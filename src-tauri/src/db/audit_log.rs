@@ -106,46 +106,6 @@ pub fn verify_chain(conn: &Connection) -> Result<bool> {
     Ok(true)
 }
 
-/// Records a consent event (Doc 25 §4.2/§4.4, Doc 06 §7): e.g. Gmail
-/// authorization, onboarding disclosures, or a support-bundle export. Doc 18
-/// §4.21 (the authoritative schema) specifies these live as `audit_log`
-/// entries with `resource_type = 'consent'`, not in a separate
-/// `consent_events` table — an earlier BRD draft's naming this document does
-/// not follow. `detail` becomes part of `after_json` alongside a UTC
-/// timestamp, matching the doc's example format
-/// ("User consents to Gmail access on <timestamp>").
-pub fn record_consent_event(conn: &Connection, consent_type: &str, detail: &str) -> Result<()> {
-    let now = Utc::now();
-    let row = AuditLogRow {
-        id: uuid::Uuid::new_v4().to_string(),
-        actor_type: Some("user".to_string()),
-        actor_id: Some("local".to_string()),
-        action: Some(format!("consent_{}", consent_type)),
-        resource_type: Some("consent".to_string()),
-        resource_id: None,
-        before_json: None,
-        after_json: Some(serde_json::json!({
-            "consent_type": consent_type,
-            "detail": detail,
-            "timestamp": now.to_rfc3339(),
-        })),
-        created_at: now,
-    };
-    insert(conn, &row)
-}
-
-/// Fetches consent-event history (Doc 25 §4.4: "Consent History" viewer at
-/// Settings → Privacy → Consent History) — a thin filter over `fetch_all`
-/// scoped to `resource_type = 'consent'`, distinct from the general Network
-/// Activity Log which shows traffic, not consent.
-pub fn fetch_consent_history(
-    conn: &Connection,
-    limit: u32,
-    offset: u32,
-) -> Result<Vec<AuditLogRow>> {
-    fetch_all(conn, Some("consent".to_string()), limit, offset)
-}
-
 /// Computes and stores the `prev_hash`/`row_hash` tamper-evidence chain
 /// (Document 18 §4.21) — always computed here, never accepted from the
 /// caller, since `AuditLogRow` itself has no hash fields for a caller to

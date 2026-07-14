@@ -375,9 +375,10 @@ export const API = {
     delete: (id: string) => invokeCommand<void>('settings_pdf_passwords_delete', { id }),
   },
   privacy: {
-    // Doc 25 §4.4: Settings → Privacy → Consent History (C20).
+    // TASK-AUTH-003, Doc 19 §5.6: Settings → Privacy → Consent History,
+    // backed by the dedicated consent_events table (Doc 18 §4.21a).
     getConsentHistory: (limit = 50, offset = 0) =>
-      invokeCommand<ConsentEventRecord[]>('fetch_consent_history', { limit, offset }),
+      invokeCommand<ConsentEventRecord[]>('auth_get_consent_history', { limit, offset }),
     recordConsentEvent: (consentType: string, detail: string) =>
       invokeCommand<void>('record_consent_event', { consentType, detail }),
   },
@@ -450,14 +451,10 @@ export interface PdfPasswordSummary {
 
 export interface ConsentEventRecord {
   id: string;
-  actor_type: string | null;
-  actor_id: string | null;
-  action: string | null;
-  resource_type: string | null;
-  resource_id: string | null;
-  before_json: unknown;
-  after_json: { consent_type?: string; detail?: string; timestamp?: string } | null;
-  created_at: string;
+  event_type: string;
+  disclosure_text: string;
+  consented_at: string;
+  withdrawn_at: string | null;
 }
 
 export interface ScanProgressPayload {

@@ -527,7 +527,7 @@ pub async fn settings_export_data(
     let conn = pool.get().await.map_err(|e| e.to_string())?;
     let export_path_for_log = export_path.clone();
     conn.interact(move |c| {
-        crate::db::audit_log::record_consent_event(
+        crate::auth::consent::insert_consent_event(
             c,
             "data_export",
             &format!("User exported an encrypted copy of their local data to {}", export_path_for_log),
@@ -775,25 +775,28 @@ pub async fn reconciliation_clusters_list(
         .map_err(|e| e.to_string())?
 }
 
-/// Doc 25 §4.4: Settings → Privacy → Consent History — the authoritative,
-/// always-available answer to "what did I actually agree to, and when."
+/// TASK-AUTH-003, Document 19 §5.6: Settings → Privacy → Consent History —
+/// the authoritative, always-available answer to "what did I actually agree
+/// to, and when." Reads the dedicated `consent_events` table (Document 18
+/// §4.21a), not `audit_log` — resolves the conflict flagged (not fixed) at
+/// TASK-DB-009.
 #[tauri::command]
-pub async fn fetch_consent_history(
+pub async fn auth_get_consent_history(
     pool: State<'_, deadpool_sqlite::Pool>,
     limit: u32,
     offset: u32,
-) -> Result<Vec<crate::db::audit_log::AuditLogRow>, String> {
+) -> Result<Vec<crate::auth::consent::ConsentEventsRow>, String> {
     let conn = pool.get().await.map_err(|e| e.to_string())?;
-    conn.interact(move |c| crate::db::audit_log::fetch_consent_history(c, limit, offset))
+    conn.interact(move |c| crate::auth::consent::fetch_consent_history(c, limit, offset))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())
 }
 
 /// Doc 25 §4.2/§4.4: generic consent-event recorder, callable for any consent
-/// point beyond the Gmail-authorization one that's auto-wired internally
-/// (`ingestion::oauth`) — e.g. onboarding disclosures or a support-bundle
-/// export, once the frontend flow for those calls it.
+/// point beyond the Gmail-authorization one recorded client-side at
+/// consent-screen acknowledgment (`ingestion::oauth`'s caller) — e.g.
+/// onboarding disclosures or a support-bundle export.
 #[tauri::command]
 pub async fn record_consent_event(
     pool: State<'_, deadpool_sqlite::Pool>,
@@ -801,10 +804,11 @@ pub async fn record_consent_event(
     detail: String,
 ) -> Result<(), String> {
     let conn = pool.get().await.map_err(|e| e.to_string())?;
-    conn.interact(move |c| crate::db::audit_log::record_consent_event(c, &consent_type, &detail))
+    conn.interact(move |c| crate::auth::consent::insert_consent_event(c, &consent_type, &detail))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())
+        .map(|_id| ())
 }
 
 #[derive(Serialize, Deserialize, Debug)]

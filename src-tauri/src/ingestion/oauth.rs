@@ -512,31 +512,22 @@ pub async fn start_oauth_flow_async(
 
     let acc_id_for_check = account_id.clone();
     let email_for_update = email_address;
+    // TASK-AUTH-003: the `gmail_oauth_consent` event itself is recorded by
+    // the frontend at the moment of consent-screen acknowledgment (Document
+    // 30: "on consent-screen acknowledgment, insert a gmail_oauth_consent
+    // row"), before this OAuth round-trip even starts — not here, tied to a
+    // *successful* token exchange. Recording it here too would both
+    // duplicate that event and record it at the wrong moment (acknowledgment,
+    // not success, is what Document 18 §4.21a's consent model tracks).
     conn.interact(move |c| {
-        let result = if let Ok(Some(mut existing_acc)) = connected_accounts::get_account(c, &acc_id_for_check) {
+        if let Ok(Some(mut existing_acc)) = connected_accounts::get_account(c, &acc_id_for_check) {
             // Always update both status AND email on reconnect
             existing_acc.account_status = Some("ACTIVE".to_string());
             existing_acc.email_address = Some(email_for_update);
             connected_accounts::update_account(c, &existing_acc)
         } else {
             connected_accounts::insert_account(c, &account)
-        };
-
-        // Doc 25 §4.2/§4.4: every consent event is recorded locally with a UTC
-        // timestamp — this is the moment the user has just authorized Gmail
-        // access. Best-effort: a logging hiccup should not fail the OAuth flow
-        // the user is actively waiting on.
-        if result.is_ok() {
-            if let Err(e) = crate::db::audit_log::record_consent_event(
-                c,
-                "gmail_access",
-                "User consents to Gmail access",
-            ) {
-                tracing::warn!("Failed to record Gmail access consent event: {}", e);
-            }
         }
-
-        result
     })
     .await
     .map_err(|e| anyhow::anyhow!("DB interaction error: {}", e))?
