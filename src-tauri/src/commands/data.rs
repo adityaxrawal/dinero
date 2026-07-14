@@ -307,7 +307,7 @@ pub fn do_fetch_statement_history(conn: &Connection) -> Result<Vec<StatementReco
 pub fn do_fetch_unresolved_clusters(conn: &Connection) -> Result<Vec<ClusterRecord>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, resolution_note FROM reconciliation_clusters WHERE status != 'resolved'",
+            "SELECT id, reason FROM reconciliation_clusters WHERE cluster_status IN ('open', 'deferred')",
         )
         .map_err(|e| e.to_string())?;
 
@@ -328,9 +328,9 @@ pub fn do_fetch_unresolved_clusters(conn: &Connection) -> Result<Vec<ClusterReco
                     COALESCE(t.merchant_display_name, 'Unknown'), 
                     COALESCE(t.amount, 0), 
                     COALESCE(t.authorization_time, 'Unknown'), 
-                    CASE WHEN m.transaction_id IS NOT NULL THEN 'Bank Sync' ELSE 'Gmail Parser' END as source
+                    CASE WHEN m.canonical_transaction_id IS NOT NULL THEN 'Bank Sync' ELSE 'Gmail Parser' END as source
              FROM reconciliation_cluster_members m
-             LEFT JOIN transactions t ON m.transaction_id = t.id
+             LEFT JOIN transactions t ON m.canonical_transaction_id = t.id
              WHERE m.cluster_id = ?1"
         ).map_err(|e| e.to_string())?;
         
@@ -417,7 +417,7 @@ pub fn do_get_debug_metrics(conn: &Connection) -> Result<DebugMetrics, String> {
         .query_row("SELECT count(*) FROM statements", [], |row| row.get(0))
         .unwrap_or(0);
     let unresolved_clusters: i64 = conn.query_row(
-        "SELECT count(*) FROM reconciliation_clusters WHERE status != 'resolved'",
+        "SELECT count(*) FROM reconciliation_clusters WHERE cluster_status IN ('open', 'deferred')",
         [],
         |row| row.get(0)
     ).unwrap_or(0);
@@ -1211,11 +1211,11 @@ mod tests {
             [],
         ).unwrap();
         conn.execute(
-            "CREATE TABLE reconciliation_clusters (id TEXT PRIMARY KEY, status TEXT, resolution_note TEXT)",
+            "CREATE TABLE reconciliation_clusters (id TEXT PRIMARY KEY, cluster_status TEXT, reason TEXT)",
             [],
         ).unwrap();
         conn.execute(
-            "CREATE TABLE reconciliation_cluster_members (id TEXT PRIMARY KEY, cluster_id TEXT, transaction_id TEXT)",
+            "CREATE TABLE reconciliation_cluster_members (id TEXT PRIMARY KEY, cluster_id TEXT, canonical_transaction_id TEXT)",
             [],
         )
         .unwrap();
@@ -1252,7 +1252,7 @@ mod tests {
         ).unwrap();
 
         conn.execute(
-            "INSERT INTO reconciliation_clusters (id, resolution_note, status) VALUES ('c1', 'Ambiguous match', 'ambiguous_pending')",
+            "INSERT INTO reconciliation_clusters (id, reason, cluster_status) VALUES ('c1', 'Ambiguous match', 'open')",
             [],
         ).unwrap();
 

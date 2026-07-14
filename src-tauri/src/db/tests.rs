@@ -379,14 +379,11 @@ mod tests {
         // recon clusters
         let cluster = ReconciliationClustersRow {
             id: "cluster_1".into(),
-            observation_id: None,
-            status: "unreconciled".into(),
-            total_amount_minor: None,
-            currency: None,
-            resolution_note: None,
-            resolved_at: None,
+            cluster_status: "open".into(),
+            reason: None,
+            resolution_notes: None,
             created_at: None,
-            updated_at: None,
+            resolved_at: None,
         };
         reconciliation_clusters::insert(&conn, &cluster).unwrap();
 
@@ -485,10 +482,10 @@ mod tests {
         let r_member = ReconciliationClusterMembersRow {
             id: "rcm_1".into(),
             cluster_id: "cluster_1".into(),
-            transaction_id: Some("tx_1".into()),
-            statement_entry_id: None,
+            observation_id: None,
+            canonical_transaction_id: Some("tx_1".into()),
+            member_role: "candidate_a".into(),
             added_at: None,
-            updated_at: None,
         };
         reconciliation_cluster_members::insert(&conn, &r_member).unwrap();
 
@@ -1552,14 +1549,11 @@ mod tests {
 
         let cluster = crate::db::reconciliation_clusters::ReconciliationClustersRow {
             id: "cluster_test_1".into(),
-            observation_id: None,
-            status: "unreconciled".into(),
-            total_amount_minor: Some(1000),
-            currency: Some("USD".into()),
-            resolution_note: None,
-            resolved_at: None,
+            cluster_status: "open".into(),
+            reason: Some("ambiguous candidate match".into()),
+            resolution_notes: None,
             created_at: None,
-            updated_at: None,
+            resolved_at: None,
         };
 
         // Test Insert
@@ -1570,21 +1564,21 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(fetched.id, "cluster_test_1");
-        assert_eq!(fetched.status, "unreconciled");
-        assert_eq!(fetched.total_amount_minor, Some(1000));
+        assert_eq!(fetched.cluster_status, "open");
+        assert_eq!(fetched.reason.as_deref(), Some("ambiguous candidate match"));
 
         // Test Update Status
         crate::db::reconciliation_clusters::update_status(
             &conn,
             "cluster_test_1",
-            "partially_reconciled",
+            "deferred",
         )
         .unwrap();
         let fetched_updated =
             crate::db::reconciliation_clusters::select_by_id(&conn, "cluster_test_1")
                 .unwrap()
                 .unwrap();
-        assert_eq!(fetched_updated.status, "partially_reconciled");
+        assert_eq!(fetched_updated.cluster_status, "deferred");
 
         let tx = crate::db::transactions::TransactionsRow {
             id: "tx_test_1".into(),
@@ -1627,10 +1621,10 @@ mod tests {
         let member = crate::db::reconciliation_cluster_members::ReconciliationClusterMembersRow {
             id: "rcm_test_1".into(),
             cluster_id: "cluster_test_1".into(),
-            transaction_id: Some("tx_test_1".into()),
-            statement_entry_id: None,
+            observation_id: None,
+            canonical_transaction_id: Some("tx_test_1".into()),
+            member_role: "candidate_a".into(),
             added_at: None,
-            updated_at: None,
         };
         crate::db::reconciliation_cluster_members::insert(&conn, &member).unwrap();
 
@@ -1640,7 +1634,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(members.len(), 1);
-        assert_eq!(members[0].transaction_id.as_deref(), Some("tx_test_1"));
+        assert_eq!(members[0].canonical_transaction_id.as_deref(), Some("tx_test_1"));
 
         // Test Delete Member by Cluster ID
         crate::db::reconciliation_cluster_members::delete_by_cluster_id(&conn, "cluster_test_1")
@@ -1671,40 +1665,60 @@ mod tests {
     fn test_cluster_excluded_from_analytics_when_pending() {
         let conn = setup_db();
 
-        // Insert a cluster with 'unreconciled' status (which is pending)
+        conn.execute(
+            "INSERT INTO instruments (id, type, issuer_name, masked_identifier) VALUES ('inst_test_5', 'credit_card', 'TestBank', '1234')",
+            [],
+        ).unwrap();
+
+        // A normal, unambiguous transaction always counts.
+        conn.execute(
+            "INSERT INTO transactions (id, instrument_id, amount_minor, currency, direction, best_event_time, is_deleted)
+             VALUES ('tx_normal_5', 'inst_test_5', 1000, 'USD', 'debit', '2026-06-10 12:00:00', 0)",
+            [],
+        ).unwrap();
+
+        // A candidate transaction that's a member of a still-open ambiguity cluster.
+        conn.execute(
+            "INSERT INTO transactions (id, instrument_id, amount_minor, currency, direction, best_event_time, is_deleted)
+             VALUES ('tx_ambiguous_5', 'inst_test_5', 2000, 'USD', 'debit', '2026-06-10 13:00:00', 0)",
+            [],
+        ).unwrap();
+
         let cluster = crate::db::reconciliation_clusters::ReconciliationClustersRow {
             id: "cluster_test_5".into(),
-            observation_id: None,
-            status: "unreconciled".into(),
-            total_amount_minor: Some(1000),
-            currency: Some("USD".into()),
-            resolution_note: None,
-            resolved_at: None,
+            cluster_status: "open".into(),
+            reason: Some("ambiguous candidate match".into()),
+            resolution_notes: None,
             created_at: None,
-            updated_at: None,
+            resolved_at: None,
         };
         crate::db::reconciliation_clusters::insert(&conn, &cluster).unwrap();
 
-        // Insert a fully reconciled cluster
-        let cluster2 = crate::db::reconciliation_clusters::ReconciliationClustersRow {
-            id: "cluster_test_6".into(),
+        let member = crate::db::reconciliation_cluster_members::ReconciliationClusterMembersRow {
+            id: "rcm_test_5".into(),
+            cluster_id: "cluster_test_5".into(),
             observation_id: None,
-            status: "fully_reconciled".into(),
-            total_amount_minor: Some(2000),
-            currency: Some("EUR".into()),
-            resolution_note: None,
-            resolved_at: None,
-            created_at: None,
-            updated_at: None,
+            canonical_transaction_id: Some("tx_ambiguous_5".into()),
+            member_role: "candidate_a".into(),
+            added_at: None,
         };
-        crate::db::reconciliation_clusters::insert(&conn, &cluster2).unwrap();
+        crate::db::reconciliation_cluster_members::insert(&conn, &member).unwrap();
 
-        // In this test, we simulate an analytics query that only looks at reconciled clusters
-        let mut stmt = conn.prepare("SELECT SUM(total_amount_minor) FROM reconciliation_clusters WHERE status IN ('fully_reconciled', 'over_reconciled')").unwrap();
-        let total: Option<i64> = stmt.query_row([], |row| row.get(0)).unwrap();
+        let event_time =
+            chrono::NaiveDateTime::parse_from_str("2026-06-15 00:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
 
-        // Only the fully_reconciled cluster's amount should be included
-        assert_eq!(total, Some(2000));
+        // Hard invariant (Document 30 TASK-DB-012): clusters in an 'open'
+        // (unresolved) state must never appear in analytics totals.
+        let total =
+            crate::db::transactions::get_global_spend_current_month(&conn, &event_time).unwrap();
+        assert_eq!(total, 10.0);
+
+        // Once the cluster is resolved, its member transaction re-joins totals.
+        crate::db::reconciliation_clusters::update_status(&conn, "cluster_test_5", "resolved")
+            .unwrap();
+        let total_after_resolution =
+            crate::db::transactions::get_global_spend_current_month(&conn, &event_time).unwrap();
+        assert_eq!(total_after_resolution, 30.0);
     }
 
     #[test]
@@ -1861,24 +1875,21 @@ mod tests {
         // ReconciliationClusters -> reconciliation_cluster_members
         let cluster = crate::db::reconciliation_clusters::ReconciliationClustersRow {
             id: "cluster_fk_test".into(),
-            observation_id: None,
-            status: "unreconciled".into(),
-            total_amount_minor: None,
-            currency: None,
-            resolution_note: None,
-            resolved_at: None,
+            cluster_status: "open".into(),
+            reason: None,
+            resolution_notes: None,
             created_at: None,
-            updated_at: None,
+            resolved_at: None,
         };
         crate::db::reconciliation_clusters::insert(&conn, &cluster).unwrap();
 
         let member = crate::db::reconciliation_cluster_members::ReconciliationClusterMembersRow {
             id: "member_fk_test".into(),
             cluster_id: "cluster_fk_test".into(),
-            transaction_id: None,
-            statement_entry_id: None,
+            observation_id: None,
+            canonical_transaction_id: None,
+            member_role: "incoming".into(),
             added_at: None,
-            updated_at: None,
         };
         crate::db::reconciliation_cluster_members::insert(&conn, &member).unwrap();
 

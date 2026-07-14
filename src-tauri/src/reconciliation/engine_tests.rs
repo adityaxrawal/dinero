@@ -271,15 +271,15 @@ fn test_ambiguous_cluster_excluded_from_dashboard_totals() {
 
     // Create a cluster and add 'tx_ambiguous' to it
     conn.execute(
-        "INSERT INTO reconciliation_clusters (id, observation_id, status, created_at, updated_at) 
-         VALUES ('cluster_1', 'obs_1', 'ambiguous_pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        "INSERT INTO reconciliation_clusters (id, cluster_status, created_at)
+         VALUES ('cluster_1', 'open', CURRENT_TIMESTAMP)",
         [],
     )
     .unwrap();
 
     conn.execute(
-        "INSERT INTO reconciliation_cluster_members (id, cluster_id, transaction_id, added_at, updated_at)
-         VALUES ('member_1', 'cluster_1', 'tx_ambiguous', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        "INSERT INTO reconciliation_cluster_members (id, cluster_id, canonical_transaction_id, member_role, added_at)
+         VALUES ('member_1', 'cluster_1', 'tx_ambiguous', 'candidate_a', CURRENT_TIMESTAMP)",
         [],
     ).unwrap();
 
@@ -322,7 +322,7 @@ fn test_cluster_resolution_merge() {
     // Validate status
     let status: String = conn
         .query_row(
-            "SELECT status FROM reconciliation_clusters WHERE id = ?1",
+            "SELECT cluster_status FROM reconciliation_clusters WHERE id = ?1",
             rusqlite::params![cluster_id],
             |r| r.get(0),
         )
@@ -404,15 +404,15 @@ fn test_cluster_resolution_reject() {
     crate::reconciliation::cluster::resolve_cluster(&conn, &cluster_id, "obs_1", "reject_candidate", None)
         .unwrap();
 
-    // Status should be resolved
+    // reject_candidate is a distinct terminal state from resolved (Doc 18 §4.6)
     let status: String = conn
         .query_row(
-            "SELECT status FROM reconciliation_clusters WHERE id = ?1",
+            "SELECT cluster_status FROM reconciliation_clusters WHERE id = ?1",
             rusqlite::params![cluster_id],
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(status, "resolved");
+    assert_eq!(status, "rejected");
 
     let decision: String = conn.query_row("SELECT decision FROM match_decisions WHERE observation_id = 'obs_1' AND decision = 'manually_confirmed'", [], |r| r.get(0)).unwrap();
     assert_eq!(decision, "manually_confirmed");
@@ -442,16 +442,17 @@ fn test_cluster_resolution_mark_unresolved_does_not_close_cluster() {
     )
     .unwrap();
 
-    // G18 fix: status must NOT become 'resolved' — the cluster stays in the
-    // pending queue (`reconciliation_clusters_list` filters on status != 'resolved').
+    // Status must become 'deferred', not 'resolved' — the cluster stays in
+    // the pending queue (`reconciliation_clusters_list` filters on
+    // cluster_status IN ('open', 'deferred')).
     let status: String = conn
         .query_row(
-            "SELECT status FROM reconciliation_clusters WHERE id = ?1",
+            "SELECT cluster_status FROM reconciliation_clusters WHERE id = ?1",
             rusqlite::params![cluster_id],
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(status, "ambiguous_pending");
+    assert_eq!(status, "deferred");
 
     // No match decision should be recorded — nothing was actually decided.
     let decision_count: i64 = conn
@@ -492,12 +493,12 @@ fn test_cluster_resolution_rejects_unknown_action() {
 
     let status: String = conn
         .query_row(
-            "SELECT status FROM reconciliation_clusters WHERE id = ?1",
+            "SELECT cluster_status FROM reconciliation_clusters WHERE id = ?1",
             rusqlite::params![cluster_id],
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(status, "ambiguous_pending");
+    assert_eq!(status, "open");
 }
 
 #[test]
@@ -1378,8 +1379,14 @@ async fn test_missing_data_alert_worker_creates_alert() {
     ).unwrap_or_default();
 
     conn.execute(
-        "INSERT INTO reconciliation_clusters (id, observation_id, status)
-         VALUES ('cluster_alert_1', 'obs_alert_1', 'ambiguous_pending')",
+        "INSERT INTO reconciliation_clusters (id, cluster_status)
+         VALUES ('cluster_alert_1', 'open')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO reconciliation_cluster_members (id, cluster_id, observation_id, member_role)
+         VALUES ('rcm_alert_1', 'cluster_alert_1', 'obs_alert_1', 'incoming')",
         [],
     )
     .unwrap();
@@ -1402,9 +1409,10 @@ async fn test_missing_data_alert_worker_creates_alert() {
         .prepare(
             "SELECT c.id, o.event_time, i.issuer_name
          FROM reconciliation_clusters c
-         JOIN transaction_observations o ON c.observation_id = o.id
+         JOIN reconciliation_cluster_members m ON m.cluster_id = c.id AND m.member_role = 'incoming'
+         JOIN transaction_observations o ON m.observation_id = o.id
          JOIN instruments i ON o.instrument_id = i.id
-         WHERE c.status IN ('ambiguous_pending', 'unreconciled')
+         WHERE c.cluster_status = 'open'
            AND o.confidence_score < 0.5
            AND o.event_time < ?1
            AND NOT EXISTS (

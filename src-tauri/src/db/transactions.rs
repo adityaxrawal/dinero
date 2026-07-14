@@ -329,7 +329,11 @@ pub fn get_global_spend_current_month(
          WHERE direction = 'debit' AND is_deleted = 0
            AND best_event_time >= ?1
            AND best_event_time <= ?2
-           AND id NOT IN (SELECT transaction_id FROM reconciliation_cluster_members)",
+           AND id NOT IN (
+               SELECT m.canonical_transaction_id FROM reconciliation_cluster_members m
+               JOIN reconciliation_clusters c ON c.id = m.cluster_id
+               WHERE c.cluster_status = 'open' AND m.canonical_transaction_id IS NOT NULL
+           )",
     )?;
 
     let sum: rusqlite::Result<i64> =
@@ -358,7 +362,11 @@ pub fn get_category_spend_current_month(
          WHERE category_id = ?1 AND direction = 'debit' AND is_deleted = 0
            AND best_event_time >= ?2
            AND best_event_time <= ?3
-           AND id NOT IN (SELECT transaction_id FROM reconciliation_cluster_members)",
+           AND id NOT IN (
+               SELECT m.canonical_transaction_id FROM reconciliation_cluster_members m
+               JOIN reconciliation_clusters c ON c.id = m.cluster_id
+               WHERE c.cluster_status = 'open' AND m.canonical_transaction_id IS NOT NULL
+           )",
     )?;
 
     let sum: rusqlite::Result<i64> = stmt.query_row(
