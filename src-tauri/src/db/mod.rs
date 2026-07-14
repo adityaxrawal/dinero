@@ -1,5 +1,7 @@
 #[cfg(test)]
 mod network_activity_log_tests;
+#[cfg(test)]
+pub mod test_helpers;
 pub mod network_activity_log;
 pub mod alerts;
 pub mod audit_log;
@@ -108,21 +110,6 @@ pub enum DbInitError {
     Other(#[from] anyhow::Error),
 }
 
-/// Outcome of the migration step run inside `init_db`'s `interact` closure —
-/// lets the closure report a migration-specific failure (with the backup path
-/// already in hand) without losing that context to the generic `anyhow::Error`
-/// conversion `conn.interact` otherwise forces every closure error through.
-enum MigrationOutcome {
-    Success,
-    MigrationFailed {
-        source: anyhow::Error,
-        backup_path: PathBuf,
-    },
-    IntegrityCheckFailed {
-        details: String,
-    },
-}
-
 /// Replaces the live (post-failed-migration) database file with a
 /// pre-migration backup taken by `create_pre_migration_backup` (C18 fix).
 /// Removes any WAL/SHM sidecar files left over from the failed attempt so the
@@ -171,6 +158,10 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
             DbInitError::Other(e.context("Failed to derive database encryption key"))
         }
     })?;
+    // TASK-DB-002: cloned before `db_key` is moved into the post_create hook
+    // below — sqlx's migration connection (a separate connection stack from
+    // rusqlite/deadpool_sqlite) needs its own copy of the same key.
+    let db_key_for_migration = db_key.clone();
 
     // 2. Configure the deadpool_sqlite pool
     let cfg = Config::new(&db_path);
@@ -281,39 +272,61 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
     };
 
     let db_path_for_backup = db_path.clone();
-    let outcome = conn.interact(move |c| {
-        // Test query to ensure decryption succeeds
-        let count: i64 = c.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get(0))?;
-        info!("Database initialized successfully. Tables count: {}", count);
+    // Step A: integrity check + pre-migration backup, still via the pooled
+    // rusqlite connection (sync). Returns `Err(details)` for an integrity
+    // failure, or `Ok(backup_path)` once the pre-migration backup exists.
+    let integrity_or_backup: Result<PathBuf, String> = conn
+        .interact(move |c| {
+            // Test query to ensure decryption succeeds
+            let count: i64 = c.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get(0))?;
+            info!("Database initialized successfully. Tables count: {}", count);
 
-        // Run integrity check. I6 fix: fail closed on corruption rather than
-        // just logging a warning and continuing to operate on a corrupt db.
-        let integrity: String = c.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
-        if integrity != "ok" {
-            warn!("Database integrity check failed: {}", integrity);
-            return Ok::<MigrationOutcome, anyhow::Error>(MigrationOutcome::IntegrityCheckFailed {
-                details: integrity,
-            });
-        }
-        info!("Database integrity check passed.");
+            // Run integrity check. I6 fix: fail closed on corruption rather than
+            // just logging a warning and continuing to operate on a corrupt db.
+            let integrity: String = c.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+            if integrity != "ok" {
+                warn!("Database integrity check failed: {}", integrity);
+                return Ok::<Result<PathBuf, String>, anyhow::Error>(Err(integrity));
+            }
+            info!("Database integrity check passed.");
 
-        // Doc 18 §12.1: back up before every migration run so a failed
-        // migration can be recovered from rather than corrupting the user's
-        // only copy of their financial data. Fail closed — if the backup
-        // itself can't be created, do not proceed with the migration.
-        let backup_path = migrations::create_pre_migration_backup(c, &db_path_for_backup)
-            .context("Pre-migration backup failed — aborting before migration")?;
+            // Doc 18 §12.1: back up before every migration run so a failed
+            // migration can be recovered from rather than corrupting the user's
+            // only copy of their financial data. Fail closed — if the backup
+            // itself can't be created, do not proceed with the migration.
+            let backup_path = migrations::create_pre_migration_backup(c, &db_path_for_backup)
+                .context("Pre-migration backup failed — aborting before migration")?;
 
-        // Run database migrations. A failure here does NOT abort via `?` —
-        // the backup above already succeeded, so the caller can offer a
-        // one-click rollback to it (C18 fix) instead of just exiting.
-        if let Err(source) = migrations::run_migrations(c) {
-            return Ok::<MigrationOutcome, anyhow::Error>(MigrationOutcome::MigrationFailed {
-                source,
-                backup_path,
-            });
-        }
+            Ok(Ok(backup_path))
+        })
+        .await
+        .map_err(|e| {
+            let msg = e.to_string();
+            if is_key_mismatch(&msg) {
+                error!("DB key mismatch detected during init interact: {}", msg);
+                DbInitError::KeyMismatch
+            } else {
+                DbInitError::Other(anyhow::anyhow!("Interact error: {}", msg))
+            }
+        })?
+        .map_err(|e| DbInitError::Other(e.context("Failed during database initialization phase")))?;
 
+    let backup_path = match integrity_or_backup {
+        Err(details) => return Err(DbInitError::IntegrityCheckFailed { details }),
+        Ok(path) => path,
+    };
+
+    // Step B (TASK-DB-002): run migrations via sqlx, on its own dedicated
+    // connection — a failure here does NOT abort via `?`; the backup above
+    // already succeeded, so the caller can offer a one-click rollback to it
+    // (C18 fix) instead of just exiting.
+    if let Err(source) = migrations::run_migrations(&db_path, Some(&db_key_for_migration)).await {
+        return Err(DbInitError::MigrationFailed { source, backup_path });
+    }
+
+    // Step C: post-migration seeding + stuck-checkpoint reset, back on the
+    // pooled rusqlite connection.
+    conn.interact(move |c| {
         // Ensure default local_profile exists (ID=1)
         let _ = c.execute(
             "INSERT OR IGNORE INTO local_profile (
@@ -328,36 +341,15 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
             "UPDATE processing_checkpoints SET status = 'failed' WHERE status = 'in_progress'",
             [],
         );
-
-        Ok(MigrationOutcome::Success)
     })
     .await
-    .map_err(|e| {
-        let msg = e.to_string();
-        if is_key_mismatch(&msg) {
-            error!("DB key mismatch detected during init interact: {}", msg);
-            DbInitError::KeyMismatch
-        } else {
-            DbInitError::Other(anyhow::anyhow!("Interact error: {}", msg))
-        }
-    })?
-    .map_err(|e| DbInitError::Other(e.context("Failed during database initialization phase")))?;
+    .map_err(|e| DbInitError::Other(anyhow::anyhow!("Interact error during post-migration seeding: {}", e)))?;
 
-    match outcome {
-        MigrationOutcome::Success => {
-            // I4 fix: refresh the hardware-UUID marker on every successful
-            // open (not just after a migration) so it always reflects the
-            // machine that last opened the db, ready for the next migration.
-            crypto::record_last_known_hw_uuid(&app_data_dir);
-            Ok(pool)
-        }
-        MigrationOutcome::MigrationFailed { source, backup_path } => {
-            Err(DbInitError::MigrationFailed { source, backup_path })
-        }
-        MigrationOutcome::IntegrityCheckFailed { details } => {
-            Err(DbInitError::IntegrityCheckFailed { details })
-        }
-    }
+    // I4 fix: refresh the hardware-UUID marker on every successful open (not
+    // just after a migration) so it always reflects the machine that last
+    // opened the db, ready for the next migration.
+    crypto::record_last_known_hw_uuid(&app_data_dir);
+    Ok(pool)
 }
 
 #[cfg(test)]

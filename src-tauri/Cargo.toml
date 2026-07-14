@@ -1,0 +1,65 @@
+[package]
+name = "dinero-app"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "dinero_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api"] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+rusqlite = { version = "0.38", features = ["bundled-sqlcipher", "chrono", "serde_json"] }
+keyring = "3"
+argon2 = "0.5"
+uuid = { version = "1", features = ["v4", "v5"] }
+anyhow = "1.0"
+thiserror = "1.0"
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
+oauth2 = "4.4"
+tiny_http = "0.12"
+futures-util = "0.3"
+
+pdfium-render = "0.8"
+regex = "1.10"
+chrono = "0.4"
+sha2 = "0.10"
+sysinfo = "0.30"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender = "0.2"
+deadpool-sqlite = "0.13.0"
+url = "2.5.8"
+tokio-util = { version = "0.7.18", features = ["full"] }
+base64 = "0.22.1"
+tauri-plugin-dialog = "2.7.1"
+tauri-plugin-updater = "2"
+aes-gcm = "0.10"
+strsim = "0.11"
+candle-core = "0.8.2"
+candle-transformers = "0.8.2"
+tokenizers = "0.19.1"
+jsonwebtoken = "9"
+machine-uid = "0.5"
+bip39 = "2"
+hex = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+sqlx = { version = "0.9.0", features = ["sqlite", "migrate", "runtime-tokio"] }
+
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }
+mockito = "1.0"

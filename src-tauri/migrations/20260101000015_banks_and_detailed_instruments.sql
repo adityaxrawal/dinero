@@ -1,0 +1,15 @@
+CREATE TABLE IF NOT EXISTS banks (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    is_deleted BOOLEAN DEFAULT 0
+);
+
+CREATE TRIGGER IF NOT EXISTS updated_at_trigger_banks
+AFTER UPDATE ON banks FOR EACH ROW
+BEGIN UPDATE banks SET updated_at = CURRENT_TIMESTAMP WHERE id = old.id; END;
+
+ALTER TABLE instruments ADD COLUMN bank_id TEXT REFERENCES banks(id);
+ALTER TABLE instruments ADD COLUMN full_identifier TEXT;
+ALTER TABLE instruments ADD COLUMN billing_cycle_day INTEGER;
