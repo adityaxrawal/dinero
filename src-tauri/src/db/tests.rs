@@ -956,6 +956,63 @@ mod tests {
     }
 
     #[test]
+    fn test_transactions_updated_at_trigger() {
+        let conn = setup_db();
+        let tx = TransactionsRow {
+            id: "tx_updated_at".into(),
+            unique_event_id: None,
+            instrument_id: None,
+            instrument_type: None,
+            direction: None,
+            amount: None,
+            amount_minor: None,
+            currency: None,
+            authorization_time: None,
+            best_event_time: None,
+            event_time_confidence: None,
+            best_posting_date: None,
+            posting_date_confidence: None,
+            merchant_display_name: None,
+            merchant_normalized_name: None,
+            merchant_entity_id: None,
+            reference_id: None,
+            location: None,
+            original_amount_minor: None,
+            original_currency: None,
+            exchange_rate: None,
+            balance_after_transaction: None,
+            status: None,
+            match_confidence: None,
+            source_mix: None,
+            alert_fired: None,
+            parent_transaction_id: None,
+            transaction_subtype: None,
+            emi_group_id: None,
+            category_id: None,
+            is_deleted: false,
+            created_at: None,
+            updated_at: None,
+        };
+        transactions::insert_transaction(&conn, &tx).unwrap();
+
+        // Artificial backdate, mirroring test_local_profile_updated_at_trigger
+        conn.execute(
+            "UPDATE transactions SET updated_at = '2000-01-01 00:00:00' WHERE id = 'tx_updated_at'",
+            [],
+        )
+        .unwrap();
+
+        let mut tx_mod = tx.clone();
+        tx_mod.merchant_display_name = Some("Updated Merchant".into());
+        transactions::update_transaction(&conn, &tx_mod).unwrap();
+
+        let fetched = transactions::get_transaction(&conn, "tx_updated_at")
+            .unwrap()
+            .unwrap();
+        assert_ne!(fetched.updated_at.unwrap().to_string(), "2000-01-01 00:00:00");
+    }
+
+    #[test]
     fn test_transactions_paginated() {
         let conn = setup_db();
         let tx = TransactionsRow {

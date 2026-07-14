@@ -224,3 +224,15 @@ Append-only. One entry per task processed under the §3 verification protocol (M
 **What I did:** Added `migrations/20260101000021_instruments_indexes.sql` with both indexes.
 
 **Verified:** `cargo check` clean. Full `cargo test --lib`: 313 passed, same 4 pre-existing unrelated failures.
+
+---
+
+## TASK-DB-006: Migration — Create `transactions` Table (Canonical)
+
+**Found:** All 32 columns match Document 18 §4.3 exactly (converted faithfully under TASK-DB-002). `src-tauri/src/db/transactions.rs` has full CRUD plus reconciliation-support functions well beyond bare CRUD (`find_exact_match`, `find_candidates_within_window`, `find_parent_for_refund`, merchant/spend aggregation) — all parameterized. 8 of 9 doc-named acceptance-criteria tests already existed in `db/tests.rs` (`test_transactions_crud`, `..._comprehensive` (FK violation), `..._duplicate_pk_fails`, `..._update_success`, `..._update_not_found`, `..._delete_not_found`, `..._select_not_found`, `..._paginated`).
+
+**Gaps found:** (1) Zero indexes existed on `transactions` at all, despite Document 18 §6 specifying four (`(instrument_id, amount_minor, currency, direction, best_event_time)`, the same on `best_posting_date`, `(reference_id)`, `(merchant_normalized_name)`) — and this isn't just a documentation nicety: `find_exact_match`/`find_candidates_within_window` (the dedup engine's own lookup functions, Document 12 §8.2a) query exactly on `(instrument_id, amount_minor, currency, direction, ...)`, meaning every dedup candidate lookup was a full table scan against a table Document 18 §11.1 sizes up to 500,000 rows. (2) The doc's acceptance criteria explicitly lists an "updated_at trigger" test (mirroring the one already written for `local_profile`) — no such test existed for `transactions`, even though the `updated_at_trigger_transactions` trigger itself (migration 005) was already correctly in place.
+
+**What I did:** Added `migrations/20260101000022_transactions_indexes.sql` with all four indexes. Added `test_transactions_updated_at_trigger` to `db/tests.rs`, following the exact same backdate-then-update-then-assert pattern as `test_local_profile_updated_at_trigger`.
+
+**Verified:** `cargo check` clean. New test passes standalone and as part of the full suite. Full `cargo test --lib`: 314 passed (313 + 1 new), same 4 pre-existing unrelated failures.
