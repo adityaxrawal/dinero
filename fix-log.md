@@ -278,3 +278,15 @@ Append-only. One entry per task processed under the §3 verification protocol (M
 **Flagged, not touched:** production code (`statements/duplicate_check.rs`, `statements/metadata_extractor.rs`) writes `statements` rows via raw SQL, bypassing this DAO entirely, and doesn't set `source_type` — retrofitting that is Area 5's (`TASK-STMT-001`) job, not this schema task's; the new column is nullable so this doesn't break anything now.
 
 **Verified:** `cargo check` clean. New tests pass standalone and in the full suite: 319 passed (314 + 5 new), same 4 pre-existing unrelated failures.
+
+---
+
+## TASK-DB-010: Migration — Create `statement_entries` Table
+
+**Found:** Table (migration 001, FK cascade semantics corrected in migration 013), CRUD in `statement_entries.rs` (insert/select_by_statement_id/update) all parameterized; no standalone `delete` function exists, but none is architecturally needed — entries are only ever cleaned up via the parent statement's `ON DELETE CASCADE`, already covered by `test_fk_cascade_rules`. "Full CRUD" acceptance is reasonably satisfied by the existing `test_crud_statement_entries` plus that cascade test.
+
+**Gap found:** zero indexes existed, despite Document 18 §6 specifying two ("Row ordering and reporting"): `(statement_id, row_index)` and `(merchant_normalized)`.
+
+**What I did:** Added `migrations/20260101000026_statement_entries_indexes.sql` with both — using Document 18's exact two-index split rather than Document 30's own combined three-column version.
+
+**Verified:** `cargo check` clean. Full `cargo test --lib`: 319 passed, same 4 pre-existing unrelated failures.
