@@ -336,12 +336,11 @@ mod tests {
             id: "cat_1".into(),
             name: "Food".into(),
             parent_id: None,
-            color: None,
-            icon: None,
-            is_system: false,
+            source_type: "user".into(),
+            mcc_code: None,
+            monthly_budget_minor: None,
             is_deleted: false,
             created_at: None,
-            updated_at: None,
         };
         categories::insert(&conn, &cat).unwrap();
 

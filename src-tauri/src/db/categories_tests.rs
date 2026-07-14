@@ -15,12 +15,11 @@ mod tests {
             id: "cat_parent".into(),
             name: "Custom Parent".into(),
             parent_id: None,
-            color: Some("#000000".into()),
-            icon: Some("box".into()),
-            is_system: false,
+            source_type: "user".into(),
+            mcc_code: None,
+            monthly_budget_minor: None,
             is_deleted: false,
             created_at: None,
-            updated_at: None,
         };
 
         categories::insert(&conn, &cat_parent).unwrap();
@@ -29,12 +28,11 @@ mod tests {
             id: "cat_child".into(),
             name: "Custom Child".into(),
             parent_id: Some("cat_parent".into()),
-            color: None,
-            icon: None,
-            is_system: false,
+            source_type: "user".into(),
+            mcc_code: None,
+            monthly_budget_minor: None,
             is_deleted: false,
             created_at: None,
-            updated_at: None,
         };
 
         categories::insert(&conn, &cat_child).unwrap();
@@ -81,10 +79,10 @@ mod tests {
             .iter()
             .find(|c| c.name == "Food & Dining")
             .unwrap();
-        assert!(food_cat.is_system);
+        assert_eq!(food_cat.source_type, "system");
 
         let groceries_cat = categories.iter().find(|c| c.name == "Groceries").unwrap();
-        assert!(groceries_cat.is_system);
+        assert_eq!(groceries_cat.source_type, "system");
         assert_eq!(groceries_cat.parent_id.as_deref(), Some("cat_food"));
     }
     #[test]
@@ -122,13 +120,14 @@ mod tests {
             "Should not be able to reparent a system category"
         );
 
-        // Attempt to change color (should be allowed)
-        let mut recolored = food_cat.clone();
-        recolored.color = Some("#000000".into());
-        let recolor_res = categories::update(&conn, &recolored);
+        // Attempt to set a monthly budget (should be allowed -- name/parent_id
+        // are the only protected fields on a system category)
+        let mut budgeted = food_cat.clone();
+        budgeted.monthly_budget_minor = Some(500000);
+        let budget_res = categories::update(&conn, &budgeted);
         assert!(
-            recolor_res.is_ok(),
-            "Should be able to recolor a system category"
+            budget_res.is_ok(),
+            "Should be able to set a budget on a system category"
         );
     }
 
