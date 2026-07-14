@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost https://accounts.google.com https://oauth2.googleapis.com https://www.googleapis.com https://api.dinero-app.com https://github.com https://objects.githubusercontent.com; img-src 'self' asset: data:; font-src 'self';",
+      "csp": "default-src 'self'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://license.dinero.app; img-src 'self' data:; style-src 'self' 'unsafe-inline'",
       "capabilities": [
         {
           "identifier": "default",
