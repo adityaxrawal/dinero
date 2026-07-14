@@ -11,3 +11,4 @@ Append-only. One line per task, appended only once the task is genuinely complet
 | TASK-SETUP-005 | SETUP | done | 2026-07-14T00:14:00Z | Dependency set matches spec except sqlx (flagged for TASK-DB-001/002 — existing code uses rusqlite_migration). |
 | TASK-SETUP-006 | SETUP | done | 2026-07-14T00:20:00Z | Implemented from scratch: src-tauri/src/startup.rs RAM check, llm_eligible state, system_warning event. |
 | TASK-SETUP-007 | SETUP | done | 2026-07-14T00:25:00Z | tsconfig: ES2022, exactOptionalPropertyTypes, 4 missing path aliases (+ vite.config.ts mirror). Fixed 2 latent tsc errors so `tsc --noEmit` passes clean. |
+| TASK-SETUP-008 | SETUP | done | 2026-07-14T00:30:00Z | no-explicit-any -> error, .prettierrc corrected to spec. FLAGGED: pnpm lint now reports 76 errors (pre-existing `any` usage in Area 9 pages, not fixed here — deferred to owning TASK-FE-* tasks). |
