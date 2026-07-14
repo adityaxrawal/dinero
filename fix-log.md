@@ -236,3 +236,15 @@ Append-only. One entry per task processed under the §3 verification protocol (M
 **What I did:** Added `migrations/20260101000022_transactions_indexes.sql` with all four indexes. Added `test_transactions_updated_at_trigger` to `db/tests.rs`, following the exact same backdate-then-update-then-assert pattern as `test_local_profile_updated_at_trigger`.
 
 **Verified:** `cargo check` clean. New test passes standalone and as part of the full suite. Full `cargo test --lib`: 314 passed (313 + 1 new), same 4 pre-existing unrelated failures.
+
+---
+
+## TASK-DB-007: Migration — Create `transactions_fts` FTS5 Virtual Table
+
+**Found:** A real "wrong table" deviation, not a cosmetic one. Migration 011 (`transactionsfts_schema_correction`, already in place before this task) replaced the table Document 18 §4.3a specifies (`transactions_fts`, indexing the real `merchant_display_name`/`merchant_normalized_name`/`reference_id`/`location` columns via FTS5's external-content mechanism) with a differently-named table `transactionsfts` (no underscore) indexing three *shadow* `GENERATED ALWAYS AS VIRTUAL` columns (`merchantdisplayname`, `merchantnormalizedname`, `referenceid`) added onto `transactions` purely to feed the FTS index.
+
+**Verified empirically before touching anything:** wrote a throwaway Python/sqlite3 probe (scratchpad, not part of the repo) creating Document 18 §4.3a's exact DDL — an FTS5 external-content table indexing the real columns directly, no shadow columns — and confirmed insert/query both work with no error. This proves the shadow-column workaround wasn't solving a real SQLite/FTS5 constraint; it was unnecessary complexity introduced without a stated reason. Per Step C, "wrong table" is one of the explicit categories to fix, not accommodate.
+
+**What I did:** Added `migrations/20260101000023_transactions_fts_rename_to_spec.sql`: drops the three sync triggers and the `transactionsfts` table, drops the three shadow generated columns from `transactions`, creates `transactions_fts` matching Document 18 §4.3a's DDL exactly, recreates the three sync triggers (same names as before — `transactions_ai`/`ad`/`au` — now targeting the real columns), and backfills from existing rows. Checked blast radius first (`grep` across `src`/`migrations`): only `transactions.rs`'s `search_transactions()` referenced the old table name — updated its `JOIN`/`MATCH` clause to `transactions_fts`. No `src-tauri/src/db/search.rs` file exists (the doc names one); `search_transactions` already lives sensibly inside `transactions.rs` — didn't create a separate file just to match a path that has no functional bearing.
+
+**Verified:** `cargo check` clean. The migration itself only gets validated at runtime (via `sqlx::migrate!`'s embedded SQL, not at compile time) — ran `test_transactions_fts_stays_synced` (the existing integration test already covering both doc-named acceptance criteria: FTS-stays-in-sync across insert/update/delete, and keyword-ranking correctness via its exact-match-ranks-first assertion) standalone first to confirm the new migration SQL is actually valid, then the full suite: 314 passed, same 4 pre-existing unrelated failures.

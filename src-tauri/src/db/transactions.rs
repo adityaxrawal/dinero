@@ -139,10 +139,10 @@ pub fn search_transactions(
     offset: i64,
 ) -> Result<Vec<TransactionsRow>> {
     let mut stmt = conn.prepare(
-        "SELECT t.* 
+        "SELECT t.*
          FROM transactions t
-         JOIN transactionsfts fts ON t.id = fts.id
-         WHERE transactionsfts MATCH ?1 AND t.is_deleted = 0
+         JOIN transactions_fts fts ON t.id = fts.id
+         WHERE transactions_fts MATCH ?1 AND t.is_deleted = 0
          ORDER BY rank
          LIMIT ?2 OFFSET ?3",
     )?;
