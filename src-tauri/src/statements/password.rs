@@ -225,6 +225,75 @@ pub async fn try_stored_passwords(
     Ok(PasswordResolutionResult::PromptRequired)
 }
 
+/// Tries every stored password across **every** instrument, not scoped to
+/// one — used wherever the instrument genuinely isn't known yet (a fresh
+/// upload's password is resolved at Step 5, before metadata extraction at
+/// Step 7 ever discovers which instrument the PDF belongs to at all; a
+/// `statements_retry` on a still-cached-bytes statement is in the identical
+/// position). Doc 30 TASK-STMT-010 ("statements_retry... reusing any
+/// previously-entered password first") and the real upload flow both need
+/// this — `try_stored_passwords` alone can't help either caller, since both
+/// would otherwise have to pass a real `instrument_id` that doesn't exist yet.
+///
+/// PDF passwords are typically shared per bank/card template, so the number
+/// of distinct stored passwords across all instruments a user has is small —
+/// a full linear scan here is cheap, not a performance concern.
+pub async fn try_all_stored_passwords(
+    pdf_bytes: &[u8],
+    pool: &deadpool_sqlite::Pool,
+) -> Result<PasswordResolutionResult> {
+    if is_pdf_unencrypted(pdf_bytes).await {
+        return Ok(PasswordResolutionResult::NotEncrypted);
+    }
+
+    let conn = pool.get().await?;
+    let rows: Vec<(String, Vec<u8>)> = conn
+        .interact(|c| {
+            let mut stmt = c.prepare(
+                "SELECT id, password_ciphertext FROM pdf_passwords \
+                 ORDER BY success_count DESC, last_used_at DESC",
+            )?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok::<_, rusqlite::Error>(rows)
+        })
+        .await
+        .map_err(|e| anyhow!("DB interact error: {}", e))??;
+
+    for (row_id, ciphertext) in rows {
+        let plaintext = match decrypt_password(&ciphertext) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("Failed to decrypt stored password row {}: {}", row_id, e);
+                continue;
+            }
+        };
+
+        if try_pdfium_unlock(pdf_bytes, &plaintext).await {
+            let rid = row_id.clone();
+            conn.interact(move |c| {
+                c.execute(
+                    "UPDATE pdf_passwords \
+                     SET success_count = success_count + 1, \
+                         last_used_at = datetime('now') \
+                     WHERE id = ?",
+                    [&rid],
+                )
+            })
+            .await
+            .map_err(|e| anyhow!("DB interact error (update success_count): {}", e))??;
+
+            tracing::info!("Stored password row '{}' unlocked the PDF (cross-instrument scan)", row_id);
+            return Ok(PasswordResolutionResult::UnlockedWithStored(plaintext));
+        }
+    }
+
+    Ok(PasswordResolutionResult::PromptRequired)
+}
+
 /// Saves a newly learned password for an instrument.
 /// Password is AES-256-GCM encrypted before writing to `pdf_passwords` (Doc 10 §7.4, §19.3).
 /// Plaintext is never persisted. Never returned to UI.

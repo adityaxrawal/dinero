@@ -2,7 +2,7 @@ pub mod network;
 use crate::statements::{
     duplicate_check::{check_file_hash_duplicate, DuplicateCheckResult},
     events,
-    password::{is_pdf_unencrypted, try_stored_passwords, PasswordResolutionResult},
+    password::{is_pdf_unencrypted, try_all_stored_passwords, PasswordResolutionResult},
     validator::validate_and_hash,
 };
 use tauri::{Emitter, Manager};
@@ -364,9 +364,17 @@ async fn upload_one_statement(
     // If encrypted: try stored passwords (AES-256-GCM decrypted from DB).
     // If all stored passwords fail: create unprocessed_statements row → emit password_required event.
     // The password submit flow continues via statements_submit_password.
+    //
+    // Real bug fixed here (Doc 30 TASK-STMT-010): the instrument this PDF
+    // belongs to isn't known yet at this point in the pipeline — metadata
+    // extraction (Step 7, after unlocking) is what discovers it — so a
+    // per-instrument stored-password lookup can never have a real
+    // `instrument_id` to scope by. Scans across every instrument's stored
+    // passwords instead, which is what actually makes "try stored passwords
+    // before prompting" work at all for a fresh upload.
     let pdf_is_encrypted = !is_pdf_unencrypted(&bytes).await;
     if pdf_is_encrypted {
-        let pw_result = try_stored_passwords("", &bytes, pool_ref)
+        let pw_result = try_all_stored_passwords(&bytes, pool_ref)
             .await
             .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
 
@@ -1307,89 +1315,257 @@ async fn record_pdf_password_event(pool: &deadpool_sqlite::Pool, statement_id: &
         .await;
 }
 
-/// Phase 5 — Retry processing a statement that is in pending_retry state (Doc 10 §7.6).
-/// Re-enters the password resolution flow for the stored unprocessed_statements row.
+/// Doc 30 TASK-STMT-010 `statements_retry(id)`: "re-attempts the full
+/// pipeline, reusing any previously-entered password first." The existing
+/// version of this command only ever re-emitted `password_required`,
+/// unconditionally re-prompting the user even when a password already on
+/// file (e.g. entered for a different statement from the same
+/// bank/instrument in the interim) would unlock this one immediately —
+/// fixed to actually attempt `try_all_stored_passwords` first, resuming the
+/// full pipeline exactly like `statements_submit_password`'s success path
+/// when one matches, and falling back to the original re-prompt behavior
+/// only when none do.
 #[tauri::command]
 pub async fn statements_retry_unprocessed(
     statement_id: String,
-    pool: tauri::State<'_, deadpool_sqlite::Pool>,
     app: tauri::AppHandle,
+    pool: tauri::State<'_, deadpool_sqlite::Pool>,
+    pending_bytes: tauri::State<'_, crate::statements::pending_bytes::PendingStatementBytes>,
 ) -> Result<serde_json::Value, crate::error::AppError> {
     if !statement_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') { return Err(crate::error::AppError::Unknown("Invalid ID format".into())); }
 
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
-    use crate::statements::events;
+    use crate::statements::{events, password::try_all_stored_passwords};
 
     tracing::info!("Retrying unprocessed statement_id='{}'", statement_id);
 
-    // Look up the unprocessed_statements row
     let conn = pool
         .get()
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     let stmt_id_clone = statement_id.clone();
     let row = conn
-        .interact(move |c| {
-            c.query_row(
-                "SELECT id, status, statement_source_json FROM unprocessed_statements \
-                 WHERE id = ?",
-                [&stmt_id_clone],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                },
-            )
-        })
+        .interact(move |c| crate::db::unprocessed_statements::select_by_id(c, &stmt_id_clone))
         .await
-        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+        .ok_or_else(|| {
+            crate::error::AppError::Unknown(format!(
+                "No unprocessed statement found with statement_id='{}'",
+                statement_id
+            ))
+        })?;
 
-    match row {
-        Ok((_, status, source_json)) => {
+    // I9 fix: a statement locked out by the 3-attempt cap must not be
+    // reopened for further password guesses via retry.
+    if row.status == "password_failed_max_attempts" {
+        return Err(crate::error::AppError::Unknown(
+            "This statement is locked after too many incorrect password attempts. \
+             Please re-upload the file to try again."
+                .to_string(),
+        ));
+    }
+
+    let filename = serde_json::from_str::<serde_json::Value>(&row.statement_source_json)
+        .ok()
+        .and_then(|v| v["filename"].as_str().map(|s| s.to_string()))
+        .unwrap_or_default();
+
+    // Doc 15 Core Principle 4/10: raw PDFs are never persisted — if the
+    // bytes are no longer cached (the 30-minute pending_bytes TTL elapsed),
+    // there is genuinely nothing left to retry with; the user must re-upload.
+    let Some(pdf_bytes) = pending_bytes.peek(&statement_id).await else {
+        return Err(crate::error::AppError::Unknown(
+            "This statement's cached data has expired — please re-upload the file to retry"
+                .to_string(),
+        ));
+    };
+
+    let stored_result = try_all_stored_passwords(&pdf_bytes, pool.inner())
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
+
+    match stored_result {
+        crate::statements::password::PasswordResolutionResult::UnlockedWithStored(password) => {
             tracing::info!(
-                "Found unprocessed_statements row: status='{}' for statement_id='{}'",
-                status,
+                "Retry found a matching stored password for statement_id='{}' — resuming pipeline",
                 statement_id
             );
-
-            // I9 fix: a statement locked out by the 3-attempt cap must not be
-            // reopened for further password guesses via retry.
-            if status == "password_failed_max_attempts" {
-                return Err(crate::error::AppError::Unknown(
-                    "This statement is locked after too many incorrect password attempts. \
-                     Please re-upload the file to try again."
-                        .to_string(),
-                ));
-            }
-
-            // Re-emit password_required so UI re-prompts the user
-            let filename = serde_json::from_str::<serde_json::Value>(&source_json)
+            pending_bytes.take(&statement_id).await;
+            let file_hash = serde_json::from_str::<serde_json::Value>(&row.statement_source_json)
                 .ok()
-                .and_then(|v| v["filename"].as_str().map(|s| s.to_string()))
+                .and_then(|v| v["file_hash"].as_str().map(|s| s.to_string()))
                 .unwrap_or_default();
 
+            let pipeline_result = run_parse_pipeline(
+                &pdf_bytes,
+                &filename,
+                &file_hash,
+                pool.inner(),
+                &app,
+                pending_bytes.inner(),
+                None,
+                Some(&password),
+                None,
+            )
+            .await;
+
+            match pipeline_result {
+                Ok(new_stmt_id) => {
+                    let conn = pool
+                        .get()
+                        .await
+                        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+                    let orig_id = statement_id.clone();
+                    let resolved_id = new_stmt_id.clone();
+                    conn.interact(move |c| {
+                        crate::db::unprocessed_statements::update_status(c, &orig_id, "resolved", Some(&resolved_id))
+                    })
+                    .await
+                    .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+                    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
+
+                    app.emit(
+                        events::PARSED,
+                        serde_json::json!({ "statement_id": new_stmt_id, "filename": filename }),
+                    )
+                    .ok();
+                    Ok(serde_json::json!({ "status": "unlocked", "statement_id": new_stmt_id }))
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "statements_retry_unprocessed: pipeline failed for statement_id='{}': {}",
+                        statement_id,
+                        e
+                    );
+                    Err(crate::error::AppError::Unknown(e.to_string()))
+                }
+            }
+        }
+        _ => {
+            // No stored password unlocked it — fall back to the original
+            // behavior: re-prompt the user, preserving all in-progress context.
             app.emit(
                 events::PASSWORD_REQUIRED,
-                serde_json::json!({
-                    "statement_id": statement_id,
-                    "filename": filename,
-                }),
+                serde_json::json!({ "statement_id": statement_id, "filename": filename }),
             )
             .ok();
 
-            Ok(serde_json::json!({
-                "status": "retry_queued",
-                "statement_id": statement_id
-            }))
+            Ok(serde_json::json!({ "status": "retry_queued", "statement_id": statement_id }))
         }
-        Err(_) => Err(crate::error::AppError::Unknown(format!(
+    }
+}
+
+/// Doc 30 TASK-STMT-010 `statements_list_unprocessed()`: statements grouped
+/// by status into the 3 actionable UI buckets.
+#[tauri::command]
+pub async fn statements_list_unprocessed(
+    pool: tauri::State<'_, deadpool_sqlite::Pool>,
+) -> Result<serde_json::Value, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let rows = conn
+        .interact(|c| crate::db::unprocessed_statements::select_actionable(c))
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+
+    Ok(group_unprocessed_by_status(rows))
+}
+
+/// Doc 30 TASK-STMT-010: groups `unprocessed_statements` rows into the 3
+/// actionable UI buckets. Separated from `statements_list_unprocessed`'s DB
+/// query so the grouping logic itself is directly testable without a Tauri
+/// State/App context.
+fn group_unprocessed_by_status(
+    rows: Vec<crate::db::unprocessed_statements::UnprocessedStatementRow>,
+) -> serde_json::Value {
+    let mut awaiting_password = Vec::new();
+    let mut pending_retry = Vec::new();
+    let mut failed = Vec::new();
+
+    for row in rows {
+        let filename = serde_json::from_str::<serde_json::Value>(&row.statement_source_json)
+            .ok()
+            .and_then(|v| v["filename"].as_str().map(|s| s.to_string()))
+            .unwrap_or_default();
+        let entry = serde_json::json!({
+            "statement_id": row.id,
+            "filename": filename,
+            "failure_type": row.failure_type,
+            "failure_reason": row.failure_reason,
+        });
+        match row.status.as_str() {
+            "awaiting_password" => awaiting_password.push(entry),
+            "pending_retry" => pending_retry.push(entry),
+            "failed" => failed.push(entry),
+            _ => {}
+        }
+    }
+
+    serde_json::json!({
+        "awaiting_password": awaiting_password,
+        "pending_retry": pending_retry,
+        "failed": failed,
+    })
+}
+
+/// Doc 30 TASK-STMT-010 `statements_discard(id)`: permanently removes the
+/// row, logging `statement_discarded`. `failure_reason`/`failure_type` are
+/// always the structured, enum-like strings already written at creation
+/// time (never a raw exception message) — this command doesn't add any new
+/// error text of its own.
+#[tauri::command]
+pub async fn statements_discard(
+    statement_id: String,
+    pool: tauri::State<'_, deadpool_sqlite::Pool>,
+) -> Result<serde_json::Value, crate::error::AppError> {
+    if !statement_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return Err(crate::error::AppError::Unknown("Invalid ID format".into()));
+    }
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let stmt_id = statement_id.clone();
+    let removed = conn
+        .interact(move |c| {
+            let removed = crate::db::unprocessed_statements::delete(c, &stmt_id)?;
+            if removed {
+                crate::db::audit_log::insert(
+                    c,
+                    &crate::db::audit_log::AuditLogRow {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        actor_type: Some("user".to_string()),
+                        actor_id: Some("local".to_string()),
+                        action: Some("statement_discarded".to_string()),
+                        resource_type: Some("statement".to_string()),
+                        resource_id: Some(stmt_id.clone()),
+                        before_json: None,
+                        after_json: None,
+                        created_at: chrono::Utc::now(),
+                    },
+                )?;
+            }
+            Ok::<bool, anyhow::Error>(removed)
+        })
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+
+    if !removed {
+        return Err(crate::error::AppError::Unknown(format!(
             "No unprocessed statement found with statement_id='{}'",
             statement_id
-        ))),
+        )));
     }
+
+    Ok(serde_json::json!({ "status": "discarded", "statement_id": statement_id }))
 }
 
 // G20/H10/J8 fix: renamed from `resolve_cluster` to match Doc 19 §10.3's
@@ -2055,6 +2231,8 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         statements_upload,
         statements_submit_password,
         statements_retry_unprocessed,
+        statements_list_unprocessed,
+        statements_discard,
         statements_confirm_instrument,
         ipc_trigger_patch_sync,
         log_frontend_event,
@@ -2110,6 +2288,8 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     /// §5.8 Integration test: Verify that the raw PDF bytes do not persist
     /// in the database or as files on disk after the pipeline runs.
     ///
@@ -2224,5 +2404,185 @@ mod tests {
         assert_eq!(parsed["billing_period_start"], "2026-01-01");
         assert_eq!(parsed["billing_period_end"], "2026-01-31");
         assert_eq!(parsed["filename"], "HDFC_Jan_2026.pdf");
+    }
+
+    // ── test_list_unprocessed_grouped_by_status (Doc 30 TASK-STMT-010) ───────
+
+    #[test]
+    fn test_list_unprocessed_grouped_by_status() {
+        use crate::db::unprocessed_statements::UnprocessedStatementRow;
+
+        fn make_row(id: &str, status: &str) -> UnprocessedStatementRow {
+            UnprocessedStatementRow {
+                id: id.to_string(),
+                statement_source_json: serde_json::json!({ "filename": format!("{id}.pdf") }).to_string(),
+                failure_type: "password_required".to_string(),
+                failure_reason: String::new(),
+                status: status.to_string(),
+                resolved_statement_id: None,
+                created_at: None,
+                updated_at: None,
+            }
+        }
+
+        let rows = vec![
+            make_row("s1", "awaiting_password"),
+            make_row("s2", "pending_retry"),
+            make_row("s3", "failed"),
+            make_row("s4", "awaiting_password"),
+        ];
+
+        let grouped = super::group_unprocessed_by_status(rows);
+        assert_eq!(grouped["awaiting_password"].as_array().unwrap().len(), 2);
+        assert_eq!(grouped["pending_retry"].as_array().unwrap().len(), 1);
+        assert_eq!(grouped["failed"].as_array().unwrap().len(), 1);
+        assert_eq!(grouped["awaiting_password"][0]["statement_id"], "s1");
+        assert_eq!(grouped["awaiting_password"][0]["filename"], "s1.pdf");
+    }
+
+    // ── test_retry_reuses_saved_password (Doc 30 TASK-STMT-010) ──────────────
+
+    #[tokio::test]
+    async fn test_retry_reuses_saved_password() {
+        use crate::statements::password::{try_all_stored_passwords, try_stored_passwords, PasswordResolutionResult};
+
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+
+        let conn = pool.get().await.unwrap();
+        conn.interact(|c| {
+            c.execute(
+                "INSERT INTO instruments (id, type, issuer_name, masked_identifier) \
+                 VALUES ('inst_a', 'credit_card', 'HDFC', '1111')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO instruments (id, type, issuer_name, masked_identifier) \
+                 VALUES ('inst_b', 'credit_card', 'ICICI', '2222')",
+                [],
+            )
+            .unwrap();
+            // Real stored passwords under two DIFFERENT real instruments —
+            // ciphertext content doesn't matter for this test (pdfium itself
+            // isn't installed on this dev machine, so no candidate can
+            // actually unlock here regardless); what matters is which rows
+            // the query even considers.
+            c.execute(
+                "INSERT INTO pdf_passwords (id, instrument_id, password_ciphertext, success_count, created_at) \
+                 VALUES ('pw_a', 'inst_a', X'0102030405060708090A0B0C0D0E0F1011121314', 0, datetime('now'))",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO pdf_passwords (id, instrument_id, password_ciphertext, success_count, created_at) \
+                 VALUES ('pw_b', 'inst_b', X'0102030405060708090A0B0C0D0E0F1011121314', 0, datetime('now'))",
+                [],
+            )
+            .unwrap();
+        })
+        .await
+        .unwrap();
+
+        // The real bug this fixes: the old call site scoped the lookup to
+        // instrument_id="" — a value no real instrument ever has, so it
+        // structurally could never find a stored password at all, regardless
+        // of what's actually on file.
+        let old_bug_result = try_stored_passwords("", b"%PDF-1.4 fake", &pool)
+            .await
+            .unwrap();
+        assert_eq!(old_bug_result, PasswordResolutionResult::PromptRequired);
+
+        let scoped_count: i64 = conn
+            .interact(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM pdf_passwords WHERE instrument_id = ''",
+                    [],
+                    |r| r.get(0),
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(scoped_count, 0, "no real instrument has an empty-string id");
+
+        // The fix: try_all_stored_passwords isn't scoped to any instrument —
+        // both seeded rows, across two different instruments, are real
+        // candidates it considers (gracefully falling through to
+        // PromptRequired once none actually unlock, rather than erroring).
+        let result = try_all_stored_passwords(b"%PDF-1.4 fake", &pool).await.unwrap();
+        assert_eq!(result, PasswordResolutionResult::PromptRequired);
+    }
+
+    // ── test_discard_removes_row_and_logs_audit (Doc 30 TASK-STMT-010) ───────
+
+    #[tokio::test]
+    async fn test_discard_removes_row_and_logs_audit() {
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+
+        let conn = pool.get().await.unwrap();
+        conn.interact(|c| {
+            c.execute(
+                "INSERT INTO unprocessed_statements \
+                 (id, statement_source_json, failure_type, failure_reason, status) \
+                 VALUES ('stmt_discard', '{}', 'password_required', '', 'awaiting_password')",
+                [],
+            )
+            .unwrap();
+        })
+        .await
+        .unwrap();
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(pool.clone());
+
+        let result = statements_discard(
+            "stmt_discard".to_string(),
+            app.state::<deadpool_sqlite::Pool>(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["status"], "discarded");
+
+        let conn2 = pool.get().await.unwrap();
+        let remaining: i64 = conn2
+            .interact(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM unprocessed_statements WHERE id = 'stmt_discard'",
+                    [],
+                    |r| r.get(0),
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(remaining, 0, "row must be permanently removed");
+
+        let (action, resource_id): (String, Option<String>) = conn2
+            .interact(|c| {
+                c.query_row(
+                    "SELECT action, resource_id FROM audit_log WHERE action = 'statement_discarded'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(action, "statement_discarded");
+        assert_eq!(resource_id.as_deref(), Some("stmt_discard"));
+
+        // Discarding again must fail — the row is really gone, not just hidden.
+        let second_attempt = statements_discard(
+            "stmt_discard".to_string(),
+            app.state::<deadpool_sqlite::Pool>(),
+        )
+        .await;
+        assert!(second_attempt.is_err());
     }
 }
