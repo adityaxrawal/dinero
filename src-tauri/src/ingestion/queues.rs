@@ -8,6 +8,7 @@
 use crate::extraction::ladder::ExtractionResult;
 use crate::statements::pending_bytes::PendingStatementBytes;
 use deadpool_sqlite::Pool;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tauri::Emitter;
 use tokio::sync::{mpsc, Mutex, Semaphore};
@@ -29,11 +30,53 @@ pub struct TransactionJob {
 /// `stmt_id` is the `statements` row `insert_queued()` already wrote at intake
 /// (Doc 18 §4.7's crash-recovery invariant) — threaded through so
 /// `run_parse_pipeline`'s Step 10 upserts it rather than minting a new ID.
+///
+/// `batch_progress`, when `Some`, is a tracker shared by every job in the
+/// same manual-upload batch (Doc 30 TASK-STMT-009: batches over 10
+/// statements get periodic `parsed`/`total`/`eta_seconds` progress events).
+/// `None` for single-file uploads and the Gmail-attachment path, neither of
+/// which is a "batch" in the sense this task means.
 pub struct StatementJob {
     pub bytes: Vec<u8>,
     pub filename: String,
     pub file_hash: String,
     pub stmt_id: String,
+    pub batch_progress: Option<Arc<BatchProgressTracker>>,
+}
+
+/// Doc 30 TASK-STMT-009: "emit periodic scan.progress { parsed, total,
+/// eta_seconds } using a rolling per-statement duration average" for batches
+/// exceeding 10 statements. A simple cumulative average — `total_duration /
+/// parsed_count`, updated as each statement finishes — since no window size
+/// is specified anywhere for a fancier moving average.
+pub struct BatchProgressTracker {
+    total: usize,
+    parsed: AtomicUsize,
+    total_duration_ms: AtomicU64,
+}
+
+impl BatchProgressTracker {
+    pub fn new(total: usize) -> Self {
+        Self {
+            total,
+            parsed: AtomicUsize::new(0),
+            total_duration_ms: AtomicU64::new(0),
+        }
+    }
+
+    /// Records one statement's completion and returns `(parsed, total, eta_seconds)`
+    /// for the caller to emit as a progress event.
+    fn record_completion(&self, elapsed: std::time::Duration) -> (usize, usize, u64) {
+        let parsed = self.parsed.fetch_add(1, Ordering::SeqCst) + 1;
+        let total_ms = self
+            .total_duration_ms
+            .fetch_add(elapsed.as_millis() as u64, Ordering::SeqCst)
+            + elapsed.as_millis() as u64;
+        let avg_ms = total_ms / parsed as u64;
+        let remaining = self.total.saturating_sub(parsed) as u64;
+        let eta_seconds = (avg_ms * remaining) / 1000;
+        (parsed, self.total, eta_seconds)
+    }
 }
 
 /// Senders for both queues, stored as Tauri managed state so every entry point
@@ -108,6 +151,7 @@ fn spawn_statement_dispatcher<R: tauri::Runtime>(
             let pending_bytes = pending_bytes.clone();
             tauri::async_runtime::spawn(async move {
                 let _permit = permit;
+                let start = std::time::Instant::now();
                 let result = crate::commands::run_parse_pipeline(
                     &job.bytes,
                     &job.filename,
@@ -120,6 +164,25 @@ fn spawn_statement_dispatcher<R: tauri::Runtime>(
                     Some(job.stmt_id),
                 )
                 .await;
+
+                // Doc 30 TASK-STMT-009: batches over 10 statements get
+                // periodic parsed/total/eta_seconds progress — permit release
+                // (the `_permit` drop at the end of this task) already happens
+                // after this point, so the reported "parsed" count and the
+                // concurrency cap stay consistent with each other.
+                if let Some(tracker) = &job.batch_progress {
+                    let (parsed, total, eta_seconds) = tracker.record_completion(start.elapsed());
+                    let payload = serde_json::json!({
+                        "parsed": parsed,
+                        "total": total,
+                        "eta_seconds": eta_seconds,
+                    });
+                    crate::statements::events::emit(
+                        crate::statements::events::BATCH_PROGRESS,
+                        payload.clone(),
+                    );
+                    let _ = app.emit(crate::statements::events::BATCH_PROGRESS, payload);
+                }
 
                 // Doc 19 §9.1/§3.6: fire-and-forget — the IPC call already
                 // returned an intake status. The real outcome is reported
@@ -243,5 +306,74 @@ async fn process_transaction_job(job: TransactionJob, pool: &Pool) {
                 }
             })
             .await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Doc 30 TASK-STMT-009: "A Tokio semaphore with exactly 5 permits guards
+    /// entry into the PDF parsing pipeline... additional PDFs beyond 5
+    /// concurrent wait FIFO, never dropped/rejected." Proves the real
+    /// `STATEMENT_QUEUE_MAX_CONCURRENT` constant the dispatcher uses, the
+    /// same way TASK-GMAIL-002's quota-semaphore test proved its cap — every
+    /// task eventually gets its permit (never dropped/rejected), and never
+    /// more than 5 hold one at once.
+    #[tokio::test]
+    async fn test_concurrency_cap_enforced_at_5() {
+        let semaphore = Arc::new(Semaphore::new(STATEMENT_QUEUE_MAX_CONCURRENT));
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let max_seen = Arc::new(AtomicUsize::new(0));
+        let completed = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+        for _ in 0..12 {
+            let semaphore = Arc::clone(&semaphore);
+            let in_flight = Arc::clone(&in_flight);
+            let max_seen = Arc::clone(&max_seen);
+            let completed = Arc::clone(&completed);
+            handles.push(tokio::spawn(async move {
+                let _permit = semaphore.acquire_owned().await.unwrap();
+                let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                max_seen.fetch_max(now, Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                in_flight.fetch_sub(1, Ordering::SeqCst);
+                completed.fetch_add(1, Ordering::SeqCst);
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        assert_eq!(
+            max_seen.load(Ordering::SeqCst),
+            STATEMENT_QUEUE_MAX_CONCURRENT,
+            "cap must be exactly 5, not more (and, given 12 tasks contending, not less either)"
+        );
+        assert_eq!(
+            completed.load(Ordering::SeqCst),
+            12,
+            "every task beyond the cap must still eventually run (FIFO wait), never be dropped"
+        );
+    }
+
+    /// Doc 30 TASK-STMT-009: "emit periodic scan.progress { parsed, total,
+    /// eta_seconds } using a rolling per-statement duration average."
+    #[test]
+    fn test_eta_calculation_uses_rolling_average() {
+        let tracker = BatchProgressTracker::new(4);
+
+        // First statement takes 100ms — average is 100ms, 3 remaining → 300ms ETA.
+        let (parsed, total, eta) = tracker.record_completion(std::time::Duration::from_millis(100));
+        assert_eq!((parsed, total), (1, 4));
+        assert_eq!(eta, 0, "300ms rounds down to 0 whole seconds");
+
+        // Second statement takes 1900ms — average is now (100+1900)/2 = 1000ms,
+        // 2 remaining → 2000ms = 2s ETA. Proves the average actually *rolls*
+        // forward with new data rather than staying pinned to the first sample.
+        let (parsed, _, eta) = tracker.record_completion(std::time::Duration::from_secs(2) - std::time::Duration::from_millis(100));
+        assert_eq!(parsed, 2);
+        assert_eq!(eta, 2, "rolling average must reflect both samples, not just the first");
     }
 }

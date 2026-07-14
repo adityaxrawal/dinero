@@ -406,6 +406,9 @@ async fn run_scan_batches<R: tauri::Runtime>(
                                                 // file_hash proxy for email-sourced statements.
                                                 file_hash: msg_id.clone(),
                                                 stmt_id,
+                                                // Doc 30 TASK-STMT-009: batch progress is a
+                                                // manual-upload-batch concept only.
+                                                batch_progress: None,
                                             };
                                             let st_tx = app
                                                 .state::<crate::ingestion::queues::QueueHandles>()

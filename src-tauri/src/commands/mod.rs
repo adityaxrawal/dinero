@@ -251,6 +251,18 @@ pub async fn statements_upload(
     // accepting a single path. Each file still goes through the identical
     // single-statement pipeline below; failures are isolated per-file so one
     // bad file in a batch doesn't abort the rest.
+    //
+    // Doc 30 TASK-STMT-009: batches over 10 statements share one progress
+    // tracker so the Statement Queue dispatcher can emit rolling
+    // parsed/total/eta_seconds events as each one actually finishes parsing.
+    let batch_progress = if files.len() > 10 {
+        Some(std::sync::Arc::new(
+            crate::ingestion::queues::BatchProgressTracker::new(files.len()),
+        ))
+    } else {
+        None
+    };
+
     let mut results = Vec::with_capacity(files.len());
     for file in files {
         let filename = file.filename.clone();
@@ -261,6 +273,7 @@ pub async fn statements_upload(
             pool.inner(),
             &queues,
             pending_bytes.inner(),
+            batch_progress.clone(),
         )
         .await;
         results.push(match result {
@@ -282,6 +295,7 @@ async fn upload_one_statement(
     pool_ref: &deadpool_sqlite::Pool,
     queues: &crate::ingestion::queues::QueueHandles,
     pending_bytes: &crate::statements::pending_bytes::PendingStatementBytes,
+    batch_progress: Option<std::sync::Arc<crate::ingestion::queues::BatchProgressTracker>>,
 ) -> Result<UploadResult, crate::error::AppError> {
     tracing::info!(
         "statements_upload: filename='{}' size={} bytes",
@@ -423,6 +437,7 @@ async fn upload_one_statement(
         filename: filename.clone(),
         file_hash: file_hash.clone(),
         stmt_id: stmt_id.clone(),
+        batch_progress,
     };
     if queues.statement_tx.send(job).await.is_err() {
         return Err(crate::error::AppError::Unknown(
