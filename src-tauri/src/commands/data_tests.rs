@@ -28,17 +28,17 @@ mod tests {
         // Insert dummy observations to test extraction_layer_distribution
         conn.execute(
             "INSERT INTO transaction_observations (id, source_pipeline, source_record_id, extraction_method) 
-             VALUES ('obs1', 'test', 'rec1', 'llm')",
+             VALUES ('obs1', 'gmail_transaction', 'rec1', 'llm')",
             []
         ).unwrap();
         conn.execute(
             "INSERT INTO transaction_observations (id, source_pipeline, source_record_id, extraction_method) 
-             VALUES ('obs2', 'test', 'rec2', 'llm')",
+             VALUES ('obs2', 'gmail_transaction', 'rec2', 'llm')",
             []
         ).unwrap();
         conn.execute(
             "INSERT INTO transaction_observations (id, source_pipeline, source_record_id, extraction_method) 
-             VALUES ('obs3', 'test', 'rec3', 'regex')",
+             VALUES ('obs3', 'gmail_transaction', 'rec3', 'regex')",
             []
         ).unwrap();
 

@@ -8,7 +8,7 @@ fn setup_test_db() -> Connection {
     conn.execute("PRAGMA foreign_keys = OFF;", []).unwrap();
 
     // Insert mock observation
-    conn.execute("INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint) VALUES ('obs_1', 'gmail', 'msg_1', 'fp_1')", []).unwrap();
+    conn.execute("INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint) VALUES ('obs_1', 'gmail_transaction', 'msg_1', 'fp_1')", []).unwrap();
 
     conn
 }
@@ -20,7 +20,7 @@ fn setup_test_db() -> Connection {
 async fn setup_test_db_async() -> Connection {
     let conn = crate::db::test_helpers::setup_test_db_async().await;
     conn.execute("PRAGMA foreign_keys = OFF;", []).unwrap();
-    conn.execute("INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint) VALUES ('obs_1', 'gmail', 'msg_1', 'fp_1')", []).unwrap();
+    conn.execute("INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint) VALUES ('obs_1', 'gmail_transaction', 'msg_1', 'fp_1')", []).unwrap();
     conn
 }
 
@@ -37,7 +37,7 @@ fn test_exact_match_success() {
         event_time: "2026-06-10 14:00:00".to_string(),
         reference_id: Some("REF123".to_string()),
         merchant_raw: Some("Test Merchant".to_string()),
-        source_pipeline: "gmail".to_string(),
+        source_pipeline: "gmail_transaction".to_string(),
         source_record_id: "msg_1".to_string(),
     };
 
@@ -70,7 +70,7 @@ fn test_exact_match_failure_without_reference_id() {
         event_time: "2026-06-10 14:00:00".to_string(),
         reference_id: None, // Missing reference ID
         merchant_raw: Some("Test Merchant".to_string()),
-        source_pipeline: "gmail".to_string(),
+        source_pipeline: "gmail_transaction".to_string(),
         source_record_id: "msg_1".to_string(),
     };
 
@@ -104,7 +104,7 @@ fn test_new_canonical_created_when_no_match() {
         event_time: "2026-06-10 14:00:00".to_string(),
         reference_id: Some("REF123".to_string()),
         merchant_raw: Some("Test Merchant".to_string()),
-        source_pipeline: "gmail".to_string(),
+        source_pipeline: "gmail_transaction".to_string(),
         source_record_id: "msg_1".to_string(),
     };
 
@@ -126,7 +126,7 @@ fn test_ambiguous_cluster_created_for_same_amount_same_day() {
         event_time: "2026-06-10 14:00:00".to_string(),
         reference_id: None,
         merchant_raw: Some("Uber".to_string()),
-        source_pipeline: "gmail".to_string(),
+        source_pipeline: "gmail_transaction".to_string(),
         source_record_id: "msg_1".to_string(),
     };
 
@@ -994,7 +994,7 @@ fn test_anomaly_detection_logic() {
         ).unwrap();
     }
 
-    conn.execute("INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint) VALUES ('obs_anomaly', 'gmail', 'msg_anomaly', 'fp_anomaly')", []).unwrap();
+    conn.execute("INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint) VALUES ('obs_anomaly', 'gmail_transaction', 'msg_anomaly', 'fp_anomaly')", []).unwrap();
 
     // Spike: 2000 minor = 4x the average of 500
     let obs = crate::reconciliation::engine::IncomingObservation {
@@ -1006,7 +1006,7 @@ fn test_anomaly_detection_logic() {
         event_time: "2026-06-10 12:00:00".to_string(),
         reference_id: None,
         merchant_raw: Some("Corner Cafe".to_string()),
-        source_pipeline: "gmail".to_string(),
+        source_pipeline: "gmail_transaction".to_string(),
         source_record_id: "msg_anomaly".to_string(),
     };
 
@@ -1080,7 +1080,7 @@ fn test_upcoming_subscription_logic() {
 fn test_global_spend_limit_80_percent() {
     let conn = setup_test_db();
 
-    conn.execute("INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint) VALUES ('obs_80pct', 'gmail', 'msg_80pct', 'fp_80pct')", []).unwrap();
+    conn.execute("INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint) VALUES ('obs_80pct', 'gmail_transaction', 'msg_80pct', 'fp_80pct')", []).unwrap();
 
     // 400_100 minor = 4001.00 INR — crosses 80% of 5000 global budget
     let obs = crate::reconciliation::engine::IncomingObservation {
@@ -1092,7 +1092,7 @@ fn test_global_spend_limit_80_percent() {
         event_time: "2026-06-10 12:00:00".to_string(),
         reference_id: None,
         merchant_raw: Some("Electronics Store".to_string()),
-        source_pipeline: "gmail".to_string(),
+        source_pipeline: "gmail_transaction".to_string(),
         source_record_id: "msg_80pct".to_string(),
     };
 
@@ -1125,7 +1125,7 @@ fn test_global_spend_limit_80_percent() {
 fn test_category_budget_100_percent() {
     let conn = setup_test_db();
 
-    conn.execute("INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint) VALUES ('obs_cat_100', 'gmail', 'msg_cat_100', 'fp_cat_100')", []).unwrap();
+    conn.execute("INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint) VALUES ('obs_cat_100', 'gmail_transaction', 'msg_cat_100', 'fp_cat_100')", []).unwrap();
 
     // 50_200 minor = 502 INR — crosses 100% of 500 category budget
     // "UBER INDIA SYSTEMS" triggers the transportation keyword in post_processing heuristics
@@ -1138,7 +1138,7 @@ fn test_category_budget_100_percent() {
         event_time: "2026-06-10 12:00:00".to_string(),
         reference_id: None,
         merchant_raw: Some("UBER INDIA SYSTEMS".to_string()),
-        source_pipeline: "gmail".to_string(),
+        source_pipeline: "gmail_transaction".to_string(),
         source_record_id: "msg_cat_100".to_string(),
     };
 

@@ -1197,7 +1197,7 @@ mod tests {
         let mut obs = TransactionObservationsRow {
             id: "obs_1".into(),
             canonical_transaction_id: None,
-            source_pipeline: Some("email".into()),
+            source_pipeline: Some("gmail_transaction".into()),
             source_record_id: Some("rec_1".into()),
             source_message_id: None,
             source_thread_id: None,
