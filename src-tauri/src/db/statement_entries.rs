@@ -142,7 +142,7 @@ mod tests {
         conn.execute("INSERT INTO local_profile (id) VALUES (1)", [])
             .unwrap_or_default();
         conn.execute("INSERT INTO instruments (id, type, issuer_name, masked_identifier, status) VALUES ('inst_1', 'credit_card', 'HDFC', '1234', 'active')", []).unwrap_or_default();
-        conn.execute("INSERT INTO statements (id, instrument_id, statement_type, billing_period_start, billing_period_end, parse_status) VALUES ('stmt_1', 'inst_1', 'credit_card', '2023-01-01', '2023-01-31', 'success')", []).unwrap_or_default();
+        conn.execute("INSERT INTO statements (id, instrument_id, statement_type, billing_period_start, billing_period_end, parse_status) VALUES ('stmt_1', 'inst_1', 'credit_card', '2023-01-01', '2023-01-31', 'parsed')", []).unwrap_or_default();
 
         conn
     }

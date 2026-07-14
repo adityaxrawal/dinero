@@ -293,6 +293,7 @@ mod tests {
             id: "stmt_1".into(),
             instrument_id: None,
             statement_type: "credit_card_statement".into(),
+            source_type: None,
             billing_period_start: chrono::NaiveDate::from_ymd_opt(2023, 1, 1).unwrap(),
             billing_period_end: chrono::NaiveDate::from_ymd_opt(2023, 1, 31).unwrap(),
             due_date: None,
@@ -303,6 +304,7 @@ mod tests {
             source_message_id: None,
             parse_status: "parsed".into(),
             is_duplicate: false,
+            file_hash: None,
             created_at: None,
             updated_at: None,
         };
@@ -1295,6 +1297,7 @@ mod tests {
             id: "stmt_1".into(),
             instrument_id: None,
             statement_type: "credit_card_statement".into(),
+            source_type: None,
             billing_period_start: chrono::NaiveDate::from_ymd_opt(2023, 1, 1).unwrap(),
             billing_period_end: chrono::NaiveDate::from_ymd_opt(2023, 1, 31).unwrap(),
             due_date: None,
@@ -1305,6 +1308,7 @@ mod tests {
             source_message_id: None,
             parse_status: "parsed".into(),
             is_duplicate: false,
+            file_hash: None,
             created_at: None,
             updated_at: None,
         };
@@ -1351,6 +1355,67 @@ mod tests {
         let fetched_deleted = statements::select_by_id(&conn, "stmt_1").unwrap();
         assert!(fetched_deleted.is_none());
     }
+
+    fn sample_statement_row(id: &str) -> StatementsRow {
+        StatementsRow {
+            id: id.into(),
+            instrument_id: None,
+            statement_type: "credit_card_statement".into(),
+            source_type: None,
+            billing_period_start: chrono::NaiveDate::from_ymd_opt(2023, 1, 1).unwrap(),
+            billing_period_end: chrono::NaiveDate::from_ymd_opt(2023, 1, 31).unwrap(),
+            due_date: None,
+            statement_date: None,
+            current_balance: None,
+            minimum_due: None,
+            rewards_summary_json: None,
+            source_message_id: None,
+            parse_status: "parsed".into(),
+            is_duplicate: false,
+            file_hash: None,
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn test_statements_insert_duplicate_pk_fails() {
+        let conn = setup_db();
+        let stmt = sample_statement_row("stmt_dup");
+        statements::insert(&conn, &stmt).unwrap();
+        let err = statements::insert(&conn, &stmt).unwrap_err();
+        assert!(err.to_string().contains("UNIQUE constraint failed"));
+    }
+
+    #[test]
+    fn test_statements_update_not_found() {
+        let conn = setup_db();
+        let stmt = sample_statement_row("stmt_missing");
+        let err = statements::update(&conn, &stmt).unwrap_err();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn test_statements_select_not_found() {
+        let conn = setup_db();
+        let fetched = statements::select_by_id(&conn, "stmt_missing").unwrap();
+        assert!(fetched.is_none());
+    }
+
+    #[test]
+    fn test_statements_delete_not_found() {
+        let conn = setup_db();
+        let err = statements::soft_delete(&conn, "stmt_missing").unwrap_err();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn test_statements_paginated_empty() {
+        let conn = setup_db();
+        let res = statements::select_all_paginated(&conn, 10, 0).unwrap();
+        assert_eq!(res.len(), 0);
+    }
+
     #[test]
     fn test_match_decisions_no_update_path() {
         let conn = setup_db();
@@ -1698,6 +1763,7 @@ mod tests {
             id: "stmt_fk_test".into(),
             instrument_id: None,
             statement_type: "credit".into(),
+            source_type: None,
             billing_period_start: chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
             billing_period_end: chrono::NaiveDate::from_ymd_opt(2026, 1, 31).unwrap(),
             due_date: None,
@@ -1706,8 +1772,9 @@ mod tests {
             minimum_due: None,
             rewards_summary_json: None,
             source_message_id: None,
-            parse_status: "success".into(),
+            parse_status: "parsed".into(),
             is_duplicate: false,
+            file_hash: None,
             created_at: None,
             updated_at: None,
         };

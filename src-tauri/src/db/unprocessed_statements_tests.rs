@@ -47,6 +47,7 @@ fn test_unprocessed_statements_lifecycle() {
         id: "stmt_123".to_string(),
         instrument_id: None,
         statement_type: "pdf".to_string(),
+        source_type: None,
         billing_period_start: Utc::now().naive_utc().date(),
         billing_period_end: Utc::now().naive_utc().date(),
         due_date: None,
@@ -57,6 +58,7 @@ fn test_unprocessed_statements_lifecycle() {
         source_message_id: None,
         parse_status: "parsed".to_string(),
         is_duplicate: false,
+        file_hash: None,
         created_at: None,
         updated_at: None,
     };

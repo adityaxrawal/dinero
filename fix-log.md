@@ -264,3 +264,17 @@ Append-only. One entry per task processed under the §3 verification protocol (M
 **Process note for future migration-adding tasks:** hit a transient build-caching quirk while diagnosing this — `sqlx::migrate!`'s directory scan didn't pick up a newly-added migration file on the very first `cargo test` after adding it (confirmed via a throwaway schema-dump diagnostic, deleted after use), silently running against the prior migration set instead of erroring. A full `cargo clean`/incremental-cache wipe reliably resolved it. Worth a `rm -rf target/debug/incremental` (or full `cargo clean`) as a sanity check any time a just-added migration doesn't seem to have taken effect, rather than assuming the SQL itself is wrong.
 
 **Verified:** `cargo check` clean. Full `cargo test --lib` after a clean rebuild (to rule out the caching quirk above): 314 passed, same 4 pre-existing unrelated failures — zero regressions from either the constraint or the `historical_scan.rs` production fix.
+
+---
+
+## TASK-DB-009: Migration — Create `statements` Table
+
+**Found:** Table (migration 001, `file_hash` added migration 009), CRUD in `statements.rs` largely present. Acceptance criteria only partially covered — the single combined `test_statements_crud` exercised insert/update/paginated/FK-violation/delete-success, but not insert-duplicate-PK, update-not-found, select-not-found, delete-not-found, or paginated-empty.
+
+**Real gaps found:** (1) No `source_type` column anywhere — Document 18 §4.7 requires it (`gmail_email`/`manual_upload`) specifically so the UI can filter by entry point rather than inferring it from `source_message_id` nullability, which the doc explicitly says not to rely on. (2) No `CHECK` on `parse_status`, and Document 30's own text ("pending/parsed/failed/duplicate") doesn't even match Document 18 §4.7's authoritative values (`queued`/`processing`/`parsed`/`failed`) — checked every real usage first (production code only ever writes `'parsed'`; two test fixtures used `'success'`, fixed to `'parsed'` before adding the constraint, learning from the TASK-DB-008 near-miss). (3) Missing the `(billing_period_start, billing_period_end, instrument_id)` index Document 18 §6 requires for duplicate-cycle detection (TASK-STMT-002). (4) `update()` and `soft_delete()` never checked the affected-row count, so a "not found" case was silently indistinguishable from success — contradicting the doc's own acceptance criteria, which explicitly wants both tested.
+
+**What I did:** Added `migrations/20260101000025_statements_source_type_and_checks.sql` (table recreate: adds `source_type` with its own CHECK, adds the `parse_status` CHECK, preserves `file_hash`) plus the index. Updated `StatementsRow`/`insert`/`update`/`row_to_statement` for `source_type` and `file_hash` (updated 4 struct-literal call sites accordingly). Fixed `update()`/`soft_delete()` to return `Err` on a zero-row match. Added the five missing tests.
+
+**Flagged, not touched:** production code (`statements/duplicate_check.rs`, `statements/metadata_extractor.rs`) writes `statements` rows via raw SQL, bypassing this DAO entirely, and doesn't set `source_type` — retrofitting that is Area 5's (`TASK-STMT-001`) job, not this schema task's; the new column is nullable so this doesn't break anything now.
+
+**Verified:** `cargo check` clean. New tests pass standalone and in the full suite: 319 passed (314 + 5 new), same 4 pre-existing unrelated failures.
