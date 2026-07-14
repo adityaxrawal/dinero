@@ -368,3 +368,15 @@ Rewrote `reconciliation/cluster.rs`: `create_ambiguity_cluster()` now inserts th
 **What I did:** Added `migrations/20260101000033_pdf_passwords_pattern_rules_feedback_log_indexes.sql` with all three.
 
 **Verified:** `cargo build --lib` clean. Full `cargo test --lib`: 319 passed, same 4 pre-existing unrelated failures.
+
+---
+
+## TASK-DB-017: Migration — Create `processing_checkpoints`, `unprocessed_statements`, `unassigned_transactions`
+
+**Found:** All three tables (migration 007) already matched Document 18 §4.15/§4.16/§4.17 field-for-field, including the `UNIQUE(job_type, job_key)` constraint. Both named acceptance tests already existed and pass: `test_upsert_and_get_checkpoint` (UPSERT idempotency) and `test_unprocessed_statements_lifecycle` (retry lifecycle).
+
+**Gap found:** the 2 `(status)` indexes Document 18 §6 lists for `unprocessed_statements` and `unassigned_transactions` didn't exist.
+
+**What I did:** Added `migrations/20260101000034_unprocessed_and_unassigned_status_indexes.sql`.
+
+**Verified:** `cargo build --lib` clean. Full `cargo test --lib`: 319 passed, same 4 pre-existing unrelated failures.
