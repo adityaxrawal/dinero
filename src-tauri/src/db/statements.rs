@@ -24,6 +24,37 @@ pub struct StatementsRow {
     pub updated_at: Option<NaiveDateTime>,
 }
 
+/// Doc 18 §4.7: "A row is written with parse_status = 'queued' immediately
+/// upon intake, before any parsing begins... this is what makes crash
+/// recovery possible (Document 16 §14.5)" — regardless of entry point
+/// (manual upload or Gmail-attachment). `billing_period_start`/`_end` are
+/// NOT NULL in this schema, so a placeholder (today's date, in both fields)
+/// is used until the real metadata extraction overwrites it via `update()`;
+/// this is purely a bookkeeping placeholder, never read as a real value
+/// while `parse_status = 'queued'`.
+pub fn insert_queued(
+    conn: &Connection,
+    id: &str,
+    source_type: &str,
+    source_message_id: Option<&str>,
+    file_hash: Option<&str>,
+) -> Result<()> {
+    let today = chrono::Utc::now().date_naive();
+    conn.execute(
+        "INSERT INTO statements (
+            id, instrument_id, statement_type, source_type, billing_period_start, billing_period_end,
+            due_date, statement_date, current_balance, minimum_due, rewards_summary_json,
+            source_message_id, parse_status, is_duplicate, file_hash, created_at, updated_at
+         ) VALUES (
+            ?1, NULL, 'credit_card_statement', ?2, ?3, ?3,
+            NULL, NULL, NULL, NULL, NULL,
+            ?4, 'queued', 0, ?5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+         )",
+        params![id, source_type, today, source_message_id, file_hash],
+    )?;
+    Ok(())
+}
+
 pub fn insert(conn: &Connection, stmt: &StatementsRow) -> Result<()> {
     conn.execute(
         "INSERT INTO statements (

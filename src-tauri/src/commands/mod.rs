@@ -208,17 +208,42 @@ pub async fn export_logs(
 //  15. Discard raw PDF bytes from memory (§5.8)
 //  16. Emit statement.parsed or statement.parse_failed event
 
-/// Phase 5 — Upload a PDF statement for in-memory parsing (Doc 10 §3.2).
-/// Accepts a file path from the frontend (via dialog); no raw bytes cross the IPC boundary.
-/// Runs the full pipeline: validation → duplicate check → password → parse → reconcile → classify.
+/// Doc 19 §9.1: one file in a `statements_upload` batch. The frontend reads
+/// the file via the browser File API (`file.arrayBuffer()`) and sends bytes
+/// directly — the Rust backend never reads a filesystem path itself, so a
+/// locked-down WebView with no filesystem access still works.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadFile {
+    pub file_bytes: Vec<u8>,
+    pub filename: String,
+}
+
+/// Doc 19 §9.1: one per-file result, in submission order.
+#[derive(serde::Serialize)]
+pub struct UploadResult {
+    pub statement_id: String,
+    pub filename: String,
+    pub status: String,
+}
+
+/// Phase 5 — Upload one or more PDF statements for in-memory parsing (Doc 19 §9.1, FR-031).
+/// Each file becomes an independent Statement Queue job, subject to the same
+/// bounded 5-concurrent cap and Statement Instrument Gate as email-detected
+/// statements. Doc 19 §3.6 / Doc 15 §2.7: expensive PDF processing is queued
+/// and processed asynchronously — this command returns as soon as each file
+/// is validated and enqueued, never blocking on the parse itself. The real
+/// outcome (parsed / failed / awaiting_password / awaiting_instrument) arrives
+/// later via `statement_parsed`/`statement_parse_failed`/`statement_password_required`/
+/// `statement_instrument_confirmation_required` events.
 #[tauri::command]
 pub async fn statements_upload(
-    file_paths: Vec<String>,
+    files: Vec<UploadFile>,
     app: tauri::AppHandle,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
     queues: tauri::State<'_, crate::ingestion::queues::QueueHandles>,
     pending_bytes: tauri::State<'_, crate::statements::pending_bytes::PendingStatementBytes>,
-) -> Result<Vec<serde_json::Value>, crate::error::AppError> {
+) -> Result<serde_json::Value, crate::error::AppError> {
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
     // H2 fix (Doc 19 §9.1, FR-031): a real multi-file batch contract — one
@@ -226,40 +251,38 @@ pub async fn statements_upload(
     // accepting a single path. Each file still goes through the identical
     // single-statement pipeline below; failures are isolated per-file so one
     // bad file in a batch doesn't abort the rest.
-    let mut results = Vec::with_capacity(file_paths.len());
-    for file_path in file_paths {
-        let result = upload_one_statement(file_path, &app, pool.inner(), &queues, pending_bytes.inner()).await;
+    let mut results = Vec::with_capacity(files.len());
+    for file in files {
+        let filename = file.filename.clone();
+        let result = upload_one_statement(
+            file.file_bytes,
+            filename.clone(),
+            &app,
+            pool.inner(),
+            &queues,
+            pending_bytes.inner(),
+        )
+        .await;
         results.push(match result {
-            Ok(value) => value,
-            Err(e) => serde_json::json!({ "status": "error", "error": e.to_string() }),
+            Ok(r) => r,
+            Err(e) => UploadResult {
+                statement_id: String::new(),
+                filename,
+                status: format!("error: {}", e),
+            },
         });
     }
-    Ok(results)
+    Ok(serde_json::json!({ "results": results }))
 }
 
 async fn upload_one_statement(
-    file_path: String,
+    bytes: Vec<u8>,
+    filename: String,
     app: &tauri::AppHandle,
     pool_ref: &deadpool_sqlite::Pool,
     queues: &crate::ingestion::queues::QueueHandles,
     pending_bytes: &crate::statements::pending_bytes::PendingStatementBytes,
-) -> Result<serde_json::Value, crate::error::AppError> {
-
-    // ── Step 1: Read bytes from file path ────────────────────────────────────
-    let bytes = std::fs::read(&file_path).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::PermissionDenied {
-            tracing::error!("macOS TCC PermissionDenied for file: {}", file_path);
-            crate::error::AppError::FileAccessDenied(e.to_string())
-        } else {
-            crate::error::AppError::Unknown(e.to_string())
-        }
-    })?;
-
-    let filename = std::path::Path::new(&file_path)
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
-
+) -> Result<UploadResult, crate::error::AppError> {
     tracing::info!(
         "statements_upload: filename='{}' size={} bytes",
         filename,
@@ -354,10 +377,11 @@ async fn upload_one_statement(
                 events::emit(events::PASSWORD_REQUIRED, payload.clone());
                 app.emit(events::PASSWORD_REQUIRED, payload).ok();
 
-                return Ok(serde_json::json!({
-                    "status": "awaiting_password",
-                    "statement_id": stmt_id
-                }));
+                return Ok(UploadResult {
+                    statement_id: stmt_id,
+                    filename,
+                    status: "awaiting_password".to_string(),
+                });
             }
             _ => {}
         }
@@ -367,64 +391,51 @@ async fn upload_one_statement(
     // Doc 15 §2 principle 7 / Doc 12 §7.2: manual upload is a Statement Queue job,
     // subject to the same bounded 5-concurrent cap as email-detected statements —
     // there is no separate, weaker-validated path for uploads (§7.6.10).
-    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+    //
+    // Doc 18 §4.7 / Doc 19 §9.1: the `statements` row is written in `queued`
+    // state right here, immediately before enqueueing — before any parsing
+    // begins, satisfying the crash-recovery invariant — and the command
+    // returns immediately after enqueueing rather than blocking on the parse
+    // (Doc 19 §3.6: expensive operations are async, never block the IPC call).
+    let stmt_id = uuid::Uuid::new_v4().to_string();
+    {
+        let conn = pool_ref
+            .get()
+            .await
+            .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+        let id = stmt_id.clone();
+        let hash = file_hash.clone();
+        conn.interact(move |c| {
+            crate::db::statements::insert_queued(c, &id, "manual_upload", None, Some(&hash))
+        })
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    }
+
     let job = crate::ingestion::queues::StatementJob {
         bytes,
         filename: filename.clone(),
         file_hash: file_hash.clone(),
-        respond_to: Some(resp_tx),
+        stmt_id: stmt_id.clone(),
     };
     if queues.statement_tx.send(job).await.is_err() {
         return Err(crate::error::AppError::Unknown(
             "Statement Queue closed".to_string(),
         ));
     }
-    let result = resp_rx.await.map_err(|_| {
-        crate::error::AppError::Unknown(
-            "Statement Queue worker dropped without responding".to_string(),
-        )
-    })?;
 
-    match result {
-        Ok(stmt_id) => {
-            tracing::info!(
-                "statements_upload: pipeline complete for stmt_id='{}'",
-                stmt_id
-            );
-            events::emit(
-                events::PARSED,
-                serde_json::json!({ "statement_id": stmt_id, "filename": filename }),
-            );
-            app.emit(
-                events::PARSED,
-                serde_json::json!({
-                    "statement_id": stmt_id,
-                    "filename": filename
-                }),
-            )
-            .ok();
-            Ok(serde_json::json!({
-                "status": "parsed",
-                "statement_id": stmt_id
-            }))
-        }
-        Err(e) => {
-            tracing::error!("statements_upload: pipeline failed: {}", e);
-            events::emit(
-                events::PARSE_FAILED,
-                serde_json::json!({ "reason": e.to_string(), "filename": filename }),
-            );
-            app.emit(
-                events::PARSE_FAILED,
-                serde_json::json!({
-                    "reason": e.to_string(),
-                    "filename": filename
-                }),
-            )
-            .ok();
-            Err(crate::error::AppError::Unknown(e.to_string()))
-        }
-    }
+    tracing::info!(
+        "statements_upload: filename='{}' queued as stmt_id='{}'",
+        filename,
+        stmt_id
+    );
+
+    Ok(UploadResult {
+        statement_id: stmt_id,
+        filename,
+        status: "queued".to_string(),
+    })
 }
 
 /// Runs steps 6–14 of the PDF statement processing pipeline.
@@ -438,6 +449,15 @@ async fn upload_one_statement(
 /// `confirmed_instrument`, when `Some`, is supplied by `statements_confirm_instrument`
 /// resuming a statement previously blocked by the Instrument Gate (C2 fix) — it
 /// bypasses the gate below and uses the user-confirmed issuer/masked/type directly.
+///
+/// `stmt_id`, when `Some`, names a `statements` row already written by
+/// `insert_queued()` at intake (Doc 18 §4.7's crash-recovery invariant) —
+/// Step 10 upserts it instead of minting a new ID. `None` for the
+/// resumed-after-block paths (`statements_confirm_instrument`/
+/// `statements_submit_password`), which correctly mint a fresh ID at Step 10
+/// as before — `unprocessed_statements` already owns crash-recovery for the
+/// blocked window via its own separate ID (Doc 18 §4.16's `resolved_statement_id`
+/// is a deliberate one-way link, not a shared ID).
 pub async fn run_parse_pipeline<R: tauri::Runtime>(
     bytes: &[u8],
     _filename: &str,
@@ -447,6 +467,7 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
     pending_bytes: &crate::statements::pending_bytes::PendingStatementBytes,
     confirmed_instrument: Option<ConfirmedInstrument>,
     password: Option<&str>,
+    stmt_id: Option<String>,
 ) -> anyhow::Result<String> {
     use crate::statements::{
         bill_classifier,
@@ -499,13 +520,14 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
         let issuer = match meta.issuer_name.clone() {
             Some(i) if !i.trim().is_empty() => i,
             _ => {
-                let stmt_id = uuid::Uuid::new_v4().to_string();
-                create_awaiting_instrument_row(&stmt_id, file_hash, _filename, pool)
+                delete_orphaned_queued_row(stmt_id.as_deref(), pool).await;
+                let unprocessed_id = uuid::Uuid::new_v4().to_string();
+                create_awaiting_instrument_row(&unprocessed_id, file_hash, _filename, pool)
                     .await
                     .map_err(|e| anyhow::anyhow!("DB error creating awaiting_instrument row: {}", e))?;
-                pending_bytes.insert(stmt_id.clone(), bytes.to_vec()).await;
+                pending_bytes.insert(unprocessed_id.clone(), bytes.to_vec()).await;
                 let payload = serde_json::json!({
-                    "statement_id": stmt_id,
+                    "statement_id": unprocessed_id,
                     "filename": _filename,
                     "reason": "issuer_name could not be extracted from statement header",
                 });
@@ -514,21 +536,22 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
                 tracing::warn!(
                     "Statement Instrument Gate BLOCKED (issuer absent) — \
                      statement_id='{}' filename='{}'",
-                    stmt_id, _filename
+                    unprocessed_id, _filename
                 );
-                return Ok(stmt_id);
+                return Ok(unprocessed_id);
             }
         };
         let masked = match meta.masked_identifier.clone() {
             Some(m) if !m.trim().is_empty() => m,
             _ => {
-                let stmt_id = uuid::Uuid::new_v4().to_string();
-                create_awaiting_instrument_row(&stmt_id, file_hash, _filename, pool)
+                delete_orphaned_queued_row(stmt_id.as_deref(), pool).await;
+                let unprocessed_id = uuid::Uuid::new_v4().to_string();
+                create_awaiting_instrument_row(&unprocessed_id, file_hash, _filename, pool)
                     .await
                     .map_err(|e| anyhow::anyhow!("DB error creating awaiting_instrument row: {}", e))?;
-                pending_bytes.insert(stmt_id.clone(), bytes.to_vec()).await;
+                pending_bytes.insert(unprocessed_id.clone(), bytes.to_vec()).await;
                 let payload = serde_json::json!({
-                    "statement_id": stmt_id,
+                    "statement_id": unprocessed_id,
                     "filename": _filename,
                     "issuer": issuer,
                     "reason": "masked account/card number could not be extracted from statement header",
@@ -538,9 +561,9 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
                 tracing::warn!(
                     "Statement Instrument Gate BLOCKED (masked_id absent) — \
                      issuer='{}' statement_id='{}' filename='{}'",
-                    issuer, stmt_id, _filename
+                    issuer, unprocessed_id, _filename
                 );
-                return Ok(stmt_id);
+                return Ok(unprocessed_id);
             }
         };
         // Instrument type: default "credit_card" now that both issuer and masked are confirmed by gate.
@@ -568,6 +591,7 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
                 start,
                 end
             );
+            delete_orphaned_queued_row(stmt_id.as_deref(), pool).await;
             return Err(anyhow::anyhow!(
                 "duplicate_billing_cycle: cycle {} → {} already imported for instrument {}",
                 start,
@@ -578,8 +602,13 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
     }
 
     // ── Step 10: Write statements row ─────────────────────────────────────────
-    // source_message_id for manual uploads uses the file_hash as a proxy identifier
+    // source_message_id for manual uploads uses the file_hash as a proxy identifier.
+    // `stmt_id`, if the caller pre-created a queued row at intake (Doc 18 §4.7),
+    // is upserted in place; otherwise (a resumed-after-block path) a fresh ID
+    // is minted here, matching the pre-existing behavior for that case.
+    let final_stmt_id = stmt_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let stmt_id = write_statement_row(
+        &final_stmt_id,
         &instrument_id,
         &instrument_type,
         &meta,
@@ -705,6 +734,23 @@ async fn create_awaiting_password_row(
         statement_id
     );
     Ok(())
+}
+
+/// Best-effort cleanup for the queued `statements` row `insert_queued()` wrote
+/// at intake, when the pipeline diverges away from ever completing it (an
+/// Instrument Gate block or a post-metadata duplicate reject) — otherwise it
+/// would sit at `parse_status = 'queued'` forever, an orphan `unprocessed_statements`
+/// (or the duplicate rejection) already fully accounts for going forward.
+/// No-op (and never fails the caller) when `stmt_id` is `None` — the
+/// resumed-after-block paths never had a queued row to begin with.
+async fn delete_orphaned_queued_row(stmt_id: Option<&str>, pool: &deadpool_sqlite::Pool) {
+    let Some(id) = stmt_id else { return };
+    let id = id.to_string();
+    if let Ok(conn) = pool.get().await {
+        let _ = conn
+            .interact(move |c| c.execute("DELETE FROM statements WHERE id = ?1 AND parse_status = 'queued'", rusqlite::params![id]))
+            .await;
+    }
 }
 
 /// Creates an `unprocessed_statements` row with `status = 'awaiting_instrument_confirmation'`
@@ -849,6 +895,7 @@ pub async fn statements_confirm_instrument(
         &app,
         pending_bytes.inner(),
         Some(confirmed),
+        None,
         None,
     )
     .await;
@@ -1042,6 +1089,7 @@ pub async fn statements_submit_password(
                 pending_bytes.inner(),
                 None,
                 Some(&password),
+                None,
             )
             .await;
 

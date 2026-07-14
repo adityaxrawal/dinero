@@ -332,11 +332,30 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                         let filename = &att.filename;
                                         match gmail_client.fetch_attachment(&msg_id, att_id).await {
                                             Ok(pdf_bytes) => {
+                                                // Doc 18 §4.7: the `statements` row must exist in
+                                                // `queued` state before parsing begins, regardless
+                                                // of entry point — same invariant as manual upload.
+                                                let stmt_id = uuid::Uuid::new_v4().to_string();
+                                                if let Ok(conn) = pool.get().await {
+                                                    let id = stmt_id.clone();
+                                                    let msg_id_for_row = msg_id.clone();
+                                                    let _ = conn
+                                                        .interact(move |c| {
+                                                            crate::db::statements::insert_queued(
+                                                                c,
+                                                                &id,
+                                                                "gmail_email",
+                                                                Some(&msg_id_for_row),
+                                                                None,
+                                                            )
+                                                        })
+                                                        .await;
+                                                }
                                                 let job = crate::ingestion::queues::StatementJob {
                                                     bytes: pdf_bytes,
                                                     filename: filename.clone(),
                                                     file_hash: msg_id.clone(),
-                                                    respond_to: None,
+                                                    stmt_id,
                                                 };
                                                 let st_tx = app
                                                     .state::<crate::ingestion::queues::QueueHandles>()
