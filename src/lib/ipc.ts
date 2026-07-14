@@ -324,8 +324,9 @@ export const API = {
       invokeCommand<string>('submit_user_feedback', { text, includeLogs }),
   },
   auth: {
-    startGoogle: () =>
-      invokeCommand<string>('auth_google_start', { profileId: 1 }),
+    // TASK-DB-022: the backend resolves the single local profile internally
+    // rather than trusting a caller-supplied profileId (Document 22 §13.1).
+    startGoogle: () => invokeCommand<string>('auth_google_start'),
     isGmailConnected: () => invokeCommand<boolean>('is_gmail_connected'),
     // Doc 03 §8.2: a license supports up to 10 simultaneously connected
     // Gmail accounts — the list can have more than one entry.

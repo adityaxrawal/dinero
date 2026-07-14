@@ -16,7 +16,7 @@ pub mod integrity;
 pub mod startup;
 
 use std::path::PathBuf;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 
 /// Doc 28 §4.2 (J4 fix): default retention for rotated `app-logs.log.*`
@@ -161,13 +161,31 @@ pub fn run() {
             // `finance.db.bak.*` backup naming migrations.rs already used).
             let db_path = app_dir.join("finance.db");
 
+            // TASK-DB-021: peek at the hardware-UUID marker before init_db
+            // consumes/updates it, so a successful open below can show the
+            // non-blocking "Database migrated to new Mac" toast Document 30
+            // describes — without threading a migration flag through
+            // init_db's own return type.
+            let looks_like_hardware_migration =
+                crate::db::crypto::hw_uuid_marker_indicates_migration(&app_dir);
+
             // Initialize SQLCipher database and run migrations.
             // Handle key-mismatch separately so the user sees a clear dialog
             // (with recovery instructions) rather than a raw panic.
             let pool = match tauri::async_runtime::block_on(async {
                 db::init_db(db_path.clone()).await
             }) {
-                Ok(p) => p,
+                Ok(p) => {
+                    if looks_like_hardware_migration {
+                        let _ = app.handle().emit(
+                            crate::ipc::events::AppEvent::DbHardwareMigrated.as_str(),
+                            serde_json::json!({
+                                "message": "Database migrated to new Mac.",
+                            }),
+                        );
+                    }
+                    p
+                }
                 Err(db::DbInitError::KeyMismatch) => {
                     let msg = concat!(
                         "Dinero cannot open its database.\n\n",
@@ -423,6 +441,8 @@ pub fn run() {
             let archive_dir = app_dir.join("archives");
             let archive_db_key = crate::db::crypto::derive_database_key().ok();
             let pool_for_backup = pool_clone.clone();
+            let app_handle_for_backup = app.handle().clone();
+            let db_path_for_backup = db_path.clone();
             tauri::async_runtime::spawn(async move {
                 // Background loop for backups
                 loop {
@@ -453,10 +473,40 @@ pub fn run() {
                         match res {
                             Ok(Ok(_)) => {
                                 match std::fs::rename(&backup_tmp_file, &backup_file) {
-                                    Ok(_) => tracing::info!(
-                                        "Backup successful: {}",
-                                        backup_file.display()
-                                    ),
+                                    Ok(_) => {
+                                        tracing::info!(
+                                            "Backup successful: {}",
+                                            backup_file.display()
+                                        );
+                                        // TASK-DB-020: log completion + notify Settings so it
+                                        // can show the last-backup timestamp.
+                                        let _ = app_handle_for_backup.emit(
+                                            crate::ipc::events::AppEvent::DbBackupCompleted.as_str(),
+                                            serde_json::json!({
+                                                "completed_at": chrono::Utc::now().to_rfc3339(),
+                                            }),
+                                        );
+                                        if let Ok(conn) = pool_for_backup.get().await {
+                                            let _ = conn
+                                                .interact(|c| {
+                                                    crate::db::audit_log::insert(
+                                                        c,
+                                                        &crate::db::audit_log::AuditLogRow {
+                                                            id: uuid::Uuid::new_v4().to_string(),
+                                                            actor_type: Some("system".to_string()),
+                                                            actor_id: None,
+                                                            action: Some("db_backup_completed".to_string()),
+                                                            resource_type: Some("database".to_string()),
+                                                            resource_id: None,
+                                                            before_json: None,
+                                                            after_json: None,
+                                                            created_at: chrono::Utc::now(),
+                                                        },
+                                                    )
+                                                })
+                                                .await;
+                                        }
+                                    }
                                     Err(e) => tracing::error!(
                                         "Backup succeeded but failed to replace {}: {}",
                                         backup_file.display(),
@@ -470,6 +520,25 @@ pub fn run() {
                             }
                         }
                     }
+
+                    // TASK-DB-019 steps 1/3/4: corruption check, bounded
+                    // incremental vacuum, and a size warning once finance.db
+                    // exceeds 2GB. Run on the same daily cadence, after the
+                    // backup/retention/archive steps above.
+                    if let Ok(conn) = pool_for_backup.get().await {
+                        let app_handle_for_integrity = app_handle_for_backup.clone();
+                        let _ = conn
+                            .interact(move |c| {
+                                crate::db::maintenance::check_integrity_and_report(c, &app_handle_for_integrity)
+                            })
+                            .await;
+                    }
+                    if let Ok(conn) = pool_for_backup.get().await {
+                        let _ = conn
+                            .interact(|c| crate::db::maintenance::run_incremental_vacuum(c))
+                            .await;
+                    }
+                    let _ = crate::db::maintenance::check_db_size_warning(&app_handle_for_backup, &db_path_for_backup);
 
                     // J2 fix (Doc 28 §4.2 row 1): nulls raw_payload_json/
                     // raw_row_json on matched records older than 90 days —

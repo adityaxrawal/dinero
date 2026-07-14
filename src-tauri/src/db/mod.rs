@@ -18,6 +18,7 @@ pub mod feedback_log;
 mod feedback_log_tests;
 pub mod instruments;
 pub mod local_profile;
+pub mod maintenance;
 pub mod match_decisions;
 #[cfg(test)]
 mod match_decisions_tests;
@@ -36,6 +37,7 @@ pub mod reconciliation_cluster_members;
 pub mod reconciliation_clusters;
 pub mod recurring_payments;
 pub mod retention;
+pub mod scoping;
 #[cfg(test)]
 mod recurring_payments_tests;
 pub mod sessions;

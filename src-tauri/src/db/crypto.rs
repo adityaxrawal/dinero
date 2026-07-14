@@ -246,6 +246,27 @@ pub fn record_last_known_hw_uuid(app_data_dir: &std::path::Path) {
     }
 }
 
+/// TASK-DB-021: peeks at the recorded hardware-UUID marker (without deriving
+/// or touching any keys) to tell the caller, *before* attempting DB init,
+/// whether this launch looks like a Mac-to-Mac migration — so it can show
+/// the "Database migrated to new Mac" toast (Document 30 TASK-DB-021) after
+/// a successful open, without threading a migration flag through
+/// `init_db`'s return type. Returns `false` on any read/detection error
+/// (conservatively: no toast rather than a spurious one).
+pub fn hw_uuid_marker_indicates_migration(app_data_dir: &std::path::Path) -> bool {
+    let Ok(old_hw_uuid) = std::fs::read_to_string(hw_uuid_marker_path(app_data_dir)) else {
+        return false;
+    };
+    let old_hw_uuid = old_hw_uuid.trim();
+    if old_hw_uuid.is_empty() {
+        return false;
+    }
+    match get_hardware_uuid() {
+        Ok(current) => old_hw_uuid != current,
+        Err(_) => false,
+    }
+}
+
 /// Attempts to recover from a hardware-UUID change by re-keying the database
 /// in place. Derives the *old* SQLCipher key from the marker's recorded
 /// hardware UUID, verifies it still decrypts `db_path`, and if so `PRAGMA
@@ -370,6 +391,27 @@ mod hardware_migration_tests {
                 .unwrap();
             assert_eq!(count, 1);
         }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hw_uuid_marker_migration_detection() {
+        let dir = std::env::temp_dir().join(format!("dinero_hw_marker_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // No marker file at all -> never a migration signal.
+        assert!(!hw_uuid_marker_indicates_migration(&dir));
+
+        let current = get_hardware_uuid().unwrap();
+
+        // Marker matches current hardware -> no migration.
+        std::fs::write(hw_uuid_marker_path(&dir), &current).unwrap();
+        assert!(!hw_uuid_marker_indicates_migration(&dir));
+
+        // Marker differs from current hardware -> looks like a migration.
+        std::fs::write(hw_uuid_marker_path(&dir), "some-other-hw-uuid").unwrap();
+        assert!(hw_uuid_marker_indicates_migration(&dir));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -25,17 +25,25 @@ pub struct ConfirmedInstrument {
 
 /// G20/H10/J8 fix: renamed from `start_oauth_flow` to match Doc 19 §5.1's
 /// documented `auth_google_start` naming.
+///
+/// TASK-DB-022: no longer accepts `profile_id` from the caller — Dinero is
+/// single-tenant by construction (`local_profile.id` can only ever be `1`),
+/// so this resolves `db::scoping::LOCAL_PROFILE_ID` internally instead of
+/// trusting an IPC-supplied value (Document 22 §13.1).
 #[tauri::command]
 pub async fn auth_google_start(
-    profile_id: i64,
     app: tauri::AppHandle,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
 ) -> Result<String, crate::error::AppError> {
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
-    crate::ingestion::oauth::start_oauth_flow_async(app, pool.inner().clone(), profile_id)
-        .await
-        .map_err(|e| crate::error::AppError::Auth(e.to_string()))
+    crate::ingestion::oauth::start_oauth_flow_async(
+        app,
+        pool.inner().clone(),
+        crate::db::scoping::LOCAL_PROFILE_ID,
+    )
+    .await
+    .map_err(|e| crate::error::AppError::Auth(e.to_string()))
 }
 
 /// Doc 19 §5.4, Doc 22 §8.2: returns the opt-in 24-word Secure Backup Recovery
