@@ -112,35 +112,45 @@ pub async fn revoke_gmail_access(pool: &Pool) {
     let network = crate::network_client::NetworkClient::new(pool.clone());
 
     for account in &accounts {
-        if let Ok(token_json) = get_token(&account.id) {
-            if let Ok(token_store) = serde_json::from_str::<TokenStore>(&token_json) {
-                let builder = network
-                    .client()
-                    .post("https://oauth2.googleapis.com/revoke")
-                    .form(&[("token", token_store.access_token.as_str())]);
-                let revoke_result = network.execute(builder).await;
-                match revoke_result {
-                    Ok(res) if res.status().is_success() => {
-                        tracing::info!("Gmail OAuth token revoked with Google for account {}", account.id);
-                    }
-                    Ok(res) => {
-                        tracing::warn!(
-                            "Gmail OAuth token revocation for account {} returned non-success status {} — \
-                             proceeding with local wipe regardless (Local Wipe Priority, Doc 28 §4.4)",
-                            account.id, res.status()
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "Gmail OAuth token revocation request failed for account {}: {} — proceeding with \
-                             local wipe regardless (Local Wipe Priority, Doc 28 §4.4)",
-                            account.id, e
-                        );
-                    }
-                }
-            }
-        }
+        revoke_single_account_with_google(&network, &account.id).await;
         delete_token(&account.id);
+    }
+}
+
+/// Calls Google's revoke endpoint for one account's stored access token.
+/// Best-effort/non-fatal by design (Doc 28 §4.4's "Local Wipe Priority" —
+/// shared by both the full-wipe path above and TASK-AUTH-006's single-account
+/// disconnect below): local cleanup must still complete even if this fails
+/// or the device is offline.
+async fn revoke_single_account_with_google(network: &crate::network_client::NetworkClient, account_id: &str) {
+    let Ok(token_json) = get_token(account_id) else {
+        return;
+    };
+    let Ok(token_store) = serde_json::from_str::<TokenStore>(&token_json) else {
+        return;
+    };
+    let builder = network
+        .client()
+        .post("https://oauth2.googleapis.com/revoke")
+        .form(&[("token", token_store.access_token.as_str())]);
+    match network.execute(builder).await {
+        Ok(res) if res.status().is_success() => {
+            tracing::info!("Gmail OAuth token revoked with Google for account {}", account_id);
+        }
+        Ok(res) => {
+            tracing::warn!(
+                "Gmail OAuth token revocation for account {} returned non-success status {} — \
+                 proceeding with local cleanup regardless (Local Wipe Priority, Doc 28 §4.4)",
+                account_id, res.status()
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Gmail OAuth token revocation request failed for account {}: {} — proceeding with \
+                 local cleanup regardless (Local Wipe Priority, Doc 28 §4.4)",
+                account_id, e
+            );
+        }
     }
 }
 
@@ -302,8 +312,19 @@ pub async fn list_connected_accounts(
     .map_err(|e| e.to_string())?
 }
 
-/// G20/H10/J8 fix: renamed from `disconnect_gmail` to match Doc 19 §5.3's
-/// documented `auth_google_disconnect` naming.
+/// TASK-AUTH-006 (Document 30's `auth_revoke_gmail`; kept as
+/// `auth_google_disconnect` per the G20/H10/J8 fix matching Doc 19 §5.3's
+/// documented naming — that naming isn't in conflict with Document 30, which
+/// simply doesn't appear in Document 19's IPC catalog at all).
+///
+/// Calls Google's revoke endpoint (best-effort — local cleanup must still
+/// complete per Doc 28 §4.4's Local Wipe Priority even if this fails or the
+/// device is offline); deletes the Keychain token entry; marks this specific
+/// account `disconnected` (not a blanket update — Doc 03 §8.2 allows
+/// multiple simultaneously-connected accounts, and disconnecting one must
+/// not affect the others); withdraws the `gmail_oauth_consent` consent event
+/// (sets `withdrawn_at`, never deletes — TASK-AUTH-003); writes an
+/// audit_log entry (`gmail_revoked`).
 #[tauri::command]
 pub async fn auth_google_disconnect(
     account_id: String,
@@ -313,39 +334,49 @@ pub async fn auth_google_disconnect(
         .await
         .map_err(|e| e.to_string())?;
 
-    // 1. Delete this account's token from keychain (per-account entry, Doc 22 §5.4/§6.2).
+    let network = crate::network_client::NetworkClient::new(pool.inner().clone());
+    revoke_single_account_with_google(&network, &account_id).await;
     delete_token(&account_id);
 
-    // 2. Mark this specific account as inactive — not a blanket update, since
-    // Doc 03 §8.2 allows multiple simultaneously-connected accounts and
-    // disconnecting one must not affect the others.
     let conn = pool.get().await.map_err(|e| e.to_string())?;
     let acc_id_clone = account_id.clone();
-    conn.interact(move |c| {
-        let _ = c.execute(
-            "UPDATE connected_accounts SET account_status = 'INACTIVE', email_address = NULL WHERE id = ?1",
-            params![acc_id_clone],
-        );
-
-        let _ = crate::db::audit_log::insert(
-            c,
-            &crate::db::audit_log::AuditLogRow {
-                id: uuid::Uuid::new_v4().to_string(),
-                actor_type: Some("user".to_string()),
-                actor_id: Some("local".to_string()),
-                action: Some("disconnect_gmail".to_string()),
-                resource_type: Some("connected_account".to_string()),
-                resource_id: Some(acc_id_clone.clone()),
-                before_json: None,
-                after_json: Some(serde_json::json!({
-                    "status": "disconnected"
-                })),
-                created_at: chrono::Utc::now(),
-            },
-        );
-    }).await.map_err(|e| e.to_string())?;
+    conn.interact(move |c| apply_disconnect(c, &acc_id_clone))
+        .await
+        .map_err(|e| e.to_string())?;
 
     Ok("Disconnected".to_string())
+}
+
+/// The DB-mutation portion of `auth_google_disconnect`, extracted so it's
+/// directly unit-testable without a real Keychain/network round-trip:
+/// marks the account `disconnected`, withdraws the `gmail_oauth_consent`
+/// event, and writes the `gmail_revoked` audit_log entry.
+fn apply_disconnect(c: &rusqlite::Connection, account_id: &str) {
+    let _ = c.execute(
+        "UPDATE connected_accounts SET account_status = 'disconnected', email_address = NULL WHERE id = ?1",
+        params![account_id],
+    );
+
+    if let Err(e) = crate::auth::consent::withdraw_consent_event(c, "gmail_oauth_consent") {
+        tracing::warn!("Failed to withdraw gmail_oauth_consent event: {}", e);
+    }
+
+    let _ = crate::db::audit_log::insert(
+        c,
+        &crate::db::audit_log::AuditLogRow {
+            id: uuid::Uuid::new_v4().to_string(),
+            actor_type: Some("user".to_string()),
+            actor_id: Some("local".to_string()),
+            action: Some("gmail_revoked".to_string()),
+            resource_type: Some("connected_account".to_string()),
+            resource_id: Some(account_id.to_string()),
+            before_json: None,
+            after_json: Some(serde_json::json!({
+                "status": "disconnected"
+            })),
+            created_at: chrono::Utc::now(),
+        },
+    );
 }
 
 /// Doc 03 §8.2, Doc 40 §11: enforced entirely locally — the connected-account
@@ -772,6 +803,50 @@ pub async fn handle_invalid_history_id(pool: &Pool, account_id: &str) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// TASK-AUTH-006: disconnect marks the account `disconnected`, withdraws
+    /// the `gmail_oauth_consent` event (without deleting it), and writes a
+    /// `gmail_revoked` audit_log entry — the DB-level portion of
+    /// `auth_google_disconnect`, tested directly since the full command
+    /// needs a real Keychain/network round-trip.
+    #[test]
+    fn apply_disconnect_updates_status_withdraws_consent_and_logs() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        conn.execute("INSERT INTO local_profile (id) VALUES (1)", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO connected_accounts (id, profile_id, email_address, account_status) \
+             VALUES ('acc_1', 1, 'user@gmail.com', 'ACTIVE')",
+            [],
+        )
+        .unwrap();
+        crate::auth::consent::insert_consent_event(&conn, "gmail_oauth_consent", "verbatim disclosure").unwrap();
+
+        apply_disconnect(&conn, "acc_1");
+
+        let (status, email): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT account_status, email_address FROM connected_accounts WHERE id = 'acc_1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status.as_deref(), Some("disconnected"));
+        assert_eq!(email, None);
+
+        let history = crate::auth::consent::fetch_consent_history(&conn, 10, 0).unwrap();
+        assert_eq!(history.len(), 1, "consent event must still exist, not be deleted");
+        assert!(history[0].withdrawn_at.is_some());
+
+        let action: String = conn
+            .query_row(
+                "SELECT action FROM audit_log WHERE resource_id = 'acc_1' ORDER BY rowid DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(action, "gmail_revoked");
+    }
 
     /// Document 30 TASK-AUTH-004: the classified reason must never contain
     /// the raw error text (which could carry a token fragment) — only ever
