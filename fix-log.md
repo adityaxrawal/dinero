@@ -35,3 +35,13 @@ Append-only. One entry per task processed under the §3 verification protocol (M
 **What I did:** No code change. This is the Tauri-v2-equivalent of "disabled" already, structurally: the WebView has no path to raw filesystem, shell execution, or generic HTTP that doesn't already run through a typed `invoke()` command. Confirmed match, no quality gaps found.
 
 **Verified:** `grep` confirms no fs/shell/http plugin dependencies and no matching permission strings anywhere in `tauri.conf.json` or `src-tauri/capabilities/`.
+
+---
+
+## TASK-SETUP-004: Configure Window Dimensions and Startup Behavior
+
+**Found:** `tauri.conf.json`'s `app.windows[0]` deviated from Document 30's exact spec on four fields: `title` was `"dinero-app"` (spec: `"Dinero"`), `width` was `1200` (spec: `1280`), `minWidth` was `800` (spec: `900`), and `transparent` was `true` (spec: `false` — the doc explicitly calls out non-transparent as a deliberate choice to avoid alpha-compositing overhead on older Macs). `resizable`, `decorations`, and `center` were absent (relying on Tauri defaults, which happen to match `resizable: true`/`decorations: true`, but `center` defaults to `false`, not `true`).
+
+**What I did:** Corrected all four deviating fields and added explicit `resizable: true`, `decorations: true`, `center: true` so the config states its intent rather than relying on implicit defaults.
+
+**Verified:** `python3 -c "import json; json.load(...)"` confirms valid JSON. No acceptance criteria beyond manual launch verification (per doc); config now matches spec exactly.
