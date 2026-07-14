@@ -200,3 +200,15 @@ Append-only. One entry per task processed under the §3 verification protocol (M
 **What I did:** Corrected the seed `INSERT` to `'Asia/Kolkata'` and `'[80,90,100]'`. Did not add a schema-level `DEFAULT` clause to the already-committed migration file — editing a shipped migration is bad practice (Document 18 §13.1's forward-only philosophy) and unnecessary here, since this singleton row is only ever created through this one seed statement, not through any other insert path.
 
 **Verified:** `cargo check` clean. All 7 `local_profile`-related tests in `db::tests` pass, unaffected by the seed-value fix (they each construct their own explicit `LocalProfileRow`, not relying on the seed defaults). Full `cargo test --lib`: 313 passed, same 4 pre-existing unrelated failures. The default-value fix itself isn't exercised by a dedicated automated test — it only matters on the real `init_db()` first-launch path, which none of the lightweight unit tests invoke (they call `run_migrations()` directly, bypassing the seed-insert step); verified by code inspection instead, consistent with how this seed statement had no prior test coverage either.
+
+---
+
+## TASK-DB-004: Migration — Create `connected_accounts` Table
+
+**Found:** Table already exists (migration 001), CRUD already complete in `src-tauri/src/db/connected_accounts.rs` (`insert_account`/`update_account`/`get_account`/`get_all_accounts`/`delete_account`, all parameterized). Acceptance criteria ("full CRUD unit tests including FK violation cases") already satisfied by `db/tests.rs`'s existing `test_connected_accounts_crud`, `..._update_success`, `..._update_not_found`, `..._select_not_found`, `..._fk_violation`.
+
+**Deviation found:** Document 30 specifies `email_address (unique)`; the migrated schema had `email_address TEXT` with no uniqueness constraint at all — the same Gmail account could be "connected" twice, wasting a slot against the 10-account cap (Document 03 §8.2) and creating ambiguous duplicate-account state.
+
+**What I did:** Added `migrations/20260101000020_connected_accounts_email_unique.sql` — a `CREATE UNIQUE INDEX` (not editing the already-committed migration 001, per the same forward-only convention as TASK-DB-003). Checked existing call sites first: `ingestion/polling_tests.rs` inserts one account with `email_address: None` — safe, since SQLite treats multiple `NULL`s in a `UNIQUE` index as distinct, never colliding with each other.
+
+**Verified:** `cargo check` clean. Full `cargo test --lib`: 313 passed, same 4 pre-existing unrelated failures — the new unique index doesn't break any existing test (none insert the same non-null email twice within one database instance).
