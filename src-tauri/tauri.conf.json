@@ -1,0 +1,60 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Dinero",
+  "version": "0.1.0",
+  "identifier": "com.dinero.app",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "title": "dinero-app",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "transparent": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost https://accounts.google.com https://oauth2.googleapis.com https://www.googleapis.com https://api.dinero-app.com https://github.com https://objects.githubusercontent.com; img-src 'self' asset: data:; font-src 'self';",
+      "capabilities": [
+        {
+          "identifier": "default",
+          "description": "Capability for the main window",
+          "windows": ["main"],
+          "permissions": ["core:default", "opener:default", "dialog:default"]
+        }
+      ]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": ["binaries/*"],
+    "macOS": {
+      "entitlements": "Entitlements.plist",
+      "exceptionDomain": "api.dinero-app.com"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/dinero-app/dinero-app/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlCRjZCNTA1N0Q1MEQ5Q0MKUldUTTJWQjlCYlgybXpJMzlUS1Y4LzNHZTE1ZFJGREJCNU1JOTBWUGRKRjZWb1crQmZwc0JPRXMK"
+    }
+  }
+}
