@@ -45,3 +45,15 @@ Append-only. One entry per task processed under the §3 verification protocol (M
 **What I did:** Corrected all four deviating fields and added explicit `resizable: true`, `decorations: true`, `center: true` so the config states its intent rather than relying on implicit defaults.
 
 **Verified:** `python3 -c "import json; json.load(...)"` confirms valid JSON. No acceptance criteria beyond manual launch verification (per doc); config now matches spec exactly.
+
+---
+
+## TASK-SETUP-005: Add All Rust Cargo Dependencies
+
+**Found:** Nearly every dependency Document 30 lists is already present in `src-tauri/Cargo.toml` (tauri, tokio full, rusqlite bundled-sqlcipher, deadpool-sqlite, serde/serde_json, reqwest json/rustls-tls, keyring, thiserror/anyhow, tracing/tracing-subscriber, uuid v4, sha2, argon2, aes-gcm, regex, chrono, strsim, sysinfo, oauth2). Two nominal gaps against the doc's literal list:
+1. **`once_cell`** — absent, but every place that would use it (`ladder.rs`, `message_processor.rs`) already uses `std::sync::OnceLock`, the stdlib equivalent stabilized after `once_cell` became the de facto standard this crate historically filled. Adding an unused `once_cell` dependency alongside an already-idiomatic stdlib solution would be pure noise — not adding it.
+2. **`sqlx`** — genuinely absent. Document 30's own TASK-DB-002 explicitly specifies `sqlx::migrate!` as the migration runner, but the existing, already-built migration system (`src-tauri/src/db/migrations.rs`) uses the `rusqlite_migration` crate instead — a real architectural substitution, not a missing-dependency oversight. This is a substantive Area 2 decision (keep `rusqlite_migration` and treat Document 30 as superseded-in-practice, or migrate the already-built system to `sqlx`), not something to resolve by silently adding an unused dependency inside a manifest-listing task. **Flagged for TASK-DB-001/002**, not resolved here.
+
+**What I did:** No `Cargo.toml` change. `cargo build`/`cargo check` already succeed (verified under TASK-SETUP-001), which is this task's only stated acceptance criterion.
+
+**Verified:** `cargo check` clean (see TASK-SETUP-001/002 verification runs, dependency set unchanged since).
