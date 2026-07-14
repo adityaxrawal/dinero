@@ -14,6 +14,7 @@ pub mod crash_reporter;
 pub mod diagnostics;
 pub mod feedback;
 pub mod integrity;
+pub mod security;
 pub mod startup;
 
 use std::path::PathBuf;
@@ -397,6 +398,9 @@ pub fn run() {
             // hiccup should not block startup — `current_session_id()`
             // simply returns `None` until the next successful call.
             app.manage(crate::auth::session::SessionState::default());
+            // TASK-AUTH-014: in-memory-only incident counters, registered
+            // once for the lifetime of this run.
+            app.manage(crate::security::incident_response::IncidentMonitor::default());
             {
                 let pool_for_session = pool_clone.clone();
                 let session_state_handle = app.handle().clone();
@@ -546,11 +550,32 @@ pub fn run() {
                     // backup/retention/archive steps above.
                     if let Ok(conn) = pool_for_backup.get().await {
                         let app_handle_for_integrity = app_handle_for_backup.clone();
-                        let _ = conn
+                        let integrity_ok = conn
                             .interact(move |c| {
                                 crate::db::maintenance::check_integrity_and_report(c, &app_handle_for_integrity)
                             })
                             .await;
+                        // TASK-AUTH-014: a corrupt database is itself the
+                        // incident-response trigger this task names
+                        // ("PRAGMA integrity_check failures") — fires on the
+                        // very first occurrence (see IncidentMonitor's
+                        // per-trigger threshold).
+                        if let Ok(Ok(false)) = integrity_ok {
+                            let monitor = app_handle_for_backup.state::<crate::security::incident_response::IncidentMonitor>();
+                            if crate::security::incident_response::record_trigger(
+                                monitor.inner(),
+                                crate::security::incident_response::TriggerKind::IntegrityCheckFailure,
+                            ) {
+                                let session_state = app_handle_for_backup.state::<crate::auth::session::SessionState>();
+                                let _ = crate::security::incident_response::respond_to_incident(
+                                    crate::security::incident_response::TriggerKind::IntegrityCheckFailure,
+                                    &app_handle_for_backup,
+                                    &pool_for_backup,
+                                    session_state.inner(),
+                                )
+                                .await;
+                            }
+                        }
                     }
                     if let Ok(conn) = pool_for_backup.get().await {
                         let _ = conn

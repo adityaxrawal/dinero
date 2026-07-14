@@ -9,7 +9,7 @@ use oauth2::{
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tiny_http::{Response, Server};
 use url::Url;
 
@@ -626,6 +626,28 @@ async fn mark_account_degraded_async<R: tauri::Runtime>(
             account_id,
             reason
         );
+
+        // TASK-AUTH-014: a token the Keychain itself reports invalid/revoked
+        // is the closest existing signal to "repeated OAuth failure" this
+        // task names as an incident trigger — record it and, once repeated,
+        // respond (session revoke + Gmail disconnect).
+        let monitor = app.state::<crate::security::incident_response::IncidentMonitor>();
+        if crate::security::incident_response::record_trigger(
+            monitor.inner(),
+            crate::security::incident_response::TriggerKind::RepeatedOAuthFailure,
+        ) {
+            let session_state = app.state::<crate::auth::session::SessionState>();
+            if let Err(e) = crate::security::incident_response::respond_to_incident(
+                crate::security::incident_response::TriggerKind::RepeatedOAuthFailure,
+                app,
+                pool,
+                session_state.inner(),
+            )
+            .await
+            {
+                tracing::error!("Incident response failed: {}", e);
+            }
+        }
     }
 
     if let Ok(conn) = pool.get().await {
