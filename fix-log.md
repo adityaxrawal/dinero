@@ -25,3 +25,13 @@ Append-only. One entry per task processed under the §3 verification protocol (M
 **Flagged, not silently resolved:** the task's acceptance criterion ("CI check: production build CSP contains no `localhost` reference") is written assuming only the dev-mode `ws://localhost:*` allowance the task text describes. Read completely literally it would also flag Tauri's own required `http://ipc.localhost` virtual host, which has nothing to do with the dev-server concern the criterion is guarding against and is present in every Tauri v2 scaffold. Treating this as a resolvable engineering-convention judgment call (Document 49 §4 precedent), not a product/business tradeoff worth stopping for. The CI check itself (TASK-SETUP-010) should be written to check for the dev-only `ws://localhost:*` pattern specifically, not a bare `localhost` substring match.
 
 **Verified:** `python3 -c "import json; json.load(open('src-tauri/tauri.conf.json'))"` confirms valid JSON. No frontend code depends on the removed origins (grep above).
+
+---
+
+## TASK-SETUP-003: Configure Tauri IPC Allowlists (Disable Generic Shell/FS Access)
+
+**Found:** Document 30's task text uses Tauri v1 terminology (`tauri.allowlist.shell/fs/http` with `"all": false`) which no longer exists in Tauri v2 — v2 replaced the allowlist model with an opt-in capabilities/permissions system where nothing is exposed to the WebView unless a plugin is added as a Cargo dependency *and* granted a permission in `capabilities`. Checked `src-tauri/Cargo.toml`: no `tauri-plugin-fs`, `tauri-plugin-shell`, or `tauri-plugin-http` dependency exists. Checked `tauri.conf.json`'s inline capability (`src-tauri/capabilities/` directory itself is empty — permissions are declared inline): only `core:default`, `opener:default`, `dialog:default` are granted. Checked all `fs::`/`std::fs` usage in `src-tauri/src` — every call site is Rust-native (`std::fs`, `tokio::fs`) inside backend modules, never exposed to the frontend. The `opener:default` permission is a deliberate, scoped exception for `tauri_plugin_opener::open_url()` (used once, in `src-tauri/src/ingestion/oauth.rs`, to launch the system browser for Google OAuth per TASK-AUTH-001) — not a generic shell-open capability.
+
+**What I did:** No code change. This is the Tauri-v2-equivalent of "disabled" already, structurally: the WebView has no path to raw filesystem, shell execution, or generic HTTP that doesn't already run through a typed `invoke()` command. Confirmed match, no quality gaps found.
+
+**Verified:** `grep` confirms no fs/shell/http plugin dependencies and no matching permission strings anywhere in `tauri.conf.json` or `src-tauri/capabilities/`.
