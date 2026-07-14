@@ -116,8 +116,9 @@ pub fn sanitize_plain_text(text: &str) -> String {
         if line.trim_start().starts_with('>') {
             continue;
         }
-        // Strip signature block usually starting with "-- " or "--"
-        if line.trim() == "--" || line.trim() == "-- " {
+        // Strip signature block, delimited per convention by a lone "--" line
+        // (trailing whitespace is already gone after .trim()).
+        if line.trim() == "--" {
             break;
         }
         sanitized.push(line.trim_end());
