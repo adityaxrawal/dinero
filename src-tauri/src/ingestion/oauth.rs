@@ -544,6 +544,26 @@ pub async fn start_oauth_flow_async(
 /// request failure is only treated as invalid when the OAuth server itself
 /// rejected the grant (`invalid_grant`/`invalid_client`/`unauthorized`) rather
 /// than e.g. a network timeout.
+/// Document 30 TASK-AUTH-004: "Never expose the raw refresh error (may
+/// contain token fragments) to the React layer or logs." Reduces a refresh
+/// error's full `Display` text (checked once, in memory, never logged or
+/// stored itself) to one of a small, fixed set of safe category strings —
+/// this is the only representation of the failure that ever reaches a log
+/// line, an `audit_log` row, or a caller-visible error.
+fn classify_refresh_error(raw: &str) -> &'static str {
+    if raw.contains("invalid_grant") {
+        "invalid_grant"
+    } else if raw.contains("invalid_client") {
+        "invalid_client"
+    } else if raw.contains("unauthorized") {
+        "unauthorized"
+    } else if raw.to_lowercase().contains("timeout") || raw.to_lowercase().contains("connect") {
+        "network_error"
+    } else {
+        "unknown_error"
+    }
+}
+
 fn reason_indicates_invalid_token(reason: &str) -> bool {
     reason == "keychain_read_failed"
         || reason == "token_parse_failed"
@@ -617,7 +637,7 @@ pub async fn get_valid_access_token<R: tauri::Runtime>(
         }
     };
 
-    let mut token_store: TokenStore = match serde_json::from_str(&token_json) {
+    let token_store: TokenStore = match serde_json::from_str(&token_json) {
         Ok(ts) => ts,
         Err(e) => {
             tracing::error!("Failed to parse token from secure storage: {}", e);
@@ -631,6 +651,44 @@ pub async fn get_valid_access_token<R: tauri::Runtime>(
         return Ok(token_store.access_token);
     }
 
+    refresh_token_store(app, pool, account_id, token_store).await
+}
+
+/// TASK-AUTH-004: forces a refresh-token exchange regardless of the locally
+/// cached `expires_at` — for the reactive path (an in-flight Gmail API call
+/// just got HTTP 401), where the cached expiry can't be trusted (the token
+/// may have been revoked externally, or clock skew made the local expiry
+/// math wrong), unlike `get_valid_access_token`'s proactive pre-flight check.
+pub async fn force_refresh_access_token<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    pool: &Pool,
+    account_id: &str,
+) -> Result<String> {
+    let token_json = match get_token(account_id) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!("Failed to get token from secure storage: {}", e);
+            mark_account_degraded_async(app, pool, account_id, "keychain_read_failed").await;
+            return Err(e);
+        }
+    };
+    let token_store: TokenStore = match serde_json::from_str(&token_json) {
+        Ok(ts) => ts,
+        Err(e) => {
+            tracing::error!("Failed to parse token from secure storage: {}", e);
+            mark_account_degraded_async(app, pool, account_id, "token_parse_failed").await;
+            return Err(anyhow::anyhow!("Token parse error: {}", e));
+        }
+    };
+    refresh_token_store(app, pool, account_id, token_store).await
+}
+
+async fn refresh_token_store<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    pool: &Pool,
+    account_id: &str,
+    mut token_store: TokenStore,
+) -> Result<String> {
     let refresh_token = match &token_store.refresh_token {
         Some(rt) => rt.clone(),
         None => {
@@ -664,9 +722,15 @@ pub async fn get_valid_access_token<R: tauri::Runtime>(
             Ok(token_store.access_token)
         }
         Err(e) => {
-            tracing::error!("Failed to refresh token: {}", e);
-            mark_account_degraded_async(app, pool, account_id, &format!("refresh_request_failed: {e}")).await;
-            Err(anyhow::anyhow!("Refresh token failed: {}", e))
+            // Document 30 TASK-AUTH-004: "Never expose the raw refresh error
+            // (may contain token fragments) to the React layer or logs."
+            // Classify into a fixed, safe vocabulary here and never format
+            // `e` itself into a log line, an audit_log row, or the error
+            // this function returns (which callers may surface to the UI).
+            let category = classify_refresh_error(&e.to_string());
+            tracing::error!("Gmail token refresh failed: {}", category);
+            mark_account_degraded_async(app, pool, account_id, &format!("refresh_request_failed: {category}")).await;
+            Err(anyhow::anyhow!("Gmail token refresh failed: {}", category))
         }
     }
 }
@@ -680,6 +744,25 @@ pub async fn handle_invalid_history_id(pool: &Pool, account_id: &str) -> Result<
             account.last_history_id = None;
             let _ = connected_accounts::update_account(c, &account);
         }
+        // Document 30 TASK-AUTH-004: "logging history_checkpoint_reset to
+        // audit_log" — previously only a tracing::warn!, invisible to the
+        // audit trail every other lifecycle event in this file writes to.
+        if let Err(e) = crate::db::audit_log::insert(
+            c,
+            &crate::db::audit_log::AuditLogRow {
+                id: uuid::Uuid::new_v4().to_string(),
+                actor_type: Some("system".to_string()),
+                actor_id: None,
+                action: Some("history_checkpoint_reset".to_string()),
+                resource_type: Some("connected_account".to_string()),
+                resource_id: Some(acc_id),
+                before_json: None,
+                after_json: None,
+                created_at: chrono::Utc::now(),
+            },
+        ) {
+            tracing::warn!("Failed to record history_checkpoint_reset audit event: {}", e);
+        }
     })
     .await
     .map_err(|e| anyhow::anyhow!("DB interaction error: {}", e))?;
@@ -689,6 +772,27 @@ pub async fn handle_invalid_history_id(pool: &Pool, account_id: &str) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Document 30 TASK-AUTH-004: the classified reason must never contain
+    /// the raw error text (which could carry a token fragment) — only ever
+    /// one of the fixed category strings.
+    #[test]
+    fn classify_refresh_error_never_echoes_raw_text() {
+        assert_eq!(
+            classify_refresh_error("Server returned error response: invalid_grant: Token has been expired or revoked."),
+            "invalid_grant"
+        );
+        assert_eq!(
+            classify_refresh_error("Server returned error response: invalid_client: no client authentication"),
+            "invalid_client"
+        );
+        assert_eq!(classify_refresh_error("request unauthorized by server"), "unauthorized");
+        assert_eq!(classify_refresh_error("connection timeout after 30s"), "network_error");
+        assert_eq!(
+            classify_refresh_error("some completely unexpected raw error text with a secret-looking token abc123"),
+            "unknown_error"
+        );
+    }
 
     #[test]
     fn test_oauth_callback_payload_validation() {
