@@ -99,6 +99,25 @@ fn test_gate3_fails_amount_only() {
         ..Default::default()
     };
     assert!(!MessageProcessor::evaluate_mandatory_field_gate(&obs));
+    assert_eq!(
+        MessageProcessor::gate3_failure_reason(&obs),
+        "gate3_failed:missing_counterparty"
+    );
+}
+
+#[test]
+fn test_gate3_fails_merchant_only() {
+    let obs = ExtractionResult {
+        amount_minor: None,
+        merchant_raw: Some("Amazon".to_string()),
+        extraction_method: "test".to_string(),
+        ..Default::default()
+    };
+    assert!(!MessageProcessor::evaluate_mandatory_field_gate(&obs));
+    assert_eq!(
+        MessageProcessor::gate3_failure_reason(&obs),
+        "gate3_failed:missing_amount"
+    );
 }
 
 /// Doc 30 TASK-GMAIL-002: proves the metadata-first cost saving directly —
