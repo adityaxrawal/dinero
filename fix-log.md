@@ -212,3 +212,15 @@ Append-only. One entry per task processed under the §3 verification protocol (M
 **What I did:** Added `migrations/20260101000020_connected_accounts_email_unique.sql` — a `CREATE UNIQUE INDEX` (not editing the already-committed migration 001, per the same forward-only convention as TASK-DB-003). Checked existing call sites first: `ingestion/polling_tests.rs` inserts one account with `email_address: None` — safe, since SQLite treats multiple `NULL`s in a `UNIQUE` index as distinct, never colliding with each other.
 
 **Verified:** `cargo check` clean. Full `cargo test --lib`: 313 passed, same 4 pre-existing unrelated failures — the new unique index doesn't break any existing test (none insert the same non-null email twice within one database instance).
+
+---
+
+## TASK-DB-005: Migration — Create `instruments` Table
+
+**Found:** Table (migration 001), CRUD (`insert_instrument`/`update_instrument`/`get_instrument`/`get_all_instruments`/`get_paginated_instruments`/`delete_instrument` — soft delete, all parameterized), and `get_or_create_instrument` — the exact `INSERT OR IGNORE` + `SELECT` `resolve_instrument()` pattern Document 12 §10.4a describes, with its own dedicated test coverage (`test_instrument_linked_from_existing_record`, `..._auto_created_for_new_card`, `..._unique_constraint_enforced`) — all already match spec exactly. All doc-named acceptance criteria (insert success, UNIQUE violation, update/delete success/not-found, paginated select works/empty) already covered by `db/tests.rs`'s `test_instruments_crud`, `..._comprehensive`, `..._update_success`, `..._update_not_found`, `..._delete_not_found`, `..._select_not_found`, `..._paginated`.
+
+**Gap found:** Document 18 §4.2/§6 explicitly specify `idx_instruments_type` and `idx_instruments_issuer` — the latter named specifically ("since the UI groups the Instruments screen by bank... a dedicated index on the grouping key avoids relying solely on the composite unique index"). Neither existed anywhere in the migrated schema; only the `UNIQUE(type, issuer_name, masked_identifier)` constraint was ported over from the original `rusqlite_migration` source.
+
+**What I did:** Added `migrations/20260101000021_instruments_indexes.sql` with both indexes.
+
+**Verified:** `cargo check` clean. Full `cargo test --lib`: 313 passed, same 4 pre-existing unrelated failures.
