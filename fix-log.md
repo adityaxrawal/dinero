@@ -356,3 +356,15 @@ Rewrote `reconciliation/cluster.rs`: `create_ambiguity_cluster()` now inserts th
 **What I did:** `migrations/20260101000032_tags_color_hex_rename.sql` (`ALTER TABLE tags RENAME COLUMN color TO color_hex`). Renamed `TagsRow.color` → `color_hex` in `db/tags.rs`'s struct/CRUD, and fixed the one production call site plus `tags_tests.rs` (4 uses) and `db/tests.rs` (2 uses).
 
 **Verified:** `cargo build --lib` clean. Full `cargo test --lib`: 319 passed, same 4 pre-existing unrelated failures. `cargo clippy --all-targets --all-features -- -D warnings`: zero warnings in any touched file.
+
+---
+
+## TASK-DB-016: Migration — Create `pdf_passwords`, `pattern_rules`, `feedback_log` Tables
+
+**Found:** All three tables (migration 006) already matched Document 18 §4.12/§4.13/§4.19 field-for-field. `pattern_rules.rs` already implements the full Layer 1 learning state machine at the exact thresholds Document 30 names (pending→active at 3 successes, active→trusted at 10, →inactive at 3 failures or confidence below 70%), with passing tests for all four transitions. `password.rs` already encrypts with real AES-256-GCM (`encrypt_password`) before ever calling `pdf_passwords::insert` — `test_pdf_passwords_not_in_plaintext` already exists and passes. `feedback_log.rs` already validates `source_pipeline` against the correct 3 values. The `status` CHECK has 5 values (`pending`/`active`/`trusted`/`inactive`/`flagged`) where Document 18 lists only 4 (missing `pending`) and Document 30 lists a different 4 (missing `flagged`) — checked real usage: the code's transition logic genuinely uses all 5 (`flagged` is a real manual-override state reachable from every other state, `pending` is the real initial state before any successes), so the implemented set is the union of both docs done correctly, not a bug to fix.
+
+**Gap found:** none of the 3 indexes Document 18 §6 lists existed: `pdf_passwords(instrument_id, success_count DESC)`, `pattern_rules(bank_name, template_hash, field_name)`, `feedback_log(transaction_id)`.
+
+**What I did:** Added `migrations/20260101000033_pdf_passwords_pattern_rules_feedback_log_indexes.sql` with all three.
+
+**Verified:** `cargo build --lib` clean. Full `cargo test --lib`: 319 passed, same 4 pre-existing unrelated failures.
