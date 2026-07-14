@@ -5,6 +5,7 @@ pub mod test_helpers;
 pub mod network_activity_log;
 pub mod alerts;
 pub mod audit_log;
+pub mod batch_writer;
 #[cfg(test)]
 mod audit_log_tests;
 pub mod categories;
