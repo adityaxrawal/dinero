@@ -4,8 +4,13 @@ use chrono::Utc;
 use rusqlite::Connection;
 use mockito;
 
+/// Superseded as the acceptance-criteria test by
+/// `licensing::state_machine::tests::test_license_state_machine_transitions`
+/// (TASK-AUTH-009), which also asserts illegal transitions are rejected —
+/// this predates that and only exercised the direct SQL/legacy
+/// `transition_to_locked` path. Kept as a basic CRUD-level smoke test.
 #[test]
-fn test_license_state_machine_transitions() {
+fn test_active_grace_locked_basic_sql_transitions() {
     let conn = crate::db::test_helpers::setup_test_db();
 
     let now = Utc::now();
