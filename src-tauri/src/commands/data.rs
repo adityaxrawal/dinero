@@ -591,7 +591,7 @@ pub async fn settings_delete_account(
     // §4.4, an explicit named design rule): the local wipe proceeds
     // *regardless* of whether this call succeeds — a locked-out or offline
     // user's local erasure must never be gated on network/backend availability.
-    if let Err(e) = crate::licensing::commands::license_deactivate(pool.clone()).await {
+    if let Err(e) = crate::licensing::commands::deactivate_license_internal(pool.inner()).await {
         tracing::warn!(
             "License deactivation during reset failed (proceeding with local wipe anyway): {:?}",
             e

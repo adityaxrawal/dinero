@@ -1,5 +1,6 @@
 pub mod args;
 pub mod events;
+pub mod middleware;
 pub mod responses;
 
 use crate::error::AppError;

@@ -329,7 +329,13 @@ pub async fn list_connected_accounts(
 pub async fn auth_google_disconnect(
     account_id: String,
     pool: tauri::State<'_, Pool>,
+    session_state: tauri::State<'_, crate::auth::session::SessionState>,
 ) -> Result<String, String> {
+    // TASK-AUTH-008: requires an active local session (resolved from
+    // Rust-side SessionState, never a caller-supplied argument) before any
+    // Gmail IPC command executes.
+    crate::ipc::middleware::require_active_session(&session_state).map_err(|e| e.to_string())?;
+
     crate::licensing::gate::assert_write_allowed(pool.inner())
         .await
         .map_err(|e| e.to_string())?;
