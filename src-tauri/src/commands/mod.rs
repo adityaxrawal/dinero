@@ -46,6 +46,22 @@ pub async fn auth_google_start(
     .map_err(|e| crate::error::AppError::Auth(e.to_string()))
 }
 
+/// TASK-AUTH-005: revokes the current local session (`revoked_at`, never
+/// deleted) and clears in-memory session state — requires re-auth before any
+/// subsequent Gmail/licensing IPC command that depends on an active session
+/// (enforced broadly by TASK-AUTH-008's tenant-isolation pattern, which this
+/// task's session concept is the foundation for).
+#[tauri::command]
+pub async fn auth_logout(
+    app: tauri::AppHandle,
+    pool: tauri::State<'_, deadpool_sqlite::Pool>,
+) -> Result<(), String> {
+    let state = app.state::<crate::auth::session::SessionState>();
+    crate::auth::session::logout(pool.inner(), state.inner())
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Doc 19 §5.4, Doc 22 §8.2: returns the opt-in 24-word Secure Backup Recovery
 /// Phrase for the current `base_key`, generating it (and marking the user as
 /// opted in) on first call. Marks `local_profile.recovery_phrase_enabled` —
@@ -1912,6 +1928,7 @@ pub fn log_frontend_event(
 pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
     tauri::generate_handler![
         auth_google_start,
+        auth_logout,
         reconciliation_clusters_resolve,
         trigger_reconciliation,
         transactions_create,

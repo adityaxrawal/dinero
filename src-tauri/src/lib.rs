@@ -390,6 +390,24 @@ pub fn run() {
             let pool_clone = pool.clone();
             app.manage(pool);
 
+            // TASK-AUTH-005: ensure an active session row exists for this
+            // device, storing its id only in Tauri's managed in-memory
+            // state (never sent to React, never persisted outside the
+            // `sessions` table itself). Best-effort: a session-establishment
+            // hiccup should not block startup — `current_session_id()`
+            // simply returns `None` until the next successful call.
+            app.manage(crate::auth::session::SessionState::default());
+            {
+                let pool_for_session = pool_clone.clone();
+                let session_state_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let state = session_state_handle.state::<crate::auth::session::SessionState>();
+                    if let Err(e) = crate::auth::session::ensure_active_session(&pool_for_session, state.inner()).await {
+                        tracing::warn!("Failed to establish local session: {}", e);
+                    }
+                });
+            }
+
             // In-memory-only holding area for PDF bytes blocked on Statement
             // Instrument Gate confirmation (C2 fix) — never written to disk.
             let pending_statement_bytes = crate::statements::pending_bytes::PendingStatementBytes::default();
