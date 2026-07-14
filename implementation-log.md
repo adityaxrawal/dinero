@@ -9,3 +9,4 @@ Append-only. One line per task, appended only once the task is genuinely complet
 | TASK-SETUP-003 | SETUP | done | 2026-07-14T00:10:00Z | No code change — Tauri v2's capability model already disables generic shell/fs/http for the WebView. |
 | TASK-SETUP-004 | SETUP | done | 2026-07-14T00:12:00Z | Fixed window config: title, width, minWidth, transparent; added explicit resizable/decorations/center. |
 | TASK-SETUP-005 | SETUP | done | 2026-07-14T00:14:00Z | Dependency set matches spec except sqlx (flagged for TASK-DB-001/002 — existing code uses rusqlite_migration). |
+| TASK-SETUP-006 | SETUP | done | 2026-07-14T00:20:00Z | Implemented from scratch: src-tauri/src/startup.rs RAM check, llm_eligible state, system_warning event. |

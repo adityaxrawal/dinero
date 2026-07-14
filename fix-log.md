@@ -57,3 +57,15 @@ Append-only. One entry per task processed under the §3 verification protocol (M
 **What I did:** No `Cargo.toml` change. `cargo build`/`cargo check` already succeed (verified under TASK-SETUP-001), which is this task's only stated acceptance criterion.
 
 **Verified:** `cargo check` clean (see TASK-SETUP-001/002 verification runs, dependency set unchanged since).
+
+---
+
+## TASK-SETUP-006: Add macOS RAM Check on App Startup
+
+**Found:** No RAM-gating logic existed in the Tauri `setup()` hook at all. `check_system_ram` (in `src-tauri/src/commands/mod.rs`) is an on-demand IPC command returning RAM in GB — unrelated to this task, which requires an automatic startup check that sets an app-wide `llm_eligible` state and emits a warning event. `llm_manager.rs` has the 5-tier model catalog (`min_ram_gb` per tier, matching Document 16 §12.3) but nothing reads actual system RAM against it at launch. The `AppEvent::SystemWarning` enum variant (`"system_warning"`) already existed in `src-tauri/src/ipc/events.rs` but was never emitted anywhere in the codebase.
+
+**Naming note:** Document 30's task text says emit `system.warning` with fields `{ type, available_gb }`; Document 19 §15.1 (the authoritative Tauri Events catalog) names the event `system_warning` with fields `warning_type`/`message`. Followed Document 19 since it is the authoritative source for all Tauri event names and is explicitly self-described as such — added `available_gb` as a third payload field since Document 19 doesn't prohibit additive fields (§19 versioning policy: additive changes are fine).
+
+**What I did:** Implemented from scratch — new module `src-tauri/src/startup.rs`: `compute_llm_eligibility(ram_gb)` (pure, unit-testable), and `check_ram_and_set_llm_eligibility(app)` which reads RAM via `sysinfo::System::new_all().refresh_memory()`, calls `app.manage()` with an `LlmEligibility { eligible, total_ram_gb }` state (eligible iff RAM ≥ 16 GB, matching Document 16 §12.3's auto-eligible tier — the 8–16 GB tier's smaller models remain available only via a manual settings override that TASK-TXN-006 will wire in when it actually consumes this state), and emits `system_warning` if RAM < 8 GB. Wired into `lib.rs`'s `setup()` hook, running before DB init (which can itself exit the process on several error paths) so the RAM check is never skipped. The function is synchronous, infallible, and never panics or blocks.
+
+**Verified:** `cargo check` clean. 5 new unit tests in `startup.rs` (`low_ram_is_not_llm_eligible`, `mid_tier_8_to_16gb_is_not_auto_eligible`, `sixteen_gb_is_eligible`, `high_ram_is_eligible`, `boundary_just_below_sixteen_is_not_eligible`) — all pass (`cargo test --lib startup::`).
