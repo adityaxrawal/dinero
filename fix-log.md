@@ -290,3 +290,17 @@ Append-only. One entry per task processed under the §3 verification protocol (M
 **What I did:** Added `migrations/20260101000026_statement_entries_indexes.sql` with both — using Document 18's exact two-index split rather than Document 30's own combined three-column version.
 
 **Verified:** `cargo check` clean. Full `cargo test --lib`: 319 passed, same 4 pre-existing unrelated failures.
+
+---
+
+## TASK-DB-011: Migration — Create `match_decisions` Table (Insert-Only)
+
+**Found:** Immutability (migration 012's `BEFORE UPDATE ... RAISE(ABORT)` trigger) already in place and already tested (`test_match_decisions_no_update_path` in `db/tests.rs`, plus its own dedicated test in `match_decisions_tests.rs`) — the doc's specific acceptance criterion was already fully satisfied. CRUD (insert/select_by_id/select_by_observation_id) already correct, no `update` function exists at the Rust layer either (matches the insert-only spirit beyond just the DB trigger).
+
+**Gaps found:** no `CHECK` on `decision` or `review_status` despite Document 18 §4.5 specifying both, and no indexes despite Document 18 §6 requiring two. Checked every real usage first (by now a standing practice after TASK-DB-008/009): production code (`reconciliation/audit.rs`) already used the correct 7 `decision` values via its own `DecisionType` enum — but used `"unreviewed"`/`"needs_review"` for `review_status` instead of Document 18's `"not_required"`/`"pending_review"`. Confirmed zero other code reads those exact strings anywhere before changing them — lower risk than TASK-DB-008's `historical_scan.rs` case (which had genuine design ambiguity); applied the same "fix it now" resolution you already approved there rather than re-asking, documenting the reasoning fully here for review. Also found and fixed test-fixture placeholder values the new constraints would otherwise break: `match_decisions_tests.rs`/`db/tests.rs` used `'match'`/`'pending'` (neither valid); `commands/data_tests.rs`/`phase8_telemetry_tests.rs` used `'AutoMatchedExact'`/`'AmbiguousPending'`/`'exact_match'`/`'ambiguous'` in decision-distribution aggregation tests that assert on the literal string but don't care what it means — updated both the inserted values and their assertions to Document 18's real vocabulary.
+
+**Not fixed, flagged as accepted:** Document 18 §4.5 names the FK columns `incoming_observation_id`/`matched_canonical_transaction_id`; the actual schema and every Rust call site instead use `observation_id`/`matched_transaction_id`, consistently, throughout. Renaming now would touch many already-correct call sites for a purely cosmetic difference — left as-is, matching the same class of decision as TASK-DB-001's Keychain service-name naming.
+
+**What I did:** Added `migrations/20260101000027_match_decisions_checks_and_indexes.sql` (table recreate preserving the FK/RESTRICT semantics from migration 013 and the immutability trigger, adding both CHECKs) plus the two indexes on `observation_id`/`matched_transaction_id`.
+
+**Verified:** `cargo check` clean. Full `cargo test --lib`: 319 passed, same 4 pre-existing unrelated failures (confirmed via the full uncompressed log, not just the summary count).

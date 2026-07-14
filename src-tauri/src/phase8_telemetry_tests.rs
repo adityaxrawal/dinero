@@ -160,9 +160,9 @@ async fn test_performance_metrics_tracking() {
     }).await.unwrap();
 
     conn.interact(|c| {
-        c.execute("INSERT INTO match_decisions (id, decision) VALUES ('md1', 'exact_match')", []).unwrap();
-        c.execute("INSERT INTO match_decisions (id, decision) VALUES ('md2', 'exact_match')", []).unwrap();
-        c.execute("INSERT INTO match_decisions (id, decision) VALUES ('md3', 'ambiguous')", []).unwrap();
+        c.execute("INSERT INTO match_decisions (id, decision) VALUES ('md1', 'auto_matched_exact')", []).unwrap();
+        c.execute("INSERT INTO match_decisions (id, decision) VALUES ('md2', 'auto_matched_exact')", []).unwrap();
+        c.execute("INSERT INTO match_decisions (id, decision) VALUES ('md3', 'ambiguous_pending')", []).unwrap();
     }).await.unwrap();
 
     let metrics = conn.interact(|c| do_get_debug_metrics(c)).await.unwrap().unwrap();
@@ -172,6 +172,6 @@ async fn test_performance_metrics_tracking() {
     assert_eq!(metrics.extraction_layer_distribution.get("llm"), Some(&1));
     assert_eq!(metrics.extraction_layer_distribution.get("bank_templates"), Some(&2));
 
-    assert_eq!(metrics.reconciliation_decision_distribution.get("exact_match"), Some(&2));
-    assert_eq!(metrics.reconciliation_decision_distribution.get("ambiguous"), Some(&1));
+    assert_eq!(metrics.reconciliation_decision_distribution.get("auto_matched_exact"), Some(&2));
+    assert_eq!(metrics.reconciliation_decision_distribution.get("ambiguous_pending"), Some(&1));
 }

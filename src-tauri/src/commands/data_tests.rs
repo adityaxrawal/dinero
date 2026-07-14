@@ -44,15 +44,15 @@ mod tests {
 
         // Insert dummy match decisions to test reconciliation_decision_distribution
         conn.execute(
-            "INSERT INTO match_decisions (id, decision) VALUES ('dec1', 'AutoMatchedExact')",
+            "INSERT INTO match_decisions (id, decision) VALUES ('dec1', 'auto_matched_exact')",
             []
         ).unwrap();
         conn.execute(
-            "INSERT INTO match_decisions (id, decision) VALUES ('dec2', 'AutoMatchedExact')",
+            "INSERT INTO match_decisions (id, decision) VALUES ('dec2', 'auto_matched_exact')",
             []
         ).unwrap();
         conn.execute(
-            "INSERT INTO match_decisions (id, decision) VALUES ('dec3', 'AmbiguousPending')",
+            "INSERT INTO match_decisions (id, decision) VALUES ('dec3', 'ambiguous_pending')",
             []
         ).unwrap();
 
@@ -66,7 +66,7 @@ mod tests {
         assert_eq!(*metrics.extraction_layer_distribution.get("regex").unwrap(), 1);
         
         // check reconciliation_decision_distribution
-        assert_eq!(*metrics.reconciliation_decision_distribution.get("AutoMatchedExact").unwrap(), 2);
-        assert_eq!(*metrics.reconciliation_decision_distribution.get("AmbiguousPending").unwrap(), 1);
+        assert_eq!(*metrics.reconciliation_decision_distribution.get("auto_matched_exact").unwrap(), 2);
+        assert_eq!(*metrics.reconciliation_decision_distribution.get("ambiguous_pending").unwrap(), 1);
     }
 }

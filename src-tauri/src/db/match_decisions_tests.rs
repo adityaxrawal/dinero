@@ -24,10 +24,10 @@ fn test_match_decisions_no_update_path() -> Result<()> {
         id: id.clone(),
         observation_id: Some("obs_123".to_string()),
         matched_transaction_id: Some("tx_456".to_string()),
-        decision: Some("match".to_string()),
+        decision: Some("auto_matched_exact".to_string()),
         score: Some(0.95),
         rules_triggered_json: Some("[]".to_string()),
-        review_status: Some("pending".to_string()),
+        review_status: Some("not_required".to_string()),
         reviewed_by: None,
         created_at: Some(Utc::now().naive_utc()),
     };
@@ -37,7 +37,7 @@ fn test_match_decisions_no_update_path() -> Result<()> {
 
     // Get
     let fetched = match_decisions::select_by_id(&conn, &id)?.expect("Decision should exist");
-    assert_eq!(fetched.decision.as_deref(), Some("match"));
+    assert_eq!(fetched.decision.as_deref(), Some("auto_matched_exact"));
     assert_eq!(fetched.score, Some(0.95));
 
     // Immutability test (Attempt Update)

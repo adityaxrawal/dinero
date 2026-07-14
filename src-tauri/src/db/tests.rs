@@ -1505,7 +1505,7 @@ mod tests {
             decision: Some("auto_matched_exact".into()),
             score: Some(0.95),
             rules_triggered_json: Some("{\"rule\": \"exact_amount\"}".into()),
-            review_status: Some("pending".into()),
+            review_status: Some("not_required".into()),
             reviewed_by: Some("system".into()),
             created_at: None,
         };
