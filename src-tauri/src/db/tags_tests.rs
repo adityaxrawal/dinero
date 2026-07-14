@@ -18,7 +18,7 @@ mod tests {
         let tag = TagsRow {
             id: "tag_1".to_string(),
             name: "Groceries".to_string(),
-            color: Some("#ff0000".to_string()),
+            color_hex: Some("#ff0000".to_string()),
             created_at: Some(Utc::now().naive_utc()),
         };
 
@@ -28,25 +28,25 @@ mod tests {
         // 2. Select By ID
         let fetched = select_by_id(&conn, "tag_1").unwrap().unwrap();
         assert_eq!(fetched.name, "Groceries");
-        assert_eq!(fetched.color.unwrap(), "#ff0000");
+        assert_eq!(fetched.color_hex.unwrap(), "#ff0000");
 
         // 3. Update
         let updated_tag = TagsRow {
             name: "Supermarket".to_string(),
-            color: Some("#00ff00".to_string()),
+            color_hex: Some("#00ff00".to_string()),
             ..tag.clone()
         };
         update(&conn, &updated_tag).expect("Failed to update tag");
 
         let fetched_updated = select_by_id(&conn, "tag_1").unwrap().unwrap();
         assert_eq!(fetched_updated.name, "Supermarket");
-        assert_eq!(fetched_updated.color.unwrap(), "#00ff00");
+        assert_eq!(fetched_updated.color_hex.unwrap(), "#00ff00");
 
         // 4. Select All
         let tag2 = TagsRow {
             id: "tag_2".to_string(),
             name: "Apple".to_string(),
-            color: None,
+            color_hex: None,
             created_at: Some(Utc::now().naive_utc()),
         };
         insert(&conn, &tag2).expect("Failed to insert tag2");
@@ -84,7 +84,7 @@ mod tests {
         let tag = TagsRow {
             id: "tag_1".to_string(),
             name: "Important".to_string(),
-            color: None,
+            color_hex: None,
             created_at: Some(Utc::now().naive_utc()),
         };
         insert(&conn, &tag).unwrap();

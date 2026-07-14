@@ -1,0 +1,20 @@
+-- TASK-DB-015: `tags` already matched Document 18 §4.9a/§4.9b's structure
+-- and behavior almost exactly (full CRUD, tag-assignment/removal already
+-- tested, transaction_tags already has ON DELETE CASCADE/RESTRICT from
+-- migration 013). The one real field-level deviation: Document 18 names the
+-- color field `color_hex`; the existing table calls it `color`. Checked
+-- every real usage first: only one production call site
+-- (commands/mod.rs's tag-resolution logic), always constructed with
+-- `color: None` -- a mechanical, zero-risk rename.
+--
+-- Not changed, flagged instead: Document 18 gives `transaction_tags` a
+-- surrogate `id` primary key (plus implied uniqueness on
+-- (transaction_id, tag_id)); the existing table uses a composite
+-- PRIMARY KEY (transaction_id, tag_id) directly, from migration 013's FK
+-- rewrite. Both enforce the identical invariant (no duplicate tag
+-- assignment per transaction) and support the same queries -- a
+-- structural-but-not-functional difference, same class of decision as
+-- TASK-DB-001's Keychain service naming and TASK-DB-011's match_decisions
+-- FK column naming. Left as-is rather than a schema change with no
+-- behavioral benefit.
+ALTER TABLE tags RENAME COLUMN color TO color_hex;

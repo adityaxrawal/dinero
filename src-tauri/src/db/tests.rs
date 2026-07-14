@@ -373,7 +373,7 @@ mod tests {
         let tag = TagsRow {
             id: "tag_1".into(),
             name: "Vacation".into(),
-            color: None,
+            color_hex: None,
             created_at: None,
         };
         tags::insert(&conn, &tag).unwrap();
@@ -1866,7 +1866,7 @@ mod tests {
         let tag = crate::db::tags::TagsRow {
             id: "tag_fk_test".into(),
             name: "Test Tag".into(),
-            color: None,
+            color_hex: None,
             created_at: None,
         };
         crate::db::tags::insert(&conn, &tag).unwrap();

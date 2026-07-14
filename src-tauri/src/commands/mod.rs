@@ -1616,7 +1616,7 @@ pub async fn transactions_update(
                         &crate::db::tags::TagsRow {
                             id: new_id.clone(),
                             name: trimmed.to_string(),
-                            color: None,
+                            color_hex: None,
                             created_at: Some(chrono::Utc::now().naive_utc()),
                         },
                     )
