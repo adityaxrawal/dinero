@@ -330,7 +330,9 @@ async fn run_scan_batches<R: tauri::Runtime>(
                                     msg_id
                                 );
                             } else {
-                                for (att_id, filename) in &extracted.pdf_attachments {
+                                for att in &extracted.pdf_attachments {
+                                    let att_id = &att.attachment_id;
+                                    let filename = &att.filename;
                                     match client.fetch_attachment(&msg_id, att_id).await {
                                         Ok(pdf_bytes) => {
                                             let job = crate::ingestion::queues::StatementJob {
