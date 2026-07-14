@@ -36,6 +36,21 @@ struct HistoryMessage {
     id: String,
 }
 
+/// Doubles a backoff duration, capped at 60s (Doc 30 TASK-GMAIL-001: "1s initial, 60s max, jittered").
+pub(crate) fn next_backoff(current: Duration) -> Duration {
+    current.saturating_mul(2).min(Duration::from_secs(60))
+}
+
+/// Applies +/-15% jitter to a backoff duration so concurrent retries don't synchronize.
+fn jittered(d: Duration) -> Duration {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|t| t.subsec_nanos())
+        .unwrap_or(0);
+    let factor = 0.85 + (nanos as f64 / 1_000_000_000.0) * 0.30; // in [0.85, 1.15]
+    Duration::from_secs_f64((d.as_secs_f64() * factor).max(0.0)).min(Duration::from_secs(60))
+}
+
 /// Background task that polls Gmail for new history events every 60 seconds.
 pub async fn start_polling_loop<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
@@ -156,7 +171,9 @@ async fn poll_single_account<R: tauri::Runtime>(
         }
 
         let mut retry_count = 0;
-        let max_retries = 3;
+        // Doc 30 TASK-GMAIL-001: backoff must reach and hold a 60s cap before
+        // giving up for this cycle — 8 retries covers 1,2,4,8,16,32,60,60.
+        let max_retries = 8;
         let mut backoff = Duration::from_secs(1);
 
         let response = loop {
@@ -217,8 +234,8 @@ async fn poll_single_account<R: tauri::Runtime>(
                             "Rate limited or server error, retrying in {}s...",
                             backoff.as_secs()
                         );
-                        sleep(backoff).await;
-                        backoff *= 2;
+                        sleep(jittered(backoff)).await;
+                        backoff = next_backoff(backoff);
                     } else {
                         return Err(anyhow::anyhow!("Unexpected response status: {}", status));
                     }
@@ -233,8 +250,8 @@ async fn poll_single_account<R: tauri::Runtime>(
                         backoff.as_secs(),
                         e
                     );
-                    sleep(backoff).await;
-                    backoff *= 2;
+                    sleep(jittered(backoff)).await;
+                    backoff = next_backoff(backoff);
                 }
             }
         }?;
