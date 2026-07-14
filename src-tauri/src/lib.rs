@@ -156,7 +156,10 @@ pub fn run() {
             crate::crash_reporter::init(app_dir.clone());
             app.manage(crate::feedback::FeedbackManager::new(app_dir.clone()));
 
-            let db_path = app_dir.join("data.db");
+            // TASK-DB-001: Document 18 §7.2 names the file `finance.db`
+            // (was `data.db` — a drift already visible in the mismatched
+            // `finance.db.bak.*` backup naming migrations.rs already used).
+            let db_path = app_dir.join("finance.db");
 
             // Initialize SQLCipher database and run migrations.
             // Handle key-mismatch separately so the user sees a clear dialog
