@@ -127,3 +127,23 @@ Append-only. One entry per task processed under the §3 verification protocol (M
 **What I did:** Implemented `with_panic_boundary()` in `src-tauri/src/ipc/mod.rs` (new file content — 3 unit tests: ok-passthrough, err-passthrough, actual-panic-caught-and-mapped). **Not wired into any of the ~53 existing command handlers** — retrofitting every already-built command (`commands/mod.rs`, `licensing/commands.rs`, etc.) is a wide, invasive change spanning most of Area 8's already-built IPC surface; flagged for TASK-API-001 ("IPC Request Validation Middleware") as the natural integration point, since a DB pool is already in scope there for the `audit_log` write too. Created `src/types/ipc.ts` (canonical `AppError`, plus `IpcResponse<T>` mirroring the Rust `Payload<T>`); updated `src/lib/ipc.ts` to import `AppError` from there instead of its own private copy, and exported its existing `invokeCommand()` helper so the new hook can reuse it rather than duplicate the error-normalization logic. Added `src/hooks/useIpcInvoke.ts` and `src/hooks/useIpcListen.ts` — both additive; existing call sites are not migrated to use them (out of scope, would touch several unrelated component files for a non-functional refactor).
 
 **Verified:** `cargo check` clean; 3 new Rust unit tests pass; full `cargo test --lib` still shows 312 passed (up from 309 — the 3 new ones) against the same 4 pre-existing, unrelated failures. `pnpm typecheck` and `pnpm build` both pass clean with the new files and the `lib/ipc.ts` changes.
+
+---
+
+## TASK-SETUP-014: Create PR Template, Issue Templates, and Commit Convention
+
+**Found:** `.github/PULL_REQUEST_TEMPLATE.md` and `.github/ISSUE_TEMPLATE/bug_report.md` already exist and already cover every item Document 30 requires: Phase/Task reference, network-destination-change disclosure, financial-data-exposure checkbox, DPDP privacy-impact section, and test-coverage confirmation — plus a bug-report template with explicit guidance not to paste raw financial data and to use the sanitized diagnostic export instead.
+
+**What I did:** No change — matches spec exactly, good quality.
+
+**Verified:** Read both files in full; all five required checklist items present in the PR template.
+
+---
+
+## TASK-SETUP-015: Write Local Development Setup README
+
+**Found:** `README.md` existed but covered only a fraction of spec: no macOS version floor, `Node.js: Version 22 recommended` (imprecise vs. spec's `≥20` floor, and inconsistent with the CI pin of Node 20 in `react.yml`), no Xcode CLT step, no Google OAuth dev-credential setup, no note that Keychain prompts are expected, no DB-reset instructions, and no privacy-invariants section. `docs/dev-setup.md` (the second file the task names) didn't exist at all.
+
+**What I did:** Created `docs/dev-setup.md` covering: macOS ≥13 prerequisite, Node ≥20/pnpm 9 (matching the CI pin), Xcode CLT, the Keychain-prompt-is-expected note, a full Google OAuth dev-credential walkthrough (found via reading `src-tauri/src/ingestion/oauth.rs` that `GOOGLE_CLIENT_ID` is a **compile-time** `option_env!` constant, not a runtime env var — documented that distinction explicitly since it's easy to get wrong), the exact DB-reset command, and a "Privacy Invariants" section enumerating the five allowed network channels and what must never cross them (Document 15 §2, Document 01 §10.4). Trimmed and corrected `README.md`'s prerequisites to match (macOS/Node/pnpm versions, Xcode CLT), added the Keychain-prompt note, and linked to `docs/dev-setup.md` for the detailed sections rather than duplicating them.
+
+**Verified:** Read `src-tauri/src/ingestion/oauth.rs` to confirm the `GOOGLE_CLIENT_ID` compile-time-constant behavior before documenting it (didn't want to write a guessed instruction for a real onboarding step). Documentation-only task; no build/test surface to verify beyond that.
