@@ -330,6 +330,11 @@ async fn upload_one_statement(
             "Duplicate billing cycle detected from filename: '{}'",
             filename
         );
+        // Doc 30 TASK-STMT-002: "Every skip is logged to audit_log
+        // (statement_duplicate_skipped) with the detected period for user
+        // transparency."
+        let period = crate::statements::duplicate_check::extract_billing_period_from_filename(&filename);
+        log_duplicate_skipped_audit(&filename, period.as_ref(), pool_ref).await;
         events::emit(
             events::DUPLICATE_REJECTED,
             serde_json::json!({ "reason": "duplicate_billing_cycle_filename", "filename": filename }),
@@ -591,6 +596,14 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
                 start,
                 end
             );
+            // Doc 30 TASK-STMT-002: audit trail for the post-metadata-extraction
+            // duplicate-skip path too, not just the filename-heuristic one.
+            log_duplicate_skipped_audit(
+                _filename,
+                Some(&(start.clone(), end.clone())),
+                pool,
+            )
+            .await;
             delete_orphaned_queued_row(stmt_id.as_deref(), pool).await;
             return Err(anyhow::anyhow!(
                 "duplicate_billing_cycle: cycle {} → {} already imported for instrument {}",
@@ -734,6 +747,42 @@ async fn create_awaiting_password_row(
         statement_id
     );
     Ok(())
+}
+
+/// Doc 30 TASK-STMT-002: "Every skip is logged to audit_log
+/// (statement_duplicate_skipped) with the detected period for user
+/// transparency." Best-effort — a logging failure must never fail the
+/// (already-decided) duplicate rejection itself.
+async fn log_duplicate_skipped_audit(
+    filename: &str,
+    period: Option<&(String, String)>,
+    pool: &deadpool_sqlite::Pool,
+) {
+    let after_json = serde_json::json!({
+        "filename": filename,
+        "billing_period_start": period.map(|(s, _)| s.clone()),
+        "billing_period_end": period.map(|(_, e)| e.clone()),
+    });
+    if let Ok(conn) = pool.get().await {
+        let _ = conn
+            .interact(move |c| {
+                crate::db::audit_log::insert(
+                    c,
+                    &crate::db::audit_log::AuditLogRow {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        actor_type: Some("system".to_string()),
+                        actor_id: None,
+                        action: Some("statement_duplicate_skipped".to_string()),
+                        resource_type: Some("statement".to_string()),
+                        resource_id: None,
+                        before_json: None,
+                        after_json: Some(after_json),
+                        created_at: chrono::Utc::now(),
+                    },
+                )
+            })
+            .await;
+    }
 }
 
 /// Best-effort cleanup for the queued `statements` row `insert_queued()` wrote
@@ -2124,5 +2173,41 @@ mod tests {
             "SQLite database file must not contain raw PDF magic bytes — \
              this would indicate PDF bytes were written to disk"
         );
+    }
+
+    /// Doc 30 TASK-STMT-002: "Every skip is logged to audit_log
+    /// (statement_duplicate_skipped) with the detected period for user
+    /// transparency."
+    #[tokio::test]
+    async fn test_duplicate_skip_writes_audit_log_with_period() {
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+
+        super::log_duplicate_skipped_audit(
+            "HDFC_Jan_2026.pdf",
+            Some(&("2026-01-01".to_string(), "2026-01-31".to_string())),
+            &pool,
+        )
+        .await;
+
+        let conn = pool.get().await.unwrap();
+        let (action, after_json): (String, String) = conn
+            .interact(|c| {
+                c.query_row(
+                    "SELECT action, after_json FROM audit_log WHERE action = 'statement_duplicate_skipped'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(action, "statement_duplicate_skipped");
+        let parsed: serde_json::Value = serde_json::from_str(&after_json).unwrap();
+        assert_eq!(parsed["billing_period_start"], "2026-01-01");
+        assert_eq!(parsed["billing_period_end"], "2026-01-31");
+        assert_eq!(parsed["filename"], "HDFC_Jan_2026.pdf");
     }
 }

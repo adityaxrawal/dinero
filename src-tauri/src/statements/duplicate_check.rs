@@ -417,6 +417,39 @@ mod tests {
         );
     }
 
+    // ── test_ambiguous_filename_defers_check (Doc 30 TASK-STMT-002) ──────────
+    // A dedicated test for the deferral behavior alone, distinct from
+    // test_duplicate_cycle_skipped_after_metadata_extraction's fuller
+    // filename-then-post-metadata round trip.
+
+    #[tokio::test]
+    async fn test_ambiguous_filename_defers_check() {
+        let pool = setup_db().await;
+
+        let conn = pool.get().await.unwrap();
+        conn.interact(|c| {
+            c.execute(
+                "INSERT INTO instruments (id, type, issuer_name, masked_identifier) \
+                 VALUES ('inst_ambig', 'credit_card', 'HDFC', '2222')",
+                [],
+            )
+            .unwrap();
+        })
+        .await
+        .unwrap();
+
+        // "statement.pdf" has no year/month pattern at all — the heuristic
+        // must yield None rather than guessing, deferring to Doc 30
+        // TASK-STMT-004's real metadata extraction.
+        let result = check_filename_billing_cycle("statement.pdf", "inst_ambig", &pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            result, None,
+            "an ambiguous filename must defer, not silently pick a period"
+        );
+    }
+
     // ── test_duplicate_cycle_skipped_from_filename (Doc 10 §5.2) ────────────
 
     #[tokio::test]
