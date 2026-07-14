@@ -913,12 +913,12 @@ fn test_merchant_spike_alert() {
 
     // Set up merchant and alias so run_post_processing maps the new transaction correctly
     conn.execute(
-        "INSERT INTO merchants (id, name, category_id) VALUES ('m_regular', 'Regular Shop', NULL)",
+        "INSERT INTO merchants (id, name, normalized_name) VALUES ('m_regular', 'Regular Shop', 'REGULAR SHOP')",
         [],
     )
     .unwrap();
     conn.execute(
-        "INSERT INTO merchant_aliases (merchant_id, alias) VALUES ('m_regular', 'Regular Shop')",
+        "INSERT INTO merchant_aliases (id, merchant_entity_id, alias_raw, alias_normalized) VALUES ('ma_regular', 'm_regular', 'Regular Shop', 'REGULAR SHOP')",
         [],
     )
     .unwrap();
@@ -973,12 +973,12 @@ fn test_anomaly_detection_logic() {
     let conn = setup_test_db();
 
     conn.execute(
-        "INSERT INTO merchants (id, name, category_id) VALUES ('m_cafe', 'Corner Cafe', NULL)",
+        "INSERT INTO merchants (id, name, normalized_name) VALUES ('m_cafe', 'Corner Cafe', 'CORNER CAFE')",
         [],
     )
     .unwrap();
     conn.execute(
-        "INSERT INTO merchant_aliases (merchant_id, alias) VALUES ('m_cafe', 'Corner Cafe')",
+        "INSERT INTO merchant_aliases (id, merchant_entity_id, alias_raw, alias_normalized) VALUES ('ma_cafe', 'm_cafe', 'Corner Cafe', 'CORNER CAFE')",
         [],
     )
     .unwrap();

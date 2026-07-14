@@ -349,9 +349,8 @@ mod tests {
         let merchant = MerchantsRow {
             id: "merch_1".into(),
             name: "McDonalds".into(),
-            category_id: Some("cat_1".into()),
-            logo_url: None,
-            website: None,
+            normalized_name: "MCDONALDS".into(),
+            source: "system".into(),
             is_deleted: false,
             created_at: None,
             updated_at: None,
@@ -361,8 +360,12 @@ mod tests {
         // merchant aliases
         let alias = MerchantAliasesRow {
             id: "alias_1".into(),
-            merchant_id: Some("merch_1".into()),
-            alias: "mcd".into(),
+            merchant_entity_id: "merch_1".into(),
+            alias_raw: "mcd".into(),
+            alias_normalized: "MCD".into(),
+            country_code: None,
+            issuer_name: None,
+            confidence: 1.0,
             created_at: None,
         };
         merchants::insert_alias(&conn, &alias).unwrap();
@@ -1729,9 +1732,8 @@ mod tests {
         let merchant = MerchantsRow {
             id: "merch_test".into(),
             name: "Test Merchant".into(),
-            category_id: None,
-            logo_url: None,
-            website: None,
+            normalized_name: "TEST MERCHANT".into(),
+            source: "system".into(),
             is_deleted: false,
             created_at: None,
             updated_at: None,
@@ -1740,8 +1742,12 @@ mod tests {
 
         let alias = MerchantAliasesRow {
             id: "alias_test".into(),
-            merchant_id: Some("merch_test".into()),
-            alias: "TEST M".into(),
+            merchant_entity_id: "merch_test".into(),
+            alias_raw: "Test M".into(),
+            alias_normalized: "TEST M".into(),
+            country_code: None,
+            issuer_name: None,
+            confidence: 1.0,
             created_at: None,
         };
         merchants::insert_alias(&conn, &alias).unwrap();
