@@ -74,7 +74,13 @@ pub async fn start_polling_loop<R: tauri::Runtime>(
 
                 let pool_clone = pool.clone();
                 let app_clone = app.clone();
-                if let Err(e) = poll_all_accounts(&app_clone, &pool_clone).await {
+                if let Err(e) = poll_all_accounts(
+                    &app_clone,
+                    &pool_clone,
+                    crate::ingestion::gmail_client::GMAIL_API_BASE_URL,
+                )
+                .await
+                {
                     tracing::error!("Error during polling cycle: {}", e);
                 }
             }
@@ -82,9 +88,14 @@ pub async fn start_polling_loop<R: tauri::Runtime>(
     }
 }
 
-async fn poll_all_accounts<R: tauri::Runtime>(
+/// Doc 30 TASK-GMAIL-009: iterates every active connected account
+/// independently — each account's checkpoint is keyed on its own `id`
+/// (`poll_single_account`), and one account's failure (caught here, not
+/// propagated) never blocks the next account in the loop from being polled.
+pub(crate) async fn poll_all_accounts<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     pool: &Pool,
+    base_url: &str,
 ) -> anyhow::Result<()> {
     let accounts: Vec<ConnectedAccountsRow> = {
         let conn = pool.get().await?;
@@ -99,7 +110,7 @@ async fn poll_all_accounts<R: tauri::Runtime>(
     });
 
     for account in active_accounts {
-        if let Err(e) = poll_single_account(app, pool, &account).await {
+        if let Err(e) = poll_single_account(app, pool, &account, base_url).await {
             tracing::error!("Failed to poll account {}: {}", account.id, e);
         }
     }
@@ -107,10 +118,11 @@ async fn poll_all_accounts<R: tauri::Runtime>(
     Ok(())
 }
 
-async fn poll_single_account<R: tauri::Runtime>(
+pub(crate) async fn poll_single_account<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     pool: &Pool,
     account: &ConnectedAccountsRow,
+    base_url: &str,
 ) -> anyhow::Result<()> {
     // 1. Fetch valid token
     let token = match get_valid_access_token(app, pool, &account.id).await {
@@ -155,7 +167,11 @@ async fn poll_single_account<R: tauri::Runtime>(
     let mut token = token;
     let mut refreshed_after_401 = false;
 
-    let mut gmail_client = crate::ingestion::gmail_client::GmailClient::new(token.clone(), pool.clone());
+    let mut gmail_client = crate::ingestion::gmail_client::GmailClient::new_with_base_url(
+        token.clone(),
+        pool.clone(),
+        base_url.to_string(),
+    );
     // Doc 01 §10.4 (BG-02): the history-poll loop below built its own bare
     // client, invisible to the Network Activity audit trail — routed through
     // NetworkClient like every other Gmail call in this module.
@@ -163,8 +179,8 @@ async fn poll_single_account<R: tauri::Runtime>(
 
     loop {
         let mut url = format!(
-            "https://gmail.googleapis.com/gmail/v1/users/me/history?startHistoryId={}",
-            current_history_id_str
+            "{}/gmail/v1/users/me/history?startHistoryId={}",
+            base_url, current_history_id_str
         );
         if let Some(token) = &page_token {
             url.push_str(&format!("&pageToken={}", token));
@@ -209,9 +225,10 @@ async fn poll_single_account<R: tauri::Runtime>(
                         match crate::ingestion::oauth::force_refresh_access_token(app, pool, &account.id).await {
                             Ok(new_token) => {
                                 token = new_token;
-                                gmail_client = crate::ingestion::gmail_client::GmailClient::new(
+                                gmail_client = crate::ingestion::gmail_client::GmailClient::new_with_base_url(
                                     token.clone(),
                                     pool.clone(),
+                                    base_url.to_string(),
                                 );
                             }
                             Err(e) => {
