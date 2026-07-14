@@ -329,10 +329,16 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
     conn.interact(move |c| {
         // Ensure default local_profile exists (ID=1)
         let _ = c.execute(
+            // TASK-DB-003: timezone/limit_thresholds defaults corrected to
+            // Document 30's spec ('Asia/Kolkata', [80,90,100]) — were 'UTC'
+            // and '[]', contradicting Document 18 §5.3's IST-normalization
+            // requirement ("All month-boundary calculations rely on IST
+            // normalization to correctly align with Indian banking cycles")
+            // and the 80/90/100% threshold default Document 18 §4.1 states.
             "INSERT OR IGNORE INTO local_profile (
                 id, primary_email, display_name, timezone, spending_limit_monthly,
                 limit_thresholds, recovery_phrase_enabled
-             ) VALUES (1, NULL, 'Default User', 'UTC', 5000.0, '[]', 0)",
+             ) VALUES (1, NULL, 'Default User', 'Asia/Kolkata', 5000.0, '[80,90,100]', 0)",
             [],
         );
 
