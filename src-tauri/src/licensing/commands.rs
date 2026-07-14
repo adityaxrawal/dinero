@@ -139,7 +139,20 @@ pub async fn license_activate(
             billing_interval: billing_interval.clone(),
         })
         .await
-        .map_err(|e| AppError::Network(e.to_string()))?;
+        .map_err(|e| {
+            // Document 30 TASK-AUTH-011: DEVICE_ALREADY_BOUND must be
+            // surfaced clearly, with guidance to deactivate elsewhere first
+            // — not a generic network-error string.
+            if e.to_string() == "DEVICE_ALREADY_BOUND" {
+                AppError::Auth(
+                    "This license is already active on another Mac. Deactivate it there first \
+                     (Settings → License → Deactivate), then activate here."
+                        .to_string(),
+                )
+            } else {
+                AppError::Network(e.to_string())
+            }
+        })?;
 
     // Doc 22 §10.3: never trust an unverified JWT, even on HTTP success.
     let claims = verify_license_jwt(&response.jwt)
@@ -233,10 +246,17 @@ pub async fn deactivate_license_internal(pool: &deadpool_sqlite::Pool) -> Result
 
 /// Doc 19 §14.4 — the "Refresh License" manual action (also what C11's fixed
 /// background loop calls on its own cadence).
+///
+/// TASK-AUTH-008/011: gated behind an active session for the same reason as
+/// `license_activate`/`license_deactivate` — all three are "licensing IPC
+/// commands" this task's text groups together.
 #[tauri::command]
 pub async fn license_refresh(
     pool: State<'_, deadpool_sqlite::Pool>,
+    session_state: State<'_, crate::auth::session::SessionState>,
 ) -> Result<LicenseRefreshResponse, AppError> {
+    crate::ipc::middleware::require_active_session(&session_state)?;
+
     let device_id = get_device_id().map_err(|e| AppError::Auth(e.to_string()))?;
 
     let client = LicensingClient::new(LICENSING_BASE_URL.to_string(), pool.inner().clone());

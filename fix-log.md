@@ -553,3 +553,15 @@ Grouping these two: fixing AUTH-002's disclosure content properly required decid
 **What I did:** Added the acceptance-named `test_licensing_backend_receives_no_financial_data` for the *validate* call specifically (the existing test under this name in `phase9_security_tests.rs` only covers the *activate* endpoint) — mocks `/api/license/validate`, asserts the request body is exactly `{"device_id": "..."}`, nothing else.
 
 **Verified:** `cargo build --lib` clean. 1 new test. Full `cargo test --lib`: 350 passed (349 + 1 new), same 4 pre-existing unrelated failures. `cargo clippy --all-targets --all-features -- -D warnings`: zero new warnings.
+
+---
+
+## TASK-AUTH-011: Implement License Activate/Deactivate/Validate IPC Commands
+
+**Found:** `license_activate`/`license_deactivate`/`license_refresh` (the "`license_validate()`/`license_refresh`" pair Document 30 describes as one concept — confirmed `license_refresh` already calls `client.validate()`, verifies the JWT, and updates state, exactly matching the spec) all already existed, already correctly bound `device_id`, already verified JWT signatures before trusting responses, and (from TASK-AUTH-008, done earlier this session) already required an active session — except `license_refresh`, which didn't have that gate wired in; added it for consistency, since Document 30's own text groups all three commands together as sharing the same constraints.
+
+**Real gap found:** `DEVICE_ALREADY_BOUND` (Document 19 §14.2/§4's documented activation error code) was never surfaced distinctly — `client.rs`'s `activate()` only called `res.error_for_status_ref()`, which inspects the HTTP status and discards the response body entirely, so the specific error code the backend actually returns was thrown away in favor of a generic "request failed" message. No "guidance to deactivate elsewhere first" could ever reach the user, regardless of what the backend actually said.
+
+**What I did:** `activate()` now checks for a non-success status *before* discarding the body, attempts to parse it against Document 19 §3.4's `{code, message, details}` error shape, and propagates the `code` value directly if present. `commands.rs`'s `license_activate` catches the specific `"DEVICE_ALREADY_BOUND"` string and returns a clear, actionable message ("Deactivate it there first (Settings → License → Deactivate), then activate here.") instead of a generic network error.
+
+**Verified:** `cargo build --lib` clean. Added `activate_surfaces_device_already_bound_distinctly` (mocks a 409 response with the real error shape, asserts the propagated error is exactly `"DEVICE_ALREADY_BOUND"`, not a generic wrapped string). Full `cargo test --lib`: 351 passed (350 + 1 new), same 4 pre-existing unrelated failures. `cargo clippy --all-targets --all-features -- -D warnings`: zero new warnings.

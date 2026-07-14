@@ -14,10 +14,20 @@ pub struct ActivateRequest {
     pub billing_interval: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct LicenseResponse {
     pub jwt: String,
     pub status: String,
+}
+
+/// Document 19 §3.4/§4's error response shape (`{code, message, details}`),
+/// used by the Licensing Backend's HTTP error responses same as the local
+/// IPC error contract.
+#[derive(Deserialize)]
+struct LicensingErrorResponse {
+    code: String,
+    #[allow(dead_code)]
+    message: Option<String>,
 }
 
 /// Doc 19 §14.2/§14.4: post-activation revalidation is keyed on `device_id`
@@ -49,7 +59,19 @@ impl LicensingClient {
         let url = format!("{}/api/license/activate", self.base_url);
         let builder = self.network.client().post(&url).json(&req);
         let res = self.network.execute(builder).await?;
-        res.error_for_status_ref()?;
+
+        // Document 19 §14.2/Document 30 TASK-AUTH-011: `DEVICE_ALREADY_BOUND`
+        // must be surfaced clearly, with guidance to deactivate elsewhere
+        // first — not flattened into a generic network-error string, which
+        // `error_for_status_ref()` alone would do (it only sees the HTTP
+        // status, never the error body carrying the actual code).
+        if !res.status().is_success() {
+            if let Ok(body) = res.json::<LicensingErrorResponse>().await {
+                anyhow::bail!(body.code);
+            }
+            anyhow::bail!("Licensing Backend activation request failed");
+        }
+
         let data = res.json::<LicenseResponse>().await?;
         Ok(data)
     }
@@ -110,6 +132,41 @@ mod tests {
             .unwrap();
 
         assert_eq!(res.status, "active");
+        mock.assert_async().await;
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    /// TASK-AUTH-011: `DEVICE_ALREADY_BOUND` must be surfaced clearly as
+    /// that exact code, not flattened into a generic error string that
+    /// loses which specific failure occurred.
+    #[tokio::test]
+    async fn activate_surfaces_device_already_bound_distinctly() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/license/activate")
+            .with_status(409)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"code":"DEVICE_ALREADY_BOUND","message":"License already bound to another device"}"#)
+            .create_async()
+            .await;
+
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+
+        let client = LicensingClient::new(server.url(), pool);
+        let err = client
+            .activate(ActivateRequest {
+                email: "test@example.com".to_string(),
+                razorpay_payment_id: "pay_1".to_string(),
+                razorpay_signature: "sig".to_string(),
+                device_id: "some-device".to_string(),
+                billing_interval: "monthly".to_string(),
+            })
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.to_string(), "DEVICE_ALREADY_BOUND");
         mock.assert_async().await;
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
