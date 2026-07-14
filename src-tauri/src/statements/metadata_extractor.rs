@@ -522,6 +522,56 @@ mod tests {
         );
     }
 
+    // ── test_auto_create_instrument_from_statement (Doc 30 TASK-STMT-004) ────
+
+    #[tokio::test]
+    async fn test_auto_create_instrument_from_statement() {
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+
+        // No `instruments` row exists yet for this (type, issuer, masked) key.
+        let conn = pool.get().await.unwrap();
+        let existing: i64 = conn
+            .interact(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM instruments WHERE issuer_name = 'HDFC' AND masked_identifier = '4321'",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(existing, 0, "instrument must not exist before resolution");
+
+        let id1 = resolve_or_create_instrument("credit_card", "HDFC", "4321", Some("VISA"), &pool)
+            .await
+            .unwrap();
+        assert!(!id1.is_empty());
+
+        // Doc 12 §10.4a: a second resolution for the identical key (e.g. a
+        // concurrently-processing email alert for the same instrument) must
+        // reuse the same row, never create a duplicate.
+        let id2 = resolve_or_create_instrument("credit_card", "HDFC", "4321", Some("VISA"), &pool)
+            .await
+            .unwrap();
+        assert_eq!(id1, id2, "resolving the same key twice must reuse the same instrument");
+
+        let count: i64 = conn
+            .interact(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM instruments WHERE issuer_name = 'HDFC' AND masked_identifier = '4321'",
+                    [],
+                    |row| row.get(0),
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(count, 1, "exactly one instrument row must exist, never a duplicate");
+    }
+
     // ── Async DB test: write_statement_row ────────────────────────────────────
 
     #[tokio::test]
