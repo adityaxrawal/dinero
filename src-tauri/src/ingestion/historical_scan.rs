@@ -3,7 +3,6 @@ use deadpool_sqlite::Pool;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use uuid::Uuid;
 
@@ -13,6 +12,40 @@ use crate::db::processing_checkpoints::{
 use crate::ingestion::gmail_client::GmailClient;
 use crate::ingestion::message_processor::{MessageProcessor, ProcessResult};
 use crate::ingestion::oauth::get_valid_access_token;
+
+/// Doc 30 TASK-GMAIL-007 / Doc 19 §3.6: "only one active historical scan per
+/// connected account is allowed unless explicitly resumed." Split out as a
+/// pure function so the rejection behavior is testable without a live OAuth
+/// token / Keychain access, which `scans_historical` itself requires.
+fn reject_if_scan_in_progress(
+    existing: &Option<ProcessingCheckpointRow>,
+) -> Result<(), crate::error::AppError> {
+    if let Some(cp) = existing {
+        if cp.status == "in_progress" {
+            // Document 19's dedicated `SCAN_ALREADY_RUNNING` code isn't on
+            // `AppError` yet — that catalog-wide mapping is TASK-API-010's
+            // explicit scope (see error.rs's own doc comment). `Validation`
+            // is the closest generic code available now.
+            return Err(crate::error::AppError::Validation(
+                "A historical scan is already in progress for this account".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Doc 30 TASK-GMAIL-007: checkpoint every 5 processed messages.
+const CHECKPOINT_INTERVAL: usize = 5;
+
+fn should_checkpoint(batch_count: usize) -> bool {
+    batch_count >= CHECKPOINT_INTERVAL
+}
+
+/// Doc 30 TASK-GMAIL-007 / TASK-GMAIL-002: bounded concurrent batches, max 50
+/// full-message fetches in flight at once — the same figure the shared Gmail
+/// quota semaphore in `gmail_client.rs` enforces globally across both the
+/// live poll worker and historical scans.
+const MAX_CONCURRENT_FETCHES: usize = 50;
 
 #[derive(Clone, Serialize)]
 struct ScanProgressPayload {
@@ -88,11 +121,7 @@ pub async fn scans_historical<R: tauri::Runtime>(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
 
-    if let Some(cp) = &existing {
-        if cp.status == "in_progress" {
-            tracing::warn!("A historical scan was marked as in progress, but we are starting a new one. It might have been interrupted.");
-        }
-    }
+    reject_if_scan_in_progress(&existing)?;
 
     tokio::spawn(async move {
         if let Err(e) = run_scan(
@@ -241,11 +270,10 @@ async fn run_scan_batches<R: tauri::Runtime>(
     let to_process = state.all_message_ids.clone();
     let mut processed_count = state.processed_count;
 
-    let semaphore = Arc::new(Semaphore::new(10)); // Bounded concurrency
     let client = Arc::new(client);
     let pool_arc = Arc::new(pool.clone());
 
-    let mut join_set = JoinSet::new();
+    let mut join_set: JoinSet<(String, anyhow::Result<Option<ProcessResult>>)> = JoinSet::new();
 
     let mut batch_count = 0;
     
@@ -266,33 +294,50 @@ async fn run_scan_batches<R: tauri::Runtime>(
         },
     );
 
-    for msg_id in to_process.into_iter().skip(processed_count) {
+    async fn wait_while_paused() {
         loop {
-            let paused = crate::commands::debug::SCAN_QUEUE_PAUSED.load(std::sync::atomic::Ordering::Relaxed);
+            let paused =
+                crate::commands::debug::SCAN_QUEUE_PAUSED.load(std::sync::atomic::Ordering::Relaxed);
             if !paused {
                 break;
             }
-            // Sleep and retry if paused
             tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
+    }
 
-        let sem = Arc::clone(&semaphore);
-        let cli = Arc::clone(&client);
-        let p = Arc::clone(&pool_arc);
-
+    fn spawn_fetch(
+        join_set: &mut JoinSet<(String, anyhow::Result<Option<ProcessResult>>)>,
+        client: Arc<GmailClient>,
+        pool_arc: Arc<Pool>,
+        msg_id: String,
+    ) {
         join_set.spawn(async move {
-            let _permit = sem.acquire().await.unwrap();
-            let res = MessageProcessor::process_message(&p, &cli, &msg_id).await;
-            (msg_id, res, p)
+            let res = MessageProcessor::process_message(&pool_arc, &client, &msg_id).await;
+            (msg_id, res)
         });
+    }
 
-        // Wait for results in batches of 5 to manage concurrency explicitly or just let join_set buffer it
-        // Actually, bounded concurrency is handled by semaphore.
-        // We can just pull from join_set to get completions as they happen.
-        while let Some(join_res) = join_set.join_next().await {
-            match join_res {
-                Ok((msg_id, result, _p)) => {
-                    match result {
+    let mut ids_iter = to_process.into_iter().skip(processed_count);
+
+    // Doc 30 TASK-GMAIL-007: keep up to MAX_CONCURRENT_FETCHES tasks in
+    // flight at once. Priming here, then refilling one-for-one as each
+    // completes below (rather than spawning a single task and draining it
+    // to empty before spawning the next) is what actually makes the bound
+    // meaningful — the previous spawn-then-immediately-drain pattern here
+    // meant effective concurrency was always 1, regardless of the semaphore
+    // that used to gate it.
+    for _ in 0..MAX_CONCURRENT_FETCHES {
+        wait_while_paused().await;
+        match ids_iter.next() {
+            Some(msg_id) => spawn_fetch(&mut join_set, Arc::clone(&client), Arc::clone(&pool_arc), msg_id),
+            None => break,
+        }
+    }
+
+    while let Some(join_res) = join_set.join_next().await {
+        match join_res {
+            Ok((msg_id, result)) => {
+                match result {
                         Ok(Some(ProcessResult::TransactionAlert(_, boxed_obs))) => {
                             // Doc 15 §2 principle 7 / Doc 12 §6.2a: route to the Transaction
                             // Queue rather than processing inline — no code path may write an
@@ -383,7 +428,7 @@ async fn run_scan_batches<R: tauri::Runtime>(
             processed_count += 1;
             batch_count += 1;
 
-            if batch_count >= 10 {
+            if should_checkpoint(batch_count) {
                 state.processed_count = processed_count;
 
                 let cp = ProcessingCheckpointRow {
@@ -402,7 +447,7 @@ async fn run_scan_batches<R: tauri::Runtime>(
 
                 batch_count = 0;
                 let elapsed = batch_start_time.elapsed();
-                tracing::info!(elapsed_ms = elapsed.as_millis(), batch_size = 10, "Historical scan batch completed");
+                tracing::info!(elapsed_ms = elapsed.as_millis(), batch_size = CHECKPOINT_INTERVAL, "Historical scan batch completed");
                 batch_start_time = std::time::Instant::now();
 
                 let _ = app.emit(
@@ -419,6 +464,10 @@ async fn run_scan_batches<R: tauri::Runtime>(
                     },
                 );
             }
+
+        wait_while_paused().await;
+        if let Some(next_id) = ids_iter.next() {
+            spawn_fetch(&mut join_set, Arc::clone(&client), Arc::clone(&pool_arc), next_id);
         }
     }
 
@@ -464,8 +513,49 @@ mod tests {
     use std::fs;
     use tauri::test::{mock_builder, mock_context};
 
+    /// Doc 30 TASK-GMAIL-007: pure, deterministic proof that the checkpoint
+    /// cadence is every 5 (not 10, the value the code used to have before
+    /// this fix — a wall-clock/DB-timing test can't reliably distinguish "a
+    /// checkpoint fired at 5" from "only the final one fired" once fetches
+    /// run concurrently, so this checks the actual threshold value directly).
+    #[test]
+    fn test_historical_scan_checkpoints_every_5() {
+        for n in 0..CHECKPOINT_INTERVAL {
+            assert!(!should_checkpoint(n), "must not checkpoint before {} processed", CHECKPOINT_INTERVAL);
+        }
+        assert!(should_checkpoint(CHECKPOINT_INTERVAL));
+        assert!(should_checkpoint(CHECKPOINT_INTERVAL + 1));
+    }
+
+    /// Doc 30 TASK-GMAIL-007 / Doc 19 §3.6: only one active scan per account.
+    #[test]
+    fn test_concurrent_scan_rejected() {
+        let in_progress = ProcessingCheckpointRow {
+            id: "cp1".into(),
+            job_type: "historical_scan".into(),
+            job_key: "acc_1".into(),
+            checkpoint_state_json: "{}".into(),
+            last_processed_token: None,
+            status: "in_progress".into(),
+            updated_at: None,
+        };
+        assert!(reject_if_scan_in_progress(&Some(in_progress)).is_err());
+
+        let completed = ProcessingCheckpointRow {
+            id: "cp2".into(),
+            job_type: "historical_scan".into(),
+            job_key: "acc_1".into(),
+            checkpoint_state_json: "{}".into(),
+            last_processed_token: None,
+            status: "completed".into(),
+            updated_at: None,
+        };
+        assert!(reject_if_scan_in_progress(&Some(completed)).is_ok());
+        assert!(reject_if_scan_in_progress(&None).is_ok());
+    }
+
     #[tokio::test]
-    async fn test_historical_scan_checkpoints_every_5() {
+    async fn test_historical_scan_completes_and_checkpoints_final_state() {
         let app = mock_builder()
             .build(mock_context(tauri::test::noop_assets()))
             .unwrap()
