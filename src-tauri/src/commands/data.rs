@@ -542,9 +542,11 @@ pub async fn settings_export_data(
 }
 
 /// "Reset App Data" full local wipe (Doc 28 §4.4, §6.1, §6.3; Doc 25 §4.3, §10
-/// row 7). Doc 28 §4.4 step 1 (two-step typed-phrase UI confirmation) is
-/// frontend work, tracked separately by M45 — this command implements steps
-/// 2–7, the backend-owned destructive sequence, in the doc's own order.
+/// row 7; TASK-AUTH-013). Doc 28 §4.4 step 1's two-step typed-phrase UI
+/// confirmation lives in `Settings.tsx`'s reset modal (exact phrase
+/// `RESET_CONFIRM_PHRASE = "DELETE MY DATA"`, matching Document 30's own
+/// quoted text) — this command implements steps 2–7, the backend-owned
+/// destructive sequence, in the doc's own order.
 /// G20/H10/J8 fix: renamed from `reset_database` to match Doc 19 §13/§18's
 /// documented `settings_delete_account` naming — this app has no login/
 /// account concept, but a full local wipe is the closest and only documented
@@ -614,6 +616,36 @@ pub async fn settings_delete_account(
         .path()
         .app_data_dir()
         .map_err(|e| format!("Failed to resolve app data directory: {}", e))?;
+    delete_finance_db_and_all_backups(&app_dir);
+
+    // Document 30 TASK-AUTH-013: "write a final audit_log entry
+    // (account_deletion_completed) as the last write before the file is
+    // removed." Logged via `tracing`, not `db::audit_log::insert` —
+    // `audit_log` lives *inside* finance.db, which is deleted immediately
+    // after this point, so a row written there would be destroyed in the
+    // very next step and could never serve as an audit trail. `tracing`
+    // writes to `app-logs.log`, a separate file that survives the wipe and
+    // is what actually persists this event.
+    tracing::info!("account_deletion_completed: local wipe finished, restarting to onboarding");
+
+    // Step 7: the app resets to first-run onboarding state. Restarting the
+    // process is what makes this safe and correct — on relaunch, init_db()
+    // finds no finance.db, creates a fresh one from scratch (fresh SQLCipher
+    // key too, since delete_base_key() cleared the old one), and the user
+    // lands on onboarding with no local_profile/connected_accounts/instruments
+    // left over. AppHandle::restart() never returns.
+    app.restart();
+}
+
+/// Deletes `finance.db` (and its `-wal`/`-shm` sidecars), everything in the
+/// daily-backup directory, and every pre-migration `finance.db.bak.*`
+/// snapshot — the last of which lives directly in `app_dir`
+/// (`db::migrations::create_pre_migration_backup`'s target directory is the
+/// database's own parent, not the `backups/` subdirectory the daily backup
+/// uses), so it needs its own sweep separate from the `backups/` directory
+/// scan. Extracted from `settings_delete_account` so the file-deletion logic
+/// is directly testable without a real `AppHandle`.
+fn delete_finance_db_and_all_backups(app_dir: &std::path::Path) {
     let db_path = app_dir.join("finance.db");
     for suffix in ["", "-wal", "-shm"] {
         let sidecar = std::path::PathBuf::from(format!("{}{}", db_path.display(), suffix));
@@ -625,14 +657,57 @@ pub async fn settings_delete_account(
             let _ = std::fs::remove_file(entry.path());
         }
     }
+    if let Ok(entries) = std::fs::read_dir(app_dir) {
+        for entry in entries.flatten() {
+            let is_pre_migration_backup = entry
+                .path()
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.starts_with("finance.db.bak."))
+                .unwrap_or(false);
+            if is_pre_migration_backup {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
 
-    // Step 7: the app resets to first-run onboarding state. Restarting the
-    // process is what makes this safe and correct — on relaunch, init_db()
-    // finds no finance.db, creates a fresh one from scratch (fresh SQLCipher
-    // key too, since delete_base_key() cleared the old one), and the user
-    // lands on onboarding with no local_profile/connected_accounts/instruments
-    // left over. AppHandle::restart() never returns.
-    app.restart();
+#[cfg(test)]
+mod delete_account_tests {
+    use super::delete_finance_db_and_all_backups;
+
+    /// TASK-AUTH-013: "delete finance.db and all .bak files" must cover
+    /// pre-migration backups too, not just the daily-backup directory — a
+    /// real gap this test catches (previously, files matching this pattern
+    /// directly in `app_dir` survived a full wipe untouched).
+    #[test]
+    fn sweeps_finance_db_sidecars_daily_backups_and_pre_migration_backups() {
+        let app_dir = std::env::temp_dir().join(format!("dinero_wipe_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(app_dir.join("backups")).unwrap();
+
+        let db_path = app_dir.join("finance.db");
+        std::fs::write(&db_path, b"db").unwrap();
+        std::fs::write(app_dir.join("finance.db-wal"), b"wal").unwrap();
+        std::fs::write(app_dir.join("finance.db-shm"), b"shm").unwrap();
+        std::fs::write(app_dir.join("finance.db.bak.20260101000000000"), b"old backup").unwrap();
+        std::fs::write(app_dir.join("finance.db.bak.20260102000000000"), b"newer backup").unwrap();
+        std::fs::write(app_dir.join("backups").join("finance.db.daily.bak"), b"daily").unwrap();
+        // A file that must NOT be deleted — sanity check the sweep isn't
+        // simply wiping the whole directory.
+        std::fs::write(app_dir.join("hw_uuid_marker.txt"), b"unrelated").unwrap();
+
+        delete_finance_db_and_all_backups(&app_dir);
+
+        assert!(!db_path.exists());
+        assert!(!app_dir.join("finance.db-wal").exists());
+        assert!(!app_dir.join("finance.db-shm").exists());
+        assert!(!app_dir.join("finance.db.bak.20260101000000000").exists());
+        assert!(!app_dir.join("finance.db.bak.20260102000000000").exists());
+        assert!(!app_dir.join("backups").join("finance.db.daily.bak").exists());
+        assert!(app_dir.join("hw_uuid_marker.txt").exists(), "unrelated files must survive the sweep");
+
+        let _ = std::fs::remove_dir_all(&app_dir);
+    }
 }
 
 // G20/H10/J8 fix: renamed from `fetch_dashboard_summary` to match Doc 19
