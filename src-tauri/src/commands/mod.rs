@@ -350,7 +350,7 @@ async fn upload_one_statement(
     // If encrypted: try stored passwords (AES-256-GCM decrypted from DB).
     // If all stored passwords fail: create unprocessed_statements row → emit password_required event.
     // The password submit flow continues via statements_submit_password.
-    let pdf_is_encrypted = !is_pdf_unencrypted(&bytes);
+    let pdf_is_encrypted = !is_pdf_unencrypted(&bytes).await;
     if pdf_is_encrypted {
         let pw_result = try_stored_passwords("", &bytes, pool_ref)
             .await
@@ -485,7 +485,7 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
     // ── Step 6: Parse PDF in-memory ──────────────────────────────────────────
     // H3 fix: `password`, when Some, is the password the user just confirmed
     // via statements_submit_password — pdfium must be told it on every open.
-    let parse_result = parse_in_memory_with_password(bytes, password)?;
+    let parse_result = parse_in_memory_with_password(bytes, password).await?;
     tracing::info!(
         "Parsed {} pages (method={:?}, ocr_pages={})",
         parse_result.total_pages,
