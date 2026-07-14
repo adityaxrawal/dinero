@@ -50,12 +50,14 @@ impl MessageProcessor {
                 bank_name
             }
             SenderVerificationResult::VerifiedNoise => {
+                crate::ingestion::gmail_telemetry::gmail_telemetry().record_gate_rejection("gate1");
                 Self::append_to_scan_log(message_id, "REJECTED", "gate1_verified_noise", Some(&serde_json::to_value(&metadata_msg).unwrap_or_default()), None).await;
                 return Ok(None);
             }
             SenderVerificationResult::UnverifiedReject(reason)
             | SenderVerificationResult::SpoofReject(reason) => {
                 // Log to audit log and return None
+                crate::ingestion::gmail_telemetry::gmail_telemetry().record_gate_rejection("gate1");
                 Self::log_rejection(pool, message_id, &reason).await?;
                 Self::append_to_scan_log(message_id, "REJECTED", &reason, Some(&serde_json::to_value(&metadata_msg).unwrap_or_default()), None).await;
                 return Ok(None);
@@ -91,6 +93,7 @@ impl MessageProcessor {
                 | ContentClass::Marketing
                 | ContentClass::Kyc
                 | ContentClass::Reminder => {
+                    crate::ingestion::gmail_telemetry::gmail_telemetry().record_gate_rejection("gate2");
                     let reason = format!("gate2_reject_{:?}", content_class);
                     Self::log_rejection(
                         pool,
@@ -102,6 +105,7 @@ impl MessageProcessor {
                     return Ok(None);
                 }
                 ContentClass::Noise | ContentClass::Unknown => {
+                    crate::ingestion::gmail_telemetry::gmail_telemetry().record_gate_rejection("gate2");
                     let reason = format!("gate2_reject_{:?}", content_class);
                     Self::log_rejection(
                         pool,
@@ -155,6 +159,7 @@ impl MessageProcessor {
                                 Box::new(obs),
                             )));
                         } else {
+                            crate::ingestion::gmail_telemetry::gmail_telemetry().record_gate_rejection("gate3");
                             let reason = Self::gate3_failure_reason(&obs);
                             Self::log_rejection(pool, message_id, reason).await?;
                             Self::append_to_scan_log(message_id, "REJECTED", reason, Some(&serde_json::to_value(&full_msg).unwrap_or_default()), Some(body_text)).await;

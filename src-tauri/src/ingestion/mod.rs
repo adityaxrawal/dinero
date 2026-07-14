@@ -1,5 +1,6 @@
 pub mod content_classifier;
 pub mod gmail_client;
+pub mod gmail_telemetry;
 pub mod historical_scan;
 pub mod message_processor;
 pub mod mime_sanitization;
@@ -13,6 +14,9 @@ mod polling_tests;
 
 #[cfg(test)]
 mod gmail_client_tests;
+
+#[cfg(test)]
+mod gmail_telemetry_tests;
 
 #[cfg(test)]
 mod mime_sanitization_tests;

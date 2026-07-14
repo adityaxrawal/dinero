@@ -74,13 +74,19 @@ pub async fn start_polling_loop<R: tauri::Runtime>(
 
                 let pool_clone = pool.clone();
                 let app_clone = app.clone();
-                if let Err(e) = poll_all_accounts(
+                let cycle_start = std::time::Instant::now();
+                let result = poll_all_accounts(
                     &app_clone,
                     &pool_clone,
                     crate::ingestion::gmail_client::GMAIL_API_BASE_URL,
                 )
-                .await
-                {
+                .await;
+                // Doc 30 TASK-GMAIL-010: gmail_poll_cycle_duration_ms — timed
+                // regardless of success/failure, since a stalled cycle is
+                // exactly the case this latency signal exists to catch.
+                crate::ingestion::gmail_telemetry::gmail_telemetry()
+                    .record_poll_cycle_duration(cycle_start.elapsed());
+                if let Err(e) = result {
                     tracing::error!("Error during polling cycle: {}", e);
                 }
             }
@@ -240,6 +246,15 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                             }
                         }
                     } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+                        // Doc 30 TASK-GMAIL-010: aggregate counts only — no
+                        // response body, no account/email content.
+                        if status == StatusCode::TOO_MANY_REQUESTS {
+                            crate::ingestion::gmail_telemetry::gmail_telemetry()
+                                .record_quota_exhausted();
+                        } else {
+                            crate::ingestion::gmail_telemetry::gmail_telemetry()
+                                .record_5xx(status.as_u16());
+                        }
                         if retry_count >= max_retries {
                             return Err(anyhow::anyhow!(
                                 "Max retries reached for polling account {}",
