@@ -176,6 +176,23 @@ pub async fn parse_in_memory_with_password(pdf_bytes: &[u8], password: Option<&s
 // Image-Based PDFs", which already owns its own RAII-guard cleanup
 // requirement; primary text extraction above is TASK-STMT-003's.)
 
+/// Doc 30 TASK-STMT-006: RAII guard over a spawned `tesseract` child process,
+/// guaranteeing it's killed if this scope unwinds (panic) or returns early
+/// before the process is explicitly waited on — `run_tesseract_on_bytes`
+/// never writes a temp file at all (bytes are piped via stdin/stdout), so
+/// the process itself, not a file, is the resource actually at risk of
+/// leaking on panic/error.
+struct TesseractChildGuard(Option<std::process::Child>);
+
+impl Drop for TesseractChildGuard {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
 /// Renders a single PDF page to an in-memory bitmap and runs Tesseract OCR on it.
 ///
 /// Returns `Ok(Some(text))` if OCR produces text, `Ok(None)` if text is empty,
@@ -282,7 +299,7 @@ fn run_tesseract_on_bytes(image_bytes: &[u8]) -> Result<Option<String>> {
     use std::io::Write;
     use std::process::Stdio;
 
-    let mut child = std::process::Command::new("tesseract")
+    let child = std::process::Command::new("tesseract")
         .arg("stdin")
         .arg("stdout")
         .arg("-l")
@@ -295,15 +312,25 @@ fn run_tesseract_on_bytes(image_bytes: &[u8]) -> Result<Option<String>> {
         .spawn()
         .map_err(|e| anyhow::anyhow!("tesseract spawn error: {}", e))?;
 
+    // Doc 30 TASK-STMT-006: "Use an RAII guard (Drop-implementing struct) to
+    // guarantee immediate cleanup... even on panic/error." This
+    // implementation never writes a temp file at all (bytes are piped via
+    // stdin/stdout, per the comment above) — the resource that actually
+    // needs guaranteed cleanup here is the spawned tesseract *process*: if a
+    // panic unwound through this function before `wait_with_output` below,
+    // an un-guarded `Child` would leak as an orphaned process.
+    let mut guard = TesseractChildGuard(Some(child));
+
     // Write stdin on a separate thread while we read stdout/stderr on this one.
     // A page render at 200 DPI is several MB — far larger than the OS pipe
     // buffer (~64KB) — so writing stdin to completion before reading stdout
     // would deadlock: tesseract blocks writing recognized text to its stdout
     // pipe (full, unread) while we block writing the remaining image bytes to
     // its stdin pipe (full, unread by tesseract, which is itself blocked).
-    let mut stdin = child
-        .stdin
-        .take()
+    let mut stdin = guard
+        .0
+        .as_mut()
+        .and_then(|c| c.stdin.take())
         .ok_or_else(|| anyhow::anyhow!("failed to open tesseract stdin"))?;
     let image_bytes_owned = image_bytes.to_vec();
     let writer = std::thread::spawn(move || -> std::io::Result<()> {
@@ -312,6 +339,10 @@ fn run_tesseract_on_bytes(image_bytes: &[u8]) -> Result<Option<String>> {
         Ok(())
     });
 
+    // Hand the child out of the guard for the blocking wait — past this
+    // point the child is being waited on normally, not orphaned, so the
+    // guard's job (covering the spawn → wait window) is done.
+    let child = guard.0.take().expect("guard was just populated above");
     let output = child
         .wait_with_output()
         .map_err(|e| anyhow::anyhow!("tesseract exec error: {}", e))?;
@@ -439,5 +470,42 @@ mod tests {
         if let Ok(opt_text) = result {
             assert!(opt_text.unwrap_or_default().is_empty());
         }
+    }
+
+    // ── test_ocr_temp_files_cleaned_up_on_panic ───────────────────────────────
+    //
+    // `run_tesseract_on_bytes` never writes a temp file at all (bytes are
+    // piped via stdin/stdout) — the resource actually at risk of leaking on
+    // panic is the spawned child *process*, not a file. Proves
+    // `TesseractChildGuard` kills its held child even when the scope holding
+    // it unwinds via a real panic.
+    #[test]
+    fn test_ocr_temp_files_cleaned_up_on_panic() {
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("must be able to spawn a long-running process for this test");
+        let pid = child.id();
+        let guard = TesseractChildGuard(Some(child));
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = guard; // moved in; dropped when this closure unwinds
+            panic!("simulated panic while the guarded child is still running");
+        }));
+        assert!(result.is_err(), "the simulated panic must actually occur");
+
+        // Give the OS a moment to reap the killed process, then confirm it's
+        // gone — `kill -0` only checks liveness, it doesn't signal the process.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let still_alive = std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(
+            !still_alive,
+            "child process (pid={}) must be killed by the RAII guard on panic",
+            pid
+        );
     }
 }
