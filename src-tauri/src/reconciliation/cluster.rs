@@ -1,10 +1,25 @@
 use anyhow::Result;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
+
+/// Doc 30 TASK-DEDUP-006: same window used for windowed candidate search
+/// (TASK-DEDUP-003) — an existing open cluster is treated as "the same
+/// ambiguous situation" if its members fall within this many days of the
+/// new observation's event_time.
+const CLUSTER_OVERLAP_WINDOW_DAYS: i64 = 3;
+
+/// Doc 30 TASK-DEDUP-006: above this top score, an ambiguous case is
+/// classified as `multiple_high_score_candidates` (several strong
+/// candidates competing); at or below it, `mid_range_score` (candidates
+/// that cleared the viability floor but without a standout).
+const HIGH_SCORE_CLUSTER_REASON_THRESHOLD: f64 = 0.75;
 
 /// Creates an ambiguity cluster in `reconciliation_clusters` and links the
 /// incoming observation plus all competing candidate transactions into
-/// `reconciliation_cluster_members`, per Document 18 §4.6/§4.6a.
+/// `reconciliation_cluster_members`, per Document 18 §4.6/§4.6a — or, if an
+/// existing open cluster already covers the same instrument + amount +
+/// direction + overlapping date window (Doc 30 TASK-DEDUP-006), appends the
+/// new observation to that cluster instead of creating a duplicate one.
 ///
 /// Ambiguity triggers (Doc 11 §6):
 ///  - Multiple exact matches for the same observation
@@ -18,17 +33,47 @@ use uuid::Uuid;
 ///    (member_role = 'candidate_a' | 'candidate_b' | 'candidate_other')
 ///  - Excluded from analytics totals while cluster_status = 'open'
 ///  - Visible in the reconciliation console
+///
+/// **Hard invariant (Doc 30 TASK-DEDUP-006):** no `transactions` row is ever
+/// created or modified as a side effect of this function — clusters exist
+/// entirely outside the canonical analytics path until explicitly resolved.
+#[allow(clippy::too_many_arguments)]
 pub fn create_ambiguity_cluster(
     conn: &Connection,
     observation_id: &str,
+    instrument_id: &str,
+    amount_minor: i64,
+    direction: &str,
+    event_time: &str,
+    top_score: f64,
     competing_candidate_ids: &[String],
 ) -> Result<String> {
+    if let Some(existing_cluster_id) = find_overlapping_open_cluster(
+        conn,
+        instrument_id,
+        amount_minor,
+        direction,
+        event_time,
+    )? {
+        conn.execute(
+            "INSERT INTO reconciliation_cluster_members (id, cluster_id, observation_id, member_role, added_at)
+             VALUES (?1, ?2, ?3, 'incoming', CURRENT_TIMESTAMP)",
+            params![Uuid::new_v4().to_string(), existing_cluster_id, observation_id],
+        )?;
+        return Ok(existing_cluster_id);
+    }
+
     let cluster_id = Uuid::new_v4().to_string();
+    let reason = if top_score > HIGH_SCORE_CLUSTER_REASON_THRESHOLD {
+        "multiple_high_score_candidates"
+    } else {
+        "mid_range_score"
+    };
 
     conn.execute(
-        "INSERT INTO reconciliation_clusters (id, cluster_status, created_at)
-         VALUES (?1, 'open', CURRENT_TIMESTAMP)",
-        params![cluster_id],
+        "INSERT INTO reconciliation_clusters (id, cluster_status, reason, created_at)
+         VALUES (?1, 'open', ?2, CURRENT_TIMESTAMP)",
+        params![cluster_id, reason],
     )?;
 
     conn.execute(
@@ -48,6 +93,40 @@ pub fn create_ambiguity_cluster(
         )?;
     }
 
+    Ok(cluster_id)
+}
+
+/// Doc 30 TASK-DEDUP-006: "check for an existing cluster covering the same
+/// instrument + amount + direction + overlapping date window; if found,
+/// append the observation as a new member rather than creating a duplicate
+/// cluster." Looks at each open cluster's members (whether backed by a
+/// canonical transaction or a raw observation) for one matching all four
+/// conditions.
+fn find_overlapping_open_cluster(
+    conn: &Connection,
+    instrument_id: &str,
+    amount_minor: i64,
+    direction: &str,
+    event_time: &str,
+) -> Result<Option<String>> {
+    let window_seconds = CLUSTER_OVERLAP_WINDOW_DAYS * 24 * 60 * 60;
+    let cluster_id: Option<String> = conn
+        .query_row(
+            "SELECT DISTINCT c.id
+             FROM reconciliation_clusters c
+             JOIN reconciliation_cluster_members m ON m.cluster_id = c.id
+             LEFT JOIN transactions t ON t.id = m.canonical_transaction_id
+             LEFT JOIN transaction_observations o ON o.id = m.observation_id
+             WHERE c.cluster_status = 'open'
+               AND COALESCE(t.instrument_id, o.instrument_id) = ?1
+               AND COALESCE(t.amount_minor, o.amount_minor) = ?2
+               AND COALESCE(t.direction, o.direction) = ?3
+               AND ABS(strftime('%s', COALESCE(t.best_event_time, o.event_time)) - strftime('%s', ?4)) <= ?5
+             LIMIT 1",
+            params![instrument_id, amount_minor, direction, event_time, window_seconds],
+            |row| row.get(0),
+        )
+        .optional()?;
     Ok(cluster_id)
 }
 
@@ -167,4 +246,209 @@ pub fn resolve_cluster(
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod cluster_creation_tests {
+    //! Doc 30 TASK-DEDUP-006: Implement Reconciliation Cluster Creation and
+    //! Membership Management.
+    use super::*;
+
+    fn setup_test_db() -> Connection {
+        let conn = crate::db::test_helpers::setup_test_db();
+        conn.execute("PRAGMA foreign_keys = OFF;", []).unwrap();
+        conn.execute(
+            "INSERT INTO transaction_observations (id, source_pipeline, source_record_id, instrument_id, amount_minor, direction, event_time) \
+             VALUES ('obs_new', 'gmail_transaction', 'msg_new', 'inst_1', 1000, 'debit', '2026-06-10 12:00:00')",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    /// Doc 30 TASK-DEDUP-006 acceptance test.
+    #[test]
+    fn test_new_cluster_created_for_first_ambiguous_case() {
+        let conn = setup_test_db();
+
+        let cluster_id = create_ambiguity_cluster(
+            &conn,
+            "obs_new",
+            "inst_1",
+            1000,
+            "debit",
+            "2026-06-10 12:00:00",
+            0.6,
+            &["cand_1".to_string()],
+        )
+        .unwrap();
+
+        let (status, reason): (String, String) = conn
+            .query_row(
+                "SELECT cluster_status, reason FROM reconciliation_clusters WHERE id = ?1",
+                params![cluster_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, "open");
+        assert_eq!(reason, "mid_range_score");
+
+        let member_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM reconciliation_cluster_members WHERE cluster_id = ?1",
+                params![cluster_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // 1 incoming (the observation) + 1 candidate.
+        assert_eq!(member_count, 2);
+    }
+
+    /// Doc 30 TASK-DEDUP-006 acceptance test: a second ambiguous observation
+    /// covering the same instrument+amount+direction+overlapping window
+    /// extends the existing open cluster instead of creating a duplicate.
+    #[test]
+    fn test_existing_cluster_extended_for_overlapping_case() {
+        let conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO transaction_observations (id, source_pipeline, source_record_id, instrument_id, amount_minor, direction, event_time) \
+             VALUES ('obs_second', 'gmail_transaction', 'msg_second', 'inst_1', 1000, 'debit', '2026-06-11 09:00:00')",
+            [],
+        )
+        .unwrap();
+
+        let first_cluster_id = create_ambiguity_cluster(
+            &conn,
+            "obs_new",
+            "inst_1",
+            1000,
+            "debit",
+            "2026-06-10 12:00:00",
+            0.6,
+            &["cand_1".to_string()],
+        )
+        .unwrap();
+
+        // Second observation: same instrument/amount/direction, event_time
+        // ~21 hours later -- well within the 3-day overlap window.
+        let second_cluster_id = create_ambiguity_cluster(
+            &conn,
+            "obs_second",
+            "inst_1",
+            1000,
+            "debit",
+            "2026-06-11 09:00:00",
+            0.6,
+            &["cand_1".to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(first_cluster_id, second_cluster_id, "must extend the existing cluster, not create a duplicate");
+
+        let cluster_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM reconciliation_clusters", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(cluster_count, 1);
+
+        let member_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM reconciliation_cluster_members WHERE cluster_id = ?1",
+                params![first_cluster_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // 2 incoming (obs_new, obs_second) + 1 candidate from the first call
+        // (the second call's candidate list is not re-added since the
+        // cluster already exists).
+        assert_eq!(member_count, 3);
+    }
+
+    /// Doc 30 TASK-DEDUP-006 acceptance test: cluster creation must never
+    /// create or modify a `transactions` row as a side effect.
+    #[test]
+    fn test_cluster_creation_does_not_touch_transactions_table() {
+        let conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO transactions (id, instrument_id, amount_minor, currency, direction, is_deleted) \
+             VALUES ('cand_1', 'inst_1', 1000, 'USD', 'debit', 0)",
+            [],
+        )
+        .unwrap();
+
+        let before_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM transactions", [], |r| r.get(0))
+            .unwrap();
+        let before_snapshot: String = conn
+            .query_row(
+                "SELECT merchant_display_name FROM transactions WHERE id = 'cand_1'",
+                [],
+                |r| r.get::<_, Option<String>>(0).map(|v| v.unwrap_or_default()),
+            )
+            .unwrap();
+
+        create_ambiguity_cluster(
+            &conn,
+            "obs_new",
+            "inst_1",
+            1000,
+            "debit",
+            "2026-06-10 12:00:00",
+            0.9,
+            &["cand_1".to_string()],
+        )
+        .unwrap();
+
+        let after_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM transactions", [], |r| r.get(0))
+            .unwrap();
+        let after_snapshot: String = conn
+            .query_row(
+                "SELECT merchant_display_name FROM transactions WHERE id = 'cand_1'",
+                [],
+                |r| r.get::<_, Option<String>>(0).map(|v| v.unwrap_or_default()),
+            )
+            .unwrap();
+
+        assert_eq!(before_count, after_count);
+        assert_eq!(before_snapshot, after_snapshot);
+    }
+
+    /// A non-overlapping (different instrument) ambiguous case must not be
+    /// folded into an unrelated existing cluster.
+    #[test]
+    fn test_non_overlapping_case_creates_separate_cluster() {
+        let conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO transaction_observations (id, source_pipeline, source_record_id, instrument_id, amount_minor, direction, event_time) \
+             VALUES ('obs_other_inst', 'gmail_transaction', 'msg_other', 'inst_2', 1000, 'debit', '2026-06-10 12:00:00')",
+            [],
+        )
+        .unwrap();
+
+        let first_cluster_id = create_ambiguity_cluster(
+            &conn,
+            "obs_new",
+            "inst_1",
+            1000,
+            "debit",
+            "2026-06-10 12:00:00",
+            0.6,
+            &["cand_1".to_string()],
+        )
+        .unwrap();
+
+        let second_cluster_id = create_ambiguity_cluster(
+            &conn,
+            "obs_other_inst",
+            "inst_2",
+            1000,
+            "debit",
+            "2026-06-10 12:00:00",
+            0.6,
+            &["cand_2".to_string()],
+        )
+        .unwrap();
+
+        assert_ne!(first_cluster_id, second_cluster_id);
+    }
 }

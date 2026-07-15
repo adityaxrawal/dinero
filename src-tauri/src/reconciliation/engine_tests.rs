@@ -700,6 +700,11 @@ fn test_cluster_resolution_merge() {
     crate::reconciliation::cluster::create_ambiguity_cluster(
         &conn,
         "obs_1",
+        "inst_1",
+        1000,
+        "debit",
+        "2026-06-10 12:00:00",
+        0.6,
         &["cand_1".to_string()],
     )
     .unwrap();
@@ -751,6 +756,11 @@ fn test_cluster_resolution_branch() {
     crate::reconciliation::cluster::create_ambiguity_cluster(
         &conn,
         "obs_1",
+        "inst_1",
+        1000,
+        "debit",
+        "2026-06-10 12:00:00",
+        0.6,
         &["cand_1".to_string()],
     )
     .unwrap();
@@ -793,6 +803,11 @@ fn test_cluster_resolution_reject() {
     crate::reconciliation::cluster::create_ambiguity_cluster(
         &conn,
         "obs_1",
+        "inst_1",
+        1000,
+        "debit",
+        "2026-06-10 12:00:00",
+        0.6,
         &["cand_1".to_string()],
     )
     .unwrap();
@@ -831,6 +846,11 @@ fn test_cluster_resolution_mark_unresolved_does_not_close_cluster() {
     crate::reconciliation::cluster::create_ambiguity_cluster(
         &conn,
         "obs_1",
+        "inst_1",
+        1000,
+        "debit",
+        "2026-06-10 12:00:00",
+        0.6,
         &["cand_1".to_string()],
     )
     .unwrap();
@@ -878,6 +898,11 @@ fn test_cluster_resolution_rejects_unknown_action() {
     crate::reconciliation::cluster::create_ambiguity_cluster(
         &conn,
         "obs_1",
+        "inst_1",
+        1000,
+        "debit",
+        "2026-06-10 12:00:00",
+        0.6,
         &["cand_1".to_string()],
     )
     .unwrap();
