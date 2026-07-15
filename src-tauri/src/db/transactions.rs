@@ -288,6 +288,34 @@ pub fn find_parent_for_refund(
     }
 }
 
+/// Doc 30 TASK-TXN-011: prior occurrences for the same instrument + merchant
+/// entity, oldest first, for recurring-payment interval detection. Excludes
+/// the transaction currently being evaluated (`exclude_transaction_id`) so a
+/// canonical-update re-run doesn't count itself.
+pub fn find_prior_occurrences_for_merchant(
+    conn: &Connection,
+    instrument_id: &str,
+    merchant_entity_id: &str,
+    exclude_transaction_id: &str,
+) -> Result<Vec<TransactionsRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT * FROM transactions
+         WHERE instrument_id = ?1 AND merchant_entity_id = ?2 AND direction = 'debit'
+           AND is_deleted = 0 AND id != ?3 AND best_event_time IS NOT NULL
+         ORDER BY best_event_time ASC",
+    )?;
+    let rows = stmt.query_map(
+        params![instrument_id, merchant_entity_id, exclude_transaction_id],
+        row_to_transaction,
+    )?;
+
+    let mut transactions = Vec::new();
+    for row in rows {
+        transactions.push(row?);
+    }
+    Ok(transactions)
+}
+
 pub fn get_trailing_30_day_merchant_average(
     conn: &Connection,
     merchant_entity_id: &str,

@@ -91,6 +91,8 @@ pub fn create_canonical_transaction(conn: &Connection, obs: &IncomingObservation
             obs.amount_minor,
             &obs.direction,
             &dt,
+            obs.emi_total_installments,
+            obs.emi_original_amount_minor,
         );
     }
 
@@ -230,5 +232,27 @@ pub fn apply_match_precedence_and_link(
     // specifically statement-vs-email).
 
     update_canonical_transaction_id(conn, &obs.id, Some(matched_id))?;
+
+    // Doc 30 TASK-TXN-011/012: "after each canonical create/update" --
+    // matched decisions are an update, not just a create, so post-processing
+    // (which now also runs recurring-payment detection) must run here too,
+    // not just from `create_canonical_transaction`.
+    let fmt = "%Y-%m-%d %H:%M:%S";
+    if let Ok(event_time_dt) = NaiveDateTime::parse_from_str(&obs.event_time, fmt).or_else(|_| {
+        NaiveDateTime::parse_from_str(&format!("{} 00:00:00", obs.event_time), fmt)
+    }) {
+        let _ = crate::reconciliation::post_processing::run_post_processing(
+            conn,
+            matched_id,
+            &obs.instrument_id,
+            obs.merchant_raw.as_deref(),
+            obs.amount_minor,
+            &obs.direction,
+            &event_time_dt,
+            obs.emi_total_installments,
+            obs.emi_original_amount_minor,
+        );
+    }
+
     Ok(())
 }

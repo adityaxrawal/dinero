@@ -39,6 +39,8 @@ fn test_exact_match_success() {
         merchant_raw: Some("Test Merchant".to_string()),
         source_pipeline: "gmail_transaction".to_string(),
         source_record_id: "msg_1".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
     };
 
     let cand = CanonicalCandidate {
@@ -73,6 +75,8 @@ fn test_exact_match_failure_without_reference_id() {
         merchant_raw: Some("Test Merchant".to_string()),
         source_pipeline: "gmail_transaction".to_string(),
         source_record_id: "msg_1".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
     };
 
     let cand = CanonicalCandidate {
@@ -108,6 +112,8 @@ fn test_new_canonical_created_when_no_match() {
         merchant_raw: Some("Test Merchant".to_string()),
         source_pipeline: "gmail_transaction".to_string(),
         source_record_id: "msg_1".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
     };
 
     let decision = reconcile(&conn, &obs, vec![]).unwrap();
@@ -130,6 +136,8 @@ fn test_ambiguous_cluster_created_for_same_amount_same_day() {
         merchant_raw: Some("Uber".to_string()),
         source_pipeline: "gmail_transaction".to_string(),
         source_record_id: "msg_1".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
     };
 
     let cand1 = CanonicalCandidate {
@@ -186,6 +194,8 @@ fn test_new_canonical_created_from_single_observation() {
         merchant_raw: Some("Test Merchant".to_string()),
         source_pipeline: "gmail_transaction".to_string(),
         source_record_id: "msg_1".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
     };
 
     let decision = reconcile(&conn, &obs, vec![]).unwrap();
@@ -236,6 +246,8 @@ fn test_ambiguous_decision_creates_no_canonical_row() {
         merchant_raw: Some("Uber".to_string()),
         source_pipeline: "gmail_transaction".to_string(),
         source_record_id: "msg_1".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
     };
 
     let cand1 = CanonicalCandidate {
@@ -312,6 +324,8 @@ fn test_statement_overrides_email_on_conflict() {
         merchant_raw: Some("Uber Statement".to_string()),
         source_pipeline: "statement_pdf".to_string(),
         source_record_id: "stmt_2".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
     };
 
     let cand2 = CanonicalCandidate {
@@ -385,6 +399,8 @@ fn test_email_fills_null_fields_only_when_statement_present() {
         merchant_raw: Some("Refund Co (Email)".to_string()),
         source_pipeline: "gmail_transaction".to_string(),
         source_record_id: "msg_email_1".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
     };
 
     let cand = CanonicalCandidate {
@@ -700,6 +716,8 @@ fn test_manual_entry_triggers_realtime_reconciliation() {
         merchant_raw: Some("Starbucks".to_string()),
         source_pipeline: "manual".to_string(),
         source_record_id: "manual_1".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
     };
 
     // Fetch candidates
@@ -731,6 +749,8 @@ fn test_refund_linked_to_original_debit() {
         merchant_raw: Some("Amazon".to_string()),
         source_pipeline: "manual".to_string(),
         source_record_id: "manual_1".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs_debit).unwrap();
@@ -756,6 +776,8 @@ fn test_refund_linked_to_original_debit() {
         merchant_raw: Some("Amazon Refund".to_string()),
         source_pipeline: "manual".to_string(),
         source_record_id: "manual_2".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs_credit).unwrap();
@@ -801,6 +823,8 @@ fn test_reversal_detected_within_hours() {
         merchant_raw: Some("Target".to_string()),
         source_pipeline: "manual".to_string(),
         source_record_id: "manual_1".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs_debit).unwrap();
@@ -826,6 +850,8 @@ fn test_reversal_detected_within_hours() {
         merchant_raw: Some("Target".to_string()),
         source_pipeline: "manual".to_string(),
         source_record_id: "manual_2".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs_credit).unwrap();
@@ -870,6 +896,8 @@ fn test_merchant_alias_resolves_normalized_name() {
         merchant_raw: Some("PAYMENT TO AMAZON PAY INDIA BLR".to_string()),
         source_pipeline: "manual".to_string(),
         source_record_id: "manual_3".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
@@ -903,6 +931,8 @@ fn test_category_assigned_from_merchant_entity() {
         merchant_raw: Some("UBER INDIA SYSTEMS".to_string()),
         source_pipeline: "manual".to_string(),
         source_record_id: "manual_4".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
@@ -936,6 +966,8 @@ fn test_missing_category_does_not_block_canonical_write() {
         merchant_raw: Some("UNKNOWN MERCHANT".to_string()),
         source_pipeline: "manual".to_string(),
         source_record_id: "manual_5".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
@@ -974,6 +1006,8 @@ fn test_alert_not_fired_when_under_threshold() {
         merchant_raw: Some("Small Coffee Shop".to_string()),
         source_pipeline: "manual".to_string(),
         source_record_id: "manual_no_alert".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
@@ -1013,6 +1047,8 @@ fn test_global_spend_limit_alert() {
         merchant_raw: Some("Big Purchase".to_string()),
         source_pipeline: "manual".to_string(),
         source_record_id: "manual_global".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
@@ -1061,6 +1097,8 @@ fn test_category_spend_limit_alert() {
         merchant_raw: Some("UBER INDIA SYSTEMS".to_string()),
         source_pipeline: "manual".to_string(),
         source_record_id: "manual_cat".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
@@ -1116,6 +1154,8 @@ fn test_merchant_spike_alert() {
         merchant_raw: Some("Regular Shop".to_string()),
         source_pipeline: "manual".to_string(),
         source_record_id: "manual_spike".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
@@ -1185,6 +1225,8 @@ fn test_anomaly_detection_logic() {
         merchant_raw: Some("Corner Cafe".to_string()),
         source_pipeline: "gmail_transaction".to_string(),
         source_record_id: "msg_anomaly".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
@@ -1271,6 +1313,8 @@ fn test_global_spend_limit_80_percent() {
         merchant_raw: Some("Electronics Store".to_string()),
         source_pipeline: "gmail_transaction".to_string(),
         source_record_id: "msg_80pct".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
@@ -1317,6 +1361,8 @@ fn test_category_budget_100_percent() {
         merchant_raw: Some("UBER INDIA SYSTEMS".to_string()),
         source_pipeline: "gmail_transaction".to_string(),
         source_record_id: "msg_cat_100".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
@@ -1357,6 +1403,8 @@ fn test_manual_transaction_creation() {
         merchant_raw: Some("Local Grocery".to_string()),
         source_pipeline: "manual".to_string(),
         source_record_id: "manual_create_1".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
@@ -1470,6 +1518,8 @@ fn test_manual_transactions_handled_by_deduplication() {
         merchant_raw: Some("Test Merchant".to_string()),
         source_pipeline: "manual".to_string(),
         source_record_id: "manual_dup_1".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();

@@ -91,9 +91,13 @@ pub fn normalize_observation(
         // parsers (flagged, not guessed, at TASK-TXN-001 and TASK-TXN-003
         // already) -- still true here, left unpopulated.
         parser_version: None,
-        emi_total_installments: None,
-        emi_installment_number: None,
-        emi_original_amount_minor: None,
+        // Doc 30 TASK-TXN-012: populated by the extraction ladder when EMI
+        // language was detected in the source body -- previously always
+        // silently dropped here (ExtractionResult didn't even carry these
+        // fields until this task added them).
+        emi_total_installments: raw.emi_total_installments,
+        emi_installment_number: raw.emi_installment_number,
+        emi_original_amount_minor: raw.emi_original_amount_minor,
         is_deleted: false,
         created_at: Some(Utc::now().naive_utc()),
         updated_at: Some(Utc::now().naive_utc()),

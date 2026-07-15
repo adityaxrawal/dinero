@@ -76,7 +76,10 @@ pub fn resolve_cluster(
     action: &str, // "confirm_match" | "reject_candidate" | "keep_separate" | "mark_unresolved"
     chosen_canonical_id: Option<&str>,
 ) -> Result<()> {
-    if !matches!(action, "confirm_match" | "reject_candidate" | "keep_separate" | "mark_unresolved") {
+    if !matches!(
+        action,
+        "confirm_match" | "reject_candidate" | "keep_separate" | "mark_unresolved"
+    ) {
         anyhow::bail!("Unknown cluster resolution action: '{}'", action);
     }
 
@@ -96,7 +99,11 @@ pub fn resolve_cluster(
         return Ok(());
     }
 
-    let new_status = if action == "reject_candidate" { "rejected" } else { "resolved" };
+    let new_status = if action == "reject_candidate" {
+        "rejected"
+    } else {
+        "resolved"
+    };
     conn.execute(
         "UPDATE reconciliation_clusters SET cluster_status = ?2, resolved_at = CURRENT_TIMESTAMP WHERE id = ?1",
         params![cluster_id, new_status],
@@ -130,6 +137,8 @@ pub fn resolve_cluster(
                     merchant_raw: obs_row.merchant_raw,
                     source_pipeline: obs_row.source_pipeline.unwrap_or_default(),
                     source_record_id: obs_row.source_record_id.unwrap_or_default(),
+                    emi_total_installments: obs_row.emi_total_installments,
+                    emi_original_amount_minor: obs_row.emi_original_amount_minor,
                 };
                 crate::reconciliation::canonical::create_canonical_transaction(
                     conn,

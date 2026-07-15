@@ -132,9 +132,8 @@ pub async fn auth_restore_from_recovery_phrase(
         .map_err(|e| format!("Failed to resolve app data directory: {}", e))?;
     let db_path = app_dir.join("finance.db");
 
-    let base_key =
-        crate::db::crypto::restore_base_key_from_phrase(&recovery_phrase, &db_path)
-            .map_err(|e| e.to_string())?;
+    let base_key = crate::db::crypto::restore_base_key_from_phrase(&recovery_phrase, &db_path)
+        .map_err(|e| e.to_string())?;
 
     let db_key = crate::db::crypto::derive_database_key_from_base_key(&base_key)
         .map_err(|e| e.to_string())?;
@@ -347,7 +346,8 @@ async fn upload_one_statement(
         // Doc 30 TASK-STMT-002: "Every skip is logged to audit_log
         // (statement_duplicate_skipped) with the detected period for user
         // transparency."
-        let period = crate::statements::duplicate_check::extract_billing_period_from_filename(&filename);
+        let period =
+            crate::statements::duplicate_check::extract_billing_period_from_filename(&filename);
         log_duplicate_skipped_audit(&filename, period.as_ref(), pool_ref).await;
         events::emit(
             events::DUPLICATE_REJECTED,
@@ -552,19 +552,25 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
                 let unprocessed_id = uuid::Uuid::new_v4().to_string();
                 create_awaiting_instrument_row(&unprocessed_id, file_hash, _filename, pool)
                     .await
-                    .map_err(|e| anyhow::anyhow!("DB error creating awaiting_instrument row: {}", e))?;
-                pending_bytes.insert(unprocessed_id.clone(), bytes.to_vec()).await;
+                    .map_err(|e| {
+                        anyhow::anyhow!("DB error creating awaiting_instrument row: {}", e)
+                    })?;
+                pending_bytes
+                    .insert(unprocessed_id.clone(), bytes.to_vec())
+                    .await;
                 let payload = serde_json::json!({
                     "statement_id": unprocessed_id,
                     "filename": _filename,
                     "reason": "issuer_name could not be extracted from statement header",
                 });
                 events::emit(events::INSTRUMENT_CONFIRMATION_REQUIRED, payload.clone());
-                app.emit(events::INSTRUMENT_CONFIRMATION_REQUIRED, payload).ok();
+                app.emit(events::INSTRUMENT_CONFIRMATION_REQUIRED, payload)
+                    .ok();
                 tracing::warn!(
                     "Statement Instrument Gate BLOCKED (issuer absent) — \
                      statement_id='{}' filename='{}'",
-                    unprocessed_id, _filename
+                    unprocessed_id,
+                    _filename
                 );
                 return Ok(unprocessed_id);
             }
@@ -576,8 +582,12 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
                 let unprocessed_id = uuid::Uuid::new_v4().to_string();
                 create_awaiting_instrument_row(&unprocessed_id, file_hash, _filename, pool)
                     .await
-                    .map_err(|e| anyhow::anyhow!("DB error creating awaiting_instrument row: {}", e))?;
-                pending_bytes.insert(unprocessed_id.clone(), bytes.to_vec()).await;
+                    .map_err(|e| {
+                        anyhow::anyhow!("DB error creating awaiting_instrument row: {}", e)
+                    })?;
+                pending_bytes
+                    .insert(unprocessed_id.clone(), bytes.to_vec())
+                    .await;
                 let payload = serde_json::json!({
                     "statement_id": unprocessed_id,
                     "filename": _filename,
@@ -585,11 +595,14 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
                     "reason": "masked account/card number could not be extracted from statement header",
                 });
                 events::emit(events::INSTRUMENT_CONFIRMATION_REQUIRED, payload.clone());
-                app.emit(events::INSTRUMENT_CONFIRMATION_REQUIRED, payload).ok();
+                app.emit(events::INSTRUMENT_CONFIRMATION_REQUIRED, payload)
+                    .ok();
                 tracing::warn!(
                     "Statement Instrument Gate BLOCKED (masked_id absent) — \
                      issuer='{}' statement_id='{}' filename='{}'",
-                    issuer, unprocessed_id, _filename
+                    issuer,
+                    unprocessed_id,
+                    _filename
                 );
                 return Ok(unprocessed_id);
             }
@@ -607,7 +620,6 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
     .await?;
     tracing::info!("Instrument resolved: id='{}'", instrument_id);
 
-
     // ── Step 9: Post-metadata billing cycle duplicate check ───────────────────
     if let (Some(ref start), Some(ref end)) = (&meta.billing_period_start, &meta.billing_period_end)
     {
@@ -621,12 +633,7 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
             );
             // Doc 30 TASK-STMT-002: audit trail for the post-metadata-extraction
             // duplicate-skip path too, not just the filename-heuristic one.
-            log_duplicate_skipped_audit(
-                _filename,
-                Some(&(start.clone(), end.clone())),
-                pool,
-            )
-            .await;
+            log_duplicate_skipped_audit(_filename, Some(&(start.clone(), end.clone())), pool).await;
             delete_orphaned_queued_row(stmt_id.as_deref(), pool).await;
             return Err(anyhow::anyhow!(
                 "duplicate_billing_cycle: cycle {} → {} already imported for instrument {}",
@@ -820,7 +827,12 @@ async fn delete_orphaned_queued_row(stmt_id: Option<&str>, pool: &deadpool_sqlit
     let id = id.to_string();
     if let Ok(conn) = pool.get().await {
         let _ = conn
-            .interact(move |c| c.execute("DELETE FROM statements WHERE id = ?1 AND parse_status = 'queued'", rusqlite::params![id]))
+            .interact(move |c| {
+                c.execute(
+                    "DELETE FROM statements WHERE id = ?1 AND parse_status = 'queued'",
+                    rusqlite::params![id],
+                )
+            })
             .await;
     }
 }
@@ -867,7 +879,10 @@ async fn create_awaiting_instrument_row(
                 created_at: chrono::Utc::now(),
             },
         ) {
-            tracing::warn!("Failed to record instrument_gate_blocked audit event: {}", e);
+            tracing::warn!(
+                "Failed to record instrument_gate_blocked audit event: {}",
+                e
+            );
         }
         Ok::<(), rusqlite::Error>(())
     })
@@ -1085,8 +1100,18 @@ pub async fn statements_submit_password(
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
     pending_bytes: tauri::State<'_, crate::statements::pending_bytes::PendingStatementBytes>,
 ) -> Result<serde_json::Value, crate::error::AppError> {
-    if !statement_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') { return Err(crate::error::AppError::Unknown("Invalid ID format".into())); }
-    if !instrument_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') { return Err(crate::error::AppError::Unknown("Invalid ID format".into())); }
+    if !statement_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(crate::error::AppError::Unknown("Invalid ID format".into()));
+    }
+    if !instrument_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(crate::error::AppError::Unknown("Invalid ID format".into()));
+    }
 
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
@@ -1149,7 +1174,10 @@ pub async fn statements_submit_password(
                     ))
                 })?;
             let parsed: serde_json::Value = serde_json::from_str(&source_json).unwrap_or_default();
-            let filename = parsed["filename"].as_str().unwrap_or("statement.pdf").to_string();
+            let filename = parsed["filename"]
+                .as_str()
+                .unwrap_or("statement.pdf")
+                .to_string();
             let file_hash = parsed["file_hash"].as_str().unwrap_or_default().to_string();
 
             let pipeline_result = run_parse_pipeline(
@@ -1174,7 +1202,12 @@ pub async fn statements_submit_password(
                     let orig_id = statement_id.clone();
                     let resolved_id = new_stmt_id.clone();
                     conn.interact(move |c| {
-                        crate::db::unprocessed_statements::update_status(c, &orig_id, "resolved", Some(&resolved_id))
+                        crate::db::unprocessed_statements::update_status(
+                            c,
+                            &orig_id,
+                            "resolved",
+                            Some(&resolved_id),
+                        )
                     })
                     .await
                     .map_err(|e| crate::error::AppError::Db(e.to_string()))?
@@ -1222,7 +1255,10 @@ pub async fn statements_submit_password(
             let stmt_id_for_attempts = statement_id.clone();
             let attempts = conn
                 .interact(move |c| {
-                    crate::db::unprocessed_statements::increment_password_attempts(c, &stmt_id_for_attempts)
+                    crate::db::unprocessed_statements::increment_password_attempts(
+                        c,
+                        &stmt_id_for_attempts,
+                    )
                 })
                 .await
                 .map_err(|e| crate::error::AppError::Db(e.to_string()))?
@@ -1332,7 +1368,12 @@ pub async fn statements_retry_unprocessed(
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
     pending_bytes: tauri::State<'_, crate::statements::pending_bytes::PendingStatementBytes>,
 ) -> Result<serde_json::Value, crate::error::AppError> {
-    if !statement_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') { return Err(crate::error::AppError::Unknown("Invalid ID format".into())); }
+    if !statement_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(crate::error::AppError::Unknown("Invalid ID format".into()));
+    }
 
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
@@ -1420,7 +1461,12 @@ pub async fn statements_retry_unprocessed(
                     let orig_id = statement_id.clone();
                     let resolved_id = new_stmt_id.clone();
                     conn.interact(move |c| {
-                        crate::db::unprocessed_statements::update_status(c, &orig_id, "resolved", Some(&resolved_id))
+                        crate::db::unprocessed_statements::update_status(
+                            c,
+                            &orig_id,
+                            "resolved",
+                            Some(&resolved_id),
+                        )
                     })
                     .await
                     .map_err(|e| crate::error::AppError::Db(e.to_string()))?
@@ -1523,7 +1569,10 @@ pub async fn statements_discard(
     statement_id: String,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
 ) -> Result<serde_json::Value, crate::error::AppError> {
-    if !statement_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+    if !statement_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
         return Err(crate::error::AppError::Unknown("Invalid ID format".into()));
     }
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
@@ -1578,8 +1627,18 @@ pub async fn reconciliation_clusters_resolve(
     chosen_canonical_id: Option<String>,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
 ) -> Result<String, crate::error::AppError> {
-    if !cluster_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') { return Err(crate::error::AppError::Unknown("Invalid ID format".into())); }
-    if !observation_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') { return Err(crate::error::AppError::Unknown("Invalid ID format".into())); }
+    if !cluster_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(crate::error::AppError::Unknown("Invalid ID format".into()));
+    }
+    if !observation_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(crate::error::AppError::Unknown("Invalid ID format".into()));
+    }
 
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
@@ -1635,8 +1694,18 @@ pub async fn correct_match(
     new_canonical_id: Option<String>,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
 ) -> Result<String, crate::error::AppError> {
-    if !observation_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') { return Err(crate::error::AppError::Unknown("Invalid ID format".into())); }
-    if !original_decision_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') { return Err(crate::error::AppError::Unknown("Invalid ID format".into())); }
+    if !observation_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(crate::error::AppError::Unknown("Invalid ID format".into()));
+    }
+    if !original_decision_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(crate::error::AppError::Unknown("Invalid ID format".into()));
+    }
 
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
@@ -1733,6 +1802,8 @@ pub async fn transactions_create(
         merchant_raw: Some(payload.merchant_name),
         source_pipeline: "manual".to_string(),
         source_record_id: format!("manual_{}", obs_id),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
     };
 
     let decision = conn
@@ -1862,10 +1933,19 @@ pub async fn transactions_update(
         let mut new_merchant = old_tx.merchant_display_name.clone();
 
         if let Some(amt) = payload.amount_minor {
-            let old_val = old_tx.amount_minor.map(|v| v.to_string()).unwrap_or_default();
+            let old_val = old_tx
+                .amount_minor
+                .map(|v| v.to_string())
+                .unwrap_or_default();
             let new_val = amt.to_string();
             if old_val != new_val {
-                let _ = crate::reconciliation::audit::log_user_correction(conn, &tx_id.to_string(), "amount", &old_val, &new_val);
+                let _ = crate::reconciliation::audit::log_user_correction(
+                    conn,
+                    &tx_id.to_string(),
+                    "amount",
+                    &old_val,
+                    &new_val,
+                );
             }
             new_amount_minor = Some(amt);
             new_amount = Some(amt as f64 / 100.0);
@@ -1877,14 +1957,21 @@ pub async fn transactions_update(
             new_direction = Some(dir);
         }
         if let Some(et) = payload.event_time {
-            let dt = chrono::NaiveDateTime::parse_from_str(&et, "%Y-%m-%d %H:%M:%S").unwrap_or_default();
+            let dt =
+                chrono::NaiveDateTime::parse_from_str(&et, "%Y-%m-%d %H:%M:%S").unwrap_or_default();
             new_best_event_time = Some(dt);
             new_posting_date = Some(dt.date());
         }
         if let Some(merch) = payload.merchant_name {
             let old_val = old_tx.merchant_display_name.clone().unwrap_or_default();
             if old_val != merch {
-                let _ = crate::reconciliation::audit::log_user_correction(conn, &tx_id.to_string(), "merchant", &old_val, &merch);
+                let _ = crate::reconciliation::audit::log_user_correction(
+                    conn,
+                    &tx_id.to_string(),
+                    "merchant",
+                    &old_val,
+                    &merch,
+                );
             }
             new_merchant = Some(merch);
         }
@@ -1919,7 +2006,10 @@ pub async fn transactions_update(
                 if trimmed.is_empty() {
                     continue;
                 }
-                if let Some(existing) = existing_tags.iter().find(|t| t.name.eq_ignore_ascii_case(trimmed)) {
+                if let Some(existing) = existing_tags
+                    .iter()
+                    .find(|t| t.name.eq_ignore_ascii_case(trimmed))
+                {
                     tag_ids.push(existing.id.clone());
                 } else {
                     let new_id = uuid::Uuid::new_v4().to_string();
@@ -1937,10 +2027,15 @@ pub async fn transactions_update(
                 }
             }
 
-            let existing_assocs = crate::db::tags::select_by_transaction_id(conn, &tx_id.to_string())
-                .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+            let existing_assocs =
+                crate::db::tags::select_by_transaction_id(conn, &tx_id.to_string())
+                    .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
             for assoc in existing_assocs {
-                let _ = crate::db::tags::delete_transaction_tag(conn, &assoc.transaction_id, &assoc.tag_id);
+                let _ = crate::db::tags::delete_transaction_tag(
+                    conn,
+                    &assoc.transaction_id,
+                    &assoc.tag_id,
+                );
             }
             for tag_id in tag_ids {
                 let _ = crate::db::tags::insert_transaction_tag(
@@ -1995,7 +2090,10 @@ pub async fn settings_pdf_passwords_delete(
     id: String,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
 ) -> Result<(), crate::error::AppError> {
-    if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
         return Err(crate::error::AppError::Unknown("Invalid ID format".into()));
     }
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
@@ -2067,7 +2165,12 @@ pub async fn fetch_transaction_tags(
             let all_tags = crate::db::tags::select_all(c)?;
             Ok(assocs
                 .into_iter()
-                .filter_map(|a| all_tags.iter().find(|t| t.id == a.tag_id).map(|t| t.name.clone()))
+                .filter_map(|a| {
+                    all_tags
+                        .iter()
+                        .find(|t| t.id == a.tag_id)
+                        .map(|t| t.name.clone())
+                })
                 .collect())
         })
         .await
@@ -2084,7 +2187,12 @@ pub async fn transactions_delete(
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, crate::error::AppError> {
-    if !transaction_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') { return Err(crate::error::AppError::Unknown("Invalid ID format".into())); }
+    if !transaction_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(crate::error::AppError::Unknown("Invalid ID format".into()));
+    }
 
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
@@ -2147,7 +2255,12 @@ pub async fn ipc_trigger_patch_sync(
     alert_id: String,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
 ) -> Result<String, crate::error::AppError> {
-    if !alert_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') { return Err(crate::error::AppError::Unknown("Invalid ID format".into())); }
+    if !alert_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(crate::error::AppError::Unknown("Invalid ID format".into()));
+    }
 
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
@@ -2178,8 +2291,7 @@ pub async fn ipc_trigger_patch_sync(
         }
 
         let alert_id_clone = alert.alert_id.clone();
-        pool
-            .get()
+        pool.get()
             .await
             .map_err(|e| crate::error::AppError::Db(e.to_string()))?
             .interact(move |conn| {
@@ -2199,9 +2311,9 @@ pub async fn ipc_trigger_patch_sync(
 
 #[tauri::command]
 pub fn log_frontend_event(
-    level: String, 
-    message: String, 
-    data: Option<serde_json::Value>
+    level: String,
+    message: String,
+    data: Option<serde_json::Value>,
 ) {
     let data_str = data.map(|d| format!("| Data: {}", d)).unwrap_or_default();
     match level.to_lowercase().as_str() {
@@ -2415,7 +2527,8 @@ mod tests {
         fn make_row(id: &str, status: &str) -> UnprocessedStatementRow {
             UnprocessedStatementRow {
                 id: id.to_string(),
-                statement_source_json: serde_json::json!({ "filename": format!("{id}.pdf") }).to_string(),
+                statement_source_json: serde_json::json!({ "filename": format!("{id}.pdf") })
+                    .to_string(),
                 failure_type: "password_required".to_string(),
                 failure_reason: String::new(),
                 status: status.to_string(),
@@ -2444,7 +2557,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_retry_reuses_saved_password() {
-        use crate::statements::password::{try_all_stored_passwords, try_stored_passwords, PasswordResolutionResult};
+        use crate::statements::password::{
+            try_all_stored_passwords, try_stored_passwords, PasswordResolutionResult,
+        };
 
         let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).unwrap();
@@ -2511,7 +2626,9 @@ mod tests {
         // both seeded rows, across two different instruments, are real
         // candidates it considers (gracefully falling through to
         // PromptRequired once none actually unlock, rather than erroring).
-        let result = try_all_stored_passwords(b"%PDF-1.4 fake", &pool).await.unwrap();
+        let result = try_all_stored_passwords(b"%PDF-1.4 fake", &pool)
+            .await
+            .unwrap();
         assert_eq!(result, PasswordResolutionResult::PromptRequired);
     }
 

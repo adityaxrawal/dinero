@@ -41,6 +41,16 @@ pub struct ExtractionResult {
     /// stays `None` everywhere until one exists — left unpopulated rather
     /// than guessed.
     pub parser_version: Option<String>,
+
+    /// Doc 30 TASK-TXN-012: populated when Layer 2/3 detects EMI language
+    /// ("EMI", "installment X of Y", "converted to EMI") in the source
+    /// text. `emi_total_installments`/`emi_installment_number` come from
+    /// the "X of Y" pattern when present; `emi_original_amount_minor` is
+    /// the pre-EMI-conversion purchase amount when the email states it
+    /// (distinct from `amount_minor`, which is this installment's amount).
+    pub emi_total_installments: Option<i32>,
+    pub emi_installment_number: Option<i32>,
+    pub emi_original_amount_minor: Option<i64>,
 }
 
 impl ExtractionResult {
@@ -231,7 +241,8 @@ pub fn extract_instrument_signals(bank_name: &str, body: &str) -> InstrumentSign
 
     // 1. Try to detect a masked card last-4 (e.g. "card ending 1234", "card XX1234", "Card no. XX1234")
     let card_re = INSTR_CARD_LAST4_RE.get_or_init(|| {
-        Regex::new(r"(?i)card\s+(?:ending|no\.?|number|#)?\s*(?:with\s+)?(?:xx+|\*+)?(\d{4})\b").unwrap()
+        Regex::new(r"(?i)card\s+(?:ending|no\.?|number|#)?\s*(?:with\s+)?(?:xx+|\*+)?(\d{4})\b")
+            .unwrap()
     });
     if let Some(caps) = card_re.captures(body) {
         if let Some(last4) = caps.get(1) {
@@ -269,7 +280,11 @@ pub fn extract_instrument_signals(bank_name: &str, body: &str) -> InstrumentSign
         .get_or_init(|| Regex::new(r"(?i)(?:UPI/[^/]+/)?([\w.\-+]+@[\w.\-]+)").unwrap());
     if let Some(caps) = upi_re.captures(body) {
         if let Some(vpa) = caps.get(1) {
-            let vpa_str = vpa.as_str().to_lowercase().trim_end_matches('.').to_string();
+            let vpa_str = vpa
+                .as_str()
+                .to_lowercase()
+                .trim_end_matches('.')
+                .to_string();
             // Filter out generic email-like domains that are not VPAs
             if !vpa_str.ends_with("@gmail.com")
                 && !vpa_str.ends_with("@yahoo.com")
@@ -442,7 +457,13 @@ impl ExtractionLayer for BankTemplateLayer {
             if let Ok(conn) = pool.get().await {
                 let _ = conn
                     .interact(move |c| {
-                        synthesize_pending_rule(c, &b_name, &template_hash, &matched_clone, "layer2_template")
+                        synthesize_pending_rule(
+                            c,
+                            &b_name,
+                            &template_hash,
+                            &matched_clone,
+                            "layer2_template",
+                        )
                     })
                     .await;
             }
@@ -589,9 +610,14 @@ impl ExtractionLayer for NlpLayer {
                 let orig_token = tokens[i];
 
                 // Direction
-                if token.contains("debited") || token.contains("spent") || token.contains("paid") 
-                    || token.contains("withdrawn") || token.contains("payment") || token.contains("sent")
-                    || token.contains("deducted") || token.contains("purchase")
+                if token.contains("debited")
+                    || token.contains("spent")
+                    || token.contains("paid")
+                    || token.contains("withdrawn")
+                    || token.contains("payment")
+                    || token.contains("sent")
+                    || token.contains("deducted")
+                    || token.contains("purchase")
                 {
                     result.direction = Some("debit".to_string());
                 } else if token.contains("credited")
@@ -618,7 +644,15 @@ impl ExtractionLayer for NlpLayer {
                 }
 
                 // Merchant
-                if (token == "at" || token == "to" || token == "from" || token == "for" || token == "by" || token == "merchant" || token == "beneficiary") && i + 1 < tokens.len() {
+                if (token == "at"
+                    || token == "to"
+                    || token == "from"
+                    || token == "for"
+                    || token == "by"
+                    || token == "merchant"
+                    || token == "beneficiary")
+                    && i + 1 < tokens.len()
+                {
                     let mut merchant_parts = Vec::new();
                     let mut j = i + 1;
                     // Expanded window to capture larger merchant names
@@ -849,9 +883,10 @@ impl Layer5CrossrefLayer {
         }
 
         let signals = extract_instrument_signals(bank_name, body);
-        let (Some(instrument_type), Some(masked_identifier)) =
-            (signals.instrument_type.as_ref(), signals.masked_identifier.as_ref())
-        else {
+        let (Some(instrument_type), Some(masked_identifier)) = (
+            signals.instrument_type.as_ref(),
+            signals.masked_identifier.as_ref(),
+        ) else {
             return None;
         };
         let issuer_name = signals.issuer_name.as_deref().unwrap_or(bank_name);
@@ -933,7 +968,7 @@ impl ExtractionLayer for Layer6LlmLayer {
                     return None;
                 }
             };
-            
+
             // For now, hardcode to gemma-4-e4b or fetch active model ID.
             let model_id = "gemma-4-e4b";
             let model_path = match crate::llm_manager::get_model_path(app_dir, model_id) {
@@ -943,7 +978,7 @@ impl ExtractionLayer for Layer6LlmLayer {
                     return None;
                 }
             };
-            
+
             let tokenizer_path = match crate::llm_manager::get_tokenizer_path(app_dir, model_id) {
                 Some(p) => p,
                 None => {
@@ -953,10 +988,10 @@ impl ExtractionLayer for Layer6LlmLayer {
             };
 
             tracing::info!(bank_name = bank_name, "Layer 6 (LLM) extraction invoked");
-            
+
             let engine = crate::extraction::llm::LlmEngine::new(&model_path, &tokenizer_path);
             let result = engine.extract(body);
-            
+
             // Track Layer 5 usage rate in structured logs
             tracing::info!(
                 event = "layer5_usage",
@@ -964,7 +999,7 @@ impl ExtractionLayer for Layer6LlmLayer {
                 success = result.is_some(),
                 "Layer 6 fallback utilized"
             );
-            
+
             result
         })
     }
@@ -1016,17 +1051,34 @@ pub async fn run_extraction_ladder(
                 obs.masked_identifier = signals.masked_identifier;
                 obs.network = signals.network;
                 obs.upi_vpa = signals.upi_vpa;
-                tracing::info!(layer = layer_name, status = "success", "Extraction layer succeeded");
+                // Doc 30 TASK-TXN-012: "During extraction (Layers 2/3),
+                // detect EMI language" -- applied uniformly regardless of
+                // which layer produced the core fields, since EMI phrasing
+                // detection is language-level, not tied to any one layer's
+                // own bank-specific/generic regex templates.
+                if let Some((number, total)) = crate::extraction::emi_detector::detect_emi_installment_numbers(body) {
+                    obs.emi_installment_number = Some(number);
+                    obs.emi_total_installments = Some(total);
+                    obs.emi_original_amount_minor = crate::extraction::emi_detector::detect_emi_original_amount_minor(body);
+                }
+                tracing::info!(
+                    layer = layer_name,
+                    status = "success",
+                    "Extraction layer succeeded"
+                );
                 return Ok(Some(obs));
             }
         }
-        tracing::info!(layer = layer_name, status = "failure", "Extraction layer failed");
+        tracing::info!(
+            layer = layer_name,
+            status = "failure",
+            "Extraction layer failed"
+        );
     }
 
     // ── Layer 5: statement-row cross-reference (Doc 30 TASK-TXN-005) ─────────
-    let anchor_date = internal_date.and_then(|ts| {
-        chrono::DateTime::from_timestamp(ts, 0).map(|dt| dt.naive_utc().date())
-    });
+    let anchor_date = internal_date
+        .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0).map(|dt| dt.naive_utc().date()));
     if let Some(crossref_result) = Layer5CrossrefLayer
         .extract(pool, bank_name, body, anchor_date)
         .await
@@ -1649,10 +1701,7 @@ mod tests {
         assert_eq!(debit_result.direction, Some("debit".to_string()));
 
         let credit_body = "Rs 500 credited to your account from Amazon Refund on 01-Jan-24.";
-        let credit_result = layer
-            .extract(&pool, "Any Bank", credit_body)
-            .await
-            .unwrap();
+        let credit_result = layer.extract(&pool, "Any Bank", credit_body).await.unwrap();
         assert_eq!(credit_result.direction, Some("credit".to_string()));
     }
 
@@ -1809,7 +1858,9 @@ mod tests {
 
     /// Seeds a migrated DB with one instrument, one statement, and the given
     /// `statement_entries` rows for it. Returns the pool.
-    async fn setup_crossref_db(entries: Vec<crate::db::statement_entries::StatementEntriesRow>) -> Pool {
+    async fn setup_crossref_db(
+        entries: Vec<crate::db::statement_entries::StatementEntriesRow>,
+    ) -> Pool {
         let pool = dummy_migrated_pool().await;
         let conn = pool.get().await.unwrap();
         conn.interact(move |c| {
@@ -1944,7 +1995,9 @@ mod tests {
     async fn test_layer5_no_anchor_date_returns_none() {
         let pool = setup_crossref_db(vec![]).await;
         let body = "Rs 1500.00 spent on your HDFC Bank credit card ending 1234.";
-        let result = Layer5CrossrefLayer.extract(&pool, "HDFC Bank", body, None).await;
+        let result = Layer5CrossrefLayer
+            .extract(&pool, "HDFC Bank", body, None)
+            .await;
         assert!(result.is_none());
     }
 

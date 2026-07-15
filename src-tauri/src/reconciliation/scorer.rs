@@ -167,6 +167,8 @@ mod tests {
             merchant_raw: Some("Uber".to_string()),
             source_pipeline: "gmail".to_string(),
             source_record_id: "msg1".to_string(),
+            emi_total_installments: None,
+            emi_original_amount_minor: None,
         };
 
         let cand = CanonicalCandidate {
@@ -199,6 +201,8 @@ mod tests {
             merchant_raw: Some("AMZN Mktp US".to_string()),
             source_pipeline: "gmail".to_string(),
             source_record_id: "msg1".to_string(),
+            emi_total_installments: None,
+            emi_original_amount_minor: None,
         };
 
         let cand1 = CanonicalCandidate {
@@ -256,6 +260,8 @@ mod tests {
             merchant_raw: Some("Spotify".to_string()),
             source_pipeline: "statement".to_string(), // gets +0.05
             source_record_id: "msg1".to_string(),
+            emi_total_installments: None,
+            emi_original_amount_minor: None,
         };
 
         let cand = CanonicalCandidate {
@@ -290,6 +296,8 @@ mod tests {
             merchant_raw: Some("Target".to_string()),
             source_pipeline: "gmail".to_string(),
             source_record_id: "msg2".to_string(),
+            emi_total_installments: None,
+            emi_original_amount_minor: None,
         };
 
         let cand_realtime = CanonicalCandidate {

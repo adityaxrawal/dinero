@@ -323,6 +323,8 @@ async fn process_transaction_job(job: TransactionJob, pool: &Pool) {
                                 .clone()
                                 .unwrap_or_else(|| "unknown".to_string()),
                             source_record_id: row.source_record_id.clone().unwrap_or_default(),
+                            emi_total_installments: row.emi_total_installments,
+                            emi_original_amount_minor: row.emi_original_amount_minor,
                         };
 
                         let candidates =

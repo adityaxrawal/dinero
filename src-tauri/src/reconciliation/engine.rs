@@ -20,6 +20,9 @@ pub struct IncomingObservation {
     pub merchant_raw: Option<String>,
     pub source_pipeline: String, // "gmail_transaction" | "statement_pdf" | "manual"
     pub source_record_id: String,
+    /// Doc 30 TASK-TXN-012: EMI language detected during extraction, if any.
+    pub emi_total_installments: Option<i32>,
+    pub emi_original_amount_minor: Option<i64>,
 }
 
 /// Represents an existing canonical transaction for candidate matching.
