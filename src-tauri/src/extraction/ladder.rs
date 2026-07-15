@@ -1184,68 +1184,6 @@ fn synthesize_pending_rule(
 mod tests {
     use super::*;
 
-    struct MockValidLayer;
-    impl ExtractionLayer for MockValidLayer {
-        fn extract<'a>(
-            &'a self,
-            _pool: &'a Pool,
-            _bank_name: &'a str,
-            _body: &'a str,
-        ) -> BoxFuture<'a, Option<ExtractionResult>> {
-            Box::pin(async move {
-                Some(ExtractionResult {
-                    amount_minor: Some(1000),
-                    currency: Some("INR".to_string()),
-                    direction: Some("debit".to_string()),
-                    event_time: Some(1704067200),
-                    merchant_raw: Some("Amazon".to_string()),
-                    extraction_method: "mock_valid".to_string(),
-                    ..Default::default()
-                })
-            })
-        }
-        fn layer_name(&self) -> &'static str {
-            "mock_valid"
-        }
-    }
-
-    struct MockInvalidLayer;
-    impl ExtractionLayer for MockInvalidLayer {
-        fn extract<'a>(
-            &'a self,
-            _pool: &'a Pool,
-            _bank_name: &'a str,
-            _body: &'a str,
-        ) -> BoxFuture<'a, Option<ExtractionResult>> {
-            Box::pin(async move {
-                Some(ExtractionResult {
-                    amount_minor: Some(1000),
-                    // Missing currency, direction, event_time, merchant_raw
-                    extraction_method: "mock_invalid".to_string(),
-                    ..Default::default()
-                })
-            })
-        }
-        fn layer_name(&self) -> &'static str {
-            "mock_invalid"
-        }
-    }
-
-    struct MockEmptyLayer;
-    impl ExtractionLayer for MockEmptyLayer {
-        fn extract<'a>(
-            &'a self,
-            _pool: &'a Pool,
-            _bank_name: &'a str,
-            _body: &'a str,
-        ) -> BoxFuture<'a, Option<ExtractionResult>> {
-            Box::pin(async move { None })
-        }
-        fn layer_name(&self) -> &'static str {
-            "mock_empty"
-        }
-    }
-
     // Helper to create a dummy pool for tests
     fn dummy_pool() -> Pool {
         let mgr = deadpool_sqlite::Manager::from_config(
