@@ -407,3 +407,89 @@ pub fn get_category_spend_current_month(
         Err(_) => Ok(0.0),
     }
 }
+
+#[cfg(test)]
+mod candidate_search_tests {
+    //! Doc 30 TASK-DEDUP-003: Implement Candidate Generation (Windowed Search).
+    //! Direct DB-level tests for `find_candidates_within_window` — the
+    //! bounded-candidate-set query `reconciliation::engine::fetch_candidates`
+    //! wraps for the reconciliation engine.
+    use super::*;
+
+    fn setup_test_db() -> Connection {
+        let conn = crate::db::test_helpers::setup_test_db();
+        // Disable foreign keys for unit tests that test query logic in
+        // isolation, without needing real `instruments` rows to satisfy
+        // `transactions.instrument_id`'s FK — mirrors the same pattern
+        // `reconciliation::engine_tests::setup_test_db` already uses.
+        conn.execute("PRAGMA foreign_keys = OFF;", []).unwrap();
+        conn
+    }
+
+    fn seed_transaction(
+        conn: &Connection,
+        id: &str,
+        instrument_id: &str,
+        amount_minor: i64,
+        direction: &str,
+        best_event_time: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO transactions (id, instrument_id, amount_minor, currency, direction, best_event_time, is_deleted) \
+             VALUES (?1, ?2, ?3, 'INR', ?4, ?5, 0)",
+            params![id, instrument_id, amount_minor, direction, best_event_time],
+        )
+        .unwrap();
+    }
+
+    /// Doc 30 TASK-DEDUP-003 acceptance test: only same-instrument,
+    /// same-direction rows are returned — a matching amount/time on a
+    /// different instrument or opposite direction must never appear.
+    #[test]
+    fn test_candidate_search_filters_by_instrument_and_direction() {
+        let conn = setup_test_db();
+        seed_transaction(&conn, "match", "inst_1", 1000, "debit", "2026-06-10 12:00:00");
+        seed_transaction(&conn, "wrong_instrument", "inst_2", 1000, "debit", "2026-06-10 12:00:00");
+        seed_transaction(&conn, "wrong_direction", "inst_1", 1000, "credit", "2026-06-10 12:00:00");
+
+        let anchor = NaiveDateTime::parse_from_str("2026-06-10 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
+        let results =
+            find_candidates_within_window(&conn, "inst_1", 1000, "debit", &anchor, 3).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "match");
+    }
+
+    /// Doc 30 TASK-DEDUP-003 acceptance test: the +/-3-day window boundary —
+    /// a candidate exactly at the edge is included, one day further out is
+    /// excluded.
+    #[test]
+    fn test_candidate_search_date_window_boundary() {
+        let conn = setup_test_db();
+        seed_transaction(&conn, "within_window", "inst_1", 1000, "debit", "2026-06-13 12:00:00"); // +3 days exactly
+        seed_transaction(&conn, "outside_window", "inst_1", 1000, "debit", "2026-06-14 12:00:00"); // +4 days
+
+        let anchor = NaiveDateTime::parse_from_str("2026-06-10 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
+        let results =
+            find_candidates_within_window(&conn, "inst_1", 1000, "debit", &anchor, 3).unwrap();
+
+        let ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
+        assert!(ids.contains(&"within_window"));
+        assert!(!ids.contains(&"outside_window"));
+    }
+
+    /// Doc 30 TASK-DEDUP-003 acceptance test: a genuinely new transaction
+    /// (no prior row shares instrument+amount+direction within the window)
+    /// returns an empty candidate set, not an error.
+    #[test]
+    fn test_candidate_search_returns_empty_for_new_transaction() {
+        let conn = setup_test_db();
+        seed_transaction(&conn, "unrelated", "inst_1", 5000, "debit", "2026-06-10 12:00:00");
+
+        let anchor = NaiveDateTime::parse_from_str("2026-06-10 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
+        let results =
+            find_candidates_within_window(&conn, "inst_1", 1000, "debit", &anchor, 3).unwrap();
+
+        assert!(results.is_empty());
+    }
+}
