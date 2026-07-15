@@ -238,14 +238,21 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                             "Gmail API returned 401 for account {} — forcing token refresh and retrying once",
                             account.id
                         );
-                        match crate::ingestion::oauth::force_refresh_access_token(app, pool, &account.id).await {
+                        match crate::ingestion::oauth::force_refresh_access_token(
+                            app,
+                            pool,
+                            &account.id,
+                        )
+                        .await
+                        {
                             Ok(new_token) => {
                                 token = new_token;
-                                gmail_client = crate::ingestion::gmail_client::GmailClient::new_with_base_url(
-                                    token.clone(),
-                                    pool.clone(),
-                                    base_url.to_string(),
-                                );
+                                gmail_client =
+                                    crate::ingestion::gmail_client::GmailClient::new_with_base_url(
+                                        token.clone(),
+                                        pool.clone(),
+                                        base_url.to_string(),
+                                    );
                             }
                             Err(e) => {
                                 return Err(anyhow::anyhow!(
@@ -312,15 +319,25 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                             app_dir.clone(),
                             llm_eligible,
                         ).await {
-                            Ok(Some(crate::ingestion::message_processor::ProcessResult::TransactionAlert(_, boxed_obs))) => {
+                            Ok(Some(crate::ingestion::message_processor::ProcessResult::TransactionAlert(extracted, boxed_obs))) => {
                                 // Doc 15 §2 principle 7 / Doc 12 §6.2a: route to the Transaction
                                 // Queue rather than processing inline — same shared worker logic
                                 // as the historical-scan entry point.
                                 let job = crate::ingestion::queues::TransactionJob {
                                     obs: *boxed_obs,
-                                    source_pipeline: "realtime_poll".to_string(),
+                                    // Doc 18's CHECK constraint only allows
+                                    // 'gmail_transaction'/'statement_pdf'/'manual'
+                                    // -- "realtime_poll" isn't one of them and
+                                    // would fail every insert (same class of
+                                    // bug already fixed in historical_scan.rs
+                                    // at TASK-DB-008: this field is evidence
+                                    // origin, not ingestion trigger mechanism,
+                                    // and live polling reads the same Gmail
+                                    // transaction alerts a historical scan does).
+                                    source_pipeline: "gmail_transaction".to_string(),
                                     source_record_id: msg_id.clone(),
                                     connected_account_id: account.id.clone(),
+                                    raw_body: extracted.text_body.clone(),
                                 };
                                 let tx = app
                                     .state::<crate::ingestion::queues::QueueHandles>()

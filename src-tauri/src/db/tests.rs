@@ -1010,7 +1010,10 @@ mod tests {
         let fetched = transactions::get_transaction(&conn, "tx_updated_at")
             .unwrap()
             .unwrap();
-        assert_ne!(fetched.updated_at.unwrap().to_string(), "2000-01-01 00:00:00");
+        assert_ne!(
+            fetched.updated_at.unwrap().to_string(),
+            "2000-01-01 00:00:00"
+        );
     }
 
     #[test]
@@ -1247,12 +1250,17 @@ mod tests {
         let err = transaction_observations::insert_observation(&conn, &obs2).unwrap_err();
         assert!(err.to_string().contains("UNIQUE constraint failed"));
 
-        // Test Unique constraint (fingerprint)
+        // Doc 30 TASK-TXN-008/009 (migration 037): `fingerprint` must NOT be
+        // unique -- Document 18 §6 lists it as a plain index, not a
+        // constraint. Two observations of the same real transaction from
+        // different sources (email + statement) are meant to share a
+        // fingerprint; a UNIQUE constraint would hard-fail the second insert
+        // instead of letting the reconciliation engine evaluate the pair.
         let mut obs3 = obs.clone();
         obs3.id = "obs_3".into();
-        obs3.source_record_id = Some("rec_3".into()); // Change source_record_id to avoid that constraint
-        let err2 = transaction_observations::insert_observation(&conn, &obs3).unwrap_err();
-        assert!(err2.to_string().contains("UNIQUE constraint failed"));
+        obs3.source_record_id = Some("rec_3".into());
+        transaction_observations::insert_observation(&conn, &obs3)
+            .expect("duplicate fingerprint must be insertable, only (source_pipeline, source_record_id) is unique");
 
         // Update
         obs.merchant_raw = Some("Amazon Updated".into());
@@ -1272,18 +1280,20 @@ mod tests {
         let err_fk = transaction_observations::insert_observation(&conn, &obs_fk).unwrap_err();
         assert!(err_fk.to_string().contains("FOREIGN KEY constraint failed"));
 
-        // Paginated
+        // Paginated -- obs_1 and obs_3 both landed (obs_3's duplicate
+        // fingerprint is allowed; only obs_2's duplicate
+        // (source_pipeline, source_record_id) was rejected above).
         let res = transaction_observations::select_all_paginated(&conn, 10, 0).unwrap();
-        assert_eq!(res.len(), 1);
+        assert_eq!(res.len(), 2);
 
         // Soft delete
         transaction_observations::soft_delete(&conn, "obs_1").unwrap();
         let fetched3 = transaction_observations::get_observation(&conn, "obs_1").unwrap();
         assert!(fetched3.is_none());
 
-        // Paginated should exclude deleted
+        // Paginated should exclude deleted -- obs_3 remains (never deleted).
         let res_deleted = transaction_observations::select_all_paginated(&conn, 10, 0).unwrap();
-        assert_eq!(res_deleted.len(), 0);
+        assert_eq!(res_deleted.len(), 1);
     }
 
     #[test]
@@ -1570,12 +1580,8 @@ mod tests {
         assert_eq!(fetched.reason.as_deref(), Some("ambiguous candidate match"));
 
         // Test Update Status
-        crate::db::reconciliation_clusters::update_status(
-            &conn,
-            "cluster_test_1",
-            "deferred",
-        )
-        .unwrap();
+        crate::db::reconciliation_clusters::update_status(&conn, "cluster_test_1", "deferred")
+            .unwrap();
         let fetched_updated =
             crate::db::reconciliation_clusters::select_by_id(&conn, "cluster_test_1")
                 .unwrap()
@@ -1636,7 +1642,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(members.len(), 1);
-        assert_eq!(members[0].canonical_transaction_id.as_deref(), Some("tx_test_1"));
+        assert_eq!(
+            members[0].canonical_transaction_id.as_deref(),
+            Some("tx_test_1")
+        );
 
         // Test Delete Member by Cluster ID
         crate::db::reconciliation_cluster_members::delete_by_cluster_id(&conn, "cluster_test_1")
@@ -1707,7 +1716,8 @@ mod tests {
         crate::db::reconciliation_cluster_members::insert(&conn, &member).unwrap();
 
         let event_time =
-            chrono::NaiveDateTime::parse_from_str("2026-06-15 00:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
+            chrono::NaiveDateTime::parse_from_str("2026-06-15 00:00:00", "%Y-%m-%d %H:%M:%S")
+                .unwrap();
 
         // Hard invariant (Document 30 TASK-DB-012): clusters in an 'open'
         // (unresolved) state must never appear in analytics totals.
@@ -1820,9 +1830,16 @@ mod tests {
         crate::db::statement_entries::insert(&conn, &entry).unwrap();
 
         // Delete the statement and check cascade
-        conn.execute("DELETE FROM statements WHERE id = 'stmt_fk_test'", []).unwrap();
+        conn.execute("DELETE FROM statements WHERE id = 'stmt_fk_test'", [])
+            .unwrap();
 
-        let entries: i32 = conn.query_row("SELECT count(*) FROM statement_entries WHERE id = 'entry_fk_test'", [], |r| r.get(0)).unwrap();
+        let entries: i32 = conn
+            .query_row(
+                "SELECT count(*) FROM statement_entries WHERE id = 'entry_fk_test'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(entries, 0, "statement_entry should be cascaded deleted");
 
         // Transactions -> transaction_tags
@@ -1872,9 +1889,16 @@ mod tests {
         crate::db::tags::insert(&conn, &tag).unwrap();
 
         conn.execute("INSERT INTO transaction_tags (transaction_id, tag_id) VALUES ('tx_fk_test', 'tag_fk_test')", []).unwrap();
-        conn.execute("DELETE FROM transactions WHERE id = 'tx_fk_test'", []).unwrap();
+        conn.execute("DELETE FROM transactions WHERE id = 'tx_fk_test'", [])
+            .unwrap();
 
-        let tags_assoc: i32 = conn.query_row("SELECT count(*) FROM transaction_tags WHERE transaction_id = 'tx_fk_test'", [], |r| r.get(0)).unwrap();
+        let tags_assoc: i32 = conn
+            .query_row(
+                "SELECT count(*) FROM transaction_tags WHERE transaction_id = 'tx_fk_test'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(tags_assoc, 0, "transaction_tags should be cascaded deleted");
 
         // ReconciliationClusters -> reconciliation_cluster_members
@@ -1898,8 +1922,21 @@ mod tests {
         };
         crate::db::reconciliation_cluster_members::insert(&conn, &member).unwrap();
 
-        conn.execute("DELETE FROM reconciliation_clusters WHERE id = 'cluster_fk_test'", []).unwrap();
-        let members: i32 = conn.query_row("SELECT count(*) FROM reconciliation_cluster_members WHERE id = 'member_fk_test'", [], |r| r.get(0)).unwrap();
-        assert_eq!(members, 0, "reconciliation_cluster_members should be cascaded deleted");
+        conn.execute(
+            "DELETE FROM reconciliation_clusters WHERE id = 'cluster_fk_test'",
+            [],
+        )
+        .unwrap();
+        let members: i32 = conn
+            .query_row(
+                "SELECT count(*) FROM reconciliation_cluster_members WHERE id = 'member_fk_test'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            members, 0,
+            "reconciliation_cluster_members should be cascaded deleted"
+        );
     }
 }

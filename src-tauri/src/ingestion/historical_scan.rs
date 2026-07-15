@@ -285,7 +285,7 @@ async fn run_scan_batches<R: tauri::Runtime>(
     let mut join_set: JoinSet<(String, anyhow::Result<Option<ProcessResult>>)> = JoinSet::new();
 
     let mut batch_count = 0;
-    
+
     let mut batch_start_time = std::time::Instant::now();
 
     // Emit initial progress so the UI knows how many emails were fetched immediately
@@ -305,8 +305,8 @@ async fn run_scan_batches<R: tauri::Runtime>(
 
     async fn wait_while_paused() {
         loop {
-            let paused =
-                crate::commands::debug::SCAN_QUEUE_PAUSED.load(std::sync::atomic::Ordering::Relaxed);
+            let paused = crate::commands::debug::SCAN_QUEUE_PAUSED
+                .load(std::sync::atomic::Ordering::Relaxed);
             if !paused {
                 break;
             }
@@ -363,155 +363,165 @@ async fn run_scan_batches<R: tauri::Runtime>(
         match join_res {
             Ok((msg_id, result)) => {
                 match result {
-                        Ok(Some(ProcessResult::TransactionAlert(_, boxed_obs))) => {
-                            // Doc 15 §2 principle 7 / Doc 12 §6.2a: route to the Transaction
-                            // Queue rather than processing inline — no code path may write an
-                            // observation directly, only via the queue's shared worker logic.
-                            state.transactions_found += 1;
-                            // TASK-DB-008 fix: was "historical_scan" -- that
-                            // conflated *evidence origin* (what this field
-                            // means, Document 18 §4.4) with *ingestion
-                            // trigger mechanism* (already tracked separately
-                            // by `processing_checkpoints.job_type`). A
-                            // historical scan still reads Gmail transaction
-                            // alert messages, exactly like live polling.
-                            let job = crate::ingestion::queues::TransactionJob {
-                                obs: *boxed_obs,
-                                source_pipeline: "gmail_transaction".to_string(),
-                                source_record_id: msg_id.clone(),
-                                connected_account_id: account_id.clone(),
-                            };
-                            let tx = app
-                                .state::<crate::ingestion::queues::QueueHandles>()
-                                .transaction_tx
-                                .clone();
-                            if tx.send(job).await.is_err() {
-                                tracing::error!("Transaction Queue closed — dropping job for msg_id='{}'", msg_id);
-                            }
+                    Ok(Some(ProcessResult::TransactionAlert(extracted, boxed_obs))) => {
+                        // Doc 15 §2 principle 7 / Doc 12 §6.2a: route to the Transaction
+                        // Queue rather than processing inline — no code path may write an
+                        // observation directly, only via the queue's shared worker logic.
+                        state.transactions_found += 1;
+                        // TASK-DB-008 fix: was "historical_scan" -- that
+                        // conflated *evidence origin* (what this field
+                        // means, Document 18 §4.4) with *ingestion
+                        // trigger mechanism* (already tracked separately
+                        // by `processing_checkpoints.job_type`). A
+                        // historical scan still reads Gmail transaction
+                        // alert messages, exactly like live polling.
+                        let job = crate::ingestion::queues::TransactionJob {
+                            obs: *boxed_obs,
+                            source_pipeline: "gmail_transaction".to_string(),
+                            source_record_id: msg_id.clone(),
+                            connected_account_id: account_id.clone(),
+                            raw_body: extracted.text_body.clone(),
+                        };
+                        let tx = app
+                            .state::<crate::ingestion::queues::QueueHandles>()
+                            .transaction_tx
+                            .clone();
+                        if tx.send(job).await.is_err() {
+                            tracing::error!(
+                                "Transaction Queue closed — dropping job for msg_id='{}'",
+                                msg_id
+                            );
                         }
-                        Ok(Some(ProcessResult::StatementEmail(extracted))) => {
-                            // Doc 15 §2 principle 7 / Doc 12 §7.2: email-detected statements
-                            // route onto the same Statement Queue as manual uploads — no
-                            // lesser-validated path for either entry point.
-                            state.statements_found += 1;
-                            if extracted.pdf_attachments.is_empty() {
-                                tracing::warn!(
-                                    "StatementEmail for msg_id='{}' has has_pdf_attachment=true \
+                    }
+                    Ok(Some(ProcessResult::StatementEmail(extracted))) => {
+                        // Doc 15 §2 principle 7 / Doc 12 §7.2: email-detected statements
+                        // route onto the same Statement Queue as manual uploads — no
+                        // lesser-validated path for either entry point.
+                        state.statements_found += 1;
+                        if extracted.pdf_attachments.is_empty() {
+                            tracing::warn!(
+                                "StatementEmail for msg_id='{}' has has_pdf_attachment=true \
                                      but no downloadable attachment_ids — skipping parse",
-                                    msg_id
-                                );
-                            } else {
-                                for att in &extracted.pdf_attachments {
-                                    let att_id = &att.attachment_id;
-                                    let filename = &att.filename;
-                                    match client.fetch_attachment(&msg_id, att_id).await {
-                                        Ok(pdf_bytes) => {
-                                            // Doc 18 §4.7: the `statements` row must exist in
-                                            // `queued` state before parsing begins, regardless
-                                            // of entry point — same invariant as manual upload.
-                                            let stmt_id = uuid::Uuid::new_v4().to_string();
-                                            if let Ok(conn) = pool.get().await {
-                                                let id = stmt_id.clone();
-                                                let msg_id_for_row = msg_id.clone();
-                                                let _ = conn
-                                                    .interact(move |c| {
-                                                        crate::db::statements::insert_queued(
-                                                            c,
-                                                            &id,
-                                                            "gmail_email",
-                                                            Some(&msg_id_for_row),
-                                                            None,
-                                                        )
-                                                    })
-                                                    .await;
-                                            }
-                                            let job = crate::ingestion::queues::StatementJob {
-                                                bytes: pdf_bytes,
-                                                filename: filename.clone(),
-                                                // Use message_id as the source_record_id /
-                                                // file_hash proxy for email-sourced statements.
-                                                file_hash: msg_id.clone(),
-                                                stmt_id,
-                                                // Doc 30 TASK-STMT-009: batch progress is a
-                                                // manual-upload-batch concept only.
-                                                batch_progress: None,
-                                            };
-                                            let st_tx = app
-                                                .state::<crate::ingestion::queues::QueueHandles>()
-                                                .statement_tx
-                                                .clone();
-                                            if st_tx.send(job).await.is_err() {
-                                                tracing::error!(
+                                msg_id
+                            );
+                        } else {
+                            for att in &extracted.pdf_attachments {
+                                let att_id = &att.attachment_id;
+                                let filename = &att.filename;
+                                match client.fetch_attachment(&msg_id, att_id).await {
+                                    Ok(pdf_bytes) => {
+                                        // Doc 18 §4.7: the `statements` row must exist in
+                                        // `queued` state before parsing begins, regardless
+                                        // of entry point — same invariant as manual upload.
+                                        let stmt_id = uuid::Uuid::new_v4().to_string();
+                                        if let Ok(conn) = pool.get().await {
+                                            let id = stmt_id.clone();
+                                            let msg_id_for_row = msg_id.clone();
+                                            let _ = conn
+                                                .interact(move |c| {
+                                                    crate::db::statements::insert_queued(
+                                                        c,
+                                                        &id,
+                                                        "gmail_email",
+                                                        Some(&msg_id_for_row),
+                                                        None,
+                                                    )
+                                                })
+                                                .await;
+                                        }
+                                        let job = crate::ingestion::queues::StatementJob {
+                                            bytes: pdf_bytes,
+                                            filename: filename.clone(),
+                                            // Use message_id as the source_record_id /
+                                            // file_hash proxy for email-sourced statements.
+                                            file_hash: msg_id.clone(),
+                                            stmt_id,
+                                            // Doc 30 TASK-STMT-009: batch progress is a
+                                            // manual-upload-batch concept only.
+                                            batch_progress: None,
+                                        };
+                                        let st_tx = app
+                                            .state::<crate::ingestion::queues::QueueHandles>()
+                                            .statement_tx
+                                            .clone();
+                                        if st_tx.send(job).await.is_err() {
+                                            tracing::error!(
                                                     "Statement Queue closed — dropping job for msg_id='{}' file='{}'",
                                                     msg_id, filename
                                                 );
-                                            }
                                         }
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                "Failed to fetch PDF attachment '{}' for \
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "Failed to fetch PDF attachment '{}' for \
                                                  msg_id='{}': {}",
-                                                att_id, msg_id, e
-                                            );
-                                        }
+                                            att_id,
+                                            msg_id,
+                                            e
+                                        );
                                     }
                                 }
                             }
                         }
-                        Ok(None) => {
-                            state.non_financial += 1;
-                        }
-                        Err(e) => {
-                            state.errors += 1;
-                            tracing::error!("Failed to process message {}: {}", msg_id, e);
-                        }
+                    }
+                    Ok(None) => {
+                        state.non_financial += 1;
+                    }
+                    Err(e) => {
+                        state.errors += 1;
+                        tracing::error!("Failed to process message {}: {}", msg_id, e);
                     }
                 }
-                Err(e) => {
-                    state.errors += 1;
-                    tracing::error!("Join error: {}", e);
-                }
+            }
+            Err(e) => {
+                state.errors += 1;
+                tracing::error!("Join error: {}", e);
+            }
+        }
+
+        processed_count += 1;
+        batch_count += 1;
+
+        if should_checkpoint(batch_count) {
+            state.processed_count = processed_count;
+
+            let cp = ProcessingCheckpointRow {
+                id: Uuid::new_v4().to_string(),
+                job_type: "historical_scan".to_string(),
+                job_key: account_id.clone(),
+                checkpoint_state_json: serde_json::to_string(&state).unwrap_or_default(),
+                last_processed_token: None,
+                status: "in_progress".to_string(),
+                updated_at: Some(Utc::now().naive_utc()),
+            };
+
+            if let Ok(conn) = pool.get().await {
+                let _ = conn.interact(move |c| upsert_checkpoint(c, &cp)).await;
             }
 
-            processed_count += 1;
-            batch_count += 1;
+            batch_count = 0;
+            let elapsed = batch_start_time.elapsed();
+            tracing::info!(
+                elapsed_ms = elapsed.as_millis(),
+                batch_size = CHECKPOINT_INTERVAL,
+                "Historical scan batch completed"
+            );
+            batch_start_time = std::time::Instant::now();
 
-            if should_checkpoint(batch_count) {
-                state.processed_count = processed_count;
-
-                let cp = ProcessingCheckpointRow {
-                    id: Uuid::new_v4().to_string(),
-                    job_type: "historical_scan".to_string(),
-                    job_key: account_id.clone(),
-                    checkpoint_state_json: serde_json::to_string(&state).unwrap_or_default(),
-                    last_processed_token: None,
-                    status: "in_progress".to_string(),
-                    updated_at: Some(Utc::now().naive_utc()),
-                };
-
-                if let Ok(conn) = pool.get().await {
-                    let _ = conn.interact(move |c| upsert_checkpoint(c, &cp)).await;
-                }
-
-                batch_count = 0;
-                let elapsed = batch_start_time.elapsed();
-                tracing::info!(elapsed_ms = elapsed.as_millis(), batch_size = CHECKPOINT_INTERVAL, "Historical scan batch completed");
-                batch_start_time = std::time::Instant::now();
-
-                let _ = app.emit(
-                    "scan_progress",
-                    ScanProgressPayload {
-                        account_id: account_id.clone(),
-                        processed: processed_count,
-                        total,
-                        transactions_found: state.transactions_found,
-                        statements_found: state.statements_found,
-                        non_financial: state.non_financial,
-                        errors: state.errors,
-                        error_message: None,
-                    },
-                );
-            }
+            let _ = app.emit(
+                "scan_progress",
+                ScanProgressPayload {
+                    account_id: account_id.clone(),
+                    processed: processed_count,
+                    total,
+                    transactions_found: state.transactions_found,
+                    statements_found: state.statements_found,
+                    non_financial: state.non_financial,
+                    errors: state.errors,
+                    error_message: None,
+                },
+            );
+        }
 
         wait_while_paused().await;
         if let Some(next_id) = ids_iter.next() {
@@ -576,7 +586,11 @@ mod tests {
     #[test]
     fn test_historical_scan_checkpoints_every_5() {
         for n in 0..CHECKPOINT_INTERVAL {
-            assert!(!should_checkpoint(n), "must not checkpoint before {} processed", CHECKPOINT_INTERVAL);
+            assert!(
+                !should_checkpoint(n),
+                "must not checkpoint before {} processed",
+                CHECKPOINT_INTERVAL
+            );
         }
         assert!(should_checkpoint(CHECKPOINT_INTERVAL));
         assert!(should_checkpoint(CHECKPOINT_INTERVAL + 1));

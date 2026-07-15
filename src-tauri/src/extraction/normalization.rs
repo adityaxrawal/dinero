@@ -7,6 +7,7 @@ pub fn normalize_observation(
     raw: ExtractionResult,
     source_pipeline: &str,
     source_message_id: &str,
+    raw_body: Option<&str>,
 ) -> TransactionObservationsRow {
     // 1. Amount Minor Normalization
     let amount_minor = raw.amount_minor;
@@ -78,8 +79,17 @@ pub fn normalize_observation(
         timezone_at_ingestion: None,
         fingerprint: None,
         extraction_method: Some(raw.extraction_method),
-        confidence_score: None,
-        raw_payload_json: None,
+        // Doc 30 TASK-TXN-001 added this field to ExtractionResult
+        // (Layer 5/6 LLM sets 0.7 per FRS §6.3); TASK-TXN-009's "insert...
+        // with all fields" means it must actually flow through, not be
+        // silently dropped here.
+        confidence_score: raw.confidence_score,
+        // Doc 30 TASK-TXN-009: "raw_payload_json (the full sanitized body...
+        // for auditability/reprocessing)".
+        raw_payload_json: raw_body.map(|b| serde_json::json!({ "body": b }).to_string()),
+        // No document anywhere defines a versioning scheme for bank-template
+        // parsers (flagged, not guessed, at TASK-TXN-001 and TASK-TXN-003
+        // already) -- still true here, left unpopulated.
         parser_version: None,
         emi_total_installments: None,
         emi_installment_number: None,
@@ -113,7 +123,7 @@ mod tests {
             ..Default::default()
         };
 
-        let obs = normalize_observation(raw, "test_pipeline", "msg_123");
+        let obs = normalize_observation(raw, "test_pipeline", "msg_123", None);
         assert_eq!(obs.fingerprint, None);
     }
 
@@ -123,11 +133,11 @@ mod tests {
             direction: Some("Cr.".to_string()),
             ..Default::default()
         };
-        let obs1 = normalize_observation(raw.clone(), "test_pipeline", "msg_123");
+        let obs1 = normalize_observation(raw.clone(), "test_pipeline", "msg_123", None);
         assert_eq!(obs1.direction.unwrap(), "credit");
 
         raw.direction = Some("debited".to_string());
-        let obs2 = normalize_observation(raw, "test_pipeline", "msg_123");
+        let obs2 = normalize_observation(raw, "test_pipeline", "msg_123", None);
         assert_eq!(obs2.direction.unwrap(), "debit");
     }
 
@@ -137,11 +147,11 @@ mod tests {
             currency: Some("usd".to_string()),
             ..Default::default()
         };
-        let obs1 = normalize_observation(raw.clone(), "test_pipeline", "msg_123");
+        let obs1 = normalize_observation(raw.clone(), "test_pipeline", "msg_123", None);
         assert_eq!(obs1.currency.unwrap(), "USD");
 
         raw.currency = None;
-        let obs2 = normalize_observation(raw, "test_pipeline", "msg_123");
+        let obs2 = normalize_observation(raw, "test_pipeline", "msg_123", None);
         assert_eq!(obs2.currency.unwrap(), "INR");
     }
 
@@ -152,7 +162,7 @@ mod tests {
             event_time: Some(1704103200),
             ..Default::default()
         };
-        let obs = normalize_observation(raw, "test_pipeline", "msg_123");
+        let obs = normalize_observation(raw, "test_pipeline", "msg_123", None);
         // IST time should be UTC + 5:30 -> 2024-01-01 15:30:00
         assert_eq!(
             obs.event_time

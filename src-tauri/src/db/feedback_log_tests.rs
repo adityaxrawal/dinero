@@ -48,4 +48,37 @@ mod tests {
         );
         assert_eq!(retrieved[0].new_value, "1000");
     }
+
+    /// Doc 30 TASK-TXN-009 acceptance test.
+    #[test]
+    fn test_feedback_log_written_on_manual_correction() {
+        let conn = setup_db();
+
+        conn.execute(
+            "INSERT INTO instruments (id, type, issuer_name, masked_identifier) VALUES (?1, ?2, ?3, ?4)",
+            ["inst-1", "credit_card", "Test Issuer", "1234"],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO transactions (id, instrument_id, merchant_display_name, amount_minor, currency, best_event_time)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params!["tx-2", "inst-1", "Amazn", 50000, "INR", "2024-01-01"],
+        ).unwrap();
+
+        feedback_log::record_manual_correction(
+            &conn,
+            "tx-2",
+            None,
+            "merchant_display_name",
+            Some("Amazn"),
+            "Amazon",
+        )
+        .unwrap();
+
+        let retrieved = feedback_log::select_by_transaction(&conn, "tx-2").unwrap();
+        assert_eq!(retrieved.len(), 1);
+        assert_eq!(retrieved[0].field_name, "merchant_display_name");
+        assert_eq!(retrieved[0].old_value, Some("Amazn".to_string()));
+        assert_eq!(retrieved[0].new_value, "Amazon");
+        assert_eq!(retrieved[0].source_pipeline, Some("manual".to_string()));
+    }
 }

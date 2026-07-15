@@ -23,6 +23,10 @@ pub struct TransactionJob {
     /// came from, folded into the fingerprint so otherwise-identical alerts
     /// from two different genuine accounts are never merged.
     pub connected_account_id: String,
+    /// Doc 30 TASK-TXN-009: the sanitized email body, persisted verbatim as
+    /// `transaction_observations.raw_payload_json` for auditability/
+    /// reprocessing. `None` when the message had no text body at all.
+    pub raw_body: Option<String>,
 }
 
 /// Raw PDF bytes from either Statement Queue entry point (email-detected or
@@ -105,7 +109,8 @@ pub fn spawn_queues<R: tauri::Runtime>(
     pool: Pool,
     pending_bytes: PendingStatementBytes,
 ) -> QueueHandles {
-    let (transaction_tx, transaction_rx) = mpsc::channel::<TransactionJob>(TRANSACTION_QUEUE_CAPACITY);
+    let (transaction_tx, transaction_rx) =
+        mpsc::channel::<TransactionJob>(TRANSACTION_QUEUE_CAPACITY);
     let (statement_tx, statement_rx) = mpsc::channel::<StatementJob>(STATEMENT_QUEUE_CAPACITY);
 
     spawn_transaction_workers(transaction_rx, pool.clone());
@@ -239,6 +244,7 @@ async fn process_transaction_job(job: TransactionJob, pool: &Pool) {
         obs,
         &job.source_pipeline,
         &job.source_record_id,
+        job.raw_body.as_deref(),
     );
 
     let connected_account_id = job.connected_account_id;
@@ -286,48 +292,58 @@ async fn process_transaction_job(job: TransactionJob, pool: &Pool) {
                     ));
                 }
 
-                if let Err(e) = crate::db::transaction_observations::insert_observation(c, &row) {
-                    tracing::warn!("Observation insert failed (possibly deduped): {}", e);
-                } else {
-                    let incoming_obs = crate::reconciliation::engine::IncomingObservation {
-                        id: row.id.clone(),
-                        instrument_id: row
-                            .instrument_id
-                            .clone()
-                            .unwrap_or_else(|| "unknown".to_string()),
-                        amount_minor: row.amount_minor.unwrap_or(0),
-                        currency: row.currency.clone().unwrap_or_else(|| "INR".to_string()),
-                        direction: row.direction.clone().unwrap_or_else(|| "debit".to_string()),
-                        event_time: row
-                            .event_time
-                            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-                            .unwrap_or_default(),
-                        reference_id: row.reference_id.clone(),
-                        merchant_raw: row.merchant_raw.clone(),
-                        source_pipeline: row
-                            .source_pipeline
-                            .clone()
-                            .unwrap_or_else(|| "unknown".to_string()),
-                        source_record_id: row.source_record_id.clone().unwrap_or_default(),
-                    };
+                use crate::db::transaction_observations::InsertObservationOutcome;
+                match crate::db::transaction_observations::insert_observation_idempotent(c, &row) {
+                    Err(e) => {
+                        tracing::warn!("Observation insert failed: {}", e);
+                    }
+                    Ok(InsertObservationOutcome::DuplicateSkipped) => {
+                        // Doc 30 TASK-TXN-009: a re-processed message is
+                        // silently skipped, never an error and never
+                        // re-run through reconciliation a second time.
+                    }
+                    Ok(InsertObservationOutcome::Inserted) => {
+                        let incoming_obs = crate::reconciliation::engine::IncomingObservation {
+                            id: row.id.clone(),
+                            instrument_id: row
+                                .instrument_id
+                                .clone()
+                                .unwrap_or_else(|| "unknown".to_string()),
+                            amount_minor: row.amount_minor.unwrap_or(0),
+                            currency: row.currency.clone().unwrap_or_else(|| "INR".to_string()),
+                            direction: row.direction.clone().unwrap_or_else(|| "debit".to_string()),
+                            event_time: row
+                                .event_time
+                                .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                                .unwrap_or_default(),
+                            reference_id: row.reference_id.clone(),
+                            merchant_raw: row.merchant_raw.clone(),
+                            source_pipeline: row
+                                .source_pipeline
+                                .clone()
+                                .unwrap_or_else(|| "unknown".to_string()),
+                            source_record_id: row.source_record_id.clone().unwrap_or_default(),
+                        };
 
-                    let candidates =
-                        crate::reconciliation::engine::fetch_candidates(c, &incoming_obs)
-                            .unwrap_or_default();
-                    match crate::reconciliation::engine::reconcile(c, &incoming_obs, candidates) {
-                        Ok(decision) => {
-                            tracing::debug!(
-                                "Reconciliation decision for obs '{}': {:?}",
-                                incoming_obs.id,
-                                decision
-                            );
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "Reconciliation failed for obs '{}': {}",
-                                incoming_obs.id,
-                                e
-                            );
+                        let candidates =
+                            crate::reconciliation::engine::fetch_candidates(c, &incoming_obs)
+                                .unwrap_or_default();
+                        match crate::reconciliation::engine::reconcile(c, &incoming_obs, candidates)
+                        {
+                            Ok(decision) => {
+                                tracing::debug!(
+                                    "Reconciliation decision for obs '{}': {:?}",
+                                    incoming_obs.id,
+                                    decision
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Reconciliation failed for obs '{}': {}",
+                                    incoming_obs.id,
+                                    e
+                                );
+                            }
                         }
                     }
                 }
@@ -399,8 +415,13 @@ mod tests {
         // Second statement takes 1900ms — average is now (100+1900)/2 = 1000ms,
         // 2 remaining → 2000ms = 2s ETA. Proves the average actually *rolls*
         // forward with new data rather than staying pinned to the first sample.
-        let (parsed, _, eta) = tracker.record_completion(std::time::Duration::from_secs(2) - std::time::Duration::from_millis(100));
+        let (parsed, _, eta) = tracker.record_completion(
+            std::time::Duration::from_secs(2) - std::time::Duration::from_millis(100),
+        );
         assert_eq!(parsed, 2);
-        assert_eq!(eta, 2, "rolling average must reflect both samples, not just the first");
+        assert_eq!(
+            eta, 2,
+            "rolling average must reflect both samples, not just the first"
+        );
     }
 }
