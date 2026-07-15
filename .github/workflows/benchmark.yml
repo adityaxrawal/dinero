@@ -40,6 +40,14 @@ jobs:
           BENCHMARK_CORPUS_DIR: ${{ github.workspace }}/dinero-benchmarks
           BENCHMARK_REPORT_DIR: ${{ github.workspace }}/benchmark-reports
 
+      # Doc 30 TASK-DEDUP-010: "feeding the same nightly CI benchmark job as
+      # TASK-SETUP-011/TASK-TXN-014" -- the reconciliation engine's own
+      # false-merge/false-separation rate gate, corpus-independent (no
+      # BENCHMARK_CORPUS_DIR dependency, unlike the quality-gate step above).
+      - name: Run Reconciliation Regression Suite
+        run: cargo test --test reconciliation_regression -- --nocapture
+        working-directory: src-tauri
+
       - name: Upload benchmark reports
         if: always()
         uses: actions/upload-artifact@v4
