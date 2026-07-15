@@ -1308,6 +1308,26 @@ mod tests {
         // Should return None because rules are inactive and query won't pick them up
         assert!(result.is_none());
     }
+
+    /// Doc 30 TASK-TXN-002 acceptance test: a `pending` rule (not yet
+    /// promoted to `active`/`trusted` via 3 confirmed successes,
+    /// `db/pattern_rules.rs::record_rule_success`) must never be
+    /// auto-applied, even if its regex would otherwise match — a candidate
+    /// rule is unproven until a human/feedback loop confirms it.
+    #[tokio::test]
+    async fn test_pending_rule_not_auto_applied() {
+        let pool = setup_db_with_rule("pending".to_string()).await;
+        let layer = LearnedPatternLayer;
+        let body = "Your amount is 1500 INR at Amazon debit time 123";
+
+        let result = layer.extract(&pool, "Chase", body).await;
+
+        assert!(
+            result.is_none(),
+            "a pending rule must not be auto-applied, even when its regex matches"
+        );
+    }
+
     #[tokio::test]
     async fn test_hdfc_credit_card_regex() {
         let pool = dummy_pool();
