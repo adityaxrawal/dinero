@@ -802,7 +802,116 @@ pub fn detect_pattern_drift(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Layer 5: LLM-based extraction (stub)
+// Layer 5: Statement-row cross-reference (Doc 30 TASK-TXN-005, ADR-019)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Doc 30 TASK-TXN-005 / Doc 12 §6.3 Layer 5. Not an [`ExtractionLayer`] trait
+/// object — like the LLM fallback below, it needs an extra input the trait's
+/// fixed `(pool, bank_name, body)` signature has no room for: an anchor date
+/// to bound the `±3-day` statement-row search window. `run_extraction_ladder`
+/// calls it directly, the same way it already calls `Layer5LlmLayer`
+/// (renumbered Layer 6).
+pub struct Layer5CrossrefLayer;
+
+impl Layer5CrossrefLayer {
+    pub async fn extract(
+        &self,
+        pool: &Pool,
+        bank_name: &str,
+        body: &str,
+        anchor_date: Option<chrono::NaiveDate>,
+    ) -> Option<ExtractionResult> {
+        // No date signal at all (not even Gmail's internalDate) -- a search
+        // with no window bound would be far too permissive to trust.
+        let anchor_date = anchor_date?;
+
+        // Reuse the same partial-field regexes Layer 3 uses -- Layer 5 rescues
+        // emails that failed *overall* validation (missing a mandatory field
+        // like merchant), not emails with zero extractable signal at all.
+        let prefix_re = GENERIC_CURRENCY_AMOUNT_PREFIX_RE
+            .get_or_init(|| Regex::new(r"(?i)(rs\.?|inr|₹|\$)\s*([\d,]+(?:\.\d+)?)").unwrap());
+        let suffix_re = GENERIC_CURRENCY_AMOUNT_SUFFIX_RE
+            .get_or_init(|| Regex::new(r"(?i)([\d,]+(?:\.\d+)?)\s*(inr|rs\.?|₹)").unwrap());
+        let ref_re = GENERIC_REF_RE.get_or_init(|| Regex::new(r"\b(\d{12})\b").unwrap());
+
+        let amount_minor = prefix_re
+            .captures(body)
+            .and_then(|c| c.get(2))
+            .or_else(|| suffix_re.captures(body).and_then(|c| c.get(1)))
+            .and_then(|m| parse_amount(m.as_str()));
+        let reference_id = ref_re
+            .captures(body)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().to_string());
+
+        if amount_minor.is_none() && reference_id.is_none() {
+            return None;
+        }
+
+        let signals = extract_instrument_signals(bank_name, body);
+        let (Some(instrument_type), Some(masked_identifier)) =
+            (signals.instrument_type.as_ref(), signals.masked_identifier.as_ref())
+        else {
+            return None;
+        };
+        let issuer_name = signals.issuer_name.as_deref().unwrap_or(bank_name);
+
+        let conn = pool.get().await.ok()?;
+        let it = instrument_type.clone();
+        let mi = masked_identifier.clone();
+        let issuer = issuer_name.to_string();
+        let instrument_id = conn
+            .interact(move |c| crate::db::instruments::find_instrument_by_key(c, &it, &issuer, &mi))
+            .await
+            .ok()?
+            .ok()??;
+
+        let ref_fragment = reference_id.clone();
+        let candidates = conn
+            .interact(move |c| {
+                crate::db::statement_entries::find_crossref_candidates(
+                    c,
+                    &instrument_id,
+                    anchor_date,
+                    ref_fragment.as_deref(),
+                    amount_minor,
+                )
+            })
+            .await
+            .ok()?
+            .ok()?;
+
+        // Doc 30: "A single high-confidence match... zero or multiple
+        // ambiguous candidates return None" -- conservative by construction,
+        // matching Doc 15 §2 principle 9's ambiguity handling.
+        if candidates.len() != 1 {
+            return None;
+        }
+        let entry = &candidates[0];
+
+        Some(ExtractionResult {
+            amount_minor: entry.amount_minor,
+            currency: entry.currency.clone(),
+            direction: entry.direction.clone(),
+            event_time: entry
+                .transaction_date
+                .and_then(|d| d.and_hms_opt(0, 0, 0))
+                .map(|dt| dt.and_utc().timestamp()),
+            merchant_raw: entry.merchant_raw.clone(),
+            reference_id: entry.reference_id.clone(),
+            instrument_type: signals.instrument_type.clone(),
+            issuer_name: signals.issuer_name.clone(),
+            masked_identifier: signals.masked_identifier.clone(),
+            network: signals.network.clone(),
+            upi_vpa: signals.upi_vpa.clone(),
+            extraction_method: "layer5_statement_crossref".to_string(),
+            ..Default::default()
+        })
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Layer 6: LLM-based extraction (stub)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Layer 5 — LLM-based fallback extraction.
@@ -887,6 +996,7 @@ pub async fn run_extraction_ladder(
     body: &str,
     app_dir: Option<std::path::PathBuf>,
     llm_eligible: bool,
+    internal_date: Option<i64>,
 ) -> Result<Option<ExtractionResult>> {
     let layers: Vec<Box<dyn ExtractionLayer>> = vec![
         Box::new(LearnedPatternLayer),
@@ -913,14 +1023,40 @@ pub async fn run_extraction_ladder(
         tracing::info!(layer = layer_name, status = "failure", "Extraction layer failed");
     }
 
-    // ── All four layers failed: Layer 5 gate is RAM-eligibility only ─────────
+    // ── Layer 5: statement-row cross-reference (Doc 30 TASK-TXN-005) ─────────
+    let anchor_date = internal_date.and_then(|ts| {
+        chrono::DateTime::from_timestamp(ts, 0).map(|dt| dt.naive_utc().date())
+    });
+    if let Some(crossref_result) = Layer5CrossrefLayer
+        .extract(pool, bank_name, body, anchor_date)
+        .await
+    {
+        if crossref_result.is_valid() {
+            tracing::info!(
+                layer = "layer5_statement_crossref",
+                status = "success",
+                "Extraction layer succeeded"
+            );
+            // Instrument signals were already attached inside
+            // Layer5CrossrefLayer::extract (it needs them earlier, to
+            // resolve the instrument for the query itself).
+            return Ok(Some(crossref_result));
+        }
+    }
+    tracing::info!(
+        layer = "layer5_statement_crossref",
+        status = "failure",
+        "Extraction layer failed"
+    );
+
+    // ── All five layers failed: Layer 6 gate is RAM-eligibility only ─────────
     // (Doc 30 TASK-TXN-001) — never conditioned on whether this particular
     // bank has a known/drifted template. A brand-new, never-before-seen bank
-    // must still be able to reach Layer 5.
+    // must still be able to reach Layer 6.
     if !llm_eligible {
         tracing::info!(
             bank_name = bank_name,
-            "Layer 5 skipped — LLM not RAM-eligible"
+            "Layer 6 skipped — LLM not RAM-eligible"
         );
         return Ok(None);
     }
@@ -1156,7 +1292,7 @@ mod tests {
         let pool = setup_db_with_rule("active".to_string()).await;
         let body = "Your amount is 1500 INR at Amazon debit time 123";
 
-        let result = run_extraction_ladder(&pool, "Chase", body, None, false)
+        let result = run_extraction_ladder(&pool, "Chase", body, None, false, None)
             .await
             .unwrap();
 
@@ -1173,7 +1309,7 @@ mod tests {
     async fn test_orchestrator_fails_if_all_layers_empty() {
         // A real (if unused) subscriber must be active here, not just the
         // bare process default: `tracing`'s per-callsite Interest cache can
-        // permanently pin the "Layer 5 skipped" log line's callsite (shared
+        // permanently pin the "Layer 6 skipped" log line's callsite (shared
         // with test_orchestrator_skips_layer_5_when_llm_ineligible below) to
         // `never` the first time it fires under no subscriber at all, which
         // then silently defeats that other test's capturing layer if this
@@ -1187,7 +1323,7 @@ mod tests {
             tracing::subscriber::set_default(tracing_subscriber::registry().with(NoopLayer));
 
         let pool = dummy_pool();
-        let res = run_extraction_ladder(&pool, "Chase", "unparseable body", None, false)
+        let res = run_extraction_ladder(&pool, "Chase", "unparseable body", None, false, None)
             .await
             .unwrap();
         assert!(res.is_none());
@@ -1229,14 +1365,14 @@ mod tests {
         let _guard = tracing::subscriber::set_default(subscriber);
 
         let pool = dummy_pool();
-        let res = run_extraction_ladder(&pool, "Chase", "unparseable body", None, false)
+        let res = run_extraction_ladder(&pool, "Chase", "unparseable body", None, false, None)
             .await
             .unwrap();
         assert!(res.is_none());
 
         let captured = logs.lock().unwrap();
         assert!(
-            captured.iter().any(|l| l.contains("Layer 5 skipped")),
+            captured.iter().any(|l| l.contains("Layer 6 skipped")),
             "expected the RAM-ineligibility skip log line, got: {:?}",
             *captured
         );
@@ -1716,7 +1852,7 @@ mod tests {
         // Use BankTemplateLayer body that will match HDFC credit card pattern
         let body =
             "Rs 1500.00 spent on your HDFC Bank CREDIT Card ending 1234 at Amazon on 25-May-23.";
-        let result = run_extraction_ladder(&pool, "HDFC Bank", body, None, false)
+        let result = run_extraction_ladder(&pool, "HDFC Bank", body, None, false, None)
             .await
             .unwrap();
         assert!(result.is_some());
@@ -1727,6 +1863,151 @@ mod tests {
         assert_eq!(obs.masked_identifier, Some("XXXX1234".to_string()));
         assert_eq!(obs.instrument_type, Some("credit_card".to_string()));
         assert_eq!(obs.issuer_name, Some("HDFC Bank".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for Layer5CrossrefLayer (Doc 30 TASK-TXN-005)
+    // -----------------------------------------------------------------------
+
+    /// Seeds a migrated DB with one instrument, one statement, and the given
+    /// `statement_entries` rows for it. Returns the pool.
+    async fn setup_crossref_db(entries: Vec<crate::db::statement_entries::StatementEntriesRow>) -> Pool {
+        let pool = dummy_migrated_pool().await;
+        let conn = pool.get().await.unwrap();
+        conn.interact(move |c| {
+            c.execute("INSERT INTO local_profile (id) VALUES (1)", [])
+                .unwrap();
+            c.execute(
+                "INSERT INTO instruments (id, type, issuer_name, masked_identifier, status) \
+                 VALUES ('inst_1', 'credit_card', 'HDFC Bank', 'XXXX1234', 'active')",
+                [],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO statements (id, instrument_id, statement_type, billing_period_start, billing_period_end, parse_status) \
+                 VALUES ('stmt_1', 'inst_1', 'credit_card', '2023-05-01', '2023-05-31', 'parsed')",
+                [],
+            )
+            .unwrap();
+            for entry in entries {
+                crate::db::statement_entries::insert(c, &entry).unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        pool
+    }
+
+    fn crossref_entry(
+        id: &str,
+        transaction_date: chrono::NaiveDate,
+        amount_minor: i64,
+        reference_id: Option<&str>,
+    ) -> crate::db::statement_entries::StatementEntriesRow {
+        crate::db::statement_entries::StatementEntriesRow {
+            id: id.to_string(),
+            statement_id: Some("stmt_1".to_string()),
+            row_index: Some(1),
+            transaction_date: Some(transaction_date),
+            posting_date: None,
+            description_raw: Some("AMAZON PAY".to_string()),
+            merchant_raw: Some("Amazon".to_string()),
+            merchant_normalized: Some("amazon".to_string()),
+            amount: Some(amount_minor as f64 / 100.0),
+            amount_minor: Some(amount_minor),
+            currency: Some("INR".to_string()),
+            direction: Some("debit".to_string()),
+            reference_id: reference_id.map(|s| s.to_string()),
+            location: None,
+            raw_row_json: None,
+            created_at: None,
+        }
+    }
+
+    /// Doc 30 TASK-TXN-005 acceptance test: a single unambiguous match
+    /// borrows the statement entry's complete, authoritative field set.
+    #[tokio::test]
+    async fn test_layer5_single_match_completes_extraction() {
+        let anchor = chrono::NaiveDate::from_ymd_opt(2023, 5, 25).unwrap();
+        let entry_date = chrono::NaiveDate::from_ymd_opt(2023, 5, 24).unwrap();
+        let pool = setup_crossref_db(vec![crossref_entry(
+            "se_1",
+            entry_date,
+            150000,
+            Some("123456789012"),
+        )])
+        .await;
+
+        // Body yields a partial amount (Rs 1500.00) but no merchant/date --
+        // exactly the "layers 1-4 failed overall" scenario Layer 5 rescues.
+        let body = "Rs 1500.00 spent on your HDFC Bank credit card ending 1234.";
+        let result = Layer5CrossrefLayer
+            .extract(&pool, "HDFC Bank", body, Some(anchor))
+            .await;
+
+        assert!(result.is_some());
+        let obs = result.unwrap();
+        assert_eq!(obs.amount_minor, Some(150000));
+        assert_eq!(obs.merchant_raw, Some("Amazon".to_string()));
+        assert_eq!(obs.reference_id, Some("123456789012".to_string()));
+        assert_eq!(obs.extraction_method, "layer5_statement_crossref");
+        assert_eq!(obs.masked_identifier, Some("XXXX1234".to_string()));
+    }
+
+    /// Doc 30 TASK-TXN-005 acceptance test: multiple candidates matching the
+    /// same partial fields must not be force-picked (Doc 15 §2 principle 9).
+    #[tokio::test]
+    async fn test_layer5_ambiguous_match_returns_none() {
+        let anchor = chrono::NaiveDate::from_ymd_opt(2023, 5, 25).unwrap();
+        let entry_date = chrono::NaiveDate::from_ymd_opt(2023, 5, 24).unwrap();
+        let pool = setup_crossref_db(vec![
+            crossref_entry("se_1", entry_date, 150000, Some("111111111111")),
+            crossref_entry("se_2", entry_date, 150000, Some("222222222222")),
+        ])
+        .await;
+
+        let body = "Rs 1500.00 spent on your HDFC Bank credit card ending 1234.";
+        let result = Layer5CrossrefLayer
+            .extract(&pool, "HDFC Bank", body, Some(anchor))
+            .await;
+
+        assert!(
+            result.is_none(),
+            "two equally-plausible candidates must not be auto-resolved"
+        );
+    }
+
+    /// Doc 30 TASK-TXN-005 acceptance test: zero candidates (wrong window,
+    /// wrong instrument, or no statement processed yet) returns None.
+    #[tokio::test]
+    async fn test_layer5_no_match_returns_none() {
+        let anchor = chrono::NaiveDate::from_ymd_opt(2023, 5, 25).unwrap();
+        // Entry is 10 days outside the anchor date -- well past the ±3-day window.
+        let far_date = chrono::NaiveDate::from_ymd_opt(2023, 6, 10).unwrap();
+        let pool = setup_crossref_db(vec![crossref_entry(
+            "se_1",
+            far_date,
+            150000,
+            Some("123456789012"),
+        )])
+        .await;
+
+        let body = "Rs 1500.00 spent on your HDFC Bank credit card ending 1234.";
+        let result = Layer5CrossrefLayer
+            .extract(&pool, "HDFC Bank", body, Some(anchor))
+            .await;
+
+        assert!(result.is_none());
+    }
+
+    /// No anchor date at all (Gmail internalDate missing too) -- must not
+    /// attempt an unbounded search.
+    #[tokio::test]
+    async fn test_layer5_no_anchor_date_returns_none() {
+        let pool = setup_crossref_db(vec![]).await;
+        let body = "Rs 1500.00 spent on your HDFC Bank credit card ending 1234.";
+        let result = Layer5CrossrefLayer.extract(&pool, "HDFC Bank", body, None).await;
+        assert!(result.is_none());
     }
 
     // -----------------------------------------------------------------------

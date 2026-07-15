@@ -109,6 +109,58 @@ pub fn update(conn: &Connection, entry: &StatementEntriesRow) -> Result<()> {
     Ok(())
 }
 
+/// Doc 30 TASK-TXN-005 (Layer 5): candidate `statement_entries` rows for the
+/// given instrument within a `±3-day` window of `anchor_date` whose
+/// `reference_id` fragment or `amount_minor` matches whatever partial field
+/// the failing email yielded. `statement_entries` carries no `instrument_id`
+/// of its own (Document 18 §4.8 — it's written only after the parent
+/// statement's Statement Instrument Gate resolves one), so this joins
+/// through `statements`. Both match fields are optional but at least one
+/// must be `Some` — an unfiltered date-window-only query would be far too
+/// permissive to safely auto-complete an extraction from.
+pub fn find_crossref_candidates(
+    conn: &Connection,
+    instrument_id: &str,
+    anchor_date: NaiveDate,
+    reference_id_fragment: Option<&str>,
+    amount_minor: Option<i64>,
+) -> Result<Vec<StatementEntriesRow>> {
+    if reference_id_fragment.is_none() && amount_minor.is_none() {
+        return Ok(Vec::new());
+    }
+
+    let window_start = anchor_date - chrono::Duration::days(3);
+    let window_end = anchor_date + chrono::Duration::days(3);
+
+    let mut stmt = conn.prepare(
+        "SELECT se.* FROM statement_entries se \
+         JOIN statements s ON s.id = se.statement_id \
+         WHERE s.instrument_id = ?1 \
+           AND se.transaction_date BETWEEN ?2 AND ?3 \
+           AND ( \
+             (?4 IS NOT NULL AND se.reference_id IS NOT NULL AND se.reference_id LIKE '%' || ?4 || '%') \
+             OR (?5 IS NOT NULL AND se.amount_minor = ?5) \
+           )",
+    )?;
+
+    let rows = stmt.query_map(
+        params![
+            instrument_id,
+            window_start,
+            window_end,
+            reference_id_fragment,
+            amount_minor
+        ],
+        row_to_entry,
+    )?;
+
+    let mut entries = Vec::new();
+    for row in rows {
+        entries.push(row?);
+    }
+    Ok(entries)
+}
+
 fn row_to_entry(row: &Row) -> rusqlite::Result<StatementEntriesRow> {
     Ok(StatementEntriesRow {
         id: row.get("id")?,

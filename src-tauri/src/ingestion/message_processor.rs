@@ -124,12 +124,18 @@ impl MessageProcessor {
                 }
                 ContentClass::TransactionAlert | ContentClass::BalanceUpdate => {
                     // GATE 3: Extraction and Mandatory Field Gate
+                    // Doc 30 TASK-TXN-005: Layer 5's ±3-day statement-row
+                    // search window needs an anchor date even when the email
+                    // body itself yields none — Gmail's internalDate is the
+                    // only signal always available at this point.
+                    let internal_date_seconds = Self::internal_date_fallback(&full_msg.internal_date);
                     let extracted_data = crate::extraction::ladder::run_extraction_ladder(
                         pool,
                         &current_bank_name,
                         body_text,
                         app_dir.clone(),
                         llm_eligible,
+                        internal_date_seconds,
                     )
                     .await
                     .unwrap_or(None);

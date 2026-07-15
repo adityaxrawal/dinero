@@ -1,6 +1,6 @@
 use anyhow::Result;
 use chrono::{NaiveDate, NaiveDateTime};
-use rusqlite::{params, Connection, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -117,6 +117,33 @@ pub fn get_instrument(conn: &Connection, id: &str) -> Result<Option<InstrumentsR
     } else {
         Ok(None)
     }
+}
+
+/// Doc 30 TASK-TXN-005: a read-only lookup by the same `(type, issuer_name,
+/// masked_identifier)` key `get_or_create_instrument` uses, but never
+/// creates a row. Layer 5 (statement cross-reference) needs to know whether
+/// an instrument is already known *without* speculatively creating one from
+/// a single ambiguous, still-unextracted email — that would violate Doc 15
+/// §2 principle 8 (never guess/prematurely create an instrument). If no
+/// statement has ever been processed for this instrument, none can exist to
+/// cross-reference against either, so a clean `None` here is the correct,
+/// safe outcome for the caller to fall through on.
+pub fn find_instrument_by_key(
+    conn: &Connection,
+    instrument_type: &str,
+    issuer_name: &str,
+    masked_identifier: &str,
+) -> Result<Option<String>> {
+    let id: Option<String> = conn
+        .query_row(
+            "SELECT id FROM instruments \
+             WHERE type = ?1 AND issuer_name = ?2 AND masked_identifier = ?3 AND is_deleted = 0 \
+             LIMIT 1",
+            params![instrument_type, issuer_name, masked_identifier],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(id)
 }
 
 pub fn get_all_instruments(conn: &Connection) -> Result<Vec<InstrumentsRow>> {

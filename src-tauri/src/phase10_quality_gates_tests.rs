@@ -219,7 +219,7 @@ mod tests {
 
         for sample in &samples {
             let expected = sample.expected.as_ref().unwrap();
-            let actual = run_extraction_ladder(&pool, &sample.bank_name, &sample.body, None, false)
+            let actual = run_extraction_ladder(&pool, &sample.bank_name, &sample.body, None, false, None)
                 .await
                 .ok()
                 .flatten();
@@ -308,7 +308,7 @@ mod tests {
         let mut false_positives = 0u64;
 
         for sample in &samples {
-            let actual = run_extraction_ladder(&pool, &sample.bank_name, &sample.body, None, false)
+            let actual = run_extraction_ladder(&pool, &sample.bank_name, &sample.body, None, false, None)
                 .await
                 .ok()
                 .flatten();
