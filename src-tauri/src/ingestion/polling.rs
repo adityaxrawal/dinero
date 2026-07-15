@@ -320,6 +320,7 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                     obs: *boxed_obs,
                                     source_pipeline: "realtime_poll".to_string(),
                                     source_record_id: msg_id.clone(),
+                                    connected_account_id: account.id.clone(),
                                 };
                                 let tx = app
                                     .state::<crate::ingestion::queues::QueueHandles>()

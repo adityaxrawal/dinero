@@ -379,6 +379,7 @@ async fn run_scan_batches<R: tauri::Runtime>(
                                 obs: *boxed_obs,
                                 source_pipeline: "gmail_transaction".to_string(),
                                 source_record_id: msg_id.clone(),
+                                connected_account_id: account_id.clone(),
                             };
                             let tx = app
                                 .state::<crate::ingestion::queues::QueueHandles>()

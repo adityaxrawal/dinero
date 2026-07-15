@@ -1,5 +1,6 @@
 pub mod classifier;
 pub mod deduplication_gate;
+pub mod fingerprint;
 pub mod ladder;
 pub mod llm;
 pub mod merchant_normalizer;

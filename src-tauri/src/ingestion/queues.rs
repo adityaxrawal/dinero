@@ -19,6 +19,10 @@ pub struct TransactionJob {
     pub obs: ExtractionResult,
     pub source_pipeline: String,
     pub source_record_id: String,
+    /// Doc 30 TASK-TXN-008: the connected Gmail account this observation
+    /// came from, folded into the fingerprint so otherwise-identical alerts
+    /// from two different genuine accounts are never merged.
+    pub connected_account_id: String,
 }
 
 /// Raw PDF bytes from either Statement Queue entry point (email-detected or
@@ -237,6 +241,8 @@ async fn process_transaction_job(job: TransactionJob, pool: &Pool) {
         &job.source_record_id,
     );
 
+    let connected_account_id = job.connected_account_id;
+
     if let Ok(conn) = pool.get().await {
         let _ = conn
             .interact(move |c| {
@@ -257,6 +263,27 @@ async fn process_transaction_job(job: TransactionJob, pool: &Pool) {
                             tracing::warn!("Failed to resolve instrument: {}", e);
                         }
                     }
+                }
+
+                // Doc 30 TASK-TXN-008: fingerprint must be keyed on the
+                // *resolved* instrument_id, which is only known from this
+                // point on — computed here, not inside normalize_observation
+                // (which runs before instrument resolution and has no way
+                // to produce a spec-correct fingerprint yet).
+                if let (Some(ref instrument_id), Some(ref direction), Some(amount_minor)) =
+                    (&row.instrument_id, &row.direction, row.amount_minor)
+                {
+                    let event_bucket = row
+                        .event_time
+                        .map(|dt| dt.format("%Y-%m-%dT%H:%M").to_string())
+                        .unwrap_or_default();
+                    row.fingerprint = Some(crate::extraction::fingerprint::compute_fingerprint(
+                        instrument_id,
+                        direction,
+                        amount_minor,
+                        &event_bucket,
+                        &connected_account_id,
+                    ));
                 }
 
                 if let Err(e) = crate::db::transaction_observations::insert_observation(c, &row) {
