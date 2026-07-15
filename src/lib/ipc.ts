@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { invoke } from '@tauri-apps/api/core';
+import { readFile } from '@tauri-apps/plugin-fs';
 import type { AppError } from '@/types/ipc';
 
 /**
@@ -217,11 +218,34 @@ export const API = {
   statements: {
     // H2 fix: statements_upload is now a real multi-file batch contract
     // (Doc 19 §9.1, FR-031) — one IPC call processes every selected file.
-    upload: (filePaths: string[]) =>
-      invokeCommand<Array<{ status: string; statement_id?: string; error?: string }>>(
-        'statements_upload',
-        { filePaths },
-      ),
+    // Doc 30 TASK-API-004 fix: the real backend command needs `files:
+    // [{ file_bytes, filename }]` (actual PDF byte content), not paths —
+    // the previous `{ filePaths }` shape never matched the command's real
+    // argument type, so upload from the UI never actually worked. Reads
+    // each dialog-selected path's bytes via the newly-added, read-only,
+    // capability-scoped `@tauri-apps/plugin-fs` (tauri.conf.json's
+    // `fs:allow-read-file`) before sending — the bytes are held in memory
+    // only for this one IPC call, consistent with Document 15's "raw PDFs
+    // never persisted" invariant (this is the frontend's read of the
+    // user's own already-selected file, not a new persistence path).
+    upload: async (filePaths: string[]) => {
+      const files = await Promise.all(
+        filePaths.map(async (path) => {
+          const bytes = await readFile(path);
+          const filename = path.split(/[/\\]/).pop() || path;
+          return { file_bytes: Array.from(bytes), filename };
+        }),
+      );
+      // Doc 30 TASK-API-004 fix: the real command wraps its array in
+      // `{ results: [...] }` (Document 19 §9.1's exact response shape) --
+      // this wrapper was previously also mismatched (the caller expected a
+      // bare array), which would have thrown ("not iterable") the moment
+      // upload actually reached a real response.
+      const response = await invokeCommand<{
+        results: Array<{ status: string; statement_id?: string; filename?: string; error?: string }>;
+      }>('statements_upload', { files });
+      return response.results;
+    },
     submitPassword: (
       statementId: string,
       instrumentId: string,
@@ -243,8 +267,16 @@ export const API = {
         maskedIdentifier,
         instrumentType,
       }),
-    listHistory: () =>
-      invokeCommand<StatementRecord[]>('statements_list'),
+    // Doc 30 TASK-API-004: `statements_list` now returns a real paginated
+    // page ({ records, total }, matching Document 19 §3.3's pagination
+    // convention -- it previously had no pagination at all). Unwrapped to
+    // `.records` here so the existing array-shaped consumer keeps working;
+    // `page`/`total` are available for a future paginated statements UI.
+    listHistory: (page = 1) =>
+      invokeCommand<{ records: StatementRecord[]; total: number }>('statements_list', { page })
+        .then((res) => res.records),
+    getEntries: (statementId: string) =>
+      invokeCommand<any[]>('statements_get_entries', { statementId }),
   },
   reconciliation: {
     // G20/H10/J8 fix: both renamed to match Doc 19 §10.1/§10.3's documented

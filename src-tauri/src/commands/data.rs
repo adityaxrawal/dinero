@@ -85,6 +85,17 @@ pub struct StatementRecord {
 }
 
 #[derive(Serialize, Debug, PartialEq)]
+pub struct StatementsPage {
+    pub records: Vec<StatementRecord>,
+    pub total: i64,
+}
+
+pub fn count_statements(conn: &Connection) -> Result<i64, String> {
+    conn.query_row("SELECT COUNT(*) FROM statements", [], |row| row.get(0))
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Serialize, Debug, PartialEq)]
 pub struct ClusterMember {
     pub id: String,
     pub source: String,
@@ -388,15 +399,22 @@ pub async fn transactions_search(
         .map_err(|e| e.to_string())?
 }
 
-pub fn do_fetch_statement_history(conn: &Connection) -> Result<Vec<StatementRecord>, String> {
+// Doc 30 TASK-API-004 acceptance test `test_statements_list_paginated`: real
+// gap fixed here -- this previously returned every statement row in one
+// unbounded query, with no `limit`/`offset` parameters at all.
+pub fn do_fetch_statement_history(
+    conn: &Connection,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<StatementRecord>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, created_at, source_message_id, parse_status FROM statements ORDER BY created_at DESC",
+            "SELECT id, created_at, source_message_id, parse_status FROM statements ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
         )
         .map_err(|e| e.to_string())?;
 
     let iter = stmt
-        .query_map([], |row| {
+        .query_map(params![limit, offset], |row| {
             let created_at: Option<String> = row.get(1)?;
             let file_name: Option<String> = row.get(2)?;
             let status: Option<String> = row.get(3)?;
@@ -993,14 +1011,45 @@ pub async fn fetch_transaction_source_log(
 
 // G20/H10/J8 fix: renamed from `fetch_statement_history` to match Doc 19
 // §9.2's documented `statements_list` naming.
+const STATEMENTS_PAGE_SIZE: i64 = 50;
+
 #[tauri::command]
 pub async fn statements_list(
     pool: State<'_, deadpool_sqlite::Pool>,
-) -> Result<Vec<StatementRecord>, String> {
+    page: Option<u32>,
+) -> Result<StatementsPage, String> {
+    let page = page.unwrap_or(1).max(1) as i64;
+    let offset = (page - 1) * STATEMENTS_PAGE_SIZE;
     let conn = pool.get().await.map_err(|e| e.to_string())?;
-    conn.interact(|c| do_fetch_statement_history(c))
+    conn.interact(move |c| {
+        let records = do_fetch_statement_history(c, STATEMENTS_PAGE_SIZE, offset)?;
+        let total = count_statements(c)?;
+        Ok(StatementsPage { records, total })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Doc 30 TASK-API-004: `statements_get_entries` -- the debug/audit "view
+/// raw rows" panel. Did not exist as an IPC command before this task
+/// (`db::statement_entries::select_by_statement_id` already existed but was
+/// never exposed over IPC). No raw PDF bytes are ever part of
+/// `StatementEntriesRow` (Document 18 §4.8 has no such column) -- this
+/// command inherits that invariant by construction, not by a special check.
+#[tauri::command]
+pub async fn statements_get_entries(
+    statement_id: String,
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<Vec<crate::db::statement_entries::StatementEntriesRow>, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("statement_id", &statement_id)?;
+    let conn = pool
+        .get()
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(move |c| crate::db::statement_entries::select_by_statement_id(c, &statement_id))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))
 }
 
 // G20/H10/J8 fix: renamed from `fetch_unresolved_clusters` to match Doc 19
@@ -1800,7 +1849,7 @@ mod tests {
         assert_eq!(txs[0].id, "tx_1"); // 2026-06-10 is the latest date
         assert_eq!(txs[0].amount, -1499.0);
 
-        let stmts = do_fetch_statement_history(&conn).unwrap();
+        let stmts = do_fetch_statement_history(&conn, 50, 0).unwrap();
         assert_eq!(stmts.len(), 1);
         assert_eq!(stmts[0].file_name, "HDFC_May_2026.pdf");
 
@@ -1848,5 +1897,30 @@ mod tests {
 
         assert!(ids.contains(&"tx_amazon"));
         assert!(!ids.contains(&"tx_uber"), "FTS5 match must be specific to the query term, not a substring hit on unrelated rows");
+    }
+
+    /// Doc 30 TASK-API-004 acceptance test: `statements_list` returns a
+    /// real bounded page, not every row unconditionally.
+    #[test]
+    fn test_statements_list_paginated() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        conn.execute("PRAGMA foreign_keys = OFF;", []).unwrap();
+        for i in 0..5 {
+            conn.execute(
+                "INSERT INTO statements (id, instrument_id, statement_type, source_type, billing_period_start, billing_period_end, parse_status, is_duplicate, created_at) \
+                 VALUES (?1, NULL, 'credit_card_statement', 'manual_upload', '2026-01-01', '2026-01-31', 'parsed', 0, ?2)",
+                rusqlite::params![format!("stmt_{i}"), format!("2026-01-0{}", i + 1)],
+            )
+            .unwrap();
+        }
+
+        let page1 = do_fetch_statement_history(&conn, 2, 0).unwrap();
+        let page2 = do_fetch_statement_history(&conn, 2, 2).unwrap();
+        let total = count_statements(&conn).unwrap();
+
+        assert_eq!(page1.len(), 2, "page size must be respected");
+        assert_eq!(page2.len(), 2);
+        assert_eq!(total, 5, "total count must reflect all rows, independent of the page size");
+        assert_ne!(page1[0].id, page2[0].id, "different pages must return different rows");
     }
 }

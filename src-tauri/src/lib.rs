@@ -1,21 +1,21 @@
-pub mod network_client;
 pub mod auth;
 pub mod commands;
+pub mod crash_reporter;
 pub mod db;
+pub mod diagnostics;
 pub mod error;
 pub mod extraction;
+pub mod feedback;
 pub mod ingestion;
+pub mod integrity;
 pub mod ipc;
-pub mod reconciliation;
-pub mod statements;
 pub mod licensing;
 pub mod llm_manager;
-pub mod crash_reporter;
-pub mod diagnostics;
-pub mod feedback;
-pub mod integrity;
+pub mod network_client;
+pub mod reconciliation;
 pub mod security;
 pub mod startup;
+pub mod statements;
 
 use std::path::PathBuf;
 use tauri::{Emitter, Manager};
@@ -65,7 +65,11 @@ fn prune_old_logs(log_dir: &std::path::Path) {
                 if let Err(e) = std::fs::remove_file(&path) {
                     tracing::warn!("Failed to prune old log file {:?}: {}", path, e);
                 } else {
-                    tracing::info!("Pruned log file older than {} days: {:?}", retention_days, path);
+                    tracing::info!(
+                        "Pruned log file older than {} days: {:?}",
+                        retention_days,
+                        path
+                    );
                 }
             }
         }
@@ -76,7 +80,10 @@ fn prune_old_logs(log_dir: &std::path::Path) {
 pub fn run() {
     let mut log_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     if log_dir.ends_with("src-tauri") {
-        log_dir = log_dir.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
+        log_dir = log_dir
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .to_path_buf();
     }
     // J4 fix (Doc 28 §4.2): the debug log previously never rotated or
     // expired at all (`rolling::never` into one ever-growing file). Rotates
@@ -95,7 +102,11 @@ pub fn run() {
     tracing_subscriber::registry()
         .with(env_filter)
         .with(tracing_subscriber::fmt::layer().with_ansi(true))
-        .with(tracing_subscriber::fmt::layer().with_writer(non_blocking).with_ansi(false))
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(non_blocking)
+                .with_ansi(false),
+        )
         .init();
 
     // H4 fix (Doc 19 §3.4): a global panic hook so any panic — inside a
@@ -124,6 +135,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // Doc 30 TASK-API-004: read-only, capability-scoped (tauri.conf.json's
+        // `fs:allow-read-file`) -- lets the frontend read the bytes of a
+        // dialog-selected statement PDF so `statements_upload` can be sent
+        // real file content, matching Document 19 §9.1's actual contract.
+        .plugin(tauri_plugin_fs::init())
         .setup(|app| {
             // I11 fix (Doc 26 T-10): verify the running binary's code signature
             // before doing anything else. Release-build-only — local dev builds
@@ -629,18 +645,18 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 #[cfg(test)]
-mod phase8_telemetry_tests;
-#[cfg(test)]
-mod phase9_security_tests;
-#[cfg(test)]
-mod phase9_rigorous_tests;
-#[cfg(test)]
-mod phase11_llm_tests;
-#[cfg(test)]
 mod llm_manager_tests;
-#[cfg(test)]
-mod phase11_rigorous_tests;
 #[cfg(test)]
 mod phase10_quality_gates_tests;
 #[cfg(test)]
 mod phase10_rigorous_tests;
+#[cfg(test)]
+mod phase11_llm_tests;
+#[cfg(test)]
+mod phase11_rigorous_tests;
+#[cfg(test)]
+mod phase8_telemetry_tests;
+#[cfg(test)]
+mod phase9_rigorous_tests;
+#[cfg(test)]
+mod phase9_security_tests;

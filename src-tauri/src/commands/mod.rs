@@ -226,6 +226,18 @@ pub struct UploadResult {
     pub status: String,
 }
 
+/// Doc 30 TASK-API-004 acceptance test `test_upload_command_rejects_missing_file`:
+/// extracted as a pure function so it's directly testable without the full
+/// async IPC plumbing.
+fn validate_upload_files_non_empty(files: &[UploadFile]) -> Result<(), crate::error::AppError> {
+    if files.is_empty() {
+        return Err(crate::error::AppError::Validation(
+            "at least one file is required".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Phase 5 — Upload one or more PDF statements for in-memory parsing (Doc 19 §9.1, FR-031).
 /// Each file becomes an independent Statement Queue job, subject to the same
 /// bounded 5-concurrent cap and Statement Instrument Gate as email-detected
@@ -243,6 +255,11 @@ pub async fn statements_upload(
     queues: tauri::State<'_, crate::ingestion::queues::QueueHandles>,
     pending_bytes: tauri::State<'_, crate::statements::pending_bytes::PendingStatementBytes>,
 ) -> Result<serde_json::Value, crate::error::AppError> {
+    // Doc 30 TASK-API-004 acceptance test `test_upload_command_rejects_missing_file`:
+    // real gap fixed here -- an empty `files` array previously fell through
+    // the loop below untouched and returned `Ok({"results": []})`, never an
+    // error.
+    validate_upload_files_non_empty(&files)?;
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
     // H2 fix (Doc 19 §9.1, FR-031): a real multi-file batch contract — one
@@ -2550,6 +2567,7 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         data::fetch_transaction_observations,
         data::fetch_transaction_source_log,
         data::statements_list,
+        data::statements_get_entries,
         data::reconciliation_clusters_list,
         llm::llm_get_available_models,
         llm::llm_download_model,
@@ -2669,6 +2687,50 @@ mod tests {
             .unwrap();
         assert_eq!(merchant, "Acme Streaming");
         assert!(entity_id.is_some(), "the transaction must be linked to a resolved merchant entity");
+    }
+
+    /// Doc 30 TASK-API-004 acceptance test.
+    #[test]
+    fn test_upload_command_rejects_missing_file() {
+        assert!(validate_upload_files_non_empty(&[]).is_err());
+        let one_file = vec![UploadFile { file_bytes: vec![1, 2, 3], filename: "a.pdf".to_string() }];
+        assert!(validate_upload_files_non_empty(&one_file).is_ok());
+    }
+
+    /// Doc 30 TASK-API-004 acceptance test: schema-level check that no
+    /// statement-related *response* type ever carries raw PDF bytes.
+    /// Scans each response struct's own field block (not the whole file --
+    /// `UploadFile`'s `file_bytes: Vec<u8>` is a legitimate *input* type in
+    /// the same file and must not false-positive this check).
+    #[test]
+    fn test_no_command_returns_pdf_bytes() {
+        fn struct_field_block(src: &str, struct_name: &str) -> String {
+            let marker = format!("struct {struct_name} {{");
+            let start = src.find(&marker).unwrap_or_else(|| panic!("struct {struct_name} not found"));
+            let body_start = start + marker.len();
+            let end = src[body_start..].find('}').unwrap();
+            src[body_start..body_start + end].to_string()
+        }
+
+        let commands_mod_src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/commands/mod.rs")).unwrap();
+        let commands_data_src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/commands/data.rs")).unwrap();
+        let statement_entries_src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/db/statement_entries.rs")).unwrap();
+
+        for (src, name) in [
+            (&commands_mod_src, "UploadResult"),
+        ] {
+            let block = struct_field_block(src, name);
+            assert!(!block.contains("Vec<u8>"), "{name} must never carry raw byte content: {block}");
+        }
+        for (src, name) in [
+            (&commands_data_src, "StatementRecord"),
+            (&commands_data_src, "StatementsPage"),
+        ] {
+            let block = struct_field_block(src, name);
+            assert!(!block.contains("Vec<u8>"), "{name} must never carry raw byte content: {block}");
+        }
+        let entries_block = struct_field_block(&statement_entries_src, "StatementEntriesRow");
+        assert!(!entries_block.contains("Vec<u8>"), "StatementEntriesRow must never carry raw byte content");
     }
 
     /// §5.8 Integration test: Verify that the raw PDF bytes do not persist
