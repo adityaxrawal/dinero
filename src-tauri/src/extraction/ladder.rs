@@ -51,6 +51,14 @@ pub struct ExtractionResult {
     pub emi_total_installments: Option<i32>,
     pub emi_installment_number: Option<i32>,
     pub emi_original_amount_minor: Option<i64>,
+
+    /// Doc 30 TASK-TXN-013: exchange rate parsed directly from the bank's
+    /// email text when explicitly stated (FRS §6.4: "No external live API
+    /// calls... are permitted to backfill this rate"). `None` when the bank
+    /// doesn't print it, even if `original_currency`/`original_amount_minor`
+    /// are populated -- that combination is exactly what should route a
+    /// transaction to `pending_fx` rather than being guessed at here.
+    pub exchange_rate: Option<f64>,
 }
 
 impl ExtractionResult {
@@ -1061,6 +1069,14 @@ pub async fn run_extraction_ladder(
                     obs.emi_total_installments = Some(total);
                     obs.emi_original_amount_minor = crate::extraction::emi_detector::detect_emi_original_amount_minor(body);
                 }
+                // Doc 30 TASK-TXN-013: foreign-currency evidence, same
+                // "applies regardless of which layer produced the core
+                // fields" reasoning as EMI detection above.
+                let settled_currency = obs.currency.clone().unwrap_or_else(|| "INR".to_string());
+                let fx = crate::extraction::currency_handler::detect_fx_fields(body, &settled_currency);
+                obs.original_amount_minor = fx.original_amount_minor;
+                obs.original_currency = fx.original_currency;
+                obs.exchange_rate = fx.exchange_rate;
                 tracing::info!(
                     layer = layer_name,
                     status = "success",

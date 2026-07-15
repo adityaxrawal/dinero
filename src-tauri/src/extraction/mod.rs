@@ -1,4 +1,5 @@
 pub mod classifier;
+pub mod currency_handler;
 pub mod deduplication_gate;
 pub mod emi_detector;
 pub mod fingerprint;

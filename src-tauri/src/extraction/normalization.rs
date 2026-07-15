@@ -74,7 +74,10 @@ pub fn normalize_observation(
         reference_id: raw.reference_id,
         original_amount_minor: raw.original_amount_minor,
         original_currency: raw.original_currency,
-        exchange_rate: None,
+        // Doc 30 TASK-TXN-013: previously hardcoded None -- no layer ever
+        // populated ExtractionResult.exchange_rate before this task added
+        // the field and the currency_handler that fills it.
+        exchange_rate: raw.exchange_rate,
         balance_after_transaction: raw.balance_after.map(|a| a as f64 / 100.0),
         timezone_at_ingestion: None,
         fingerprint: None,
