@@ -135,10 +135,14 @@ impl MessageProcessor {
                     .unwrap_or(None);
 
                     if let Some(mut obs) = extracted_data {
-                        if let Some(internal_date_str) = &full_msg.internal_date {
-                            if let Ok(ts_millis) = internal_date_str.parse::<i64>() {
-                                obs.event_time = Some(ts_millis / 1000);
-                            }
+                        // Doc 30 TASK-TXN-004: Gmail's internalDate is a
+                        // *fallback* for Layer 3's generic date regex, not an
+                        // unconditional override — Layers 1/2 already parse
+                        // the real transaction date/time out of the email
+                        // body, which can legitimately differ from (and is
+                        // more precise than) the email's arrival timestamp.
+                        if obs.event_time.is_none() {
+                            obs.event_time = Self::internal_date_fallback(&full_msg.internal_date);
                         }
 
                         // If it's a pure balance update (no amount/merchant), fill defaults
@@ -180,6 +184,17 @@ impl MessageProcessor {
         }
 
         Ok(None)
+    }
+
+    /// Doc 30 TASK-TXN-004: parses Gmail's `internalDate` (epoch
+    /// milliseconds, as a string) into epoch seconds. Only ever called when
+    /// extraction itself found no date — this is a fallback, not a general
+    /// date source.
+    pub(crate) fn internal_date_fallback(internal_date: &Option<String>) -> Option<i64> {
+        internal_date
+            .as_ref()
+            .and_then(|s| s.parse::<i64>().ok())
+            .map(|ts_millis| ts_millis / 1000)
     }
 
     /// Evaluates if the extracted observation passes Gate 3 (Mandatory Fields):

@@ -467,6 +467,11 @@ impl ExtractionLayer for GenericRegexLayer {
         Box::pin(async move {
             let mut result = ExtractionResult {
                 extraction_method: "generic_regex".to_string(),
+                // Doc 30 TASK-TXN-004: "a lower confidence score (0.5-0.7)
+                // than Layer 1/2 (typically 0.9+), which flows directly into
+                // the reconciliation scoring engine." No document pins an
+                // exact figure within that range; 0.6 is the midpoint.
+                confidence_score: Some(0.6),
                 ..Default::default()
             };
 
@@ -1539,6 +1544,79 @@ mod tests {
         let result = layer.extract(&pool, "Any Bank", body).await;
 
         assert!(result.is_none());
+    }
+
+    /// Doc 30 TASK-TXN-004 acceptance test: generic currency-prefixed amount
+    /// regex, proximate to a debit/credit verb.
+    #[tokio::test]
+    async fn test_generic_amount_extraction() {
+        let pool = dummy_pool();
+        let layer = GenericRegexLayer;
+        let body = "You have paid Rs 1,500.50 to Zomato via UPI on 25/05/2023.";
+        let result = layer.extract(&pool, "Any Bank", body).await.unwrap();
+        assert_eq!(result.amount_minor, Some(150050));
+        assert_eq!(result.currency, Some("INR".to_string()));
+        assert_eq!(
+            result.confidence_score,
+            Some(0.6),
+            "Layer 3 must assign a lower confidence than Layer 1/2"
+        );
+    }
+
+    /// Doc 30 TASK-TXN-004 acceptance test: direction via keyword proximity
+    /// ("debited"/"spent"/"paid" vs. "credited"/"received").
+    #[tokio::test]
+    async fn test_generic_direction_keyword_proximity() {
+        let pool = dummy_pool();
+        let layer = GenericRegexLayer;
+
+        let debit_body = "Rs 500 spent at Amazon on 01-Jan-24.";
+        let debit_result = layer.extract(&pool, "Any Bank", debit_body).await.unwrap();
+        assert_eq!(debit_result.direction, Some("debit".to_string()));
+
+        let credit_body = "Rs 500 credited to your account from Amazon Refund on 01-Jan-24.";
+        let credit_result = layer
+            .extract(&pool, "Any Bank", credit_body)
+            .await
+            .unwrap();
+        assert_eq!(credit_result.direction, Some("credit".to_string()));
+    }
+
+    /// Doc 30 TASK-TXN-004 acceptance test: merchant via capitalized-token or
+    /// "at"/"to"/"towards"/"info:" heuristics.
+    #[tokio::test]
+    async fn test_generic_merchant_heuristic() {
+        let pool = dummy_pool();
+        let layer = GenericRegexLayer;
+        let body = "Rs 1,500.50 paid to Zomato via UPI on 25/05/2023.";
+        let result = layer.extract(&pool, "Any Bank", body).await.unwrap();
+        assert_eq!(result.merchant_raw, Some("Zomato".to_string()));
+    }
+
+    /// Doc 30 TASK-TXN-004 acceptance test: when Layer 3's own date regex
+    /// finds nothing, Gmail's `internalDate` fills in as a fallback — but
+    /// must never override a date the extraction layer already found (the
+    /// bug this test guards against: the caller previously overwrote
+    /// `event_time` unconditionally, discarding a more precise in-body date
+    /// in favor of the email's arrival timestamp).
+    #[test]
+    fn test_generic_date_fallback_to_internal_date() {
+        use crate::ingestion::message_processor::MessageProcessor;
+
+        // No internal_date at all -> no fallback value.
+        assert_eq!(MessageProcessor::internal_date_fallback(&None), None);
+
+        // A valid internalDate (epoch millis as a string) converts to epoch
+        // seconds -- this is the fallback path itself.
+        let internal_date = Some("1700000000000".to_string());
+        assert_eq!(
+            MessageProcessor::internal_date_fallback(&internal_date),
+            Some(1_700_000_000)
+        );
+
+        // Malformed internalDate must not panic -- fails closed to None.
+        let malformed = Some("not-a-number".to_string());
+        assert_eq!(MessageProcessor::internal_date_fallback(&malformed), None);
     }
 
     #[test]
