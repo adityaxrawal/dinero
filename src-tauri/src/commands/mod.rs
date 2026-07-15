@@ -1884,28 +1884,174 @@ pub async fn transactions_create(
     Ok(decision.as_str().to_string())
 }
 
+/// Doc 19 §8.3's exact editable set: `merchant_display_name`, `category_id`,
+/// `notes`, `location`. Real bug fixed here: the previous payload instead
+/// let the caller freely rewrite `amount_minor`/`currency`/`direction`/
+/// `event_time` — none of which Document 19 documents as editable, and all
+/// of which are evidence-derived fields (Document 15 Core Principle 6:
+/// canonical transactions are the analytics source of truth, populated
+/// through reconciliation, not ad hoc user rewrite) with no re-reconciliation
+/// or observation trail triggered by changing them this way. The frontend
+/// (`src/lib/ipc.ts`) never actually sent any of the four removed fields —
+/// confirmed via full grep before removing them — so this is not a
+/// behavior change for the real app, only a closed attack-surface/spec gap.
 #[derive(serde::Deserialize)]
-pub struct ManualTransactionUpdatePayload {
+pub struct TransactionUpdatePayload {
     pub transaction_id: uuid::Uuid,
-    pub amount_minor: Option<i64>,
-    pub currency: Option<String>,
-    pub direction: Option<String>,
-    pub event_time: Option<String>,
-    pub merchant_name: Option<String>,
-    /// G13 fix: tags are a first-class, reusable entity (crate::db::tags) —
-    /// resolved by name (get-or-create) and replaces this transaction's tag
-    /// associations, rather than a flat free-text array with nowhere to live.
+    pub merchant_display_name: Option<String>,
+    pub category_id: Option<String>,
+    pub notes: Option<String>,
+    pub location: Option<String>,
+    /// Not itself in Document 19 §8.3's editable-field list (§8.7/§8.8 name
+    /// dedicated `transactions_add_tag`/`transactions_remove_tag` commands
+    /// instead, both now also implemented below) — kept here as an
+    /// additive, non-contradicting bulk-replace convenience the existing
+    /// frontend tag-editor UI already depends on.
     pub tags: Option<Vec<String>>,
 }
 
+/// Doc 30 TASK-API-003: the actual field-update logic, extracted to a plain
+/// synchronous function so it's directly testable (`tauri::State` has no
+/// public test constructor) without needing the full async IPC plumbing
+/// around it. Applies Document 19 §8.3's exact editable set
+/// (`merchant_display_name`/`category_id`/`notes`/`location`); every
+/// changed field writes a `feedback_log` entry via `log_user_correction`,
+/// and a merchant change additionally resolves/creates a `merchants` row
+/// and records the old raw text as a `merchant_aliases` entry.
+fn apply_transaction_field_update(
+    conn: &rusqlite::Connection,
+    tx_id: &str,
+    merchant_display_name: Option<String>,
+    category_id: Option<String>,
+    notes: Option<String>,
+    location: Option<String>,
+) -> Result<(), crate::error::AppError> {
+    let old_tx = crate::db::transactions::get_transaction(conn, tx_id)
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+        .ok_or_else(|| crate::error::AppError::Unknown("Transaction not found".to_string()))?;
+
+    let mut new_merchant = old_tx.merchant_display_name.clone();
+    let mut new_merchant_normalized = old_tx.merchant_normalized_name.clone();
+    let mut new_merchant_entity_id = old_tx.merchant_entity_id.clone();
+    let mut new_category_id = old_tx.category_id.clone();
+    let mut new_notes = old_tx.notes.clone();
+    let mut new_location = old_tx.location.clone();
+
+    if let Some(cat) = category_id {
+        let old_val = old_tx.category_id.clone().unwrap_or_default();
+        if old_val != cat {
+            // Doc 30 TASK-API-003 acceptance test: category changes must
+            // write a feedback_log entry too, same as merchant.
+            let _ = crate::reconciliation::audit::log_user_correction(
+                conn, tx_id, "category_id", &old_val, &cat,
+            );
+        }
+        new_category_id = Some(cat);
+    }
+    if let Some(notes) = notes {
+        new_notes = Some(notes);
+    }
+    if let Some(loc) = location {
+        new_location = Some(loc);
+    }
+    if let Some(merch) = merchant_display_name {
+        let old_val = old_tx.merchant_display_name.clone().unwrap_or_default();
+        if old_val != merch {
+            let _ = crate::reconciliation::audit::log_user_correction(
+                conn, tx_id, "merchant", &old_val, &merch,
+            );
+            // Doc 30 TASK-API-003: "for merchant, merchant_aliases" --
+            // resolves/creates a canonical merchant entity for the
+            // corrected name and records the *old* raw text as a new
+            // alias pointing at it, so future occurrences of the same
+            // misrecognized raw text auto-resolve correctly next time
+            // (the same learning mechanism TASK-TXN-007 already
+            // established for extraction-time normalization).
+            let cleaned = crate::extraction::merchant_normalizer::strip_noise_tokens(&merch);
+            if !cleaned.is_empty() {
+                if let Ok(Some(existing)) = crate::db::merchants::select_by_alias(conn, &cleaned) {
+                    new_merchant_entity_id = Some(existing.id.clone());
+                    new_merchant_normalized = Some(existing.normalized_name.clone());
+                    if !old_val.is_empty() {
+                        let alias = crate::db::merchants::MerchantAliasesRow {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            merchant_entity_id: existing.id,
+                            alias_raw: old_val,
+                            alias_normalized: crate::extraction::merchant_normalizer::strip_noise_tokens(&merch),
+                            country_code: None,
+                            issuer_name: None,
+                            confidence: 1.0,
+                            created_at: Some(chrono::Utc::now().naive_utc()),
+                        };
+                        let _ = crate::db::merchants::insert_alias(conn, &alias);
+                    }
+                } else {
+                    let new_merchant_id = uuid::Uuid::new_v4().to_string();
+                    let merchant_row = crate::db::merchants::MerchantsRow {
+                        id: new_merchant_id.clone(),
+                        name: merch.clone(),
+                        normalized_name: cleaned.clone(),
+                        source: "user".to_string(),
+                        created_at: Some(chrono::Utc::now().naive_utc()),
+                        updated_at: Some(chrono::Utc::now().naive_utc()),
+                        is_deleted: false,
+                    };
+                    if crate::db::merchants::insert(conn, &merchant_row).is_ok() {
+                        new_merchant_entity_id = Some(new_merchant_id.clone());
+                        new_merchant_normalized = Some(cleaned.clone());
+                        if !old_val.is_empty() {
+                            let alias = crate::db::merchants::MerchantAliasesRow {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                merchant_entity_id: new_merchant_id,
+                                alias_raw: old_val,
+                                alias_normalized: crate::extraction::merchant_normalizer::strip_noise_tokens(&merch),
+                                country_code: None,
+                                issuer_name: None,
+                                confidence: 1.0,
+                                created_at: Some(chrono::Utc::now().naive_utc()),
+                            };
+                            let _ = crate::db::merchants::insert_alias(conn, &alias);
+                        }
+                    }
+                }
+            }
+        }
+        new_merchant = Some(merch);
+    }
+
+    conn.execute(
+        "UPDATE transactions
+         SET merchant_display_name = ?1, merchant_normalized_name = ?2, merchant_entity_id = ?3,
+             category_id = ?4, notes = ?5, location = ?6,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?7",
+        rusqlite::params![
+            new_merchant,
+            new_merchant_normalized,
+            new_merchant_entity_id,
+            new_category_id,
+            new_notes,
+            new_location,
+            tx_id
+        ],
+    )
+    .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+
+    Ok(())
+}
+
 // G20/H10/J8 fix: renamed from `transaction_update` to match Doc 19 §8.3's
-// documented `transactions_update` naming.
+// documented `transactions_update` naming. Doc 30 TASK-API-003 fix: payload
+// type renamed from `ManualTransactionUpdatePayload` (misleading -- this
+// command was never actually restricted to manually-created transactions)
+// to `TransactionUpdatePayload`, matching its real, universal scope.
 #[tauri::command]
 pub async fn transactions_update(
-    payload: ManualTransactionUpdatePayload,
+    payload: TransactionUpdatePayload,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("transaction_id", &payload.transaction_id.to_string())?;
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
     let conn = pool
@@ -1915,95 +2061,16 @@ pub async fn transactions_update(
 
     let payload_tx_id = payload.transaction_id.to_string();
 
-    let payload_tx_id_clone = payload_tx_id.clone();
     conn.interact(move |conn| {
-        // Fetch old values
-        let old_tx = crate::db::transactions::get_transaction(conn, &payload_tx_id_clone)
-            .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-
-        let old_tx = match old_tx {
-            Some(tx) => tx,
-            None => {
-                return Err(crate::error::AppError::Unknown(
-                    "Transaction not found".to_string(),
-                ))
-            }
-        };
-
-        // Just update the transaction
-
         let tx_id = payload.transaction_id;
-
-        let mut new_amount_minor = old_tx.amount_minor;
-        let mut new_amount = old_tx.amount;
-        let mut new_currency = old_tx.currency.clone();
-        let mut new_direction = old_tx.direction.clone();
-        let mut new_best_event_time = old_tx.best_event_time;
-        let mut new_posting_date = old_tx.best_posting_date; // The original code updated 'posting_date' which doesn't exist on transactions (it's best_posting_date)
-        let mut new_merchant = old_tx.merchant_display_name.clone();
-
-        if let Some(amt) = payload.amount_minor {
-            let old_val = old_tx
-                .amount_minor
-                .map(|v| v.to_string())
-                .unwrap_or_default();
-            let new_val = amt.to_string();
-            if old_val != new_val {
-                let _ = crate::reconciliation::audit::log_user_correction(
-                    conn,
-                    &tx_id.to_string(),
-                    "amount",
-                    &old_val,
-                    &new_val,
-                );
-            }
-            new_amount_minor = Some(amt);
-            new_amount = Some(amt as f64 / 100.0);
-        }
-        if let Some(curr) = payload.currency {
-            new_currency = Some(curr);
-        }
-        if let Some(dir) = payload.direction {
-            new_direction = Some(dir);
-        }
-        if let Some(et) = payload.event_time {
-            let dt =
-                chrono::NaiveDateTime::parse_from_str(&et, "%Y-%m-%d %H:%M:%S").unwrap_or_default();
-            new_best_event_time = Some(dt);
-            new_posting_date = Some(dt.date());
-        }
-        if let Some(merch) = payload.merchant_name {
-            let old_val = old_tx.merchant_display_name.clone().unwrap_or_default();
-            if old_val != merch {
-                let _ = crate::reconciliation::audit::log_user_correction(
-                    conn,
-                    &tx_id.to_string(),
-                    "merchant",
-                    &old_val,
-                    &merch,
-                );
-            }
-            new_merchant = Some(merch);
-        }
-
-        conn.execute(
-            "UPDATE transactions
-             SET amount_minor = ?1, amount = ?2, currency = ?3, direction = ?4,
-                 best_event_time = ?5, best_posting_date = ?6, merchant_display_name = ?7,
-                 updated_at = CURRENT_TIMESTAMP
-             WHERE id = ?8",
-            rusqlite::params![
-                new_amount_minor,
-                new_amount,
-                new_currency,
-                new_direction,
-                new_best_event_time,
-                new_posting_date,
-                new_merchant,
-                tx_id.to_string()
-            ],
-        )
-        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+        apply_transaction_field_update(
+            conn,
+            &tx_id.to_string(),
+            payload.merchant_display_name,
+            payload.category_id,
+            payload.notes,
+            payload.location,
+        )?;
 
         // G13 fix: resolve each tag name to an existing tag or create one,
         // then replace this transaction's tag associations with that set.
@@ -2189,6 +2256,115 @@ pub async fn fetch_transaction_tags(
     Ok(names)
 }
 
+/// Doc 19 §8.2 `transactions_get`: canonical transaction detail plus
+/// linked evidence (observations) and match decisions, for the "view
+/// source" panel -- did not exist as a single command before this task
+/// (only the observations/source-log/tags pieces existed separately).
+#[derive(serde::Serialize)]
+pub struct TransactionDetail {
+    pub transaction: crate::db::transactions::TransactionsRow,
+    pub observations: Vec<crate::db::transaction_observations::TransactionObservationsRow>,
+    pub match_decisions: Vec<crate::db::match_decisions::MatchDecisionsRow>,
+}
+
+#[tauri::command]
+pub async fn transactions_get(
+    id: String,
+    pool: tauri::State<'_, deadpool_sqlite::Pool>,
+) -> Result<TransactionDetail, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("id", &id)?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(move |c| {
+        let transaction = crate::db::transactions::get_transaction(c, &id)
+            .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+            .ok_or_else(|| crate::error::AppError::Validation("transaction not found".to_string()))?;
+        let observations = crate::db::transaction_observations::get_observations_for_transaction(c, &id)
+            .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+        let mut match_decisions = Vec::new();
+        for obs in &observations {
+            if let Ok(decisions) = crate::db::match_decisions::select_by_observation_id(c, &obs.id) {
+                match_decisions.extend(decisions);
+            }
+        }
+        Ok(TransactionDetail { transaction, observations, match_decisions })
+    })
+    .await
+    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+}
+
+/// Doc 19 §8.7/§8.8: dedicated single-tag add/remove commands, distinct
+/// from `transactions_update`'s existing bulk tag-replace convenience.
+#[tauri::command]
+pub async fn transactions_add_tag(
+    transaction_id: String,
+    tag_id: String,
+    pool: tauri::State<'_, deadpool_sqlite::Pool>,
+) -> Result<String, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("transaction_id", &transaction_id)?;
+    crate::ipc::validation::validate_uuid("tag_id", &tag_id)?;
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(move |c| {
+        crate::db::tags::insert_transaction_tag(
+            c,
+            &crate::db::tags::TransactionTagsRow {
+                transaction_id,
+                tag_id,
+                created_at: Some(chrono::Utc::now().naive_utc()),
+            },
+        )
+    })
+    .await
+    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+    .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    Ok("tag_added".to_string())
+}
+
+#[tauri::command]
+pub async fn transactions_remove_tag(
+    transaction_id: String,
+    tag_id: String,
+    pool: tauri::State<'_, deadpool_sqlite::Pool>,
+) -> Result<String, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("transaction_id", &transaction_id)?;
+    crate::ipc::validation::validate_uuid("tag_id", &tag_id)?;
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(move |c| crate::db::tags::delete_transaction_tag(c, &transaction_id, &tag_id))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    Ok("tag_removed".to_string())
+}
+
+/// Doc 30 TASK-API-003: "transactions_get_emi_group" -- wraps TASK-TXN-012's
+/// already-built `emi_detector::get_emi_group_summary` (total paid/count so
+/// far; `total_expected` is deliberately absent, see that function's own
+/// doc comment for why).
+#[tauri::command]
+pub async fn transactions_get_emi_group(
+    emi_group_id: String,
+    pool: tauri::State<'_, deadpool_sqlite::Pool>,
+) -> Result<crate::extraction::emi_detector::EmiGroupSummary, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(move |c| crate::extraction::emi_detector::get_emi_group_summary(c, &emi_group_id))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))
+}
+
 // G20/H10/J8 fix: renamed from `transaction_delete` to match Doc 19 §8.5's
 // documented `transactions_delete` naming.
 #[tauri::command]
@@ -2344,6 +2520,10 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         transactions_create,
         transactions_update,
         transactions_delete,
+        transactions_get,
+        transactions_add_tag,
+        transactions_remove_tag,
+        transactions_get_emi_group,
         tags_list,
         fetch_transaction_tags,
         pattern_rule_set_status,
@@ -2412,6 +2592,84 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn setup_tx_test_db() -> rusqlite::Connection {
+        let conn = crate::db::test_helpers::setup_test_db();
+        conn.execute("PRAGMA foreign_keys = OFF;", []).unwrap();
+        conn.execute(
+            "INSERT INTO transactions (id, instrument_id, amount_minor, currency, direction, merchant_display_name, category_id, is_deleted) \
+             VALUES ('tx_1', 'inst_1', 1000, 'INR', 'debit', 'ZZZTEST MKTP', 'cat_old', 0)",
+            [],
+        )
+        .unwrap();
+        // `log_user_correction` (Doc 30 TASK-TXN-009) attributes the
+        // correction to the transaction's linked observation -- a real
+        // canonical transaction always has one (that's how reconciliation
+        // created it); seed one here too so feedback_log writes actually
+        // fire, matching production shape.
+        conn.execute(
+            "INSERT INTO transaction_observations (id, canonical_transaction_id, source_pipeline, source_record_id, fingerprint) \
+             VALUES ('obs_1', 'tx_1', 'gmail_transaction', 'msg_1', 'fp_1')",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    /// Doc 30 TASK-API-003 acceptance test: a category change writes a
+    /// `feedback_log` entry, the same as a merchant correction does.
+    #[test]
+    fn test_category_update_writes_feedback_log() {
+        let conn = setup_tx_test_db();
+        apply_transaction_field_update(&conn, "tx_1", None, Some("cat_new".to_string()), None, None).unwrap();
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM feedback_log WHERE transaction_id = 'tx_1' AND field_name = 'category_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+
+        let new_cat: String = conn
+            .query_row("SELECT category_id FROM transactions WHERE id = 'tx_1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(new_cat, "cat_new");
+    }
+
+    /// Doc 30 TASK-API-003 acceptance test: correcting a transaction's
+    /// merchant creates a `merchant_aliases` row mapping the old raw text
+    /// to the resolved/created merchant entity.
+    #[test]
+    fn test_merchant_update_creates_alias() {
+        let conn = setup_tx_test_db();
+        // A fictional merchant name -- migration 20260101000030 already
+        // seeds 5 real merchants (Amazon/Swiggy/Uber/Starbucks/Netflix,
+        // per TASK-TXN-007/011's own established test-fixture precedent),
+        // so a real brand name here would collide with seed data instead
+        // of exercising the "genuinely new merchant" code path.
+        apply_transaction_field_update(&conn, "tx_1", Some("Acme Streaming".to_string()), None, None, None).unwrap();
+
+        let alias_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM merchant_aliases WHERE alias_raw = 'ZZZTEST MKTP'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(alias_count, 1, "the old raw merchant text must be recorded as a new alias");
+
+        let (merchant, entity_id): (String, Option<String>) = conn
+            .query_row(
+                "SELECT merchant_display_name, merchant_entity_id FROM transactions WHERE id = 'tx_1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(merchant, "Acme Streaming");
+        assert!(entity_id.is_some(), "the transaction must be linked to a resolved merchant entity");
+    }
 
     /// §5.8 Integration test: Verify that the raw PDF bytes do not persist
     /// in the database or as files on disk after the pipeline runs.

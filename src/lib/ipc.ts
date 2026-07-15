@@ -175,21 +175,40 @@ export const API = {
         },
       }),
     delete: (transactionId: string) => invokeCommand<string>('transactions_delete', { transactionId }),
-    // Matches the actual `transactions_update` command and its
-    // ManualTransactionUpdatePayload contract (renamed from the previous
-    // singular `transaction_update` to match Doc 19 §8.3 — G20/H10/J8 fix).
-    update: (transactionId: string, updates: { merchantName?: string; tags?: string[] }) =>
+    // Doc 30 TASK-API-003: matches the real `TransactionUpdatePayload`
+    // contract (renamed from `ManualTransactionUpdatePayload` -- this
+    // command was never actually restricted to manual transactions).
+    // Editable fields per Document 19 §8.3 exactly: merchant_display_name,
+    // category_id, notes, location (amount/currency/direction/event_time
+    // were removed from the backend entirely -- evidence-derived fields,
+    // never actually sent by this wrapper even before the fix). `tags`
+    // remains as an additive bulk-replace convenience, not itself in
+    // Document 19's editable-field list.
+    update: (
+      transactionId: string,
+      updates: { merchantDisplayName?: string; categoryId?: string; notes?: string; location?: string; tags?: string[] },
+    ) =>
       invokeCommand<string>('transactions_update', {
         payload: {
           transaction_id: transactionId,
-          merchant_name: updates.merchantName,
+          merchant_display_name: updates.merchantDisplayName,
+          category_id: updates.categoryId,
+          notes: updates.notes,
+          location: updates.location,
           tags: updates.tags,
         },
       }),
+    get: (id: string) => invokeCommand<any>('transactions_get', { id }),
     getObservations: (id: string) => invokeCommand<any[]>('fetch_transaction_observations', { transactionId: id }),
     getSourceLog: (id: string) => invokeCommand<string>('fetch_transaction_source_log', { transactionId: id }),
     // G13 fix: the tag names currently on a transaction (relational, not free-text).
     getTags: (id: string) => invokeCommand<string[]>('fetch_transaction_tags', { transactionId: id }),
+    addTag: (transactionId: string, tagId: string) =>
+      invokeCommand<string>('transactions_add_tag', { transactionId, tagId }),
+    removeTag: (transactionId: string, tagId: string) =>
+      invokeCommand<string>('transactions_remove_tag', { transactionId, tagId }),
+    getEmiGroup: (emiGroupId: string) =>
+      invokeCommand<{ installments_paid: number; total_paid_minor: number }>('transactions_get_emi_group', { emiGroupId }),
   },
   tags: {
     // G13 fix: the full reusable-tag catalog, for autocomplete.

@@ -38,6 +38,10 @@ pub struct TransactionsRow {
     pub is_deleted: bool,
     pub created_at: Option<NaiveDateTime>,
     pub updated_at: Option<NaiveDateTime>,
+    /// Document 19 §8.3 editable field; added by migration 038 -- Document
+    /// 18 §4.3's schema never had this column despite Document 19 already
+    /// documenting it as editable (Aditya's decision, 2026-07-16).
+    pub notes: Option<String>,
 }
 
 pub fn insert_transaction(conn: &Connection, tx: &TransactionsRow) -> Result<()> {
@@ -49,10 +53,10 @@ pub fn insert_transaction(conn: &Connection, tx: &TransactionsRow) -> Result<()>
             reference_id, location, original_amount_minor, original_currency, exchange_rate,
             balance_after_transaction, status, match_confidence, source_mix, alert_fired,
             parent_transaction_id, transaction_subtype, emi_group_id, category_id, is_deleted,
-            created_at, updated_at
+            created_at, updated_at, notes
          ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-            ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, COALESCE(?32, CURRENT_TIMESTAMP), COALESCE(?33, CURRENT_TIMESTAMP)
+            ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, COALESCE(?32, CURRENT_TIMESTAMP), COALESCE(?33, CURRENT_TIMESTAMP), ?34
          )",
         params![
             tx.id, tx.unique_event_id, tx.instrument_id, tx.instrument_type, tx.direction, tx.amount,
@@ -61,7 +65,7 @@ pub fn insert_transaction(conn: &Connection, tx: &TransactionsRow) -> Result<()>
             tx.merchant_entity_id, tx.reference_id, tx.location, tx.original_amount_minor, tx.original_currency,
             tx.exchange_rate, tx.balance_after_transaction, tx.status, tx.match_confidence, tx.source_mix,
             tx.alert_fired, tx.parent_transaction_id, tx.transaction_subtype, tx.emi_group_id, tx.category_id,
-            tx.is_deleted, tx.created_at, tx.updated_at
+            tx.is_deleted, tx.created_at, tx.updated_at, tx.notes
         ],
     )?;
     Ok(())
@@ -77,7 +81,7 @@ pub fn update_transaction(conn: &Connection, tx: &TransactionsRow) -> Result<()>
             reference_id = ?17, location = ?18, original_amount_minor = ?19, original_currency = ?20,
             exchange_rate = ?21, balance_after_transaction = ?22, status = ?23, match_confidence = ?24,
             source_mix = ?25, alert_fired = ?26, parent_transaction_id = ?27, transaction_subtype = ?28,
-            emi_group_id = ?29, category_id = ?30, is_deleted = ?31
+            emi_group_id = ?29, category_id = ?30, is_deleted = ?31, notes = ?32
          WHERE id = ?1",
         params![
             tx.id, tx.unique_event_id, tx.instrument_id, tx.instrument_type, tx.direction, tx.amount,
@@ -86,7 +90,7 @@ pub fn update_transaction(conn: &Connection, tx: &TransactionsRow) -> Result<()>
             tx.merchant_entity_id, tx.reference_id, tx.location, tx.original_amount_minor, tx.original_currency,
             tx.exchange_rate, tx.balance_after_transaction, tx.status, tx.match_confidence, tx.source_mix,
             tx.alert_fired, tx.parent_transaction_id, tx.transaction_subtype, tx.emi_group_id, tx.category_id,
-            tx.is_deleted
+            tx.is_deleted, tx.notes
         ],
     )?;
     if count == 0 {
@@ -192,6 +196,7 @@ fn row_to_transaction(row: &Row) -> rusqlite::Result<TransactionsRow> {
         is_deleted: row.get("is_deleted")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
+        notes: row.get("notes")?,
     })
 }
 

@@ -123,6 +123,7 @@ pub fn link_emi_installment(
 /// such column; it's a hash input only), so "remaining" can only be
 /// expressed as "count so far", not "count so far vs. total N" without
 /// re-deriving N from the original observation. Flagged rather than guessed.
+#[derive(serde::Serialize)]
 pub struct EmiGroupSummary {
     pub installments_paid: i64,
     pub total_paid_minor: i64,

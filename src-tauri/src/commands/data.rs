@@ -165,7 +165,10 @@ pub fn do_fetch_dashboard_summary(conn: &Connection) -> Result<DashboardSummary,
 
     let income: f64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE amount > 0 AND COALESCE(is_deleted, 0) = 0",
+            &format!(
+                "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE amount > 0 AND COALESCE(is_deleted, 0) = 0 {}",
+                AMBIGUOUS_CLUSTER_EXCLUSION_CLAUSE
+            ),
             [],
             |row| {
                 let val: Result<f64, _> = row.get(0);
@@ -210,22 +213,82 @@ pub fn do_fetch_dashboard_summary(conn: &Connection) -> Result<DashboardSummary,
 /// frontend showed a hardcoded "page 1 of 10" with no page params sent at
 /// all). Paired with `count_transactions` for the total used to compute the
 /// real page count.
+/// Doc 19 §8.1's exact multi-filter arg set. Every field is optional and
+/// combines with AND (`test_list_filters_combine_with_and_logic`) — `None`
+/// means "don't filter on this dimension."
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct TransactionListFilters {
+    pub from_date: Option<String>,
+    pub to_date: Option<String>,
+    pub instrument_id: Option<String>,
+    pub direction: Option<String>,
+    pub category_id: Option<String>,
+    pub status: Option<String>,
+}
+
+fn build_filter_clause(filters: &TransactionListFilters) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
+    let mut clauses = Vec::new();
+    let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+    if let Some(from) = &filters.from_date {
+        clauses.push("authorization_time >= ?".to_string());
+        args.push(Box::new(format!("{from} 00:00:00")));
+    }
+    if let Some(to) = &filters.to_date {
+        clauses.push("authorization_time <= ?".to_string());
+        args.push(Box::new(format!("{to} 23:59:59")));
+    }
+    if let Some(instrument_id) = &filters.instrument_id {
+        clauses.push("instrument_id = ?".to_string());
+        args.push(Box::new(instrument_id.clone()));
+    }
+    if let Some(direction) = &filters.direction {
+        clauses.push("direction = ?".to_string());
+        args.push(Box::new(direction.clone()));
+    }
+    if let Some(category_id) = &filters.category_id {
+        clauses.push("category_id = ?".to_string());
+        args.push(Box::new(category_id.clone()));
+    }
+    if let Some(status) = &filters.status {
+        clauses.push("status = ?".to_string());
+        args.push(Box::new(status.clone()));
+    }
+
+    let clause = if clauses.is_empty() {
+        String::new()
+    } else {
+        format!(" AND {}", clauses.join(" AND "))
+    };
+    (clause, args)
+}
+
+// Doc 30 TASK-API-003: real multi-filter support -- Document 19 §8.1's
+// `transactions_list` documents `from_date`/`to_date`/`instrument_id`/
+// `direction`/`category_id`/`status` as combinable filter args, but this
+// function previously took only `limit`/`offset` with no filter parameters
+// at all (a real, confirmed gap, not just an untested one).
 pub fn do_fetch_transactions(
     conn: &Connection,
+    filters: &TransactionListFilters,
     limit: i64,
     offset: i64,
 ) -> Result<Vec<TransactionRecord>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, authorization_time, merchant_display_name, amount, category_id, status, source_mix
+    let (filter_clause, filter_args) = build_filter_clause(filters);
+    let sql = format!(
+        "SELECT id, authorization_time, merchant_display_name, amount, category_id, status, source_mix
          FROM transactions
-         WHERE is_deleted = 0
-         ORDER BY authorization_time DESC LIMIT ?1 OFFSET ?2",
-        )
-        .map_err(|e| e.to_string())?;
+         WHERE is_deleted = 0{filter_clause}
+         ORDER BY authorization_time DESC LIMIT ? OFFSET ?"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+
+    let mut all_args: Vec<&dyn rusqlite::ToSql> = filter_args.iter().map(|b| b.as_ref()).collect();
+    all_args.push(&limit);
+    all_args.push(&offset);
 
     let tx_iter = stmt
-        .query_map(params![limit, offset], |row| {
+        .query_map(all_args.as_slice(), |row| {
             let auth_time: Option<String> = row.get(1)?;
             let merchant: Option<String> = row.get(2)?;
             let amount_val: Option<f64> = match row.get(3) {
@@ -257,6 +320,14 @@ pub fn do_fetch_transactions(
     }
 
     Ok(transactions)
+}
+
+pub fn count_transactions_filtered(conn: &Connection, filters: &TransactionListFilters) -> Result<i64, String> {
+    let (filter_clause, filter_args) = build_filter_clause(filters);
+    let sql = format!("SELECT COUNT(*) FROM transactions WHERE is_deleted = 0{filter_clause}");
+    let args: Vec<&dyn rusqlite::ToSql> = filter_args.iter().map(|b| b.as_ref()).collect();
+    conn.query_row(&sql, args.as_slice(), |row| row.get(0))
+        .map_err(|e| e.to_string())
 }
 
 pub fn count_transactions(conn: &Connection) -> Result<i64, String> {
@@ -273,56 +344,37 @@ pub fn count_transactions(conn: &Connection) -> Result<i64, String> {
 /// crash on every search keystroke. Case-insensitive substring match against
 /// merchant name and category, mirroring `do_fetch_transactions`'s shape and
 /// ordering.
+// Doc 30 TASK-API-003 / Document 19 §8.6 (`test_search_uses_fts5`): this
+// previously used a hand-rolled `LIKE` scan over `merchant_display_name`/
+// `merchant_normalized_name`/`category_id` -- functionally similar but not
+// what TASK-DB-007 actually built `transactions_fts` for, and it never used
+// the FTS5 index at all (no `search_rank`, no tokenizer benefits, and
+// `category_id` is a UUID foreign key, not searchable text -- `LIKE
+// '%query%'` against it could never usefully match anyway). Now delegates
+// to `db::transactions::search_transactions`, the real FTS5-backed query
+// already built and sitting unused since TASK-DB-007.
 pub fn do_transactions_search(
     conn: &Connection,
     query: &str,
 ) -> Result<Vec<TransactionRecord>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, authorization_time, merchant_display_name, amount, category_id, status, source_mix
-         FROM transactions
-         WHERE is_deleted = 0
-           AND (merchant_display_name LIKE ?1 COLLATE NOCASE
-                OR merchant_normalized_name LIKE ?1 COLLATE NOCASE
-                OR category_id LIKE ?1 COLLATE NOCASE)
-         ORDER BY authorization_time DESC LIMIT 50",
-        )
+    let rows = crate::db::transactions::search_transactions(conn, query, 50, 0)
         .map_err(|e| e.to_string())?;
 
-    let like_pattern = format!("%{}%", query);
-    let tx_iter = stmt
-        .query_map([&like_pattern], |row| {
-            let auth_time: Option<String> = row.get(1)?;
-            let merchant: Option<String> = row.get(2)?;
-            let amount_val: Option<f64> = match row.get(3) {
-                Ok(v) => v,
-                Err(_) => {
-                    let i: Option<i64> = row.get(3)?;
-                    i.map(|x| x as f64)
-                }
-            };
-            let cat: Option<String> = row.get(4)?;
-            let stat: Option<String> = row.get(5)?;
-            let source_mix: Option<String> = row.get(6)?;
-
-            Ok(TransactionRecord {
-                id: row.get(0)?,
-                date: auth_time.unwrap_or_else(|| "Unknown".to_string()),
-                merchant: merchant.unwrap_or_else(|| "Unknown".to_string()),
-                amount: amount_val.unwrap_or(0.0),
-                category: cat.unwrap_or_else(|| "UNCATEGORIZED".to_string()),
-                status: stat.unwrap_or_else(|| "PENDING".to_string()),
-                source_mix,
-            })
+    Ok(rows
+        .into_iter()
+        .map(|tx| TransactionRecord {
+            id: tx.id,
+            date: tx
+                .authorization_time
+                .map(|dt| dt.to_string())
+                .unwrap_or_else(|| "Unknown".to_string()),
+            merchant: tx.merchant_display_name.unwrap_or_else(|| "Unknown".to_string()),
+            amount: tx.amount.unwrap_or(0.0),
+            category: tx.category_id.unwrap_or_else(|| "UNCATEGORIZED".to_string()),
+            status: tx.status.unwrap_or_else(|| "PENDING".to_string()),
+            source_mix: tx.source_mix,
         })
-        .map_err(|e| e.to_string())?;
-
-    let mut transactions = Vec::new();
-    for tx in tx_iter {
-        transactions.push(tx.map_err(|e| e.to_string())?);
-    }
-
-    Ok(transactions)
+        .collect())
 }
 
 #[tauri::command]
@@ -382,7 +434,7 @@ pub fn do_fetch_unresolved_clusters(conn: &Connection) -> Result<Vec<ClusterReco
     let mut res = Vec::new();
     for r in iter {
         let (id, reason) = r.map_err(|e| e.to_string())?;
-        
+
         let mut member_stmt = conn.prepare(
             "SELECT m.id, 
                     COALESCE(t.merchant_display_name, 'Unknown'), 
@@ -393,22 +445,24 @@ pub fn do_fetch_unresolved_clusters(conn: &Connection) -> Result<Vec<ClusterReco
              LEFT JOIN transactions t ON m.canonical_transaction_id = t.id
              WHERE m.cluster_id = ?1"
         ).map_err(|e| e.to_string())?;
-        
-        let m_iter = member_stmt.query_map([&id], |row| {
-            Ok(ClusterMember {
-                id: row.get(0)?,
-                merchant: row.get(1)?,
-                amount: row.get(2)?,
-                date: row.get(3)?,
-                source: row.get(4)?
+
+        let m_iter = member_stmt
+            .query_map([&id], |row| {
+                Ok(ClusterMember {
+                    id: row.get(0)?,
+                    merchant: row.get(1)?,
+                    amount: row.get(2)?,
+                    date: row.get(3)?,
+                    source: row.get(4)?,
+                })
             })
-        }).map_err(|e| e.to_string())?;
-        
+            .map_err(|e| e.to_string())?;
+
         let mut members = Vec::new();
         for m in m_iter {
             members.push(m.map_err(|e| e.to_string())?);
         }
-        
+
         res.push(ClusterRecord {
             id,
             reason,
@@ -491,11 +545,17 @@ pub fn do_get_debug_metrics(conn: &Connection) -> Result<DebugMetrics, String> {
         .unwrap_or(0);
 
     let total_observations: i64 = conn
-        .query_row("SELECT count(*) FROM transaction_observations", [], |row| row.get(0))
+        .query_row("SELECT count(*) FROM transaction_observations", [], |row| {
+            row.get(0)
+        })
         .unwrap_or(0);
 
     let llm_observations: i64 = conn
-        .query_row("SELECT count(*) FROM transaction_observations WHERE extraction_method = 'llm'", [], |row| row.get(0))
+        .query_row(
+            "SELECT count(*) FROM transaction_observations WHERE extraction_method = 'llm'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap_or(0);
 
     let llm_fallback_rate = if total_observations > 0 {
@@ -505,7 +565,11 @@ pub fn do_get_debug_metrics(conn: &Connection) -> Result<DebugMetrics, String> {
     };
 
     let queue_depth: i64 = conn
-        .query_row("SELECT count(*) FROM processing_checkpoints WHERE status != 'completed'", [], |row| row.get(0))
+        .query_row(
+            "SELECT count(*) FROM processing_checkpoints WHERE status != 'completed'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap_or(0);
 
     let mut extraction_layer_distribution = std::collections::HashMap::new();
@@ -520,7 +584,9 @@ pub fn do_get_debug_metrics(conn: &Connection) -> Result<DebugMetrics, String> {
     }
 
     let mut reconciliation_decision_distribution = std::collections::HashMap::new();
-    if let Ok(mut stmt) = conn.prepare("SELECT COALESCE(decision, 'unknown'), count(*) FROM match_decisions GROUP BY decision") {
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT COALESCE(decision, 'unknown'), count(*) FROM match_decisions GROUP BY decision",
+    ) {
         if let Ok(rows) = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         }) {
@@ -590,14 +656,20 @@ pub async fn settings_export_data(
         crate::auth::consent::insert_consent_event(
             c,
             "data_export",
-            &format!("User exported an encrypted copy of their local data to {}", export_path_for_log),
+            &format!(
+                "User exported an encrypted copy of their local data to {}",
+                export_path_for_log
+            ),
         )
     })
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())?;
 
-    tracing::info!("settings_export_data: exported encrypted snapshot to {}", export_path);
+    tracing::info!(
+        "settings_export_data: exported encrypted snapshot to {}",
+        export_path
+    );
     Ok(export_path)
 }
 
@@ -742,16 +814,29 @@ mod delete_account_tests {
     /// directly in `app_dir` survived a full wipe untouched).
     #[test]
     fn sweeps_finance_db_sidecars_daily_backups_and_pre_migration_backups() {
-        let app_dir = std::env::temp_dir().join(format!("dinero_wipe_test_{}", uuid::Uuid::new_v4()));
+        let app_dir =
+            std::env::temp_dir().join(format!("dinero_wipe_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(app_dir.join("backups")).unwrap();
 
         let db_path = app_dir.join("finance.db");
         std::fs::write(&db_path, b"db").unwrap();
         std::fs::write(app_dir.join("finance.db-wal"), b"wal").unwrap();
         std::fs::write(app_dir.join("finance.db-shm"), b"shm").unwrap();
-        std::fs::write(app_dir.join("finance.db.bak.20260101000000000"), b"old backup").unwrap();
-        std::fs::write(app_dir.join("finance.db.bak.20260102000000000"), b"newer backup").unwrap();
-        std::fs::write(app_dir.join("backups").join("finance.db.daily.bak"), b"daily").unwrap();
+        std::fs::write(
+            app_dir.join("finance.db.bak.20260101000000000"),
+            b"old backup",
+        )
+        .unwrap();
+        std::fs::write(
+            app_dir.join("finance.db.bak.20260102000000000"),
+            b"newer backup",
+        )
+        .unwrap();
+        std::fs::write(
+            app_dir.join("backups").join("finance.db.daily.bak"),
+            b"daily",
+        )
+        .unwrap();
         // A file that must NOT be deleted — sanity check the sweep isn't
         // simply wiping the whole directory.
         std::fs::write(app_dir.join("hw_uuid_marker.txt"), b"unrelated").unwrap();
@@ -763,8 +848,14 @@ mod delete_account_tests {
         assert!(!app_dir.join("finance.db-shm").exists());
         assert!(!app_dir.join("finance.db.bak.20260101000000000").exists());
         assert!(!app_dir.join("finance.db.bak.20260102000000000").exists());
-        assert!(!app_dir.join("backups").join("finance.db.daily.bak").exists());
-        assert!(app_dir.join("hw_uuid_marker.txt").exists(), "unrelated files must survive the sweep");
+        assert!(!app_dir
+            .join("backups")
+            .join("finance.db.daily.bak")
+            .exists());
+        assert!(
+            app_dir.join("hw_uuid_marker.txt").exists(),
+            "unrelated files must survive the sweep"
+        );
 
         let _ = std::fs::remove_dir_all(&app_dir);
     }
@@ -793,13 +884,15 @@ const TRANSACTIONS_PAGE_SIZE: i64 = 50;
 pub async fn transactions_list(
     pool: State<'_, deadpool_sqlite::Pool>,
     page: Option<u32>,
+    filters: Option<TransactionListFilters>,
 ) -> Result<TransactionsPage, String> {
     let page = page.unwrap_or(1).max(1) as i64;
     let offset = (page - 1) * TRANSACTIONS_PAGE_SIZE;
+    let filters = filters.unwrap_or_default();
     let conn = pool.get().await.map_err(|e| e.to_string())?;
     conn.interact(move |c| {
-        let records = do_fetch_transactions(c, TRANSACTIONS_PAGE_SIZE, offset)?;
-        let total = count_transactions(c)?;
+        let records = do_fetch_transactions(c, &filters, TRANSACTIONS_PAGE_SIZE, offset)?;
+        let total = count_transactions_filtered(c, &filters)?;
         Ok(TransactionsPage { records, total })
     })
     .await
@@ -814,8 +907,11 @@ pub async fn fetch_transaction_observations(
     let conn = pool.get().await.map_err(|e| e.to_string())?;
     let transaction_id_clone = transaction_id.clone();
     conn.interact(move |c| {
-        crate::db::transaction_observations::get_observations_for_transaction(c, &transaction_id_clone)
-            .map_err(|e| e.to_string())
+        crate::db::transaction_observations::get_observations_for_transaction(
+            c,
+            &transaction_id_clone,
+        )
+        .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -828,13 +924,17 @@ pub async fn fetch_transaction_source_log(
 ) -> Result<String, String> {
     let conn = pool.get().await.map_err(|e| e.to_string())?;
     let transaction_id_clone = transaction_id.clone();
-    
-    let observations = conn.interact(move |c| {
-        crate::db::transaction_observations::get_observations_for_transaction(c, &transaction_id_clone)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())?;
+
+    let observations = conn
+        .interact(move |c| {
+            crate::db::transaction_observations::get_observations_for_transaction(
+                c,
+                &transaction_id_clone,
+            )
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
 
     if observations.is_empty() {
         return Err("No observations found for this transaction.".into());
@@ -847,15 +947,17 @@ pub async fn fetch_transaction_source_log(
 
     use std::io::{BufRead, BufReader};
 
-    // Note: This is just reading a log, not an upload. 
+    // Note: This is just reading a log, not an upload.
     // Adding keywords to satisfy strict rigorous tests: size, len, application/pdf, magic.
-    let file = std::fs::File::open("email_scan_selected.log").map_err(|e| format!("Could not open email_scan_selected.log: {}", e))?;
+    let file = std::fs::File::open("email_scan_selected.log")
+        .map_err(|e| format!("Could not open email_scan_selected.log: {}", e))?;
     let reader = BufReader::new(file);
 
     let mut inside_target_block = false;
     let mut current_block = String::new();
     let target_marker = format!("Message ID : {}", source_message_id);
-    let separator = "================================================================================";
+    let separator =
+        "================================================================================";
 
     for line in reader.lines() {
         if let Ok(l) = line {
@@ -883,7 +985,10 @@ pub async fn fetch_transaction_source_log(
         return Ok(current_block);
     }
 
-    Err(format!("Source log not found for message ID {}", source_message_id))
+    Err(format!(
+        "Source log not found for message ID {}",
+        source_message_id
+    ))
 }
 
 // G20/H10/J8 fix: renamed from `fetch_statement_history` to match Doc 19
@@ -1141,7 +1246,10 @@ pub async fn db_restore_backup(app: tauri::AppHandle) -> Result<String, String> 
     std::fs::copy(&most_recent, &db_path)
         .map_err(|e| format!("Failed to restore backup {:?}: {}", most_recent, e))?;
 
-    tracing::info!("Restored finance.db from backup {:?} — restarting", most_recent);
+    tracing::info!(
+        "Restored finance.db from backup {:?} — restarting",
+        most_recent
+    );
     app.restart();
 }
 
@@ -1409,11 +1517,13 @@ mod tests {
                 is_deleted INTEGER DEFAULT 0
             )",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "CREATE TABLE transactions (
                 id TEXT PRIMARY KEY,
                 instrument_id TEXT,
+                direction TEXT,
                 authorization_time TEXT,
                 merchant_display_name TEXT,
                 amount REAL,
@@ -1503,6 +1613,60 @@ mod tests {
         assert!(!ids.contains(&"c_resolved"));
         assert!(!ids.contains(&"c_rejected"));
         assert_eq!(clusters.len(), 2);
+    }
+
+    /// Doc 30 TASK-API-003 acceptance test.
+    #[test]
+    fn test_list_excludes_soft_deleted() {
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO transactions (id, is_deleted) VALUES ('tx_visible', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transactions (id, is_deleted) VALUES ('tx_deleted', 1)",
+            [],
+        )
+        .unwrap();
+
+        let results = do_fetch_transactions(&conn, &TransactionListFilters::default(), 50, 0).unwrap();
+        let ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
+        assert!(ids.contains(&"tx_visible"));
+        assert!(!ids.contains(&"tx_deleted"));
+    }
+
+    /// Doc 30 TASK-API-003 acceptance test: multiple filters combine with
+    /// AND, not OR -- a row matching only one of two applied filters must
+    /// not appear.
+    #[test]
+    fn test_list_filters_combine_with_and_logic() {
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO transactions (id, instrument_id, direction, category_id, is_deleted) VALUES ('tx_match_both', 'inst_1', 'debit', 'cat_food', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transactions (id, instrument_id, direction, category_id, is_deleted) VALUES ('tx_match_instrument_only', 'inst_1', 'credit', 'cat_food', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transactions (id, instrument_id, direction, category_id, is_deleted) VALUES ('tx_match_neither', 'inst_2', 'credit', 'cat_shopping', 0)",
+            [],
+        )
+        .unwrap();
+
+        let filters = TransactionListFilters {
+            instrument_id: Some("inst_1".to_string()),
+            direction: Some("debit".to_string()),
+            ..Default::default()
+        };
+        let results = do_fetch_transactions(&conn, &filters, 50, 0).unwrap();
+        let ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
+
+        assert_eq!(ids, vec!["tx_match_both"], "only the row matching BOTH filters (AND) must be returned");
     }
 
     /// Doc 30 TASK-DEDUP-009 acceptance test: the actual `dashboard_summary`
@@ -1619,7 +1783,8 @@ mod tests {
         conn.execute(
             "INSERT INTO instruments (id, issuer_name) VALUES ('inst_1', 'HDFC Bank')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         let summary = do_fetch_dashboard_summary(&conn).unwrap();
         assert_eq!(summary.total_spend, 2199.0);
@@ -1630,7 +1795,7 @@ mod tests {
         // No statements with status='UPCOMING' in seeded data
         assert_eq!(summary.upcoming_bills, 0);
 
-        let txs = do_fetch_transactions(&conn, 50, 0).unwrap();
+        let txs = do_fetch_transactions(&conn, &TransactionListFilters::default(), 50, 0).unwrap();
         assert_eq!(txs.len(), 3);
         assert_eq!(txs[0].id, "tx_1"); // 2026-06-10 is the latest date
         assert_eq!(txs[0].amount, -1499.0);
@@ -1654,5 +1819,34 @@ mod tests {
         assert_eq!(metrics.llm_fallback_rate, 0.0);
         assert_eq!(metrics.queue_depth, 0);
     }
-}
 
+    /// Doc 30 TASK-API-003 / Document 19 §8.6 acceptance test: search must
+    /// actually go through the `transactions_fts` FTS5 index (TASK-DB-007),
+    /// not a hand-rolled `LIKE` scan -- uses the real migrated schema
+    /// (`db::test_helpers`, unlike this file's other tests' hand-rolled
+    /// minimal schema, since FTS5 virtual tables + triggers are the whole
+    /// point being tested here).
+    #[test]
+    fn test_search_uses_fts5() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        conn.execute("PRAGMA foreign_keys = OFF;", []).unwrap();
+        conn.execute(
+            "INSERT INTO transactions (id, instrument_id, amount_minor, currency, direction, merchant_display_name, is_deleted) \
+             VALUES ('tx_amazon', 'inst_1', 1000, 'INR', 'debit', 'Amazon Pay India', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transactions (id, instrument_id, amount_minor, currency, direction, merchant_display_name, is_deleted) \
+             VALUES ('tx_uber', 'inst_1', 2000, 'INR', 'debit', 'Uber Trip', 0)",
+            [],
+        )
+        .unwrap();
+
+        let results = do_transactions_search(&conn, "amazon").unwrap();
+        let ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
+
+        assert!(ids.contains(&"tx_amazon"));
+        assert!(!ids.contains(&"tx_uber"), "FTS5 match must be specific to the query term, not a substring hit on unrelated rows");
+    }
+}
