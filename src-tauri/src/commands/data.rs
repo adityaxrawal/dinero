@@ -1157,6 +1157,42 @@ pub async fn instruments_list(
         .map_err(|e| e.to_string())?
 }
 
+/// Doc 30 TASK-API-002: single-instrument fetch for the instrument detail
+/// page (Document 13 §8.3, TASK-FE-011) -- not itself in Document 19 §12's
+/// summary table (which lists list/create/update/archive only), but not
+/// contradicted by it either; `instruments_list` already returns full
+/// records, so this is a thin convenience wrapper over the same shape.
+#[tauri::command]
+pub async fn instruments_get(
+    id: String,
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<InstrumentRecord, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("id", &id)?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(move |c| {
+        crate::db::instruments::get_instrument(c, &id)
+            .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+            .map(|row| InstrumentRecord {
+                id: row.id,
+                instrument_type: row.r#type,
+                issuer_name: row.issuer_name,
+                masked_identifier: row.masked_identifier,
+                status: row.status,
+                current_balance: row.current_balance.map(|v| v as f64 / 100.0),
+                credit_limit: row.credit_limit.map(|v| v as f64 / 100.0),
+                full_identifier: row.full_identifier,
+                billing_cycle_day: row.billing_cycle_day,
+                bank_ifsc: row.bank_ifsc,
+            })
+            .ok_or_else(|| crate::error::AppError::Validation("instrument not found".to_string()))
+    })
+    .await
+    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+}
+
 #[tauri::command]
 pub async fn get_debug_metrics(
     pool: State<'_, deadpool_sqlite::Pool>,
@@ -1165,6 +1201,24 @@ pub async fn get_debug_metrics(
     conn.interact(|c| do_get_debug_metrics(c))
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// Doc 18 §4.2's exact `CHECK(type IN (...))` enum -- validated here at the
+/// IPC layer (Doc 30 TASK-API-002's `test_instruments_create_validates_type_enum`)
+/// so a bad value returns a clean `AppError::Validation` with the field name,
+/// instead of a raw SQLite constraint-violation string reaching the frontend.
+const VALID_INSTRUMENT_TYPES: &[&str] = &[
+    "credit_card", "debit_card", "bank_account", "UPI", "NEFT", "RTGS", "SWIFT", "upi_vpa",
+    "wallet", "POS", "ATM", "cheque",
+];
+
+fn validate_instrument_type(instrument_type: &str) -> Result<(), crate::error::AppError> {
+    if !VALID_INSTRUMENT_TYPES.contains(&instrument_type) {
+        return Err(crate::error::AppError::Validation(format!(
+            "instrument_type '{instrument_type}' is not a recognized instrument type"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(serde::Deserialize)]
@@ -1181,15 +1235,19 @@ pub struct InstrumentCreatePayload {
 pub async fn instruments_create(
     payload: InstrumentCreatePayload,
     pool: State<'_, deadpool_sqlite::Pool>,
-) -> Result<InstrumentRecord, String> {
-    crate::licensing::gate::assert_write_allowed(pool.inner())
-        .await
-        .map_err(|e| e.to_string())?;
+) -> Result<InstrumentRecord, crate::error::AppError> {
+    validate_instrument_type(&payload.instrument_type)?;
+    crate::ipc::validation::validate_non_empty("issuer_name", &payload.issuer_name)?;
+    crate::ipc::validation::validate_non_empty("masked_identifier", &payload.masked_identifier)?;
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
-    let conn = pool.get().await.map_err(|e| e.to_string())?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(move |c| {
         let id = uuid::Uuid::new_v4().to_string();
-        
+
         let row = crate::db::instruments::InstrumentsRow {
             id: id.clone(),
             r#type: payload.instrument_type.clone(),
@@ -1213,7 +1271,8 @@ pub async fn instruments_create(
             billing_cycle_day: payload.billing_cycle_day,
         };
 
-        crate::db::instruments::insert_instrument(c, &row).map_err(|e| e.to_string())?;
+        crate::db::instruments::insert_instrument(c, &row)
+            .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
 
         Ok(InstrumentRecord {
             id,
@@ -1229,14 +1288,17 @@ pub async fn instruments_create(
         })
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
 }
 
+/// Doc 30 TASK-API-002: "partial, user-editable fields only — never
+/// `issuer_name`/`masked_identifier` post-creation, since those are
+/// identity fields used elsewhere in matching." Deliberately has no
+/// `issuer_name`/`masked_identifier` fields at all -- there is no way for
+/// the frontend to even attempt to send them.
 #[derive(serde::Deserialize)]
 pub struct InstrumentUpdatePayload {
     pub id: String,
-    pub issuer_name: String,
-    pub masked_identifier: String,
     pub full_identifier: Option<String>,
     pub billing_cycle_day: Option<u8>,
     pub bank_ifsc: Option<String>,
@@ -1246,45 +1308,42 @@ pub struct InstrumentUpdatePayload {
 pub async fn instruments_update(
     payload: InstrumentUpdatePayload,
     pool: State<'_, deadpool_sqlite::Pool>,
-) -> Result<String, String> {
-    crate::licensing::gate::assert_write_allowed(pool.inner())
+) -> Result<String, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("id", &payload.id)?;
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+
+    let conn = pool
+        .get()
         .await
-        .map_err(|e| e.to_string())?;
-
-    let conn = pool.get().await.map_err(|e| e.to_string())?;
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(move |c| {
-        // Fetch existing
-        let mut stmt = c.prepare("SELECT type, status FROM instruments WHERE id = ?").map_err(|e| e.to_string())?;
-        let (inst_type, status): (String, String) = stmt.query_row([&payload.id], |row| Ok((row.get(0)?, row.get(1)?))).map_err(|e| e.to_string())?;
-        
-        let row = crate::db::instruments::InstrumentsRow {
-            id: payload.id.clone(),
-            r#type: inst_type,
-            issuer_name: payload.issuer_name.clone(),
-            masked_identifier: payload.masked_identifier.clone(),
-            network: None,
-            credit_limit: None,
-            current_balance: None,
-            statement_due_date: None,
-            minimum_due: None,
-            bank_ifsc: payload.bank_ifsc.clone(),
-            account_type: None,
-            upi_vpa: None,
-            nickname: None,
-            rewards_summary: None,
-            status: status,
-            created_at: None,
-            updated_at: None,
-            is_deleted: false,
-            full_identifier: payload.full_identifier.clone(),
-            billing_cycle_day: payload.billing_cycle_day,
-        };
+        // Real bug fixed here: `update_instrument` is a full-row overwrite
+        // (no partial-column UPDATE exists at the DB layer) -- the previous
+        // version of this handler only fetched `type`/`status` before
+        // calling it, silently wiping every other field on every single
+        // update (current_balance, credit_limit, statement_due_date,
+        // minimum_due, network, account_type, upi_vpa, nickname,
+        // rewards_summary — several of which are populated elsewhere, e.g.
+        // TASK-STMT-007's bill classifier). Fetching the *full* existing
+        // row first and only overwriting this payload's allowed fields is
+        // what actually makes this a partial update.
+        let mut row = crate::db::instruments::get_instrument(c, &payload.id)
+            .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+            .ok_or_else(|| crate::error::AppError::Validation("instrument not found".to_string()))?;
 
-        crate::db::instruments::update_instrument(c, &row).map_err(|e| e.to_string())?;
+        row.full_identifier = payload.full_identifier;
+        row.billing_cycle_day = payload.billing_cycle_day;
+        row.bank_ifsc = payload.bank_ifsc;
+        // issuer_name/masked_identifier/type/status/current_balance/
+        // credit_limit/statement_due_date/etc. all carry over untouched
+        // from the fetched row.
+
+        crate::db::instruments::update_instrument(c, &row)
+            .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
         Ok("updated".to_string())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
 }
 
 // G20/H10/J8 fix: renamed from `instruments_delete` to match Doc 19 §12.4's
@@ -1292,26 +1351,47 @@ pub async fn instruments_update(
 // `is_deleted = 1` (a soft delete), so "archive" was the accurate name for
 // what the command has always done.
 #[tauri::command]
+// Doc 30 TASK-API-002: "does not cascade-delete transactions — they remain
+// queryable, just hidden from active lists" -- already true by construction
+// (this only ever touches the `instruments` row itself; `instruments_list`'s
+// own `WHERE is_deleted = 0` is what hides it, not a cascade), verified by
+// `test_instruments_soft_delete_preserves_transactions`.
 pub async fn instruments_archive(
     id: String,
     pool: State<'_, deadpool_sqlite::Pool>,
-) -> Result<String, String> {
-    crate::licensing::gate::assert_write_allowed(pool.inner())
-        .await
-        .map_err(|e| e.to_string())?;
+) -> Result<String, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("id", &id)?;
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
-    let conn = pool.get().await.map_err(|e| e.to_string())?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(move |c| {
-        c.execute("UPDATE instruments SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", [&id]).map_err(|e| e.to_string())?;
+        c.execute(
+            "UPDATE instruments SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            [&id],
+        )
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
         Ok("deleted".to_string())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Doc 30 TASK-API-002 acceptance test.
+    #[test]
+    fn test_instruments_create_validates_type_enum() {
+        assert!(validate_instrument_type("credit_card").is_ok());
+        assert!(validate_instrument_type("upi_vpa").is_ok());
+        assert!(validate_instrument_type("not_a_real_type").is_err());
+        assert!(validate_instrument_type("").is_err());
+        assert!(validate_instrument_type("CREDIT_CARD").is_err(), "must be case-sensitive, matching Document 18 §4.2's exact CHECK values");
+    }
 
     fn setup_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();

@@ -110,10 +110,16 @@ export default function Instruments() {
   const handleEditInstrument = async () => {
     if (!editingId) return;
     try {
+      // Doc 30 TASK-API-002: issuer_name/masked_identifier are identity
+      // fields, never editable post-creation -- not sent to the backend.
+      // FLAGGED for Area 9 (TASK-FE-011): `renderInstrumentForm` below is
+      // still shared as-is between add/edit and visually offers editable
+      // issuer/masked-identifier inputs in edit mode even though the
+      // backend now silently ignores them -- disabling/hiding those two
+      // fields specifically in edit mode is frontend presentation work
+      // out of this IPC-layer task's scope.
       await API.instruments.update(
         editingId,
-        editForm.issuerName,
-        editForm.maskedIdentifier,
         editForm.fullIdentifier || undefined,
         editForm.billingCycleDay ? parseInt(editForm.billingCycleDay) : undefined,
         editForm.bankIfsc || undefined

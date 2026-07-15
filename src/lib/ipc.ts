@@ -260,17 +260,21 @@ export const API = {
           bank_ifsc: bankIfsc,
         }
       }),
-    update: (id: string, issuerName: string, maskedIdentifier: string, fullIdentifier?: string, billingCycleDay?: number, bankIfsc?: string) =>
+    // Doc 30 TASK-API-002: issuer_name/masked_identifier are identity
+    // fields (used by resolve_instrument()'s matching key, Document 15
+    // §2.8) and are never editable post-creation -- the backend's
+    // InstrumentUpdatePayload no longer even has fields for them, so this
+    // wrapper no longer accepts them either.
+    update: (id: string, fullIdentifier?: string, billingCycleDay?: number, bankIfsc?: string) =>
       invokeCommand<string>('instruments_update', {
         payload: {
           id,
-          issuer_name: issuerName,
-          masked_identifier: maskedIdentifier,
           full_identifier: fullIdentifier,
           billing_cycle_day: billingCycleDay,
           bank_ifsc: bankIfsc,
         }
       }),
+    get: (id: string) => invokeCommand<InstrumentRecord>('instruments_get', { id }),
     delete: (id: string) =>
       invokeCommand<string>('instruments_archive', { id }),
   },

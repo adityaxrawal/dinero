@@ -2374,6 +2374,7 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         llm::llm_get_available_models,
         llm::llm_download_model,
         data::instruments_list,
+        data::instruments_get,
         data::instruments_create,
         data::instruments_update,
         data::instruments_archive,

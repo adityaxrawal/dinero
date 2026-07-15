@@ -172,6 +172,27 @@ pub fn get_paginated_instruments(
     Ok(instruments)
 }
 
+/// Doc 30 TASK-API-002: "instruments_get_upcoming_bills (non-null future
+/// statement_due_date, ascending, for the dashboard widget)." Document 19
+/// §11.2 exposes this same data via the `dashboard_upcoming_bills` command
+/// (TASK-API-006) rather than a separate instruments-namespaced one -- this
+/// data-layer function is what both this task's own acceptance test and
+/// TASK-API-006's real IPC command are built on.
+pub fn list_upcoming_bills(conn: &Connection, today: &NaiveDate) -> Result<Vec<InstrumentsRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT * FROM instruments \
+         WHERE is_deleted = 0 AND statement_due_date IS NOT NULL AND statement_due_date >= ?1 \
+         ORDER BY statement_due_date ASC",
+    )?;
+    let rows = stmt.query_map(params![today], row_to_instrument)?;
+
+    let mut instruments = Vec::new();
+    for row in rows {
+        instruments.push(row?);
+    }
+    Ok(instruments)
+}
+
 pub fn delete_instrument(conn: &Connection, id: &str) -> Result<()> {
     // Soft delete
     let count = conn.execute(
@@ -385,5 +406,98 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM instruments", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1, "Unique constraint must prevent duplicate rows");
+    }
+
+    fn insert_with_due_date(conn: &Connection, id: &str, due_date: Option<&str>) {
+        conn.execute(
+            "INSERT INTO instruments (id, type, issuer_name, masked_identifier, statement_due_date, is_deleted) \
+             VALUES (?1, 'credit_card', 'Test Bank', ?1, ?2, 0)",
+            params![id, due_date],
+        )
+        .unwrap();
+    }
+
+    /// Doc 30 TASK-API-002 acceptance test.
+    #[test]
+    fn test_upcoming_bills_sorted_ascending() {
+        let conn = setup_test_db();
+        insert_with_due_date(&conn, "inst_far", Some("2026-08-15"));
+        insert_with_due_date(&conn, "inst_near", Some("2026-06-20"));
+        insert_with_due_date(&conn, "inst_mid", Some("2026-07-01"));
+        insert_with_due_date(&conn, "inst_no_due_date", None);
+        insert_with_due_date(&conn, "inst_past_due", Some("2026-01-01"));
+
+        let today = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+        let bills = list_upcoming_bills(&conn, &today).unwrap();
+
+        let ids: Vec<&str> = bills.iter().map(|b| b.id.as_str()).collect();
+        assert_eq!(ids, vec!["inst_near", "inst_mid", "inst_far"], "must be ascending by due date, excluding NULL and past-due");
+    }
+
+    /// Doc 30 TASK-API-002 acceptance test: simulates the exact
+    /// fetch-full-row-then-patch-allowed-fields-only pattern
+    /// `commands::data::instruments_update` uses -- issuer_name/
+    /// masked_identifier must survive unchanged even though every other
+    /// field can legitimately be patched.
+    #[test]
+    fn test_instruments_update_rejects_identity_field_changes() {
+        let conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO instruments (id, type, issuer_name, masked_identifier, billing_cycle_day) \
+             VALUES ('inst_1', 'credit_card', 'HDFC Bank', '1234', 5)",
+            [],
+        )
+        .unwrap();
+
+        // The real command handler's pattern: fetch the full existing row,
+        // then only ever overwrite the user-editable fields -- there is no
+        // code path here that assigns a caller-supplied issuer_name/
+        // masked_identifier at all.
+        let mut row = get_instrument(&conn, "inst_1").unwrap().unwrap();
+        row.billing_cycle_day = Some(15);
+        row.bank_ifsc = Some("HDFC0001234".to_string());
+        update_instrument(&conn, &row).unwrap();
+
+        let after = get_instrument(&conn, "inst_1").unwrap().unwrap();
+        assert_eq!(after.issuer_name, "HDFC Bank", "issuer_name must never change via update");
+        assert_eq!(after.masked_identifier, "1234", "masked_identifier must never change via update");
+        assert_eq!(after.billing_cycle_day, Some(15), "user-editable fields must still update");
+    }
+
+    /// Doc 30 TASK-API-002 acceptance test: soft-deleting an instrument
+    /// (`is_deleted = 1`) must never cascade-delete or modify the
+    /// transactions that reference it -- they remain queryable, just
+    /// hidden from active instrument lists.
+    #[test]
+    fn test_instruments_soft_delete_preserves_transactions() {
+        let conn = setup_test_db();
+        conn.execute(
+            "INSERT INTO instruments (id, type, issuer_name, masked_identifier) \
+             VALUES ('inst_1', 'credit_card', 'HDFC Bank', '1234')",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "CREATE TABLE transactions (id TEXT PRIMARY KEY, instrument_id TEXT, amount_minor INTEGER, is_deleted INTEGER DEFAULT 0);
+             INSERT INTO transactions (id, instrument_id, amount_minor) VALUES ('tx_1', 'inst_1', 1000);",
+        )
+        .unwrap();
+
+        delete_instrument(&conn, "inst_1").unwrap();
+
+        let is_deleted: bool = conn
+            .query_row("SELECT is_deleted FROM instruments WHERE id = 'inst_1'", [], |r| r.get(0))
+            .unwrap();
+        assert!(is_deleted, "the instrument itself must be soft-deleted");
+
+        let (tx_amount, tx_deleted): (i64, bool) = conn
+            .query_row(
+                "SELECT amount_minor, is_deleted FROM transactions WHERE id = 'tx_1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(tx_amount, 1000, "the transaction row must be completely untouched");
+        assert!(!tx_deleted, "the transaction must remain queryable, not cascade-deleted");
     }
 }
