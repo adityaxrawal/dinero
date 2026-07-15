@@ -101,7 +101,8 @@ pub fn create_canonical_transaction(conn: &Connection, obs: &IncomingObservation
 
 /// Called when statement evidence arrives after a canonical transaction already exists from
 /// an email observation. Updates the canonical record with statement-preferred fields without
-/// overwriting raw source evidence. Logs as 'canonical_updated_with_statement' (Doc 11 §5).
+/// overwriting raw source evidence. Logs as 'canonical_field_overwritten_by_statement'
+/// with before/after values (Doc 30 TASK-DEDUP-008).
 pub fn update_canonical_with_statement(
     conn: &Connection,
     canonical_id: &str,
@@ -128,6 +129,17 @@ pub fn update_canonical_with_statement(
             .map(|d| d.format("%Y-%m-%d").to_string())
     });
 
+    // Doc 30 TASK-DEDUP-008: "every precedence-driven overwrite is logged to
+    // audit_log... with before/after values for full auditability" --
+    // snapshot the fields this UPDATE can change before it runs.
+    let before: Option<(Option<String>, Option<String>, Option<String>, Option<i64>)> = conn
+        .query_row(
+            "SELECT reference_id, best_posting_date, merchant_display_name, amount_minor FROM transactions WHERE id = ?1",
+            params![canonical_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .ok();
+
     conn.execute(
         "UPDATE transactions SET
             reference_id = COALESCE(?2, reference_id),
@@ -151,12 +163,31 @@ pub fn update_canonical_with_statement(
         ],
     )?;
 
-    // Append audit log
+    // Doc 30 TASK-DEDUP-008: named exactly `canonical_field_overwritten_by_statement`.
     let audit_id = Uuid::new_v4().to_string();
+    let (before_ref, before_posting, before_merchant, before_amount) =
+        before.unwrap_or((None, None, None, None));
     conn.execute(
-        "INSERT INTO audit_log (id, actor_type, actor_id, action, resource_type, resource_id, created_at)
-         VALUES (?1, 'system', 'reconciliation_engine', 'canonical_updated_with_statement', 'transaction', ?2, CURRENT_TIMESTAMP)",
-        params![audit_id, canonical_id],
+        "INSERT INTO audit_log (id, actor_type, actor_id, action, resource_type, resource_id, before_json, after_json, created_at)
+         VALUES (?1, 'system', 'reconciliation_engine', 'canonical_field_overwritten_by_statement', 'transaction', ?2, ?3, ?4, CURRENT_TIMESTAMP)",
+        params![
+            audit_id,
+            canonical_id,
+            serde_json::json!({
+                "reference_id": before_ref,
+                "best_posting_date": before_posting,
+                "merchant_display_name": before_merchant,
+                "amount_minor": before_amount,
+            })
+            .to_string(),
+            serde_json::json!({
+                "reference_id": reference_id,
+                "best_posting_date": posting_date_parsed,
+                "merchant_display_name": merchant_display,
+                "amount_minor": settled_amount_minor,
+            })
+            .to_string(),
+        ],
     )?;
 
     Ok(())
@@ -194,6 +225,81 @@ pub fn fill_null_fields_from_email(
     Ok(())
 }
 
+/// Doc 30 TASK-DEDUP-008: "both email (e.g. two connected accounts alerting
+/// on the same transaction) -> standard scoring match, first-arriving data
+/// generally retained unless the second has materially higher-confidence
+/// fields." How much higher `obs.confidence_score` must be than the
+/// already-linked email observation's own confidence before the newer
+/// arrival is allowed to overwrite it.
+const EMAIL_VS_EMAIL_CONFIDENCE_MARGIN: f64 = 0.15;
+
+/// Doc 30 TASK-DEDUP-008 email-vs-email precedence path. Only called when
+/// the matched canonical's `source_mix` is `email_only` (both sides are
+/// email evidence, no statement involved anywhere) — compares the incoming
+/// observation's extraction confidence against the already-linked email
+/// observation's; overwrites merchant/reference fields only if the new one
+/// is materially more confident.
+fn maybe_overwrite_from_higher_confidence_email(
+    conn: &Connection,
+    canonical_id: &str,
+    obs: &IncomingObservation,
+) -> Result<()> {
+    let Some(new_confidence) = obs.confidence_score else {
+        return Ok(()); // No confidence signal on the new observation -- can't compare, keep first-arriving.
+    };
+
+    let existing_confidence: Option<f64> = conn
+        .query_row(
+            "SELECT confidence_score FROM transaction_observations \
+             WHERE canonical_transaction_id = ?1 AND source_pipeline = 'gmail_transaction' AND id != ?2 \
+             ORDER BY created_at ASC LIMIT 1",
+            params![canonical_id, obs.id],
+            |row| row.get(0),
+        )
+        .ok()
+        .flatten();
+
+    let Some(existing_confidence) = existing_confidence else {
+        return Ok(()); // Nothing to compare against -- keep first-arriving.
+    };
+
+    if new_confidence - existing_confidence <= EMAIL_VS_EMAIL_CONFIDENCE_MARGIN {
+        return Ok(()); // Not materially higher -- first-arriving data is retained.
+    }
+
+    let before: Option<(Option<String>, Option<String>)> = conn
+        .query_row(
+            "SELECT reference_id, merchant_display_name FROM transactions WHERE id = ?1",
+            params![canonical_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .ok();
+    let (before_ref, before_merchant) = before.unwrap_or((None, None));
+
+    conn.execute(
+        "UPDATE transactions SET
+            reference_id = COALESCE(?2, reference_id),
+            merchant_display_name = COALESCE(?3, merchant_display_name),
+            updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?1",
+        params![canonical_id, obs.reference_id, obs.merchant_raw],
+    )?;
+
+    let audit_id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO audit_log (id, actor_type, actor_id, action, resource_type, resource_id, before_json, after_json, created_at)
+         VALUES (?1, 'system', 'reconciliation_engine', 'canonical_field_overwritten_by_higher_confidence_email', 'transaction', ?2, ?3, ?4, CURRENT_TIMESTAMP)",
+        params![
+            audit_id,
+            canonical_id,
+            serde_json::json!({ "reference_id": before_ref, "merchant_display_name": before_merchant }).to_string(),
+            serde_json::json!({ "reference_id": obs.reference_id, "merchant_display_name": obs.merchant_raw }).to_string(),
+        ],
+    )?;
+
+    Ok(())
+}
+
 /// Doc 30 TASK-TXN-010: shared entry point for both `AutoMatchedExact` and
 /// `AutoMatchedScored` decisions — "update the existing row per the
 /// statement-overrides-email precedence rule... [and] populate
@@ -225,11 +331,13 @@ pub fn apply_match_precedence_and_link(
             obs.reference_id.as_deref(),
             obs.merchant_raw.as_deref(),
         )?;
+    } else if obs.source_pipeline == "gmail_transaction" && matched_source_mix == Some("email_only")
+    {
+        maybe_overwrite_from_higher_confidence_email(conn, matched_id, obs)?;
     }
-    // obs.source_pipeline == "manual", or an email matching an email-sourced
-    // canonical: no document specifies a precedence rule for either case, so
-    // no field update is made beyond linking below (Doc 30's rule is
-    // specifically statement-vs-email).
+    // obs.source_pipeline == "manual": no document specifies a precedence
+    // rule for a manual entry matching an existing canonical, so no field
+    // update is made beyond linking below.
 
     update_canonical_transaction_id(conn, &obs.id, Some(matched_id))?;
 

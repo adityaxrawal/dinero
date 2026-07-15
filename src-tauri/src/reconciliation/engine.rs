@@ -43,6 +43,14 @@ pub struct IncomingObservation {
     /// skipped in that case, falling straight through to windowed search.
     #[serde(default)]
     pub fingerprint: Option<String>,
+    /// Doc 30 TASK-DEDUP-008: this observation's own extraction confidence
+    /// (`transaction_observations.confidence_score`, Document 18 §4.4),
+    /// consumed by the email-vs-email precedence path in
+    /// `canonical::apply_match_precedence_and_link` — "first-arriving data
+    /// generally retained unless the second has materially higher-confidence
+    /// fields." `None` when unavailable (e.g. manual entries).
+    #[serde(default)]
+    pub confidence_score: Option<f64>,
 }
 
 /// Represents an existing canonical transaction for candidate matching.

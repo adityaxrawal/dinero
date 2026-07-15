@@ -63,7 +63,7 @@ fn test_exact_match_success() {
         emi_total_installments: None,
         emi_original_amount_minor: None,
         fingerprint: Some("fp_shared".to_string()),
-    };
+        confidence_score: None,    };
 
     // Empty candidate set: proves the fingerprint pre-filter resolves this
     // on its own, without ever needing the windowed search's results.
@@ -93,7 +93,7 @@ fn test_prefilter_miss_falls_through_to_scoring() {
         emi_original_amount_minor: None,
         // No prior observation carries this fingerprint.
         fingerprint: Some("fp_no_match_anywhere".to_string()),
-    };
+        confidence_score: None,    };
 
     let cand = CanonicalCandidate {
         id: "cand_1".to_string(),
@@ -133,7 +133,9 @@ fn test_clear_winner_single_viable_candidate_auto_matches() {
         source_record_id: "msg_1".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-        fingerprint: None,    };
+        fingerprint: None,
+        confidence_score: None,
+    };
 
     let cand = CanonicalCandidate {
         id: "cand_1".to_string(),
@@ -175,7 +177,7 @@ fn test_clear_winner_margin_exceeds_15_percent_auto_matches() {
         emi_total_installments: None,
         emi_original_amount_minor: None,
         fingerprint: None,
-    };
+        confidence_score: None,    };
 
     // Strong candidate: exact reference ID + exact merchant + close time.
     let strong = CanonicalCandidate {
@@ -227,7 +229,7 @@ fn test_ambiguity_margin_within_15_percent_routes_ambiguous() {
         emi_total_installments: None,
         emi_original_amount_minor: None,
         fingerprint: None,
-    };
+        confidence_score: None,    };
 
     // Two near-identical candidates -- same merchant, same amount, close
     // times -- neither one clearly better than the other.
@@ -279,7 +281,7 @@ fn test_below_viability_floor_routes_new_canonical() {
         emi_total_installments: None,
         emi_original_amount_minor: None,
         fingerprint: None,
-    };
+        confidence_score: None,    };
 
     // Same instrument/amount/direction (required just to be a windowed
     // candidate at all) but a wildly different merchant and a time far from
@@ -325,7 +327,9 @@ fn test_new_canonical_created_when_no_match() {
         source_record_id: "msg_1".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-        fingerprint: None,    };
+        fingerprint: None,
+        confidence_score: None,
+    };
 
     let decision = reconcile(&conn, &obs, vec![]).unwrap();
 
@@ -349,7 +353,9 @@ fn test_ambiguous_cluster_created_for_same_amount_same_day() {
         source_record_id: "msg_1".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-        fingerprint: None,    };
+        fingerprint: None,
+        confidence_score: None,
+    };
 
     let cand1 = CanonicalCandidate {
         id: "cand_1".to_string(),
@@ -407,7 +413,9 @@ fn test_new_canonical_created_from_single_observation() {
         source_record_id: "msg_1".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-        fingerprint: None,    };
+        fingerprint: None,
+        confidence_score: None,
+    };
 
     let decision = reconcile(&conn, &obs, vec![]).unwrap();
     assert_eq!(decision, DecisionType::NewCanonical);
@@ -459,7 +467,9 @@ fn test_ambiguous_decision_creates_no_canonical_row() {
         source_record_id: "msg_1".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-        fingerprint: None,    };
+        fingerprint: None,
+        confidence_score: None,
+    };
 
     let cand1 = CanonicalCandidate {
         id: "cand_1".to_string(),
@@ -502,12 +512,15 @@ fn test_ambiguous_decision_creates_no_canonical_row() {
     assert_eq!(linked, None, "an ambiguous observation must not be linked to any canonical row");
 }
 
-/// Doc 30 TASK-TXN-010 acceptance test: a statement observation that
-/// exact-matches an email-sourced canonical transaction overwrites its
-/// authoritative fields (merchant/posting_date/reference_id), and the
-/// observation is linked via `canonical_transaction_id`.
+/// Doc 30 TASK-TXN-010 / TASK-DEDUP-008 acceptance test (renamed from
+/// `test_statement_overrides_email_on_conflict` to Doc 30 DEDUP-008's own
+/// name — same underlying precedence rule, both tasks' acceptance
+/// criterion): a statement observation that exact-matches an
+/// email-sourced canonical transaction overwrites its authoritative fields
+/// (merchant/posting_date/reference_id), and the observation is linked via
+/// `canonical_transaction_id`.
 #[test]
-fn test_statement_overrides_email_on_conflict() {
+fn test_statement_overwrites_email_sourced_fields() {
     let conn = setup_test_db();
 
     // Create an initial canonical transaction, email-sourced.
@@ -537,7 +550,9 @@ fn test_statement_overrides_email_on_conflict() {
         source_record_id: "stmt_2".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-        fingerprint: None,    };
+        fingerprint: None,
+        confidence_score: None,
+    };
 
     let cand2 = CanonicalCandidate {
         id: "tx_1".to_string(),
@@ -584,11 +599,13 @@ fn test_statement_overrides_email_on_conflict() {
     assert_eq!(linked, Some("tx_1".to_string()));
 }
 
-/// Doc 30 TASK-TXN-010 acceptance test: an email observation matching an
-/// already-statement-sourced canonical transaction only fills currently-NULL
-/// fields, never overwrites an existing value.
+/// Doc 30 TASK-TXN-010 / TASK-DEDUP-008 acceptance test (renamed from
+/// `test_email_fills_null_fields_only_when_statement_present` to Doc 30
+/// DEDUP-008's own name — same rule): an email observation matching an
+/// already-statement-sourced canonical transaction only fills
+/// currently-NULL fields, never overwrites an existing value.
 #[test]
-fn test_email_fills_null_fields_only_when_statement_present() {
+fn test_email_only_fills_null_fields_when_statement_present() {
     let conn = setup_test_db();
 
     // Canonical already has statement evidence: reference_id is set (must
@@ -618,7 +635,9 @@ fn test_email_fills_null_fields_only_when_statement_present() {
         source_record_id: "msg_email_1".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-        fingerprint: None,    };
+        fingerprint: None,
+        confidence_score: None,
+    };
 
     let cand = CanonicalCandidate {
         id: "tx_2".to_string(),
@@ -650,6 +669,174 @@ fn test_email_fills_null_fields_only_when_statement_present() {
     assert_eq!(merchant, "Refund Co (Email)", "NULL merchant must be filled from email");
     assert_eq!(reference_id, "REF_STATEMENT", "existing non-NULL reference_id must NOT be overwritten by email");
     assert_eq!(source_mix, "merged");
+}
+
+/// Doc 30 TASK-DEDUP-008 acceptance test: two connected accounts alerting on
+/// the same real-world transaction (both email-sourced) -- first-arriving
+/// data is retained unless the second observation has materially
+/// higher-confidence fields (the named +0.15 margin).
+#[test]
+fn test_email_vs_email_uses_confidence_score() {
+    let conn = setup_test_db();
+
+    conn.execute(
+        "INSERT INTO transactions (id, instrument_id, amount_minor, currency, direction, best_posting_date, merchant_display_name, reference_id, source_mix, is_deleted)
+         VALUES ('tx_3', 'inst_1', 1000, 'USD', 'debit', '2026-06-10', 'Low Confidence Merchant', 'REF_SHARED', 'email_only', 0)",
+        [],
+    ).unwrap();
+    // The first, already-linked email observation -- low confidence.
+    conn.execute(
+        "INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint, canonical_transaction_id, confidence_score, created_at) \
+         VALUES ('obs_first', 'gmail_transaction', 'msg_first', 'fp_first', 'tx_3', 0.5, '2026-06-10 09:00:00')",
+        [],
+    ).unwrap();
+
+    // Not-materially-higher second observation (0.5 -> 0.55, only +0.05): must NOT overwrite.
+    conn.execute(
+        "INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint) \
+         VALUES ('obs_slightly_higher', 'gmail_transaction', 'msg_slightly_higher', 'fp_slightly_higher')",
+        [],
+    ).unwrap();
+    let obs_slightly_higher = IncomingObservation {
+        id: "obs_slightly_higher".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 1000,
+        currency: "USD".to_string(),
+        direction: "debit".to_string(),
+        event_time: "2026-06-10 09:05:00".to_string(),
+        reference_id: Some("REF_SHARED".to_string()),
+        merchant_raw: Some("Slightly Higher Confidence Merchant".to_string()),
+        source_pipeline: "gmail_transaction".to_string(),
+        source_record_id: "msg_slightly_higher".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
+        fingerprint: None,
+        confidence_score: Some(0.55),
+    };
+    let cand = CanonicalCandidate {
+        id: "tx_3".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 1000,
+        currency: "USD".to_string(),
+        direction: "debit".to_string(),
+        event_time: "2026-06-10 09:04:00".to_string(),
+        reference_id: Some("REF_SHARED".to_string()),
+        merchant_normalized_name: Some("Low Confidence Merchant".to_string()),
+        source_mix: Some("email_only".to_string()),
+    };
+    reconcile(&conn, &obs_slightly_higher, vec![cand.clone()]).unwrap();
+
+    let merchant_after_slight: String = conn
+        .query_row(
+            "SELECT merchant_display_name FROM transactions WHERE id = 'tx_3'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        merchant_after_slight, "Low Confidence Merchant",
+        "a merely-slightly-higher confidence must NOT overwrite first-arriving data"
+    );
+
+    // Materially higher second observation (0.5 -> 0.95, +0.45): must overwrite.
+    conn.execute(
+        "INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint) \
+         VALUES ('obs_much_higher', 'gmail_transaction', 'msg_much_higher', 'fp_much_higher')",
+        [],
+    ).unwrap();
+    let obs_much_higher = IncomingObservation {
+        id: "obs_much_higher".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 1000,
+        currency: "USD".to_string(),
+        direction: "debit".to_string(),
+        event_time: "2026-06-10 09:06:00".to_string(),
+        reference_id: Some("REF_SHARED".to_string()),
+        merchant_raw: Some("Much Higher Confidence Merchant".to_string()),
+        source_pipeline: "gmail_transaction".to_string(),
+        source_record_id: "msg_much_higher".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
+        fingerprint: None,
+        confidence_score: Some(0.95),
+    };
+    reconcile(&conn, &obs_much_higher, vec![cand]).unwrap();
+
+    let merchant_after_much: String = conn
+        .query_row(
+            "SELECT merchant_display_name FROM transactions WHERE id = 'tx_3'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        merchant_after_much, "Much Higher Confidence Merchant",
+        "a materially higher confidence observation must overwrite first-arriving data"
+    );
+}
+
+/// Doc 30 TASK-DEDUP-008 acceptance test: every precedence-driven overwrite
+/// is logged to `audit_log` with actual before/after values, not just a bare
+/// event marker.
+#[test]
+fn test_precedence_overwrite_logged_to_audit() {
+    let conn = setup_test_db();
+
+    conn.execute(
+        "INSERT INTO transactions (id, instrument_id, amount_minor, currency, direction, best_posting_date, merchant_display_name, reference_id, source_mix, is_deleted)
+         VALUES ('tx_4', 'inst_1', 1000, 'USD', 'debit', '2026-06-10', 'Uber Email', 'REF_EXACT', 'email_only', 0)",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint) \
+         VALUES ('obs_stmt', 'statement_pdf', 'stmt_4', 'fp_stmt4')",
+        [],
+    ).unwrap();
+
+    // Same reference_id as the candidate (so the score stays well above the
+    // viability floor despite the different merchant text) -- the field
+    // under test here is merchant_display_name's before/after capture, not
+    // reference_id's.
+    let obs = IncomingObservation {
+        id: "obs_stmt".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 1000,
+        currency: "USD".to_string(),
+        direction: "debit".to_string(),
+        event_time: "2026-06-10 14:06:00".to_string(),
+        reference_id: Some("REF_EXACT".to_string()),
+        merchant_raw: Some("Uber Statement".to_string()),
+        source_pipeline: "statement_pdf".to_string(),
+        source_record_id: "stmt_4".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
+        fingerprint: None,
+        confidence_score: None,
+    };
+    let cand = CanonicalCandidate {
+        id: "tx_4".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 1000,
+        currency: "USD".to_string(),
+        direction: "debit".to_string(),
+        event_time: "2026-06-10 14:05:00".to_string(),
+        reference_id: Some("REF_EXACT".to_string()),
+        merchant_normalized_name: Some("Uber Email".to_string()),
+        source_mix: Some("email_only".to_string()),
+    };
+
+    reconcile(&conn, &obs, vec![cand]).unwrap();
+
+    let (before_json, after_json): (String, String) = conn
+        .query_row(
+            "SELECT before_json, after_json FROM audit_log WHERE action = 'canonical_field_overwritten_by_statement' AND resource_id = 'tx_4'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+
+    assert!(before_json.contains("Uber Email"), "before_json must capture the pre-overwrite value: {before_json}");
+    assert!(after_json.contains("Uber Statement"), "after_json must capture the post-overwrite value: {after_json}");
 }
 
 #[test]
@@ -779,7 +966,7 @@ fn test_original_ambiguous_decision_row_never_modified() {
         emi_total_installments: None,
         emi_original_amount_minor: None,
         fingerprint: None,
-    };
+        confidence_score: None,    };
     let cand1 = CanonicalCandidate {
         id: "cand_1".to_string(),
         instrument_id: "inst_1".to_string(),
@@ -1086,7 +1273,9 @@ fn test_manual_entry_triggers_realtime_reconciliation() {
         source_record_id: "manual_1".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-        fingerprint: None,    };
+        fingerprint: None,
+        confidence_score: None,
+    };
 
     // Fetch candidates
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
@@ -1119,7 +1308,9 @@ fn test_refund_linked_to_original_debit() {
         source_record_id: "manual_1".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-        fingerprint: None,    };
+        fingerprint: None,
+        confidence_score: None,
+    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs_debit).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs_debit, candidates).unwrap();
@@ -1146,7 +1337,9 @@ fn test_refund_linked_to_original_debit() {
         source_record_id: "manual_2".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-        fingerprint: None,    };
+        fingerprint: None,
+        confidence_score: None,
+    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs_credit).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs_credit, candidates).unwrap();
@@ -1193,7 +1386,9 @@ fn test_reversal_detected_within_hours() {
         source_record_id: "manual_1".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-        fingerprint: None,    };
+        fingerprint: None,
+        confidence_score: None,
+    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs_debit).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs_debit, candidates).unwrap();
@@ -1220,7 +1415,9 @@ fn test_reversal_detected_within_hours() {
         source_record_id: "manual_2".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-        fingerprint: None,    };
+        fingerprint: None,
+        confidence_score: None,
+    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs_credit).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs_credit, candidates).unwrap();
@@ -1266,7 +1463,9 @@ fn test_merchant_alias_resolves_normalized_name() {
         source_record_id: "manual_3".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-        fingerprint: None,    };
+        fingerprint: None,
+        confidence_score: None,
+    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs, candidates).unwrap();
@@ -1301,7 +1500,9 @@ fn test_category_assigned_from_merchant_entity() {
         source_record_id: "manual_4".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-        fingerprint: None,    };
+        fingerprint: None,
+        confidence_score: None,
+    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs, candidates).unwrap();
@@ -1336,7 +1537,9 @@ fn test_missing_category_does_not_block_canonical_write() {
         source_record_id: "manual_5".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-        fingerprint: None,    };
+        fingerprint: None,
+        confidence_score: None,
+    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs, candidates).unwrap();
@@ -1376,7 +1579,9 @@ fn test_alert_not_fired_when_under_threshold() {
         source_record_id: "manual_no_alert".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-        fingerprint: None,    };
+        fingerprint: None,
+        confidence_score: None,
+    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs, candidates).unwrap();
@@ -1417,7 +1622,9 @@ fn test_global_spend_limit_alert() {
         source_record_id: "manual_global".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-        fingerprint: None,    };
+        fingerprint: None,
+        confidence_score: None,
+    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs, candidates).unwrap();
@@ -1467,7 +1674,9 @@ fn test_category_spend_limit_alert() {
         source_record_id: "manual_cat".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-        fingerprint: None,    };
+        fingerprint: None,
+        confidence_score: None,
+    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs, candidates).unwrap();
@@ -1524,7 +1733,9 @@ fn test_merchant_spike_alert() {
         source_record_id: "manual_spike".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-        fingerprint: None,    };
+        fingerprint: None,
+        confidence_score: None,
+    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs, candidates).unwrap();
@@ -1595,7 +1806,9 @@ fn test_anomaly_detection_logic() {
         source_record_id: "msg_anomaly".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-        fingerprint: None,    };
+        fingerprint: None,
+        confidence_score: None,
+    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs, candidates).unwrap();
@@ -1683,7 +1896,9 @@ fn test_global_spend_limit_80_percent() {
         source_record_id: "msg_80pct".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-        fingerprint: None,    };
+        fingerprint: None,
+        confidence_score: None,
+    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs, candidates).unwrap();
@@ -1731,7 +1946,9 @@ fn test_category_budget_100_percent() {
         source_record_id: "msg_cat_100".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-        fingerprint: None,    };
+        fingerprint: None,
+        confidence_score: None,
+    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs, candidates).unwrap();
@@ -1773,7 +1990,9 @@ fn test_manual_transaction_creation() {
         source_record_id: "manual_create_1".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-        fingerprint: None,    };
+        fingerprint: None,
+        confidence_score: None,
+    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
     let decision = crate::reconciliation::engine::reconcile(&conn, &obs, candidates).unwrap();
@@ -1888,7 +2107,9 @@ fn test_manual_transactions_handled_by_deduplication() {
         source_record_id: "manual_dup_1".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-        fingerprint: None,    };
+        fingerprint: None,
+        confidence_score: None,
+    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
     // Must find the existing automated transaction as a candidate

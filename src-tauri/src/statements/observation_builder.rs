@@ -70,6 +70,10 @@ pub fn build_observation(
         // complementarity) still correctly reconciles this case -- just
         // without the fingerprint performance shortcut.
         fingerprint: None,
+        // Statement rows always win precedence outright (Doc 30
+        // TASK-DEDUP-008) regardless of confidence -- this field only
+        // matters for the email-vs-email comparison, irrelevant here.
+        confidence_score: None,
     })
 }
 

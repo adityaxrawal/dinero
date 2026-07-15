@@ -1812,6 +1812,8 @@ pub async fn transactions_create(
         // TASK-TXN-008's formula input) — the fingerprint pre-filter
         // (TASK-DEDUP-001) is simply skipped for these observations.
         fingerprint: None,
+        // Manual entries are ground truth, not extracted -- maximal confidence.
+        confidence_score: Some(1.0),
     };
 
     let decision = conn

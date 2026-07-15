@@ -214,7 +214,7 @@ mod tests {
             emi_total_installments: None,
             emi_original_amount_minor: None,
             fingerprint: None,
-        }
+            confidence_score: None,        }
     }
 
     fn base_candidate() -> CanonicalCandidate {

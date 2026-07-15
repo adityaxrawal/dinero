@@ -331,6 +331,10 @@ async fn process_transaction_job(job: TransactionJob, pool: &Pool) {
                             // previously computed and persisted but never
                             // consumed anywhere.
                             fingerprint: row.fingerprint.clone(),
+                            // Doc 30 TASK-DEDUP-008: threaded into the
+                            // reconciliation engine's input for the
+                            // email-vs-email precedence comparison.
+                            confidence_score: row.confidence_score,
                         };
 
                         let candidates =

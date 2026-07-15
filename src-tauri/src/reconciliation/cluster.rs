@@ -218,7 +218,9 @@ pub fn resolve_cluster(
                     source_record_id: obs_row.source_record_id.unwrap_or_default(),
                     emi_total_installments: obs_row.emi_total_installments,
                     emi_original_amount_minor: obs_row.emi_original_amount_minor,
-                    fingerprint: None,                };
+                    fingerprint: None,
+                    confidence_score: None,
+                };
                 crate::reconciliation::canonical::create_canonical_transaction(
                     conn,
                     &incoming_obs,
