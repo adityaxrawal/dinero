@@ -1,3 +1,4 @@
+pub mod benchmark;
 pub mod classifier;
 pub mod currency_handler;
 pub mod deduplication_gate;

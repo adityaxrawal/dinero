@@ -1,0 +1,49 @@
+name: Nightly Benchmark Run
+
+on:
+  schedule:
+    - cron: '0 2 * * *' # Run at 2 AM every day
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  benchmark:
+    name: Run Quality Gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Checkout Benchmark Corpus
+        uses: actions/checkout@v4
+        with:
+          repository: your-org/dinero-benchmarks
+          path: dinero-benchmarks
+          lfs: true
+          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
+          
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
+          
+      - name: Run Quality Gate Tests
+        run: cargo test phase10_quality_gates -- --nocapture
+        working-directory: src-tauri
+        env:
+          BENCHMARK_CORPUS_DIR: ${{ github.workspace }}/dinero-benchmarks
+          BENCHMARK_REPORT_DIR: ${{ github.workspace }}/benchmark-reports
+
+      - name: Upload benchmark reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-reports-${{ github.run_id }}
+          path: benchmark-reports/
+          retention-days: 90

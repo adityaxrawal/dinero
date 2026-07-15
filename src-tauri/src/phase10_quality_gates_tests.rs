@@ -9,6 +9,10 @@ mod tests {
     use rusqlite::params;
     use serde::Deserialize;
 
+    use crate::extraction::benchmark::{
+        report_path, BenchmarkReport, LayerContributionTracker, MetricResult,
+        ACCURACY_GATE_THRESHOLD_PCT, FALSE_POSITIVE_GATE_THRESHOLD_PCT,
+    };
     use crate::extraction::ladder::run_extraction_ladder;
     use crate::reconciliation::audit::DecisionType;
     use crate::reconciliation::engine::{reconcile, CanonicalCandidate, IncomingObservation};
@@ -217,6 +221,10 @@ mod tests {
         let pool = dummy_pool();
         let mut total_fields = 0u64;
         let mut correct_fields = 0u64;
+        // Doc 30 TASK-TXN-014: per-layer contribution breakdown -- which of
+        // the 6 extraction-ladder layers produced each field comparison,
+        // not just the aggregate accuracy figure.
+        let mut layer_tracker = LayerContributionTracker::new();
 
         for sample in &samples {
             let expected = sample.expected.as_ref().unwrap();
@@ -226,6 +234,7 @@ mod tests {
                     .ok()
                     .flatten();
 
+            let extraction_method = actual.as_ref().map(|r| r.extraction_method.as_str());
             let (act_amount, act_currency, act_direction, act_merchant) = match &actual {
                 Some(r) => (
                     r.amount_minor,
@@ -238,27 +247,35 @@ mod tests {
 
             if let Some(e) = &expected.amount_minor {
                 total_fields += 1;
-                if act_amount.as_ref() == Some(e) {
+                let correct = act_amount.as_ref() == Some(e);
+                if correct {
                     correct_fields += 1;
                 }
+                layer_tracker.record(extraction_method, correct);
             }
             if let Some(e) = &expected.currency {
                 total_fields += 1;
-                if act_currency.as_ref() == Some(e) {
+                let correct = act_currency.as_ref() == Some(e);
+                if correct {
                     correct_fields += 1;
                 }
+                layer_tracker.record(extraction_method, correct);
             }
             if let Some(e) = &expected.direction {
                 total_fields += 1;
-                if act_direction.as_ref() == Some(e) {
+                let correct = act_direction.as_ref() == Some(e);
+                if correct {
                     correct_fields += 1;
                 }
+                layer_tracker.record(extraction_method, correct);
             }
             if let Some(e) = &expected.merchant_raw {
                 total_fields += 1;
-                if act_merchant.as_ref() == Some(e) {
+                let correct = act_merchant.as_ref() == Some(e);
+                if correct {
                     correct_fields += 1;
                 }
+                layer_tracker.record(extraction_method, correct);
             }
         }
 
@@ -267,14 +284,25 @@ mod tests {
             "Corpus transaction samples had no labeled fields to check"
         );
         let accuracy = (correct_fields as f64 / total_fields as f64) * 100.0;
+
+        let report = BenchmarkReport::new(
+            "extraction_accuracy",
+            MetricResult::new(accuracy, ACCURACY_GATE_THRESHOLD_PCT, samples.len(), true),
+            layer_tracker.into_breakdown(),
+        );
+        if let Err(e) = report.write_to_path(&report_path("extraction_accuracy")) {
+            eprintln!("WARN: failed to write extraction accuracy benchmark report: {}", e);
+        }
+
         assert!(
-            accuracy >= 95.0,
+            accuracy >= ACCURACY_GATE_THRESHOLD_PCT,
             "Real field-level extraction accuracy {:.2}% ({}/{} fields correct across {} \
-             corpus samples) is below the Document 34 §10.2 threshold of 95%",
+             corpus samples) is below the Document 34 §10.2 threshold of {}%",
             accuracy,
             correct_fields,
             total_fields,
-            samples.len()
+            samples.len(),
+            ACCURACY_GATE_THRESHOLD_PCT
         );
     }
 
@@ -308,6 +336,10 @@ mod tests {
 
         let pool = dummy_pool();
         let mut false_positives = 0u64;
+        // Doc 30 TASK-TXN-014: per-layer breakdown of which layer produced
+        // each wrongly-extracted noise sample (bucketed under
+        // "no_extraction" when every layer correctly returned nothing).
+        let mut layer_tracker = LayerContributionTracker::new();
 
         for sample in &samples {
             let actual =
@@ -315,19 +347,35 @@ mod tests {
                     .await
                     .ok()
                     .flatten();
-            if matches!(&actual, Some(r) if r.is_valid()) {
+            let extraction_method = actual.as_ref().map(|r| r.extraction_method.as_str());
+            let is_false_positive = matches!(&actual, Some(r) if r.is_valid());
+            if is_false_positive {
                 false_positives += 1;
             }
+            // "correct" here means the layer correctly abstained (i.e. did
+            // NOT wrongly extract a noise sample as a transaction).
+            layer_tracker.record(extraction_method, !is_false_positive);
         }
 
         let fpr = (false_positives as f64 / samples.len() as f64) * 100.0;
+
+        let report = BenchmarkReport::new(
+            "false_positive_rate",
+            MetricResult::new(fpr, FALSE_POSITIVE_GATE_THRESHOLD_PCT, samples.len(), false),
+            layer_tracker.into_breakdown(),
+        );
+        if let Err(e) = report.write_to_path(&report_path("false_positive_rate")) {
+            eprintln!("WARN: failed to write false positive rate benchmark report: {}", e);
+        }
+
         assert!(
-            fpr <= 0.1,
+            fpr <= FALSE_POSITIVE_GATE_THRESHOLD_PCT,
             "Real false positive rate {:.4}% ({}/{} noise samples wrongly extracted as \
-             transactions) exceeds the Document 34 §10.2 threshold of 0.1%",
+             transactions) exceeds the Document 34 §10.2 threshold of {}%",
             fpr,
             false_positives,
-            samples.len()
+            samples.len(),
+            FALSE_POSITIVE_GATE_THRESHOLD_PCT
         );
     }
 
