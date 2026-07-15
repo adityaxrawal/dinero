@@ -11,6 +11,51 @@ pub struct DashboardSummary {
     pub limit: f64,
 }
 
+/// Doc 30 TASK-DEDUP-009: "an `unassigned_amount_pending_review` metric (NOT
+/// part of totals, shown as a distinct 'X transactions need your review'
+/// banner) computed from `ambiguous_pending` clusters plus `pending`
+/// unassigned transactions." Exposed here as its own computable value —
+/// Area 8's `analytics_pending_review_count` command (Doc 30 TASK-API-006)
+/// wraps this as IPC once built; this task's own scope is the underlying
+/// metric and its defensive exclusion tests.
+#[derive(Serialize, Debug, PartialEq)]
+pub struct PendingReviewMetric {
+    pub count: i64,
+    pub amount_minor: i64,
+}
+
+pub fn compute_unassigned_amount_pending_review(
+    conn: &Connection,
+) -> Result<PendingReviewMetric, String> {
+    let (cluster_count, cluster_amount_minor): (i64, i64) = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT t.id), COALESCE(SUM(t.amount_minor), 0)
+             FROM transactions t
+             JOIN reconciliation_cluster_members m ON m.canonical_transaction_id = t.id
+             JOIN reconciliation_clusters c ON c.id = m.cluster_id
+             WHERE c.cluster_status = 'open'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap_or((0, 0));
+
+    let (unassigned_count, unassigned_amount_minor): (i64, i64) = conn
+        .query_row(
+            "SELECT COUNT(*), COALESCE(SUM(o.amount_minor), 0)
+             FROM unassigned_transactions u
+             JOIN transaction_observations o ON o.id = u.observation_id
+             WHERE u.status = 'open'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap_or((0, 0));
+
+    Ok(PendingReviewMetric {
+        count: cluster_count + unassigned_count,
+        amount_minor: cluster_amount_minor + unassigned_amount_minor,
+    })
+}
+
 #[derive(Serialize, Debug, PartialEq)]
 pub struct TransactionRecord {
     pub id: String,
@@ -83,11 +128,26 @@ pub struct DebugMetrics {
     pub reconciliation_decision_distribution: std::collections::HashMap<String, i64>,
 }
 
+// Doc 30 TASK-DEDUP-009 / Document 19 §11.1 ("Must exclude ambiguous
+// unresolved data"): a canonical transaction that is a candidate member of
+// a still-`open` reconciliation cluster is not deleted or hidden from
+// `transactions` (Doc 30 TASK-DEDUP-006's hard invariant) -- it must be
+// excluded from spend totals explicitly, the same exclusion clause already
+// established in `db/transactions.rs`'s `get_global_spend_current_month`/
+// `get_category_spend_current_month`.
+const AMBIGUOUS_CLUSTER_EXCLUSION_CLAUSE: &str = "AND id NOT IN (
+               SELECT m.canonical_transaction_id FROM reconciliation_cluster_members m
+               JOIN reconciliation_clusters c ON c.id = m.cluster_id
+               WHERE c.cluster_status = 'open' AND m.canonical_transaction_id IS NOT NULL
+           )";
 
 pub fn do_fetch_dashboard_summary(conn: &Connection) -> Result<DashboardSummary, String> {
     let total_spend: f64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE amount < 0 AND COALESCE(is_deleted, 0) = 0",
+            &format!(
+                "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE amount < 0 AND COALESCE(is_deleted, 0) = 0 {}",
+                AMBIGUOUS_CLUSTER_EXCLUSION_CLAUSE
+            ),
             [],
             |row| {
                 let val: Result<f64, _> = row.get(0);
@@ -1277,6 +1337,7 @@ mod tests {
                 authorization_time TEXT,
                 merchant_display_name TEXT,
                 amount REAL,
+                amount_minor INTEGER,
                 category_id TEXT,
                 status TEXT,
                 source_mix TEXT,
@@ -1295,6 +1356,16 @@ mod tests {
         ).unwrap();
         conn.execute(
             "CREATE TABLE reconciliation_cluster_members (id TEXT PRIMARY KEY, cluster_id TEXT, canonical_transaction_id TEXT)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "CREATE TABLE transaction_observations (id TEXT PRIMARY KEY, amount_minor INTEGER)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "CREATE TABLE unassigned_transactions (id TEXT PRIMARY KEY, observation_id TEXT, status TEXT)",
             [],
         )
         .unwrap();
@@ -1352,6 +1423,94 @@ mod tests {
         assert!(!ids.contains(&"c_resolved"));
         assert!(!ids.contains(&"c_rejected"));
         assert_eq!(clusters.len(), 2);
+    }
+
+    /// Doc 30 TASK-DEDUP-009 acceptance test: the actual `dashboard_summary`
+    /// IPC command's totals (not just the lower-level per-month helper
+    /// functions in `db/transactions.rs`) must exclude a canonical
+    /// transaction that is a candidate member of a still-`open`
+    /// reconciliation cluster. This is the exact "new query path added
+    /// without the exclusion" failure mode Doc 30 warns about: this
+    /// function's own totals had no such exclusion until this task.
+    #[test]
+    fn test_no_ambiguous_cluster_member_ever_appears_in_transactions_totals() {
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO transactions (id, amount, amount_minor, is_deleted) VALUES ('tx_normal', -10.0, -1000, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transactions (id, amount, amount_minor, is_deleted) VALUES ('tx_ambiguous', -50.0, -5000, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reconciliation_clusters (id, cluster_status) VALUES ('cl_1', 'open')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reconciliation_cluster_members (id, cluster_id, canonical_transaction_id) VALUES ('m_1', 'cl_1', 'tx_ambiguous')",
+            [],
+        )
+        .unwrap();
+
+        let summary = do_fetch_dashboard_summary(&conn).unwrap();
+        assert_eq!(summary.total_spend, 10.0, "the ambiguous candidate's amount must not be counted");
+    }
+
+    /// Doc 30 TASK-DEDUP-009 acceptance test: `unassigned_amount_pending_review`
+    /// is computed separately from -- and never folds into -- the dashboard
+    /// totals, even though both draw from overlapping tables.
+    #[test]
+    fn test_pending_review_banner_metric_computed_separately() {
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO transactions (id, amount, amount_minor, is_deleted) VALUES ('tx_normal', -10.0, -1000, 0)",
+            [],
+        )
+        .unwrap();
+        // `amount` (signed, this test module's local convention for the
+        // legacy dashboard total) is negative for spend; `amount_minor`
+        // (Document 18 §4.3, the real production field) is always a
+        // positive magnitude, with `direction` -- not the sign -- carrying
+        // debit/credit meaning, so it stays positive here too.
+        conn.execute(
+            "INSERT INTO transactions (id, amount, amount_minor, is_deleted) VALUES ('tx_ambiguous', -50.0, 5000, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reconciliation_clusters (id, cluster_status) VALUES ('cl_1', 'open')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reconciliation_cluster_members (id, cluster_id, canonical_transaction_id) VALUES ('m_1', 'cl_1', 'tx_ambiguous')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transaction_observations (id, amount_minor) VALUES ('obs_orphan', 2500)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO unassigned_transactions (id, observation_id, status) VALUES ('u_1', 'obs_orphan', 'open')",
+            [],
+        )
+        .unwrap();
+
+        let summary = do_fetch_dashboard_summary(&conn).unwrap();
+        let pending = compute_unassigned_amount_pending_review(&conn).unwrap();
+
+        // The pending-review metric sees both the ambiguous cluster member
+        // (5000 minor) and the unassigned observation (2500 minor).
+        assert_eq!(pending.count, 2);
+        assert_eq!(pending.amount_minor, 7500);
+        // The dashboard total is completely unaffected by either.
+        assert_eq!(summary.total_spend, 10.0);
     }
 
     #[test]
