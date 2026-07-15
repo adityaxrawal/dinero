@@ -230,12 +230,18 @@ pub fn resolve_cluster(
         _ => {}
     }
 
+    // Doc 30 TASK-DEDUP-007: "writes a new match_decisions row
+    // (manually_confirmed, reviewed_by set)". "user_id" matches the same
+    // single-local-user actor placeholder this function's own audit_log
+    // inserts below already use — there is no multi-user actor model
+    // (Document 18 §7.1).
     crate::reconciliation::audit::append_match_decision(
         conn,
         observation_id,
         chosen_canonical_id,
         1.0,
         crate::reconciliation::audit::DecisionType::ManuallyConfirmed,
+        Some("user_id"),
     )?;
 
     let audit_id = Uuid::new_v4().to_string();

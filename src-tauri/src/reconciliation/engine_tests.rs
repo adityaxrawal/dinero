@@ -694,8 +694,13 @@ fn test_ambiguous_cluster_excluded_from_dashboard_totals() {
     assert_eq!(global_spend, 10.0);
 }
 
+/// Doc 30 TASK-DEDUP-007 acceptance test (renamed from
+/// `test_cluster_resolution_merge` — Doc 30's own task text calls the action
+/// `merge_into_existing`, but Document 19 §10.3 (the IPC-authoritative
+/// source) and the real, already-built `cluster::resolve_cluster` allowlist
+/// both name it `confirm_match`; same underlying scenario).
 #[test]
-fn test_cluster_resolution_merge() {
+fn test_resolve_confirm_match_creates_manually_confirmed_decision() {
     let conn = setup_test_db();
     crate::reconciliation::cluster::create_ambiguity_cluster(
         &conn,
@@ -750,8 +755,125 @@ fn test_cluster_resolution_merge() {
     assert_eq!(matched_id, "cand_1");
 }
 
+/// Doc 30 TASK-DEDUP-007 acceptance test: resolving a cluster writes a *new*
+/// `match_decisions` row (`manually_confirmed`) without ever modifying the
+/// original `ambiguous_pending` row it's resolving — full audit trail
+/// preserved. Drives a real observation through `reconcile()` (not a
+/// manually-constructed cluster) so a genuine `ambiguous_pending` decision
+/// row exists to protect.
 #[test]
-fn test_cluster_resolution_branch() {
+fn test_original_ambiguous_decision_row_never_modified() {
+    let conn = setup_test_db();
+
+    let obs = IncomingObservation {
+        id: "obs_1".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 1000,
+        currency: "USD".to_string(),
+        direction: "debit".to_string(),
+        event_time: "2026-06-10 14:00:00".to_string(),
+        reference_id: None,
+        merchant_raw: Some("Uber".to_string()),
+        source_pipeline: "gmail_transaction".to_string(),
+        source_record_id: "msg_1".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
+        fingerprint: None,
+    };
+    let cand1 = CanonicalCandidate {
+        id: "cand_1".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 1000,
+        currency: "USD".to_string(),
+        direction: "debit".to_string(),
+        event_time: "2026-06-10 14:05:00".to_string(),
+        reference_id: None,
+        merchant_normalized_name: Some("Uber".to_string()),
+        source_mix: None,
+    };
+    let cand2 = CanonicalCandidate {
+        id: "cand_2".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 1000,
+        currency: "USD".to_string(),
+        direction: "debit".to_string(),
+        event_time: "2026-06-10 14:10:00".to_string(),
+        reference_id: None,
+        merchant_normalized_name: Some("Uber".to_string()),
+        source_mix: None,
+    };
+    // Both candidates must actually exist as real transactions rows for
+    // `confirm_match` below to be able to link against one.
+    conn.execute(
+        "INSERT INTO transactions (id, instrument_id, amount_minor, currency, direction, is_deleted) VALUES ('cand_1', 'inst_1', 1000, 'USD', 'debit', 0)",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO transactions (id, instrument_id, amount_minor, currency, direction, is_deleted) VALUES ('cand_2', 'inst_1', 1000, 'USD', 'debit', 0)",
+        [],
+    ).unwrap();
+
+    let decision = reconcile(&conn, &obs, vec![cand1, cand2]).unwrap();
+    let cluster_id = match decision {
+        DecisionType::AmbiguousPending(id) => id,
+        other => panic!("expected AmbiguousPending, got {:?}", other),
+    };
+
+    let (original_id, original_decision): (String, String) = conn
+        .query_row(
+            "SELECT id, decision FROM match_decisions WHERE observation_id = 'obs_1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(original_decision, "ambiguous_pending");
+
+    crate::reconciliation::cluster::resolve_cluster(
+        &conn,
+        &cluster_id,
+        "obs_1",
+        "confirm_match",
+        Some("cand_1"),
+    )
+    .unwrap();
+
+    // The original row, looked up by its own id, must be byte-for-byte
+    // unchanged.
+    let still_ambiguous: String = conn
+        .query_row(
+            "SELECT decision FROM match_decisions WHERE id = ?1",
+            rusqlite::params![original_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(still_ambiguous, "ambiguous_pending");
+
+    // A second, new row records the manual resolution.
+    let decision_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM match_decisions WHERE observation_id = 'obs_1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(decision_count, 2);
+
+    let manual_reviewed_by: Option<String> = conn
+        .query_row(
+            "SELECT reviewed_by FROM match_decisions WHERE observation_id = 'obs_1' AND decision = 'manually_confirmed'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(manual_reviewed_by.is_some(), "manual resolution must set reviewed_by (Doc 30 TASK-DEDUP-007)");
+}
+
+/// Doc 30 TASK-DEDUP-007 acceptance test (renamed from
+/// `test_cluster_resolution_branch` — Doc 30's task text calls the action
+/// `treat_as_separate`; the real, already-built allowlist names it
+/// `keep_separate`, Document 19 §10.3).
+#[test]
+fn test_resolve_keep_separate_creates_new_canonical() {
     let conn = setup_test_db();
     crate::reconciliation::cluster::create_ambiguity_cluster(
         &conn,

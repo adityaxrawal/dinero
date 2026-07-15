@@ -31,12 +31,19 @@ impl DecisionType {
 /// Appends an immutable row to `match_decisions`.
 /// Every reconciliation action — auto or manual — must create one of these rows (Doc 11 §7).
 /// This table is the auditable, append-only trail of all reconciliation outcomes.
+///
+/// `reviewed_by` (Document 18 §4.5) should be `None` for every automated
+/// decision (`AutoMatchedExact`/`AutoMatchedScored`/`AmbiguousPending`/
+/// `NewCanonical` — there is no human reviewer) and `Some(actor)` for
+/// manual resolutions (`ManuallyConfirmed`/`ManuallyCorrected`/
+/// `RejectedMatch`, Doc 30 TASK-DEDUP-007's "reviewed_by set" requirement).
 pub fn append_match_decision(
     conn: &Connection,
     observation_id: &str,
     matched_canonical_id: Option<&str>,
     score: f64,
     decision: DecisionType,
+    reviewed_by: Option<&str>,
 ) -> Result<()> {
     let id = Uuid::new_v4().to_string();
     // TASK-DB-011 fix: Document 18 §4.5's authoritative review_status enum is
@@ -45,14 +52,16 @@ pub fn append_match_decision(
     // (checked before changing), so this is a pure internal-consistency fix.
     let review_status = if let DecisionType::AmbiguousPending(_) = decision {
         "pending_review"
+    } else if reviewed_by.is_some() {
+        "reviewed"
     } else {
         "not_required"
     };
 
     conn.execute(
-        "INSERT INTO match_decisions (id, observation_id, matched_transaction_id, score, decision, review_status, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, CURRENT_TIMESTAMP)",
-        params![id, observation_id, matched_canonical_id, score, decision.as_str(), review_status],
+        "INSERT INTO match_decisions (id, observation_id, matched_transaction_id, score, decision, review_status, reviewed_by, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, CURRENT_TIMESTAMP)",
+        params![id, observation_id, matched_canonical_id, score, decision.as_str(), review_status, reviewed_by],
     )?;
 
     Ok(())

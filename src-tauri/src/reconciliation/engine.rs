@@ -140,6 +140,7 @@ pub fn reconcile(
                         Some(&candidate.id),
                         1.0,
                         DecisionType::AutoMatchedExact,
+                        None,
                     )?;
                     tracing::info!(
                         observation_id = obs.id,
@@ -169,7 +170,7 @@ pub fn reconcile(
     if candidates.is_empty() {
         // No candidates at all → new canonical transaction
         create_canonical_transaction(conn, obs)?;
-        append_match_decision(conn, &obs.id, None, 0.0, DecisionType::NewCanonical)?;
+        append_match_decision(conn, &obs.id, None, 0.0, DecisionType::NewCanonical, None)?;
         tracing::info!(
             observation_id = obs.id,
             decision = "NewCanonical",
@@ -189,7 +190,7 @@ pub fn reconcile(
     if viable.is_empty() {
         // No viable match → new canonical
         create_canonical_transaction(conn, obs)?;
-        append_match_decision(conn, &obs.id, None, 0.0, DecisionType::NewCanonical)?;
+        append_match_decision(conn, &obs.id, None, 0.0, DecisionType::NewCanonical, None)?;
         tracing::info!(
             observation_id = obs.id,
             decision = "NewCanonical",
@@ -219,6 +220,7 @@ pub fn reconcile(
             Some(&top.candidate_id),
             top.score,
             DecisionType::AutoMatchedScored,
+            None,
         )?;
         tracing::info!(
             observation_id = obs.id,
@@ -252,6 +254,7 @@ pub fn reconcile(
             Some(&top.candidate_id),
             top.score,
             DecisionType::AutoMatchedScored,
+            None,
         )?;
         tracing::info!(
             observation_id = obs.id,
@@ -282,6 +285,7 @@ pub fn reconcile(
         None,
         top.score,
         DecisionType::AmbiguousPending(cluster_id.clone()),
+        None,
     )?;
     tracing::info!(
         observation_id = obs.id,

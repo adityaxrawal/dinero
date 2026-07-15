@@ -1312,6 +1312,48 @@ mod tests {
         conn
     }
 
+    /// Doc 30 TASK-DEDUP-007 acceptance test: `reconciliation_clusters_list`
+    /// (Doc 19 §10.1's real command name; Doc 30's own task text paraphrases
+    /// it as `reconciliation_list_pending_clusters`) returns only clusters
+    /// still awaiting review -- `open`/`deferred` (Document 18 §4.6's
+    /// `cluster_status` enum has no literal `ambiguous_pending` value; that
+    /// string is a `match_decisions.decision`, not a `cluster_status` --
+    /// this is the cluster-level equivalent Doc 30's paraphrase means).
+    /// `resolved`/`rejected` clusters must never appear.
+    #[test]
+    fn test_list_pending_clusters_returns_only_ambiguous() {
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO reconciliation_clusters (id, cluster_status, reason) VALUES ('c_open', 'open', 'multiple_high_score_candidates')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reconciliation_clusters (id, cluster_status, reason) VALUES ('c_deferred', 'deferred', 'mid_range_score')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reconciliation_clusters (id, cluster_status, reason) VALUES ('c_resolved', 'resolved', 'multiple_high_score_candidates')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reconciliation_clusters (id, cluster_status, reason) VALUES ('c_rejected', 'rejected', 'mid_range_score')",
+            [],
+        )
+        .unwrap();
+
+        let clusters = do_fetch_unresolved_clusters(&conn).unwrap();
+        let ids: Vec<&str> = clusters.iter().map(|c| c.id.as_str()).collect();
+
+        assert!(ids.contains(&"c_open"));
+        assert!(ids.contains(&"c_deferred"));
+        assert!(!ids.contains(&"c_resolved"));
+        assert!(!ids.contains(&"c_rejected"));
+        assert_eq!(clusters.len(), 2);
+    }
+
     #[test]
     fn test_seed_and_fetch() {
         let conn = setup_db();

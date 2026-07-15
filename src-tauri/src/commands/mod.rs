@@ -1623,7 +1623,11 @@ pub async fn statements_discard(
 pub async fn reconciliation_clusters_resolve(
     cluster_id: String,
     observation_id: String,
-    action: String, // "merge" | "reject" | "keep_separate"
+    // Doc 19 §10.3's real allowlist ("confirm_match" | "reject_candidate" |
+    // "keep_separate" | "mark_unresolved", enforced by
+    // cluster::resolve_cluster) -- this comment previously named a stale
+    // "merge"/"reject" pair that was never the real allowlist.
+    action: String,
     chosen_canonical_id: Option<String>,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
 ) -> Result<String, crate::error::AppError> {
