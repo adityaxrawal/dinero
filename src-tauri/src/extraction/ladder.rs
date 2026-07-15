@@ -809,7 +809,7 @@ pub fn detect_pattern_drift(
 /// object — like the LLM fallback below, it needs an extra input the trait's
 /// fixed `(pool, bank_name, body)` signature has no room for: an anchor date
 /// to bound the `±3-day` statement-row search window. `run_extraction_ladder`
-/// calls it directly, the same way it already calls `Layer5LlmLayer`
+/// calls it directly, the same way it already calls `Layer6LlmLayer`
 /// (renumbered Layer 6).
 pub struct Layer5CrossrefLayer;
 
@@ -915,10 +915,10 @@ impl Layer5CrossrefLayer {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Layer 5 — LLM-based fallback extraction.
-pub struct Layer5LlmLayer {
+pub struct Layer6LlmLayer {
     pub app_dir: Option<std::path::PathBuf>,
 }
-impl ExtractionLayer for Layer5LlmLayer {
+impl ExtractionLayer for Layer6LlmLayer {
     fn extract<'a>(
         &'a self,
         _pool: &'a Pool,
@@ -929,7 +929,7 @@ impl ExtractionLayer for Layer5LlmLayer {
             let app_dir = match &self.app_dir {
                 Some(dir) => dir,
                 None => {
-                    tracing::warn!("Layer 5: No app_dir provided, cannot locate LLM model");
+                    tracing::warn!("Layer 6: No app_dir provided, cannot locate LLM model");
                     return None;
                 }
             };
@@ -939,7 +939,7 @@ impl ExtractionLayer for Layer5LlmLayer {
             let model_path = match crate::llm_manager::get_model_path(app_dir, model_id) {
                 Some(p) => p,
                 None => {
-                    tracing::warn!("Layer 5: Model file not found for {}", model_id);
+                    tracing::warn!("Layer 6: Model file not found for {}", model_id);
                     return None;
                 }
             };
@@ -947,12 +947,12 @@ impl ExtractionLayer for Layer5LlmLayer {
             let tokenizer_path = match crate::llm_manager::get_tokenizer_path(app_dir, model_id) {
                 Some(p) => p,
                 None => {
-                    tracing::warn!("Layer 5: Tokenizer file not found for {}", model_id);
+                    tracing::warn!("Layer 6: Tokenizer file not found for {}", model_id);
                     return None;
                 }
             };
 
-            tracing::info!(bank_name = bank_name, "Layer 5 (LLM) extraction invoked");
+            tracing::info!(bank_name = bank_name, "Layer 6 (LLM) extraction invoked");
             
             let engine = crate::extraction::llm::LlmEngine::new(&model_path, &tokenizer_path);
             let result = engine.extract(body);
@@ -962,14 +962,14 @@ impl ExtractionLayer for Layer5LlmLayer {
                 event = "layer5_usage",
                 bank_name = bank_name,
                 success = result.is_some(),
-                "Layer 5 fallback utilized"
+                "Layer 6 fallback utilized"
             );
             
             result
         })
     }
     fn layer_name(&self) -> &'static str {
-        "llm_layer5"
+        "llm_layer6"
     }
 }
 
@@ -982,7 +982,7 @@ impl ExtractionLayer for Layer5LlmLayer {
 /// merged into the result.
 ///
 /// When **all** four layers fail, Layer 5 (the local LLM fallback) is invoked
-/// if and only if `llm_eligible` is true (Doc 30 TASK-TXN-001: "Layer 5 if
+/// if and only if `llm_eligible` is true (Doc 30 TASK-TXN-001: "Layer 6 if
 /// the local LLM is RAM-eligible, TASK-SETUP-006") — this is a hardware
 /// eligibility gate, independent of whether this specific bank has drifted
 /// from a previously-learned template. [`detect_pattern_drift`] still runs
@@ -1061,10 +1061,10 @@ pub async fn run_extraction_ladder(
         return Ok(None);
     }
 
-    let layer5 = Layer5LlmLayer {
+    let layer6 = Layer6LlmLayer {
         app_dir: app_dir.clone(),
     };
-    if let Some(mut llm_result) = layer5.extract(pool, bank_name, body).await {
+    if let Some(mut llm_result) = layer6.extract(pool, bank_name, body).await {
         if llm_result.is_valid() {
             // Augment with instrument signals.
             let signals = extract_instrument_signals(bank_name, body);
@@ -1310,7 +1310,7 @@ mod tests {
         // A real (if unused) subscriber must be active here, not just the
         // bare process default: `tracing`'s per-callsite Interest cache can
         // permanently pin the "Layer 6 skipped" log line's callsite (shared
-        // with test_orchestrator_skips_layer_5_when_llm_ineligible below) to
+        // with test_llm_skipped_when_ineligible below) to
         // `never` the first time it fires under no subscriber at all, which
         // then silently defeats that other test's capturing layer if this
         // test happens to run first — this is not about this test's own
@@ -1332,11 +1332,11 @@ mod tests {
     /// Doc 30 TASK-TXN-001 acceptance test. Layer 5 must be gated on
     /// hardware RAM-eligibility (`llm_eligible`), not on whether this bank's
     /// template has drifted — proven here by confirming the ladder emits the
-    /// "skipped" log line and never reaches `Layer5LlmLayer::extract` at all
+    /// "skipped" log line and never reaches `Layer6LlmLayer::extract` at all
     /// (which would instead log "No app_dir provided") even with a body that
     /// makes Layers 1-4 fail.
     #[tokio::test]
-    async fn test_orchestrator_skips_layer_5_when_llm_ineligible() {
+    async fn test_llm_skipped_when_ineligible() {
         use tracing_subscriber::layer::SubscriberExt;
 
         struct MessageVisitor(String);
@@ -1378,7 +1378,7 @@ mod tests {
         );
         assert!(
             !captured.iter().any(|l| l.contains("No app_dir provided")),
-            "Layer5LlmLayer::extract must never be reached when llm_eligible is false, got: {:?}",
+            "Layer6LlmLayer::extract must never be reached when llm_eligible is false, got: {:?}",
             *captured
         );
     }
