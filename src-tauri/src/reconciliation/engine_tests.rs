@@ -50,6 +50,7 @@ fn test_exact_match_success() {
         event_time: "2026-06-10 14:05:00".to_string(),
         reference_id: Some("REF123".to_string()),
         merchant_normalized_name: Some("Test Merchant".to_string()),
+        source_mix: None,
     };
 
     let decision = reconcile(&conn, &obs, vec![cand]).unwrap();
@@ -83,6 +84,7 @@ fn test_exact_match_failure_without_reference_id() {
         event_time: "2026-06-10 14:05:00".to_string(),
         reference_id: None,
         merchant_normalized_name: Some("Test Merchant".to_string()),
+        source_mix: None,
     };
 
     let decision = reconcile(&conn, &obs, vec![cand]).unwrap();
@@ -139,6 +141,7 @@ fn test_ambiguous_cluster_created_for_same_amount_same_day() {
         event_time: "2026-06-10 14:05:00".to_string(),
         reference_id: None,
         merchant_normalized_name: Some("Uber".to_string()),
+        source_mix: None,
     };
 
     let cand2 = CanonicalCandidate {
@@ -150,6 +153,7 @@ fn test_ambiguous_cluster_created_for_same_amount_same_day() {
         event_time: "2026-06-10 14:10:00".to_string(),
         reference_id: None,
         merchant_normalized_name: Some("Uber".to_string()),
+        source_mix: None,
     };
 
     // Both candidates will have very similar scores (amount, time, merchant).
@@ -163,47 +167,139 @@ fn test_ambiguous_cluster_created_for_same_amount_same_day() {
     }
 }
 
+/// Doc 30 TASK-TXN-010 acceptance test: on `decision = 'new_canonical'`, a
+/// `transactions` row is actually created from the single observation, with
+/// `source_mix` set to the originating pipeline's Doc 18 §4.3 enum value and
+/// `status = 'posted'`, and the observation is linked for traceability.
 #[test]
-fn test_statement_over_email_precedence_applied() {
+fn test_new_canonical_created_from_single_observation() {
     let conn = setup_test_db();
 
-    // Create an initial canonical transaction
+    let obs = IncomingObservation {
+        id: "obs_1".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 1000,
+        currency: "USD".to_string(),
+        direction: "debit".to_string(),
+        event_time: "2026-06-10 14:00:00".to_string(),
+        reference_id: Some("REF123".to_string()),
+        merchant_raw: Some("Test Merchant".to_string()),
+        source_pipeline: "gmail_transaction".to_string(),
+        source_record_id: "msg_1".to_string(),
+    };
+
+    let decision = reconcile(&conn, &obs, vec![]).unwrap();
+    assert_eq!(decision, DecisionType::NewCanonical);
+
+    let mut stmt = conn
+        .prepare("SELECT amount_minor, merchant_display_name, source_mix, status FROM transactions")
+        .unwrap();
+    let mut rows = stmt.query([]).unwrap();
+    let row = rows
+        .next()
+        .unwrap()
+        .expect("a transactions row must have been created");
+    let amount_minor: i64 = row.get(0).unwrap();
+    let merchant: String = row.get(1).unwrap();
+    let source_mix: String = row.get(2).unwrap();
+    let status: String = row.get(3).unwrap();
+    assert_eq!(amount_minor, 1000);
+    assert_eq!(merchant, "Test Merchant");
+    assert_eq!(source_mix, "email_only");
+    assert_eq!(status, "posted");
+
+    let linked: Option<String> = conn
+        .query_row(
+            "SELECT canonical_transaction_id FROM transaction_observations WHERE id = 'obs_1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(linked.is_some(), "observation must be linked to the new canonical row");
+}
+
+/// Doc 30 TASK-TXN-010 acceptance test: on `decision = 'ambiguous_pending'`,
+/// no `transactions` row is created or modified -- the observation stays
+/// linked only via `reconciliation_clusters` until resolved.
+#[test]
+fn test_ambiguous_decision_creates_no_canonical_row() {
+    let conn = setup_test_db();
+
+    let obs = IncomingObservation {
+        id: "obs_1".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 1000,
+        currency: "USD".to_string(),
+        direction: "debit".to_string(),
+        event_time: "2026-06-10 14:00:00".to_string(),
+        reference_id: None,
+        merchant_raw: Some("Uber".to_string()),
+        source_pipeline: "gmail_transaction".to_string(),
+        source_record_id: "msg_1".to_string(),
+    };
+
+    let cand1 = CanonicalCandidate {
+        id: "cand_1".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 1000,
+        currency: "USD".to_string(),
+        direction: "debit".to_string(),
+        event_time: "2026-06-10 14:05:00".to_string(),
+        reference_id: None,
+        merchant_normalized_name: Some("Uber".to_string()),
+        source_mix: None,
+    };
+    let cand2 = CanonicalCandidate {
+        id: "cand_2".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 1000,
+        currency: "USD".to_string(),
+        direction: "debit".to_string(),
+        event_time: "2026-06-10 14:10:00".to_string(),
+        reference_id: None,
+        merchant_normalized_name: Some("Uber".to_string()),
+        source_mix: None,
+    };
+
+    let decision = reconcile(&conn, &obs, vec![cand1, cand2]).unwrap();
+    assert!(matches!(decision, DecisionType::AmbiguousPending(_)));
+
+    let tx_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM transactions", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(tx_count, 0, "no canonical transaction may be created for an ambiguous decision");
+
+    let linked: Option<String> = conn
+        .query_row(
+            "SELECT canonical_transaction_id FROM transaction_observations WHERE id = 'obs_1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(linked, None, "an ambiguous observation must not be linked to any canonical row");
+}
+
+/// Doc 30 TASK-TXN-010 acceptance test: a statement observation that
+/// exact-matches an email-sourced canonical transaction overwrites its
+/// authoritative fields (merchant/posting_date/reference_id), and the
+/// observation is linked via `canonical_transaction_id`.
+#[test]
+fn test_statement_overrides_email_on_conflict() {
+    let conn = setup_test_db();
+
+    // Create an initial canonical transaction, email-sourced.
     conn.execute(
-        "INSERT INTO transactions (id, instrument_id, amount_minor, currency, direction, best_posting_date, merchant_display_name, reference_id, is_deleted)
-         VALUES ('tx_1', 'inst_1', 1000, 'USD', 'debit', '2026-06-10', 'Uber Email', 'REF_OLD', 0)",
+        "INSERT INTO transactions (id, instrument_id, amount_minor, currency, direction, best_posting_date, merchant_display_name, reference_id, source_mix, is_deleted)
+         VALUES ('tx_1', 'inst_1', 1000, 'USD', 'debit', '2026-06-10', 'Uber Email', 'REF_EXACT', 'email_only', 0)",
         [],
     ).unwrap();
-
-    let _obs = IncomingObservation {
-        id: "obs_statement".to_string(),
-        instrument_id: "inst_1".to_string(),
-        amount_minor: 1000,
-        currency: "USD".to_string(),
-        direction: "debit".to_string(),
-        event_time: "2026-06-12 00:00:00".to_string(),
-        reference_id: Some("REF_STATEMENT".to_string()),
-        merchant_raw: Some("Uber Statement".to_string()),
-        source_pipeline: "statement".to_string(),
-        source_record_id: "stmt_1".to_string(),
-    };
-
-    let _cand = CanonicalCandidate {
-        id: "tx_1".to_string(),
-        instrument_id: "inst_1".to_string(),
-        amount_minor: 1000,
-        currency: "USD".to_string(),
-        direction: "debit".to_string(),
-        event_time: "2026-06-10 14:05:00".to_string(), // won't match exactly on time, but if exact matches on ref?
-        reference_id: Some("REF_OLD".to_string()), // If it matches by exact match, it expects ref_id to match.
-        merchant_normalized_name: Some("Uber Email".to_string()),
-    };
-
-    // Wait, exact match checks if `obs.reference_id == c.reference_id`.
-    // So if the statement has a different reference ID, it won't be an exact match in stage 1 unless we test statement over email for something else or we test it by mocking an exact match or scoring match.
-    // In `engine.rs`, `update_canonical_with_statement` is called when `exact_matches.len() == 1`.
-    // And exact matches check: `c.reference_id == obs.reference_id`.
-    // So the reference IDs must match for stage 1!
-    // Let's make the reference IDs match.
+    // The observation being reconciled must exist for canonical_transaction_id linking.
+    conn.execute(
+        "INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint) \
+         VALUES ('obs_statement2', 'statement_pdf', 'stmt_2', 'fp_stmt2')",
+        [],
+    )
+    .unwrap();
 
     let obs2 = IncomingObservation {
         id: "obs_statement2".to_string(),
@@ -214,12 +310,12 @@ fn test_statement_over_email_precedence_applied() {
         event_time: "2026-06-12 00:00:00".to_string(),
         reference_id: Some("REF_EXACT".to_string()),
         merchant_raw: Some("Uber Statement".to_string()),
-        source_pipeline: "statement".to_string(),
+        source_pipeline: "statement_pdf".to_string(),
         source_record_id: "stmt_2".to_string(),
     };
 
     let cand2 = CanonicalCandidate {
-        id: "tx_1".to_string(), // ID of the created row
+        id: "tx_1".to_string(),
         instrument_id: "inst_1".to_string(),
         amount_minor: 1000,
         currency: "USD".to_string(),
@@ -227,28 +323,96 @@ fn test_statement_over_email_precedence_applied() {
         event_time: "2026-06-10 14:05:00".to_string(),
         reference_id: Some("REF_EXACT".to_string()),
         merchant_normalized_name: Some("Uber Email".to_string()),
+        source_mix: Some("email_only".to_string()),
     };
-
-    // Update DB row to match cand2
-    conn.execute(
-        "UPDATE transactions SET reference_id = 'REF_EXACT' WHERE id = 'tx_1'",
-        [],
-    )
-    .unwrap();
 
     let decision = reconcile(&conn, &obs2, vec![cand2]).unwrap();
     assert_eq!(decision, DecisionType::AutoMatchedExact);
 
-    // Verify DB was updated
-    let mut stmt = conn.prepare("SELECT merchant_display_name, best_posting_date, reference_id FROM transactions WHERE id = 'tx_1'").unwrap();
+    // Statement's merchant/posting_date/reference_id/source_mix must have overwritten.
+    let mut stmt = conn.prepare("SELECT merchant_display_name, best_posting_date, reference_id, source_mix FROM transactions WHERE id = 'tx_1'").unwrap();
     let mut rows = stmt.query([]).unwrap();
     let row = rows.next().unwrap().unwrap();
+    let merchant: String = row.get(0).unwrap();
+    let posting_date: String = row.get(1).unwrap();
+    let reference_id: String = row.get(2).unwrap();
+    let source_mix: String = row.get(3).unwrap();
+    assert_eq!(merchant, "Uber Statement", "statement merchant must overwrite email merchant");
+    assert_eq!(posting_date, "2026-06-12", "statement posting_date must overwrite email posting_date");
+    assert_eq!(reference_id, "REF_EXACT");
+    assert_eq!(source_mix, "merged", "email_only canonical must become merged once statement evidence arrives");
 
-    let _merchant: String = row.get(0).unwrap();
-    // In engine.rs `update_canonical_with_statement` it parses `posting_date` using %Y-%m-%d from event_time, wait, the `reconcile` calls it with `Some(&obs.event_time)`.
-    // "2026-06-12 00:00:00" will fail `NaiveDate::parse_from_str(pd, "%Y-%m-%d")` because it has the time part!
-    // Let's check `update_canonical_with_statement` logic in `canonical.rs`.
-    // The test will reveal if it fails to parse the date.
+    // Observation must be linked for traceability.
+    let linked: Option<String> = conn
+        .query_row(
+            "SELECT canonical_transaction_id FROM transaction_observations WHERE id = 'obs_statement2'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(linked, Some("tx_1".to_string()));
+}
+
+/// Doc 30 TASK-TXN-010 acceptance test: an email observation matching an
+/// already-statement-sourced canonical transaction only fills currently-NULL
+/// fields, never overwrites an existing value.
+#[test]
+fn test_email_fills_null_fields_only_when_statement_present() {
+    let conn = setup_test_db();
+
+    // Canonical already has statement evidence: reference_id is set (must
+    // survive), merchant_display_name is NULL (must get filled).
+    conn.execute(
+        "INSERT INTO transactions (id, instrument_id, amount_minor, currency, direction, best_posting_date, merchant_display_name, reference_id, source_mix, is_deleted)
+         VALUES ('tx_2', 'inst_1', 2000, 'USD', 'credit', '2026-06-10', NULL, 'REF_STATEMENT', 'statement_only', 0)",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint) \
+         VALUES ('obs_email_1', 'gmail_transaction', 'msg_email_1', 'fp_email_1')",
+        [],
+    )
+    .unwrap();
+
+    let obs = IncomingObservation {
+        id: "obs_email_1".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 2000,
+        currency: "USD".to_string(),
+        direction: "credit".to_string(),
+        event_time: "2026-06-10 09:00:00".to_string(),
+        reference_id: Some("REF_STATEMENT".to_string()),
+        merchant_raw: Some("Refund Co (Email)".to_string()),
+        source_pipeline: "gmail_transaction".to_string(),
+        source_record_id: "msg_email_1".to_string(),
+    };
+
+    let cand = CanonicalCandidate {
+        id: "tx_2".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 2000,
+        currency: "USD".to_string(),
+        direction: "credit".to_string(),
+        event_time: "2026-06-10 09:05:00".to_string(),
+        reference_id: Some("REF_STATEMENT".to_string()),
+        merchant_normalized_name: None,
+        source_mix: Some("statement_only".to_string()),
+    };
+
+    let decision = reconcile(&conn, &obs, vec![cand]).unwrap();
+    assert_eq!(decision, DecisionType::AutoMatchedExact);
+
+    let mut stmt = conn
+        .prepare("SELECT merchant_display_name, reference_id, source_mix FROM transactions WHERE id = 'tx_2'")
+        .unwrap();
+    let mut rows = stmt.query([]).unwrap();
+    let row = rows.next().unwrap().unwrap();
+    let merchant: String = row.get(0).unwrap();
+    let reference_id: String = row.get(1).unwrap();
+    let source_mix: String = row.get(2).unwrap();
+    assert_eq!(merchant, "Refund Co (Email)", "NULL merchant must be filled from email");
+    assert_eq!(reference_id, "REF_STATEMENT", "existing non-NULL reference_id must NOT be overwritten by email");
+    assert_eq!(source_mix, "merged");
 }
 
 #[test]
@@ -401,8 +565,14 @@ fn test_cluster_resolution_reject() {
         })
         .unwrap();
 
-    crate::reconciliation::cluster::resolve_cluster(&conn, &cluster_id, "obs_1", "reject_candidate", None)
-        .unwrap();
+    crate::reconciliation::cluster::resolve_cluster(
+        &conn,
+        &cluster_id,
+        "obs_1",
+        "reject_candidate",
+        None,
+    )
+    .unwrap();
 
     // reject_candidate is a distinct terminal state from resolved (Doc 18 §4.6)
     let status: String = conn
@@ -511,6 +681,12 @@ fn test_manual_entry_triggers_realtime_reconciliation() {
          VALUES ('cand_1', 'inst_1', 500, 'USD', 'debit', '2026-06-10 12:00:00', 'Starbucks')",
         [],
     ).unwrap();
+    conn.execute(
+        "INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint) \
+         VALUES ('manual_obs_1', 'manual', 'manual_1', 'fp_manual_1')",
+        [],
+    )
+    .unwrap();
 
     // Manual observation
     let obs = crate::reconciliation::engine::IncomingObservation {

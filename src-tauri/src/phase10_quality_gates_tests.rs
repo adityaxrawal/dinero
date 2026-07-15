@@ -142,6 +142,7 @@ mod tests {
                 event_time: c.event_time,
                 reference_id: c.reference_id,
                 merchant_normalized_name: c.merchant_normalized_name,
+                source_mix: None,
             }
         }
     }
@@ -219,10 +220,11 @@ mod tests {
 
         for sample in &samples {
             let expected = sample.expected.as_ref().unwrap();
-            let actual = run_extraction_ladder(&pool, &sample.bank_name, &sample.body, None, false, None)
-                .await
-                .ok()
-                .flatten();
+            let actual =
+                run_extraction_ladder(&pool, &sample.bank_name, &sample.body, None, false, None)
+                    .await
+                    .ok()
+                    .flatten();
 
             let (act_amount, act_currency, act_direction, act_merchant) = match &actual {
                 Some(r) => (
@@ -308,10 +310,11 @@ mod tests {
         let mut false_positives = 0u64;
 
         for sample in &samples {
-            let actual = run_extraction_ladder(&pool, &sample.bank_name, &sample.body, None, false, None)
-                .await
-                .ok()
-                .flatten();
+            let actual =
+                run_extraction_ladder(&pool, &sample.bank_name, &sample.body, None, false, None)
+                    .await
+                    .ok()
+                    .flatten();
             if matches!(&actual, Some(r) if r.is_valid()) {
                 false_positives += 1;
             }
