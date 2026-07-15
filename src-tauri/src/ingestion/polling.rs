@@ -183,6 +183,16 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
     // NetworkClient like every other Gmail call in this module.
     let network = NetworkClient::new(pool.clone());
 
+    // TASK-TXN-001: resolved once per poll cycle and threaded down into
+    // `MessageProcessor::process_message` so Layer 5 (local LLM fallback)
+    // can actually run — the previous hardcoded `None` app_dir meant Layer 5
+    // never fired in production regardless of RAM eligibility.
+    let app_dir = app.path().app_data_dir().ok();
+    let llm_eligible = app
+        .try_state::<crate::startup::LlmEligibility>()
+        .map(|s| s.eligible)
+        .unwrap_or(false);
+
     loop {
         let mut url = format!(
             "{}/gmail/v1/users/me/history?startHistoryId={}",
@@ -299,6 +309,8 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                             pool,
                             &gmail_client,
                             &msg_id,
+                            app_dir.clone(),
+                            llm_eligible,
                         ).await {
                             Ok(Some(crate::ingestion::message_processor::ProcessResult::TransactionAlert(_, boxed_obs))) => {
                                 // Doc 15 §2 principle 7 / Doc 12 §6.2a: route to the Transaction

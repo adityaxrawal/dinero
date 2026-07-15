@@ -11,7 +11,7 @@ use serde_json::json;
 use std::sync::OnceLock;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ProcessResult {
     TransactionAlert(
         ExtractedMessage,
@@ -34,6 +34,8 @@ impl MessageProcessor {
         pool: &Pool,
         client: &GmailClient,
         message_id: &str,
+        app_dir: Option<std::path::PathBuf>,
+        llm_eligible: bool,
     ) -> Result<Option<ProcessResult>> {
         // 1. Fetch metadata first (fast, low bandwidth)
         let metadata_msg = client
@@ -126,7 +128,8 @@ impl MessageProcessor {
                         pool,
                         &current_bank_name,
                         body_text,
-                        None, // Gracefully skip Layer 5 if app_dir is not provided
+                        app_dir.clone(),
+                        llm_eligible,
                     )
                     .await
                     .unwrap_or(None);

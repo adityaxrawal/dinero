@@ -5,10 +5,9 @@ use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::future::Future;
 use std::pin::Pin;
-use tracing::debug;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ExtractionResult {
     // Mandatory fields
     pub amount_minor: Option<i64>,
@@ -32,6 +31,16 @@ pub struct ExtractionResult {
 
     // Metadata
     pub extraction_method: String,
+    /// Doc 30 TASK-TXN-001's named `ExtractionResult` field. Only Layer 5
+    /// (LLM) has a spec-defined value (0.7, Doc 12 §6.3) — the other layers
+    /// leave this `None` rather than inventing an unspecified number.
+    /// Consumed by TASK-TXN-010 (canonical creation) to gate `pending_review`.
+    pub confidence_score: Option<f64>,
+    /// Doc 30 TASK-TXN-001's named `ExtractionResult` field. No document
+    /// defines a versioning scheme for bank-template parsers yet, so this
+    /// stays `None` everywhere until one exists — left unpopulated rather
+    /// than guessed.
+    pub parser_version: Option<String>,
 }
 
 impl ExtractionResult {
@@ -833,16 +842,21 @@ impl ExtractionLayer for Layer5LlmLayer {
 /// success.  After a valid result is found, instrument signals are extracted and
 /// merged into the result.
 ///
-/// When **all** four layers fail the function invokes [`detect_pattern_drift`]
-/// to determine whether the failure is due to template change.  If drift is
-/// detected the body is routed to [`Layer5LlmLayer`].  When Layer 5 succeeds a
-/// new `pattern_rule` candidate is synthesised in `pending` state and written to
-/// the database so a human reviewer can promote it.
+/// When **all** four layers fail, Layer 5 (the local LLM fallback) is invoked
+/// if and only if `llm_eligible` is true (Doc 30 TASK-TXN-001: "Layer 5 if
+/// the local LLM is RAM-eligible, TASK-SETUP-006") — this is a hardware
+/// eligibility gate, independent of whether this specific bank has drifted
+/// from a previously-learned template. [`detect_pattern_drift`] still runs
+/// after a successful Layer 5 extraction, but only to decide whether to
+/// synthesise a `pending` `pattern_rule` candidate for a human reviewer to
+/// promote (feeding Layer 1's learning loop) — it is a side effect, not a
+/// precondition, of Layer 5 running.
 pub async fn run_extraction_ladder(
     pool: &Pool,
     bank_name: &str,
     body: &str,
     app_dir: Option<std::path::PathBuf>,
+    llm_eligible: bool,
 ) -> Result<Option<ExtractionResult>> {
     let layers: Vec<Box<dyn ExtractionLayer>> = vec![
         Box::new(LearnedPatternLayer),
@@ -869,78 +883,69 @@ pub async fn run_extraction_ladder(
         tracing::info!(layer = layer_name, status = "failure", "Extraction layer failed");
     }
 
-    // ── All four layers failed: check for template drift ─────────────────────
-    let b_name = bank_name.to_string();
-    let body_owned = body.to_string();
-
-    let conn = pool.get().await?;
-    let drift_result = conn
-        .interact(move |c| detect_pattern_drift(c, &b_name, &body_owned, &None))
-        .await
-        .map_err(|e| anyhow::anyhow!("pool interact error: {:?}", e));
-
-    // Degrade gracefully if the schema is not yet migrated (e.g. in tests that
-    // use a bare in-memory pool without running migrations).  In production the
-    // table always exists after first launch.
-    let drift = match drift_result {
-        Ok(Ok(d)) => d,
-        Ok(Err(db_err)) => {
-            debug!(
-                error = %db_err,
-                bank_name = bank_name,
-                "drift detection skipped - DB query failed (schema may not be migrated)"
-            );
-            return Ok(None);
-        }
-        Err(interact_err) => {
-            debug!(
-                error = %interact_err,
-                bank_name = bank_name,
-                "drift detection skipped - pool interact error"
-            );
-            return Ok(None);
-        }
-    };
-
-    if drift.drift_detected {
-        tracing::warn!(
+    // ── All four layers failed: Layer 5 gate is RAM-eligibility only ─────────
+    // (Doc 30 TASK-TXN-001) — never conditioned on whether this particular
+    // bank has a known/drifted template. A brand-new, never-before-seen bank
+    // must still be able to reach Layer 5.
+    if !llm_eligible {
+        tracing::info!(
             bank_name = bank_name,
-            template_hash = %drift.template_hash,
-            "Template drift detected — known rules exist but all layers failed. Routing to Layer 5 (LLM)."
+            "Layer 5 skipped — LLM not RAM-eligible"
         );
+        return Ok(None);
+    }
 
-        // ── Route to Layer 5 ─────────────────────────────────────────────────
-        let layer5 = Layer5LlmLayer { app_dir };
-        if let Some(mut llm_result) = layer5.extract(pool, bank_name, body).await {
-            if llm_result.is_valid() {
-                // Augment with instrument signals.
-                let signals = extract_instrument_signals(bank_name, body);
-                llm_result.instrument_type = signals.instrument_type;
-                llm_result.issuer_name = signals.issuer_name;
-                llm_result.masked_identifier = signals.masked_identifier;
-                llm_result.network = signals.network;
-                llm_result.upi_vpa = signals.upi_vpa;
+    let layer5 = Layer5LlmLayer {
+        app_dir: app_dir.clone(),
+    };
+    if let Some(mut llm_result) = layer5.extract(pool, bank_name, body).await {
+        if llm_result.is_valid() {
+            // Augment with instrument signals.
+            let signals = extract_instrument_signals(bank_name, body);
+            llm_result.instrument_type = signals.instrument_type;
+            llm_result.issuer_name = signals.issuer_name;
+            llm_result.masked_identifier = signals.masked_identifier;
+            llm_result.network = signals.network;
+            llm_result.upi_vpa = signals.upi_vpa;
 
-                // ── Synthesise a pending pattern-rule candidate ───────────────
-                let template_hash_clone = drift.template_hash.clone();
-                let bank_name_str = bank_name.to_string();
-                let llm_result_clone = llm_result.clone();
-
-                let conn2 = pool.get().await?;
-                let _ = conn2
-                    .interact(move |c| {
-                        synthesize_pending_rule(
-                            c,
-                            &bank_name_str,
-                            &template_hash_clone,
-                            &llm_result_clone,
-                        )
-                    })
-                    .await
-                    .map_err(|e| anyhow::anyhow!("pool interact error (synthesis): {:?}", e));
-
-                return Ok(Some(llm_result));
+            // ── Best-effort: synthesise a pending pattern-rule candidate ─────
+            // Only when this bank's known rules had drifted from the current
+            // body — a side effect that feeds Layer 1's learning loop, never
+            // a precondition for Layer 5 itself having run. A DB error here
+            // must not unwind an already-successful extraction.
+            let b_name = bank_name.to_string();
+            let body_owned = body.to_string();
+            if let Ok(conn) = pool.get().await {
+                let drift_result = conn
+                    .interact(move |c| detect_pattern_drift(c, &b_name, &body_owned, &None))
+                    .await;
+                if let Ok(Ok(drift)) = drift_result {
+                    if drift.drift_detected {
+                        tracing::warn!(
+                            bank_name = bank_name,
+                            template_hash = %drift.template_hash,
+                            "Template drift detected — synthesising pending pattern-rule candidate."
+                        );
+                        let template_hash_clone = drift.template_hash.clone();
+                        let bank_name_str = bank_name.to_string();
+                        let llm_result_clone = llm_result.clone();
+                        if let Ok(conn2) = pool.get().await {
+                            let _ = conn2
+                                .interact(move |c| {
+                                    synthesize_pending_rule(
+                                        c,
+                                        &bank_name_str,
+                                        &template_hash_clone,
+                                        &llm_result_clone,
+                                    )
+                                })
+                                .await;
+                        }
+                    }
+                }
             }
+
+            return Ok(Some(llm_result));
         }
     }
 
@@ -1107,57 +1112,92 @@ mod tests {
         Pool::builder(mgr).build().unwrap()
     }
 
+    /// Doc 30 TASK-TXN-001 acceptance test. Exercises the real
+    /// `run_extraction_ladder`, not a hand-copied loop over mock layers: an
+    /// active Layer 1 (learned-rule) match must win even though it precedes
+    /// nothing else viable in this fixture — the meaningful claim is that
+    /// the returned `extraction_method` is `"learned_patterns"` (Layer 1),
+    /// proving the ladder actually reached and returned from the first
+    /// layer rather than some other path.
     #[tokio::test]
     async fn test_orchestrator_stops_at_first_valid_layer() {
-        let pool = dummy_pool();
-        let layers: Vec<Box<dyn ExtractionLayer>> = vec![
-            Box::new(MockEmptyLayer),
-            Box::new(MockInvalidLayer),
-            Box::new(MockValidLayer),
-            Box::new(MockEmptyLayer), // Should not reach here
-        ];
+        let pool = setup_db_with_rule("active".to_string()).await;
+        let body = "Your amount is 1500 INR at Amazon debit time 123";
 
-        let mut result = None;
-        for layer in layers {
-            if let Some(obs) = layer.extract(&pool, "Chase", "test").await {
-                if obs.is_valid() {
-                    result = Some(obs);
-                    break;
-                }
-            }
-        }
+        let result = run_extraction_ladder(&pool, "Chase", body, None, false)
+            .await
+            .unwrap();
 
         assert!(result.is_some());
-        assert_eq!(result.unwrap().extraction_method, "mock_valid");
+        assert_eq!(result.unwrap().extraction_method, "learned_patterns");
     }
 
+    /// Doc 30 TASK-TXN-001 acceptance test. Exercises the real
+    /// `run_extraction_ladder` against an unmigrated pool with a body no
+    /// layer can parse and `llm_eligible = false` — every layer including
+    /// Layer 5 must fail closed to `None`, not panic or silently invent a
+    /// partial result.
     #[tokio::test]
     async fn test_orchestrator_fails_if_all_layers_empty() {
         let pool = dummy_pool();
-        let layers: Vec<Box<dyn ExtractionLayer>> =
-            vec![Box::new(MockEmptyLayer), Box::new(MockInvalidLayer)];
-
-        let mut result = None;
-        for layer in layers {
-            if let Some(obs) = layer.extract(&pool, "Chase", "test").await {
-                if obs.is_valid() {
-                    result = Some(obs);
-                    break;
-                }
-            }
-        }
-
-        assert!(result.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_actual_orchestrator_fails_empty_scaffold() {
-        let pool = dummy_pool();
-        // Since all real layers are currently scaffolds returning None (if no rules are in DB)
-        let res = run_extraction_ladder(&pool, "Chase", "test body", None)
+        let res = run_extraction_ladder(&pool, "Chase", "unparseable body", None, false)
             .await
             .unwrap();
         assert!(res.is_none());
+    }
+
+    /// Doc 30 TASK-TXN-001 acceptance test. Layer 5 must be gated on
+    /// hardware RAM-eligibility (`llm_eligible`), not on whether this bank's
+    /// template has drifted — proven here by confirming the ladder emits the
+    /// "skipped" log line and never reaches `Layer5LlmLayer::extract` at all
+    /// (which would instead log "No app_dir provided") even with a body that
+    /// makes Layers 1-4 fail.
+    #[tokio::test]
+    async fn test_orchestrator_skips_layer_5_when_llm_ineligible() {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        struct MessageVisitor(String);
+        impl tracing::field::Visit for MessageVisitor {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    self.0 = format!("{:?}", value);
+                }
+            }
+        }
+        struct CapturingLayer(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CapturingLayer {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                let mut visitor = MessageVisitor(String::new());
+                event.record(&mut visitor);
+                self.0.lock().unwrap().push(visitor.0);
+            }
+        }
+
+        let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let subscriber = tracing_subscriber::registry().with(CapturingLayer(logs.clone()));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let pool = dummy_pool();
+        let res = run_extraction_ladder(&pool, "Chase", "unparseable body", None, false)
+            .await
+            .unwrap();
+        assert!(res.is_none());
+
+        let captured = logs.lock().unwrap();
+        assert!(
+            captured.iter().any(|l| l.contains("Layer 5 skipped")),
+            "expected the RAM-ineligibility skip log line, got: {:?}",
+            *captured
+        );
+        assert!(
+            !captured.iter().any(|l| l.contains("No app_dir provided")),
+            "Layer5LlmLayer::extract must never be reached when llm_eligible is false, got: {:?}",
+            *captured
+        );
     }
 
     #[test]
@@ -1488,7 +1528,7 @@ mod tests {
         // Use BankTemplateLayer body that will match HDFC credit card pattern
         let body =
             "Rs 1500.00 spent on your HDFC Bank CREDIT Card ending 1234 at Amazon on 25-May-23.";
-        let result = run_extraction_ladder(&pool, "HDFC Bank", body, None)
+        let result = run_extraction_ladder(&pool, "HDFC Bank", body, None, false)
             .await
             .unwrap();
         assert!(result.is_some());

@@ -166,7 +166,7 @@ async fn test_metadata_fetch_before_full_fetch() {
 
     let client = GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url());
 
-    let result = MessageProcessor::process_message(&pool, &client, "msg1")
+    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, false)
         .await
         .unwrap();
     assert!(result.is_none(), "unverified sender must be rejected at Gate 1");

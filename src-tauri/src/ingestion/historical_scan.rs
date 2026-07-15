@@ -273,6 +273,15 @@ async fn run_scan_batches<R: tauri::Runtime>(
     let client = Arc::new(client);
     let pool_arc = Arc::new(pool.clone());
 
+    // TASK-TXN-001: resolved once per scan and threaded into every spawned
+    // `process_message` call so Layer 5 (local LLM fallback) can actually
+    // run during a historical scan — previously hardcoded to `None`.
+    let app_dir = app.path().app_data_dir().ok();
+    let llm_eligible = app
+        .try_state::<crate::startup::LlmEligibility>()
+        .map(|s| s.eligible)
+        .unwrap_or(false);
+
     let mut join_set: JoinSet<(String, anyhow::Result<Option<ProcessResult>>)> = JoinSet::new();
 
     let mut batch_count = 0;
@@ -310,9 +319,18 @@ async fn run_scan_batches<R: tauri::Runtime>(
         client: Arc<GmailClient>,
         pool_arc: Arc<Pool>,
         msg_id: String,
+        app_dir: Option<std::path::PathBuf>,
+        llm_eligible: bool,
     ) {
         join_set.spawn(async move {
-            let res = MessageProcessor::process_message(&pool_arc, &client, &msg_id).await;
+            let res = MessageProcessor::process_message(
+                &pool_arc,
+                &client,
+                &msg_id,
+                app_dir,
+                llm_eligible,
+            )
+            .await;
             (msg_id, res)
         });
     }
@@ -329,7 +347,14 @@ async fn run_scan_batches<R: tauri::Runtime>(
     for _ in 0..MAX_CONCURRENT_FETCHES {
         wait_while_paused().await;
         match ids_iter.next() {
-            Some(msg_id) => spawn_fetch(&mut join_set, Arc::clone(&client), Arc::clone(&pool_arc), msg_id),
+            Some(msg_id) => spawn_fetch(
+                &mut join_set,
+                Arc::clone(&client),
+                Arc::clone(&pool_arc),
+                msg_id,
+                app_dir.clone(),
+                llm_eligible,
+            ),
             None => break,
         }
     }
@@ -489,7 +514,14 @@ async fn run_scan_batches<R: tauri::Runtime>(
 
         wait_while_paused().await;
         if let Some(next_id) = ids_iter.next() {
-            spawn_fetch(&mut join_set, Arc::clone(&client), Arc::clone(&pool_arc), next_id);
+            spawn_fetch(
+                &mut join_set,
+                Arc::clone(&client),
+                Arc::clone(&pool_arc),
+                next_id,
+                app_dir.clone(),
+                llm_eligible,
+            );
         }
     }
 
