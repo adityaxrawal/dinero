@@ -169,7 +169,7 @@ mod tests {
             source_record_id: "msg1".to_string(),
             emi_total_installments: None,
             emi_original_amount_minor: None,
-        };
+            fingerprint: None,        };
 
         let cand = CanonicalCandidate {
             id: "cand1".to_string(),
@@ -203,7 +203,7 @@ mod tests {
             source_record_id: "msg1".to_string(),
             emi_total_installments: None,
             emi_original_amount_minor: None,
-        };
+            fingerprint: None,        };
 
         let cand1 = CanonicalCandidate {
             id: "cand1".to_string(),
@@ -262,7 +262,7 @@ mod tests {
             source_record_id: "msg1".to_string(),
             emi_total_installments: None,
             emi_original_amount_minor: None,
-        };
+            fingerprint: None,        };
 
         let cand = CanonicalCandidate {
             id: "cand1".to_string(),
@@ -298,7 +298,7 @@ mod tests {
             source_record_id: "msg2".to_string(),
             emi_total_installments: None,
             emi_original_amount_minor: None,
-        };
+            fingerprint: None,        };
 
         let cand_realtime = CanonicalCandidate {
             id: "tx_realtime".to_string(),

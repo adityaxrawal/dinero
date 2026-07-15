@@ -23,6 +23,15 @@ pub struct IncomingObservation {
     /// Doc 30 TASK-TXN-012: EMI language detected during extraction, if any.
     pub emi_total_installments: Option<i32>,
     pub emi_original_amount_minor: Option<i64>,
+    /// Doc 30 TASK-TXN-008 / TASK-DEDUP-001: the observation's pre-computed
+    /// SHA-256 fingerprint (`transaction_observations.fingerprint`), consumed
+    /// by the fingerprint pre-filter in `reconcile()` below before the more
+    /// expensive windowed candidate generation / scoring engine ever run.
+    /// `None` when the caller couldn't compute one (e.g. manual entries have
+    /// no `connected_account_id` to hash) -- the pre-filter is simply
+    /// skipped in that case, falling straight through to windowed search.
+    #[serde(default)]
+    pub fingerprint: Option<String>,
 }
 
 /// Represents an existing canonical transaction for candidate matching.
@@ -62,23 +71,27 @@ pub fn fetch_candidates(
         3,
     )?;
 
-    Ok(rows
-        .into_iter()
-        .map(|r| CanonicalCandidate {
-            id: r.id,
-            instrument_id: r.instrument_id.unwrap_or_default(),
-            amount_minor: r.amount_minor.unwrap_or(0),
-            currency: r.currency.unwrap_or_default(),
-            direction: r.direction.unwrap_or_default(),
-            event_time: r
-                .best_event_time
-                .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-                .unwrap_or_default(),
-            reference_id: r.reference_id,
-            merchant_normalized_name: r.merchant_normalized_name,
-            source_mix: r.source_mix,
-        })
-        .collect())
+    Ok(rows.into_iter().map(to_canonical_candidate).collect())
+}
+
+/// Shared row->candidate mapping used both by the windowed search above
+/// (TASK-DEDUP-003) and by the fingerprint pre-filter's single-row lookup
+/// (TASK-DEDUP-001) in `reconcile()` below.
+fn to_canonical_candidate(r: crate::db::transactions::TransactionsRow) -> CanonicalCandidate {
+    CanonicalCandidate {
+        id: r.id,
+        instrument_id: r.instrument_id.unwrap_or_default(),
+        amount_minor: r.amount_minor.unwrap_or(0),
+        currency: r.currency.unwrap_or_default(),
+        direction: r.direction.unwrap_or_default(),
+        event_time: r
+            .best_event_time
+            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or_default(),
+        reference_id: r.reference_id,
+        merchant_normalized_name: r.merchant_normalized_name,
+        source_mix: r.source_mix,
+    }
 }
 
 /// Main reconciliation entry point: takes an observation and a set of candidate canonical
@@ -89,73 +102,59 @@ pub fn reconcile(
     obs: &IncomingObservation,
     candidates: Vec<CanonicalCandidate>,
 ) -> Result<DecisionType> {
-    // ── Stage 1: Exact deterministic match ──────────────────────────────────
-    let exact_matches: Vec<&CanonicalCandidate> = candidates
-        .iter()
-        .filter(|c| {
-            c.instrument_id == obs.instrument_id
-                && c.amount_minor == obs.amount_minor
-                && c.currency == obs.currency
-                && c.direction == obs.direction
-                && obs.reference_id.is_some()
-                && c.reference_id == obs.reference_id
-        })
-        .collect();
-
-    if exact_matches.len() == 1 {
-        let matched = exact_matches[0];
-
-        // Doc 30 TASK-TXN-010: statement-overrides-email precedence rule,
-        // plus transaction_observations.canonical_transaction_id linking --
-        // applies to every matched decision, not just the statement case
-        // (C3 fix, below, only ever handled the statement-arrives half of
-        // the precedence rule and never linked the observation at all).
-        crate::reconciliation::canonical::apply_match_precedence_and_link(
-            conn,
-            obs,
-            &matched.id,
-            matched.source_mix.as_deref(),
-        )?;
-
-        append_match_decision(
-            conn,
-            &obs.id,
-            Some(&matched.id),
-            1.0,
-            DecisionType::AutoMatchedExact,
-        )?;
-        tracing::info!(
-            observation_id = obs.id,
-            canonical_id = matched.id,
-            decision = "AutoMatchedExact",
-            score = 1.0,
-            "Reconciliation decision completed"
-        );
-        return Ok(DecisionType::AutoMatchedExact);
+    // ── Stage 0: Fingerprint pre-filter (Doc 30 TASK-DEDUP-001) ──────────────
+    // An indexed lookup via idx_transaction_observations_fingerprint, tried
+    // before the windowed candidate set (already fetched by the caller via
+    // `fetch_candidates`, TASK-DEDUP-003) is scored at all. An exact
+    // fingerprint match against an already-reconciled observation is an
+    // extremely strong exact-match candidate — verified against the strict
+    // condition (TASK-DEDUP-002) and, if it holds, resolved without ever
+    // touching the fuzzy scoring engine below.
+    if let Some(fp) = obs.fingerprint.as_deref() {
+        if let Some(canonical_id) =
+            crate::reconciliation::prefilter::fingerprint_prefilter_lookup(conn, fp, &obs.id)?
+        {
+            if let Some(row) = crate::db::transactions::get_transaction(conn, &canonical_id)? {
+                let candidate = to_canonical_candidate(row);
+                if crate::reconciliation::exact_match::verify_exact_match(obs, &candidate) {
+                    crate::reconciliation::canonical::apply_match_precedence_and_link(
+                        conn,
+                        obs,
+                        &candidate.id,
+                        candidate.source_mix.as_deref(),
+                    )?;
+                    append_match_decision(
+                        conn,
+                        &obs.id,
+                        Some(&candidate.id),
+                        1.0,
+                        DecisionType::AutoMatchedExact,
+                    )?;
+                    tracing::info!(
+                        observation_id = obs.id,
+                        canonical_id = candidate.id,
+                        decision = "AutoMatchedExact",
+                        score = 1.0,
+                        reason = "fingerprint_prefilter",
+                        "Reconciliation decision completed"
+                    );
+                    return Ok(DecisionType::AutoMatchedExact);
+                }
+                // Doc 30 TASK-DEDUP-002: a rare fingerprint collision (hash
+                // matches, strict fields don't) falls through to full
+                // scoring rather than assuming a match — never routed to
+                // ambiguous on the strength of a hash collision alone.
+                tracing::debug!(
+                    observation_id = obs.id,
+                    canonical_id = candidate.id,
+                    "Fingerprint pre-filter hit but exact-match conditions failed \
+                     (rare collision) — falling through to full scoring"
+                );
+            }
+        }
     }
 
-    if exact_matches.len() > 1 {
-        // Multiple exact matches → ambiguous
-        let ids: Vec<String> = exact_matches.iter().map(|c| c.id.clone()).collect();
-        let cluster_id = create_ambiguity_cluster(conn, &obs.id, &ids)?;
-        append_match_decision(
-            conn,
-            &obs.id,
-            None,
-            0.0,
-            DecisionType::AmbiguousPending(cluster_id.clone()),
-        )?;
-        tracing::info!(
-            observation_id = obs.id,
-            cluster_id = cluster_id,
-            decision = "AmbiguousPending",
-            reason = "multiple_exact_matches",
-            "Reconciliation decision completed"
-        );
-        return Ok(DecisionType::AmbiguousPending(cluster_id));
-    }
-
-    // ── Stage 2: Scored candidate matching ──────────────────────────────────
+    // ── Stage 1: Scored candidate matching ──────────────────────────────────
     if candidates.is_empty() {
         // No candidates at all → new canonical transaction
         create_canonical_transaction(conn, obs)?;

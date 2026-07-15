@@ -3,8 +3,10 @@ pub mod audit;
 pub mod canonical;
 pub mod cluster;
 pub mod engine;
+pub mod exact_match;
 pub mod feedback;
 pub mod post_processing;
+pub mod prefilter;
 pub mod scorer;
 
 #[cfg(test)]

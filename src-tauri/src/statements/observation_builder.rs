@@ -55,6 +55,21 @@ pub fn build_observation(
         // statement rows, so this is correctly left unpopulated here.
         emi_total_installments: None,
         emi_original_amount_minor: None,
+        // FLAGGED, not fixed (Doc 30 TASK-DEDUP-001 architectural gap, out
+        // of this task's scope): Doc 30 TASK-TXN-008's fingerprint formula
+        // requires connected_accounts.id as a hash input, but statement rows
+        // have no connected-account concept at all (Doc 18 §4.7's
+        // `statements` table carries only instrument_id) -- so a statement
+        // observation can never produce a fingerprint that would collide
+        // with its corresponding email observation for the same real-world
+        // transaction, even though that is the exact scenario the
+        // fingerprint pre-filter's own doc comment (TASK-TXN-008) names as
+        // its purpose. Left `None` here rather than guessing a substitute
+        // input: the windowed candidate search + scoring engine (Doc 30
+        // TASK-DEDUP-003/004, which already scores cross-pipeline
+        // complementarity) still correctly reconciles this case -- just
+        // without the fingerprint performance shortcut.
+        fingerprint: None,
     })
 }
 

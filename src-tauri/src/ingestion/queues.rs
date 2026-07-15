@@ -325,6 +325,12 @@ async fn process_transaction_job(job: TransactionJob, pool: &Pool) {
                             source_record_id: row.source_record_id.clone().unwrap_or_default(),
                             emi_total_installments: row.emi_total_installments,
                             emi_original_amount_minor: row.emi_original_amount_minor,
+                            // Doc 30 TASK-DEDUP-001: thread the fingerprint
+                            // computed above into the reconciliation engine's
+                            // input so the fast pre-filter can actually run —
+                            // previously computed and persisted but never
+                            // consumed anywhere.
+                            fingerprint: row.fingerprint.clone(),
                         };
 
                         let candidates =

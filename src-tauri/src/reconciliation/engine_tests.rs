@@ -24,8 +24,58 @@ async fn setup_test_db_async() -> Connection {
     conn
 }
 
+/// Doc 30 TASK-DEDUP-001/TASK-DEDUP-002 acceptance test: an incoming
+/// observation whose fingerprint matches an already-reconciled observation
+/// resolves via the fingerprint pre-filter's exact-match path — even when
+/// the windowed candidate set passed to `reconcile()` is empty, proving the
+/// pre-filter genuinely short-circuits the windowed search / scoring engine
+/// rather than merely duplicating a signal already available downstream.
 #[test]
 fn test_exact_match_success() {
+    let conn = setup_test_db();
+
+    conn.execute(
+        "INSERT INTO transactions (id, instrument_id, amount_minor, currency, direction, best_event_time, reference_id, merchant_normalized_name, source_mix, is_deleted) \
+         VALUES ('cand_1', 'inst_1', 1000, 'USD', 'debit', '2026-06-10 14:00:30', 'REF123', 'Test Merchant', 'email_only', 0)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint, canonical_transaction_id) \
+         VALUES ('obs_prior', 'gmail_transaction', 'msg_prior', 'fp_shared', 'cand_1')",
+        [],
+    )
+    .unwrap();
+
+    let obs = IncomingObservation {
+        id: "obs_1".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 1000,
+        currency: "USD".to_string(),
+        direction: "debit".to_string(),
+        // 30 seconds after the linked observation's event -- within the
+        // TASK-DEDUP-002 +/-2 minute exact-match tolerance.
+        event_time: "2026-06-10 14:01:00".to_string(),
+        reference_id: Some("REF123".to_string()),
+        merchant_raw: Some("Test Merchant".to_string()),
+        source_pipeline: "gmail_transaction".to_string(),
+        source_record_id: "msg_1".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
+        fingerprint: Some("fp_shared".to_string()),
+    };
+
+    // Empty candidate set: proves the fingerprint pre-filter resolves this
+    // on its own, without ever needing the windowed search's results.
+    let decision = reconcile(&conn, &obs, vec![]).unwrap();
+
+    assert_eq!(decision, DecisionType::AutoMatchedExact);
+}
+
+/// Doc 30 TASK-DEDUP-001 acceptance test: no fingerprint match falls through
+/// to windowed candidate generation / scoring exactly as before.
+#[test]
+fn test_prefilter_miss_falls_through_to_scoring() {
     let conn = setup_test_db();
 
     let obs = IncomingObservation {
@@ -41,6 +91,8 @@ fn test_exact_match_success() {
         source_record_id: "msg_1".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
+        // No prior observation carries this fingerprint.
+        fingerprint: Some("fp_no_match_anywhere".to_string()),
     };
 
     let cand = CanonicalCandidate {
@@ -49,7 +101,7 @@ fn test_exact_match_success() {
         amount_minor: 1000,
         currency: "USD".to_string(),
         direction: "debit".to_string(),
-        event_time: "2026-06-10 14:05:00".to_string(),
+        event_time: "2026-06-10 14:00:30".to_string(),
         reference_id: Some("REF123".to_string()),
         merchant_normalized_name: Some("Test Merchant".to_string()),
         source_mix: None,
@@ -57,7 +109,9 @@ fn test_exact_match_success() {
 
     let decision = reconcile(&conn, &obs, vec![cand]).unwrap();
 
-    assert_eq!(decision, DecisionType::AutoMatchedExact);
+    // Falls through to Stage 1 scoring and still resolves correctly, just
+    // via a different decision type than the fingerprint fast path.
+    assert_eq!(decision, DecisionType::AutoMatchedScored);
 }
 
 #[test]
@@ -77,7 +131,7 @@ fn test_exact_match_failure_without_reference_id() {
         source_record_id: "msg_1".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-    };
+        fingerprint: None,    };
 
     let cand = CanonicalCandidate {
         id: "cand_1".to_string(),
@@ -114,7 +168,7 @@ fn test_new_canonical_created_when_no_match() {
         source_record_id: "msg_1".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-    };
+        fingerprint: None,    };
 
     let decision = reconcile(&conn, &obs, vec![]).unwrap();
 
@@ -138,7 +192,7 @@ fn test_ambiguous_cluster_created_for_same_amount_same_day() {
         source_record_id: "msg_1".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-    };
+        fingerprint: None,    };
 
     let cand1 = CanonicalCandidate {
         id: "cand_1".to_string(),
@@ -196,7 +250,7 @@ fn test_new_canonical_created_from_single_observation() {
         source_record_id: "msg_1".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-    };
+        fingerprint: None,    };
 
     let decision = reconcile(&conn, &obs, vec![]).unwrap();
     assert_eq!(decision, DecisionType::NewCanonical);
@@ -248,7 +302,7 @@ fn test_ambiguous_decision_creates_no_canonical_row() {
         source_record_id: "msg_1".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-    };
+        fingerprint: None,    };
 
     let cand1 = CanonicalCandidate {
         id: "cand_1".to_string(),
@@ -326,7 +380,7 @@ fn test_statement_overrides_email_on_conflict() {
         source_record_id: "stmt_2".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-    };
+        fingerprint: None,    };
 
     let cand2 = CanonicalCandidate {
         id: "tx_1".to_string(),
@@ -341,7 +395,13 @@ fn test_statement_overrides_email_on_conflict() {
     };
 
     let decision = reconcile(&conn, &obs2, vec![cand2]).unwrap();
-    assert_eq!(decision, DecisionType::AutoMatchedExact);
+    // No fingerprint set on this observation (Doc 30 TASK-DEDUP-001's
+    // pre-filter is skipped) and the two event times are 5 minutes apart --
+    // outside TASK-DEDUP-002's +/-2 minute exact-match tolerance -- so this
+    // resolves via Stage 1 scoring rather than the fingerprint fast path.
+    // The precedence rule under test applies identically to both decision
+    // types (`apply_match_precedence_and_link` is called on both paths).
+    assert_eq!(decision, DecisionType::AutoMatchedScored);
 
     // Statement's merchant/posting_date/reference_id/source_mix must have overwritten.
     let mut stmt = conn.prepare("SELECT merchant_display_name, best_posting_date, reference_id, source_mix FROM transactions WHERE id = 'tx_1'").unwrap();
@@ -401,7 +461,7 @@ fn test_email_fills_null_fields_only_when_statement_present() {
         source_record_id: "msg_email_1".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-    };
+        fingerprint: None,    };
 
     let cand = CanonicalCandidate {
         id: "tx_2".to_string(),
@@ -416,7 +476,11 @@ fn test_email_fills_null_fields_only_when_statement_present() {
     };
 
     let decision = reconcile(&conn, &obs, vec![cand]).unwrap();
-    assert_eq!(decision, DecisionType::AutoMatchedExact);
+    // No fingerprint set and the two event times are 5 minutes apart --
+    // outside the +/-2 minute exact-match tolerance (Doc 30 TASK-DEDUP-002)
+    // -- so this resolves via Stage 1 scoring. Same precedence logic runs
+    // regardless of decision type.
+    assert_eq!(decision, DecisionType::AutoMatchedScored);
 
     let mut stmt = conn
         .prepare("SELECT merchant_display_name, reference_id, source_mix FROM transactions WHERE id = 'tx_2'")
@@ -718,7 +782,7 @@ fn test_manual_entry_triggers_realtime_reconciliation() {
         source_record_id: "manual_1".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-    };
+        fingerprint: None,    };
 
     // Fetch candidates
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
@@ -751,7 +815,7 @@ fn test_refund_linked_to_original_debit() {
         source_record_id: "manual_1".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-    };
+        fingerprint: None,    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs_debit).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs_debit, candidates).unwrap();
@@ -778,7 +842,7 @@ fn test_refund_linked_to_original_debit() {
         source_record_id: "manual_2".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-    };
+        fingerprint: None,    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs_credit).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs_credit, candidates).unwrap();
@@ -825,7 +889,7 @@ fn test_reversal_detected_within_hours() {
         source_record_id: "manual_1".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-    };
+        fingerprint: None,    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs_debit).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs_debit, candidates).unwrap();
@@ -852,7 +916,7 @@ fn test_reversal_detected_within_hours() {
         source_record_id: "manual_2".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-    };
+        fingerprint: None,    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs_credit).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs_credit, candidates).unwrap();
@@ -898,7 +962,7 @@ fn test_merchant_alias_resolves_normalized_name() {
         source_record_id: "manual_3".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-    };
+        fingerprint: None,    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs, candidates).unwrap();
@@ -933,7 +997,7 @@ fn test_category_assigned_from_merchant_entity() {
         source_record_id: "manual_4".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-    };
+        fingerprint: None,    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs, candidates).unwrap();
@@ -968,7 +1032,7 @@ fn test_missing_category_does_not_block_canonical_write() {
         source_record_id: "manual_5".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-    };
+        fingerprint: None,    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs, candidates).unwrap();
@@ -1008,7 +1072,7 @@ fn test_alert_not_fired_when_under_threshold() {
         source_record_id: "manual_no_alert".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-    };
+        fingerprint: None,    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs, candidates).unwrap();
@@ -1049,7 +1113,7 @@ fn test_global_spend_limit_alert() {
         source_record_id: "manual_global".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-    };
+        fingerprint: None,    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs, candidates).unwrap();
@@ -1099,7 +1163,7 @@ fn test_category_spend_limit_alert() {
         source_record_id: "manual_cat".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-    };
+        fingerprint: None,    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs, candidates).unwrap();
@@ -1156,7 +1220,7 @@ fn test_merchant_spike_alert() {
         source_record_id: "manual_spike".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-    };
+        fingerprint: None,    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs, candidates).unwrap();
@@ -1227,7 +1291,7 @@ fn test_anomaly_detection_logic() {
         source_record_id: "msg_anomaly".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-    };
+        fingerprint: None,    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs, candidates).unwrap();
@@ -1315,7 +1379,7 @@ fn test_global_spend_limit_80_percent() {
         source_record_id: "msg_80pct".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-    };
+        fingerprint: None,    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs, candidates).unwrap();
@@ -1363,7 +1427,7 @@ fn test_category_budget_100_percent() {
         source_record_id: "msg_cat_100".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-    };
+        fingerprint: None,    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
     crate::reconciliation::engine::reconcile(&conn, &obs, candidates).unwrap();
@@ -1405,7 +1469,7 @@ fn test_manual_transaction_creation() {
         source_record_id: "manual_create_1".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-    };
+        fingerprint: None,    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
     let decision = crate::reconciliation::engine::reconcile(&conn, &obs, candidates).unwrap();
@@ -1520,7 +1584,7 @@ fn test_manual_transactions_handled_by_deduplication() {
         source_record_id: "manual_dup_1".to_string(),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-    };
+        fingerprint: None,    };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
     // Must find the existing automated transaction as a candidate

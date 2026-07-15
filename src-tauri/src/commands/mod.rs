@@ -1804,6 +1804,10 @@ pub async fn transactions_create(
         source_record_id: format!("manual_{}", obs_id),
         emi_total_installments: None,
         emi_original_amount_minor: None,
+        // Manual entries have no connected_account_id to hash (Doc 30
+        // TASK-TXN-008's formula input) — the fingerprint pre-filter
+        // (TASK-DEDUP-001) is simply skipped for these observations.
+        fingerprint: None,
     };
 
     let decision = conn
