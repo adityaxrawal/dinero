@@ -114,8 +114,10 @@ fn test_prefilter_miss_falls_through_to_scoring() {
     assert_eq!(decision, DecisionType::AutoMatchedScored);
 }
 
+/// Doc 30 TASK-DEDUP-005 acceptance test: a single viable candidate (no
+/// runner-up to compare a margin against) auto-matches via scoring.
 #[test]
-fn test_exact_match_failure_without_reference_id() {
+fn test_clear_winner_single_viable_candidate_auto_matches() {
     let conn = setup_test_db();
 
     let obs = IncomingObservation {
@@ -147,8 +149,163 @@ fn test_exact_match_failure_without_reference_id() {
 
     let decision = reconcile(&conn, &obs, vec![cand]).unwrap();
 
-    // Without a reference ID, exact match fails. It falls back to scored matching.
+    // No fingerprint set, no reference ID -- falls straight to Stage 1
+    // scoring, single viable candidate present.
     assert_eq!(decision, DecisionType::AutoMatchedScored);
+}
+
+/// Doc 30 TASK-DEDUP-005 acceptance test: two viable candidates where the
+/// top scorer beats the runner-up by more than the 15% ambiguity margin --
+/// a Clear Winner, auto-matches rather than routing to ambiguous.
+#[test]
+fn test_clear_winner_margin_exceeds_15_percent_auto_matches() {
+    let conn = setup_test_db();
+
+    let obs = IncomingObservation {
+        id: "obs_1".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 1000,
+        currency: "USD".to_string(),
+        direction: "debit".to_string(),
+        event_time: "2026-06-10 14:00:00".to_string(),
+        reference_id: Some("REF_STRONG".to_string()),
+        merchant_raw: Some("Uber".to_string()),
+        source_pipeline: "gmail_transaction".to_string(),
+        source_record_id: "msg_1".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
+        fingerprint: None,
+    };
+
+    // Strong candidate: exact reference ID + exact merchant + close time.
+    let strong = CanonicalCandidate {
+        id: "cand_strong".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 1000,
+        currency: "USD".to_string(),
+        direction: "debit".to_string(),
+        event_time: "2026-06-10 14:00:30".to_string(),
+        reference_id: Some("REF_STRONG".to_string()),
+        merchant_normalized_name: Some("Uber".to_string()),
+        source_mix: None,
+    };
+
+    // Weak-but-still-viable candidate: no reference ID, weaker merchant match.
+    let weak = CanonicalCandidate {
+        id: "cand_weak".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 1000,
+        currency: "USD".to_string(),
+        direction: "debit".to_string(),
+        event_time: "2026-06-10 14:03:00".to_string(),
+        reference_id: None,
+        merchant_normalized_name: Some("Uber Eats".to_string()),
+        source_mix: None,
+    };
+
+    let decision = reconcile(&conn, &obs, vec![strong, weak]).unwrap();
+    assert_eq!(decision, DecisionType::AutoMatchedScored);
+}
+
+/// Doc 30 TASK-DEDUP-005 acceptance test: two candidates scoring within 15%
+/// of each other must NOT be force-picked -- routes to `ambiguous_pending`.
+#[test]
+fn test_ambiguity_margin_within_15_percent_routes_ambiguous() {
+    let conn = setup_test_db();
+
+    let obs = IncomingObservation {
+        id: "obs_1".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 1000,
+        currency: "USD".to_string(),
+        direction: "debit".to_string(),
+        event_time: "2026-06-10 14:00:00".to_string(),
+        reference_id: None,
+        merchant_raw: Some("Uber".to_string()),
+        source_pipeline: "gmail_transaction".to_string(),
+        source_record_id: "msg_1".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
+        fingerprint: None,
+    };
+
+    // Two near-identical candidates -- same merchant, same amount, close
+    // times -- neither one clearly better than the other.
+    let cand1 = CanonicalCandidate {
+        id: "cand_1".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 1000,
+        currency: "USD".to_string(),
+        direction: "debit".to_string(),
+        event_time: "2026-06-10 14:05:00".to_string(),
+        reference_id: None,
+        merchant_normalized_name: Some("Uber".to_string()),
+        source_mix: None,
+    };
+    let cand2 = CanonicalCandidate {
+        id: "cand_2".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 1000,
+        currency: "USD".to_string(),
+        direction: "debit".to_string(),
+        event_time: "2026-06-10 14:10:00".to_string(),
+        reference_id: None,
+        merchant_normalized_name: Some("Uber".to_string()),
+        source_mix: None,
+    };
+
+    let decision = reconcile(&conn, &obs, vec![cand1, cand2]).unwrap();
+    assert!(matches!(decision, DecisionType::AmbiguousPending(_)));
+}
+
+/// Doc 30 TASK-DEDUP-005 acceptance test: a candidate scoring below the
+/// 0.55 base viability floor is not viable at all -- routes to
+/// `new_canonical`, never force-matched.
+#[test]
+fn test_below_viability_floor_routes_new_canonical() {
+    let conn = setup_test_db();
+
+    let obs = IncomingObservation {
+        id: "obs_1".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 1000,
+        currency: "USD".to_string(),
+        direction: "debit".to_string(),
+        event_time: "2026-06-10 14:00:00".to_string(),
+        reference_id: None,
+        merchant_raw: Some("Completely Different Merchant Name".to_string()),
+        source_pipeline: "gmail_transaction".to_string(),
+        source_record_id: "msg_1".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
+        fingerprint: None,
+    };
+
+    // Same instrument/amount/direction (required just to be a windowed
+    // candidate at all) but a wildly different merchant and a time far from
+    // the window's close edge -- scores well under 0.55.
+    let cand = CanonicalCandidate {
+        id: "cand_1".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 1000,
+        currency: "USD".to_string(),
+        direction: "debit".to_string(),
+        event_time: "2026-06-13 14:00:00".to_string(), // 3 days later -> 0 time score
+        reference_id: None,
+        merchant_normalized_name: Some("Zzz Nothing Alike".to_string()),
+        source_mix: None,
+    };
+
+    let decision = reconcile(&conn, &obs, vec![cand]).unwrap();
+    assert_eq!(decision, DecisionType::NewCanonical);
+}
+
+/// Doc 30 TASK-DEDUP-005 acceptance test: the routing thresholds are named,
+/// documented constants -- not magic numbers.
+#[test]
+fn test_viability_floor_and_margin_are_named_constants() {
+    assert_eq!(crate::reconciliation::engine::BASE_VIABILITY_FLOOR, 0.55);
+    assert_eq!(crate::reconciliation::engine::AMBIGUITY_MARGIN_THRESHOLD, 0.15);
 }
 
 #[test]

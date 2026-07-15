@@ -7,6 +7,17 @@ use rusqlite::Connection;
 
 use serde::{Deserialize, Serialize};
 
+/// Doc 30 TASK-DEDUP-005 / Document 12 §8.2's Relative Margin Model: a
+/// candidate must clear this score before being considered viable at all.
+/// Anything below it, or zero viable candidates, routes to `new_canonical`.
+pub const BASE_VIABILITY_FLOOR: f64 = 0.55;
+/// Doc 30 TASK-DEDUP-005 / Document 12 §8.2: the margin the top-scoring
+/// viable candidate must beat the runner-up by to be a "Clear Winner"
+/// (`auto_matched_scored`). Candidates within this margin of each other are
+/// routed to `ambiguous_pending` instead of force-picking the highest —
+/// "ambiguous matches must be kept unresolved rather than forced."
+pub const AMBIGUITY_MARGIN_THRESHOLD: f64 = 0.15;
+
 /// Represents a normalized observation coming from Gmail or a statement PDF.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IncomingObservation {
@@ -170,8 +181,10 @@ pub fn reconcile(
 
     let scored = score_candidates(obs, &candidates);
 
-    // Base viability threshold: 0.55
-    let viable: Vec<&ScoredCandidate> = scored.iter().filter(|s| s.score >= 0.55).collect();
+    let viable: Vec<&ScoredCandidate> = scored
+        .iter()
+        .filter(|s| s.score >= BASE_VIABILITY_FLOOR)
+        .collect();
 
     if viable.is_empty() {
         // No viable match → new canonical
@@ -220,8 +233,9 @@ pub fn reconcile(
 
     let second = viable[1];
 
-    // Relative-margin model: >15% margin between top and runner-up → clear winner
-    if (top.score - second.score) > 0.15 {
+    // Relative-margin model: margin exceeding the ambiguity threshold between
+    // top and runner-up → clear winner.
+    if (top.score - second.score) > AMBIGUITY_MARGIN_THRESHOLD {
         let matched_source_mix = candidates
             .iter()
             .find(|c| c.id == top.candidate_id)
