@@ -343,7 +343,7 @@ pub struct BankTemplateLayer;
 impl ExtractionLayer for BankTemplateLayer {
     fn extract<'a>(
         &'a self,
-        _pool: &'a Pool,
+        pool: &'a Pool,
         bank_name: &'a str,
         body: &'a str,
     ) -> BoxFuture<'a, Option<ExtractionResult>> {
@@ -355,74 +355,99 @@ impl ExtractionLayer for BankTemplateLayer {
                 ..Default::default()
             };
 
-            if bank_name == "HDFC Bank" {
-                let re_cc = HDFC_CC_RE.get_or_init(|| Regex::new(r"(?i)(?:Rs\.?|INR)\s*([\d,]+(?:\.\d+)?)\s+spent\s+on\s+.*?credit\s+card.*?at\s+(.*?)\s+on\s+(\d{2}-[a-zA-Z]{3}-\d{2,4})").unwrap());
-                if let Some(caps) = re_cc.captures(body) {
-                    result.amount_minor = parse_amount(caps.get(1)?.as_str());
-                    result.merchant_raw = Some(caps.get(2)?.as_str().trim().to_string());
-                    result.event_time = Some(parse_date(caps.get(3)?.as_str()));
-                    return Some(result);
+            // Doc 30 TASK-TXN-003: a single exit point so a successful match
+            // (regardless of which bank/format branch produced it) can seed a
+            // `pending` pattern_rules candidate below before returning.
+            let matched: Option<ExtractionResult> = 'm: {
+                if bank_name == "HDFC Bank" {
+                    let re_cc = HDFC_CC_RE.get_or_init(|| Regex::new(r"(?i)(?:Rs\.?|INR)\s*([\d,]+(?:\.\d+)?)\s+spent\s+on\s+.*?credit\s+card.*?at\s+(.*?)\s+on\s+(\d{2}-[a-zA-Z]{3}-\d{2,4})").unwrap());
+                    if let Some(caps) = re_cc.captures(body) {
+                        result.amount_minor = parse_amount(caps.get(1)?.as_str());
+                        result.merchant_raw = Some(caps.get(2)?.as_str().trim().to_string());
+                        result.event_time = Some(parse_date(caps.get(3)?.as_str()));
+                        break 'm Some(result);
+                    }
+
+                    let re_dc = HDFC_DC_RE.get_or_init(|| Regex::new(r"(?i)(?:Rs\.?|INR)\s*([\d,]+(?:\.\d+)?)\s+debited\s+from\s+.*?A/c.*?at\s+(.*?)(?:\s+on\s+(\d{2}-[a-zA-Z]{3}-\d{2,4})|$)").unwrap());
+                    if let Some(caps) = re_dc.captures(body) {
+                        result.amount_minor = parse_amount(caps.get(1)?.as_str());
+                        result.merchant_raw = Some(caps.get(2)?.as_str().trim().to_string());
+                        result.event_time =
+                            Some(caps.get(3).map_or(1704067200, |m| parse_date(m.as_str())));
+                        break 'm Some(result);
+                    }
+                } else if bank_name == "ICICI Bank" {
+                    let re_cc = ICICI_CC_RE.get_or_init(|| Regex::new(r"(?i)(?:INR|Rs\.?)\s*([\d,]+(?:\.\d+)?)\s+spent\s+on\s+.*?Card.*?on\s+(\d{2}-[a-zA-Z]{3}-\d{2,4})\s+at\s+(.*?)(?:\.|$)").unwrap());
+                    if let Some(caps) = re_cc.captures(body) {
+                        result.amount_minor = parse_amount(caps.get(1)?.as_str());
+                        result.event_time = Some(parse_date(caps.get(2)?.as_str()));
+                        result.merchant_raw = Some(caps.get(3)?.as_str().trim().to_string());
+                        break 'm Some(result);
+                    }
+
+                    let re_upi = ICICI_UPI_RE.get_or_init(|| Regex::new(r"(?i)Acct\s+.*?\s+debited\s+with\s+(?:INR|Rs\.?)\s*([\d,]+(?:\.\d+)?)\s+on\s+(\d{2}-[a-zA-Z]{3}-\d{2,4}).*?Info:\s*UPI/[^/]+/(.*?)(?:\.|$)").unwrap());
+                    if let Some(caps) = re_upi.captures(body) {
+                        result.amount_minor = parse_amount(caps.get(1)?.as_str());
+                        result.event_time = Some(parse_date(caps.get(2)?.as_str()));
+                        result.merchant_raw = Some(caps.get(3)?.as_str().trim().to_string());
+                        break 'm Some(result);
+                    }
+                } else if bank_name == "State Bank of India" {
+                    let re_sbi = SBI_CC_RE.get_or_init(|| Regex::new(r"(?i)(?:Rs\.?|INR)\s*([\d,]+(?:\.\d+)?)\s+spent\s+on\s+.*?SBI\s+Credit\s+Card.*?at\s+(.*?)\s+on\s+(\d{2}-[a-zA-Z]{3}-\d{2,4})").unwrap());
+                    if let Some(caps) = re_sbi.captures(body) {
+                        result.amount_minor = parse_amount(caps.get(1)?.as_str());
+                        result.merchant_raw = Some(caps.get(2)?.as_str().trim().to_string());
+                        result.event_time = Some(parse_date(caps.get(3)?.as_str()));
+                        break 'm Some(result);
+                    }
+                } else if bank_name == "Axis Bank" {
+                    let re_axis = AXIS_CC_RE.get_or_init(|| Regex::new(r"(?i)(?:Rs\.?|INR)\s*([\d,]+(?:\.\d+)?)\s+spent\s+on\s+.*?Axis.*?Card.*?at\s+(.*?)\s+on\s+(\d{2}-[a-zA-Z]{3}-\d{2,4})").unwrap());
+                    if let Some(caps) = re_axis.captures(body) {
+                        result.amount_minor = parse_amount(caps.get(1)?.as_str());
+                        result.merchant_raw = Some(caps.get(2)?.as_str().trim().to_string());
+                        result.event_time = Some(parse_date(caps.get(3)?.as_str()));
+                        break 'm Some(result);
+                    }
+                } else if bank_name == "Kotak Mahindra Bank" {
+                    let re_kotak = KOTAK_CC_RE.get_or_init(|| Regex::new(r"(?i)(?:Rs\.?|INR)\s*([\d,]+(?:\.\d+)?)\s+spent\s+on\s+.*?Kotak.*?Card.*?at\s+(.*?)\s+on\s+(\d{2}-[a-zA-Z]{3}-\d{2,4})").unwrap());
+                    if let Some(caps) = re_kotak.captures(body) {
+                        result.amount_minor = parse_amount(caps.get(1)?.as_str());
+                        result.merchant_raw = Some(caps.get(2)?.as_str().trim().to_string());
+                        result.event_time = Some(parse_date(caps.get(3)?.as_str()));
+                        break 'm Some(result);
+                    }
+                } else if bank_name == "YES Bank" {
+                    let re_yes = YES_CC_RE.get_or_init(|| Regex::new(r"(?i)(?:Rs\.?|INR)\s*([\d,]+(?:\.\d+)?)\s+spent\s+on\s+.*?YES.*?Card.*?at\s+(.*?)\s+on\s+(\d{2}-[a-zA-Z]{3}-\d{2,4})").unwrap());
+                    if let Some(caps) = re_yes.captures(body) {
+                        result.amount_minor = parse_amount(caps.get(1)?.as_str());
+                        result.merchant_raw = Some(caps.get(2)?.as_str().trim().to_string());
+                        result.event_time = Some(parse_date(caps.get(3)?.as_str()));
+                        break 'm Some(result);
+                    }
                 }
 
-                let re_dc = HDFC_DC_RE.get_or_init(|| Regex::new(r"(?i)(?:Rs\.?|INR)\s*([\d,]+(?:\.\d+)?)\s+debited\s+from\s+.*?A/c.*?at\s+(.*?)(?:\s+on\s+(\d{2}-[a-zA-Z]{3}-\d{2,4})|$)").unwrap());
-                if let Some(caps) = re_dc.captures(body) {
-                    result.amount_minor = parse_amount(caps.get(1)?.as_str());
-                    result.merchant_raw = Some(caps.get(2)?.as_str().trim().to_string());
-                    result.event_time =
-                        Some(caps.get(3).map_or(1704067200, |m| parse_date(m.as_str())));
-                    return Some(result);
-                }
-            } else if bank_name == "ICICI Bank" {
-                let re_cc = ICICI_CC_RE.get_or_init(|| Regex::new(r"(?i)(?:INR|Rs\.?)\s*([\d,]+(?:\.\d+)?)\s+spent\s+on\s+.*?Card.*?on\s+(\d{2}-[a-zA-Z]{3}-\d{2,4})\s+at\s+(.*?)(?:\.|$)").unwrap());
-                if let Some(caps) = re_cc.captures(body) {
-                    result.amount_minor = parse_amount(caps.get(1)?.as_str());
-                    result.event_time = Some(parse_date(caps.get(2)?.as_str()));
-                    result.merchant_raw = Some(caps.get(3)?.as_str().trim().to_string());
-                    return Some(result);
-                }
+                None
+            };
 
-                let re_upi = ICICI_UPI_RE.get_or_init(|| Regex::new(r"(?i)Acct\s+.*?\s+debited\s+with\s+(?:INR|Rs\.?)\s*([\d,]+(?:\.\d+)?)\s+on\s+(\d{2}-[a-zA-Z]{3}-\d{2,4}).*?Info:\s*UPI/[^/]+/(.*?)(?:\.|$)").unwrap());
-                if let Some(caps) = re_upi.captures(body) {
-                    result.amount_minor = parse_amount(caps.get(1)?.as_str());
-                    result.event_time = Some(parse_date(caps.get(2)?.as_str()));
-                    result.merchant_raw = Some(caps.get(3)?.as_str().trim().to_string());
-                    return Some(result);
-                }
-            } else if bank_name == "State Bank of India" {
-                let re_sbi = SBI_CC_RE.get_or_init(|| Regex::new(r"(?i)(?:Rs\.?|INR)\s*([\d,]+(?:\.\d+)?)\s+spent\s+on\s+.*?SBI\s+Credit\s+Card.*?at\s+(.*?)\s+on\s+(\d{2}-[a-zA-Z]{3}-\d{2,4})").unwrap());
-                if let Some(caps) = re_sbi.captures(body) {
-                    result.amount_minor = parse_amount(caps.get(1)?.as_str());
-                    result.merchant_raw = Some(caps.get(2)?.as_str().trim().to_string());
-                    result.event_time = Some(parse_date(caps.get(3)?.as_str()));
-                    return Some(result);
-                }
-            } else if bank_name == "Axis Bank" {
-                let re_axis = AXIS_CC_RE.get_or_init(|| Regex::new(r"(?i)(?:Rs\.?|INR)\s*([\d,]+(?:\.\d+)?)\s+spent\s+on\s+.*?Axis.*?Card.*?at\s+(.*?)\s+on\s+(\d{2}-[a-zA-Z]{3}-\d{2,4})").unwrap());
-                if let Some(caps) = re_axis.captures(body) {
-                    result.amount_minor = parse_amount(caps.get(1)?.as_str());
-                    result.merchant_raw = Some(caps.get(2)?.as_str().trim().to_string());
-                    result.event_time = Some(parse_date(caps.get(3)?.as_str()));
-                    return Some(result);
-                }
-            } else if bank_name == "Kotak Mahindra Bank" {
-                let re_kotak = KOTAK_CC_RE.get_or_init(|| Regex::new(r"(?i)(?:Rs\.?|INR)\s*([\d,]+(?:\.\d+)?)\s+spent\s+on\s+.*?Kotak.*?Card.*?at\s+(.*?)\s+on\s+(\d{2}-[a-zA-Z]{3}-\d{2,4})").unwrap());
-                if let Some(caps) = re_kotak.captures(body) {
-                    result.amount_minor = parse_amount(caps.get(1)?.as_str());
-                    result.merchant_raw = Some(caps.get(2)?.as_str().trim().to_string());
-                    result.event_time = Some(parse_date(caps.get(3)?.as_str()));
-                    return Some(result);
-                }
-            } else if bank_name == "YES Bank" {
-                let re_yes = YES_CC_RE.get_or_init(|| Regex::new(r"(?i)(?:Rs\.?|INR)\s*([\d,]+(?:\.\d+)?)\s+spent\s+on\s+.*?YES.*?Card.*?at\s+(.*?)\s+on\s+(\d{2}-[a-zA-Z]{3}-\d{2,4})").unwrap());
-                if let Some(caps) = re_yes.captures(body) {
-                    result.amount_minor = parse_amount(caps.get(1)?.as_str());
-                    result.merchant_raw = Some(caps.get(2)?.as_str().trim().to_string());
-                    result.event_time = Some(parse_date(caps.get(3)?.as_str()));
-                    return Some(result);
-                }
+            let matched = matched?;
+
+            // Doc 30 TASK-TXN-003: "A successful Layer 2 match seeds a
+            // pending-status pattern_rules row, so repeated matches against
+            // the same template_hash can graduate to a Layer 1 learned
+            // rule." Best-effort: a DB error here must not fail an
+            // already-successful extraction.
+            let template_hash = compute_template_hash(body);
+            let b_name = bank_name.to_string();
+            let matched_clone = matched.clone();
+            if let Ok(conn) = pool.get().await {
+                let _ = conn
+                    .interact(move |c| {
+                        synthesize_pending_rule(c, &b_name, &template_hash, &matched_clone, "layer2_template")
+                    })
+                    .await;
             }
 
-            None
+            Some(matched)
         })
     }
     fn layer_name(&self) -> &'static str {
@@ -937,6 +962,7 @@ pub async fn run_extraction_ladder(
                                         &bank_name_str,
                                         &template_hash_clone,
                                         &llm_result_clone,
+                                        "llm_synthesis",
                                     )
                                 })
                                 .await;
@@ -964,6 +990,7 @@ fn synthesize_pending_rule(
     bank_name: &str,
     template_hash: &str,
     extraction: &ExtractionResult,
+    source: &str,
 ) -> Result<()> {
     let now = chrono::Utc::now().naive_utc();
 
@@ -976,7 +1003,7 @@ fn synthesize_pending_rule(
             field_name: field_name.to_string(),
             // The regex is a placeholder hint derived from the extracted value;
             // a human must verify and refine it before promoting to `active`.
-            rule_payload_json: serde_json::json!({ "regex": regex_hint, "source": "llm_synthesis" }),
+            rule_payload_json: serde_json::json!({ "regex": regex_hint, "source": source }),
             status: "pending".to_string(),
             success_count: 0,
             failure_count: 0,
@@ -1139,6 +1166,21 @@ mod tests {
     /// partial result.
     #[tokio::test]
     async fn test_orchestrator_fails_if_all_layers_empty() {
+        // A real (if unused) subscriber must be active here, not just the
+        // bare process default: `tracing`'s per-callsite Interest cache can
+        // permanently pin the "Layer 5 skipped" log line's callsite (shared
+        // with test_orchestrator_skips_layer_5_when_llm_ineligible below) to
+        // `never` the first time it fires under no subscriber at all, which
+        // then silently defeats that other test's capturing layer if this
+        // test happens to run first — this is not about this test's own
+        // assertions, purely about not poisoning a shared callsite for a
+        // sibling test running in parallel.
+        use tracing_subscriber::layer::SubscriberExt;
+        struct NoopLayer;
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for NoopLayer {}
+        let _guard =
+            tracing::subscriber::set_default(tracing_subscriber::registry().with(NoopLayer));
+
         let pool = dummy_pool();
         let res = run_extraction_ladder(&pool, "Chase", "unparseable body", None, false)
             .await
@@ -1348,6 +1390,54 @@ mod tests {
             .unwrap();
         assert_eq!(result_4.amount_minor, Some(150000));
         assert_eq!(result_4.event_time.unwrap(), parse_date("25-May-2023"));
+    }
+
+    /// Doc 30 TASK-TXN-003: "A successful Layer 2 match seeds a
+    /// pending-status pattern_rules row, so repeated matches against the
+    /// same template_hash can graduate to a Layer 1 learned rule."
+    #[tokio::test]
+    async fn test_bank_template_match_seeds_pending_pattern_rule() {
+        let pool = dummy_migrated_pool().await;
+        let layer = BankTemplateLayer;
+        let body =
+            "Rs 1500.00 spent on your HDFC Bank CREDIT Card ending 1234 at Amazon on 25-May-23.";
+
+        let result = layer.extract(&pool, "HDFC Bank", body).await;
+        assert!(result.is_some());
+
+        let template_hash = compute_template_hash(body);
+        let conn = pool.get().await.unwrap();
+        let rules = conn
+            .interact(move |c| {
+                // No direct "select all for hash" helper exists; pending rows
+                // are deliberately excluded from
+                // select_active_rules_by_bank_and_hash by design, so query
+                // the table directly here instead.
+                c.prepare("SELECT field_name, status FROM pattern_rules WHERE bank_name = ?1 AND template_hash = ?2")
+                    .unwrap()
+                    .query_map(rusqlite::params!["HDFC Bank", template_hash], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap()
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            !rules.is_empty(),
+            "a successful Layer 2 match must seed at least one pending pattern_rules row"
+        );
+        assert!(
+            rules.iter().all(|(_, status)| status == "pending"),
+            "seeded rows must be pending, not auto-active: {:?}",
+            rules
+        );
+        let field_names: std::collections::HashSet<_> =
+            rules.iter().map(|(f, _)| f.as_str()).collect();
+        assert!(field_names.contains("amount"));
+        assert!(field_names.contains("merchant"));
     }
 
     #[tokio::test]
