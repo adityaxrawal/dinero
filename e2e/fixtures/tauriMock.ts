@@ -138,7 +138,12 @@ const tauriMockInitScript = `
     if (cmd === 'update_spending_limits') return 'ok';
     if (cmd === 'seed_mock_data') return 'Mock data seeded';
     if (cmd === 'is_gmail_connected') return window.__MOCK_STATE__.gmail_connected || false;
-    if (cmd === 'list_connected_accounts') {
+    if (cmd === 'list_connected_accounts' || cmd === 'settings_get_connected_accounts') {
+      // TASK-FE-006 fix: the real command was renamed to
+      // settings_get_connected_accounts (TASK-API-008) — this mock still
+      // only had the pre-rename name, so GlobalStateContext's
+      // refreshConnectedAccounts() (real callers, not just this test) always
+      // fell through to the unhandled-command default ({}) in this fixture.
       if (window.__MOCK_STATE__.gmail_connected) {
         return [{ email: 'test@gmail.com', account_id: 'gmail_test_123' }];
       }

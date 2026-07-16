@@ -9,6 +9,7 @@ import { Loader2, Mail, ShieldCheck, Check } from 'lucide-react';
 import { API, LlmModelInfo } from '@/lib/ipc';
 import { OUTBOUND_CHANNEL_DISCLOSURE, BETA_PROGRAM_DISCLOSURE } from '@/constants/privacy';
 import GmailConsentScreen from '@/routes/onboarding/GmailConsentScreen';
+import HistoricalScanScreen from '@/routes/onboarding/HistoricalScanScreen';
 import { mapOauthError } from '@/routes/onboarding/mapOauthError';
 
 const TOTAL_STEPS = 3;
@@ -37,8 +38,11 @@ export default function Onboarding() {
   const [limitError, setLimitError] = useState<string | null>(null);
   const [statementPref, setStatementPref] = useState<StatementPref>('auto');
 
-  // Form state — Step 2
-  const [scanRange, setScanRange] = useState('3');
+  // TASK-FE-006: the real scan range is now chosen on HistoricalScanScreen
+  // (a date-range picker, not a months count) after Gmail connects — this
+  // fixed default only feeds the separate `historicalScanMonths` backend
+  // preference field, unrelated to what actually gets scanned.
+  const scanRange = '3';
   // Doc 16 §12.3: the 5-tier model catalog, fetched from the backend — not
   // hardcoded here, so this can never drift from src-tauri's own list again.
   const [availableModels, setAvailableModels] = useState<LlmModelInfo[]>([]);
@@ -93,7 +97,10 @@ export default function Onboarding() {
       localStorage.setItem('llm_model', llmConfig);
       localStorage.setItem('dinero_statement_pref', statementPref);
       await savePreferencesToBackend();
-      navigate('/');
+      // TASK-FE-006: advance to the historical-scan step instead of
+      // finishing onboarding immediately — a connected account is exactly
+      // what that step needs to actually trigger a scan.
+      setStep(3);
     } catch (e: any) {
       setOauthError(mapOauthError(e?.message));
     } finally {
@@ -308,26 +315,11 @@ export default function Onboarding() {
             </div>
           )}
 
+          {/* TASK-FE-006: the historical scan needs a real, already-connected
+              Gmail account_id to scan — it moved here, after Gmail consent
+              (step 3), superseding the old months-count dropdown that used
+              to sit here and never actually triggered a scan. */}
           {step === 2 && (
-            <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4">
-              <div className="space-y-2">
-                <Label htmlFor="scan">Historical Scan Range</Label>
-                <Select value={scanRange} onValueChange={setScanRange}>
-                  <SelectTrigger id="scan" aria-label="Select historical scan range">
-                    <SelectValue placeholder="Select months" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="1">1 Month</SelectItem>
-                    <SelectItem value="3">3 Months</SelectItem>
-                    <SelectItem value="6">6 Months</SelectItem>
-                    <SelectItem value="12">1 Year</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-          )}
-
-          {step === 3 && (
             <GmailConsentScreen
               loading={loading}
               oauthError={oauthError}
@@ -335,28 +327,35 @@ export default function Onboarding() {
               onSkip={handleSkipGmail}
             />
           )}
+
+          {step === 3 && <HistoricalScanScreen onDone={() => navigate('/')} />}
         </CardContent>
 
-        <CardFooter className="flex justify-between">
-          {step > 1 ? (
-            <Button variant="outline" onClick={handleBack} disabled={loading} aria-label="Go back to previous step">
-              Back
-            </Button>
-          ) : (
-            <div aria-hidden="true" /> // Spacer
-          )}
+        {/* TASK-FE-006: step 3 (HistoricalScanScreen) owns its own
+            Start Scan/Skip-for-now actions inline — a Back button there
+            would imply un-connecting Gmail, which isn't a real action. */}
+        {step < 3 && (
+          <CardFooter className="flex justify-between">
+            {step > 1 ? (
+              <Button variant="outline" onClick={handleBack} disabled={loading} aria-label="Go back to previous step">
+                Back
+              </Button>
+            ) : (
+              <div aria-hidden="true" /> // Spacer
+            )}
 
-          {step < TOTAL_STEPS ? (
-            <Button onClick={handleNext} variant="accent" aria-label={`Continue to step ${step + 1}`}>
-              Continue
-            </Button>
-          ) : (
-            <Button onClick={handleConnectGmail} disabled={loading} variant="accent" className="gap-2" aria-label="I Understand, Continue to Google">
-              {loading ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" /> : <Mail className="w-4 h-4" aria-hidden="true" />}
-              I Understand, Continue to Google
-            </Button>
-          )}
-        </CardFooter>
+            {step === 1 ? (
+              <Button onClick={handleNext} variant="accent" aria-label="Continue to step 2">
+                Continue
+              </Button>
+            ) : (
+              <Button onClick={handleConnectGmail} disabled={loading} variant="accent" className="gap-2" aria-label="I Understand, Continue to Google">
+                {loading ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" /> : <Mail className="w-4 h-4" aria-hidden="true" />}
+                I Understand, Continue to Google
+              </Button>
+            )}
+          </CardFooter>
+        )}
       </Card>
     </div>
   );

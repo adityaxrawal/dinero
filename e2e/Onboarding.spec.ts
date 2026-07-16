@@ -46,13 +46,11 @@ test.describe('Onboarding Flow - Rigorous Verification', () => {
     
     await page.click('button:has-text("Continue")');
 
-    // Step 2: History & Settings
-    await expect(page.locator('label:has-text("Historical Scan Range")')).toBeVisible();
-    await page.click('button[role="combobox"]');
-    await page.click('text="6 Months"');
-    await page.click('button:has-text("Continue")');
-    
-    // Step 3: Gmail connect screen
+    // TASK-FE-006: step 2 is now Gmail consent directly (the months-count
+    // dropdown that used to sit here moved to HistoricalScanScreen, after
+    // Gmail connects, as a real date-range picker that actually triggers a
+    // scan instead of just saving an unused preference).
+    // Step 2: Gmail connect screen
     await expect(page.locator('text="Connect your Gmail"')).toBeVisible();
     await expect(page.locator('text="We require read-only access to parse financial emails."')).toBeVisible();
     await expect(page.locator('text="https://www.googleapis.com/auth/gmail.readonly"')).toBeVisible();
@@ -77,7 +75,13 @@ test.describe('Onboarding Flow - Rigorous Verification', () => {
     });
     
     await finishBtn.click();
-    
+
+    // TASK-FE-006: a successful Gmail connect now advances to the
+    // historical-scan step (it needs a real connected account_id to scan)
+    // instead of finishing onboarding immediately.
+    await expect(page.locator('label:has-text("Scan From")')).toBeVisible();
+    await page.click('button:has-text("Skip for now")');
+
     await page.waitForURL(/.*\/|\/dashboard/);
     await expect(page.locator('text="Dashboard"').first()).toBeVisible();
   });
