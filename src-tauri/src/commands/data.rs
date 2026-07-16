@@ -712,6 +712,69 @@ pub async fn settings_export_data(
     Ok(export_path)
 }
 
+/// Doc 30 TASK-API-008: "the manual, password-protected Mac-to-Mac
+/// transfer path underlying TASK-DB-021, distinct from the automatic
+/// daily backup, TASK-DB-020." Neither `settings_export_encrypted_backup`
+/// nor its counterpart existed before this task. Snapshots the live DB via
+/// `VACUUM INTO` (the same pattern `settings_export_data`/
+/// `db::migrations::create_pre_migration_backup` already use) to a
+/// throwaway temp file, then AES-256-GCM-encrypts those bytes with the
+/// caller's password (`db::backup::encrypt_backup`) -- a password entirely
+/// separate from this machine's own Keychain-derived SQLCipher key, since
+/// the whole point is restorability on a different Mac with no access to
+/// this Keychain.
+#[tauri::command]
+pub async fn settings_export_encrypted_backup(
+    export_path: String,
+    password: String,
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<String, crate::error::AppError> {
+    if password.is_empty() {
+        return Err(crate::error::AppError::Validation("password must not be empty".to_string()));
+    }
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let temp_path = std::env::temp_dir().join(format!("dinero-backup-{}.tmp", uuid::Uuid::new_v4()));
+    let temp_path_str = temp_path.to_string_lossy().to_string();
+    conn.interact(move |c| c.execute("VACUUM INTO ?1", rusqlite::params![temp_path_str]))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+
+    let plaintext = std::fs::read(&temp_path).map_err(|e| crate::error::AppError::Io(e.to_string()))?;
+    let _ = std::fs::remove_file(&temp_path);
+
+    let encrypted = crate::db::backup::encrypt_backup(&plaintext, &password)
+        .map_err(|e| crate::error::AppError::Validation(e.to_string()))?;
+    std::fs::write(&export_path, encrypted).map_err(|e| crate::error::AppError::Io(e.to_string()))?;
+
+    Ok(export_path)
+}
+
+/// Doc 30 TASK-API-008's counterpart to `settings_export_encrypted_backup`.
+/// Decrypts the backup file to a temp staging path and returns it --
+/// integrity-checking and atomically swapping it in as the live database
+/// (leaving the original untouched on any failure) is TASK-OPS-002's
+/// explicit job (`test_restore_validates_integrity_before_apply`,
+/// `test_restore_failure_leaves_original_db_intact`), not this command's;
+/// this only reverses the encryption.
+#[tauri::command]
+pub async fn settings_import_encrypted_backup(
+    import_path: String,
+    password: String,
+) -> Result<String, crate::error::AppError> {
+    let blob = std::fs::read(&import_path).map_err(|e| crate::error::AppError::Io(e.to_string()))?;
+    let decrypted = crate::db::backup::decrypt_backup(&blob, &password)
+        .map_err(|e| crate::error::AppError::Validation(e.to_string()))?;
+
+    let staging_path = std::env::temp_dir().join(format!("dinero-restore-{}.db", uuid::Uuid::new_v4()));
+    std::fs::write(&staging_path, decrypted).map_err(|e| crate::error::AppError::Io(e.to_string()))?;
+
+    Ok(staging_path.to_string_lossy().to_string())
+}
+
 /// "Reset App Data" full local wipe (Doc 28 §4.4, §6.1, §6.3; Doc 25 §4.3, §10
 /// row 7; TASK-AUTH-013). Doc 28 §4.4 step 1's two-step typed-phrase UI
 /// confirmation lives in `Settings.tsx`'s reset modal (exact phrase
@@ -1790,6 +1853,37 @@ pub struct SpendingLimits {
     pub categories: Vec<CategoryBudget>,
 }
 
+/// Doc 30 TASK-API-008 (per Aditya's decision, 2026-07-16): `local_profile.limit_thresholds`
+/// is now genuinely a sorted percentage array (e.g. `[80, 90, 100]`) on
+/// disk -- `settings_profile_get`/`settings_profile_update` read/write it
+/// directly in that shape. The pre-existing M25 `SpendingLimits.tsx` UI
+/// (3 fixed 80/90/100 toggle buttons) is unchanged; these two functions
+/// convert at the boundary so `fetch_spending_limits`/`update_spending_limits`
+/// keep their existing `SpendingLimitThresholds` external contract while
+/// both command pairs write the same underlying array shape, instead of
+/// two incompatible JSON shapes racing on the same column.
+fn thresholds_to_array(t: &SpendingLimitThresholds) -> Vec<f64> {
+    let mut arr = Vec::new();
+    if t.warn_at_80 {
+        arr.push(80.0);
+    }
+    if t.warn_at_90 {
+        arr.push(90.0);
+    }
+    if t.warn_at_100 {
+        arr.push(100.0);
+    }
+    arr
+}
+
+fn array_to_thresholds(arr: &[f64]) -> SpendingLimitThresholds {
+    SpendingLimitThresholds {
+        warn_at_80: arr.contains(&80.0),
+        warn_at_90: arr.contains(&90.0),
+        warn_at_100: arr.contains(&100.0),
+    }
+}
+
 /// M25: `fetch_spending_limits`/`update_spending_limits` were called by the
 /// frontend (`SpendingLimits.tsx`) but had no backend implementation at all —
 /// opening the Spending Limits page threw an immediate, reachable runtime
@@ -1813,7 +1907,8 @@ pub async fn fetch_spending_limits(
             .map_err(|e| e.to_string())?;
 
         let thresholds = thresholds_json
-            .and_then(|j| serde_json::from_str::<SpendingLimitThresholds>(&j).ok())
+            .and_then(|j| serde_json::from_str::<Vec<f64>>(&j).ok())
+            .map(|arr| array_to_thresholds(&arr))
             .unwrap_or(SpendingLimitThresholds {
                 warn_at_80: true,
                 warn_at_90: true,
@@ -1841,7 +1936,8 @@ pub async fn update_spending_limits(
 
     let conn = pool.get().await.map_err(|e| e.to_string())?;
     conn.interact(move |c| {
-        let thresholds_json = serde_json::to_string(&limits.thresholds).map_err(|e| e.to_string())?;
+        let thresholds_json =
+            serde_json::to_string(&thresholds_to_array(&limits.thresholds)).map_err(|e| e.to_string())?;
         c.execute(
             "UPDATE local_profile SET spending_limit_monthly = ?1, limit_thresholds = ?2 WHERE id = 1",
             rusqlite::params![limits.global_limit, thresholds_json],
@@ -1853,6 +1949,109 @@ pub async fn update_spending_limits(
     .map_err(|e| e.to_string())??;
 
     Ok("Spending limits updated".to_string())
+}
+
+/// Document 19 §13's `settings_profile_get`/`settings_profile_update`
+/// naming (Doc 30's task text paraphrases these `settings_get_profile`/
+/// `settings_update_profile`). Neither existed before this task, despite
+/// `db/local_profile.rs`'s full CRUD already being built.
+#[derive(Serialize, Debug)]
+pub struct ProfileResponse {
+    pub primary_email: Option<String>,
+    pub display_name: Option<String>,
+    pub timezone: Option<String>,
+    pub spending_limit_monthly: Option<f64>,
+    pub limit_thresholds: Vec<f64>,
+    pub recovery_phrase_enabled: bool,
+}
+
+#[tauri::command]
+pub async fn settings_profile_get(
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<ProfileResponse, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(|c| -> Result<ProfileResponse, crate::error::AppError> {
+        let row = crate::db::local_profile::select_by_id(c, 1)
+            .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+            .ok_or_else(|| crate::error::AppError::Db("profile not found".to_string()))?;
+        let limit_thresholds = row
+            .limit_thresholds
+            .and_then(|v| serde_json::from_value::<Vec<f64>>(v).ok())
+            .unwrap_or_default();
+        Ok(ProfileResponse {
+            primary_email: row.primary_email,
+            display_name: row.display_name,
+            timezone: row.timezone,
+            spending_limit_monthly: row.spending_limit_monthly,
+            limit_thresholds,
+            recovery_phrase_enabled: row.recovery_phrase_enabled,
+        })
+    })
+    .await
+    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+}
+
+/// Doc 30 TASK-API-008 acceptance criterion: `limit_thresholds` must be a
+/// sorted (strictly ascending) array of 0-100 percentages.
+fn validate_limit_thresholds(thresholds: &[f64]) -> Result<(), String> {
+    for pair in thresholds.windows(2) {
+        if pair[0] >= pair[1] {
+            return Err("limit_thresholds must be a strictly ascending sorted array".to_string());
+        }
+    }
+    for &t in thresholds {
+        if !(0.0..=100.0).contains(&t) {
+            return Err(format!("limit_thresholds value {} must be between 0 and 100", t));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+pub struct ProfileUpdatePayload {
+    pub display_name: Option<String>,
+    pub timezone: Option<String>,
+    pub limit_thresholds: Option<Vec<f64>>,
+}
+
+/// `primary_email` is deliberately not editable here -- it's tied to the
+/// connected Gmail OAuth account, not a free-text profile field a user
+/// should be able to silently rewrite.
+#[tauri::command]
+pub async fn settings_profile_update(
+    payload: ProfileUpdatePayload,
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<serde_json::Value, crate::error::AppError> {
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    if let Some(ref thresholds) = payload.limit_thresholds {
+        validate_limit_thresholds(thresholds).map_err(crate::error::AppError::Validation)?;
+    }
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(move |c| -> Result<(), crate::error::AppError> {
+        let mut row = crate::db::local_profile::select_by_id(c, 1)
+            .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+            .ok_or_else(|| crate::error::AppError::Db("profile not found".to_string()))?;
+        if let Some(name) = payload.display_name {
+            row.display_name = Some(name);
+        }
+        if let Some(tz) = payload.timezone {
+            row.timezone = Some(tz);
+        }
+        if let Some(thresholds) = payload.limit_thresholds {
+            row.limit_thresholds =
+                Some(serde_json::to_value(thresholds).map_err(|e| crate::error::AppError::Validation(e.to_string()))?);
+        }
+        crate::db::local_profile::update(c, &row).map_err(|e| crate::error::AppError::Db(e.to_string()))
+    })
+    .await
+    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))??;
+    Ok(serde_json::json!({ "status": "updated" }))
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -2815,5 +3014,27 @@ mod tests {
         assert_eq!(summary[0].merchant_name, "Netflix");
         assert_eq!(summary[0].amount, 649.0);
         assert_eq!(summary[0].cadence, "monthly");
+    }
+
+    /// Doc 30 TASK-API-008 acceptance test: `limit_thresholds` must be a
+    /// sorted (strictly ascending) array of 0-100 percentages -- rejects an
+    /// out-of-order array, an out-of-range value, and accepts a genuinely
+    /// sorted one.
+    #[test]
+    fn test_limit_thresholds_validated_sorted() {
+        assert!(validate_limit_thresholds(&[80.0, 90.0, 100.0]).is_ok());
+        assert!(validate_limit_thresholds(&[]).is_ok(), "an empty array (all warnings disabled) is valid");
+        assert!(
+            validate_limit_thresholds(&[90.0, 80.0]).is_err(),
+            "out-of-order values must be rejected"
+        );
+        assert!(
+            validate_limit_thresholds(&[80.0, 80.0]).is_err(),
+            "duplicate values are not strictly ascending"
+        );
+        assert!(
+            validate_limit_thresholds(&[80.0, 150.0]).is_err(),
+            "a value outside 0-100 must be rejected"
+        );
     }
 }

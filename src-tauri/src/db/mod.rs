@@ -1,13 +1,9 @@
-#[cfg(test)]
-mod network_activity_log_tests;
-#[cfg(test)]
-pub mod test_helpers;
-pub mod network_activity_log;
 pub mod alerts;
 pub mod audit_log;
-pub mod batch_writer;
+pub mod backup;
 #[cfg(test)]
 mod audit_log_tests;
+pub mod batch_writer;
 pub mod categories;
 #[cfg(test)]
 mod categories_tests;
@@ -25,6 +21,9 @@ pub mod match_decisions;
 mod match_decisions_tests;
 pub mod merchants;
 pub mod migrations;
+pub mod network_activity_log;
+#[cfg(test)]
+mod network_activity_log_tests;
 pub mod pattern_rules;
 #[cfg(test)]
 mod pattern_rules_tests;
@@ -37,10 +36,10 @@ mod processing_checkpoints_tests;
 pub mod reconciliation_cluster_members;
 pub mod reconciliation_clusters;
 pub mod recurring_payments;
-pub mod retention;
-pub mod scoping;
 #[cfg(test)]
 mod recurring_payments_tests;
+pub mod retention;
+pub mod scoping;
 pub mod sessions;
 #[cfg(test)]
 mod sessions_tests;
@@ -49,6 +48,8 @@ pub mod statements;
 pub mod tags;
 #[cfg(test)]
 mod tags_tests;
+#[cfg(test)]
+pub mod test_helpers;
 mod tests;
 pub mod transaction_observations;
 pub mod transactions;
@@ -155,7 +156,10 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
     let db_key = crypto::derive_database_key().map_err(|e| {
         let msg = e.to_string();
         if is_keychain_access_denied(&msg) {
-            error!("Keychain access denied while deriving database key: {}", msg);
+            error!(
+                "Keychain access denied while deriving database key: {}",
+                msg
+            );
             DbInitError::KeychainAccessDenied
         } else {
             DbInitError::Other(e.context("Failed to derive database encryption key"))
@@ -312,7 +316,9 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
                 DbInitError::Other(anyhow::anyhow!("Interact error: {}", msg))
             }
         })?
-        .map_err(|e| DbInitError::Other(e.context("Failed during database initialization phase")))?;
+        .map_err(|e| {
+            DbInitError::Other(e.context("Failed during database initialization phase"))
+        })?;
 
     let backup_path = match integrity_or_backup {
         Err(details) => return Err(DbInitError::IntegrityCheckFailed { details }),
@@ -324,7 +330,10 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
     // already succeeded, so the caller can offer a one-click rollback to it
     // (C18 fix) instead of just exiting.
     if let Err(source) = migrations::run_migrations(&db_path, Some(&db_key_for_migration)).await {
-        return Err(DbInitError::MigrationFailed { source, backup_path });
+        return Err(DbInitError::MigrationFailed {
+            source,
+            backup_path,
+        });
     }
 
     // Step C: post-migration seeding + stuck-checkpoint reset, back on the
@@ -352,7 +361,12 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
         );
     })
     .await
-    .map_err(|e| DbInitError::Other(anyhow::anyhow!("Interact error during post-migration seeding: {}", e)))?;
+    .map_err(|e| {
+        DbInitError::Other(anyhow::anyhow!(
+            "Interact error during post-migration seeding: {}",
+            e
+        ))
+    })?;
 
     // I4 fix: refresh the hardware-UUID marker on every successful open (not
     // just after a migration) so it always reflects the machine that last
@@ -367,7 +381,8 @@ mod migration_rollback_tests {
 
     #[test]
     fn restore_copies_backup_over_live_db_and_clears_sidecars() {
-        let dir = std::env::temp_dir().join(format!("dinero_rollback_test_{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("dinero_rollback_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let db_path = dir.join("data.db");
         let backup_path = dir.join("finance.db.bak.20260101000000000");
@@ -381,7 +396,10 @@ mod migration_rollback_tests {
 
         restore_backup_file(&db_path, &backup_path).unwrap();
 
-        assert_eq!(std::fs::read(&db_path).unwrap(), b"pre-migration-good-state");
+        assert_eq!(
+            std::fs::read(&db_path).unwrap(),
+            b"pre-migration-good-state"
+        );
         assert!(!wal_path.exists());
         assert!(!shm_path.exists());
 
@@ -390,7 +408,8 @@ mod migration_rollback_tests {
 
     #[test]
     fn restore_errors_when_backup_missing() {
-        let dir = std::env::temp_dir().join(format!("dinero_rollback_test_{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("dinero_rollback_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let db_path = dir.join("data.db");
         let missing_backup = dir.join("finance.db.bak.does-not-exist");

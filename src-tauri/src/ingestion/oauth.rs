@@ -3,8 +3,8 @@ use deadpool_sqlite::Pool;
 use keyring::Entry;
 use oauth2::reqwest::async_http_client;
 use oauth2::{
-    basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, CsrfToken,
-    PkceCodeChallenge, RedirectUrl, RefreshToken, Scope, TokenResponse, TokenUrl,
+    basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge,
+    RedirectUrl, RefreshToken, Scope, TokenResponse, TokenUrl,
 };
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
@@ -83,7 +83,9 @@ fn delete_token(account_id: &str) {
         let _ = entry.delete_credential();
     }
     // Best-effort cleanup of a not-yet-migrated legacy entry (H6 fix).
-    if let Ok(legacy_entry) = Entry::new(LEGACY_KEYCHAIN_SERVICE, &keychain_account_name(account_id)) {
+    if let Ok(legacy_entry) =
+        Entry::new(LEGACY_KEYCHAIN_SERVICE, &keychain_account_name(account_id))
+    {
         let _ = legacy_entry.delete_credential();
     }
 }
@@ -122,7 +124,10 @@ pub async fn revoke_gmail_access(pool: &Pool) {
 /// shared by both the full-wipe path above and TASK-AUTH-006's single-account
 /// disconnect below): local cleanup must still complete even if this fails
 /// or the device is offline.
-async fn revoke_single_account_with_google(network: &crate::network_client::NetworkClient, account_id: &str) {
+async fn revoke_single_account_with_google(
+    network: &crate::network_client::NetworkClient,
+    account_id: &str,
+) {
     let Ok(token_json) = get_token(account_id) else {
         return;
     };
@@ -135,20 +140,25 @@ async fn revoke_single_account_with_google(network: &crate::network_client::Netw
         .form(&[("token", token_store.access_token.as_str())]);
     match network.execute(builder).await {
         Ok(res) if res.status().is_success() => {
-            tracing::info!("Gmail OAuth token revoked with Google for account {}", account_id);
+            tracing::info!(
+                "Gmail OAuth token revoked with Google for account {}",
+                account_id
+            );
         }
         Ok(res) => {
             tracing::warn!(
                 "Gmail OAuth token revocation for account {} returned non-success status {} — \
                  proceeding with local cleanup regardless (Local Wipe Priority, Doc 28 §4.4)",
-                account_id, res.status()
+                account_id,
+                res.status()
             );
         }
         Err(e) => {
             tracing::warn!(
                 "Gmail OAuth token revocation request failed for account {}: {} — proceeding with \
                  local cleanup regardless (Local Wipe Priority, Doc 28 §4.4)",
-                account_id, e
+                account_id,
+                e
             );
         }
     }
@@ -283,8 +293,11 @@ pub struct ConnectedAccountInfo {
 /// Doc 03 §8.2: a license supports up to 10 *simultaneously* connected Gmail
 /// accounts — the frontend needs the full list, not just one, to render a
 /// multi-account management UI.
+/// G20/H10/J8 fix: renamed from `list_connected_accounts` to match Doc 30
+/// TASK-API-008's documented `settings_get_connected_accounts` naming (no
+/// Document 19 contract exists for this command under any name).
 #[tauri::command]
-pub async fn list_connected_accounts(
+pub async fn settings_get_connected_accounts(
     pool: tauri::State<'_, Pool>,
 ) -> Result<Vec<ConnectedAccountInfo>, String> {
     let conn = pool.get().await.map_err(|e| e.to_string())?;
@@ -405,7 +418,9 @@ async fn assert_new_gmail_account_allowed(pool: &Pool) -> Result<()> {
             let is_active_license = crate::licensing::state::get_license_state(c)
                 .ok()
                 .flatten()
-                .map(|s| s.subscription_status_cached == crate::licensing::state::LicenseStatus::Active)
+                .map(|s| {
+                    s.subscription_status_cached == crate::licensing::state::LicenseStatus::Active
+                })
                 .unwrap_or(false);
             (active_count, is_active_license)
         })
@@ -466,7 +481,10 @@ pub async fn start_oauth_flow_async(
 
     let url_string = auth_url.to_string();
     tracing::info!("Opening browser for OAuth: {}", url_string);
-    tracing::info!("Listening on http://127.0.0.1:{} for OAuth callback...", redirect_port);
+    tracing::info!(
+        "Listening on http://127.0.0.1:{} for OAuth callback...",
+        redirect_port
+    );
 
     if let Err(e) = tauri_plugin_opener::open_url(&url_string, None::<&str>) {
         tracing::error!("Failed to open browser: {}", e);
@@ -508,10 +526,8 @@ pub async fn start_oauth_flow_async(
     // app must never request (Doc 01 §8.1 C-05, see the scope comment
     // above). GmailClient already routes through NetworkClient (Doc 01
     // §10.4, BG-02), so this call is captured in the Network Activity log.
-    let gmail_client = crate::ingestion::gmail_client::GmailClient::new(
-        access_token.clone(),
-        pool.clone(),
-    );
+    let gmail_client =
+        crate::ingestion::gmail_client::GmailClient::new(access_token.clone(), pool.clone());
     let profile = gmail_client
         .get_profile()
         .await
@@ -670,11 +686,16 @@ async fn mark_account_degraded_async<R: tauri::Runtime>(
                         resource_type: Some("connected_account".to_string()),
                         resource_id: Some(acc_id),
                         before_json: None,
-                        after_json: Some(serde_json::json!({ "reason": reason, "token_purged": should_purge })),
+                        after_json: Some(
+                            serde_json::json!({ "reason": reason, "token_purged": should_purge }),
+                        ),
                         created_at: chrono::Utc::now(),
                     },
                 ) {
-                    tracing::warn!("Failed to record gmail_token_refresh_failed audit event: {}", e);
+                    tracing::warn!(
+                        "Failed to record gmail_token_refresh_failed audit event: {}",
+                        e
+                    );
                 }
             })
             .await;
@@ -788,7 +809,13 @@ async fn refresh_token_store<R: tauri::Runtime>(
             // this function returns (which callers may surface to the UI).
             let category = classify_refresh_error(&e.to_string());
             tracing::error!("Gmail token refresh failed: {}", category);
-            mark_account_degraded_async(app, pool, account_id, &format!("refresh_request_failed: {category}")).await;
+            mark_account_degraded_async(
+                app,
+                pool,
+                account_id,
+                &format!("refresh_request_failed: {category}"),
+            )
+            .await;
             Err(anyhow::anyhow!("Gmail token refresh failed: {}", category))
         }
     }
@@ -820,7 +847,10 @@ pub async fn handle_invalid_history_id(pool: &Pool, account_id: &str) -> Result<
                 created_at: chrono::Utc::now(),
             },
         ) {
-            tracing::warn!("Failed to record history_checkpoint_reset audit event: {}", e);
+            tracing::warn!(
+                "Failed to record history_checkpoint_reset audit event: {}",
+                e
+            );
         }
     })
     .await
@@ -848,7 +878,12 @@ mod tests {
             [],
         )
         .unwrap();
-        crate::auth::consent::insert_consent_event(&conn, "gmail_oauth_consent", "verbatim disclosure").unwrap();
+        crate::auth::consent::insert_consent_event(
+            &conn,
+            "gmail_oauth_consent",
+            "verbatim disclosure",
+        )
+        .unwrap();
 
         apply_disconnect(&conn, "acc_1");
 
@@ -863,7 +898,11 @@ mod tests {
         assert_eq!(email, None);
 
         let history = crate::auth::consent::fetch_consent_history(&conn, 10, 0).unwrap();
-        assert_eq!(history.len(), 1, "consent event must still exist, not be deleted");
+        assert_eq!(
+            history.len(),
+            1,
+            "consent event must still exist, not be deleted"
+        );
         assert!(history[0].withdrawn_at.is_some());
 
         let action: String = conn
@@ -882,17 +921,29 @@ mod tests {
     #[test]
     fn classify_refresh_error_never_echoes_raw_text() {
         assert_eq!(
-            classify_refresh_error("Server returned error response: invalid_grant: Token has been expired or revoked."),
+            classify_refresh_error(
+                "Server returned error response: invalid_grant: Token has been expired or revoked."
+            ),
             "invalid_grant"
         );
         assert_eq!(
-            classify_refresh_error("Server returned error response: invalid_client: no client authentication"),
+            classify_refresh_error(
+                "Server returned error response: invalid_client: no client authentication"
+            ),
             "invalid_client"
         );
-        assert_eq!(classify_refresh_error("request unauthorized by server"), "unauthorized");
-        assert_eq!(classify_refresh_error("connection timeout after 30s"), "network_error");
         assert_eq!(
-            classify_refresh_error("some completely unexpected raw error text with a secret-looking token abc123"),
+            classify_refresh_error("request unauthorized by server"),
+            "unauthorized"
+        );
+        assert_eq!(
+            classify_refresh_error("connection timeout after 30s"),
+            "network_error"
+        );
+        assert_eq!(
+            classify_refresh_error(
+                "some completely unexpected raw error text with a secret-looking token abc123"
+            ),
             "unknown_error"
         );
     }

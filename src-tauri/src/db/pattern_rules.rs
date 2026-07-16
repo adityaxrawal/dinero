@@ -126,6 +126,45 @@ pub fn select_by_id(conn: &Connection, id: &str) -> Result<Option<PatternRulesRo
     }
 }
 
+/// Doc 30 TASK-API-008: `settings_pattern_rules_list` -- the full ruleset
+/// for the Settings management view. Did not exist before this task (only
+/// single-row `select_by_id` and the bank/hash-scoped lookups used by
+/// extraction did).
+pub fn select_all(conn: &Connection) -> Result<Vec<PatternRulesRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, bank_name, template_hash, field_name, rule_payload_json, status, success_count, failure_count, confidence, created_at, updated_at
+         FROM pattern_rules
+         ORDER BY bank_name ASC, field_name ASC"
+    )?;
+
+    let rows = stmt.query_map([], |row| {
+        let payload_str: String = row.get(4)?;
+        let payload = serde_json::from_str(&payload_str).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+        })?;
+
+        Ok(PatternRulesRow {
+            id: row.get(0)?,
+            bank_name: row.get(1)?,
+            template_hash: row.get(2)?,
+            field_name: row.get(3)?,
+            rule_payload_json: payload,
+            status: row.get(5)?,
+            success_count: row.get(6)?,
+            failure_count: row.get(7)?,
+            confidence: row.get(8)?,
+            created_at: row.get(9)?,
+            updated_at: row.get(10)?,
+        })
+    })?;
+
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row?);
+    }
+    Ok(results)
+}
+
 /// Returns the number of active or trusted rules for the given
 /// `(bank_name, template_hash)` pair.  Used by the drift detector to decide
 /// whether a given template is *known* (rules exist but extraction failed) or

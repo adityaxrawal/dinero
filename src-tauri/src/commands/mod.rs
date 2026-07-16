@@ -2201,11 +2201,49 @@ pub async fn settings_pdf_passwords_delete(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))
 }
 
+/// Doc 30 TASK-API-008: "`settings_pattern_rules_list`" -- did not exist at
+/// all before this task; the frontend borrowed the debug-only
+/// `debug_fetch_pattern_rule_health` (a relabeled, simplified view) as a
+/// stopgap instead. Returns the same `PatternRuleHealth` shape the
+/// Settings page (`Settings.tsx`) already correctly consumes -- only the
+/// command name changes, from a debug-console endpoint to a real
+/// Settings-owned one; `db/pattern_rules.rs::select_all` (this task's
+/// other new function, returning the raw `PatternRulesRow`) is used
+/// instead of duplicating `debug_fetch_pattern_rule_health`'s own SQL.
+#[tauri::command]
+pub async fn settings_pattern_rules_list(
+    pool: tauri::State<'_, deadpool_sqlite::Pool>,
+) -> Result<Vec<crate::commands::debug::PatternRuleHealth>, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let rules = conn
+        .interact(|c| crate::db::pattern_rules::select_all(c))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    Ok(rules
+        .into_iter()
+        .map(|r| crate::commands::debug::PatternRuleHealth {
+            id: r.id,
+            merchant_id: r.bank_name,
+            pattern_type: "regex".to_string(),
+            pattern_value: r.field_name,
+            is_active: r.status == "active",
+            success_count: r.success_count,
+            failure_count: r.failure_count,
+        })
+        .collect())
+}
+
 /// G14 fix: pattern-rule management was read-only everywhere (Debug console
 /// only) — this lets a user actually enable/disable a rule from Settings,
 /// wrapping the existing (already-validated) db::pattern_rules::update_status.
+/// G20/H10/J8 fix: renamed from `pattern_rule_set_status` to match Doc 19
+/// §13/§18's documented `settings_pattern_rules_update` naming.
 #[tauri::command]
-pub async fn pattern_rule_set_status(
+pub async fn settings_pattern_rules_update(
     rule_id: String,
     new_status: String,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
@@ -2601,7 +2639,8 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         tags_create,
         tags_delete,
         fetch_transaction_tags,
-        pattern_rule_set_status,
+        settings_pattern_rules_list,
+        settings_pattern_rules_update,
         settings_pdf_passwords_list,
         settings_pdf_passwords_delete,
         correct_match,
@@ -2615,6 +2654,10 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         log_frontend_event,
         data::settings_delete_account,
         data::settings_export_data,
+        data::settings_profile_get,
+        data::settings_profile_update,
+        data::settings_export_encrypted_backup,
+        data::settings_import_encrypted_backup,
         data::dashboard_summary,
         data::dashboard_upcoming_bills,
         data::dashboard_categories,
@@ -2654,7 +2697,7 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         data::record_consent_event,
         check_system_ram,
         crate::ingestion::oauth::is_gmail_connected,
-        crate::ingestion::oauth::list_connected_accounts,
+        crate::ingestion::oauth::settings_get_connected_accounts,
         crate::ingestion::oauth::auth_google_disconnect,
         auth_get_recovery_phrase,
         auth_restore_from_recovery_phrase,
@@ -2669,7 +2712,7 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         debug::debug_set_gmail_poll_paused,
         debug::debug_set_scan_queue_paused,
         crate::feedback::submit_user_feedback,
-        network::settings_network_activity_list,
+        network::settings_get_network_activity,
         crate::licensing::commands::license_get_status,
         crate::licensing::commands::license_activate,
         crate::licensing::commands::license_deactivate,

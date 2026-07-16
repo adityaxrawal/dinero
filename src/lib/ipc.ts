@@ -388,7 +388,7 @@ export const API = {
     // Doc 03 §8.2: a license supports up to 10 simultaneously connected
     // Gmail accounts — the list can have more than one entry.
     listConnectedAccounts: () =>
-      invokeCommand<ConnectedAccountInfo[]>('list_connected_accounts'),
+      invokeCommand<ConnectedAccountInfo[]>('settings_get_connected_accounts'),
     disconnectGmail: (accountId: string) =>
       invokeCommand<void>('auth_google_disconnect', { accountId }),
     // Doc 19 §5.4, Doc 22 §8.2: opt-in 24-word Secure Backup Recovery Phrase.
@@ -417,13 +417,17 @@ export const API = {
     setScanQueuePaused: (paused: boolean) => invokeCommand<void>('debug_set_scan_queue_paused', { paused }),
   },
   network: {
-    getActivityList: () => invokeCommand<any[]>('settings_network_activity_list'),
+    getActivityList: () =>
+      invokeCommand<{ entries: any[] }>('settings_get_network_activity').then((r) => r.entries),
   },
   patternRules: {
     // G14 fix: a real Settings-facing toggle, not just a Debug-only view.
-    list: () => invokeCommand<PatternRuleHealth[]>('debug_fetch_pattern_rule_health'),
+    // TASK-API-008: now backed by the real settings_pattern_rules_list
+    // command (previously borrowed the debug-only health view as a
+    // stopgap).
+    list: () => invokeCommand<PatternRuleHealth[]>('settings_pattern_rules_list'),
     setStatus: (ruleId: string, newStatus: 'active' | 'inactive' | 'flagged') =>
-      invokeCommand<void>('pattern_rule_set_status', { ruleId, newStatus }),
+      invokeCommand<void>('settings_pattern_rules_update', { ruleId, newStatus }),
   },
   pdfPasswords: {
     // G15 fix: management UI for stored PDF passwords (metadata only — the
