@@ -4,7 +4,7 @@ test.describe('Onboarding Flow - Rigorous Verification', () => {
   test.beforeEach(async ({ page }) => {
     // Clear the mock onboarded flag for these specific tests
     await page.addInitScript(() => window.localStorage.removeItem('dinero_onboarded'));
-    await page.goto('/onboarding');
+    await page.goto('/#/onboarding');
   });
 
   test('should enforce timezone, boundary limits, and strictly gate completion', async ({ page }) => {
