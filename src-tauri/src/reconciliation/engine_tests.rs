@@ -1201,8 +1201,12 @@ fn test_cluster_resolution_mark_unresolved_does_not_close_cluster() {
     assert_eq!(decision_count, 0);
 }
 
+/// Doc 30 TASK-API-005 acceptance test (renamed from
+/// `test_cluster_resolution_rejects_unknown_action` -- same scenario,
+/// `resolve_cluster`'s allowlist is exactly what `reconciliation_clusters_resolve`
+/// and `reconciliation_clusters_bulk_resolve` both validate through).
 #[test]
-fn test_cluster_resolution_rejects_unknown_action() {
+fn test_resolve_cluster_validates_action_enum() {
     let conn = setup_test_db();
     crate::reconciliation::cluster::create_ambiguity_cluster(
         &conn,

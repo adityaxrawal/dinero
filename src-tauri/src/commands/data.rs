@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use tauri::{Manager, State};
@@ -434,6 +434,41 @@ pub fn do_fetch_statement_history(
     Ok(res)
 }
 
+/// Doc 30 TASK-API-005: shared by `do_fetch_unresolved_clusters` (the list
+/// view) and the new `reconciliation_clusters_get` (single-cluster detail)
+/// -- extracted so the two don't maintain two copies of the same member
+/// query.
+fn fetch_cluster_members(conn: &Connection, cluster_id: &str) -> Result<Vec<ClusterMember>, String> {
+    let mut member_stmt = conn.prepare(
+        "SELECT m.id,
+                COALESCE(t.merchant_display_name, 'Unknown'),
+                COALESCE(t.amount, 0),
+                COALESCE(t.authorization_time, 'Unknown'),
+                CASE WHEN m.canonical_transaction_id IS NOT NULL THEN 'Bank Sync' ELSE 'Gmail Parser' END as source
+         FROM reconciliation_cluster_members m
+         LEFT JOIN transactions t ON m.canonical_transaction_id = t.id
+         WHERE m.cluster_id = ?1"
+    ).map_err(|e| e.to_string())?;
+
+    let m_iter = member_stmt
+        .query_map([cluster_id], |row| {
+            Ok(ClusterMember {
+                id: row.get(0)?,
+                merchant: row.get(1)?,
+                amount: row.get(2)?,
+                date: row.get(3)?,
+                source: row.get(4)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut members = Vec::new();
+    for m in m_iter {
+        members.push(m.map_err(|e| e.to_string())?);
+    }
+    Ok(members)
+}
+
 pub fn do_fetch_unresolved_clusters(conn: &Connection) -> Result<Vec<ClusterRecord>, String> {
     let mut stmt = conn
         .prepare(
@@ -452,34 +487,7 @@ pub fn do_fetch_unresolved_clusters(conn: &Connection) -> Result<Vec<ClusterReco
     let mut res = Vec::new();
     for r in iter {
         let (id, reason) = r.map_err(|e| e.to_string())?;
-
-        let mut member_stmt = conn.prepare(
-            "SELECT m.id, 
-                    COALESCE(t.merchant_display_name, 'Unknown'), 
-                    COALESCE(t.amount, 0), 
-                    COALESCE(t.authorization_time, 'Unknown'), 
-                    CASE WHEN m.canonical_transaction_id IS NOT NULL THEN 'Bank Sync' ELSE 'Gmail Parser' END as source
-             FROM reconciliation_cluster_members m
-             LEFT JOIN transactions t ON m.canonical_transaction_id = t.id
-             WHERE m.cluster_id = ?1"
-        ).map_err(|e| e.to_string())?;
-
-        let m_iter = member_stmt
-            .query_map([&id], |row| {
-                Ok(ClusterMember {
-                    id: row.get(0)?,
-                    merchant: row.get(1)?,
-                    amount: row.get(2)?,
-                    date: row.get(3)?,
-                    source: row.get(4)?,
-                })
-            })
-            .map_err(|e| e.to_string())?;
-
-        let mut members = Vec::new();
-        for m in m_iter {
-            members.push(m.map_err(|e| e.to_string())?);
-        }
+        let members = fetch_cluster_members(conn, &id)?;
 
         res.push(ClusterRecord {
             id,
@@ -489,6 +497,31 @@ pub fn do_fetch_unresolved_clusters(conn: &Connection) -> Result<Vec<ClusterReco
         });
     }
     Ok(res)
+}
+
+/// Doc 30 TASK-API-005 / Document 19 §10.2: `reconciliation_clusters_get`
+/// -- single-cluster detail. Did not exist as an IPC command before this
+/// task (only the list variant existed).
+pub fn do_fetch_cluster_detail(conn: &Connection, cluster_id: &str) -> Result<Option<ClusterRecord>, String> {
+    let found: Option<(String, Option<String>)> = conn
+        .query_row(
+            "SELECT id, reason FROM reconciliation_clusters WHERE id = ?1",
+            params![cluster_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    let Some((id, reason)) = found else {
+        return Ok(None);
+    };
+    let members = fetch_cluster_members(conn, &id)?;
+    Ok(Some(ClusterRecord {
+        id,
+        reason: reason.unwrap_or_else(|| "Unknown".to_string()),
+        members_count: members.len() as i64,
+        members,
+    }))
 }
 
 pub fn do_fetch_instruments(conn: &Connection) -> Result<Vec<InstrumentRecord>, String> {
@@ -1064,6 +1097,117 @@ pub async fn reconciliation_clusters_list(
         .map_err(|e| e.to_string())?
 }
 
+/// Document 19 §10.2 -- single-cluster detail.
+#[tauri::command]
+pub async fn reconciliation_clusters_get(
+    cluster_id: String,
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<ClusterRecord, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("cluster_id", &cluster_id)?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(move |c| do_fetch_cluster_detail(c, &cluster_id))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(crate::error::AppError::Db)?
+        .ok_or_else(|| crate::error::AppError::Validation("cluster not found".to_string()))
+}
+
+/// Doc 30 TASK-API-005: "reconciliation_get_unassigned_transactions -- a
+/// distinct queue from ambiguous clusters: extraction failures vs. matching
+/// ambiguity are surfaced separately in the UI." Did not exist at all
+/// before this task.
+#[tauri::command]
+pub async fn reconciliation_get_unassigned_transactions(
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<Vec<crate::db::unassigned_transactions::UnassignedTransactionRow>, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(|c| crate::db::unassigned_transactions::select_open(c))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))
+}
+
+/// Document 19 §10.4 -- explicitly un-does a cluster resolution, reopening
+/// it (`cluster_status` back to `'open'`). Did not exist before this task.
+#[tauri::command]
+pub async fn reconciliation_clusters_unmerge(
+    cluster_id: String,
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<String, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("cluster_id", &cluster_id)?;
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let cluster_id_clone = cluster_id.clone();
+    let count = conn
+        .interact(move |c| {
+            c.execute(
+                "UPDATE reconciliation_clusters SET cluster_status = 'open', resolved_at = NULL WHERE id = ?1",
+                params![cluster_id_clone],
+            )
+        })
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    if count == 0 {
+        return Err(crate::error::AppError::Validation("cluster not found".to_string()));
+    }
+    Ok("unmerged".to_string())
+}
+
+/// Document 19 §10.5 -- runs every resolution in a single SQLite
+/// transaction (Doc 19's own explicit requirement). Did not exist before
+/// this task; reuses `reconciliation::cluster::resolve_cluster` (TASK-DEDUP-007)
+/// per resolution, exactly as the single-resolve command does.
+#[derive(serde::Deserialize)]
+pub struct BulkResolution {
+    pub cluster_id: String,
+    pub action: String,
+    pub observation_id: String,
+    pub chosen_canonical_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn reconciliation_clusters_bulk_resolve(
+    resolutions: Vec<BulkResolution>,
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<serde_json::Value, crate::error::AppError> {
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let resolved_count = conn
+        .interact(move |c| -> Result<usize, crate::error::AppError> {
+            let tx = c
+                .unchecked_transaction()
+                .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+            for r in &resolutions {
+                crate::reconciliation::cluster::resolve_cluster(
+                    &tx,
+                    &r.cluster_id,
+                    &r.observation_id,
+                    &r.action,
+                    r.chosen_canonical_id.as_deref(),
+                )
+                .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+            }
+            tx.commit().map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+            Ok(resolutions.len())
+        })
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))??;
+    Ok(serde_json::json!({ "status": "resolved", "resolved_count": resolved_count }))
+}
+
 /// TASK-AUTH-003, Document 19 §5.6: Settings → Privacy → Consent History —
 /// the authoritative, always-available answer to "what did I actually agree
 /// to, and when." Reads the dedicated `consent_events` table (Document 18
@@ -1604,7 +1748,7 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "CREATE TABLE unassigned_transactions (id TEXT PRIMARY KEY, observation_id TEXT, status TEXT)",
+            "CREATE TABLE unassigned_transactions (id TEXT PRIMARY KEY, observation_id TEXT, reason TEXT, status TEXT, created_at TEXT)",
             [],
         )
         .unwrap();
@@ -1804,6 +1948,37 @@ mod tests {
         assert_eq!(pending.amount_minor, 7500);
         // The dashboard total is completely unaffected by either.
         assert_eq!(summary.total_spend, 10.0);
+    }
+
+    /// Doc 30 TASK-API-005 acceptance test: `reconciliation_get_unassigned_transactions`
+    /// (extraction failures -- no instrument could be resolved at all) and
+    /// `reconciliation_clusters_list` (matching ambiguity -- an instrument
+    /// *was* resolved, but which existing transaction it matches is unclear)
+    /// are structurally separate queues; seeding one must never appear in
+    /// the other.
+    #[test]
+    fn test_unassigned_and_ambiguous_are_separate_queues() {
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO reconciliation_clusters (id, cluster_status, reason) VALUES ('cl_ambiguous', 'open', 'multiple_high_score_candidates')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO unassigned_transactions (id, observation_id, reason, status) VALUES ('u_unresolved', 'obs_1', 'issuer_name_not_found', 'open')",
+            [],
+        )
+        .unwrap();
+
+        let clusters = do_fetch_unresolved_clusters(&conn).unwrap();
+        let unassigned = crate::db::unassigned_transactions::select_open(&conn).unwrap();
+
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].id, "cl_ambiguous");
+        assert_eq!(unassigned.len(), 1);
+        assert_eq!(unassigned[0].id, "u_unresolved");
+        // Neither result set references the other's row at all.
+        assert!(clusters.iter().all(|c| c.id != "u_unresolved"));
     }
 
     #[test]
