@@ -55,11 +55,11 @@ pub async fn auth_google_start(
 pub async fn auth_logout(
     app: tauri::AppHandle,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
-) -> Result<(), String> {
+) -> Result<(), crate::error::AppError> {
     let state = app.state::<crate::auth::session::SessionState>();
     crate::auth::session::logout(pool.inner(), state.inner())
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| crate::error::AppError::Auth(e.to_string()))
 }
 
 /// Doc 19 §5.4, Doc 22 §8.2: returns the opt-in 24-word Secure Backup Recovery
@@ -74,10 +74,14 @@ pub async fn auth_logout(
 #[tauri::command]
 pub async fn auth_get_recovery_phrase(
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
-) -> Result<String, String> {
-    let phrase = crate::db::crypto::get_recovery_phrase().map_err(|e| e.to_string())?;
+) -> Result<String, crate::error::AppError> {
+    let phrase = crate::db::crypto::get_recovery_phrase()
+        .map_err(|e| crate::error::AppError::Internal(e.to_string()))?;
 
-    let conn = pool.get().await.map_err(|e| e.to_string())?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(|c| {
         if let Ok(Some(mut profile)) = crate::db::local_profile::select_by_id(c, 1) {
             profile.recovery_phrase_enabled = true;
@@ -99,7 +103,7 @@ pub async fn auth_get_recovery_phrase(
         );
     })
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
 
     Ok(phrase)
 }
@@ -125,21 +129,21 @@ pub async fn auth_get_recovery_phrase(
 pub async fn auth_restore_from_recovery_phrase(
     app: tauri::AppHandle,
     recovery_phrase: String,
-) -> Result<String, String> {
-    let app_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to resolve app data directory: {}", e))?;
+) -> Result<String, crate::error::AppError> {
+    let app_dir = app.path().app_data_dir().map_err(|e| {
+        crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e))
+    })?;
     let db_path = app_dir.join("finance.db");
 
     let base_key = crate::db::crypto::restore_base_key_from_phrase(&recovery_phrase, &db_path)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| crate::error::AppError::Auth(e.to_string()))?;
 
     let db_key = crate::db::crypto::derive_database_key_from_base_key(&base_key)
-        .map_err(|e| e.to_string())?;
-    let conn = rusqlite::Connection::open(&db_path).map_err(|e| e.to_string())?;
+        .map_err(|e| crate::error::AppError::Auth(e.to_string()))?;
+    let conn = rusqlite::Connection::open(&db_path)
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.execute_batch(&format!("PRAGMA key = '{}';", db_key))
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     let _ = crate::db::audit_log::insert(
         &conn,
         &crate::db::audit_log::AuditLogRow {
@@ -170,18 +174,20 @@ pub struct ExportLogsResponse {
 pub async fn export_logs(
     app: tauri::AppHandle,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
-) -> Result<ExportLogsResponse, String> {
-    let app_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to resolve app data directory: {}", e))?;
+) -> Result<ExportLogsResponse, crate::error::AppError> {
+    let app_dir = app.path().app_data_dir().map_err(|e| {
+        crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e))
+    })?;
 
-    let conn = pool.get().await.map_err(|e| e.to_string())?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     let path = conn
         .interact(move |c| crate::diagnostics::generate_diagnostic_bundle(&app_dir, c, None))
         .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Io(e.to_string()))?;
 
     Ok(ExportLogsResponse {
         success: true,
@@ -2732,6 +2738,239 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Doc 30 TASK-API-010 acceptance test: "every error path must resolve
+    /// to a documented `AppError` variant -- no raw string or unstructured
+    /// `anyhow::Error` ever reaches the frontend." A live `generate_handler!`
+    /// registry has no simple runtime-introspectable command list, so this
+    /// walks every `.rs` file under `src/` (a real, exhaustive scan -- not a
+    /// hardcoded subset that would silently stop covering new files) and
+    /// asserts no command-annotated function's signature block contains
+    /// `Result<_, String>` or a raw `anyhow::Error` return type. Mirrors the
+    /// same source-scanning technique `test_no_command_returns_pdf_bytes`
+    /// already established in this file. (Deliberately not writing the
+    /// literal tauri-command attribute text in this comment -- it would
+    /// match its own scan below and self-report as an offender.)
+    fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_rs_files(&path, out);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    #[test]
+    fn test_all_commands_produce_documented_apperror_variants() {
+        let src_dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+        let mut files = Vec::new();
+        collect_rs_files(src_dir, &mut files);
+        assert!(!files.is_empty(), "the source scan itself must find files, or this test is vacuous");
+
+        // Built via `format!` rather than written as a literal in this file
+        // -- if the literal substring appeared here, this test would find
+        // its own source and self-report as an offender the moment its
+        // signature block (which legitimately contains no `Result<...>`
+        // return type at all, being a `#[test]` fn) got captured downstream
+        // of a spurious match.
+        let marker = format!("#[{}::{}]", "tauri", "command");
+
+        let mut offenders = Vec::new();
+        for path in &files {
+            let src = std::fs::read_to_string(path).unwrap();
+            let mut search_from = 0usize;
+            while let Some(marker_pos) = src[search_from..].find(&marker) {
+                let abs_marker = search_from + marker_pos;
+                // Capture from the marker up to the function's opening `{`
+                // (the full attribute + signature block, matching
+                // test_no_command_returns_pdf_bytes' own block-capture style).
+                let Some(brace_offset) = src[abs_marker..].find("{\n").or_else(|| src[abs_marker..].find("{ ")) else {
+                    search_from = abs_marker + marker.len();
+                    continue;
+                };
+                let block = &src[abs_marker..abs_marker + brace_offset];
+                if block.contains("Result<") {
+                    let is_documented = block.contains("AppError");
+                    let is_raw_string_or_anyhow = block.contains(", String>")
+                        || block.contains(", String,")
+                        || block.contains("anyhow::Error>");
+                    if is_raw_string_or_anyhow && !is_documented {
+                        offenders.push((path.display().to_string(), block.trim().to_string()));
+                    }
+                }
+                search_from = abs_marker + marker.len();
+            }
+        }
+
+        assert!(
+            offenders.is_empty(),
+            "every Tauri command must return Result<_, AppError>, not a raw String/anyhow::Error: {:#?}",
+            offenders
+        );
+    }
+
+    /// Finds `fn {name}(` anywhere under `src/` and returns its full body
+    /// (brace-matched from the first `{` after the signature through to the
+    /// matching close), searching every file `collect_rs_files` finds so a
+    /// command defined in any module is located regardless of which file it
+    /// lives in.
+    fn find_function_body(name: &str) -> Option<String> {
+        let src_dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+        let mut files = Vec::new();
+        collect_rs_files(src_dir, &mut files);
+        // Matches both a plain `fn name(...)` and a generic
+        // `fn name<R: tauri::Runtime>(...)` (`scans_historical`,
+        // `sync_force_poll_now`, and similarly-generic command signatures
+        // put the type parameter between the name and the opening paren).
+        let needle_plain = format!("fn {name}(");
+        let needle_generic = format!("fn {name}<");
+        for path in &files {
+            let src = std::fs::read_to_string(path).ok()?;
+            let found = src.find(&needle_plain).or_else(|| src.find(&needle_generic));
+            if let Some(fn_pos) = found {
+                let brace_start = src[fn_pos..].find('{')? + fn_pos;
+                let mut depth = 0i32;
+                for (i, ch) in src[brace_start..].char_indices() {
+                    match ch {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                return Some(src[brace_start..brace_start + i + 1].to_string());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Doc 30 TASK-API-010 acceptance test: "Ensures `AppError::LicenseLocked`
+    /// is checked/returned consistently by every write-path command."
+    /// Curated to the commands that unambiguously mutate core financial-domain
+    /// data or trigger new ingestion (Document 22 §11.5's "all writes,
+    /// including new ingestion on both queues") -- not a blanket heuristic
+    /// (e.g. matching on a `_create`/`_update` suffix) that would misclassify
+    /// borderline cases. `license_activate`/`license_deactivate` are
+    /// deliberately excluded: they are themselves the mechanism by which a
+    /// LOCKED state is resolved, so gating them behind the current lock state
+    /// would create a deadlock a locked-out user could never escape from --
+    /// confirmed correct by design, not an oversight. `settings_export_encrypted_backup`/
+    /// `settings_import_encrypted_backup` are also excluded, matching the
+    /// established, unchallenged precedent of their sibling
+    /// `settings_export_data`: none of the three mutate `finance.db`'s rows
+    /// at all (export reads only; import currently only decrypts to a
+    /// staging file, with the actual DB swap-in deferred to TASK-OPS-002
+    /// per this task's own fix-log entry) -- and a locked-out user should
+    /// still be able to back up or preserve their own data, arguably more
+    /// so, not less.
+    #[test]
+    fn test_write_commands_check_license_locked() {
+        let write_commands = [
+            "transactions_create",
+            "transactions_update",
+            "transactions_delete",
+            "transactions_add_tag",
+            "transactions_remove_tag",
+            "instruments_create",
+            "instruments_update",
+            "instruments_archive",
+            "categories_create",
+            "categories_update",
+            "categories_delete",
+            "tags_create",
+            "tags_delete",
+            "statements_upload",
+            "statements_confirm_instrument",
+            "statements_submit_password",
+            "statements_discard",
+            "statements_retry_unprocessed",
+            "reconciliation_clusters_resolve",
+            "reconciliation_clusters_unmerge",
+            "reconciliation_clusters_bulk_resolve",
+            "correct_match",
+            "trigger_reconciliation",
+            "auth_google_start",
+            "auth_google_disconnect",
+            "settings_pattern_rules_update",
+            "settings_pdf_passwords_delete",
+            "settings_delete_account",
+            "settings_profile_update",
+            "update_spending_limits",
+            "onboarding_save_preferences",
+            "scans_historical",
+            "sync_force_poll_now",
+        ];
+
+        let mut missing = Vec::new();
+        for name in write_commands {
+            match find_function_body(name) {
+                Some(body) if body.contains("assert_write_allowed") => {}
+                Some(_) => missing.push(format!("{name} (found, but no assert_write_allowed call)")),
+                None => missing.push(format!("{name} (function not found by the source scan)")),
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "every write-path command must call assert_write_allowed to enforce LicenseLocked: {:#?}",
+            missing
+        );
+    }
+
+    /// Doc 30 TASK-API-010 acceptance test: "read-path commands remain
+    /// available even when LOCKED" -- a curated sample of clearly read-only
+    /// commands (list/get/status queries with no DB mutation) must never
+    /// call `assert_write_allowed`, since doing so would incorrectly block
+    /// them for a LOCKED user who must still be able to view their existing
+    /// data.
+    #[test]
+    fn test_read_commands_available_when_locked() {
+        let read_commands = [
+            "transactions_list",
+            "transactions_get",
+            "transactions_search",
+            "instruments_list",
+            "instruments_get",
+            "categories_list",
+            "tags_list",
+            "dashboard_summary",
+            "statements_list",
+            "reconciliation_clusters_list",
+            "reconciliation_clusters_get",
+            "reconciliation_get_unassigned_transactions",
+            "scans_status",
+            "pipeline_status",
+            "license_get_status",
+            "auth_get_consent_history",
+            "settings_export_data",
+            "settings_export_encrypted_backup",
+            "settings_import_encrypted_backup",
+        ];
+
+        let mut wrongly_gated = Vec::new();
+        for name in read_commands {
+            if let Some(body) = find_function_body(name) {
+                if body.contains("assert_write_allowed") {
+                    wrongly_gated.push(name);
+                }
+            }
+            // A read command not found by the scan isn't this test's
+            // concern (rename/removal is covered by other tests) -- only
+            // "found and wrongly gated" is the failure mode here.
+        }
+
+        assert!(
+            wrongly_gated.is_empty(),
+            "these read-only commands must remain available when LOCKED, but call assert_write_allowed: {:#?}",
+            wrongly_gated
+        );
+    }
 
     fn setup_tx_test_db() -> rusqlite::Connection {
         let conn = crate::db::test_helpers::setup_test_db();

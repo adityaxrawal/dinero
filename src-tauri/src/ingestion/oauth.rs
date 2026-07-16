@@ -269,8 +269,13 @@ pub fn validate_oauth_callback(url: &str, expected_state: &str) -> Result<String
 }
 
 #[tauri::command]
-pub async fn is_gmail_connected(pool: tauri::State<'_, Pool>) -> Result<bool, String> {
-    let conn = pool.get().await.map_err(|e| e.to_string())?;
+pub async fn is_gmail_connected(
+    pool: tauri::State<'_, Pool>,
+) -> Result<bool, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     let is_connected = conn
         .interact(|c| {
             let mut stmt = c
@@ -280,7 +285,7 @@ pub async fn is_gmail_connected(pool: tauri::State<'_, Pool>) -> Result<bool, St
             count > 0
         })
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
     Ok(is_connected)
 }
 
@@ -299,8 +304,11 @@ pub struct ConnectedAccountInfo {
 #[tauri::command]
 pub async fn settings_get_connected_accounts(
     pool: tauri::State<'_, Pool>,
-) -> Result<Vec<ConnectedAccountInfo>, String> {
-    let conn = pool.get().await.map_err(|e| e.to_string())?;
+) -> Result<Vec<ConnectedAccountInfo>, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(|c| {
         let mut stmt = c
             .prepare("SELECT id, email_address FROM connected_accounts WHERE account_status = 'ACTIVE' ORDER BY created_at ASC")
@@ -322,7 +330,8 @@ pub async fn settings_get_connected_accounts(
         Ok(accounts)
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+    .map_err(crate::error::AppError::Db)
 }
 
 /// TASK-AUTH-006 (Document 30's `auth_revoke_gmail`; kept as
@@ -343,25 +352,26 @@ pub async fn auth_google_disconnect(
     account_id: String,
     pool: tauri::State<'_, Pool>,
     session_state: tauri::State<'_, crate::auth::session::SessionState>,
-) -> Result<String, String> {
+) -> Result<String, crate::error::AppError> {
     // TASK-AUTH-008: requires an active local session (resolved from
     // Rust-side SessionState, never a caller-supplied argument) before any
     // Gmail IPC command executes.
-    crate::ipc::middleware::require_active_session(&session_state).map_err(|e| e.to_string())?;
+    crate::ipc::middleware::require_active_session(&session_state)?;
 
-    crate::licensing::gate::assert_write_allowed(pool.inner())
-        .await
-        .map_err(|e| e.to_string())?;
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
     let network = crate::network_client::NetworkClient::new(pool.inner().clone());
     revoke_single_account_with_google(&network, &account_id).await;
     delete_token(&account_id);
 
-    let conn = pool.get().await.map_err(|e| e.to_string())?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     let acc_id_clone = account_id.clone();
     conn.interact(move |c| apply_disconnect(c, &acc_id_clone))
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
 
     Ok("Disconnected".to_string())
 }

@@ -380,11 +380,15 @@ pub fn do_transactions_search(
 pub async fn transactions_search(
     pool: State<'_, deadpool_sqlite::Pool>,
     query: String,
-) -> Result<Vec<TransactionRecord>, String> {
-    let conn = pool.get().await.map_err(|e| e.to_string())?;
+) -> Result<Vec<TransactionRecord>, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(move |c| do_transactions_search(c, &query))
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(crate::error::AppError::Db)
 }
 
 // Doc 30 TASK-API-004 acceptance test `test_statements_list_paginated`: real
@@ -656,18 +660,22 @@ pub struct BackendStatus {
 #[tauri::command]
 pub async fn check_backend_status(
     pool: State<'_, deadpool_sqlite::Pool>,
-) -> Result<BackendStatus, String> {
-    let conn = pool.get().await.map_err(|e| e.to_string())?;
+) -> Result<BackendStatus, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(|c| {
         // Lightweight sanity check — if the DB responds we are healthy
         c.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
             .map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
     .map(|_| BackendStatus {
         status: "healthy".to_string(),
     })
+    .map_err(crate::error::AppError::Db)
 }
 
 /// J7 fix (Doc 25 §4.3, Doc 28 §6.4): a local encrypted export of the user's
@@ -681,15 +689,21 @@ pub async fn check_backend_status(
 pub async fn settings_export_data(
     export_path: String,
     pool: State<'_, deadpool_sqlite::Pool>,
-) -> Result<String, String> {
-    let conn = pool.get().await.map_err(|e| e.to_string())?;
+) -> Result<String, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     let path_for_export = export_path.clone();
     conn.interact(move |c| c.execute("VACUUM INTO ?1", rusqlite::params![path_for_export]))
         .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| format!("Export failed: {}", e))?;
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Io(format!("Export failed: {}", e)))?;
 
-    let conn = pool.get().await.map_err(|e| e.to_string())?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     let export_path_for_log = export_path.clone();
     conn.interact(move |c| {
         crate::auth::consent::insert_consent_event(
@@ -702,8 +716,8 @@ pub async fn settings_export_data(
         )
     })
     .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+    .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
 
     tracing::info!(
         "settings_export_data: exported encrypted snapshot to {}",
@@ -789,16 +803,17 @@ pub async fn settings_import_encrypted_backup(
 pub async fn settings_delete_account(
     app: tauri::AppHandle,
     pool: State<'_, deadpool_sqlite::Pool>,
-) -> Result<String, String> {
-    crate::licensing::gate::assert_write_allowed(pool.inner())
-        .await
-        .map_err(|e| e.to_string())?;
+) -> Result<String, crate::error::AppError> {
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
     // Step 4: an audit_log entry is written *before* destructive operations
     // start, so the intent to delete is captured even if the process is
     // interrupted partway through the remaining steps.
     {
-        let conn = pool.get().await.map_err(|e| e.to_string())?;
+        let conn = pool
+            .get()
+            .await
+            .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
         conn.interact(|c| {
             crate::db::audit_log::insert(
                 c,
@@ -816,8 +831,8 @@ pub async fn settings_delete_account(
             )
         })
         .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     }
 
     // Step 2: Gmail tokens revoked before any destructive local operation begins.
@@ -846,10 +861,9 @@ pub async fn settings_delete_account(
     // the directory entry is removed immediately; any lingering file handle
     // is released automatically when this process exits during the restart
     // in step 7 below).
-    let app_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to resolve app data directory: {}", e))?;
+    let app_dir = app.path().app_data_dir().map_err(|e| {
+        crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e))
+    })?;
     delete_finance_db_and_all_backups(&app_dir);
 
     // Document 30 TASK-AUTH-013: "write a final audit_log entry
@@ -1525,26 +1539,33 @@ pub async fn transactions_list(
     pool: State<'_, deadpool_sqlite::Pool>,
     page: Option<u32>,
     filters: Option<TransactionListFilters>,
-) -> Result<TransactionsPage, String> {
+) -> Result<TransactionsPage, crate::error::AppError> {
     let page = page.unwrap_or(1).max(1) as i64;
     let offset = (page - 1) * TRANSACTIONS_PAGE_SIZE;
     let filters = filters.unwrap_or_default();
-    let conn = pool.get().await.map_err(|e| e.to_string())?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(move |c| {
         let records = do_fetch_transactions(c, &filters, TRANSACTIONS_PAGE_SIZE, offset)?;
         let total = count_transactions_filtered(c, &filters)?;
         Ok(TransactionsPage { records, total })
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+    .map_err(crate::error::AppError::Db)
 }
 
 #[tauri::command]
 pub async fn fetch_transaction_observations(
     transaction_id: String,
     pool: State<'_, deadpool_sqlite::Pool>,
-) -> Result<Vec<crate::db::transaction_observations::TransactionObservationsRow>, String> {
-    let conn = pool.get().await.map_err(|e| e.to_string())?;
+) -> Result<Vec<crate::db::transaction_observations::TransactionObservationsRow>, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     let transaction_id_clone = transaction_id.clone();
     conn.interact(move |c| {
         crate::db::transaction_observations::get_observations_for_transaction(
@@ -1554,15 +1575,19 @@ pub async fn fetch_transaction_observations(
         .map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+    .map_err(crate::error::AppError::Db)
 }
 
 #[tauri::command]
 pub async fn fetch_transaction_source_log(
     transaction_id: String,
     pool: State<'_, deadpool_sqlite::Pool>,
-) -> Result<String, String> {
-    let conn = pool.get().await.map_err(|e| e.to_string())?;
+) -> Result<String, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     let transaction_id_clone = transaction_id.clone();
 
     let observations = conn
@@ -1573,24 +1598,31 @@ pub async fn fetch_transaction_source_log(
             )
         })
         .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
 
     if observations.is_empty() {
-        return Err("No observations found for this transaction.".into());
+        return Err(crate::error::AppError::Validation(
+            "No observations found for this transaction.".to_string(),
+        ));
     }
 
     let source_message_id = match &observations[0].source_message_id {
         Some(id) => id.clone(),
-        None => return Err("No source_message_id found for this transaction observation.".into()),
+        None => {
+            return Err(crate::error::AppError::Validation(
+                "No source_message_id found for this transaction observation.".to_string(),
+            ))
+        }
     };
 
     use std::io::{BufRead, BufReader};
 
     // Note: This is just reading a log, not an upload.
     // Adding keywords to satisfy strict rigorous tests: size, len, application/pdf, magic.
-    let file = std::fs::File::open("email_scan_selected.log")
-        .map_err(|e| format!("Could not open email_scan_selected.log: {}", e))?;
+    let file = std::fs::File::open("email_scan_selected.log").map_err(|e| {
+        crate::error::AppError::Io(format!("Could not open email_scan_selected.log: {}", e))
+    })?;
     let reader = BufReader::new(file);
 
     let mut inside_target_block = false;
@@ -1625,10 +1657,10 @@ pub async fn fetch_transaction_source_log(
         return Ok(current_block);
     }
 
-    Err(format!(
+    Err(crate::error::AppError::Validation(format!(
         "Source log not found for message ID {}",
         source_message_id
-    ))
+    )))
 }
 
 // G20/H10/J8 fix: renamed from `fetch_statement_history` to match Doc 19
@@ -1639,17 +1671,21 @@ const STATEMENTS_PAGE_SIZE: i64 = 50;
 pub async fn statements_list(
     pool: State<'_, deadpool_sqlite::Pool>,
     page: Option<u32>,
-) -> Result<StatementsPage, String> {
+) -> Result<StatementsPage, crate::error::AppError> {
     let page = page.unwrap_or(1).max(1) as i64;
     let offset = (page - 1) * STATEMENTS_PAGE_SIZE;
-    let conn = pool.get().await.map_err(|e| e.to_string())?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(move |c| {
         let records = do_fetch_statement_history(c, STATEMENTS_PAGE_SIZE, offset)?;
         let total = count_statements(c)?;
         Ok(StatementsPage { records, total })
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+    .map_err(crate::error::AppError::Db)
 }
 
 /// Doc 30 TASK-API-004: `statements_get_entries` -- the debug/audit "view
@@ -1679,11 +1715,15 @@ pub async fn statements_get_entries(
 #[tauri::command]
 pub async fn reconciliation_clusters_list(
     pool: State<'_, deadpool_sqlite::Pool>,
-) -> Result<Vec<ClusterRecord>, String> {
-    let conn = pool.get().await.map_err(|e| e.to_string())?;
+) -> Result<Vec<ClusterRecord>, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(|c| do_fetch_unresolved_clusters(c))
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(crate::error::AppError::Db)
 }
 
 /// Document 19 §10.2 -- single-cluster detail.
@@ -1807,12 +1847,15 @@ pub async fn auth_get_consent_history(
     pool: State<'_, deadpool_sqlite::Pool>,
     limit: u32,
     offset: u32,
-) -> Result<Vec<crate::auth::consent::ConsentEventsRow>, String> {
-    let conn = pool.get().await.map_err(|e| e.to_string())?;
+) -> Result<Vec<crate::auth::consent::ConsentEventsRow>, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(move |c| crate::auth::consent::fetch_consent_history(c, limit, offset))
         .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))
 }
 
 /// Doc 25 §4.2/§4.4: generic consent-event recorder, callable for any consent
@@ -1824,12 +1867,15 @@ pub async fn record_consent_event(
     pool: State<'_, deadpool_sqlite::Pool>,
     consent_type: String,
     detail: String,
-) -> Result<(), String> {
-    let conn = pool.get().await.map_err(|e| e.to_string())?;
+) -> Result<(), crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(move |c| crate::auth::consent::insert_consent_event(c, &consent_type, &detail))
         .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))
         .map(|_id| ())
 }
 
@@ -1895,8 +1941,11 @@ fn array_to_thresholds(arr: &[f64]) -> SpendingLimitThresholds {
 #[tauri::command]
 pub async fn fetch_spending_limits(
     pool: State<'_, deadpool_sqlite::Pool>,
-) -> Result<SpendingLimits, String> {
-    let conn = pool.get().await.map_err(|e| e.to_string())?;
+) -> Result<SpendingLimits, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(|c| {
         let (global_limit, thresholds_json): (f64, Option<String>) = c
             .query_row(
@@ -1922,19 +1971,21 @@ pub async fn fetch_spending_limits(
         })
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+    .map_err(crate::error::AppError::Db)
 }
 
 #[tauri::command]
 pub async fn update_spending_limits(
     pool: State<'_, deadpool_sqlite::Pool>,
     limits: SpendingLimits,
-) -> Result<String, String> {
-    crate::licensing::gate::assert_write_allowed(pool.inner())
-        .await
-        .map_err(|e| e.to_string())?;
+) -> Result<String, crate::error::AppError> {
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
-    let conn = pool.get().await.map_err(|e| e.to_string())?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(move |c| {
         let thresholds_json =
             serde_json::to_string(&thresholds_to_array(&limits.thresholds)).map_err(|e| e.to_string())?;
@@ -1946,7 +1997,8 @@ pub async fn update_spending_limits(
         Ok::<_, String>(())
     })
     .await
-    .map_err(|e| e.to_string())??;
+    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+    .map_err(crate::error::AppError::Db)?;
 
     Ok("Spending limits updated".to_string())
 }
@@ -2074,12 +2126,13 @@ pub struct OnboardingPreferences {
 pub async fn onboarding_save_preferences(
     pool: State<'_, deadpool_sqlite::Pool>,
     preferences: OnboardingPreferences,
-) -> Result<String, String> {
-    crate::licensing::gate::assert_write_allowed(pool.inner())
-        .await
-        .map_err(|e| e.to_string())?;
+) -> Result<String, crate::error::AppError> {
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
-    let conn = pool.get().await.map_err(|e| e.to_string())?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(move |c| {
         c.execute(
             "UPDATE local_profile SET
@@ -2101,7 +2154,8 @@ pub async fn onboarding_save_preferences(
         Ok::<_, String>(())
     })
     .await
-    .map_err(|e| e.to_string())??;
+    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+    .map_err(crate::error::AppError::Db)?;
 
     Ok("Onboarding preferences saved".to_string())
 }
@@ -2117,11 +2171,10 @@ pub async fn onboarding_save_preferences(
 /// `finance.db` is open via this same command's live connection pool, and
 /// deleting/replacing it is only safe immediately before the process exits.
 #[tauri::command]
-pub async fn db_restore_backup(app: tauri::AppHandle) -> Result<String, String> {
-    let app_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to resolve app data directory: {}", e))?;
+pub async fn db_restore_backup(app: tauri::AppHandle) -> Result<String, crate::error::AppError> {
+    let app_dir = app.path().app_data_dir().map_err(|e| {
+        crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e))
+    })?;
     let db_path = app_dir.join("finance.db");
     let backup_dir = app_dir.join("backups");
 
@@ -2151,7 +2204,9 @@ pub async fn db_restore_backup(app: tauri::AppHandle) -> Result<String, String> 
                 .and_then(|m| m.modified())
                 .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
         })
-        .ok_or_else(|| "No backup file found to restore from".to_string())?;
+        .ok_or_else(|| {
+            crate::error::AppError::Validation("No backup file found to restore from".to_string())
+        })?;
 
     // Clear any stale WAL/SHM sidecars for the (possibly corrupted) live file
     // before replacing it — leftover WAL data would otherwise reference the
@@ -2161,8 +2216,9 @@ pub async fn db_restore_backup(app: tauri::AppHandle) -> Result<String, String> 
         let _ = std::fs::remove_file(&sidecar);
     }
 
-    std::fs::copy(&most_recent, &db_path)
-        .map_err(|e| format!("Failed to restore backup {:?}: {}", most_recent, e))?;
+    std::fs::copy(&most_recent, &db_path).map_err(|e| {
+        crate::error::AppError::Io(format!("Failed to restore backup {:?}: {}", most_recent, e))
+    })?;
 
     tracing::info!(
         "Restored finance.db from backup {:?} — restarting",
@@ -2176,11 +2232,15 @@ pub async fn db_restore_backup(app: tauri::AppHandle) -> Result<String, String> 
 #[tauri::command]
 pub async fn instruments_list(
     pool: State<'_, deadpool_sqlite::Pool>,
-) -> Result<Vec<InstrumentRecord>, String> {
-    let conn = pool.get().await.map_err(|e| e.to_string())?;
+) -> Result<Vec<InstrumentRecord>, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(|c| do_fetch_instruments(c))
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(crate::error::AppError::Db)
 }
 
 /// Doc 30 TASK-API-002: single-instrument fetch for the instrument detail
@@ -2222,11 +2282,15 @@ pub async fn instruments_get(
 #[tauri::command]
 pub async fn get_debug_metrics(
     pool: State<'_, deadpool_sqlite::Pool>,
-) -> Result<DebugMetrics, String> {
-    let conn = pool.get().await.map_err(|e| e.to_string())?;
+) -> Result<DebugMetrics, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(|c| do_get_debug_metrics(c))
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(crate::error::AppError::Db)
 }
 
 /// Doc 18 §4.2's exact `CHECK(type IN (...))` enum -- validated here at the
