@@ -1,11 +1,23 @@
 import { useEffect } from 'react';
 import { RouterProvider } from 'react-router-dom';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { API } from './lib/ipc';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Toaster } from '@/components/ui/toaster';
 import { router } from './routes';
 import { GlobalStateProvider } from './lib/GlobalStateContext';
+import { queryClient } from './lib/queryClient';
+import { useIpcQueryInvalidation } from './hooks/useIpcQueryInvalidation';
 import './App.css';
+
+// TASK-FE-003: mounted once, inside QueryClientProvider, so
+// useIpcQueryInvalidation can reach the client via useQueryClient(). Renders
+// nothing — a component is needed only because a hook can't be called from
+// the same component that creates the provider wrapping it.
+function IpcEventBridge() {
+  useIpcQueryInvalidation();
+  return null;
+}
 
 function App() {
   useEffect(() => {
@@ -49,9 +61,12 @@ function App() {
   return (
     <ErrorBoundary>
       <Toaster />
-      <GlobalStateProvider>
-        <RouterProvider router={router} />
-      </GlobalStateProvider>
+      <QueryClientProvider client={queryClient}>
+        <IpcEventBridge />
+        <GlobalStateProvider>
+          <RouterProvider router={router} />
+        </GlobalStateProvider>
+      </QueryClientProvider>
     </ErrorBoundary>
   );
 }
