@@ -1,14 +1,24 @@
+use chrono::Datelike;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use tauri::{Manager, State};
 
+/// Document 19 §11.1's exact 5 named fields (`month_to_date_spend`, `limit`,
+/// `utilization_pct`, `recent_transactions_count`, `upcoming_bills_count`).
+/// `income` is retained as an additive 6th field per Document 19 §19's own
+/// versioning rule ("introduce new fields as additive changes whenever
+/// possible... avoid breaking return shape for frontend consumers") -- it
+/// backs an existing Dashboard.tsx card with no equivalent anywhere in the
+/// 49-document spec set to replace it with.
 #[derive(Serialize, Debug, PartialEq)]
 pub struct DashboardSummary {
-    pub total_spend: f64,
-    pub income: f64,
-    pub upcoming_bills: u32,
+    pub month_to_date_spend: f64,
     pub limit: f64,
+    pub utilization_pct: f64,
+    pub recent_transactions_count: i64,
+    pub upcoming_bills_count: u32,
+    pub income: f64,
 }
 
 /// Doc 30 TASK-DEDUP-009: "an `unassigned_amount_pending_review` metric (NOT
@@ -139,60 +149,25 @@ pub struct DebugMetrics {
     pub reconciliation_decision_distribution: std::collections::HashMap<String, i64>,
 }
 
-// Doc 30 TASK-DEDUP-009 / Document 19 §11.1 ("Must exclude ambiguous
-// unresolved data"): a canonical transaction that is a candidate member of
-// a still-`open` reconciliation cluster is not deleted or hidden from
-// `transactions` (Doc 30 TASK-DEDUP-006's hard invariant) -- it must be
-// excluded from spend totals explicitly, the same exclusion clause already
-// established in `db/transactions.rs`'s `get_global_spend_current_month`/
-// `get_category_spend_current_month`.
-const AMBIGUOUS_CLUSTER_EXCLUSION_CLAUSE: &str = "AND id NOT IN (
-               SELECT m.canonical_transaction_id FROM reconciliation_cluster_members m
-               JOIN reconciliation_clusters c ON c.id = m.cluster_id
-               WHERE c.cluster_status = 'open' AND m.canonical_transaction_id IS NOT NULL
-           )";
 
 pub fn do_fetch_dashboard_summary(conn: &Connection) -> Result<DashboardSummary, String> {
-    let total_spend: f64 = conn
-        .query_row(
-            &format!(
-                "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE amount < 0 AND COALESCE(is_deleted, 0) = 0 {}",
-                AMBIGUOUS_CLUSTER_EXCLUSION_CLAUSE
-            ),
-            [],
-            |row| {
-                let val: Result<f64, _> = row.get(0);
-                match val {
-                    Ok(v) => Ok(v),
-                    Err(_) => {
-                        let i: i64 = row.get(0)?;
-                        Ok(i as f64)
-                    }
-                }
-            },
-        )
-        .unwrap_or(0.0_f64)
-        .abs();
+    let now = chrono::Utc::now().naive_utc();
 
-    let income: f64 = conn
-        .query_row(
-            &format!(
-                "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE amount > 0 AND COALESCE(is_deleted, 0) = 0 {}",
-                AMBIGUOUS_CLUSTER_EXCLUSION_CLAUSE
-            ),
-            [],
-            |row| {
-                let val: Result<f64, _> = row.get(0);
-                match val {
-                    Ok(v) => Ok(v),
-                    Err(_) => {
-                        let i: i64 = row.get(0)?;
-                        Ok(i as f64)
-                    }
-                }
-            },
-        )
-        .unwrap_or(0.0_f64);
+    // Doc 30 TASK-API-006: "All aggregation sums amount_minor (integer
+    // paise), converting to rupees only at final response formatting, to
+    // avoid floating-point rounding errors." The prior implementation
+    // summed the float `amount` column with no month scoping at all --
+    // `month_to_date_spend` was actually an all-time total. Reuses the
+    // same amount_minor/direction/best_event_time/ambiguous-exclusion
+    // helpers `db/transactions.rs`'s spending-limit checks already rely on.
+    let month_to_date_spend: f64 =
+        crate::db::transactions::get_global_spend_current_month(conn, &now)
+            .map_err(|e| e.to_string())?;
+    let income: f64 = crate::db::transactions::get_global_income_current_month(conn, &now)
+        .map_err(|e| e.to_string())?;
+    let recent_transactions_count: i64 =
+        crate::db::transactions::count_transactions_current_month(conn, &now)
+            .map_err(|e| e.to_string())?;
 
     // Fetch monthly limit from local_profile (profile id=1 is the single local profile)
     let limit: f64 = conn
@@ -203,20 +178,33 @@ pub fn do_fetch_dashboard_summary(conn: &Connection) -> Result<DashboardSummary,
         )
         .unwrap_or(0.0);
 
-    // Count statements with status='UPCOMING' or transactions tagged as upcoming bills
-    let upcoming_bills: u32 = conn
+    let utilization_pct: f64 = if limit > 0.0 {
+        (month_to_date_spend / limit) * 100.0
+    } else {
+        0.0
+    };
+
+    // Doc 19 §11.2's `dashboard_upcoming_bills` needs full instrument rows
+    // (nickname, currency, amount); this count only needs the same
+    // `statement_due_date >= today` predicate `db/instruments.rs::list_upcoming_bills`
+    // uses, so it's queried directly rather than pulling in and discarding
+    // full InstrumentsRow deserialization.
+    let today = now.date();
+    let upcoming_bills_count: u32 = conn
         .query_row(
-            "SELECT COUNT(*) FROM statements WHERE UPPER(status) = 'UPCOMING'",
-            [],
+            "SELECT COUNT(*) FROM instruments WHERE is_deleted = 0 AND statement_due_date IS NOT NULL AND statement_due_date >= ?1",
+            params![today],
             |row| row.get::<_, u32>(0),
         )
         .unwrap_or(0);
 
     Ok(DashboardSummary {
-        total_spend,
-        income,
-        upcoming_bills,
+        month_to_date_spend,
         limit,
+        utilization_pct,
+        recent_transactions_count,
+        upcoming_bills_count,
+        income,
     })
 }
 
@@ -917,11 +905,392 @@ mod delete_account_tests {
 #[tauri::command]
 pub async fn dashboard_summary(
     pool: State<'_, deadpool_sqlite::Pool>,
-) -> Result<DashboardSummary, String> {
-    let conn = pool.get().await.map_err(|e| e.to_string())?;
+) -> Result<DashboardSummary, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(|c| do_fetch_dashboard_summary(c))
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(crate::error::AppError::Db)
+}
+
+/// Document 19 §11.2's exact 5 named fields.
+#[derive(Serialize, Debug, PartialEq)]
+pub struct UpcomingBill {
+    pub id: String,
+    pub description: String,
+    pub amount: f64,
+    pub currency: String,
+    pub due_date: String,
+}
+
+/// Doc 30 TASK-API-006: did not exist at all before this task (only
+/// `db/instruments.rs::list_upcoming_bills`, added by TASK-API-002 for
+/// `instruments_get`, existed underneath it). `description` falls back to
+/// "{issuer_name} {type}" when no nickname is set; `amount` is the
+/// instrument's outstanding `current_balance` (paise -> rupees).
+pub fn do_fetch_upcoming_bills(
+    conn: &Connection,
+    today: &chrono::NaiveDate,
+) -> Result<Vec<UpcomingBill>, String> {
+    let rows = crate::db::instruments::list_upcoming_bills(conn, today).map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|inst| UpcomingBill {
+            id: inst.id,
+            description: inst
+                .nickname
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| format!("{} {}", inst.issuer_name, inst.r#type)),
+            amount: inst.current_balance.unwrap_or(0) as f64 / 100.0,
+            currency: "INR".to_string(),
+            due_date: inst
+                .statement_due_date
+                .map(|d| d.format("%Y-%m-%d").to_string())
+                .unwrap_or_default(),
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn dashboard_upcoming_bills(
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<serde_json::Value, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let today = chrono::Utc::now().date_naive();
+    let bills = conn
+        .interact(move |c| do_fetch_upcoming_bills(c, &today))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(crate::error::AppError::Db)?;
+    Ok(serde_json::json!({ "bills": bills }))
+}
+
+/// Document 19 §11.3's exact 6 named fields.
+#[derive(Serialize, Debug, PartialEq)]
+pub struct CategorySpend {
+    pub category_id: String,
+    pub name: String,
+    pub total_spend: f64,
+    pub monthly_budget: Option<f64>,
+    pub utilization_pct: f64,
+    pub currency: String,
+}
+
+/// `month` is a `"YYYY-MM"` string (Document 19 §11.3's exact argument
+/// shape); returns `[start_of_month, start_of_next_month)` as
+/// `%Y-%m-%d %H:%M:%S` strings for the half-open `best_event_time` range.
+fn month_bounds(month: &str) -> Result<(String, String), String> {
+    let start = chrono::NaiveDate::parse_from_str(&format!("{}-01", month), "%Y-%m-%d")
+        .map_err(|e| format!("invalid month '{}': {}", month, e))?;
+    let (next_year, next_month) = if start.month() == 12 {
+        (start.year() + 1, 1)
+    } else {
+        (start.year(), start.month() + 1)
+    };
+    let end = chrono::NaiveDate::from_ymd_opt(next_year, next_month, 1)
+        .ok_or_else(|| format!("invalid month '{}'", month))?;
+    Ok((
+        format!("{} 00:00:00", start),
+        format!("{} 00:00:00", end),
+    ))
+}
+
+/// Doc 30 TASK-API-006: covers Doc 30's own paraphrased
+/// `analytics_spend_by_category` -- Document 19 §11.3 already names this
+/// exact feature `dashboard_categories`, so per this session's established
+/// full-conformance precedent (Doc 19/18 naming wins over Doc 30 prose) no
+/// separate `analytics_spend_by_category` command is built. Every
+/// non-deleted category is returned (zero-spend categories included) so the
+/// UI can render budget-vs-spent for categories with no activity yet this
+/// month.
+pub fn do_fetch_category_spend(conn: &Connection, month: &str) -> Result<Vec<CategorySpend>, String> {
+    let (start, end) = month_bounds(month)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.id, c.name, COALESCE(SUM(t.amount_minor), 0), c.monthly_budget_minor
+             FROM categories c
+             LEFT JOIN transactions t ON t.category_id = c.id
+                 AND t.direction = 'debit' AND t.is_deleted = 0
+                 AND t.best_event_time >= ?1 AND t.best_event_time < ?2
+                 AND t.id NOT IN (
+                     SELECT m.canonical_transaction_id FROM reconciliation_cluster_members m
+                     JOIN reconciliation_clusters cl ON cl.id = m.cluster_id
+                     WHERE cl.cluster_status = 'open' AND m.canonical_transaction_id IS NOT NULL
+                 )
+             WHERE c.is_deleted = 0
+             GROUP BY c.id
+             ORDER BY c.name ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![start, end], |row| {
+            let spend_minor: i64 = row.get(2)?;
+            let budget_minor: Option<i64> = row.get(3)?;
+            let total_spend = spend_minor as f64 / 100.0;
+            let monthly_budget = budget_minor.map(|b| b as f64 / 100.0);
+            let utilization_pct = match monthly_budget {
+                Some(b) if b > 0.0 => (total_spend / b) * 100.0,
+                _ => 0.0,
+            };
+            Ok(CategorySpend {
+                category_id: row.get(0)?,
+                name: row.get(1)?,
+                total_spend,
+                monthly_budget,
+                utilization_pct,
+                currency: "INR".to_string(),
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(results)
+}
+
+#[tauri::command]
+pub async fn dashboard_categories(
+    month: String,
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<serde_json::Value, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let categories = conn
+        .interact(move |c| do_fetch_category_spend(c, &month))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(crate::error::AppError::Validation)?;
+    Ok(serde_json::json!({ "categories": categories }))
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct SpendTrendPoint {
+    pub period: String,
+    pub total_spend: f64,
+}
+
+/// Doc 30 TASK-API-006: "`analytics_spend_trend` (daily/weekly/monthly
+/// granularity)" -- no Document 19 contract exists for this command at all
+/// (absent from §18's 53-command catalog), so Doc 30's own name is used
+/// verbatim, consistent with how `reconciliation_get_unassigned_transactions`
+/// was handled in TASK-API-005. `granularity` selects both the SQLite
+/// `strftime` bucket format and the lookback window (30 days / 12 weeks /
+/// 12 months) -- unbounded daily/weekly buckets over the whole transaction
+/// history would make an unusably wide trend chart.
+pub fn do_fetch_spend_trend(
+    conn: &Connection,
+    granularity: &str,
+    now: &chrono::NaiveDateTime,
+) -> Result<Vec<SpendTrendPoint>, String> {
+    let (strftime_fmt, since) = match granularity {
+        "daily" => ("%Y-%m-%d", *now - chrono::Duration::days(30)),
+        "weekly" => ("%Y-%W", *now - chrono::Duration::weeks(12)),
+        "monthly" => ("%Y-%m", *now - chrono::Duration::days(365)),
+        other => return Err(format!("invalid granularity '{}': must be daily, weekly, or monthly", other)),
+    };
+    let since_str = since.format("%Y-%m-%d %H:%M:%S").to_string();
+
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT strftime('{}', best_event_time) AS period, COALESCE(SUM(amount_minor), 0)
+             FROM transactions
+             WHERE direction = 'debit' AND is_deleted = 0
+               AND best_event_time >= ?1
+               AND id NOT IN (
+                   SELECT m.canonical_transaction_id FROM reconciliation_cluster_members m
+                   JOIN reconciliation_clusters c ON c.id = m.cluster_id
+                   WHERE c.cluster_status = 'open' AND m.canonical_transaction_id IS NOT NULL
+               )
+             GROUP BY period
+             ORDER BY period ASC",
+            strftime_fmt
+        ))
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![since_str], |row| {
+            let spend_minor: i64 = row.get(1)?;
+            Ok(SpendTrendPoint {
+                period: row.get(0)?,
+                total_spend: spend_minor as f64 / 100.0,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(results)
+}
+
+#[tauri::command]
+pub async fn analytics_spend_trend(
+    granularity: String,
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<Vec<SpendTrendPoint>, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let now = chrono::Utc::now().naive_utc();
+    conn.interact(move |c| do_fetch_spend_trend(c, &granularity, &now))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(crate::error::AppError::Validation)
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct TopMerchant {
+    pub merchant_display_name: String,
+    pub total_spend: f64,
+    pub transaction_count: i64,
+}
+
+/// Doc 30 TASK-API-006: "`analytics_top_merchants`" -- no Document 19
+/// contract exists (same documentation-gap situation as `spend_trend`
+/// above). Scoped to the current calendar month (matching
+/// `dashboard_summary`'s own "month to date" framing) and capped at 10,
+/// ordered by total spend descending.
+pub fn do_fetch_top_merchants(
+    conn: &Connection,
+    now: &chrono::NaiveDateTime,
+) -> Result<Vec<TopMerchant>, String> {
+    let start_of_month = format!("{}-{:02}-01 00:00:00", now.date().year(), now.date().month());
+    let mut stmt = conn
+        .prepare(
+            "SELECT merchant_display_name, SUM(amount_minor), COUNT(*)
+             FROM transactions
+             WHERE direction = 'debit' AND is_deleted = 0
+               AND best_event_time >= ?1
+               AND merchant_display_name IS NOT NULL
+               AND id NOT IN (
+                   SELECT m.canonical_transaction_id FROM reconciliation_cluster_members m
+                   JOIN reconciliation_clusters c ON c.id = m.cluster_id
+                   WHERE c.cluster_status = 'open' AND m.canonical_transaction_id IS NOT NULL
+               )
+             GROUP BY merchant_display_name
+             ORDER BY SUM(amount_minor) DESC
+             LIMIT 10",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![start_of_month], |row| {
+            let spend_minor: i64 = row.get(1)?;
+            Ok(TopMerchant {
+                merchant_display_name: row.get(0)?,
+                total_spend: spend_minor as f64 / 100.0,
+                transaction_count: row.get(2)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(results)
+}
+
+#[tauri::command]
+pub async fn analytics_top_merchants(
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<Vec<TopMerchant>, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let now = chrono::Utc::now().naive_utc();
+    conn.interact(move |c| do_fetch_top_merchants(c, &now))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(crate::error::AppError::Db)
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct RecurringPaymentSummary {
+    pub id: String,
+    pub merchant_name: String,
+    pub amount: f64,
+    pub currency: String,
+    pub cadence: String,
+    pub next_predicted_date: Option<String>,
+    pub confidence: f64,
+}
+
+/// Doc 30 TASK-API-006: "`analytics_recurring_payments_summary`" -- no
+/// Document 19 contract exists (same documentation-gap situation as
+/// `spend_trend`/`top_merchants` above). Wraps `recurring_payments`
+/// (TASK-TXN-011/012's detection output), joined to `merchants` for a
+/// display name since the table only stores `merchant_entity_id`.
+pub fn do_fetch_recurring_payments_summary(
+    conn: &Connection,
+) -> Result<Vec<RecurringPaymentSummary>, String> {
+    let rows = crate::db::recurring_payments::select_active(conn).map_err(|e| e.to_string())?;
+    let mut results = Vec::new();
+    for row in rows {
+        let merchant_name: String = row
+            .merchant_entity_id
+            .as_ref()
+            .and_then(|id| {
+                conn.query_row(
+                    "SELECT name FROM merchants WHERE id = ?1",
+                    params![id],
+                    |r| r.get::<_, String>(0),
+                )
+                .ok()
+            })
+            .unwrap_or_else(|| "Unknown merchant".to_string());
+        results.push(RecurringPaymentSummary {
+            id: row.id,
+            merchant_name,
+            amount: row.amount_minor.unwrap_or(0) as f64 / 100.0,
+            currency: row.currency.unwrap_or_else(|| "INR".to_string()),
+            cadence: row.cadence.unwrap_or_default(),
+            next_predicted_date: row.next_predicted_date.map(|d| d.format("%Y-%m-%d").to_string()),
+            confidence: row.confidence.unwrap_or(0.0),
+        });
+    }
+    Ok(results)
+}
+
+#[tauri::command]
+pub async fn analytics_recurring_payments_summary(
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<Vec<RecurringPaymentSummary>, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(|c| do_fetch_recurring_payments_summary(c))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(crate::error::AppError::Db)
+}
+
+/// Doc 30 TASK-API-006: "`analytics_pending_review_count` (explicitly not
+/// included in any spend total)" -- thin IPC wrapper around
+/// `compute_unassigned_amount_pending_review` (TASK-DEDUP-009), which
+/// already built and tested the underlying metric but left it uncalled by
+/// any command.
+#[tauri::command]
+pub async fn analytics_pending_review_count(
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<PendingReviewMetric, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(|c| compute_unassigned_amount_pending_review(c))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(crate::error::AppError::Db)
 }
 
 const TRANSACTIONS_PAGE_SIZE: i64 = 50;
@@ -1703,10 +2072,11 @@ mod tests {
                 issuer_name TEXT, 
                 masked_identifier TEXT, 
                 status TEXT, 
-                current_balance REAL, 
+                current_balance REAL,
                 credit_limit REAL,
                 full_identifier TEXT,
                 billing_cycle_day INTEGER,
+                statement_due_date TEXT,
                 is_deleted INTEGER DEFAULT 0
             )",
             [],
@@ -1718,6 +2088,7 @@ mod tests {
                 instrument_id TEXT,
                 direction TEXT,
                 authorization_time TEXT,
+                best_event_time TEXT,
                 merchant_display_name TEXT,
                 amount REAL,
                 amount_minor INTEGER,
@@ -1862,24 +2233,24 @@ mod tests {
         assert_eq!(ids, vec!["tx_match_both"], "only the row matching BOTH filters (AND) must be returned");
     }
 
-    /// Doc 30 TASK-DEDUP-009 acceptance test: the actual `dashboard_summary`
-    /// IPC command's totals (not just the lower-level per-month helper
-    /// functions in `db/transactions.rs`) must exclude a canonical
-    /// transaction that is a candidate member of a still-`open`
-    /// reconciliation cluster. This is the exact "new query path added
-    /// without the exclusion" failure mode Doc 30 warns about: this
-    /// function's own totals had no such exclusion until this task.
+    /// Doc 30 TASK-DEDUP-009 / TASK-API-006 acceptance test (renamed to
+    /// TASK-API-006's exact name -- both tasks share this criterion): the
+    /// actual `dashboard_summary` IPC command's totals (not just the
+    /// lower-level per-month helper functions in `db/transactions.rs`) must
+    /// exclude a canonical transaction that is a candidate member of a
+    /// still-`open` reconciliation cluster.
     #[test]
-    fn test_no_ambiguous_cluster_member_ever_appears_in_transactions_totals() {
+    fn test_dashboard_summary_excludes_ambiguous_clusters() {
         let conn = setup_db();
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
         conn.execute(
-            "INSERT INTO transactions (id, amount, amount_minor, is_deleted) VALUES ('tx_normal', -10.0, -1000, 0)",
-            [],
+            "INSERT INTO transactions (id, direction, best_event_time, amount_minor, is_deleted) VALUES ('tx_normal', 'debit', ?1, 1000, 0)",
+            params![now],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO transactions (id, amount, amount_minor, is_deleted) VALUES ('tx_ambiguous', -50.0, -5000, 0)",
-            [],
+            "INSERT INTO transactions (id, direction, best_event_time, amount_minor, is_deleted) VALUES ('tx_ambiguous', 'debit', ?1, 5000, 0)",
+            params![now],
         )
         .unwrap();
         conn.execute(
@@ -1894,28 +2265,29 @@ mod tests {
         .unwrap();
 
         let summary = do_fetch_dashboard_summary(&conn).unwrap();
-        assert_eq!(summary.total_spend, 10.0, "the ambiguous candidate's amount must not be counted");
+        assert_eq!(summary.month_to_date_spend, 10.0, "the ambiguous candidate's amount must not be counted");
     }
 
-    /// Doc 30 TASK-DEDUP-009 acceptance test: `unassigned_amount_pending_review`
-    /// is computed separately from -- and never folds into -- the dashboard
-    /// totals, even though both draw from overlapping tables.
+    /// Doc 30 TASK-DEDUP-009 / TASK-API-006 acceptance test (renamed to
+    /// TASK-API-006's exact name): `unassigned_amount_pending_review` /
+    /// `analytics_pending_review_count` is computed separately from -- and
+    /// never folds into -- the dashboard totals, even though both draw from
+    /// overlapping tables.
     #[test]
-    fn test_pending_review_banner_metric_computed_separately() {
+    fn test_pending_review_count_excluded_from_totals() {
         let conn = setup_db();
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
         conn.execute(
-            "INSERT INTO transactions (id, amount, amount_minor, is_deleted) VALUES ('tx_normal', -10.0, -1000, 0)",
-            [],
+            "INSERT INTO transactions (id, direction, best_event_time, amount_minor, is_deleted) VALUES ('tx_normal', 'debit', ?1, 1000, 0)",
+            params![now],
         )
         .unwrap();
-        // `amount` (signed, this test module's local convention for the
-        // legacy dashboard total) is negative for spend; `amount_minor`
-        // (Document 18 §4.3, the real production field) is always a
-        // positive magnitude, with `direction` -- not the sign -- carrying
-        // debit/credit meaning, so it stays positive here too.
+        // `amount_minor` (Document 18 §4.3, the real production field) is
+        // always a positive magnitude, with `direction` -- not sign --
+        // carrying debit/credit meaning.
         conn.execute(
-            "INSERT INTO transactions (id, amount, amount_minor, is_deleted) VALUES ('tx_ambiguous', -50.0, 5000, 0)",
-            [],
+            "INSERT INTO transactions (id, direction, best_event_time, amount_minor, is_deleted) VALUES ('tx_ambiguous', 'debit', ?1, 5000, 0)",
+            params![now],
         )
         .unwrap();
         conn.execute(
@@ -1947,7 +2319,50 @@ mod tests {
         assert_eq!(pending.count, 2);
         assert_eq!(pending.amount_minor, 7500);
         // The dashboard total is completely unaffected by either.
-        assert_eq!(summary.total_spend, 10.0);
+        assert_eq!(summary.month_to_date_spend, 10.0);
+    }
+
+    /// Doc 30 TASK-API-006 acceptance test: a soft-deleted transaction
+    /// (`is_deleted = 1`) in the current month must never be counted in
+    /// `month_to_date_spend`, even though nothing else about it looks
+    /// unusual (correct direction, correct month).
+    #[test]
+    fn test_dashboard_summary_excludes_soft_deleted() {
+        let conn = setup_db();
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        conn.execute(
+            "INSERT INTO transactions (id, direction, best_event_time, amount_minor, is_deleted) VALUES ('tx_live', 'debit', ?1, 1000, 0)",
+            params![now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transactions (id, direction, best_event_time, amount_minor, is_deleted) VALUES ('tx_deleted', 'debit', ?1, 9000, 1)",
+            params![now],
+        )
+        .unwrap();
+
+        let summary = do_fetch_dashboard_summary(&conn).unwrap();
+        assert_eq!(summary.month_to_date_spend, 10.0, "the soft-deleted row's amount must not be counted");
+    }
+
+    /// Doc 30 TASK-API-006 acceptance test: "All aggregation sums
+    /// amount_minor (integer paise)... to avoid floating-point rounding
+    /// errors." Seeds a transaction whose float `amount` column disagrees
+    /// with `amount_minor` (a value `amount` could never represent exactly
+    /// -- 10.53 rupees) and asserts the response reflects `amount_minor`,
+    /// proving the query never reads the float column at all.
+    #[test]
+    fn test_spend_aggregation_uses_amount_minor_not_float() {
+        let conn = setup_db();
+        let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        conn.execute(
+            "INSERT INTO transactions (id, direction, best_event_time, amount, amount_minor, is_deleted) VALUES ('tx_1', 'debit', ?1, 999999.99, 1053, 0)",
+            params![now],
+        )
+        .unwrap();
+
+        let summary = do_fetch_dashboard_summary(&conn).unwrap();
+        assert_eq!(summary.month_to_date_spend, 10.53, "must read amount_minor (1053 paise), never the divergent float amount column");
     }
 
     /// Doc 30 TASK-API-005 acceptance test: `reconciliation_get_unassigned_transactions`
@@ -2010,14 +2425,19 @@ mod tests {
         )
         .unwrap();
 
+        // This fixture seeds `authorization_time`/`amount` (June 2026 dates,
+        // no `direction`/`best_event_time`/`amount_minor`) rather than the
+        // fields `do_fetch_dashboard_summary` now aggregates on (Doc 30
+        // TASK-API-006: amount_minor, direction, current-calendar-month
+        // best_event_time) -- so month-to-date spend/income are correctly 0
+        // here, not a reflection of the 3 seeded transactions above.
         let summary = do_fetch_dashboard_summary(&conn).unwrap();
-        assert_eq!(summary.total_spend, 2199.0);
-        // Seeded mock data has only negative-amount (spend) transactions — income is 0
+        assert_eq!(summary.month_to_date_spend, 0.0);
         assert_eq!(summary.income, 0.0);
         // local_profile has 60000 spending limit
         assert_eq!(summary.limit, 60000.0);
-        // No statements with status='UPCOMING' in seeded data
-        assert_eq!(summary.upcoming_bills, 0);
+        // No instruments with a future statement_due_date in seeded data
+        assert_eq!(summary.upcoming_bills_count, 0);
 
         let txs = do_fetch_transactions(&conn, &TransactionListFilters::default(), 50, 0).unwrap();
         assert_eq!(txs.len(), 3);
@@ -2097,5 +2517,146 @@ mod tests {
         assert_eq!(page2.len(), 2);
         assert_eq!(total, 5, "total count must reflect all rows, independent of the page size");
         assert_ne!(page1[0].id, page2[0].id, "different pages must return different rows");
+    }
+
+    /// Doc 30 TASK-API-006 / Document 19 §11.2 acceptance coverage:
+    /// `dashboard_upcoming_bills` surfaces an instrument with a future
+    /// `statement_due_date`, using its nickname and outstanding balance.
+    #[test]
+    fn test_dashboard_upcoming_bills_reflects_instrument_due_dates() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        conn.execute("PRAGMA foreign_keys = OFF;", []).unwrap();
+        conn.execute(
+            "INSERT INTO instruments (id, type, issuer_name, masked_identifier, current_balance, statement_due_date, nickname, status, is_deleted) \
+             VALUES ('inst_due', 'credit_card', 'HDFC Bank', '1234', 2450000, '2099-06-25', 'HDFC Regalia', 'active', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO instruments (id, type, issuer_name, masked_identifier, statement_due_date, status, is_deleted) \
+             VALUES ('inst_past', 'credit_card', 'ICICI Bank', '5678', '2000-01-01', 'active', 0)",
+            [],
+        )
+        .unwrap();
+
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let bills = do_fetch_upcoming_bills(&conn, &today).unwrap();
+
+        assert_eq!(bills.len(), 1, "only the future-dated instrument counts as an upcoming bill");
+        assert_eq!(bills[0].id, "inst_due");
+        assert_eq!(bills[0].description, "HDFC Regalia");
+        assert_eq!(bills[0].amount, 24500.0);
+        assert_eq!(bills[0].due_date, "2099-06-25");
+    }
+
+    /// Doc 30 TASK-API-006 / Document 19 §11.3 acceptance coverage:
+    /// `dashboard_categories` aggregates current-month spend per category,
+    /// keyed off the real seeded `cat_food` row (migration 20260101000002).
+    #[test]
+    fn test_dashboard_categories_aggregates_current_month_spend() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        conn.execute("PRAGMA foreign_keys = OFF;", []).unwrap();
+        let now = chrono::Utc::now().naive_utc();
+        let month = format!("{}-{:02}", now.date().year(), now.date().month());
+        let event_time = now.format("%Y-%m-%d %H:%M:%S").to_string();
+        conn.execute(
+            "INSERT INTO transactions (id, direction, best_event_time, amount_minor, category_id, is_deleted) \
+             VALUES ('tx_food', 'debit', ?1, 42500, 'cat_food', 0)",
+            params![event_time],
+        )
+        .unwrap();
+
+        let categories = do_fetch_category_spend(&conn, &month).unwrap();
+        let food = categories.iter().find(|c| c.category_id == "cat_food").expect("cat_food must be present");
+
+        assert_eq!(food.total_spend, 425.0);
+        assert_eq!(food.name, "Food & Dining");
+    }
+
+    /// Doc 30 TASK-API-006 acceptance coverage: `analytics_spend_trend`'s
+    /// monthly granularity buckets by `%Y-%m` and sums `amount_minor`.
+    #[test]
+    fn test_spend_trend_monthly_buckets_by_period() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        conn.execute("PRAGMA foreign_keys = OFF;", []).unwrap();
+        let now = chrono::Utc::now().naive_utc();
+        let event_time = now.format("%Y-%m-%d %H:%M:%S").to_string();
+        let expected_period = now.format("%Y-%m").to_string();
+        conn.execute(
+            "INSERT INTO transactions (id, direction, best_event_time, amount_minor, is_deleted) VALUES ('tx_1', 'debit', ?1, 1000, 0)",
+            params![event_time],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transactions (id, direction, best_event_time, amount_minor, is_deleted) VALUES ('tx_2', 'debit', ?1, 500, 0)",
+            params![event_time],
+        )
+        .unwrap();
+
+        let trend = do_fetch_spend_trend(&conn, "monthly", &now).unwrap();
+        let bucket = trend.iter().find(|p| p.period == expected_period).expect("current month bucket must be present");
+
+        assert_eq!(bucket.total_spend, 15.0);
+    }
+
+    /// Doc 30 TASK-API-006 acceptance coverage: `analytics_top_merchants`
+    /// orders descending by current-month spend.
+    #[test]
+    fn test_top_merchants_orders_by_spend_desc() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        conn.execute("PRAGMA foreign_keys = OFF;", []).unwrap();
+        let now = chrono::Utc::now().naive_utc();
+        let event_time = now.format("%Y-%m-%d %H:%M:%S").to_string();
+        conn.execute(
+            "INSERT INTO transactions (id, direction, best_event_time, amount_minor, merchant_display_name, is_deleted) \
+             VALUES ('tx_small', 'debit', ?1, 500, 'Small Spend Cafe', 0)",
+            params![event_time],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transactions (id, direction, best_event_time, amount_minor, merchant_display_name, is_deleted) \
+             VALUES ('tx_big', 'debit', ?1, 5000, 'Big Spend Store', 0)",
+            params![event_time],
+        )
+        .unwrap();
+
+        let merchants = do_fetch_top_merchants(&conn, &now).unwrap();
+
+        assert_eq!(merchants[0].merchant_display_name, "Big Spend Store", "the higher-spend merchant must sort first");
+        assert_eq!(merchants[0].total_spend, 50.0);
+        assert_eq!(merchants[1].merchant_display_name, "Small Spend Cafe");
+    }
+
+    /// Doc 30 TASK-API-006 acceptance coverage: `analytics_recurring_payments_summary`
+    /// resolves a display name from `merchants` via `merchant_entity_id`,
+    /// since `recurring_payments` only stores the foreign key.
+    #[test]
+    fn test_recurring_payments_summary_resolves_merchant_name() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        conn.execute("PRAGMA foreign_keys = OFF;", []).unwrap();
+        conn.execute(
+            "INSERT INTO merchants (id, name, normalized_name, source, is_deleted) VALUES ('m_netflix', 'Netflix', 'netflix', 'system', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO recurring_payments (id, merchant_entity_id, amount_minor, currency, cadence, next_predicted_date, confidence, status) \
+             VALUES ('rp_1', 'm_netflix', 64900, 'INR', 'monthly', '2026-08-01', 0.95, 'active')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO recurring_payments (id, merchant_entity_id, amount_minor, currency, cadence, status) \
+             VALUES ('rp_cancelled', 'm_netflix', 64900, 'INR', 'monthly', 'cancelled')",
+            [],
+        )
+        .unwrap();
+
+        let summary = do_fetch_recurring_payments_summary(&conn).unwrap();
+
+        assert_eq!(summary.len(), 1, "only status='active' rows are included");
+        assert_eq!(summary[0].merchant_name, "Netflix");
+        assert_eq!(summary[0].amount, 649.0);
+        assert_eq!(summary[0].cadence, "monthly");
     }
 }

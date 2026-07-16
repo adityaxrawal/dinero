@@ -378,6 +378,72 @@ pub fn get_global_spend_current_month(
     }
 }
 
+/// Doc 30 TASK-API-006 / Document 19 §11.1: mirrors `get_global_spend_current_month`
+/// for `direction = 'credit'` -- `dashboard_summary`'s additive `income` field
+/// needs the same amount_minor-based, ambiguous-cluster-excluded aggregation
+/// as spend, not the ad-hoc float `amount` scan it used before this task.
+pub fn get_global_income_current_month(
+    conn: &Connection,
+    current_date_utc: &NaiveDateTime,
+) -> Result<f64> {
+    let start_of_month = format!(
+        "{}-{:02}-01 00:00:00",
+        current_date_utc.date().year(),
+        current_date_utc.date().month()
+    );
+    let current_time_str = current_date_utc.format("%Y-%m-%d %H:%M:%S").to_string();
+
+    let mut stmt = conn.prepare(
+        "SELECT SUM(amount_minor) FROM transactions
+         WHERE direction = 'credit' AND is_deleted = 0
+           AND best_event_time >= ?1
+           AND best_event_time <= ?2
+           AND id NOT IN (
+               SELECT m.canonical_transaction_id FROM reconciliation_cluster_members m
+               JOIN reconciliation_clusters c ON c.id = m.cluster_id
+               WHERE c.cluster_status = 'open' AND m.canonical_transaction_id IS NOT NULL
+           )",
+    )?;
+
+    let sum: rusqlite::Result<i64> =
+        stmt.query_row(params![start_of_month, current_time_str], |row| row.get(0));
+
+    match sum {
+        Ok(val) => Ok(val as f64 / 100.0),
+        Err(_) => Ok(0.0),
+    }
+}
+
+/// Doc 30 TASK-API-006 / Document 19 §11.1's `recent_transactions_count`:
+/// same month-scoped, ambiguous-cluster-excluded window as spend/income,
+/// but counting rows regardless of direction.
+pub fn count_transactions_current_month(
+    conn: &Connection,
+    current_date_utc: &NaiveDateTime,
+) -> Result<i64> {
+    let start_of_month = format!(
+        "{}-{:02}-01 00:00:00",
+        current_date_utc.date().year(),
+        current_date_utc.date().month()
+    );
+    let current_time_str = current_date_utc.format("%Y-%m-%d %H:%M:%S").to_string();
+
+    conn.query_row(
+        "SELECT COUNT(*) FROM transactions
+         WHERE is_deleted = 0
+           AND best_event_time >= ?1
+           AND best_event_time <= ?2
+           AND id NOT IN (
+               SELECT m.canonical_transaction_id FROM reconciliation_cluster_members m
+               JOIN reconciliation_clusters c ON c.id = m.cluster_id
+               WHERE c.cluster_status = 'open' AND m.canonical_transaction_id IS NOT NULL
+           )",
+        params![start_of_month, current_time_str],
+        |row| row.get(0),
+    )
+    .map_err(anyhow::Error::from)
+}
+
 pub fn get_category_spend_current_month(
     conn: &Connection,
     category_id: &str,

@@ -34,10 +34,12 @@ export async function invokeCommand<T>(
 }
 
 export interface DashboardSummary {
-  total_spend: number;
-  income: number;
-  upcoming_bills: number;
+  month_to_date_spend: number;
   limit: number;
+  utilization_pct: number;
+  recent_transactions_count: number;
+  upcoming_bills_count: number;
+  income: number;
 }
 
 export interface TransactionRecord {

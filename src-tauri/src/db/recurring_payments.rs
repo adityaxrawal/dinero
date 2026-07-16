@@ -71,6 +71,40 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<RecurringPaymentsRow>> 
     Ok(row)
 }
 
+/// Doc 30 TASK-API-006: `analytics_recurring_payments_summary` -- lists
+/// every recurring payment group still `status = 'active'`, most-recently
+/// predicted first. Did not exist before this task (only single-row
+/// `get`/`find_by_instrument_and_merchant` lookups did).
+pub fn select_active(conn: &Connection) -> Result<Vec<RecurringPaymentsRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, merchant_entity_id, instrument_id, amount_minor, currency, cadence,
+                next_billing_date, next_predicted_date, next_predicted_amount, confidence, status, created_at, updated_at
+         FROM recurring_payments WHERE status = 'active' ORDER BY next_predicted_date DESC",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(RecurringPaymentsRow {
+            id: r.get(0)?,
+            merchant_entity_id: r.get(1)?,
+            instrument_id: r.get(2)?,
+            amount_minor: r.get(3)?,
+            currency: r.get(4)?,
+            cadence: r.get(5)?,
+            next_billing_date: r.get(6)?,
+            next_predicted_date: r.get(7)?,
+            next_predicted_amount: r.get(8)?,
+            confidence: r.get(9)?,
+            status: r.get(10)?,
+            created_at: r.get(11)?,
+            updated_at: r.get(12)?,
+        })
+    })?;
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row?);
+    }
+    Ok(results)
+}
+
 /// Doc 30 TASK-TXN-011: looks up an existing recurring-payment row for this
 /// (instrument, merchant) pair so re-detection after a new occurrence
 /// updates it in place rather than creating a duplicate row every time.
