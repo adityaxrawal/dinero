@@ -341,6 +341,8 @@ mod tests {
             monthly_budget_minor: None,
             is_deleted: false,
             created_at: None,
+            color: None,
+            icon: None,
         };
         categories::insert(&conn, &cat).unwrap();
 

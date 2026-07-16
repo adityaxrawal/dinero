@@ -13,13 +13,18 @@ pub struct CategoriesRow {
     pub monthly_budget_minor: Option<i64>,
     pub is_deleted: bool,
     pub created_at: Option<NaiveDateTime>,
+    /// Doc 30 TASK-API-007 / migration 20260101000039: not part of Document
+    /// 18 §4.9's original 8-field schema, added back via migration per
+    /// Aditya's decision resolving that Doc18/Doc30 conflict.
+    pub color: Option<String>,
+    pub icon: Option<String>,
 }
 
 pub fn insert(conn: &Connection, category: &CategoriesRow) -> Result<()> {
     conn.execute(
         "INSERT INTO categories (
-            id, parent_id, name, source_type, mcc_code, monthly_budget_minor, is_deleted, created_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            id, parent_id, name, source_type, mcc_code, monthly_budget_minor, is_deleted, created_at, color, icon
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             category.id,
             category.parent_id,
@@ -29,6 +34,8 @@ pub fn insert(conn: &Connection, category: &CategoriesRow) -> Result<()> {
             category.monthly_budget_minor,
             category.is_deleted,
             category.created_at,
+            category.color,
+            category.icon,
         ],
     )?;
     Ok(())
@@ -51,7 +58,9 @@ pub fn update(conn: &Connection, category: &CategoriesRow) -> Result<()> {
             source_type = ?4,
             mcc_code = ?5,
             monthly_budget_minor = ?6,
-            is_deleted = ?7
+            is_deleted = ?7,
+            color = ?8,
+            icon = ?9
          WHERE id = ?1",
         params![
             category.id,
@@ -61,6 +70,8 @@ pub fn update(conn: &Connection, category: &CategoriesRow) -> Result<()> {
             category.mcc_code,
             category.monthly_budget_minor,
             category.is_deleted,
+            category.color,
+            category.icon,
         ],
     )?;
     Ok(())
@@ -88,18 +99,46 @@ pub fn select_all(conn: &Connection) -> Result<Vec<CategoriesRow>> {
     Ok(categories)
 }
 
-pub fn soft_delete(conn: &Connection, id: &str) -> Result<()> {
+/// Doc 30 TASK-API-007: "for user categories, reassigns linked transactions
+/// to 'Others,' either automatically with a confirmation flag or requiring
+/// explicit reassignment first." Implements the first option: if any
+/// non-deleted transactions still reference this category and
+/// `confirm_reassign` is false, the delete is rejected with the linked
+/// count so the caller can re-invoke with confirmation; if true, they're
+/// reassigned to the seeded `cat_others` system category (migration
+/// 20260101000040) before the category itself is soft-deleted. Returns the
+/// number of transactions reassigned.
+pub fn soft_delete(conn: &Connection, id: &str, confirm_reassign: bool) -> Result<usize> {
     let cat = select_by_id(conn, id)?.ok_or_else(|| anyhow::anyhow!("Category not found"))?;
 
     if cat.source_type == "system" {
         return Err(anyhow::anyhow!("Cannot delete a system category"));
     }
 
+    let linked_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM transactions WHERE category_id = ?1 AND is_deleted = 0",
+        params![id],
+        |row| row.get(0),
+    )?;
+
+    if linked_count > 0 {
+        if !confirm_reassign {
+            anyhow::bail!(
+                "{} transactions are linked to this category; pass confirm_reassign=true to reassign them to 'Others' before deleting",
+                linked_count
+            );
+        }
+        conn.execute(
+            "UPDATE transactions SET category_id = 'cat_others' WHERE category_id = ?1",
+            params![id],
+        )?;
+    }
+
     conn.execute(
         "UPDATE categories SET is_deleted = 1 WHERE id = ?1",
         params![id],
     )?;
-    Ok(())
+    Ok(linked_count as usize)
 }
 
 fn row_to_category(row: &Row) -> rusqlite::Result<CategoriesRow> {
@@ -112,5 +151,7 @@ fn row_to_category(row: &Row) -> rusqlite::Result<CategoriesRow> {
         monthly_budget_minor: row.get("monthly_budget_minor")?,
         is_deleted: row.get("is_deleted")?,
         created_at: row.get("created_at")?,
+        color: row.get("color")?,
+        icon: row.get("icon")?,
     })
 }

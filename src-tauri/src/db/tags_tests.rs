@@ -108,4 +108,44 @@ mod tests {
         let tags_after_delete = select_by_transaction_id(&conn, "tx_1").unwrap();
         assert_eq!(tags_after_delete.len(), 0);
     }
+
+    /// Doc 30 TASK-API-007: `tags_delete` must not leave a dangling
+    /// `transaction_tags` join row (`tag_id REFERENCES tags(id)`, no `ON
+    /// DELETE CASCADE`) -- deleting a tag still linked to a transaction
+    /// must clean up the join row rather than raising a foreign key
+    /// violation or leaving orphaned data.
+    #[test]
+    fn test_delete_tag_still_linked_to_transaction() {
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO instruments (id, type, issuer_name, masked_identifier, status) VALUES ('inst_1', 'credit_card', 'Bank', '1234', 'active')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO transactions (id, instrument_id) VALUES ('tx_1', 'inst_1')",
+            [],
+        )
+        .unwrap();
+        let tag = TagsRow {
+            id: "tag_linked".to_string(),
+            name: "Linked".to_string(),
+            color_hex: None,
+            created_at: Some(Utc::now().naive_utc()),
+        };
+        insert(&conn, &tag).unwrap();
+        insert_transaction_tag(
+            &conn,
+            &TransactionTagsRow {
+                transaction_id: "tx_1".to_string(),
+                tag_id: "tag_linked".to_string(),
+                created_at: Some(Utc::now().naive_utc()),
+            },
+        )
+        .unwrap();
+
+        delete(&conn, "tag_linked").expect("delete must clean up the join row, not fail");
+
+        assert!(select_by_id(&conn, "tag_linked").unwrap().is_none());
+        assert_eq!(select_by_transaction_id(&conn, "tx_1").unwrap().len(), 0);
+    }
 }

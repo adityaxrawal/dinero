@@ -57,7 +57,15 @@ pub fn select_all(conn: &Connection) -> Result<Vec<TagsRow>> {
     Ok(tags)
 }
 
+/// Doc 30 TASK-API-007: `tags_delete`. Removes any `transaction_tags`
+/// join rows first -- `transaction_tags.tag_id REFERENCES tags(id)` with
+/// no `ON DELETE CASCADE`, so deleting a still-referenced tag would raise
+/// a foreign key violation whenever `PRAGMA foreign_keys` is on.
 pub fn delete(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM transaction_tags WHERE tag_id = ?1",
+        params![id],
+    )?;
     conn.execute("DELETE FROM tags WHERE id = ?1", params![id])?;
     Ok(())
 }

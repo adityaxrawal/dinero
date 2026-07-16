@@ -2241,6 +2241,62 @@ pub async fn tags_list(
     Ok(tags.into_iter().map(|t| t.name).collect())
 }
 
+#[derive(serde::Deserialize)]
+pub struct TagCreatePayload {
+    pub name: String,
+    pub color_hex: Option<String>,
+}
+
+/// Doc 30 TASK-API-007: "`tags_create`" -- Document 19 §18 already
+/// catalogs this exact name.
+#[tauri::command]
+pub async fn tags_create(
+    payload: TagCreatePayload,
+    pool: tauri::State<'_, deadpool_sqlite::Pool>,
+) -> Result<serde_json::Value, crate::error::AppError> {
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    if payload.name.trim().is_empty() {
+        return Err(crate::error::AppError::Validation("name must not be empty".to_string()));
+    }
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let row = crate::db::tags::TagsRow {
+        id: id.clone(),
+        name: payload.name,
+        color_hex: payload.color_hex,
+        created_at: None,
+    };
+    conn.interact(move |c| crate::db::tags::insert(c, &row))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    Ok(serde_json::json!({ "id": id, "status": "created" }))
+}
+
+/// Doc 30 TASK-API-007: "`tags_delete`" -- no Document 19 contract exists
+/// (absent from §18's catalog despite `tags_list`/`tags_create` both being
+/// listed there), same documentation-gap situation as several
+/// TASK-API-005/006 commands.
+#[tauri::command]
+pub async fn tags_delete(
+    id: String,
+    pool: tauri::State<'_, deadpool_sqlite::Pool>,
+) -> Result<String, crate::error::AppError> {
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(move |c| crate::db::tags::delete(c, &id))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    Ok("deleted".to_string())
+}
+
 /// G13 fix: the tag names currently associated with a transaction, so the
 /// detail drawer can populate the correction form's tag list.
 #[tauri::command]
@@ -2542,6 +2598,8 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         transactions_remove_tag,
         transactions_get_emi_group,
         tags_list,
+        tags_create,
+        tags_delete,
         fetch_transaction_tags,
         pattern_rule_set_status,
         settings_pdf_passwords_list,
@@ -2564,6 +2622,10 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         data::analytics_top_merchants,
         data::analytics_recurring_payments_summary,
         data::analytics_pending_review_count,
+        data::categories_list,
+        data::categories_create,
+        data::categories_update,
+        data::categories_delete,
         data::transactions_list,
         data::transactions_search,
         data::fetch_spending_limits,

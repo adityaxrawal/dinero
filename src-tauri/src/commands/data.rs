@@ -1293,6 +1293,163 @@ pub async fn analytics_pending_review_count(
         .map_err(crate::error::AppError::Db)
 }
 
+/// Doc 30 TASK-API-007: "`categories_list` (full tree, system + user)" --
+/// no Document 19 contract exists (absent from §18's 53-command catalog,
+/// same documentation-gap situation as several TASK-API-005/006 commands),
+/// so Doc 30's own name is used verbatim. Returns a flat list with
+/// `parent_id` references; tree assembly is a frontend concern.
+#[tauri::command]
+pub async fn categories_list(
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<Vec<crate::db::categories::CategoriesRow>, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(|c| crate::db::categories::select_all(c))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))
+}
+
+#[derive(Deserialize)]
+pub struct CategoryCreatePayload {
+    pub name: String,
+    pub parent_id: Option<String>,
+    pub mcc_code: Option<String>,
+    pub monthly_budget_minor: Option<i64>,
+    pub color: Option<String>,
+    pub icon: Option<String>,
+}
+
+/// Doc 30 TASK-API-007: "`categories_create` (user categories only)" --
+/// `source_type` is always forced to `'user'` here regardless of any
+/// caller-supplied value; system/mcc_mapped categories are seed-data-only
+/// and never created through this command.
+#[tauri::command]
+pub async fn categories_create(
+    payload: CategoryCreatePayload,
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<serde_json::Value, crate::error::AppError> {
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    if payload.name.trim().is_empty() {
+        return Err(crate::error::AppError::Validation("name must not be empty".to_string()));
+    }
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let row = crate::db::categories::CategoriesRow {
+        id: id.clone(),
+        parent_id: payload.parent_id,
+        name: payload.name,
+        source_type: "user".to_string(),
+        mcc_code: payload.mcc_code,
+        monthly_budget_minor: payload.monthly_budget_minor,
+        is_deleted: false,
+        created_at: None,
+        color: payload.color,
+        icon: payload.icon,
+    };
+    conn.interact(move |c| crate::db::categories::insert(c, &row))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    Ok(serde_json::json!({ "id": id, "status": "created" }))
+}
+
+#[derive(Deserialize)]
+pub struct CategoryUpdatePayload {
+    pub id: String,
+    pub name: Option<String>,
+    pub parent_id: Option<String>,
+    pub mcc_code: Option<String>,
+    pub monthly_budget_minor: Option<i64>,
+    pub color: Option<String>,
+    pub icon: Option<String>,
+}
+
+/// Doc 30 TASK-API-007: "`categories_update` (rejects renaming `is_system
+/// = 1` categories; icon/color customization is allowed)". Fetches the
+/// full existing row and patches only the caller-supplied fields (matching
+/// TASK-API-002's established fetch-then-patch pattern, not a blind
+/// full-row overwrite) -- `db/categories.rs::update`'s own guard rejects
+/// the write outright if `name`/`parent_id` differ on a system category,
+/// while `color`/`icon`/`monthly_budget_minor` changes pass through
+/// unconditionally, even for system categories.
+#[tauri::command]
+pub async fn categories_update(
+    payload: CategoryUpdatePayload,
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<serde_json::Value, crate::error::AppError> {
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(move |c| -> Result<(), crate::error::AppError> {
+        let mut row = crate::db::categories::select_by_id(c, &payload.id)
+            .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+            .ok_or_else(|| crate::error::AppError::Validation("category not found".to_string()))?;
+        if let Some(name) = payload.name {
+            row.name = name;
+        }
+        if let Some(parent_id) = payload.parent_id {
+            row.parent_id = Some(parent_id);
+        }
+        if let Some(mcc_code) = payload.mcc_code {
+            row.mcc_code = Some(mcc_code);
+        }
+        if let Some(budget) = payload.monthly_budget_minor {
+            row.monthly_budget_minor = Some(budget);
+        }
+        if let Some(color) = payload.color {
+            row.color = Some(color);
+        }
+        if let Some(icon) = payload.icon {
+            row.icon = Some(icon);
+        }
+        crate::db::categories::update(c, &row).map_err(|e| crate::error::AppError::Validation(e.to_string()))
+    })
+    .await
+    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))??;
+    Ok(serde_json::json!({ "status": "updated" }))
+}
+
+#[derive(Deserialize)]
+pub struct CategoryDeletePayload {
+    pub id: String,
+    #[serde(default)]
+    pub confirm_reassign: bool,
+}
+
+/// Doc 30 TASK-API-007: "`categories_delete` (rejects deleting system
+/// categories with `AppError::Validation`; for user categories, reassigns
+/// linked transactions to 'Others,' either automatically with a
+/// confirmation flag or requiring explicit reassignment first)". Both
+/// behaviors live in `db/categories.rs::soft_delete`: a system-category
+/// target or an unconfirmed reassignment both surface as `Validation`.
+#[tauri::command]
+pub async fn categories_delete(
+    payload: CategoryDeletePayload,
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<serde_json::Value, crate::error::AppError> {
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let confirm_reassign = payload.confirm_reassign;
+    let id = payload.id;
+    let reassigned = conn
+        .interact(move |c| crate::db::categories::soft_delete(c, &id, confirm_reassign))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Validation(e.to_string()))?;
+    Ok(serde_json::json!({ "status": "deleted", "reassigned_count": reassigned }))
+}
+
 const TRANSACTIONS_PAGE_SIZE: i64 = 50;
 
 /// G9 fix: `page` (1-indexed, defaults to 1) drives real offset-based
