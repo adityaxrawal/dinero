@@ -28,7 +28,46 @@ const tauriMockInitScript = `
 
   window.__TAURI_INTERNALS__.invoke = async function (cmd, args) {
     if (cmd === 'dashboard_summary') {
-      return { total_spend: 2199.0, income: 110000.0, upcoming_bills: 2, limit: 60000.0 };
+      // TASK-FE-008 fix: this mock still had the pre-TASK-API-006 shape
+      // (total_spend/upcoming_bills) -- the real DashboardSummary has been
+      // month_to_date_spend/limit/utilization_pct/recent_transactions_count/
+      // upcoming_bills_count/income since that task, so Dashboard.spec.ts
+      // never actually completed its loading state against this fixture.
+      return {
+        month_to_date_spend: 2199.0,
+        limit: 60000.0,
+        utilization_pct: 3.665,
+        recent_transactions_count: 3,
+        upcoming_bills_count: 2,
+        income: 110000.0,
+      };
+    }
+    if (cmd === 'dashboard_upcoming_bills') {
+      return {
+        bills: [
+          { id: 'bill_1', description: 'HDFC Bank Credit Card', amount: 4500.0, currency: 'INR', due_date: new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10) },
+          { id: 'bill_2', description: 'ICICI Bank Credit Card', amount: 1200.0, currency: 'INR', due_date: new Date(Date.now() + 10 * 86400000).toISOString().slice(0, 10) },
+        ],
+      };
+    }
+    if (cmd === 'dashboard_categories') {
+      return {
+        categories: [
+          { category_id: 'cat_food', name: 'FOOD', total_spend: 899.0, monthly_budget: 8000, utilization_pct: 11.2, currency: 'INR' },
+          { category_id: 'cat_transport', name: 'TRANSPORT', total_spend: 250.0, monthly_budget: 4000, utilization_pct: 6.25, currency: 'INR' },
+          { category_id: 'cat_shopping', name: 'SHOPPING', total_spend: 1050.0, monthly_budget: 15000, utilization_pct: 7.0, currency: 'INR' },
+          { category_id: 'cat_empty', name: 'ENTERTAINMENT', total_spend: 0, monthly_budget: 5000, utilization_pct: 0, currency: 'INR' },
+        ],
+      };
+    }
+    if (cmd === 'analytics_spend_trend') {
+      return [
+        { period: '2026-05', total_spend: 1800.0 },
+        { period: '2026-06', total_spend: 2199.0 },
+      ];
+    }
+    if (cmd === 'analytics_pending_review_count') {
+      return { count: 0, amount_minor: 0 };
     }
     if (cmd === 'transactions_list') {
       // G9 fix (pre-existing mock/contract drift, found during the G20/H10/J8

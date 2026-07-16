@@ -8,6 +8,10 @@ export const queryKeys = {
   dashboard: {
     all: () => ['dashboard'] as const,
     summary: () => ['dashboard', 'summary'] as const,
+    upcomingBills: () => ['dashboard', 'upcomingBills'] as const,
+    categories: (month: string) => ['dashboard', 'categories', month] as const,
+    spendTrend: (granularity: string) => ['dashboard', 'spendTrend', granularity] as const,
+    pendingReview: () => ['dashboard', 'pendingReview'] as const,
   },
   transactions: {
     all: () => ['transactions'] as const,

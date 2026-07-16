@@ -42,6 +42,37 @@ export interface DashboardSummary {
   income: number;
 }
 
+// TASK-FE-008: types for the TASK-API-006 commands that had no frontend
+// call site until now (src-tauri/src/commands/data.rs's exact struct shapes).
+export interface UpcomingBill {
+  id: string;
+  description: string;
+  amount: number;
+  currency: string;
+  due_date: string;
+}
+
+export interface CategorySpend {
+  category_id: string;
+  name: string;
+  total_spend: number;
+  monthly_budget: number | null;
+  utilization_pct: number;
+  currency: string;
+}
+
+export interface SpendTrendPoint {
+  period: string;
+  total_spend: number;
+}
+
+export type SpendTrendGranularity = 'daily' | 'weekly' | 'monthly';
+
+export interface PendingReviewMetric {
+  count: number;
+  amount_minor: number;
+}
+
 export interface TransactionRecord {
   id: string;
   date: string;
@@ -149,6 +180,17 @@ export const API = {
   dashboard: {
     getSummary: () =>
       invokeCommand<DashboardSummary>('dashboard_summary'),
+    // TASK-API-006 built these with no frontend call site; wired here.
+    getUpcomingBills: () =>
+      invokeCommand<{ bills: UpcomingBill[] }>('dashboard_upcoming_bills').then((r) => r.bills),
+    getCategories: (month: string) =>
+      invokeCommand<{ categories: CategorySpend[] }>('dashboard_categories', { month }).then((r) => r.categories),
+  },
+  analytics: {
+    getSpendTrend: (granularity: SpendTrendGranularity) =>
+      invokeCommand<SpendTrendPoint[]>('analytics_spend_trend', { granularity }),
+    getPendingReviewCount: () =>
+      invokeCommand<PendingReviewMetric>('analytics_pending_review_count'),
   },
   transactions: {
     // G9 fix: real offset-based pagination — `page` is honored server-side
@@ -365,8 +407,12 @@ export const API = {
   db: {
     restoreBackup: () => invokeCommand<string>('db_restore_backup'),
     // J7 fix: local encrypted export of the full dataset — previously no
-    // such command existed at all.
-    exportData: (exportPath: string) => invokeCommand<string>('settings_export_data', { exportPath }),
+    // such command existed at all. `password`, when provided, additionally
+    // AES-256-GCM-encrypts the export with that password (portable to a
+    // different Mac) instead of relying solely on this machine's Keychain-
+    // derived SQLCipher key.
+    exportData: (exportPath: string, password?: string) =>
+      invokeCommand<string>('settings_export_data', { exportPath, password: password ?? null }),
   },
   dev: {
     resetDatabase: () => invokeCommand<string>('settings_delete_account'),

@@ -1,94 +1,58 @@
-import { useEffect, useState, useCallback } from 'react';
-import { ArrowUpRight, ArrowDownRight, Activity, CreditCard, ChevronDown, ChevronRight, CheckCircle2, PlusCircle } from 'lucide-react';
-import { API, DashboardSummary, TransactionRecord, InstrumentRecord } from '../lib/ipc';
+import { useState, useEffect, useRef } from 'react';
+import { Activity, CreditCard, ChevronDown, ChevronRight, CheckCircle2, PlusCircle } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { useNavigate } from 'react-router-dom';
+import { useDashboardSummary } from '@/hooks/queries/useDashboardSummary';
+import { useTransactionsList } from '@/hooks/queries/useTransactionsList';
+import { useInstrumentsList } from '@/hooks/queries/useInstrumentsList';
+import { useSpendTrend } from '@/hooks/queries/useSpendTrend';
+import { useDashboardCategories } from '@/hooks/queries/useDashboardCategories';
+import type { InstrumentRecord } from '@/lib/ipc';
+import SpendSummaryCard from '@/components/dashboard/SpendSummaryCard';
+import CategoryBreakdownChart from '@/components/dashboard/CategoryBreakdownChart';
+import SpendTrendChart from '@/components/dashboard/SpendTrendChart';
+import UpcomingBillsWidget from '@/components/dashboard/UpcomingBillsWidget';
+import PendingReviewBanner from '@/components/dashboard/PendingReviewBanner';
 
-
-// Tauri event listener — no-op in browser mode
-let tauriListen: ((event: string, handler: (e: any) => void) => Promise<() => void>) | null = null;
-try {
-  import('@tauri-apps/api/event').then((m) => {
-    tauriListen = m.listen;
-  });
-} catch {
-  // Running in browser dev mode
+function currentMonthString(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 }
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const [summary, setSummary] = useState<DashboardSummary | null>(null);
-  const [transactions, setTransactions] = useState<TransactionRecord[]>([]);
-  const [instruments, setInstruments] = useState<InstrumentRecord[]>([]);
-  const [loading, setLoading] = useState(true);
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+
+  // TASK-FE-003: React Query hooks replace the old manual useState/useEffect
+  // fetch + hand-rolled transaction_created/scan_completed listeners — the
+  // globally-mounted useIpcQueryInvalidation (App.tsx's IpcEventBridge)
+  // already invalidates these exact query keys on those real events, so a
+  // second, page-local subscription would just be duplicate work.
+  const { data: summary, isLoading: summaryLoading } = useDashboardSummary();
+  const { data: txPage, isLoading: txLoading } = useTransactionsList(1);
+  const { data: instruments = [], isLoading: instrumentsLoading } = useInstrumentsList();
+  const { data: monthlyTrend } = useSpendTrend('monthly');
+  const { data: categories, isLoading: categoriesLoading } = useDashboardCategories(currentMonthString());
 
   const toggleGroup = (type: string) => {
     setExpandedGroups((prev) => ({ ...prev, [type]: !prev[type] }));
   };
 
-  const fetchData = useCallback(async () => {
-    try {
-      const [sum, txs, insts] = await Promise.all([
-        API.dashboard.getSummary(),
-        API.transactions.list(),
-        API.instruments.list(),
-      ]);
-      setSummary(sum);
-      setTransactions(txs.records.slice(0, 5));
-      setInstruments(insts);
-      // Auto-expand first group
-      if (insts.length > 0) {
-        setExpandedGroups({ [insts[0].instrument_type]: true });
-      }
-    } catch (err) {
-      console.error('Failed to fetch dashboard data:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
+  // Auto-expand the first instrument group once, same as the pre-React-Query
+  // version — but only the first time instruments load, not on every
+  // background refetch (which would clobber a user's manual toggles).
+  const hasAutoExpanded = useRef(false);
   useEffect(() => {
-    fetchData();
-
-    if (!tauriListen) {
-      // Browser mode — no live event subscriptions
-      return;
+    if (!hasAutoExpanded.current && instruments.length > 0) {
+      hasAutoExpanded.current = true;
+      setExpandedGroups({ [instruments[0].instrument_type]: true });
     }
+  }, [instruments]);
 
-    const unlisteners: (() => void)[] = [];
-
-    const setup = async () => {
-      if (!tauriListen) return;
-
-      // Subscribe to transaction.created for live dashboard updates
-      const unlistenTx = await tauriListen('transaction_created', () => {
-        fetchData();
-      });
-      unlisteners.push(unlistenTx);
-
-      // Subscribe to scan.completed for live dashboard updates
-      const unlistenScan = await tauriListen('scan_completed', () => {
-        fetchData();
-      });
-      unlisteners.push(unlistenScan);
-
-      // Subscribe to statement.parsed for live dashboard updates
-      const unlistenStmt = await tauriListen('statement_parsed', () => {
-        fetchData();
-      });
-      unlisteners.push(unlistenStmt);
-    };
-
-    setup().catch(console.error);
-
-    return () => {
-      unlisteners.forEach((fn) => fn());
-    };
-  }, [fetchData]);
+  const loading = summaryLoading || txLoading || instrumentsLoading;
 
   if (loading || !summary) {
     return (
@@ -99,6 +63,7 @@ export default function Dashboard() {
     );
   }
 
+  const transactions = (txPage?.records ?? []).slice(0, 5);
   const limitPercentage = summary.limit > 0
     ? Math.min((summary.month_to_date_spend / summary.limit) * 100, 100)
     : 0;
@@ -117,48 +82,16 @@ export default function Dashboard() {
         <p className="text-muted-foreground mt-1">Your financial summary for this month.</p>
       </header>
 
-      {/* No hardcoded subscription alert — only show if real data exists */}
+      <PendingReviewBanner />
 
-      {/* KPI Cards */}
       <section aria-label="Key performance indicators">
-        <div className="grid gap-6 grid-cols-1 md:grid-cols-3">
-          <Card aria-label={`Total spend this month: ₹${summary.month_to_date_spend.toLocaleString()}`}>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Total Spend (MTD)</CardTitle>
-              <div className="p-2 bg-destructive/10 rounded-md" aria-hidden="true">
-                <ArrowUpRight className="h-4 w-4 text-red-700" />
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">₹ {summary.month_to_date_spend.toLocaleString()}</div>
-            </CardContent>
-          </Card>
-
-          <Card aria-label={`Income this month: ₹${summary.income.toLocaleString()}`}>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Income (MTD)</CardTitle>
-              <div className="p-2 bg-emerald-500/10 rounded-md" aria-hidden="true">
-                <ArrowDownRight className="h-4 w-4 text-emerald-700" />
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">₹ {summary.income.toLocaleString()}</div>
-            </CardContent>
-          </Card>
-
-          <Card aria-label={`Upcoming bills: ${summary.upcoming_bills_count} pending`}>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Upcoming Bills</CardTitle>
-              <div className="p-2 bg-amber-500/10 rounded-md" aria-hidden="true">
-                <Activity className="h-4 w-4 text-amber-500" />
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{summary.upcoming_bills_count} Pending</div>
-            </CardContent>
-          </Card>
-        </div>
+        <SpendSummaryCard summary={summary} monthlyTrend={monthlyTrend} />
       </section>
+
+      <div className="grid gap-6 grid-cols-1 lg:grid-cols-2">
+        <CategoryBreakdownChart categories={categories} isLoading={categoriesLoading} />
+        <SpendTrendChart />
+      </div>
 
       <div className="grid gap-6 grid-cols-1 lg:grid-cols-3">
         {/* Main Feed */}
@@ -172,13 +105,10 @@ export default function Dashboard() {
               {transactions.length === 0 ? (
                 <div className="text-center py-6 text-muted-foreground flex flex-col items-center" role="status">
                   <CheckCircle2 className="w-10 h-10 mb-2 opacity-20" aria-hidden="true" />
-                  <p>No transactions found.</p>
-                  <Button variant="link" onClick={() => navigate('/statements')} aria-label="Upload a statement to get started">
-                    Upload a statement
-                  </Button>
+                  <p>No transactions exist. Sync your bank or upload a statement to get started.</p>
                 </div>
               ) : (
-                <div className="space-y-4"  aria-label="Recent transactions">
+                <div className="space-y-4" aria-label="Recent transactions">
                   {transactions.map((tx) => (
                     <div
                       key={tx.id}
@@ -218,6 +148,8 @@ export default function Dashboard() {
 
         {/* Sidebar / Instruments */}
         <div className="space-y-6">
+          <UpcomingBillsWidget />
+
           <Card aria-label={`Monthly limit: spent ₹${summary.month_to_date_spend.toLocaleString()} of ₹${summary.limit.toLocaleString()}`}>
             <CardHeader>
               <CardTitle>Monthly Limit</CardTitle>
@@ -303,9 +235,9 @@ export default function Dashboard() {
                                   </span>
                                 </div>
                                 <div className="w-full h-1 bg-secondary rounded-full overflow-hidden">
-                                  <div 
-                                    className={cn('h-full rounded-full', inst.credit_limit && ((inst.current_balance || 0) / inst.credit_limit) > 0.9 ? 'bg-destructive' : 'bg-primary')} 
-                                    style={{ width: `${inst.credit_limit ? Math.min(100, Math.max(0, ((inst.current_balance || 0) / inst.credit_limit) * 100)) : 0}%` }} 
+                                  <div
+                                    className={cn('h-full rounded-full', inst.credit_limit && ((inst.current_balance || 0) / inst.credit_limit) > 0.9 ? 'bg-destructive' : 'bg-primary')}
+                                    style={{ width: `${inst.credit_limit ? Math.min(100, Math.max(0, ((inst.current_balance || 0) / inst.credit_limit) * 100)) : 0}%` }}
                                   />
                                 </div>
                               </div>
