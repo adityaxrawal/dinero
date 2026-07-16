@@ -7,7 +7,7 @@ import Statements from '@/pages/Statements';
 import Reconciliation from '@/pages/Reconciliation';
 import Settings from '@/pages/Settings';
 import Debug from '@/pages/Debug';
-import Onboarding from '@/pages/Onboarding';
+import OnboardingFlow from './onboarding/OnboardingFlow';
 import SpendingLimits from '@/pages/SpendingLimits';
 
 // Document 30 TASK-FE-001: hash-based routing (`createHashRouter`), not
@@ -15,7 +15,7 @@ import SpendingLimits from '@/pages/SpendingLimits';
 // fall back to index.html for an arbitrary deep-linked path, only a
 // `#`-fragment survives that.
 export const router = createHashRouter([
-  { path: '/onboarding', element: <Onboarding /> },
+  { path: '/onboarding', element: <OnboardingFlow /> },
   {
     path: '/',
     element: <AppLayout />,

@@ -8,8 +8,19 @@ test.describe('Onboarding Flow - Rigorous Verification', () => {
   });
 
   test('should enforce timezone, boundary limits, and strictly gate completion', async ({ page }) => {
+    // TASK-FE-004: WelcomeScreen and NetworkDisclosureScreen now gate entry
+    // into the rest of onboarding, each requiring its own explicit click —
+    // never a timed auto-advance.
     await expect(page.locator('text="Welcome to Dinero"')).toBeVisible();
-    
+    await page.click('button:has-text("Get Started")');
+
+    await expect(page.locator('text="How Dinero Uses the Network"')).toBeVisible();
+    await expect(page.locator('text="Gmail API"')).toBeVisible();
+    await expect(page.locator('text="Licensing Backend"')).toBeVisible();
+    await page.click('button:has-text("Continue")');
+
+    await expect(page.locator('text="Set Up Your Preferences"')).toBeVisible();
+
     // Timezone confirmation
     await expect(page.locator('label:has-text("Timezone")')).toBeVisible();
     
@@ -20,9 +31,12 @@ test.describe('Onboarding Flow - Rigorous Verification', () => {
     // Test negative/invalid limit (should be disabled or show error)
     await limitInput.fill('-500');
     await page.click('button:has-text("Continue")');
-    // We expect the form to either not submit or show a validation error
-    // (Assuming HTML5 validation or Zod prevents it)
-    await expect(page.locator('text="Must be a positive number"').or(page.locator('text="Welcome to Dinero"')).first()).toBeVisible();
+    // We expect the form to either not submit or show a validation error.
+    // "Must be > 0" is the real limitError text (Onboarding.tsx); the
+    // "Set Up Your Preferences" fallback confirms we're still on this step
+    // (title renamed from "Welcome to Dinero" by TASK-FE-004's WelcomeScreen
+    // extraction) rather than having incorrectly advanced.
+    await expect(page.locator('text="Must be > 0"').or(page.locator('text="Set Up Your Preferences"')).first()).toBeVisible();
 
     await limitInput.fill('60000');
     

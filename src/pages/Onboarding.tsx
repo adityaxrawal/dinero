@@ -150,7 +150,10 @@ export default function Onboarding() {
       <Card className="w-full max-w-lg shadow-2xl">
         <CardHeader>
           <div className="flex items-center justify-between mb-1">
-            <CardTitle className="text-2xl">Welcome to Dinero</CardTitle>
+            {/* TASK-FE-004: "Welcome to Dinero" now belongs to the dedicated
+                WelcomeScreen shown before this component (OnboardingFlow) —
+                this step is the preferences setup that follows it. */}
+            <CardTitle className="text-2xl">Set Up Your Preferences</CardTitle>
             <span className="text-xs text-muted-foreground" aria-label={stepLabel}>{stepLabel}</span>
           </div>
           {/* Step progress bar */}
