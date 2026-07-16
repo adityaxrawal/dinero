@@ -5,9 +5,11 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Loader2, Mail, ShieldCheck, AlertCircle, Check } from 'lucide-react';
+import { Loader2, Mail, ShieldCheck, Check } from 'lucide-react';
 import { API, LlmModelInfo } from '@/lib/ipc';
 import { OUTBOUND_CHANNEL_DISCLOSURE, BETA_PROGRAM_DISCLOSURE } from '@/constants/privacy';
+import GmailConsentScreen from '@/routes/onboarding/GmailConsentScreen';
+import { mapOauthError } from '@/routes/onboarding/mapOauthError';
 
 const TOTAL_STEPS = 3;
 
@@ -93,8 +95,7 @@ export default function Onboarding() {
       await savePreferencesToBackend();
       navigate('/');
     } catch (e: any) {
-      const msg = e?.message || 'Failed to connect Gmail. Please try again.';
-      setOauthError(msg);
+      setOauthError(mapOauthError(e?.message));
     } finally {
       setLoading(false);
     }
@@ -327,82 +328,12 @@ export default function Onboarding() {
           )}
 
           {step === 3 && (
-            <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 text-center">
-              <div className="mx-auto w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center">
-                <ShieldCheck className="w-6 h-6 text-primary" aria-hidden="true" />
-              </div>
-              <div>
-                <h3 className="text-lg font-medium">Connect your Gmail</h3>
-                <p className="text-sm text-muted-foreground mt-2">
-                  <span>We require read-only access to parse financial emails.</span>
-                  Your credentials are never stored.
-                </p>
-              </div>
-              <div className="bg-secondary/50 p-4 rounded-md text-left" aria-label="Requested Gmail scopes">
-                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Requested Scopes</span>
-                <ul className="mt-2 text-sm space-y-1" >
-                  <li>
-                    •{' '}
-                    <code className="text-xs bg-muted px-1 rounded">
-                      https://www.googleapis.com/auth/gmail.readonly
-                    </code>
-                  </li>
-                </ul>
-              </div>
-
-              {/* F12 fix: beta/"Testing" OAuth mode constraints, surfaced
-                  before Gmail authorization rather than only in a separate
-                  onboarding guide doc. */}
-              <div
-                className="bg-amber-500/10 border border-amber-500/30 p-4 rounded-md text-left"
-                aria-label="Beta program disclosure"
-              >
-                <span className="text-xs font-semibold uppercase tracking-wider text-amber-700">
-                  Beta Program — Google Sign-In Limitations
-                </span>
-                <ul className="mt-2 text-xs space-y-1.5 text-muted-foreground" style={{ listStyleType: 'disc', paddingLeft: '16px' }}>
-                  {BETA_PROGRAM_DISCLOSURE.map((item, i) => (
-                    <li key={i}>{item}</li>
-                  ))}
-                </ul>
-              </div>
-
-              {/* Doc 01 §10.4: presented verbatim on the onboarding consent
-                  screen, before Gmail authorization. */}
-              <div className="bg-secondary/50 p-4 rounded-md text-left" aria-label="Outbound network channels disclosure">
-                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  Outbound Channels Disclosure
-                </span>
-                <ul className="mt-2 text-xs space-y-1 text-muted-foreground" style={{ listStyleType: 'disc', paddingLeft: '16px' }}>
-                  {OUTBOUND_CHANNEL_DISCLOSURE.map((item, i) => (
-                    <li key={i}>{item}</li>
-                  ))}
-                </ul>
-              </div>
-
-              {oauthError && (
-                <div
-                  role="alert"
-                  className="flex items-center gap-2 text-red-700 bg-destructive/10 border border-destructive/20 rounded-md px-3 py-2 text-sm"
-                >
-                  <AlertCircle className="w-4 h-4 shrink-0" aria-hidden="true" />
-                  {oauthError}
-                </div>
-              )}
-
-              {/* G2 fix: statement-only users previously had no way to finish
-                  onboarding without connecting Gmail. */}
-              {statementPref === 'manual' && (
-                <button
-                  type="button"
-                  onClick={handleSkipGmail}
-                  disabled={loading}
-                  className="text-sm text-muted-foreground underline underline-offset-2 hover:text-foreground disabled:opacity-50"
-                >
-                  Skip — I'll upload statements manually
-                </button>
-              )}
-            </div>
+            <GmailConsentScreen
+              loading={loading}
+              oauthError={oauthError}
+              showSkip={statementPref === 'manual'}
+              onSkip={handleSkipGmail}
+            />
           )}
         </CardContent>
 
