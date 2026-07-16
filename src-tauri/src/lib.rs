@@ -629,10 +629,12 @@ pub fn run() {
             });
 
             let pool_for_licensing = pool_clone.clone();
+            let app_handle_for_licensing = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 crate::licensing::worker::start_background_validation(
                     pool_for_licensing,
                     "https://api.dinero-app.com".to_string(),
+                    app_handle_for_licensing,
                 )
                 .await;
             });

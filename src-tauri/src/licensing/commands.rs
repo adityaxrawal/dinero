@@ -4,7 +4,9 @@ use crate::licensing::client::{ActivateRequest, LicensingClient, ValidateRequest
 use crate::licensing::device::get_device_id;
 use crate::licensing::gate::trial_days_remaining;
 use crate::licensing::jwt::verify_license_jwt;
-use crate::licensing::state::{get_license_state, upsert_license_state, LicenseStateRow, LicenseStatus};
+use crate::licensing::state::{
+    get_license_state, upsert_license_state, LicenseStateRow, LicenseStatus,
+};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use serde::Serialize;
 use tauri::State;
@@ -13,7 +15,7 @@ use tauri::State;
 /// (Doc 22 §10.1 — the narrow, single-purpose licensing network destination).
 const LICENSING_BASE_URL: &str = "https://api.dinero-app.com";
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct LicenseStatusResponse {
     pub state: String,
     pub is_active: bool,
@@ -46,47 +48,72 @@ pub struct LicenseRefreshResponse {
     pub state: String,
 }
 
+/// Shared by `license_get_status` and by every state-mutating call site
+/// (TASK-FE-002/016: `useLicenseStore` needs a fresh, consistent snapshot to
+/// emit alongside `AppEvent::LicenseStateChanged`, not a hand-rolled partial
+/// payload per call site).
+pub(crate) fn compute_license_status(
+    c: &rusqlite::Connection,
+) -> Result<LicenseStatusResponse, AppError> {
+    let state = get_license_state(c).map_err(|e| AppError::Db(e.to_string()))?;
+
+    let Some(state) = state else {
+        return trial_status_response(c);
+    };
+
+    if state.subscription_status_cached == LicenseStatus::Trial {
+        return trial_status_response(c);
+    }
+
+    let is_active = matches!(
+        state.subscription_status_cached,
+        LicenseStatus::Active | LicenseStatus::Grace
+    );
+    let days_remaining = state
+        .current_period_end_cached
+        .map(|end| (end - Utc::now()).num_days());
+
+    Ok(LicenseStatusResponse {
+        state: state.subscription_status_cached.as_str().to_uppercase(),
+        is_active,
+        // Doc 19 §14.2: Razorpay-based activation has no license_key at all.
+        license_key_masked: None,
+        plan_id: state.plan_id_cached,
+        billing_interval: state.billing_interval_cached,
+        expiry_date: state
+            .current_period_end_cached
+            .or(Some(state.jwt_expires_at))
+            .map(|d| d.to_rfc3339()),
+        days_remaining,
+    })
+}
+
 /// Doc 19 §14.1.
 #[tauri::command]
 pub async fn license_get_status(
     pool: State<'_, deadpool_sqlite::Pool>,
 ) -> Result<LicenseStatusResponse, AppError> {
     let conn = pool.get().await.map_err(|e| AppError::Db(e.to_string()))?;
-    conn.interact(|c| {
-        let state = get_license_state(c).map_err(|e| AppError::Db(e.to_string()))?;
+    conn.interact(|c| compute_license_status(&*c))
+        .await
+        .map_err(|e| AppError::Unknown(e.to_string()))?
+}
 
-        let Some(state) = state else {
-            return trial_status_response(c);
-        };
-
-        if state.subscription_status_cached == LicenseStatus::Trial {
-            return trial_status_response(c);
-        }
-
-        let is_active = matches!(
-            state.subscription_status_cached,
-            LicenseStatus::Active | LicenseStatus::Grace
-        );
-        let days_remaining = state
-            .current_period_end_cached
-            .map(|end| (end - Utc::now()).num_days());
-
-        Ok(LicenseStatusResponse {
-            state: state.subscription_status_cached.as_str().to_uppercase(),
-            is_active,
-            // Doc 19 §14.2: Razorpay-based activation has no license_key at all.
-            license_key_masked: None,
-            plan_id: state.plan_id_cached,
-            billing_interval: state.billing_interval_cached,
-            expiry_date: state
-                .current_period_end_cached
-                .or(Some(state.jwt_expires_at))
-                .map(|d| d.to_rfc3339()),
-            days_remaining,
-        })
-    })
-    .await
-    .map_err(|e| AppError::Unknown(e.to_string()))?
+/// Recomputes and emits the current license status as `AppEvent::LicenseStateChanged`
+/// — TASK-FE-002/016's `useLicenseStore` reactive-mirror requirement. Errors are
+/// logged, never propagated: a failed status broadcast must not fail the write
+/// that triggered it.
+pub(crate) async fn emit_license_state_changed<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+    pool: &deadpool_sqlite::Pool,
+) {
+    let Ok(conn) = pool.get().await else { return };
+    let Ok(Ok(status)) = conn.interact(|c| compute_license_status(&*c)).await else {
+        return;
+    };
+    if let Err(e) = crate::ipc::events::emit_event(app_handle, crate::ipc::events::AppEvent::LicenseStateChanged, status) {
+        tracing::error!("Failed to emit license_state_changed: {}", e);
+    }
 }
 
 fn trial_status_response(c: &rusqlite::Connection) -> Result<LicenseStatusResponse, AppError> {
@@ -94,14 +121,18 @@ fn trial_status_response(c: &rusqlite::Connection) -> Result<LicenseStatusRespon
     let profile = select_by_id(c, 1)
         .map_err(|e| AppError::Db(e.to_string()))?
         .ok_or_else(|| AppError::LicenseLocked("No local profile found".to_string()))?;
-    let expiry_date = profile
-        .created_at
-        .map(|created| (created + ChronoDuration::days(crate::licensing::gate::TRIAL_WINDOW_DAYS))
+    let expiry_date = profile.created_at.map(|created| {
+        (created + ChronoDuration::days(crate::licensing::gate::TRIAL_WINDOW_DAYS))
             .and_utc()
-            .to_rfc3339());
+            .to_rfc3339()
+    });
 
     Ok(LicenseStatusResponse {
-        state: if remaining >= 0 { "TRIAL".to_string() } else { "LOCKED".to_string() },
+        state: if remaining >= 0 {
+            "TRIAL".to_string()
+        } else {
+            "LOCKED".to_string()
+        },
         is_active: remaining >= 0,
         license_key_masked: None,
         plan_id: None,
@@ -121,6 +152,7 @@ pub async fn license_activate(
     billing_interval: String,
     pool: State<'_, deadpool_sqlite::Pool>,
     session_state: State<'_, crate::auth::session::SessionState>,
+    app_handle: tauri::AppHandle,
 ) -> Result<LicenseActivateResponse, AppError> {
     // TASK-AUTH-008: requires an active local session (resolved from
     // Rust-side SessionState, never a caller-supplied argument) before any
@@ -190,6 +222,8 @@ pub async fn license_activate(
         .map_err(|e| AppError::Unknown(e.to_string()))?
         .map_err(|e| AppError::Db(e.to_string()))?;
 
+    emit_license_state_changed(&app_handle, pool.inner()).await;
+
     Ok(LicenseActivateResponse {
         status: "activated".to_string(),
         state: status.as_str().to_uppercase(),
@@ -211,14 +245,19 @@ pub async fn license_activate(
 pub async fn license_deactivate(
     pool: State<'_, deadpool_sqlite::Pool>,
     session_state: State<'_, crate::auth::session::SessionState>,
+    app_handle: tauri::AppHandle,
 ) -> Result<LicenseDeactivateResponse, AppError> {
     crate::ipc::middleware::require_active_session(&session_state)?;
-    deactivate_license_internal(pool.inner()).await
+    let response = deactivate_license_internal(pool.inner()).await?;
+    emit_license_state_changed(&app_handle, pool.inner()).await;
+    Ok(response)
 }
 
 /// The actual deactivation logic, callable without a session requirement —
 /// see `license_deactivate`'s doc comment for why the wipe flow needs this.
-pub async fn deactivate_license_internal(pool: &deadpool_sqlite::Pool) -> Result<LicenseDeactivateResponse, AppError> {
+pub async fn deactivate_license_internal(
+    pool: &deadpool_sqlite::Pool,
+) -> Result<LicenseDeactivateResponse, AppError> {
     let device_id = get_device_id().map_err(|e| AppError::Auth(e.to_string()))?;
 
     let client = LicensingClient::new(LICENSING_BASE_URL.to_string(), pool.clone());
@@ -254,6 +293,7 @@ pub async fn deactivate_license_internal(pool: &deadpool_sqlite::Pool) -> Result
 pub async fn license_refresh(
     pool: State<'_, deadpool_sqlite::Pool>,
     session_state: State<'_, crate::auth::session::SessionState>,
+    app_handle: tauri::AppHandle,
 ) -> Result<LicenseRefreshResponse, AppError> {
     crate::ipc::middleware::require_active_session(&session_state)?;
 
@@ -261,7 +301,9 @@ pub async fn license_refresh(
 
     let client = LicensingClient::new(LICENSING_BASE_URL.to_string(), pool.inner().clone());
     let response = client
-        .validate(ValidateRequest { device_id: device_id.clone() })
+        .validate(ValidateRequest {
+            device_id: device_id.clone(),
+        })
         .await
         .map_err(|e| AppError::Network(e.to_string()))?;
 
@@ -289,6 +331,8 @@ pub async fn license_refresh(
     .await
     .map_err(|e| AppError::Unknown(e.to_string()))?
     .map_err(|e| AppError::Db(e.to_string()))?;
+
+    emit_license_state_changed(&app_handle, pool.inner()).await;
 
     Ok(LicenseRefreshResponse {
         status: "refreshed".to_string(),

@@ -1,6 +1,8 @@
 use crate::licensing::client::{LicensingClient, ValidateRequest};
-use crate::licensing::state::{get_license_state, record_known_valid_time, transition_to_locked, LicenseStatus};
-use chrono::{Utc, Duration as ChronoDuration};
+use crate::licensing::state::{
+    get_license_state, record_known_valid_time, transition_to_locked, LicenseStatus,
+};
+use chrono::{Duration as ChronoDuration, Utc};
 use deadpool_sqlite::Pool;
 use std::time::Duration;
 use tokio::time;
@@ -15,7 +17,11 @@ const GRACE_PERIOD: ChronoDuration = ChronoDuration::days(7);
 /// one second, triggered an immediate lock.
 const CLOCK_CORRECTION_GRACE: ChronoDuration = ChronoDuration::hours(1);
 
-pub async fn start_background_validation(pool: Pool, base_url: String) {
+pub async fn start_background_validation<R: tauri::Runtime>(
+    pool: Pool,
+    base_url: String,
+    app_handle: tauri::AppHandle<R>,
+) {
     let client = LicensingClient::new(base_url, pool.clone());
     // Doc 40 §7: "roughly every 6 hours" — this is also the cadence that must
     // keep running while LOCKED, so a healed payment auto-unlocks the app
@@ -55,7 +61,6 @@ pub async fn start_background_validation(pool: Pool, base_url: String) {
                     // Only AnonymousEval (no license ever entered, nothing to validate
                     // against) is skipped.
                     if state.subscription_status_cached != LicenseStatus::AnonymousEval {
-
                         // Doc 22 §11.1: always derive device_id fresh from the hardware UUID
                         // rather than trusting a possibly-stale/unset stored fingerprint.
                         let device_id = match crate::licensing::device::get_device_id() {
@@ -65,9 +70,9 @@ pub async fn start_background_validation(pool: Pool, base_url: String) {
                                 continue;
                             }
                         };
-                        
+
                         let req = ValidateRequest { device_id };
-                        
+
                         match client.validate(req).await {
                             Ok(response) => {
                                 // Doc 22 §10.3: the raw HTTP success is not sufficient — the JWT's
@@ -91,15 +96,17 @@ pub async fn start_background_validation(pool: Pool, base_url: String) {
                                             "License JWT failed signature verification — refusing to trust it: {}",
                                             e
                                         );
-                                        let _ = conn.interact(move |c| transition_to_locked(c, false)).await;
+                                        let _ = conn
+                                            .interact(move |c| transition_to_locked(c, false))
+                                            .await;
                                     }
                                 }
                             }
                             Err(e) => {
                                 tracing::error!("License validation failed: {:?}", e);
-                                
+
                                 let now = Utc::now();
-                                
+
                                 // Apply Grace period logic (7 days — Doc 12 §7.4/§7.5, Doc 33 §4)
                                 let _ = conn.interact(move |c| {
                                     if state.subscription_status_cached == LicenseStatus::Active {
@@ -123,11 +130,18 @@ pub async fn start_background_validation(pool: Pool, base_url: String) {
                             }
                         }
                     }
-                },
-                Ok(Ok(None)) => {},
+                }
+                Ok(Ok(None)) => {}
                 Ok(Err(e)) => tracing::error!("Error reading license state: {}", e),
                 Err(e) => tracing::error!("Pool interact error: {}", e),
             }
+
+            // TASK-FE-002/016: broadcast the (possibly just-changed) status once
+            // per tick so `useLicenseStore` stays in sync without polling. Cheap
+            // and idempotent on the frontend if nothing actually changed; simpler
+            // and more robust than threading a "did this tick mutate?" flag out
+            // of every branch above.
+            crate::licensing::commands::emit_license_state_changed(&app_handle, &pool).await;
         }
     }
 }
