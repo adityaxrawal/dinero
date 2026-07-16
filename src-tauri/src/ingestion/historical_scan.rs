@@ -37,6 +37,118 @@ fn reject_if_scan_in_progress(
 /// Doc 30 TASK-GMAIL-007: checkpoint every 5 processed messages.
 const CHECKPOINT_INTERVAL: usize = 5;
 
+/// Doc 19 §18 Scans group / Doc 30 TASK-API-009: `scans_cancel`. Keyed by
+/// `account_id` since up to 10 accounts (Doc 03 §8.2) can have concurrent
+/// scans. Checked once per checkpoint interval in `scans_historical`'s main
+/// loop (the same cadence `wait_while_paused` already uses) -- didn't exist
+/// at all before this task; a scan could previously only run to completion
+/// or fail, never be stopped mid-flight.
+fn cancelled_scans() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static CELL: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    CELL.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+fn is_scan_cancelled(account_id: &str) -> bool {
+    cancelled_scans().lock().unwrap().contains(account_id)
+}
+
+fn clear_scan_cancellation(account_id: &str) {
+    cancelled_scans().lock().unwrap().remove(account_id);
+}
+
+#[tauri::command]
+pub async fn scans_cancel(account_id: String) -> Result<String, crate::error::AppError> {
+    cancelled_scans().lock().unwrap().insert(account_id);
+    Ok("cancel_requested".to_string())
+}
+
+/// Doc 19 §18 Scans group / Doc 30 TASK-API-009's `sync_get_scan_status`.
+/// Named acceptance test: `test_scan_status_reflects_checkpoint_state`.
+#[derive(Serialize)]
+pub struct ScanStatusResponse {
+    pub status: String,
+    pub processed: usize,
+    pub total: usize,
+    pub transactions_found: usize,
+    pub statements_found: usize,
+    pub errors: usize,
+}
+
+fn checkpoint_to_status(checkpoint: Option<ProcessingCheckpointRow>) -> ScanStatusResponse {
+    match checkpoint {
+        None => ScanStatusResponse {
+            status: "not_started".to_string(),
+            processed: 0,
+            total: 0,
+            transactions_found: 0,
+            statements_found: 0,
+            errors: 0,
+        },
+        Some(cp) => {
+            let state: ScanCheckpointState =
+                serde_json::from_str(&cp.checkpoint_state_json).unwrap_or_default();
+            ScanStatusResponse {
+                status: cp.status,
+                processed: state.processed_count,
+                total: state.all_message_ids.len(),
+                transactions_found: state.transactions_found,
+                statements_found: state.statements_found,
+                errors: state.errors,
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn scans_status(
+    account_id: String,
+    pool: State<'_, Pool>,
+) -> Result<ScanStatusResponse, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let checkpoint = conn
+        .interact(move |c| get_checkpoint(c, "historical_scan", &account_id))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    Ok(checkpoint_to_status(checkpoint))
+}
+
+/// Doc 19 §18 Scans group's `scans_resume`. `scans_historical`'s own
+/// checkpoint-resume logic (a `"paused"`/`"failed"`/`"cancelled"` checkpoint
+/// picks up from `state.all_message_ids`/`state.processed_count` rather than
+/// re-querying Gmail) already makes re-invoking it with the same date range
+/// a true resume, not a restart -- so this only needs to recover that
+/// original `start_date`/`end_date` from the stored checkpoint before
+/// delegating, rather than duplicating `scans_historical`'s own body.
+#[tauri::command]
+pub async fn scans_resume<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    pool: State<'_, Pool>,
+    account_id: String,
+) -> Result<String, crate::error::AppError> {
+    let account_id_clone = account_id.clone();
+    let checkpoint = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+        .interact(move |c| get_checkpoint(c, "historical_scan", &account_id_clone))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+
+    let cp = checkpoint.ok_or_else(|| {
+        crate::error::AppError::Validation("no prior scan found for this account to resume".to_string())
+    })?;
+    let state: ScanCheckpointState = serde_json::from_str(&cp.checkpoint_state_json)
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+
+    scans_historical(app, pool, account_id, state.start_date, state.end_date).await
+}
+
 fn should_checkpoint(batch_count: usize) -> bool {
     batch_count >= CHECKPOINT_INTERVAL
 }
@@ -182,10 +294,15 @@ async fn run_scan<R: tauri::Runtime>(
     access_token: String,
     existing_checkpoint: Option<ProcessingCheckpointRow>,
 ) -> anyhow::Result<()> {
+    // Doc 19 §18 Scans group: `scans_resume`/a fresh `scans_historical` call
+    // for this account must not inherit a stale cancellation from a
+    // previous, already-finished run.
+    clear_scan_cancellation(&account_id);
+
     let client = GmailClient::new(access_token, pool.clone());
 
     let mut state = if let Some(cp) = existing_checkpoint {
-        if cp.status == "paused" || cp.status == "failed" {
+        if cp.status == "paused" || cp.status == "failed" || cp.status == "cancelled" {
             serde_json::from_str::<ScanCheckpointState>(&cp.checkpoint_state_json).unwrap_or_else(
                 |_| ScanCheckpointState {
                     start_date: start_date.clone(),
@@ -284,6 +401,7 @@ async fn run_scan_batches<R: tauri::Runtime>(
 
     let mut join_set: JoinSet<(String, anyhow::Result<Option<ProcessResult>>)> = JoinSet::new();
 
+    let mut was_cancelled = false;
     let mut batch_count = 0;
 
     let mut batch_start_time = std::time::Instant::now();
@@ -524,6 +642,17 @@ async fn run_scan_batches<R: tauri::Runtime>(
         }
 
         wait_while_paused().await;
+
+        // Doc 19 §18 Scans group / Doc 30 TASK-API-009: `scans_cancel`.
+        // Checked at the same checkpoint cadence as the pause check above
+        // rather than every single message, matching how `wait_while_paused`
+        // itself is only consulted here, not per-message.
+        if is_scan_cancelled(&account_id) {
+            clear_scan_cancellation(&account_id);
+            was_cancelled = true;
+            break;
+        }
+
         if let Some(next_id) = ids_iter.next() {
             spawn_fetch(
                 &mut join_set,
@@ -544,7 +673,7 @@ async fn run_scan_batches<R: tauri::Runtime>(
         job_key: account_id.clone(),
         checkpoint_state_json: serde_json::to_string(&state).unwrap_or_default(),
         last_processed_token: None,
-        status: "completed".to_string(),
+        status: if was_cancelled { "cancelled".to_string() } else { "completed".to_string() },
         updated_at: Some(Utc::now().naive_utc()),
     };
 
@@ -554,19 +683,25 @@ async fn run_scan_batches<R: tauri::Runtime>(
             .await;
     }
 
-    let _ = app.emit(
-        "scan_completed",
-        ScanProgressPayload {
-            account_id: account_id.clone(),
-            processed: processed_count,
-            total,
-            transactions_found: state.transactions_found,
-            statements_found: state.statements_found,
-            non_financial: state.non_financial,
-            errors: state.errors,
-            error_message: None,
-        },
-    );
+    // A cancelled scan didn't actually complete -- `scan_completed` would
+    // misrepresent it to the UI (progress bar shows 100%, "Sync Now" button
+    // re-enables as if nothing is pending). `scan_progress`'s last emission
+    // from inside the loop already reflects the true processed/total split.
+    if !was_cancelled {
+        let _ = app.emit(
+            "scan_completed",
+            ScanProgressPayload {
+                account_id: account_id.clone(),
+                processed: processed_count,
+                total,
+                transactions_found: state.transactions_found,
+                statements_found: state.statements_found,
+                non_financial: state.non_financial,
+                errors: state.errors,
+                error_message: None,
+            },
+        );
+    }
 
     Ok(())
 }
@@ -594,6 +729,42 @@ mod tests {
         }
         assert!(should_checkpoint(CHECKPOINT_INTERVAL));
         assert!(should_checkpoint(CHECKPOINT_INTERVAL + 1));
+    }
+
+    /// Doc 30 TASK-API-009 acceptance test: `scans_status` reflects the
+    /// real stored checkpoint state -- both "no checkpoint yet" and a
+    /// genuine in-progress one with real progress numbers.
+    #[test]
+    fn test_scan_status_reflects_checkpoint_state() {
+        let not_started = checkpoint_to_status(None);
+        assert_eq!(not_started.status, "not_started");
+        assert_eq!(not_started.processed, 0);
+
+        let state = ScanCheckpointState {
+            start_date: "2026-01-01".to_string(),
+            end_date: "2026-02-01".to_string(),
+            all_message_ids: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            processed_count: 2,
+            transactions_found: 1,
+            statements_found: 0,
+            non_financial: 1,
+            errors: 0,
+        };
+        let cp = ProcessingCheckpointRow {
+            id: "cp_status".into(),
+            job_type: "historical_scan".into(),
+            job_key: "acc_1".into(),
+            checkpoint_state_json: serde_json::to_string(&state).unwrap(),
+            last_processed_token: None,
+            status: "in_progress".into(),
+            updated_at: None,
+        };
+
+        let status = checkpoint_to_status(Some(cp));
+        assert_eq!(status.status, "in_progress");
+        assert_eq!(status.processed, 2);
+        assert_eq!(status.total, 3);
+        assert_eq!(status.transactions_found, 1);
     }
 
     /// Doc 30 TASK-GMAIL-007 / Doc 19 §3.6: only one active scan per account.

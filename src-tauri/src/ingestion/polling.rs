@@ -94,6 +94,59 @@ pub async fn start_polling_loop<R: tauri::Runtime>(
     }
 }
 
+/// Doc 30 TASK-API-009: "a manual 'Sync Now' bypassing the normal 30-90s
+/// wait, debounced to at most once per 10 seconds to prevent Gmail-quota
+/// abuse." No Document 19 contract exists for this command under any name
+/// -- built verbatim under Doc 30's own name, same documentation-gap
+/// precedent as several other TASK-API-005 through 008 commands.
+const FORCE_POLL_DEBOUNCE: std::time::Duration = std::time::Duration::from_secs(10);
+
+fn last_force_poll_at() -> &'static std::sync::Mutex<Option<std::time::Instant>> {
+    static CELL: std::sync::OnceLock<std::sync::Mutex<Option<std::time::Instant>>> =
+        std::sync::OnceLock::new();
+    CELL.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Pure, directly testable: given "now" and the last-poll instant, decides
+/// whether a new force-poll is allowed. Split out from the `#[tauri::command]`
+/// below (which also needs a live `AppHandle`/`Pool` to actually poll) so
+/// `test_force_poll_debounced` doesn't need to fabricate either.
+pub(crate) fn is_force_poll_allowed(
+    now: std::time::Instant,
+    last: Option<std::time::Instant>,
+) -> bool {
+    match last {
+        None => true,
+        Some(last) => now.duration_since(last) >= FORCE_POLL_DEBOUNCE,
+    }
+}
+
+#[tauri::command]
+pub async fn sync_force_poll_now<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    pool: tauri::State<'_, Pool>,
+) -> Result<String, crate::error::AppError> {
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+
+    let now = std::time::Instant::now();
+    {
+        let mut last = last_force_poll_at().lock().unwrap();
+        if !is_force_poll_allowed(now, *last) {
+            return Err(crate::error::AppError::Validation(
+                "Sync Now was used too recently -- please wait a few seconds and try again".to_string(),
+            ));
+        }
+        *last = Some(now);
+    }
+
+    let pool = pool.inner().clone();
+    poll_all_accounts(&app, &pool, crate::ingestion::gmail_client::GMAIL_API_BASE_URL)
+        .await
+        .map_err(|e| crate::error::AppError::Network(e.to_string()))?;
+
+    Ok("synced".to_string())
+}
+
 /// Doc 30 TASK-GMAIL-009: iterates every active connected account
 /// independently — each account's checkpoint is keyed on its own `id`
 /// (`poll_single_account`), and one account's failure (caught here, not

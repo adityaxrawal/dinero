@@ -100,8 +100,122 @@ const TRANSACTION_QUEUE_WORKERS: usize = 4;
 /// Bounded concurrent PDF parses for the Statement Queue (Doc 15 §5, Doc 12 §6.2a/§7).
 const STATEMENT_QUEUE_MAX_CONCURRENT: usize = 5;
 
-const TRANSACTION_QUEUE_CAPACITY: usize = 256;
-const STATEMENT_QUEUE_CAPACITY: usize = 64;
+pub(crate) const TRANSACTION_QUEUE_CAPACITY: usize = 256;
+pub(crate) const STATEMENT_QUEUE_CAPACITY: usize = 64;
+
+/// Doc 19 §14a / Doc 12 §12.9 (FR-052): "independent pause/resume of the
+/// Transaction Queue and Statement Queue" -- distinct from `commands::debug`'s
+/// `GMAIL_POLL_PAUSED`/`SCAN_QUEUE_PAUSED`, which gate the *producers*
+/// (Gmail polling, historical scan) feeding jobs into these channels, not
+/// the worker pools that actually consume and process them. Neither queue
+/// had any pause mechanism at all before this task.
+pub static TRANSACTION_QUEUE_PAUSED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+pub static STATEMENT_QUEUE_PAUSED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+async fn wait_while_transaction_queue_paused() {
+    while TRANSACTION_QUEUE_PAUSED.load(std::sync::atomic::Ordering::Relaxed) {
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    }
+}
+
+async fn wait_while_statement_queue_paused() {
+    while STATEMENT_QUEUE_PAUSED.load(std::sync::atomic::Ordering::Relaxed) {
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    }
+}
+
+fn validate_queue_name(queue: &str) -> Result<(), crate::error::AppError> {
+    if queue != "transaction_queue" && queue != "statement_queue" {
+        return Err(crate::error::AppError::Validation(format!(
+            "invalid queue '{}': must be 'transaction_queue' or 'statement_queue'",
+            queue
+        )));
+    }
+    Ok(())
+}
+
+/// Document 19 §14a.1.
+#[tauri::command]
+pub async fn pipeline_pause(queue: String) -> Result<serde_json::Value, crate::error::AppError> {
+    validate_queue_name(&queue)?;
+    match queue.as_str() {
+        "transaction_queue" => {
+            TRANSACTION_QUEUE_PAUSED.store(true, std::sync::atomic::Ordering::Relaxed)
+        }
+        "statement_queue" => {
+            STATEMENT_QUEUE_PAUSED.store(true, std::sync::atomic::Ordering::Relaxed)
+        }
+        _ => unreachable!(),
+    }
+    Ok(serde_json::json!({ "status": "paused", "queue": queue }))
+}
+
+/// Document 19 §14a.2.
+#[tauri::command]
+pub async fn pipeline_resume(queue: String) -> Result<serde_json::Value, crate::error::AppError> {
+    validate_queue_name(&queue)?;
+    match queue.as_str() {
+        "transaction_queue" => {
+            TRANSACTION_QUEUE_PAUSED.store(false, std::sync::atomic::Ordering::Relaxed)
+        }
+        "statement_queue" => {
+            STATEMENT_QUEUE_PAUSED.store(false, std::sync::atomic::Ordering::Relaxed)
+        }
+        _ => unreachable!(),
+    }
+    Ok(serde_json::json!({ "status": "running", "queue": queue }))
+}
+
+/// Document 19 §14a.3's two differently-shaped queue objects
+/// (`active_workers` for the transaction queue, `active_parsers` for the
+/// statement queue -- not a shared struct).
+#[derive(serde::Serialize)]
+pub struct TransactionQueueStatus {
+    pub state: String,
+    pub active_workers: usize,
+    pub queued_jobs: usize,
+}
+
+#[derive(serde::Serialize)]
+pub struct StatementQueueStatus {
+    pub state: String,
+    pub active_parsers: usize,
+    pub queued_jobs: usize,
+}
+
+#[derive(serde::Serialize)]
+pub struct PipelineStatusResponse {
+    pub transaction_queue: TransactionQueueStatus,
+    pub statement_queue: StatementQueueStatus,
+}
+
+/// Document 19 §14a.3. `queued_jobs` is real (derived from the live
+/// `mpsc::Sender`'s remaining capacity, not a placeholder); `active_workers`/
+/// `active_parsers` report the configured pool size when running and 0 when
+/// paused, rather than tracking a live busy-count -- proportionate to this
+/// command's role powering the Local Debug Dashboard's display, not a
+/// scheduler decision.
+#[tauri::command]
+pub async fn pipeline_status(
+    handles: tauri::State<'_, QueueHandles>,
+) -> Result<PipelineStatusResponse, crate::error::AppError> {
+    let tx_paused = TRANSACTION_QUEUE_PAUSED.load(std::sync::atomic::Ordering::Relaxed);
+    let stmt_paused = STATEMENT_QUEUE_PAUSED.load(std::sync::atomic::Ordering::Relaxed);
+    Ok(PipelineStatusResponse {
+        transaction_queue: TransactionQueueStatus {
+            state: if tx_paused { "paused" } else { "running" }.to_string(),
+            active_workers: if tx_paused { 0 } else { TRANSACTION_QUEUE_WORKERS },
+            queued_jobs: TRANSACTION_QUEUE_CAPACITY.saturating_sub(handles.transaction_tx.capacity()),
+        },
+        statement_queue: StatementQueueStatus {
+            state: if stmt_paused { "paused" } else { "running" }.to_string(),
+            active_parsers: if stmt_paused { 0 } else { STATEMENT_QUEUE_MAX_CONCURRENT },
+            queued_jobs: STATEMENT_QUEUE_CAPACITY.saturating_sub(handles.statement_tx.capacity()),
+        },
+    })
+}
 
 /// Spawns both ingestion queues and their worker pools. Called once at app startup.
 pub fn spawn_queues<R: tauri::Runtime>(
@@ -132,6 +246,7 @@ fn spawn_transaction_workers(rx: mpsc::Receiver<TransactionJob>, pool: Pool) {
         let pool = pool.clone();
         tauri::async_runtime::spawn(async move {
             loop {
+                wait_while_transaction_queue_paused().await;
                 let job = { rx.lock().await.recv().await };
                 match job {
                     Some(job) => process_transaction_job(job, &pool).await,
@@ -154,6 +269,7 @@ fn spawn_statement_dispatcher<R: tauri::Runtime>(
     let semaphore = Arc::new(Semaphore::new(STATEMENT_QUEUE_MAX_CONCURRENT));
     tauri::async_runtime::spawn(async move {
         while let Some(job) = rx.recv().await {
+            wait_while_statement_queue_paused().await;
             let permit = Arc::clone(&semaphore).acquire_owned().await.unwrap();
             let pool = pool.clone();
             let app = app.clone();
@@ -367,6 +483,18 @@ async fn process_transaction_job(job: TransactionJob, pool: &Pool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Document 19 §14a's three pipeline commands share this validation;
+    /// `pipeline_pause`/`pipeline_resume` return `VALIDATION_ERROR` per
+    /// Doc19 §14a's own error list for anything other than the two real
+    /// queue names.
+    #[test]
+    fn test_validate_queue_name_rejects_unknown_queue() {
+        assert!(validate_queue_name("transaction_queue").is_ok());
+        assert!(validate_queue_name("statement_queue").is_ok());
+        assert!(validate_queue_name("not_a_real_queue").is_err());
+        assert!(validate_queue_name("").is_err());
+    }
 
     /// Doc 30 TASK-STMT-009: "A Tokio semaphore with exactly 5 permits guards
     /// entry into the PDF parsing pipeline... additional PDFs beyond 5

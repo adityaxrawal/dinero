@@ -5,7 +5,8 @@ mod tests {
     use crate::db::local_profile::{self, LocalProfileRow};
     use crate::db::processing_checkpoints;
     use crate::ingestion::polling::{
-        next_backoff, poll_all_accounts, save_history_id, start_polling_loop,
+        is_force_poll_allowed, next_backoff, poll_all_accounts, save_history_id,
+        start_polling_loop,
     };
     use std::fs;
     use std::sync::{Arc, Mutex};
@@ -16,6 +17,27 @@ mod tests {
     // Tauri test builder
     use tauri::test::{mock_builder, mock_context};
     use tauri::Manager;
+
+    /// Doc 30 TASK-API-009 acceptance test: "Sync Now" is debounced to at
+    /// most once per 10 seconds -- a second call before the window elapses
+    /// is rejected; a call after it elapses is allowed.
+    #[test]
+    fn test_force_poll_debounced() {
+        let t0 = std::time::Instant::now();
+        assert!(is_force_poll_allowed(t0, None), "the very first call is always allowed");
+
+        let just_after = t0 + Duration::from_secs(1);
+        assert!(
+            !is_force_poll_allowed(just_after, Some(t0)),
+            "a call 1s after the last one must be rejected (debounce window is 10s)"
+        );
+
+        let after_window = t0 + Duration::from_secs(11);
+        assert!(
+            is_force_poll_allowed(after_window, Some(t0)),
+            "a call 11s after the last one must be allowed"
+        );
+    }
 
     #[tokio::test]
     async fn test_poll_worker_pauses_on_cancellation() {
@@ -152,7 +174,9 @@ mod tests {
     async fn test_independent_checkpoint_per_account() {
         let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
-        let pool = init_db(temp_dir.join("test.db")).await.expect("DB init failed");
+        let pool = init_db(temp_dir.join("test.db"))
+            .await
+            .expect("DB init failed");
 
         let conn = pool.get().await.unwrap();
         conn.interact(|c| {
@@ -213,8 +237,14 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(chk_a.last_processed_token, Some("history_for_A".to_string()));
-        assert_eq!(chk_b.last_processed_token, Some("history_for_B".to_string()));
+        assert_eq!(
+            chk_a.last_processed_token,
+            Some("history_for_A".to_string())
+        );
+        assert_eq!(
+            chk_b.last_processed_token,
+            Some("history_for_B".to_string())
+        );
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
@@ -268,7 +298,9 @@ mod tests {
 
         let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
-        let pool = init_db(temp_dir.join("test.db")).await.expect("DB init failed");
+        let pool = init_db(temp_dir.join("test.db"))
+            .await
+            .expect("DB init failed");
 
         let conn = pool.get().await.unwrap();
         conn.interact(|c| {
@@ -312,7 +344,10 @@ mod tests {
         .unwrap();
 
         let result = poll_all_accounts(&app_handle, &pool, "https://gmail.googleapis.com").await;
-        assert!(result.is_ok(), "poll_all_accounts must not propagate a per-account failure");
+        assert!(
+            result.is_ok(),
+            "poll_all_accounts must not propagate a per-account failure"
+        );
 
         let captured = logs.lock().unwrap();
         let mentions_a = captured.iter().any(|l| l.contains("acc_no_token_A"));
