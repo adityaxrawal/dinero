@@ -178,7 +178,12 @@ const tauriMockInitScript = `
     // this fixture, so these mount-time calls silently fell through to the
     // default '{}' fallback below — {}.map() then crashed the whole page.
     if (cmd === 'license_get_status') {
-      return { state: 'active', is_active: true, license_key_masked: '****-****-1234', plan_id: 'pro', billing_interval: 'monthly', expiry_date: '2026-12-31', days_remaining: 170 };
+      // TASK-FE-007 fix: state was lowercase ('active') and claimed an
+      // already-paid subscription -- the real backend's LicenseStatusResponse
+      // always uppercases state (compute_license_status / trial_status_response
+      // in commands.rs), and a freshly onboarding test user is realistically
+      // in TRIAL, not ACTIVE.
+      return { state: 'TRIAL', is_active: true, license_key_masked: null, plan_id: null, billing_interval: null, expiry_date: '2026-07-30T00:00:00Z', days_remaining: 14 };
     }
     if (cmd === 'auth_get_consent_history') return [];
     if (cmd === 'settings_pdf_passwords_list') return [];

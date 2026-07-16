@@ -10,9 +10,10 @@ import { API, LlmModelInfo } from '@/lib/ipc';
 import { OUTBOUND_CHANNEL_DISCLOSURE, BETA_PROGRAM_DISCLOSURE } from '@/constants/privacy';
 import GmailConsentScreen from '@/routes/onboarding/GmailConsentScreen';
 import HistoricalScanScreen from '@/routes/onboarding/HistoricalScanScreen';
+import LicenseActivationScreen from '@/routes/onboarding/LicenseActivationScreen';
 import { mapOauthError } from '@/routes/onboarding/mapOauthError';
 
-const TOTAL_STEPS = 3;
+const TOTAL_STEPS = 4;
 
 // TASK-AUTH-003 (Document 18 §4.21a): `disclosure_text` must be the exact
 // verbatim text shown to the user at consent time, not a paraphrase of what
@@ -125,7 +126,10 @@ export default function Onboarding() {
       localStorage.setItem('llm_model', llmConfig);
       localStorage.setItem('dinero_statement_pref', statementPref);
       await savePreferencesToBackend();
-      navigate('/');
+      // TASK-FE-007: the trial-confirmation screen is universal (not
+      // Gmail-specific) — manual/statement-only users skip the historical
+      // scan (no account to scan) but still see it.
+      setStep(4);
     } finally {
       setLoading(false);
     }
@@ -328,12 +332,15 @@ export default function Onboarding() {
             />
           )}
 
-          {step === 3 && <HistoricalScanScreen onDone={() => navigate('/')} />}
+          {step === 3 && <HistoricalScanScreen onDone={() => setStep(4)} />}
+
+          {step === 4 && <LicenseActivationScreen onContinue={() => navigate('/')} />}
         </CardContent>
 
-        {/* TASK-FE-006: step 3 (HistoricalScanScreen) owns its own
-            Start Scan/Skip-for-now actions inline — a Back button there
-            would imply un-connecting Gmail, which isn't a real action. */}
+        {/* TASK-FE-006/007: steps 3 (HistoricalScanScreen) and 4
+            (LicenseActivationScreen) own their own actions inline — a Back
+            button there would imply un-connecting Gmail or un-starting the
+            trial, neither of which is a real action. */}
         {step < 3 && (
           <CardFooter className="flex justify-between">
             {step > 1 ? (

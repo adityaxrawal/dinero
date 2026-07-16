@@ -82,6 +82,10 @@ test.describe('Onboarding Flow - Rigorous Verification', () => {
     await expect(page.locator('label:has-text("Scan From")')).toBeVisible();
     await page.click('button:has-text("Skip for now")');
 
+    // TASK-FE-007: the trial-confirmation screen is the real final step now.
+    await expect(page.locator('text="Your 14-day free trial has started"')).toBeVisible();
+    await page.click('button:has-text("Continue to Dashboard")');
+
     await page.waitForURL(/.*\/|\/dashboard/);
     await expect(page.locator('text="Dashboard"').first()).toBeVisible();
   });
