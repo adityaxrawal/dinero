@@ -2,6 +2,7 @@ import { createHashRouter, Navigate } from 'react-router-dom';
 import AppLayout from '@/components/layout/AppLayout';
 import Dashboard from '@/pages/Dashboard';
 import Transactions from '@/pages/Transactions';
+import TransactionDetail from '@/pages/TransactionDetail';
 import Instruments from '@/pages/Instruments';
 import Statements from '@/pages/Statements';
 import Reconciliation from '@/pages/Reconciliation';
@@ -22,6 +23,7 @@ export const router = createHashRouter([
     children: [
       { index: true, element: <Dashboard /> },
       { path: 'transactions', element: <Transactions /> },
+      { path: 'transactions/:id', element: <TransactionDetail /> },
       { path: 'instruments', element: <Instruments /> },
       { path: 'statements', element: <Statements /> },
       { path: 'reconciliation', element: <Reconciliation /> },

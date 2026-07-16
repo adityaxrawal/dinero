@@ -45,14 +45,19 @@ test.describe('Accessibility Compliance - Rigorous Verification', () => {
     expect(true).toBe(true);
   });
 
-  test('transaction detail panel is accessible when open and traps focus within dialog correctly', async ({ page }) => {
+  test('transaction detail page is accessible', async ({ page }) => {
+    // TASK-FE-009: the inline drawer/dialog this test targeted is gone —
+    // a row click now navigates to its own /transactions/:id route (a full
+    // page, not a focus-trapping dialog, so no focus-trap assertion applies
+    // here anymore). Full a11y coverage of that page's real content is
+    // TASK-FE-010's job once it replaces the current minimal placeholder.
     await page.goto('/#/transactions');
     await page.waitForSelector('tbody tr', { timeout: 10000 }).catch(() => {});
     const firstRow = page.locator('tbody tr').first();
     if (!await firstRow.isVisible()) test.skip();
-    
+
     await firstRow.click();
-    await expect(page.locator('text="Details"')).toBeVisible();
+    await expect(page).toHaveURL(/\/transactions\/.+/);
 
     const results = await new AxeBuilder({ page })
       .withTags(['wcag2a', 'wcag2aa', 'wcag21aa'])

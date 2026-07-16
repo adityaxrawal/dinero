@@ -97,6 +97,17 @@ const tauriMockInitScript = `
     // array, crashing the detail panel's tag autocomplete
     // (availableTags.filter().map()) on every row click.
     if (cmd === 'tags_list') return ['online', 'dinner', 'work', 'personal'];
+    if (cmd === 'categories_list') {
+      // TASK-FE-009 fix: no mock existed at all -- categories_list has had
+      // a real frontend call site (the transaction filter bar / quick
+      // actions category select) only since this task, and the fixture's
+      // unhandled-command fallback ({}) would crash any .map() over it.
+      return [
+        { id: 'SHOPPING', parent_id: null, name: 'SHOPPING', source_type: 'system', mcc_code: null, monthly_budget_minor: null, is_deleted: false, created_at: null, color: null, icon: null },
+        { id: 'FOOD', parent_id: null, name: 'FOOD', source_type: 'system', mcc_code: null, monthly_budget_minor: null, is_deleted: false, created_at: null, color: null, icon: null },
+        { id: 'TRANSPORT', parent_id: null, name: 'TRANSPORT', source_type: 'system', mcc_code: null, monthly_budget_minor: null, is_deleted: false, created_at: null, color: null, icon: null },
+      ];
+    }
     if (cmd === 'transactions_update') {
       if (window.__MOCK_STATE__.tx_update_failure) throw { code: 'UPDATE_FAILED', message: 'Failed to save update' };
       return 'Updated';

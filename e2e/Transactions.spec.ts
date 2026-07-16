@@ -12,23 +12,22 @@ test.describe('Transactions List & Detail', () => {
     await expect(page.locator('table')).toBeVisible();
   });
 
-  test('should open detail panel when a row is clicked and allow closing', async ({ page }) => {
-    // Click the first row in the table body
+  test('should navigate to the transaction detail page when a row is clicked, and back again', async ({ page }) => {
+    // TASK-FE-009: Doc30 splits List (this page) and Detail into separate
+    // routes/tasks -- a row click now navigates to /transactions/:id instead
+    // of opening an inline drawer. Full detail-page content assertions
+    // (editable fields, tags, evidence panel) move to TASK-FE-010, which
+    // replaces the current minimal placeholder route.
     const firstRow = page.locator('tbody tr').first();
     await expect(firstRow).toBeVisible();
     await firstRow.click();
 
-    // Verify detail panel opens
-    const detailPanel = page.locator('div[role="dialog"]');
-    await expect(detailPanel).toBeVisible();
-    await expect(detailPanel.locator('div.font-semibold:has-text("Details")').or(detailPanel.locator('h3:has-text("Details")'))).toBeVisible();
+    await expect(page).toHaveURL(/\/transactions\/.+/);
+    await expect(page.locator('button:has-text("Back")')).toBeVisible();
 
-    // Close the detail panel
-    const closeButton = detailPanel.locator('button[aria-label="Close"]');
-    await closeButton.click();
-    
-    // Check it's gone
-    await expect(detailPanel).not.toBeVisible();
+    await page.click('button:has-text("Back")');
+    await expect(page).toHaveURL(/\/transactions$/);
+    await expect(page.locator('h1:has-text("Transactions")')).toBeVisible();
   });
 
   test('should filter transactions based on search query', async ({ page }) => {
@@ -41,14 +40,15 @@ test.describe('Transactions List & Detail', () => {
     await expect(firstRow).toContainText(/amazon/i);
   });
 
-  test('should display pagination controls and allow navigating pages', async ({ page }) => {
-    await expect(page.locator('button:has-text("Previous")')).toBeVisible();
-    await expect(page.locator('button:has-text("Next")')).toBeVisible();
-    
-    // Attempt clicking next
-    const nextBtn = page.locator('button:has-text("Next")');
-    if (await nextBtn.isEnabled()) {
-      await nextBtn.click();
+  test('should display a loaded/total count and support loading more via infinite scroll', async ({ page }) => {
+    // TASK-FE-009: Previous/Next paging replaced by React Query's
+    // useInfiniteQuery per Doc30 -- a visible "Load more" fallback button
+    // backs the IntersectionObserver-driven scroll trigger.
+    await expect(page.locator('text=/\\d+ of \\d+ loaded/')).toBeVisible();
+
+    const loadMoreBtn = page.locator('button:has-text("Load more")');
+    if (await loadMoreBtn.isVisible()) {
+      await loadMoreBtn.click();
     }
   });
 });

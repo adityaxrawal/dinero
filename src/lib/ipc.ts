@@ -73,6 +73,19 @@ export interface PendingReviewMetric {
   amount_minor: number;
 }
 
+export interface CategoryRecord {
+  id: string;
+  parent_id: string | null;
+  name: string;
+  source_type: string;
+  mcc_code: string | null;
+  monthly_budget_minor: number | null;
+  is_deleted: boolean;
+  created_at: string | null;
+  color: string | null;
+  icon: string | null;
+}
+
 export interface TransactionRecord {
   id: string;
   date: string;
@@ -82,11 +95,27 @@ export interface TransactionRecord {
   status: string;
   tags?: string[];
   source_mix: string | null;
+  instrument_id: string | null;
 }
 
 export interface TransactionsPage {
   records: TransactionRecord[];
   total: number;
+}
+
+// TASK-FE-009: matches src-tauri/src/commands/data.rs's TransactionListFilters
+// exactly (Document 19 §8.1's documented combinable filter args). Doc30's
+// task text also names "amount"/"tags" as filter dimensions, but neither is
+// part of the real, documented contract -- not built here, consistent with
+// this session's established precedent (Doc19/18 naming and scope win over
+// Doc30 prose).
+export interface TransactionListFilters {
+  from_date?: string;
+  to_date?: string;
+  instrument_id?: string;
+  direction?: 'debit' | 'credit';
+  category_id?: string;
+  status?: string;
 }
 
 export interface StatementRecord {
@@ -196,7 +225,8 @@ export const API = {
     // G9 fix: real offset-based pagination — `page` is honored server-side
     // and the response carries the real total row count.
     // G20/H10/J8 fix: renamed to match Doc 19 §8.1's documented `transactions_list`.
-    list: (page = 1) => invokeCommand<TransactionsPage>('transactions_list', { page }),
+    list: (page = 1, filters?: TransactionListFilters) =>
+      invokeCommand<TransactionsPage>('transactions_list', { page, filters }),
     search: (query: string) => invokeCommand<TransactionRecord[]>('transactions_search', { query }),
     // G12 fix: transaction_create/transaction_delete existed on the backend
     // but had no ipc.ts wrapper or UI at all. G20/H10/J8 fix: both renamed to
@@ -258,6 +288,11 @@ export const API = {
   tags: {
     // G13 fix: the full reusable-tag catalog, for autocomplete.
     list: () => invokeCommand<string[]>('tags_list'),
+  },
+  categories: {
+    // TASK-API-007 built categories_list with no frontend call site at all
+    // until now (TASK-FE-009 needs a real category filter dropdown).
+    list: () => invokeCommand<CategoryRecord[]>('categories_list'),
   },
   statements: {
     // H2 fix: statements_upload is now a real multi-file batch contract

@@ -78,6 +78,10 @@ pub struct TransactionRecord {
     /// value where source_mix hasn't been normalized yet) — lets the UI show
     /// which ingestion path produced this transaction.
     pub source_mix: Option<String>,
+    /// TASK-FE-009: the list row needs an instrument badge — this was never
+    /// selected at all, so the frontend had no way to know which instrument
+    /// a transaction belonged to without a separate per-row fetch.
+    pub instrument_id: Option<String>,
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -275,7 +279,7 @@ pub fn do_fetch_transactions(
 ) -> Result<Vec<TransactionRecord>, String> {
     let (filter_clause, filter_args) = build_filter_clause(filters);
     let sql = format!(
-        "SELECT id, authorization_time, merchant_display_name, amount, category_id, status, source_mix
+        "SELECT id, authorization_time, merchant_display_name, amount, category_id, status, source_mix, instrument_id
          FROM transactions
          WHERE is_deleted = 0{filter_clause}
          ORDER BY authorization_time DESC LIMIT ? OFFSET ?"
@@ -300,6 +304,7 @@ pub fn do_fetch_transactions(
             let cat: Option<String> = row.get(4)?;
             let stat: Option<String> = row.get(5)?;
             let source_mix: Option<String> = row.get(6)?;
+            let instrument_id: Option<String> = row.get(7)?;
 
             Ok(TransactionRecord {
                 id: row.get(0)?,
@@ -309,6 +314,7 @@ pub fn do_fetch_transactions(
                 category: cat.unwrap_or_else(|| "UNCATEGORIZED".to_string()),
                 status: stat.unwrap_or_else(|| "PENDING".to_string()),
                 source_mix,
+                instrument_id,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -372,6 +378,7 @@ pub fn do_transactions_search(
             category: tx.category_id.unwrap_or_else(|| "UNCATEGORIZED".to_string()),
             status: tx.status.unwrap_or_else(|| "PENDING".to_string()),
             source_mix: tx.source_mix,
+            instrument_id: tx.instrument_id,
         })
         .collect())
 }
@@ -685,20 +692,53 @@ pub async fn check_backend_status(
 /// same Keychain-derived key) — the export file is only ever readable by
 /// this app on this Mac, matching "local encrypted export" without inventing
 /// a second encryption scheme.
+///
+/// Doc 19 §13 (per Aditya's decision, 2026-07-16): `password` is an
+/// additional optional argument -- when provided, the generated export is
+/// AES-256-GCM-encrypted with that password (via the same
+/// `db::backup::encrypt_backup` primitive `settings_export_encrypted_backup`
+/// already uses) instead of relying solely on this machine's Keychain-
+/// derived SQLCipher key, so the export is portable to a different Mac.
+/// `None` preserves the original behavior exactly.
 #[tauri::command]
 pub async fn settings_export_data(
     export_path: String,
+    password: Option<String>,
     pool: State<'_, deadpool_sqlite::Pool>,
 ) -> Result<String, crate::error::AppError> {
     let conn = pool
         .get()
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-    let path_for_export = export_path.clone();
-    conn.interact(move |c| c.execute("VACUUM INTO ?1", rusqlite::params![path_for_export]))
-        .await
-        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
-        .map_err(|e| crate::error::AppError::Io(format!("Export failed: {}", e)))?;
+
+    match password {
+        None => {
+            let path_for_export = export_path.clone();
+            conn.interact(move |c| c.execute("VACUUM INTO ?1", rusqlite::params![path_for_export]))
+                .await
+                .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+                .map_err(|e| crate::error::AppError::Io(format!("Export failed: {}", e)))?;
+        }
+        Some(password) => {
+            crate::ipc::validation::validate_non_empty("password", &password)?;
+            let temp_path =
+                std::env::temp_dir().join(format!("dinero-export-{}.tmp", uuid::Uuid::new_v4()));
+            let temp_path_str = temp_path.to_string_lossy().to_string();
+            conn.interact(move |c| c.execute("VACUUM INTO ?1", rusqlite::params![temp_path_str]))
+                .await
+                .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+                .map_err(|e| crate::error::AppError::Io(format!("Export failed: {}", e)))?;
+
+            let plaintext =
+                std::fs::read(&temp_path).map_err(|e| crate::error::AppError::Io(e.to_string()))?;
+            let _ = std::fs::remove_file(&temp_path);
+
+            let encrypted = crate::db::backup::encrypt_backup(&plaintext, &password)
+                .map_err(|e| crate::error::AppError::Validation(e.to_string()))?;
+            std::fs::write(&export_path, encrypted)
+                .map_err(|e| crate::error::AppError::Io(e.to_string()))?;
+        }
+    }
 
     let conn = pool
         .get()
@@ -1409,8 +1449,9 @@ pub async fn categories_create(
     pool: State<'_, deadpool_sqlite::Pool>,
 ) -> Result<serde_json::Value, crate::error::AppError> {
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
-    if payload.name.trim().is_empty() {
-        return Err(crate::error::AppError::Validation("name must not be empty".to_string()));
+    crate::ipc::validation::validate_non_empty("name", &payload.name)?;
+    if let Some(ref parent_id) = payload.parent_id {
+        crate::ipc::validation::validate_uuid("parent_id", parent_id)?;
     }
     let conn = pool
         .get()
@@ -1432,7 +1473,9 @@ pub async fn categories_create(
     conn.interact(move |c| crate::db::categories::insert(c, &row))
         .await
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
-        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+        .map_err(|e| {
+            crate::error::map_insert_conflict(e, "A category with this name already exists")
+        })?;
     Ok(serde_json::json!({ "id": id, "status": "created" }))
 }
 
@@ -1461,6 +1504,10 @@ pub async fn categories_update(
     pool: State<'_, deadpool_sqlite::Pool>,
 ) -> Result<serde_json::Value, crate::error::AppError> {
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    crate::ipc::validation::validate_uuid("id", &payload.id)?;
+    if let Some(ref parent_id) = payload.parent_id {
+        crate::ipc::validation::validate_uuid("parent_id", parent_id)?;
+    }
     let conn = pool
         .get()
         .await
@@ -1513,6 +1560,7 @@ pub async fn categories_delete(
     pool: State<'_, deadpool_sqlite::Pool>,
 ) -> Result<serde_json::Value, crate::error::AppError> {
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    crate::ipc::validation::validate_uuid("id", &payload.id)?;
     let conn = pool
         .get()
         .await
@@ -1562,6 +1610,7 @@ pub async fn fetch_transaction_observations(
     transaction_id: String,
     pool: State<'_, deadpool_sqlite::Pool>,
 ) -> Result<Vec<crate::db::transaction_observations::TransactionObservationsRow>, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("transaction_id", &transaction_id)?;
     let conn = pool
         .get()
         .await
@@ -1584,6 +1633,7 @@ pub async fn fetch_transaction_source_log(
     transaction_id: String,
     pool: State<'_, deadpool_sqlite::Pool>,
 ) -> Result<String, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("transaction_id", &transaction_id)?;
     let conn = pool
         .get()
         .await
@@ -1810,6 +1860,13 @@ pub async fn reconciliation_clusters_bulk_resolve(
     pool: State<'_, deadpool_sqlite::Pool>,
 ) -> Result<serde_json::Value, crate::error::AppError> {
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    for r in &resolutions {
+        crate::ipc::validation::validate_uuid("cluster_id", &r.cluster_id)?;
+        crate::ipc::validation::validate_uuid("observation_id", &r.observation_id)?;
+        if let Some(ref chosen_canonical_id) = r.chosen_canonical_id {
+            crate::ipc::validation::validate_uuid("chosen_canonical_id", chosen_canonical_id)?;
+        }
+    }
     let conn = pool
         .get()
         .await
@@ -2361,8 +2418,12 @@ pub async fn instruments_create(
             billing_cycle_day: payload.billing_cycle_day,
         };
 
-        crate::db::instruments::insert_instrument(c, &row)
-            .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+        crate::db::instruments::insert_instrument(c, &row).map_err(|e| {
+            crate::error::map_insert_conflict(
+                e,
+                "An instrument with this type, issuer, and masked identifier already exists",
+            )
+        })?;
 
         Ok(InstrumentRecord {
             id,
@@ -2472,6 +2533,49 @@ pub async fn instruments_archive(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Doc 30 TASK-API-008 (per Aditya's decision, 2026-07-16):
+    /// `settings_export_data` with `password: Some(...)` produces a file
+    /// that `db::backup::decrypt_backup` can decrypt back to valid SQLite
+    /// bytes -- proving the new password path actually round-trips, not
+    /// just that the command accepts the parameter.
+    #[tokio::test]
+    async fn test_export_data_with_password_round_trips_via_decrypt_backup() {
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(pool.clone());
+
+        let export_path = temp_dir.join("export.enc").to_string_lossy().to_string();
+        let result = settings_export_data(
+            export_path.clone(),
+            Some("correct horse battery staple".to_string()),
+            app.state::<deadpool_sqlite::Pool>(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, export_path);
+
+        let encrypted = std::fs::read(&export_path).unwrap();
+        let decrypted =
+            crate::db::backup::decrypt_backup(&encrypted, "correct horse battery staple").unwrap();
+        // The decrypted bytes are the raw VACUUM INTO snapshot -- still
+        // SQLCipher-encrypted at the SQLite level with this machine's own
+        // Keychain-derived key (a second, separate layer from the AES-256-GCM
+        // password encryption this test is verifying), so a non-trivial
+        // byte length is the meaningful check here, not a plaintext magic
+        // header.
+        assert!(decrypted.len() > 100);
+
+        // Wrong password must fail to decrypt.
+        assert!(crate::db::backup::decrypt_backup(&encrypted, "wrong password").is_err());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 
     /// Doc 30 TASK-API-002 acceptance test.
     #[test]
@@ -2993,6 +3097,49 @@ mod tests {
         assert_eq!(food.name, "Food & Dining");
     }
 
+    /// Doc 30 TASK-DEDUP-009 regression coverage: `dashboard_categories`
+    /// already excludes open-cluster candidates today (the query's `id NOT
+    /// IN (...)` subquery), but had no test seeding an open-cluster
+    /// candidate to prove it -- so a future edit dropping that subquery
+    /// would go undetected. Mirrors
+    /// `test_dashboard_summary_excludes_ambiguous_clusters`'s pattern.
+    #[test]
+    fn test_category_spend_excludes_open_cluster_candidates() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        conn.execute("PRAGMA foreign_keys = OFF;", []).unwrap();
+        let now = chrono::Utc::now().naive_utc();
+        let month = format!("{}-{:02}", now.date().year(), now.date().month());
+        let event_time = now.format("%Y-%m-%d %H:%M:%S").to_string();
+        conn.execute(
+            "INSERT INTO transactions (id, direction, best_event_time, amount_minor, category_id, is_deleted) \
+             VALUES ('tx_food_normal', 'debit', ?1, 1000, 'cat_food', 0)",
+            params![event_time],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transactions (id, direction, best_event_time, amount_minor, category_id, is_deleted) \
+             VALUES ('tx_food_ambiguous', 'debit', ?1, 5000, 'cat_food', 0)",
+            params![event_time],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reconciliation_clusters (id, cluster_status) VALUES ('cl_cat', 'open')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reconciliation_cluster_members (id, cluster_id, canonical_transaction_id, member_role) \
+             VALUES ('m_cat', 'cl_cat', 'tx_food_ambiguous', 'candidate_a')",
+            [],
+        )
+        .unwrap();
+
+        let categories = do_fetch_category_spend(&conn, &month).unwrap();
+        let food = categories.iter().find(|c| c.category_id == "cat_food").expect("cat_food must be present");
+
+        assert_eq!(food.total_spend, 10.0, "the open-cluster candidate's amount must not be counted");
+    }
+
     /// Doc 30 TASK-API-006 acceptance coverage: `analytics_spend_trend`'s
     /// monthly granularity buckets by `%Y-%m` and sums `amount_minor`.
     #[test]
@@ -3017,6 +3164,44 @@ mod tests {
         let bucket = trend.iter().find(|p| p.period == expected_period).expect("current month bucket must be present");
 
         assert_eq!(bucket.total_spend, 15.0);
+    }
+
+    /// Doc 30 TASK-DEDUP-009 regression coverage: same rationale as
+    /// `test_category_spend_excludes_open_cluster_candidates`, for
+    /// `analytics_spend_trend`.
+    #[test]
+    fn test_spend_trend_excludes_open_cluster_candidates() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        conn.execute("PRAGMA foreign_keys = OFF;", []).unwrap();
+        let now = chrono::Utc::now().naive_utc();
+        let event_time = now.format("%Y-%m-%d %H:%M:%S").to_string();
+        let expected_period = now.format("%Y-%m").to_string();
+        conn.execute(
+            "INSERT INTO transactions (id, direction, best_event_time, amount_minor, is_deleted) VALUES ('tx_normal', 'debit', ?1, 1000, 0)",
+            params![event_time],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transactions (id, direction, best_event_time, amount_minor, is_deleted) VALUES ('tx_ambiguous', 'debit', ?1, 5000, 0)",
+            params![event_time],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reconciliation_clusters (id, cluster_status) VALUES ('cl_trend', 'open')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reconciliation_cluster_members (id, cluster_id, canonical_transaction_id, member_role) \
+             VALUES ('m_trend', 'cl_trend', 'tx_ambiguous', 'candidate_a')",
+            [],
+        )
+        .unwrap();
+
+        let trend = do_fetch_spend_trend(&conn, "monthly", &now).unwrap();
+        let bucket = trend.iter().find(|p| p.period == expected_period).expect("current month bucket must be present");
+
+        assert_eq!(bucket.total_spend, 10.0, "the open-cluster candidate's amount must not be counted");
     }
 
     /// Doc 30 TASK-API-006 acceptance coverage: `analytics_top_merchants`
@@ -3045,6 +3230,49 @@ mod tests {
         assert_eq!(merchants[0].merchant_display_name, "Big Spend Store", "the higher-spend merchant must sort first");
         assert_eq!(merchants[0].total_spend, 50.0);
         assert_eq!(merchants[1].merchant_display_name, "Small Spend Cafe");
+    }
+
+    /// Doc 30 TASK-DEDUP-009 regression coverage: same rationale as
+    /// `test_category_spend_excludes_open_cluster_candidates`, for
+    /// `analytics_top_merchants`.
+    #[test]
+    fn test_top_merchants_excludes_open_cluster_candidates() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        conn.execute("PRAGMA foreign_keys = OFF;", []).unwrap();
+        let now = chrono::Utc::now().naive_utc();
+        let event_time = now.format("%Y-%m-%d %H:%M:%S").to_string();
+        conn.execute(
+            "INSERT INTO transactions (id, direction, best_event_time, amount_minor, merchant_display_name, is_deleted) \
+             VALUES ('tx_normal', 'debit', ?1, 500, 'Real Merchant', 0)",
+            params![event_time],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transactions (id, direction, best_event_time, amount_minor, merchant_display_name, is_deleted) \
+             VALUES ('tx_ambiguous', 'debit', ?1, 999999, 'Ambiguous Merchant', 0)",
+            params![event_time],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reconciliation_clusters (id, cluster_status) VALUES ('cl_merch', 'open')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reconciliation_cluster_members (id, cluster_id, canonical_transaction_id, member_role) \
+             VALUES ('m_merch', 'cl_merch', 'tx_ambiguous', 'candidate_a')",
+            [],
+        )
+        .unwrap();
+
+        let merchants = do_fetch_top_merchants(&conn, &now).unwrap();
+
+        assert!(
+            merchants.iter().all(|m| m.merchant_display_name != "Ambiguous Merchant"),
+            "the open-cluster candidate's merchant must not appear at all"
+        );
+        let real = merchants.iter().find(|m| m.merchant_display_name == "Real Merchant").expect("Real Merchant must still be present");
+        assert_eq!(real.total_spend, 5.0);
     }
 
     /// Doc 30 TASK-API-006 acceptance coverage: `analytics_recurring_payments_summary`

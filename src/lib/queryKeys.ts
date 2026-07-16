@@ -16,6 +16,7 @@ export const queryKeys = {
   transactions: {
     all: () => ['transactions'] as const,
     list: (page: number) => ['transactions', 'list', page] as const,
+    infiniteList: (filters: object) => ['transactions', 'infiniteList', filters] as const,
     detail: (id: string) => ['transactions', 'detail', id] as const,
     search: (query: string) => ['transactions', 'search', query] as const,
     observations: (id: string) => ['transactions', 'observations', id] as const,
@@ -38,5 +39,9 @@ export const queryKeys = {
   tags: {
     all: () => ['tags'] as const,
     list: () => ['tags', 'list'] as const,
+  },
+  categories: {
+    all: () => ['categories'] as const,
+    list: () => ['categories', 'list'] as const,
   },
 } as const;
