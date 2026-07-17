@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 import { getErrorMessage } from '@/lib/getErrorMessage';
 import { API } from '@/lib/ipc';
+import { useGlobalState } from '@/lib/GlobalStateContext';
 
 interface StatementUploadDropzoneProps {
   onUploaded: () => void;
@@ -31,15 +32,26 @@ function isPdf(name: string, type?: string): boolean {
  * duplicate detection is inherently server-side (TASK-STMT-002) — surfaced
  * distinctly from other failures as soon as the (single) round trip returns,
  * rather than lumped into a generic error message.
+ *
+ * Area 9 verification-pass fix: Doc 30 also asks for "a queued state for
+ * items beyond the backend's 5-concurrent-parser cap (TASK-STMT-009)" —
+ * the real `statement_batch_progress` event (`queues.rs`'s
+ * `BatchProgressTracker`, emitted for batches over 10 files) existed with
+ * zero frontend listeners anywhere, so a large batch showed a static
+ * "Uploading…" spinner for the whole multi-minute duration with no
+ * indication of how many statements were still waiting on the 5-permit
+ * semaphore. Now shown via `GlobalStateContext`'s `batchProgress`.
  */
 export default function StatementUploadDropzone({ onUploaded, onAccessDenied }: StatementUploadDropzoneProps) {
   const { toast } = useToast();
+  const { batchProgress, setBatchProgress } = useGlobalState();
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
 
   const uploadPaths = useCallback(
     async (paths: string[]) => {
       setIsUploading(true);
+      setBatchProgress(null);
       let accessDenied = false;
       let succeeded = 0;
       const duplicates: string[] = [];
@@ -86,7 +98,7 @@ export default function StatementUploadDropzone({ onUploaded, onAccessDenied }: 
       }
       onUploaded();
     },
-    [onUploaded, onAccessDenied, toast],
+    [onUploaded, onAccessDenied, toast, setBatchProgress],
   );
 
   const handleFileUpload = useCallback(async () => {
@@ -179,8 +191,12 @@ export default function StatementUploadDropzone({ onUploaded, onAccessDenied }: 
           <UploadCloud className="w-8 h-8 text-muted-foreground" />
         </div>
         <h2 className="text-lg font-semibold mb-1">Upload Statement</h2>
-        <p className="text-sm text-muted-foreground mb-4">
-          {isUploading ? 'Uploading…' : 'Drag and drop your PDF statements here, or click to browse.'}
+        <p className="text-sm text-muted-foreground mb-4" role="status">
+          {isUploading
+            ? 'Uploading…'
+            : batchProgress
+              ? `Parsing ${batchProgress.parsed} of ${batchProgress.total} statements (max 5 at a time)… ~${batchProgress.etaSeconds}s remaining`
+              : 'Drag and drop your PDF statements here, or click to browse.'}
         </p>
         <Button asChild variant="secondary" aria-hidden="true" tabIndex={-1}>
           <span>Browse Files</span>

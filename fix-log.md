@@ -1550,3 +1550,13 @@ Area 9 (FE) now 19/19 done -- Area 9 complete.
 **What I did:** Since the actual write-gate is already enforced backend-side (`assert_write_allowed` fails closed on every mutating command, independent of what the frontend renders), the overlay's job is purely communicative. Converted it from a full-pane blocking scrim to a persistent, non-dismissable banner (same positioning pattern as `GracePeriodBanner`, rendered above `<Outlet />` rather than over it) so every route's real content stays visible and readable while locked. Moved it from `<main>`'s overlay slot into the banner stack in `AppLayout.tsx`. Strengthened `AppShell.spec.ts`'s LOCKED test to navigate to `/transactions` while locked and assert the real page content (`h1:has-text("Transactions")`), not just the URL, is visible alongside the still-present lock banner.
 
 **Verified:** `pnpm tsc --noEmit`: clean. `pnpm exec playwright test`: 71/71 (full suite, zero regressions).
+
+---
+
+## Area 9 Verification Pass — Fix 4: batch statement uploads gave no feedback while queued behind the 5-concurrent-parser cap
+
+**Found:** Doc 30's TASK-FE-012 explicitly asks for "a queued state for items beyond the backend's 5-concurrent-parser cap (TASK-STMT-009)." The real signal for this already existed and was already correct: `statement_batch_progress` (`queues.rs`'s `BatchProgressTracker`, emitted with `{parsed, total, eta_seconds}` for batches over 10 files as each one clears the `Semaphore(5)`) -- but had zero frontend listeners anywhere in the app. `statements_upload`'s IPC round trip returns as soon as each file is intake-validated and handed to the queue (fire-and-forget, per the backend's own doc comment), long before the actual parsing finishes, so `StatementUploadDropzone`'s `isUploading` spinner cleared almost immediately and a large batch then gave zero feedback for the entire multi-minute wait while files sat behind the concurrency cap.
+
+**What I did:** Added a `batchProgress` field to `GlobalStateContext` (matching the existing `statement_parsed`/`statement_password_required`/etc. listener pattern already in the same file), subscribed to `statement_batch_progress`, auto-clearing once `parsed >= total`. `StatementUploadDropzone` now shows "Parsing X of Y statements (max 5 at a time)… ~Zs remaining" instead of a static idle prompt whenever a batch is still processing, independent of the (already-resolved) upload round trip.
+
+**Verified:** `pnpm tsc --noEmit`: clean. New e2e test drives the real event end-to-end (progress text appears, then clears at parsed>=total). `pnpm exec vitest run`: 51/51. `pnpm exec playwright test`: 72/72 (full suite, +1 new test, zero regressions).

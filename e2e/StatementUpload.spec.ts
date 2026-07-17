@@ -72,6 +72,31 @@ test.describe('Statement Management - Rigorous Verification', () => {
     await expect(modalTitle).not.toBeVisible();
   });
 
+  test('shows a queued/parsing progress indicator for large batches (statement_batch_progress)', async ({ page }) => {
+    // Area 9 verification-pass fix: statement_batch_progress (queues.rs's
+    // BatchProgressTracker, real backend signal for batches over the
+    // 5-concurrent-parser cap) had zero frontend listeners -- large batches
+    // showed a static "Uploading…" with no feedback for the whole wait.
+    await expect(page.getByText('Drag and drop your PDF statements here')).toBeVisible();
+
+    await page.evaluate(() => {
+      window.dispatchEvent(new CustomEvent('test-tauri-event', {
+        detail: { event: 'statement_batch_progress', payload: { parsed: 3, total: 12, eta_seconds: 45 } },
+      }));
+    });
+    await expect(page.getByText(/Parsing 3 of 12 statements/i)).toBeVisible();
+    await expect(page.getByText(/~45s remaining/i)).toBeVisible();
+
+    // Clears once the batch finishes (parsed >= total).
+    await page.evaluate(() => {
+      window.dispatchEvent(new CustomEvent('test-tauri-event', {
+        detail: { event: 'statement_batch_progress', payload: { parsed: 12, total: 12, eta_seconds: 0 } },
+      }));
+    });
+    await expect(page.getByText(/Parsing \d+ of \d+ statements/i)).not.toBeVisible();
+    await expect(page.getByText('Drag and drop your PDF statements here')).toBeVisible();
+  });
+
   test('should display UnprocessedItemsQueue UI for retries on timeout', async ({ page }) => {
     // TASK-FE-012: UnprocessedItemsQueue now reads the real TASK-STMT-010
     // statements_list_unprocessed backend (3 status buckets) instead of the
