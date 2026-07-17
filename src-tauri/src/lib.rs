@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod background_tasks;
 pub mod commands;
 pub mod crash_reporter;
 pub mod db;
@@ -431,6 +432,9 @@ pub fn run() {
             // TASK-AUTH-014: in-memory-only incident counters, registered
             // once for the lifetime of this run.
             app.manage(crate::security::incident_response::IncidentMonitor::default());
+            // TASK-DESK-003: single aggregated registry of long-running
+            // background tasks, backing the global background-task indicator.
+            app.manage(crate::background_tasks::indicator::BackgroundTaskRegistry::default());
             {
                 let pool_for_session = pool_clone.clone();
                 let session_state_handle = app.handle().clone();

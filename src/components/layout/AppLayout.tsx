@@ -20,22 +20,20 @@ import { useLicenseStore } from '@/stores/useLicenseStore';
 import LicenseLockOverlay from '@/components/licensing/LicenseLockOverlay';
 import GracePeriodBanner from '@/components/licensing/GracePeriodBanner';
 import StatementOnlyModeBanner from '@/components/shell/StatementOnlyModeBanner';
+import BackgroundTaskIndicator from '@/components/shell/BackgroundTaskIndicator';
 
 // HMR trigger 3
 const CORRUPTION_EVENT = 'db_corrupted';
-const TASK_STARTED_EVENT = 'task_started';
-const TASK_COMPLETED_EVENT = 'task_completed';
-
-interface BackgroundTask {
-  id: string;
-  message: string;
-}
 
 export default function AppLayout() {
   const navigate = useNavigate();
   const [backendStatus, setBackendStatus] = useState<'healthy' | 'offline' | 'corrupted'>('healthy');
   const hydrateLicenseStore = useLicenseStore((s) => s.hydrate);
-  const [bgTasks, setBgTasks] = useState<BackgroundTask[]>([]);
+  // Transient "spend threshold crossed" notice -- distinct from, and no
+  // longer piggybacking on, the background-task indicator state below
+  // (TASK-DESK-003: a spend alert isn't a long-running task and shouldn't
+  // share its aggregation logic).
+  const [alertMessage, setAlertMessage] = useState<string | null>(null);
   const [unresolvedClusters, setUnresolvedClusters] = useState(0);
   const [isRestoring, setIsRestoring] = useState(false);
 
@@ -126,26 +124,13 @@ export default function AppLayout() {
       });
       unlisteners.push(unlistenCorrupt);
 
-      // Background task started
-      const unlistenTaskStarted = await listen(TASK_STARTED_EVENT, (event: { payload: BackgroundTask }) => {
-        setBgTasks((prev) => {
-          if (prev.some((t) => t.id === event.payload.id)) return prev;
-          return [...prev, event.payload];
-        });
-      });
-      unlisteners.push(unlistenTaskStarted);
-
-      // Background task completed
-      const unlistenTaskCompleted = await listen(TASK_COMPLETED_EVENT, (event: { payload: { id: string } }) => {
-        setBgTasks((prev) => prev.filter((t) => t.id !== event.payload.id));
-      });
-      unlisteners.push(unlistenTaskCompleted);
-      
+      // TASK-DESK-003: the global background-task indicator now owns the
+      // `background_task_progress` event itself (see
+      // `BackgroundTaskIndicator`) -- this effect only needs the unrelated
+      // spend-threshold alert listener below.
       const unlistenAlert = await listen('alert_threshold_crossed', (event: { payload: any }) => {
-        setBgTasks((prev) => [...prev, { id: 'alert_' + Date.now(), message: `Alert: ${event.payload.category} exceeded ${event.payload.threshold}% of budget` }]);
-        setTimeout(() => {
-          setBgTasks((prev) => prev.filter(t => !t.id.startsWith('alert_')));
-        }, 5000);
+        setAlertMessage(`Alert: ${event.payload.category} exceeded ${event.payload.threshold}% of budget`);
+        setTimeout(() => setAlertMessage(null), 5000);
       });
       unlisteners.push(unlistenAlert);
     };
@@ -305,19 +290,18 @@ export default function AppLayout() {
           ))}
         </nav>
 
-        {/* Global Background Task Indicator */}
-        {bgTasks.length > 0 && (
+        {/* Global Background Task Indicator (TASK-DESK-003) */}
+        <BackgroundTaskIndicator />
+
+        {/* Transient spend-threshold alert notice */}
+        {alertMessage && (
           <div
             className="mb-4 p-3 rounded-md bg-secondary border border-border flex items-center gap-3"
             role="status"
             aria-live="polite"
-            aria-label={`Background task: ${bgTasks[0].message}`}
-            data-testid="bg-task-indicator"
+            data-testid="alert-notice"
           >
-            <Loader2 className="w-4 h-4 animate-spin text-muted-foreground shrink-0" aria-hidden="true" />
-            <div className="text-xs text-muted-foreground truncate">
-              {bgTasks[0].message}
-            </div>
+            <div className="text-xs text-muted-foreground truncate">{alertMessage}</div>
           </div>
         )}
 

@@ -190,39 +190,109 @@ test.describe('AppShell & Navigation - Rigorous Verification', () => {
     await expect(page.getByText(/grace period/i)).not.toBeVisible();
   });
 
-  // TASK-FE-018 fix: real event names are task_started/task_completed
-  // (snake_case, AppEvent::TaskStarted/TaskCompleted), not the illustrative
-  // dotted names this previously dispatched.
+  // TASK-DESK-003: the real event is `background_task_progress` (Document
+  // 19 §15's authoritative event catalog) -- a single event whose `status`
+  // field distinguishes running from finished, not the separate
+  // `task_started`/`task_completed` names an earlier fix used, which don't
+  // appear anywhere in Document 19's 10-event catalog.
   test('should display global background task indicator without blocking UI', async ({ page }) => {
     await expect(page.locator('aside')).toBeVisible();
 
     // Wait for listener
-    await page.waitForFunction(() => (window as any).__TAURI_LISTENERS__ && (window as any).__TAURI_LISTENERS__['task_started']);
+    await page.waitForFunction(() => (window as any).__TAURI_LISTENERS__ && (window as any).__TAURI_LISTENERS__['background_task_progress']);
 
-    // Trigger start
+    // Trigger start (a single running task)
     await page.evaluate(() => {
       window.dispatchEvent(new CustomEvent('test-tauri-event', {
-        detail: { event: 'task_started', payload: { id: 'task_1', message: 'Syncing with remote vault...' } }
+        detail: {
+          event: 'background_task_progress',
+          payload: {
+            task_id: 'task_1',
+            task_type: 'historical_scan',
+            label: 'Syncing with remote vault...',
+            current: 10,
+            total: 100,
+            eta_seconds: 30,
+            status: 'running',
+            progress_pct: 10,
+            status_message: 'Syncing with remote vault...',
+          },
+        },
       }));
     });
 
     // Indicator should appear
-    const indicator = page.locator('text="Syncing with remote vault..."');
+    const indicator = page.getByTestId('bg-task-indicator');
     await expect(indicator).toBeVisible();
-    
+    await expect(indicator).toContainText('Syncing with remote vault...');
+
     // UI should STILL be interactive (not blocked)
     await page.locator('nav a:has-text("Settings")').click();
     await expect(page).toHaveURL(/.*\/settings/);
 
-    // Trigger complete
+    // Trigger completion
     await page.evaluate(() => {
       window.dispatchEvent(new CustomEvent('test-tauri-event', {
-        detail: { event: 'task_completed', payload: { id: 'task_1' } }
+        detail: {
+          event: 'background_task_progress',
+          payload: {
+            task_id: 'task_1',
+            task_type: 'historical_scan',
+            label: 'Syncing with remote vault...',
+            current: 100,
+            total: 100,
+            eta_seconds: null,
+            status: 'completed',
+            progress_pct: 100,
+            status_message: 'Done',
+          },
+        },
       }));
     });
 
     // Indicator should disappear
     await expect(indicator).not.toBeVisible();
+  });
+
+  test('should aggregate multiple concurrent background tasks with expandable detail', async ({ page }) => {
+    await expect(page.locator('aside')).toBeVisible();
+    await page.waitForFunction(() => (window as any).__TAURI_LISTENERS__ && (window as any).__TAURI_LISTENERS__['background_task_progress']);
+
+    const dispatchProgress = (taskId: string, label: string) =>
+      page.evaluate(
+        ([id, lbl]) => {
+          window.dispatchEvent(
+            new CustomEvent('test-tauri-event', {
+              detail: {
+                event: 'background_task_progress',
+                payload: {
+                  task_id: id,
+                  task_type: 'historical_scan',
+                  label: lbl,
+                  current: 1,
+                  total: 10,
+                  eta_seconds: 5,
+                  status: 'running',
+                  progress_pct: 10,
+                  status_message: lbl,
+                },
+              },
+            })
+          );
+        },
+        [taskId, label]
+      );
+
+    await dispatchProgress('task_a', 'Scanning account A');
+    await dispatchProgress('task_b', 'Scanning account B');
+
+    const indicator = page.getByTestId('bg-task-indicator');
+    await expect(indicator).toBeVisible();
+    await expect(indicator).toContainText('2 background tasks running');
+
+    await indicator.locator('button').click();
+    await expect(indicator).toContainText('Scanning account A');
+    await expect(indicator).toContainText('Scanning account B');
   });
   
 

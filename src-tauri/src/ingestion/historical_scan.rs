@@ -7,32 +7,12 @@ use tokio::task::JoinSet;
 use uuid::Uuid;
 
 use crate::db::processing_checkpoints::{
-    get_checkpoint, upsert_checkpoint, ProcessingCheckpointRow,
+    claim_checkpoint_in_progress, get_checkpoint, upsert_checkpoint, ClaimOutcome,
+    ProcessingCheckpointRow,
 };
 use crate::ingestion::gmail_client::GmailClient;
 use crate::ingestion::message_processor::{MessageProcessor, ProcessResult};
 use crate::ingestion::oauth::get_valid_access_token;
-
-/// Doc 30 TASK-GMAIL-007 / Doc 19 §3.6: "only one active historical scan per
-/// connected account is allowed unless explicitly resumed." Split out as a
-/// pure function so the rejection behavior is testable without a live OAuth
-/// token / Keychain access, which `scans_historical` itself requires.
-fn reject_if_scan_in_progress(
-    existing: &Option<ProcessingCheckpointRow>,
-) -> Result<(), crate::error::AppError> {
-    if let Some(cp) = existing {
-        if cp.status == "in_progress" {
-            // Document 19's dedicated `SCAN_ALREADY_RUNNING` code isn't on
-            // `AppError` yet — that catalog-wide mapping is TASK-API-010's
-            // explicit scope (see error.rs's own doc comment). `Validation`
-            // is the closest generic code available now.
-            return Err(crate::error::AppError::Validation(
-                "A historical scan is already in progress for this account".into(),
-            ));
-        }
-    }
-    Ok(())
-}
 
 /// Doc 30 TASK-GMAIL-007: checkpoint every 5 processed messages.
 const CHECKPOINT_INTERVAL: usize = 5;
@@ -59,6 +39,7 @@ fn clear_scan_cancellation(account_id: &str) {
 
 #[tauri::command]
 pub async fn scans_cancel(account_id: String) -> Result<String, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("account_id", &account_id)?;
     cancelled_scans().lock().unwrap().insert(account_id);
     Ok("cancel_requested".to_string())
 }
@@ -105,6 +86,7 @@ pub async fn scans_status(
     account_id: String,
     pool: State<'_, Pool>,
 ) -> Result<ScanStatusResponse, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("account_id", &account_id)?;
     let conn = pool
         .get()
         .await
@@ -130,6 +112,7 @@ pub async fn scans_resume<R: tauri::Runtime>(
     pool: State<'_, Pool>,
     account_id: String,
 ) -> Result<String, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("account_id", &account_id)?;
     let account_id_clone = account_id.clone();
     let checkpoint = pool
         .get()
@@ -195,6 +178,8 @@ pub async fn scans_historical<R: tauri::Runtime>(
     start_date: String,
     end_date: String,
 ) -> Result<String, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("account_id", &account_id)?;
+    crate::ipc::validation::validate_date_range(&start_date, &end_date)?;
     // Doc 22 §11.5: LOCKED blocks "all writes, including new ingestion on both
     // queues" — a historical scan is new ingestion.
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
@@ -224,19 +209,51 @@ pub async fn scans_historical<R: tauri::Runtime>(
         ));
     }
 
+    // Doc 30 TASK-API-009 / Document 19: "scans_historical -- dedupe active
+    // scans via SCAN_ALREADY_RUNNING." Atomically checks-and-claims the
+    // in_progress slot in one statement (see `claim_checkpoint_in_progress`)
+    // rather than a separate read-then-later-write -- the old version only
+    // wrote `status = 'in_progress'` deep inside `run_scan`, after an
+    // awaited Gmail network round-trip, leaving a wide window in which two
+    // near-simultaneous calls for the same account could both pass a
+    // read-only check and both start scanning.
     let existing = conn
         .interact({
             let account_id_clone = account_id.clone();
-            move |c| get_checkpoint(c, "historical_scan", &account_id_clone)
+            move |c| claim_checkpoint_in_progress(c, "historical_scan", &account_id_clone)
         })
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
 
-    reject_if_scan_in_progress(&existing)?;
+    let existing = match existing {
+        ClaimOutcome::AlreadyInProgress => {
+            return Err(crate::error::AppError::ScanAlreadyRunning(
+                "A historical scan is already in progress for this account".into(),
+            ));
+        }
+        ClaimOutcome::Claimed(existing) => existing,
+    };
+
+    // TASK-DESK-003: register with the global background-task indicator
+    // before the scan starts running. `account_id` is a stable task id here
+    // -- Doc 19 §3.6 already guarantees only one active scan per account.
+    if let Some(registry) =
+        app.try_state::<crate::background_tasks::indicator::BackgroundTaskRegistry>()
+    {
+        registry.register_or_update(
+            &app,
+            &account_id,
+            "historical_scan",
+            &format!("Historical scan: {}", account_id),
+            0,
+            0,
+            "Starting historical scan…",
+        );
+    }
 
     tokio::spawn(async move {
-        if let Err(e) = run_scan(
+        let scan_result = run_scan(
             app.clone(),
             pool.clone(),
             account_id.clone(),
@@ -245,8 +262,27 @@ pub async fn scans_historical<R: tauri::Runtime>(
             access_token,
             existing,
         )
-        .await
+        .await;
+
+        // TASK-DESK-003: deregister on completion, success or failure --
+        // this is the signal the frontend removes the task on, not an
+        // inferred `current == total`.
+        if let Some(registry) =
+            app.try_state::<crate::background_tasks::indicator::BackgroundTaskRegistry>()
         {
+            use crate::background_tasks::indicator::TaskStatus;
+            match &scan_result {
+                Ok(_) => registry.deregister(
+                    &app,
+                    &account_id,
+                    TaskStatus::Completed,
+                    "Historical scan completed",
+                ),
+                Err(e) => registry.deregister(&app, &account_id, TaskStatus::Failed, &e.to_string()),
+            }
+        }
+
+        if let Err(e) = scan_result {
             tracing::error!("Historical scan failed: {}", e);
 
             // Mark checkpoint as failed
@@ -767,31 +803,62 @@ mod tests {
         assert_eq!(status.transactions_found, 1);
     }
 
-    /// Doc 30 TASK-GMAIL-007 / Doc 19 §3.6: only one active scan per account.
-    #[test]
-    fn test_concurrent_scan_rejected() {
-        let in_progress = ProcessingCheckpointRow {
-            id: "cp1".into(),
-            job_type: "historical_scan".into(),
-            job_key: "acc_1".into(),
-            checkpoint_state_json: "{}".into(),
-            last_processed_token: None,
-            status: "in_progress".into(),
-            updated_at: None,
-        };
-        assert!(reject_if_scan_in_progress(&Some(in_progress)).is_err());
+    /// Doc 30 TASK-GMAIL-007 / Doc 19 §3.6 / TASK-API-009: only one active
+    /// scan per account -- and the claim itself (not just a preceding
+    /// read) is what enforces it, so a second claim while the first is
+    /// still in_progress must be rejected even though both calls would see
+    /// the same "not in progress" state if they read at the same time.
+    #[tokio::test]
+    async fn test_concurrent_scan_claim_rejected() {
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let db_path = temp_dir.join("test_claim.db");
+        let pool = init_db(db_path.clone()).await.expect("DB init failed");
+        let conn = pool.get().await.unwrap();
 
-        let completed = ProcessingCheckpointRow {
-            id: "cp2".into(),
-            job_type: "historical_scan".into(),
-            job_key: "acc_1".into(),
-            checkpoint_state_json: "{}".into(),
-            last_processed_token: None,
-            status: "completed".into(),
-            updated_at: None,
-        };
-        assert!(reject_if_scan_in_progress(&Some(completed)).is_ok());
-        assert!(reject_if_scan_in_progress(&None).is_ok());
+        // First claim on a brand-new job_key: succeeds, no prior checkpoint.
+        let first = conn
+            .interact(|c| claim_checkpoint_in_progress(c, "historical_scan", "acc_1"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(first, ClaimOutcome::Claimed(None)));
+
+        // Second claim for the same job_key while still in_progress: rejected.
+        let second = conn
+            .interact(|c| claim_checkpoint_in_progress(c, "historical_scan", "acc_1"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(second, ClaimOutcome::AlreadyInProgress));
+
+        // Mark it completed, then a fresh claim succeeds again.
+        conn.interact(|c| {
+            upsert_checkpoint(
+                c,
+                &ProcessingCheckpointRow {
+                    id: "cp1".into(),
+                    job_type: "historical_scan".into(),
+                    job_key: "acc_1".into(),
+                    checkpoint_state_json: "{}".into(),
+                    last_processed_token: None,
+                    status: "completed".into(),
+                    updated_at: None,
+                },
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+        let third = conn
+            .interact(|c| claim_checkpoint_in_progress(c, "historical_scan", "acc_1"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(third, ClaimOutcome::Claimed(Some(_))));
+
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 
     #[tokio::test]
