@@ -113,10 +113,19 @@ pub fn count_statements(conn: &Connection) -> Result<i64, String> {
         .map_err(|e| e.to_string())
 }
 
+// TASK-FE-013: rewrote to carry the real Document 18 §4.6a
+// (`reconciliation_cluster_members`) columns instead of only a guessed
+// `source` label -- `member_role` and `observation_id` are needed to call
+// `reconciliation_clusters_resolve` correctly (it requires the real
+// `observation_id`, not a member row id), and `source_pipeline` mirrors
+// Document 19 §10.2's documented member shape.
 #[derive(Serialize, Debug, PartialEq)]
 pub struct ClusterMember {
     pub id: String,
-    pub source: String,
+    pub member_role: String,
+    pub observation_id: Option<String>,
+    pub canonical_transaction_id: Option<String>,
+    pub source_pipeline: Option<String>,
     pub merchant: String,
     pub amount: f64,
     pub date: String,
@@ -443,14 +452,25 @@ pub fn do_fetch_statement_history(
 /// -- extracted so the two don't maintain two copies of the same member
 /// query.
 fn fetch_cluster_members(conn: &Connection, cluster_id: &str) -> Result<Vec<ClusterMember>, String> {
+    // TASK-FE-013 fix: the previous query only LEFT JOINed `transactions`
+    // (via `canonical_transaction_id`), so the "incoming" member -- which
+    // carries `observation_id` instead, per Document 18 §4.6a -- always
+    // fell through to the COALESCE fallbacks ('Unknown'/0/'Unknown'). Every
+    // cluster's primary evidence (the new observation that triggered the
+    // ambiguity) rendered as blank data. Now also joins
+    // `transaction_observations` and coalesces across both sides.
     let mut member_stmt = conn.prepare(
         "SELECT m.id,
-                COALESCE(t.merchant_display_name, 'Unknown'),
-                COALESCE(t.amount, 0),
-                COALESCE(t.authorization_time, 'Unknown'),
-                CASE WHEN m.canonical_transaction_id IS NOT NULL THEN 'Bank Sync' ELSE 'Gmail Parser' END as source
+                m.member_role,
+                m.observation_id,
+                m.canonical_transaction_id,
+                COALESCE(o.source_pipeline, CASE WHEN m.canonical_transaction_id IS NOT NULL THEN 'statement_pdf' ELSE NULL END),
+                COALESCE(t.merchant_display_name, o.merchant_raw, 'Unknown'),
+                COALESCE(t.amount, o.amount, 0),
+                COALESCE(t.authorization_time, o.event_time, 'Unknown')
          FROM reconciliation_cluster_members m
          LEFT JOIN transactions t ON m.canonical_transaction_id = t.id
+         LEFT JOIN transaction_observations o ON m.observation_id = o.id
          WHERE m.cluster_id = ?1"
     ).map_err(|e| e.to_string())?;
 
@@ -458,10 +478,13 @@ fn fetch_cluster_members(conn: &Connection, cluster_id: &str) -> Result<Vec<Clus
         .query_map([cluster_id], |row| {
             Ok(ClusterMember {
                 id: row.get(0)?,
-                merchant: row.get(1)?,
-                amount: row.get(2)?,
-                date: row.get(3)?,
-                source: row.get(4)?,
+                member_role: row.get(1)?,
+                observation_id: row.get(2)?,
+                canonical_transaction_id: row.get(3)?,
+                source_pipeline: row.get(4)?,
+                merchant: row.get(5)?,
+                amount: row.get(6)?,
+                date: row.get(7)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -2630,7 +2653,7 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "CREATE TABLE statements (id TEXT PRIMARY KEY, source_message_id TEXT, parse_status TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+            "CREATE TABLE statements (id TEXT PRIMARY KEY, source_message_id TEXT, parse_status TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, instrument_id TEXT)",
             [],
         ).unwrap();
         conn.execute(
@@ -2638,12 +2661,12 @@ mod tests {
             [],
         ).unwrap();
         conn.execute(
-            "CREATE TABLE reconciliation_cluster_members (id TEXT PRIMARY KEY, cluster_id TEXT, canonical_transaction_id TEXT)",
+            "CREATE TABLE reconciliation_cluster_members (id TEXT PRIMARY KEY, cluster_id TEXT, canonical_transaction_id TEXT, observation_id TEXT, member_role TEXT)",
             [],
         )
         .unwrap();
         conn.execute(
-            "CREATE TABLE transaction_observations (id TEXT PRIMARY KEY, amount_minor INTEGER)",
+            "CREATE TABLE transaction_observations (id TEXT PRIMARY KEY, amount_minor INTEGER, source_pipeline TEXT, merchant_raw TEXT, amount REAL, event_time TEXT)",
             [],
         )
         .unwrap();

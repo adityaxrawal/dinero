@@ -249,9 +249,19 @@ export interface StatementRecord {
   instrument_id: string | null;
 }
 
+// TASK-FE-013: mirrors the real Rust `ClusterMember` shape (Document 18
+// §4.6a) -- `member_role` distinguishes the triggering "incoming"
+// observation from its "candidate_*" matches, and `observation_id` is the
+// real id `reconciliation_clusters_resolve` requires (not `id`, which is
+// only the join-table row's own key).
+export type ClusterMemberRole = 'incoming' | 'candidate_a' | 'candidate_b' | 'candidate_other';
+
 export interface ClusterMember {
   id: string;
-  source: string;
+  member_role: ClusterMemberRole;
+  observation_id: string | null;
+  canonical_transaction_id: string | null;
+  source_pipeline: string | null;
   merchant: string;
   amount: number;
   date: string;
@@ -262,6 +272,14 @@ export interface ClusterRecord {
   reason: string;
   members_count: number;
   members: ClusterMember[];
+}
+
+export interface UnassignedTransactionRecord {
+  id: string;
+  observation_id: string;
+  reason: string;
+  status: string;
+  created_at: string | null;
 }
 
 export interface InstrumentRecord {
@@ -500,17 +518,34 @@ export const API = {
     // `reconciliation_clusters_*` naming family.
     listUnresolved: () =>
       invokeCommand<ClusterRecord[]>('reconciliation_clusters_list'),
+    // TASK-FE-013: `reconciliation_clusters_get` (Doc 19 §10.2) existed on
+    // the backend with zero frontend call site -- needed for the cluster
+    // detail page.
+    getCluster: (clusterId: string) =>
+      invokeCommand<ClusterRecord>('reconciliation_clusters_get', { clusterId }),
+    // TASK-FE-013: `reconciliation_get_unassigned_transactions` (TASK-API-005)
+    // existed on the backend with zero frontend call site -- extraction
+    // failures (no instrument resolved) are a queue distinct from ambiguous
+    // clusters (matching ambiguity) and need their own UI section.
+    listUnassigned: () =>
+      invokeCommand<UnassignedTransactionRecord[]>('reconciliation_get_unassigned_transactions'),
     // G20/H10/J8 fix: action vocabulary realigned to Doc 19 §10.3's
     // documented "Allowed actions" ('confirm_match'/'reject_candidate'
     // replace the previous 'merge'/'reject' — 'keep_separate' and
     // 'mark_unresolved' already matched).
+    // TASK-FE-013 fix: the real `reconciliation_clusters_resolve` command
+    // requires `observation_id` (Document 12's `resolve_cluster` reads it
+    // for every action except `mark_unresolved`) -- this wrapper never sent
+    // it at all, so every resolve call was missing a required argument.
     resolve: (
       clusterId: string,
+      observationId: string,
       action: 'confirm_match' | 'reject_candidate' | 'keep_separate' | 'mark_unresolved',
       chosenCanonicalId?: string,
     ) =>
       invokeCommand<string>('reconciliation_clusters_resolve', {
         clusterId,
+        observationId,
         action,
         chosenCanonicalId,
       }),

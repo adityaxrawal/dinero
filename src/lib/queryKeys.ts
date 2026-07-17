@@ -42,6 +42,8 @@ export const queryKeys = {
   reconciliation: {
     all: () => ['reconciliation'] as const,
     unresolved: () => ['reconciliation', 'unresolved'] as const,
+    cluster: (clusterId: string) => ['reconciliation', 'cluster', clusterId] as const,
+    unassigned: () => ['reconciliation', 'unassigned'] as const,
   },
   tags: {
     all: () => ['tags'] as const,

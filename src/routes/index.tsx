@@ -7,6 +7,7 @@ import Instruments from '@/pages/Instruments';
 import InstrumentDetail from '@/pages/InstrumentDetail';
 import Statements from '@/pages/Statements';
 import Reconciliation from '@/pages/Reconciliation';
+import ReconciliationClusterDetail from '@/pages/ReconciliationClusterDetail';
 import Settings from '@/pages/Settings';
 import Debug from '@/pages/Debug';
 import OnboardingFlow from './onboarding/OnboardingFlow';
@@ -29,6 +30,7 @@ export const router = createHashRouter([
       { path: 'instruments/:id', element: <InstrumentDetail /> },
       { path: 'statements', element: <Statements /> },
       { path: 'reconciliation', element: <Reconciliation /> },
+      { path: 'reconciliation/:clusterId', element: <ReconciliationClusterDetail /> },
       { path: 'spending-limits', element: <SpendingLimits /> },
       { path: 'settings', element: <Settings /> },
       // F14 fix: Debug Console must not be reachable in production builds.

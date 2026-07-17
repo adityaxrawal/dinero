@@ -196,27 +196,41 @@ const tauriMockInitScript = `
         full_identifier: null, billing_cycle_day: 15, bank_ifsc: null,
       };
     }
-    if (cmd === 'reconciliation_clusters_list') {
-      return [
-        { 
-          id: 'cluster_1', 
-          reason: 'Ambiguous match: Same amount on same day', 
+    if (cmd === 'reconciliation_clusters_list' || cmd === 'reconciliation_clusters_get') {
+      // TASK-FE-013 fix: member shape now mirrors the real Rust
+      // ClusterMember (member_role/observation_id/canonical_transaction_id/
+      // source_pipeline) instead of a guessed source label -- the old
+      // shape had no way to drive reconciliation_clusters_resolve's
+      // required observation_id argument at all.
+      const clusters = [
+        {
+          id: 'cluster_1',
+          reason: 'Ambiguous match: Same amount on same day',
           members_count: 2,
           members: [
-            { id: 'm1', source: 'Bank Sync', merchant: 'Amazon Pay', amount: -1499.00, date: '2026-06-10 14:32:00 IST' },
-            { id: 'm2', source: 'Gmail Parser', merchant: 'Amazon.in', amount: -1499.00, date: '2026-06-10 14:32:00 UTC' }
-          ]
+            { id: 'm1', member_role: 'incoming', observation_id: 'obs_1', canonical_transaction_id: null, source_pipeline: 'gmail_transaction', merchant: 'Amazon.in', amount: -1499.00, date: '2026-06-10 14:32:00 UTC' },
+            { id: 'm2', member_role: 'candidate_a', observation_id: null, canonical_transaction_id: 'tx_amazon', source_pipeline: 'statement_pdf', merchant: 'Amazon Pay', amount: -1499.00, date: '2026-06-10 14:32:00 IST' },
+          ],
         },
-        { 
-          id: 'cluster_2', 
-          reason: 'Near match: Amounts off by small margin', 
+        {
+          id: 'cluster_2',
+          reason: 'Near match: Amounts off by small margin',
           members_count: 3,
           members: [
-            { id: 'm3', source: 'Bank Sync', merchant: 'Uber', amount: -250.00, date: '2026-06-11' },
-            { id: 'm4', source: 'Gmail Parser', merchant: 'Uber Trip', amount: -251.00, date: '2026-06-11' },
-            { id: 'm5', source: 'Gmail Parser', merchant: 'Uber.com', amount: -250.00, date: '2026-06-11' }
-          ]
+            { id: 'm3', member_role: 'incoming', observation_id: 'obs_2', canonical_transaction_id: null, source_pipeline: 'gmail_transaction', merchant: 'Uber Trip', amount: -251.00, date: '2026-06-11' },
+            { id: 'm4', member_role: 'candidate_a', observation_id: null, canonical_transaction_id: 'tx_uber_a', source_pipeline: 'statement_pdf', merchant: 'Uber', amount: -250.00, date: '2026-06-11' },
+            { id: 'm5', member_role: 'candidate_b', observation_id: null, canonical_transaction_id: 'tx_uber_b', source_pipeline: 'statement_pdf', merchant: 'Uber.com', amount: -250.00, date: '2026-06-11' },
+          ],
         },
+      ];
+      if (cmd === 'reconciliation_clusters_get') {
+        return clusters.find((c) => c.id === args?.clusterId) || null;
+      }
+      return window.__MOCK_STATE__.no_clusters ? [] : clusters;
+    }
+    if (cmd === 'reconciliation_get_unassigned_transactions') {
+      return window.__MOCK_STATE__.unassigned_transactions || [
+        { id: 'u_1', observation_id: 'obs_orphan_1', reason: 'issuer_name_not_found', status: 'open', created_at: '2026-06-12T10:00:00Z' },
       ];
     }
     if (cmd === 'instruments_list') {

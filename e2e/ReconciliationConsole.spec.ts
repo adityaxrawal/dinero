@@ -6,55 +6,58 @@ test.describe('Reconciliation Console - Rigorous Verification', () => {
     await page.waitForSelector('h1', { timeout: 10000 }).catch(() => {});
   });
 
-  test('should render the reconciliation page heading and display evidence side-by-side', async ({ page }) => {
+  test('should render both queue sections with pending clusters and unassigned transactions', async ({ page }) => {
     await expect(page.locator('h1:has-text("Reconciliation")')).toBeVisible();
-    await expect(page.locator('text="Resolve ambiguous transactions"')).toBeVisible();
+    await expect(page.getByText(/Resolve ambiguous and unassigned transactions/i)).toBeVisible();
 
-    const clusterCards = page.locator('text="Ambiguous Match Cluster"');
-    if (await clusterCards.count() > 0) {
-      await expect(page.locator('text="Ambiguous match"').first()).toBeVisible();
-      await expect(page.locator('text="Evidence #1"').first()).toBeVisible();
-    }
+    await expect(page.locator('h2:has-text("Pending Clusters")')).toBeVisible();
+    await expect(page.locator('h2:has-text("Unassigned Transactions")')).toBeVisible();
+
+    // TASK-FE-013: the fixture seeds 2 clusters and 1 unassigned transaction.
+    await expect(page.getByText(/Ambiguous match: Same amount on same day/i)).toBeVisible();
+    await expect(page.getByText(/issuer_name_not_found/i)).toBeVisible();
   });
 
-  test('resolution actions (merge, reject, separate) should handle network latency and failures', async ({ page }) => {
-    const mergeBtn = page.locator('button:has-text("Merge Transactions")').first();
-    if (!await mergeBtn.isVisible()) test.skip();
+  test('cluster detail page shows side-by-side comparison and resolves via confirm_match', async ({ page }) => {
+    await page.locator('button:has-text("Review Cluster")').first().click();
 
-    // Mock network failure
-    await page.evaluate(() => { (window as any).__MOCK_STATE__.resolve_failure = true; });
-    
-    await mergeBtn.click();
-    
-    // Should NOT remove the cluster from the UI on failure
-    await expect(page.locator('text=/Resolution [Ff]ailed/').or(page.locator('text="Error"')).first()).toBeVisible();
-    await expect(mergeBtn).toBeVisible(); // Must still be there
+    await expect(page.locator('h1:has-text("Ambiguous Match Cluster")')).toBeVisible();
+    // TASK-FE-013 fix: no fabricated confidence badge -- Document 18 has no
+    // such field on either reconciliation table, so it must never appear.
+    await expect(page.getByText(/Confidence:/i)).toHaveCount(0);
 
-    // Mock success
-    await page.evaluate(() => { (window as any).__MOCK_STATE__.resolve_failure = false; });
-    await mergeBtn.click();
-    
-    // Should now remove or update UI
-    await expect(page.locator('text="Cluster Resolved"').or(page.locator('text="Success"'))).toBeVisible();
+    await expect(page.getByText('New Evidence')).toBeVisible();
+    await expect(page.getByText('Existing Match A')).toBeVisible();
+
+    const confirmBtn = page.locator('button:has-text("Confirm Match")');
+    await expect(confirmBtn).toBeDisabled();
+
+    await page.locator('text=Existing Match A').first().click();
+    await expect(confirmBtn).toBeEnabled();
+    await confirmBtn.click();
+
+    await expect(page.getByText(/Cluster Resolved/i).first()).toBeVisible();
+    await expect(page).toHaveURL(/#\/reconciliation$/);
   });
 
-  test('should strictly synchronize notification badge with unresolved cluster count', async ({ page }) => {
-    // The mock data usually has 2 unresolved clusters.
-    // If it has clusters, the badge should reflect the exact count
-    const clusterCards = page.locator('text="Ambiguous Match Cluster"');
-    const count = await clusterCards.count();
-    
-    const navBadge = page.locator('nav a:has-text("Reconciliation")').locator('span').filter({ hasText: /^\d+$/ });
-    
-    if (count > 0) {
-      await expect(navBadge).toBeVisible();
-      const badgeText = await navBadge.textContent();
-      // Note: If pagination is used, the badge might show total while cards show 1 page. 
-      // But we just verify the badge exists and matches a number.
-      expect(badgeText).toMatch(/^\d+$/);
-    } else {
-      await expect(navBadge).not.toBeVisible();
-      await expect(page.locator('text="All Caught Up"')).toBeVisible();
-    }
+  test('resolution failure keeps the user on the detail page with an error toast', async ({ page }) => {
+    await page.evaluate(() => { window.__MOCK_STATE__.resolve_failure = true; });
+    await page.locator('button:has-text("Review Cluster")').first().click();
+    await page.locator('text=Existing Match A').first().click();
+    await page.locator('button:has-text("Confirm Match")').click();
+
+    await expect(page.getByText(/Resolution Failed/i).first()).toBeVisible();
+    await expect(page.locator('h1:has-text("Ambiguous Match Cluster")')).toBeVisible();
+  });
+
+  test('empty state shows a positive "All Caught Up" confirmation, not a blank page', async ({ page }) => {
+    await page.evaluate(() => {
+      window.__MOCK_STATE__.no_clusters = true;
+      window.__MOCK_STATE__.unassigned_transactions = [];
+    });
+    await page.locator('a[href="#/instruments"]').click();
+    await page.locator('a[href="#/reconciliation"]').click();
+
+    await expect(page.getByText(/All Caught Up/i)).toBeVisible();
   });
 });
