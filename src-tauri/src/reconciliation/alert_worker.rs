@@ -211,6 +211,20 @@ pub fn evaluate_alerts_internal<R: tauri::Runtime>(
 
             if let Some(app) = &app_handle {
                 for alert in fired_alerts {
+                    // TASK-DESK-002: native notification for a real
+                    // spending-limit threshold crossing specifically --
+                    // not the merchant-spike anomaly or subscription
+                    // reminder alerts this same event also carries, which
+                    // aren't what Doc 30 describes for this task.
+                    if alert.alert_type.starts_with("global_budget_") {
+                        crate::notifications::send_notification(
+                            app,
+                            crate::notifications::NotificationKind::SpendingLimitThreshold,
+                            "Spending Limit Alert",
+                            &alert.message,
+                            None,
+                        );
+                    }
                     let _ = emit_event(app, AppEvent::AlertThresholdCrossed, alert);
                 }
             }

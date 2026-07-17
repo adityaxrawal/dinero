@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
+default-run = "dinero-app"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -55,6 +56,8 @@ tokio-util = { version = "0.7.18", features = ["full"] }
 base64 = "0.22.1"
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-updater = "2"
+# TASK-DESK-002: OS-level notifications via UNUserNotificationCenter.
+tauri-plugin-notification = "2"
 aes-gcm = "0.10"
 strsim = "0.11"
 candle-core = "0.8.2"

@@ -13,6 +13,7 @@ pub mod licensing;
 pub mod llm_manager;
 pub mod menu;
 pub mod network_client;
+pub mod notifications;
 pub mod reconciliation;
 pub mod security;
 pub mod startup;
@@ -136,6 +137,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // TASK-DESK-002: native macOS notifications (UNUserNotificationCenter).
+        .plugin(tauri_plugin_notification::init())
         // Doc 30 TASK-API-004: read-only, capability-scoped (tauri.conf.json's
         // `fs:allow-read-file`) -- lets the frontend read the bytes of a
         // dialog-selected statement PDF so `statements_upload` can be sent
@@ -439,6 +442,23 @@ pub fn run() {
                 });
             }
 
+            // TASK-DESK-002: request native-notification permission only if
+            // the user has already passed the onboarding network-disclosure
+            // screen -- never proactively at cold launch before that. A
+            // no-op (returns immediately) on every launch until that
+            // consent event exists.
+            {
+                let pool_for_notif_permission = pool_clone.clone();
+                let app_handle_for_notif_permission = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    crate::notifications::request_permission_if_disclosed(
+                        &app_handle_for_notif_permission,
+                        &pool_for_notif_permission,
+                    )
+                    .await;
+                });
+            }
+
             // In-memory-only holding area for PDF bytes blocked on Statement
             // Instrument Gate confirmation (C2 fix) — never written to disk.
             let pending_statement_bytes = crate::statements::pending_bytes::PendingStatementBytes::default();
@@ -634,6 +654,38 @@ pub fn run() {
                                     crate::db::retention::archive_old_transactions(c, &archive_dir, &db_key)
                                 })
                                 .await;
+                        }
+                    }
+
+                    // TASK-DESK-002: native "bill due in 3 days" reminder --
+                    // runs once per day alongside the other daily maintenance
+                    // work above; `is_three_days_before_due`'s exact-equality
+                    // check (not a range) makes this self-deduplicating, so
+                    // no separate "already reminded" state is needed.
+                    if let Ok(conn) = pool_for_backup.get().await {
+                        let today = chrono::Utc::now().date_naive();
+                        let due_soon = conn
+                            .interact(move |c| crate::db::instruments::list_upcoming_bills(c, &today))
+                            .await;
+                        if let Ok(Ok(instruments)) = due_soon {
+                            for instrument in instruments {
+                                let Some(due_date) = instrument.statement_due_date else {
+                                    continue;
+                                };
+                                if crate::notifications::is_three_days_before_due(due_date, today) {
+                                    let label = instrument
+                                        .nickname
+                                        .clone()
+                                        .unwrap_or_else(|| instrument.issuer_name.clone());
+                                    crate::notifications::send_notification(
+                                        &app_handle_for_backup,
+                                        crate::notifications::NotificationKind::UpcomingBillDue,
+                                        "Upcoming Bill Due",
+                                        &format!("{} is due in 3 days", label),
+                                        Some(&instrument.id),
+                                    );
+                                }
+                            }
                         }
                     }
                 }

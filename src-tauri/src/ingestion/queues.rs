@@ -227,7 +227,7 @@ pub fn spawn_queues<R: tauri::Runtime>(
         mpsc::channel::<TransactionJob>(TRANSACTION_QUEUE_CAPACITY);
     let (statement_tx, statement_rx) = mpsc::channel::<StatementJob>(STATEMENT_QUEUE_CAPACITY);
 
-    spawn_transaction_workers(transaction_rx, pool.clone());
+    spawn_transaction_workers(transaction_rx, pool.clone(), app.clone());
     spawn_statement_dispatcher(statement_rx, pool, app, pending_bytes);
 
     QueueHandles {
@@ -239,17 +239,22 @@ pub fn spawn_queues<R: tauri::Runtime>(
 /// Spawns `TRANSACTION_QUEUE_WORKERS` persistent tasks pulling from the shared
 /// receiver (wrapped for multi-consumer access, since `mpsc::Receiver` has exactly
 /// one owner natively) — this is the "multi-parallel worker pool" of Doc 15 §5.
-fn spawn_transaction_workers(rx: mpsc::Receiver<TransactionJob>, pool: Pool) {
+fn spawn_transaction_workers<R: tauri::Runtime>(
+    rx: mpsc::Receiver<TransactionJob>,
+    pool: Pool,
+    app: tauri::AppHandle<R>,
+) {
     let rx = Arc::new(Mutex::new(rx));
     for _ in 0..TRANSACTION_QUEUE_WORKERS {
         let rx = Arc::clone(&rx);
         let pool = pool.clone();
+        let app = app.clone();
         tauri::async_runtime::spawn(async move {
             loop {
                 wait_while_transaction_queue_paused().await;
                 let job = { rx.lock().await.recv().await };
                 match job {
-                    Some(job) => process_transaction_job(job, &pool).await,
+                    Some(job) => process_transaction_job(job, &pool, &app).await,
                     None => break,
                 }
             }
@@ -350,7 +355,11 @@ fn spawn_statement_dispatcher<R: tauri::Runtime>(
 /// The single Transaction Queue processing path (Doc 12 §8.2a): instrument
 /// resolution, observation persistence, and reconciliation — identical for every
 /// entry point that feeds the Transaction Queue.
-async fn process_transaction_job(job: TransactionJob, pool: &Pool) {
+async fn process_transaction_job<R: tauri::Runtime>(
+    job: TransactionJob,
+    pool: &Pool,
+    app: &tauri::AppHandle<R>,
+) {
     let obs = job.obs;
     let instrument_type = obs.instrument_type.clone();
     let issuer_name = obs.issuer_name.clone();
@@ -365,9 +374,16 @@ async fn process_transaction_job(job: TransactionJob, pool: &Pool) {
 
     let connected_account_id = job.connected_account_id;
 
+    // TASK-DESK-002: snapshotted before `row` moves into the DB closure
+    // below, so a native "new confirmed transaction" notification can be
+    // built afterward without needing to re-fetch anything.
+    let notify_amount_minor = row.amount_minor;
+    let notify_direction = row.direction.clone();
+    let notify_merchant = row.merchant_raw.clone();
+
     if let Ok(conn) = pool.get().await {
-        let _ = conn
-            .interact(move |c| {
+        let outcome = conn
+            .interact(move |c| -> Option<(crate::reconciliation::audit::DecisionType, String)> {
                 if let (Some(ref itype), Some(ref iname), Some(ref masked)) =
                     (instrument_type, issuer_name, masked_identifier)
                 {
@@ -412,11 +428,13 @@ async fn process_transaction_job(job: TransactionJob, pool: &Pool) {
                 match crate::db::transaction_observations::insert_observation_idempotent(c, &row) {
                     Err(e) => {
                         tracing::warn!("Observation insert failed: {}", e);
+                        None
                     }
                     Ok(InsertObservationOutcome::DuplicateSkipped) => {
                         // Doc 30 TASK-TXN-009: a re-processed message is
                         // silently skipped, never an error and never
                         // re-run through reconciliation a second time.
+                        None
                     }
                     Ok(InsertObservationOutcome::Inserted) => {
                         let incoming_obs = crate::reconciliation::engine::IncomingObservation {
@@ -453,17 +471,17 @@ async fn process_transaction_job(job: TransactionJob, pool: &Pool) {
                             confidence_score: row.confidence_score,
                         };
 
-                        let candidates =
-                            crate::reconciliation::engine::fetch_candidates(c, &incoming_obs)
-                                .unwrap_or_default();
-                        match crate::reconciliation::engine::reconcile(c, &incoming_obs, candidates)
-                        {
+                        match crate::reconciliation::engine::reconcile_transactionally(
+                            c,
+                            &incoming_obs,
+                        ) {
                             Ok(decision) => {
                                 tracing::debug!(
                                     "Reconciliation decision for obs '{}': {:?}",
                                     incoming_obs.id,
                                     decision
                                 );
+                                Some((decision, incoming_obs.id.clone()))
                             }
                             Err(e) => {
                                 tracing::warn!(
@@ -471,12 +489,65 @@ async fn process_transaction_job(job: TransactionJob, pool: &Pool) {
                                     incoming_obs.id,
                                     e
                                 );
+                                None
                             }
                         }
                     }
                 }
             })
             .await;
+
+        // Doc 19 §15 / TASK-DESK-002: this queue-driven path previously
+        // emitted no Tauri event at all on completion -- confirmed via a
+        // full-crate grep showing `AppEvent::TransactionCreated` was only
+        // ever emitted from the manual `transactions_create` IPC command
+        // (commands/mod.rs), never from real Gmail-ingested transactions.
+        // Mirrors that command's exact branching (ambiguous -> cluster
+        // event, otherwise -> transaction_created) so both entry points
+        // behave identically, and is also what makes a native
+        // "new confirmed transaction" notification possible for the
+        // real-world case this task is actually about.
+        if let Ok(Some((decision, obs_id))) = outcome {
+            if let crate::reconciliation::audit::DecisionType::AmbiguousPending(cluster_id) = &decision
+            {
+                let _ = crate::ipc::events::emit_event(
+                    app,
+                    crate::ipc::events::AppEvent::ReconciliationCluster,
+                    serde_json::json!({ "cluster_id": cluster_id, "observation_id": obs_id }),
+                );
+            } else {
+                let _ = crate::ipc::events::emit_event(
+                    app,
+                    crate::ipc::events::AppEvent::TransactionCreated,
+                    serde_json::json!({ "observation_id": obs_id }),
+                );
+
+                let is_confirmed = matches!(
+                    decision,
+                    crate::reconciliation::audit::DecisionType::NewCanonical
+                        | crate::reconciliation::audit::DecisionType::AutoMatchedExact
+                        | crate::reconciliation::audit::DecisionType::AutoMatchedScored
+                );
+                if is_confirmed && notify_direction.as_deref() == Some("debit") {
+                    if let Some(amount_minor) = notify_amount_minor {
+                        if crate::notifications::should_notify_transaction(
+                            amount_minor,
+                            crate::notifications::DEFAULT_TRANSACTION_NOTIFICATION_THRESHOLD_MINOR,
+                        ) {
+                            let merchant =
+                                notify_merchant.unwrap_or_else(|| "a merchant".to_string());
+                            crate::notifications::send_notification(
+                                app,
+                                crate::notifications::NotificationKind::TransactionAboveThreshold,
+                                "New Transaction",
+                                &format!("₹{:.2} at {}", amount_minor as f64 / 100.0, merchant),
+                                None,
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

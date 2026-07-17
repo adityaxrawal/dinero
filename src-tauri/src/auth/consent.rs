@@ -55,6 +55,20 @@ pub fn withdraw_consent_event(conn: &Connection, event_type: &str) -> Result<()>
     Ok(())
 }
 
+/// Whether an un-withdrawn consent event of this type has ever been
+/// recorded. TASK-DESK-002 uses this (`event_type =
+/// "network_disclosure_acknowledged"`) to gate the native-notification
+/// permission request on the user having actually seen the network
+/// disclosure screen, rather than requesting it proactively at cold launch.
+pub fn has_active_consent(conn: &Connection, event_type: &str) -> Result<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM consent_events WHERE event_type = ?1 AND withdrawn_at IS NULL",
+        params![event_type],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
 /// Read-only history for Settings → Privacy → Consent History
 /// (`auth_get_consent_history`, Document 19 §5.6).
 pub fn fetch_consent_history(conn: &Connection, limit: u32, offset: u32) -> Result<Vec<ConsentEventsRow>> {
@@ -142,5 +156,22 @@ mod tests {
 
         assert!(get_by_id(&conn, &second).unwrap().unwrap().withdrawn_at.is_some());
         assert!(get_by_id(&conn, &first).unwrap().unwrap().withdrawn_at.is_none());
+    }
+
+    #[test]
+    fn has_active_consent_false_until_recorded_then_true() {
+        let conn = setup_db();
+        assert!(!has_active_consent(&conn, "network_disclosure_acknowledged").unwrap());
+
+        insert_consent_event(&conn, "network_disclosure_acknowledged", "text").unwrap();
+        assert!(has_active_consent(&conn, "network_disclosure_acknowledged").unwrap());
+    }
+
+    #[test]
+    fn has_active_consent_false_again_after_withdrawal() {
+        let conn = setup_db();
+        insert_consent_event(&conn, "network_disclosure_acknowledged", "text").unwrap();
+        withdraw_consent_event(&conn, "network_disclosure_acknowledged").unwrap();
+        assert!(!has_active_consent(&conn, "network_disclosure_acknowledged").unwrap());
     }
 }

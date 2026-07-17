@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { RouterProvider } from 'react-router-dom';
 import { QueryClientProvider } from '@tanstack/react-query';
+import { onAction } from '@tauri-apps/plugin-notification';
 import { API } from './lib/ipc';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import ToastProvider from '@/components/ToastProvider';
@@ -16,6 +17,28 @@ import './App.css';
 // the same component that creates the provider wrapping it.
 function IpcEventBridge() {
   useIpcQueryInvalidation();
+
+  useEffect(() => {
+    // TASK-DESK-002: clicking a native notification foregrounds the app and
+    // deep-links to the relevant view. Uses `window.location.hash` directly
+    // rather than `useNavigate()` -- this component is mounted outside
+    // `RouterProvider` (see below), so no router context is available here,
+    // but the hash router (Doc 30 TASK-FE-001) picks up a hash change from
+    // anywhere, React or not.
+    let unlisten: (() => void) | undefined;
+    onAction((notification) => {
+      const route = notification.extra?.deep_link;
+      if (typeof route === 'string') {
+        window.location.hash = route;
+      }
+    })
+      .then((handle) => {
+        unlisten = () => handle.unregister();
+      })
+      .catch((e) => console.error('Failed to register notification action listener', e));
+    return () => unlisten?.();
+  }, []);
+
   return null;
 }
 

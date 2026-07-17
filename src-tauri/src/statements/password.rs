@@ -380,9 +380,19 @@ pub async fn try_user_password(
 
 /// Transitions `unprocessed_statements` row to `pending_retry` when the password timeout
 /// (2.5 minutes) elapses without a correct user response (Doc 10 §7.6).
-pub async fn handle_password_timeout(
+///
+/// TASK-DESK-002: also fires a native "password prompt timed out"
+/// notification -- flagged honestly in this task's fix-log: this function
+/// itself has no real production caller anywhere in the codebase yet (a
+/// pre-existing TASK-STMT-003 gap, confirmed via a full-crate grep turning
+/// up only this function's own unit test), so the notification is real and
+/// correctly wired for whenever that timer gets built, but doesn't yet fire
+/// in a running app. Wiring the actual 2.5-minute scheduler is a separate,
+/// larger piece of work belonging to TASK-STMT-003, not this task.
+pub async fn handle_password_timeout<R: tauri::Runtime>(
     statement_id: &str,
     pool: &deadpool_sqlite::Pool,
+    app: &tauri::AppHandle<R>,
 ) -> Result<()> {
     tracing::warn!(
         "Password timeout for statement_id='{}' — transitioning to pending_retry",
@@ -419,6 +429,15 @@ pub async fn handle_password_timeout(
     })
     .await
     .map_err(|e| anyhow!("DB interact error (password timeout): {}", e))??;
+
+    crate::notifications::send_notification(
+        app,
+        crate::notifications::NotificationKind::StatementPasswordTimeout,
+        "Statement Password Needed",
+        "A statement's password prompt timed out. Tap to re-enter it.",
+        None,
+    );
+
     Ok(())
 }
 
@@ -558,7 +577,12 @@ mod tests {
         .unwrap();
 
         // Trigger timeout
-        handle_password_timeout("stmt_to", &pool).await.unwrap();
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap()
+            .handle()
+            .clone();
+        handle_password_timeout("stmt_to", &pool, &app).await.unwrap();
 
         // Verify status transitioned
         let conn2 = pool.get().await.unwrap();
