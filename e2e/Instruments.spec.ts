@@ -25,29 +25,40 @@ test.describe('Instrument Management - Rigorous Verification', () => {
     
     await page.locator('[role="dialog"] button:has-text("Add")').or(page.locator('button[aria-label="Save new instrument"]')).click();
     
-    // Expect error
-    await expect(page.locator('[role="alert"]').or(page.locator('text="already exists"'))).toBeVisible();
+    // Expect error. TASK-FE-011 fix: was an exact-match `text="already
+    // exists"` locator, but the real toast shows the backend's full message
+    // ("An instrument with this identifier already exists for this
+    // issuer.") as a sentence, not that exact isolated phrase -- Playwright's
+    // quoted text= is whole-string equality, not substring, so this never
+    // matched. Switched to a substring-tolerant getByText regex.
+    await expect(page.locator('[role="alert"]').or(page.getByText(/already exists/i)).first()).toBeVisible();
     
     await page.evaluate(() => { (window as any).__MOCK_STATE__.instrument_conflict = false; });
   });
 
   test('should handle deletion constraints (e.g. ties to existing transactions)', async ({ page }) => {
-    const deleteBtn = page.locator('button[aria-label*="Delete "]').first();
-    if (!await deleteBtn.isVisible()) test.skip();
-    
-    await deleteBtn.click();
-    const dialog = page.locator('[role="dialog"]');
-    await expect(dialog.locator('text="Remove Instrument"')).toBeVisible();
-    
+    // TASK-FE-011: delete moved from an inline list-row button + Radix
+    // confirmation dialog to InstrumentDetail's page-level action, which
+    // uses a native confirm()/ask() dialog (same pattern as
+    // TransactionDetail's delete, TASK-FE-010) -- Playwright auto-dismisses
+    // unhandled native dialogs by default, so this needs an explicit accept
+    // handler that no prior test in this suite has needed.
+    page.on('dialog', (dialog) => dialog.accept());
+
+    const firstCard = page.locator('[role="button"]').first();
+    if (!(await firstCard.isVisible())) test.skip();
+    await firstCard.click();
+    await expect(page).toHaveURL(/\/instruments\/.+/);
+
     // Mock backend rejection because of tied transactions
     await page.evaluate(() => { (window as any).__MOCK_STATE__.instrument_delete_tied = true; });
-    
-    const confirmBtn = dialog.locator('button:has-text("Remove")');
-    await confirmBtn.click();
-    
-    // Should NOT disappear, but show an error saying "Cannot delete instrument with linked transactions"
-    await expect(page.locator('text=/transactions/i').or(page.locator('text="Failed"')).first()).toBeVisible();
-    
+
+    await page.locator('button:has-text("Delete Instrument")').click();
+
+    // Should NOT navigate away, but show an error about linked transactions
+    await expect(page.getByText(/linked transactions/i).or(page.getByText(/Failed/i)).first()).toBeVisible();
+    await expect(page).toHaveURL(/\/instruments\/.+/);
+
     await page.evaluate(() => { (window as any).__MOCK_STATE__.instrument_delete_tied = false; });
   });
 

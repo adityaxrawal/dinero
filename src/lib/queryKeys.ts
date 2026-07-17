@@ -27,11 +27,16 @@ export const queryKeys = {
   instruments: {
     all: () => ['instruments'] as const,
     list: () => ['instruments', 'list'] as const,
+    detail: (id: string) => ['instruments', 'detail', id] as const,
   },
   statements: {
     all: () => ['statements'] as const,
-    list: (page: number) => ['statements', 'list', page] as const,
+    list: () => ['statements', 'list'] as const,
     entries: (statementId: string) => ['statements', 'entries', statementId] as const,
+  },
+  pdfPasswords: {
+    all: () => ['pdfPasswords'] as const,
+    list: () => ['pdfPasswords', 'list'] as const,
   },
   reconciliation: {
     all: () => ['reconciliation'] as const,

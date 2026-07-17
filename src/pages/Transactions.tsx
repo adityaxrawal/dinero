@@ -29,10 +29,15 @@ export default function Transactions() {
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
 
-  // TASK-FE-008's CategoryBreakdownChart navigates here with ?category=<id>.
+  // TASK-FE-008's CategoryBreakdownChart links here with ?category=<id>;
+  // TASK-FE-011's InstrumentDetail links here with ?instrument=<id>.
   const [filters, setFilters] = useState<TransactionListFilters>(() => {
     const category = searchParams.get('category');
-    return category ? { category_id: category } : {};
+    const instrument = searchParams.get('instrument');
+    return {
+      ...(category ? { category_id: category } : {}),
+      ...(instrument ? { instrument_id: instrument } : {}),
+    };
   });
   const [searchQuery, setSearchQuery] = useState('');
   const isSearching = searchQuery.trim().length > 0;

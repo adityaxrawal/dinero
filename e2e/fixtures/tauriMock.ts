@@ -177,11 +177,23 @@ const tauriMockInitScript = `
       return 'Updated';
     }
     if (cmd === 'statements_list') {
-      return [
-        { id: 'stmt_1', date: '2026-06-01T10:00:00Z', file_name: 'HDFC_May_2026.pdf', status: 'PROCESSED' },
-        { id: 'stmt_2', date: '2026-05-01T10:00:00Z', file_name: 'HDFC_Apr_2026.pdf', status: 'PROCESSED' },
-        { id: 'stmt_3', date: '2026-06-05T12:00:00Z', file_name: 'ICICI_May_2026.pdf', status: 'PASSWORD_REQUIRED' },
+      // TASK-FE-011 fix: this mock returned a bare array, but the real
+      // command has returned a paginated { records, total } page since
+      // TASK-API-004 -- API.statements.listHistory()'s .then(r => r.records)
+      // silently unwrapped to undefined against this stale shape.
+      const records = [
+        { id: 'stmt_1', date: '2026-06-01T10:00:00Z', file_name: 'HDFC_May_2026.pdf', status: 'PROCESSED', instrument_id: 'inst_1' },
+        { id: 'stmt_2', date: '2026-05-01T10:00:00Z', file_name: 'HDFC_Apr_2026.pdf', status: 'PROCESSED', instrument_id: 'inst_1' },
+        { id: 'stmt_3', date: '2026-06-05T12:00:00Z', file_name: 'ICICI_May_2026.pdf', status: 'PASSWORD_REQUIRED', instrument_id: 'inst_2' },
       ];
+      return { records, total: records.length };
+    }
+    if (cmd === 'instruments_get') {
+      return {
+        id: args?.id || 'inst_1', instrument_type: 'credit_card', issuer_name: 'HDFC Bank',
+        masked_identifier: '1234', status: 'active', current_balance: -1499.0, credit_limit: 60000.0,
+        full_identifier: null, billing_cycle_day: 15, bank_ifsc: null,
+      };
     }
     if (cmd === 'reconciliation_clusters_list') {
       return [
@@ -307,6 +319,24 @@ const tauriMockInitScript = `
     if (cmd === 'export_logs') return 'ok';
     if (cmd === 'auth_get_recovery_phrase') return 'test test test test test test test test test test test ball';
     if (cmd === 'settings_network_activity_list') return [];
+    if (cmd === 'plugin:dialog|message') {
+      // TASK-FE-011 fix: no mock existed at all -- @tauri-apps/plugin-dialog's
+      // ask()/confirm()/message() all route through this single IPC command.
+      // Every delete-confirmation flow in the app (TransactionQuickActions,
+      // TransactionDetail, InstrumentDetail) calls this before deleting --
+      // unmocked, it fell through to the {} fallback below and no test had
+      // ever actually exercised a confirm-then-delete path end-to-end.
+      // Real ask()/confirm() compare the resolved value against the OK-side
+      // button's exact label string ("Yes"/"Ok"/a custom okLabel), not a
+      // boolean (source: ask()'s === okLabel check in plugin-dialog's
+      // dist-js) -- first attempt returning boolean true silently failed
+      // this check (true === 'Yes' is false), so always resolve to the
+      // OK-side label instead.
+      const buttons = args?.buttons;
+      if (buttons && typeof buttons === 'object' && 'ok' in buttons) return buttons.ok;
+      if (buttons === 'OkCancel') return 'Ok';
+      return 'Yes';
+    }
     if (cmd === 'plugin:event|listen') {
       window.__TAURI_LISTENERS__ = window.__TAURI_LISTENERS__ || {};
       const { event, handler } = args;

@@ -96,6 +96,10 @@ pub struct StatementRecord {
     pub date: String,
     pub file_name: String,
     pub status: String,
+    /// TASK-FE-011: InstrumentDetail needs to scope statement history to one
+    /// instrument -- never selected before this task despite the `statements`
+    /// table having had the column since the initial schema.
+    pub instrument_id: Option<String>,
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -408,7 +412,7 @@ pub fn do_fetch_statement_history(
 ) -> Result<Vec<StatementRecord>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, created_at, source_message_id, parse_status FROM statements ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
+            "SELECT id, created_at, source_message_id, parse_status, instrument_id FROM statements ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
         )
         .map_err(|e| e.to_string())?;
 
@@ -422,6 +426,7 @@ pub fn do_fetch_statement_history(
                 date: created_at.unwrap_or_else(|| "Unknown".to_string()),
                 file_name: file_name.unwrap_or_else(|| "Unknown".to_string()),
                 status: status.unwrap_or_else(|| "UNKNOWN".to_string()),
+                instrument_id: row.get(4)?,
             })
         })
         .map_err(|e| e.to_string())?;

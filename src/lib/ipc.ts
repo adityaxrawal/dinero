@@ -233,6 +233,7 @@ export interface StatementRecord {
   date: string;
   file_name: string;
   status: string;
+  instrument_id: string | null;
 }
 
 export interface ClusterMember {

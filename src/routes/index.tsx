@@ -4,6 +4,7 @@ import Dashboard from '@/pages/Dashboard';
 import Transactions from '@/pages/Transactions';
 import TransactionDetail from '@/pages/TransactionDetail';
 import Instruments from '@/pages/Instruments';
+import InstrumentDetail from '@/pages/InstrumentDetail';
 import Statements from '@/pages/Statements';
 import Reconciliation from '@/pages/Reconciliation';
 import Settings from '@/pages/Settings';
@@ -25,6 +26,7 @@ export const router = createHashRouter([
       { path: 'transactions', element: <Transactions /> },
       { path: 'transactions/:id', element: <TransactionDetail /> },
       { path: 'instruments', element: <Instruments /> },
+      { path: 'instruments/:id', element: <InstrumentDetail /> },
       { path: 'statements', element: <Statements /> },
       { path: 'reconciliation', element: <Reconciliation /> },
       { path: 'spending-limits', element: <SpendingLimits /> },
