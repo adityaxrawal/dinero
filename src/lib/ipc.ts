@@ -311,9 +311,14 @@ interface BackendStatus {
   status: 'healthy' | 'corrupted' | 'locked';
 }
 
+// TASK-FE-015: account_status added -- the real backend column existed
+// (Document 18's connected_accounts.account_status) but was never selected
+// or exposed, so a 'degraded' account (Gmail token refresh failed) had no
+// way to surface a status badge.
 export interface ConnectedAccountInfo {
   email: string;
   account_id: string;
+  account_status: string;
 }
 
 export interface CategoryBudget {

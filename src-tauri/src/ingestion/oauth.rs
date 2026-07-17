@@ -138,7 +138,7 @@ async fn revoke_single_account_with_google(
         .client()
         .post("https://oauth2.googleapis.com/revoke")
         .form(&[("token", token_store.access_token.as_str())]);
-    match network.execute(builder).await {
+    match network.execute("google_oauth", builder).await {
         Ok(res) if res.status().is_success() => {
             tracing::info!(
                 "Gmail OAuth token revoked with Google for account {}",
@@ -293,6 +293,12 @@ pub async fn is_gmail_connected(
 pub struct ConnectedAccountInfo {
     pub email: String,
     pub account_id: String,
+    /// TASK-FE-015: "independent status/revoke per account" (Document 30
+    /// §21's own summary of this task). Real values: 'ACTIVE', 'degraded'
+    /// (token refresh failed -- syncing has silently stopped until the user
+    /// reconnects), 'disconnected' (excluded from this list entirely, see
+    /// the query below).
+    pub account_status: String,
 }
 
 /// Doc 03 §8.2: a license supports up to 10 *simultaneously* connected Gmail
@@ -310,16 +316,24 @@ pub async fn settings_get_connected_accounts(
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(|c| {
+        // TASK-FE-015 fix: this previously filtered to `account_status =
+        // 'ACTIVE'` only, so a 'degraded' account (Gmail token refresh
+        // failed -- syncing has silently stopped) vanished from the list
+        // entirely instead of surfacing a status badge the user could act
+        // on. Only a fully 'disconnected' account (explicitly revoked,
+        // email_address cleared) is excluded.
         let mut stmt = c
-            .prepare("SELECT id, email_address FROM connected_accounts WHERE account_status = 'ACTIVE' ORDER BY created_at ASC")
+            .prepare("SELECT id, email_address, account_status FROM connected_accounts WHERE account_status IS NOT NULL AND account_status != 'disconnected' ORDER BY created_at ASC")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |row| {
                 let account_id: String = row.get(0)?;
                 let email: Option<String> = row.get(1)?;
+                let account_status: String = row.get(2)?;
                 Ok(ConnectedAccountInfo {
                     email: email.unwrap_or_else(|| "Unknown".to_string()),
                     account_id,
+                    account_status,
                 })
             })
             .map_err(|e| e.to_string())?;

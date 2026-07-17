@@ -1,11 +1,12 @@
-import { Mail, Palette, Cpu, CheckCircle, ScanLine, Loader2, CalendarRange, AlertCircle, FileText, Ban, AlertTriangle, KeyRound, CreditCard, RefreshCw, Wand2, Lock, Trash2, Gauge } from 'lucide-react';
-import { API, LlmModelInfo, LicenseStatusResponse, PatternRuleHealth, PdfPasswordSummary } from '../lib/ipc';
+import { Mail, Palette, Cpu, CheckCircle, ScanLine, Loader2, CalendarRange, AlertCircle, FileText, Ban, AlertTriangle, KeyRound, CreditCard, RefreshCw, Wand2, Gauge } from 'lucide-react';
+import { API, LlmModelInfo, LicenseStatusResponse, PatternRuleHealth } from '../lib/ipc';
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import NetworkActivity from '../components/NetworkActivity';
 import { Button } from '@/components/ui/button';
 import PrivacySettings from '../components/settings/PrivacySettings';
-import RevokeGmailButton from '../components/settings/RevokeGmailButton';
+import ConnectedAccountsSettings from '../components/settings/ConnectedAccountsSettings';
+import StatementPasswordSettings from '../components/settings/StatementPasswordSettings';
 
 import { useGlobalState } from '../lib/GlobalStateContext';
 
@@ -18,7 +19,6 @@ export default function Settings() {
     scanProgress, setScanProgress,
     scanError, setScanError,
     connectedAccounts,
-    refreshConnectedAccounts,
     handleStartScan
   } = useGlobalState();
 
@@ -33,23 +33,9 @@ export default function Settings() {
       .then(setAvailableModels)
       .catch((err) => console.error('Failed to fetch LLM model catalog:', err));
   }, []);
-  const [isConnecting, setIsConnecting] = useState(false);
-  // Doc 03 §8.2: connecting a 2nd-10th account requires an ACTIVE
-  // subscription — the backend refuses and returns a specific message that
-  // we surface here rather than a generic OAuth failure.
-  const [connectError, setConnectError] = useState<string | null>(null);
   const connectedAccount = connectedAccounts[0] ?? null; // primary account, used by Mail Scan below
   const [recoveryPhrase, setRecoveryPhrase] = useState<string | null>(null);
   const [isFetchingPhrase, setIsFetchingPhrase] = useState(false);
-
-  const handleDisconnectGmail = async (accountId: string) => {
-    try {
-      await API.auth.disconnectGmail(accountId);
-      await refreshConnectedAccounts();
-    } catch (err: any) {
-      console.error('Failed to disconnect Gmail:', err);
-    }
-  };
 
   // Doc 22 §8.2: opt-in only, never prompted during onboarding — the consent
   // screen must plainly state that the phrase alone is sufficient to decrypt
@@ -202,49 +188,6 @@ export default function Settings() {
     }
   };
 
-  // ── PDF Password Management (G15 fix) ────────────────────────────────
-  const [pdfPasswords, setPdfPasswords] = useState<PdfPasswordSummary[]>([]);
-  const [isLoadingPasswords, setIsLoadingPasswords] = useState(true);
-  const [deletingPasswordId, setDeletingPasswordId] = useState<string | null>(null);
-
-  const loadPdfPasswords = async () => {
-    setIsLoadingPasswords(true);
-    try {
-      const passwords = await API.pdfPasswords.list();
-      setPdfPasswords(passwords);
-    } catch (err) {
-      console.error('Failed to fetch stored PDF passwords:', err);
-    } finally {
-      setIsLoadingPasswords(false);
-    }
-  };
-
-  useEffect(() => {
-    loadPdfPasswords();
-  }, []);
-
-  const handleDeletePassword = async (password: PdfPasswordSummary) => {
-    let confirmed = false;
-    const warning = `Forget the stored password for ${password.issuer_name} •••• ${password.masked_identifier}? You'll be prompted again next time a statement from this account needs unlocking.`;
-    try {
-      const { ask } = await import('@tauri-apps/plugin-dialog');
-      confirmed = await ask(warning, { title: 'Forget Password', kind: 'warning' });
-    } catch {
-      confirmed = confirm(warning);
-    }
-    if (!confirmed) return;
-
-    setDeletingPasswordId(password.id);
-    try {
-      await API.pdfPasswords.delete(password.id);
-      await loadPdfPasswords();
-    } catch (err: any) {
-      alert('Failed to delete password: ' + (err?.message ?? String(err)));
-    } finally {
-      setDeletingPasswordId(null);
-    }
-  };
-
   // ── Data Export / Restore from Backup (G4 fix) ───────────────────────
   const [isRestoring, setIsRestoring] = useState(false);
 
@@ -319,24 +262,6 @@ export default function Settings() {
     localStorage.setItem('llm_model', newModel);
   };
 
-  const handleConnectGmail = async () => {
-    if (connectedAccounts.length >= 10) return;
-    setIsConnecting(true);
-    setConnectError(null);
-    try {
-      await API.auth.startGoogle();
-    } catch (err: any) {
-      console.error('OAuth Error:', err);
-      // The backend's account-count/license-state gate (Doc 03 §8.2, Doc 40
-      // §11) rejects with a specific, user-facing message — surface it
-      // inline rather than a generic alert.
-      setConnectError(err?.message ?? String(err));
-    } finally {
-      // Always refresh — OAuth may have succeeded even if invoke threw a non-critical error
-      await refreshConnectedAccounts();
-      setIsConnecting(false);
-    }
-  };
   const handleCancelScan = () => {
     setScanStatus('idle');
     setScanProgress(null);
@@ -355,84 +280,8 @@ export default function Settings() {
         </p>
       </div>
 
-      {/* ── Integrations ───────────────────────────────────────────────── */}
-      <div className="glass-panel" style={{ padding: '24px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-          <Mail className="text-accent" size={24} color="var(--accent-primary)" />
-          <h3 className="heading-md">Integrations</h3>
-        </div>
-        <p className="text-sm text-muted" style={{ marginBottom: '20px' }}>
-          Connect Gmail securely via local OAuth to automate transaction
-          syncing. We only request read access, and extraction happens locally.
-          Up to 10 accounts can be connected; connecting a 2nd account or
-          beyond requires an active subscription.
-        </p>
-
-        {connectedAccounts.length > 0 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px' }}>
-            {connectedAccounts.map((account) => (
-              <div
-                key={account.account_id}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '12px',
-                  padding: '12px 16px',
-                  borderRadius: '8px',
-                  background: 'rgba(34,197,94,0.08)',
-                  border: '1px solid rgba(34,197,94,0.25)',
-                }}
-              >
-                <CheckCircle size={18} color="var(--success)" />
-                <div style={{ flex: 1 }}>
-                  <p style={{ fontSize: '13px', fontWeight: 600, color: '#047857' }}>
-                    Gmail Connected
-                  </p>
-                  <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>
-                    {account.email}
-                  </p>
-                </div>
-                <RevokeGmailButton email={account.email} onRevoke={() => handleDisconnectGmail(account.account_id)} />
-              </div>
-            ))}
-          </div>
-        )}
-
-        {connectError && (
-          <div
-            style={{
-              padding: '12px 16px',
-              borderRadius: '8px',
-              background: 'rgba(245,158,11,0.08)',
-              border: '1px solid rgba(245,158,11,0.2)',
-              marginBottom: '16px',
-              fontSize: '13px',
-              color: 'var(--text-muted)',
-            }}
-          >
-            {connectError}
-          </div>
-        )}
-
-        {connectedAccounts.length < 10 && (
-          <button
-            className="btn btn-primary"
-            onClick={handleConnectGmail}
-            disabled={isConnecting}
-            id="connect-gmail-btn"
-          >
-            {isConnecting ? (
-              <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <Loader2 size={16} className="animate-spin" /> Connecting…
-              </span>
-            ) : connectedAccounts.length === 0 ? (
-              'Connect Gmail'
-            ) : (
-              'Connect another Gmail account'
-            )}
-          </button>
-        )}
-      </div>
+      {/* ── Connected Accounts (TASK-FE-015) ──────────────────────────── */}
+      <ConnectedAccountsSettings />
 
       {/* ── Mail Scan ──────────────────────────────────────────────────── */}
       <div className="glass-panel" style={{ padding: '24px' }}>
@@ -966,53 +815,8 @@ export default function Settings() {
         )}
       </div>
 
-      {/* ── PDF Password Management (G15 fix) ─────────────────────────── */}
-      <div className="glass-panel" style={{ padding: '24px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-          <Lock className="text-accent" size={24} color="var(--accent-primary)" />
-          <h3 className="heading-md">Stored Statement Passwords</h3>
-        </div>
-        <p className="text-sm text-muted" style={{ marginBottom: '16px' }}>
-          Passwords Dinero has learned for encrypted statements, encrypted at rest and never shown here.
-          Forgetting one just means you'll be re-prompted next time.
-        </p>
-
-        {isLoadingPasswords ? (
-          <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Loading…</p>
-        ) : pdfPasswords.length === 0 ? (
-          <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>No stored passwords yet.</p>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {pdfPasswords.map((pw) => (
-              <div
-                key={pw.id}
-                style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px',
-                  padding: '10px 14px', borderRadius: '8px',
-                  background: 'var(--bg-secondary)', border: '1px solid var(--border)', fontSize: '12px',
-                }}
-              >
-                <div>
-                  <strong style={{ color: 'var(--text-primary)' }}>{pw.issuer_name}</strong>
-                  <span style={{ color: 'var(--text-muted)' }}> •••• {pw.masked_identifier}</span>
-                  <div style={{ color: 'var(--text-muted)', marginTop: '2px' }}>
-                    Used successfully {pw.success_count} time{pw.success_count === 1 ? '' : 's'}
-                    {pw.last_used_at ? ` — last on ${new Date(pw.last_used_at).toLocaleDateString()}` : ''}
-                  </div>
-                </div>
-                <button
-                  className="btn btn-secondary"
-                  style={{ padding: '6px 12px', fontSize: '12px', color: '#ef4444', display: 'flex', alignItems: 'center', gap: '6px' }}
-                  onClick={() => handleDeletePassword(pw)}
-                  disabled={deletingPasswordId === pw.id}
-                >
-                  <Trash2 size={12} /> {deletingPasswordId === pw.id ? 'Forgetting…' : 'Forget'}
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      {/* ── Statement Passwords (TASK-FE-015) ─────────────────────────── */}
+      <StatementPasswordSettings />
 
       {/* ── Data Management ────────────────────────────────────────────── */}
       {/* G4/J7 fix: Settings had no data export or restore-from-backup UI at

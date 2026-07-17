@@ -286,13 +286,23 @@ const tauriMockInitScript = `
       // refreshConnectedAccounts() (real callers, not just this test) always
       // fell through to the unhandled-command default ({}) in this fixture.
       if (window.__MOCK_STATE__.gmail_connected) {
-        return [{ email: 'test@gmail.com', account_id: 'gmail_test_123' }];
+        // TASK-FE-015 fix: account_status added -- ConnectedAccountsSettings
+        // now renders a per-account status badge off this real field.
+        return window.__MOCK_STATE__.connected_accounts || [
+          { email: 'test@gmail.com', account_id: 'gmail_test_123', account_status: 'ACTIVE' },
+        ];
       }
       return [];
     }
     if (cmd === 'auth_google_start') {
       if (window.__MOCK_STATE__.gmail_failure) throw { code: 'AUTH_FAILED', message: 'Failed to store token' };
       window.__MOCK_STATE__.gmail_connected = true;
+      // TASK-FE-015: a (re)connect flips any degraded account back to
+      // ACTIVE, so ConnectedAccountsSettings' "Reconnect" action is
+      // actually drivable to completion in tests.
+      if (window.__MOCK_STATE__.connected_accounts) {
+        window.__MOCK_STATE__.connected_accounts = window.__MOCK_STATE__.connected_accounts.map((a) => ({ ...a, account_status: 'ACTIVE' }));
+      }
       return 'oauth_completed';
     }
     if (cmd === 'auth_google_disconnect') {
@@ -371,8 +381,23 @@ const tauriMockInitScript = `
         { id: 'consent_2', event_type: 'onboarding_network_disclosure', disclosure_text: 'Acknowledged the 5 outbound network destinations.', consented_at: '2026-06-01T09:58:00Z', withdrawn_at: null },
       ];
     }
-    if (cmd === 'settings_pdf_passwords_list') return [];
-    if (cmd === 'settings_pdf_passwords_delete') return undefined;
+    if (cmd === 'settings_pdf_passwords_list') {
+      // TASK-FE-015: seeded with realistic data so StatementPasswordSettings'
+      // happy path (not just its empty state) is exercised by default.
+      return window.__MOCK_STATE__.pdf_passwords || [
+        { id: 'pw_1', instrument_id: 'inst_1', issuer_name: 'HDFC Bank', masked_identifier: '1234', success_count: 3, last_used_at: '2026-06-01T10:00:00Z' },
+      ];
+    }
+    if (cmd === 'settings_pdf_passwords_delete') {
+      // TASK-FE-015 fix: the mock never mutated its own backing state, so a
+      // "Forget" click never actually removed the row on refetch.
+      if (window.__MOCK_STATE__.pdf_passwords) {
+        window.__MOCK_STATE__.pdf_passwords = window.__MOCK_STATE__.pdf_passwords.filter((p) => p.id !== args?.id);
+      } else {
+        window.__MOCK_STATE__.pdf_passwords = [];
+      }
+      return undefined;
+    }
     if (cmd === 'settings_pattern_rules_list') {
       // TASK-FE-014 fix: the real command is settings_pattern_rules_list
       // (TASK-API-008), returning a bare array -- no mock existed at all
