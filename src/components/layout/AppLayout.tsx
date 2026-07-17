@@ -353,6 +353,12 @@ export default function AppLayout() {
         <div className="absolute -top-[10%] -right-[5%] w-[400px] h-[400px] bg-blue-600/15 blur-[150px] -z-10 pointer-events-none rounded-full" aria-hidden="true" />
 
         <div className="relative z-10 max-w-6xl mx-auto">
+          {/* TASK-FE-016: a persistent banner, not a scrim over the routed
+              content -- every route's real content must stay visible while
+              locked (Doc 30: "still allowing navigation to read-only
+              views"), and the backend's assert_write_allowed is what
+              actually enforces the write-gate, not this component. */}
+          <LicenseLockOverlay />
           <GracePeriodBanner />
           <StatementOnlyModeBanner />
           {/* Per-route error boundary so one page crash doesn't kill the whole shell */}
@@ -360,12 +366,6 @@ export default function AppLayout() {
             <Outlet />
           </ErrorBoundary>
         </div>
-
-        {/* TASK-FE-016: absolutely positioned within <main> (not the page
-            root) so it covers only the routed content pane, not the
-            sidebar -- read-only navigation and the reactivation flow
-            (Settings) both stay reachable while locked, per spec. */}
-        <LicenseLockOverlay />
       </main>
     </div>
   );

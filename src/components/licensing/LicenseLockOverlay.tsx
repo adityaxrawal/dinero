@@ -19,11 +19,24 @@ import { API } from '@/lib/ipc';
  * anywhere (grepped the whole crate), so that dialog could never appear in
  * production regardless of why the license was really locked (grace
  * expiry, JWT failure, etc., not just clock skew). It also replaced the
- * entire app (sidebar included) rather than allowing read-only navigation,
- * contradicting this task's own spec. This component is mounted inside the
- * routed content area (not at the true page root), so the sidebar stays
- * outside its bounds and remains clickable -- "full-screen" here means the
- * full content pane, not the full viewport including navigation.
+ * entire app (sidebar included).
+ *
+ * Area 9 verification-pass fix: the first rebuild of this component fixed
+ * the sidebar-blocking bug above but introduced a narrower version of the
+ * exact same defect -- it was an opaque `absolute inset-0` scrim mounted
+ * inside `<main>`, so it covered every routed page's content, not just the
+ * page it was first shown on. Clicking a sidebar link did change the URL,
+ * but the destination page's content was still hidden behind the same
+ * full-content-pane overlay -- "read-only views" were reachable in name
+ * only, never actually visible. Since the real write-gate is already
+ * enforced backend-side (`assert_write_allowed` fails closed on every
+ * mutating command regardless of what the frontend shows), this component
+ * only needs to *communicate* the lock, not visually block reading -- so
+ * it's now a persistent, non-dismissable banner (same positioning pattern
+ * as `GracePeriodBanner`, just non-dismissable and rendered above the
+ * routed content rather than as a scrim over it) instead of a full-pane
+ * overlay. Content underneath stays fully visible/scrollable on every
+ * route.
  *
  * No specific lock *reason* (clock skew vs. grace expiry vs. invalid JWT)
  * is exposed by `LicenseStatusResponse` -- only `state: "LOCKED"` -- so the
@@ -43,7 +56,7 @@ export default function LicenseLockOverlay() {
       await API.licensing.refresh();
       // A successful refresh emits license_state_changed, which
       // useLicenseStore mirrors -- isLocked flips to false reactively,
-      // dismissing this overlay without any local state change here.
+      // dismissing this banner without any local state change here.
     } catch (err) {
       console.error('License refresh failed:', err);
     } finally {
@@ -53,34 +66,25 @@ export default function LicenseLockOverlay() {
 
   return (
     <div
-      role="dialog"
-      aria-modal="true"
+      role="alert"
       aria-labelledby="license-locked-title"
       aria-describedby="license-locked-desc"
-      className="absolute inset-0 z-40 flex flex-col items-center justify-center bg-background/95 backdrop-blur-sm p-8"
+      className="flex items-center gap-3 px-4 py-3 mb-4 rounded-lg border border-red-700/30 bg-red-700/10 text-sm"
     >
-      <div className="max-w-md w-full bg-card border border-border rounded-lg p-6 flex flex-col items-center text-center space-y-4">
-        <div className="h-12 w-12 rounded-full bg-amber-500/20 flex items-center justify-center">
-          <AlertTriangle className="text-amber-500 w-6 h-6" aria-hidden="true" />
-        </div>
-        <h2 id="license-locked-title" className="text-xl font-semibold">License Locked</h2>
-        <p id="license-locked-desc" className="text-sm text-muted-foreground">
+      <AlertTriangle className="w-4 h-4 text-red-700 shrink-0" aria-hidden="true" />
+      <div className="flex-1">
+        <span id="license-locked-title" className="font-semibold text-red-700">License Locked</span>{' '}
+        <span id="license-locked-desc" className="text-red-800">
           Your license could not be validated. Editing and syncing are paused until you reactivate
           or your license revalidates — you can still browse your existing data.
-        </p>
-        <div className="flex flex-col gap-2 w-full">
-          <Button variant="default" onClick={() => navigate('/settings')} aria-label="Go to Settings to reactivate">
-            Reactivate in Settings
-          </Button>
-          <Button variant="outline" onClick={handleRetry} disabled={isRetrying} aria-label="Retry license validation now">
-            {isRetrying ? (
-              <><Loader2 className="w-4 h-4 mr-2 animate-spin" aria-hidden="true" /> Checking...</>
-            ) : (
-              'Retry Validation'
-            )}
-          </Button>
-        </div>
+        </span>
       </div>
+      <Button variant="outline" size="sm" onClick={handleRetry} disabled={isRetrying} aria-label="Retry license validation now">
+        {isRetrying ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" /> : 'Retry Validation'}
+      </Button>
+      <Button variant="default" size="sm" onClick={() => navigate('/settings')} aria-label="Go to Settings to reactivate">
+        Reactivate
+      </Button>
     </div>
   );
 }

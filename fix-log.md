@@ -1540,3 +1540,13 @@ Area 9 (FE) now 19/19 done -- Area 9 complete.
 **What I did:** Changed the trigger from `connectedAccounts.length === 0` to `connectedAccounts.every(a => a.account_status?.toLowerCase() !== 'active')`, covering both the zero-accounts case and the degraded-only case in one check. Added a new e2e test (`StatementOnlyMode.spec.ts`) proving the banner shows when the sole connected account is `degraded`.
 
 **Verified:** `pnpm tsc --noEmit`: clean. `pnpm exec playwright test`: 71/71 (full suite, +1 new test, zero regressions).
+
+---
+
+## Area 9 Verification Pass — Fix 3: License Lock Overlay still blocked read-only navigation, just less obviously
+
+**Found:** TASK-FE-016's own fix-log entry already fixed one version of this bug (the overlay used to replace the entire app, sidebar included). But the fix stopped short: `LicenseLockOverlay` was an opaque `absolute inset-0 backdrop-blur-sm` scrim mounted inside `<main>`, wrapping `<Outlet />` at the `AppLayout` level -- meaning it re-rendered on top of *every* routed page's content, not just the page open when the lock first appeared. Clicking a sidebar link did change the URL (the existing e2e test only checked this), but the destination page's real content was still hidden behind the same opaque overlay. Doc 30's explicit requirement -- "blocking write interactions but explicitly still allowing navigation to read-only views" -- was violated in substance while appearing satisfied by the existing (insufficient) test.
+
+**What I did:** Since the actual write-gate is already enforced backend-side (`assert_write_allowed` fails closed on every mutating command, independent of what the frontend renders), the overlay's job is purely communicative. Converted it from a full-pane blocking scrim to a persistent, non-dismissable banner (same positioning pattern as `GracePeriodBanner`, rendered above `<Outlet />` rather than over it) so every route's real content stays visible and readable while locked. Moved it from `<main>`'s overlay slot into the banner stack in `AppLayout.tsx`. Strengthened `AppShell.spec.ts`'s LOCKED test to navigate to `/transactions` while locked and assert the real page content (`h1:has-text("Transactions")`), not just the URL, is visible alongside the still-present lock banner.
+
+**Verified:** `pnpm tsc --noEmit`: clean. `pnpm exec playwright test`: 71/71 (full suite, zero regressions).

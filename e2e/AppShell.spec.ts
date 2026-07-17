@@ -109,7 +109,16 @@ test.describe('AppShell & Navigation - Rigorous Verification', () => {
   // interactions but explicitly still allowing navigation to read-only
   // views ... and to the reactivation flow") -- corrected to assert the
   // opposite, that navigation stays reachable.
-  test('should display License Locked overlay on license_state_changed(LOCKED) and prevent dismissal, without blocking navigation', async ({ page }) => {
+  //
+  // Area 9 verification-pass fix: the first fix above stopped short --
+  // it only proved the sidebar stayed clickable, not that a destination
+  // route's actual content became visible. The overlay was still an
+  // opaque `absolute inset-0` scrim over the whole content pane on every
+  // route, so "read-only navigation" changed the URL behind an invisible
+  // wall. Now a non-dismissable banner instead of a scrim -- this test
+  // additionally navigates to Transactions while locked and asserts its
+  // real content (not just the URL) is visible.
+  test('should display License Locked banner on license_state_changed(LOCKED), prevent dismissal, and leave every route\'s content visible', async ({ page }) => {
     await expect(page.locator('aside')).toBeVisible();
 
     await page.evaluate(() => {
@@ -128,10 +137,15 @@ test.describe('AppShell & Navigation - Rigorous Verification', () => {
     await expect(page.locator('button:has-text("Dismiss")')).toHaveCount(0);
 
     // Per spec: read-only navigation and the reactivation flow both stay
-    // reachable -- the overlay covers the routed content pane, not the
-    // sidebar.
+    // reachable, and the destination page's real content is visible, not
+    // hidden behind the lock banner.
     await expect(page.locator('aside')).toBeInViewport();
-    await page.locator('button:has-text("Reactivate in Settings")').click();
+    await page.locator('a[href="#/transactions"]').click();
+    await expect(page).toHaveURL(/.*\/transactions/);
+    await expect(page.locator('h1:has-text("Transactions")')).toBeVisible();
+    await expect(page.locator('text="License Locked"')).toBeVisible();
+
+    await page.locator('button:has-text("Reactivate")').click();
     await expect(page).toHaveURL(/.*\/settings/);
   });
 
