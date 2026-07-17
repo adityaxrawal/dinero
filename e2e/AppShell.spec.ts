@@ -294,6 +294,37 @@ test.describe('AppShell & Navigation - Rigorous Verification', () => {
     await expect(indicator).toContainText('Scanning account A');
     await expect(indicator).toContainText('Scanning account B');
   });
-  
+
+  // Doc 30 TASK-DESK-004 acceptance: `test_keychain_denial_shows_blocking_overlay`.
+  // A denied Keychain is a hard-fail: a persistent, full-screen,
+  // non-dismissable overlay with a direct System Settings link -- distinct
+  // from the dismissable toast the file-access soft-fail case gets
+  // (StatementUpload.spec.ts).
+  test('should show a persistent, non-dismissable blocking overlay on Keychain denial', async ({ page }) => {
+    await expect(page.locator('aside')).toBeVisible();
+    await page.waitForFunction(() => (window as any).__TAURI_LISTENERS__ && (window as any).__TAURI_LISTENERS__['system_warning']);
+
+    await page.evaluate(() => {
+      window.dispatchEvent(new CustomEvent('test-tauri-event', {
+        detail: {
+          event: 'system_warning',
+          payload: {
+            warning_type: 'keychain_denied',
+            message: 'Dinero cannot access the macOS Keychain, which is required to encrypt your data.',
+            severity: 'hard_fail',
+          },
+        },
+      }));
+    });
+
+    const overlay = page.getByTestId('permission-denied-overlay');
+    await expect(overlay).toBeVisible();
+    await expect(overlay).toHaveAttribute('aria-modal', 'true');
+    await expect(overlay.getByRole('button', { name: /Open System Settings/i })).toBeVisible();
+
+    // Non-dismissable: there is no close/dismiss control at all.
+    await expect(overlay.getByRole('button', { name: /dismiss/i })).toHaveCount(0);
+    await expect(overlay.locator('[aria-label*="Close" i], [aria-label*="Dismiss" i]')).toHaveCount(0);
+  });
 
 });

@@ -12,7 +12,6 @@ import { useGlobalState } from '@/lib/GlobalStateContext';
 
 interface StatementUploadDropzoneProps {
   onUploaded: () => void;
-  onAccessDenied: () => void;
 }
 
 // TASK-FE-012: no backend size limit exists on statements_upload -- this is
@@ -42,7 +41,7 @@ function isPdf(name: string, type?: string): boolean {
  * indication of how many statements were still waiting on the 5-permit
  * semaphore. Now shown via `GlobalStateContext`'s `batchProgress`.
  */
-export default function StatementUploadDropzone({ onUploaded, onAccessDenied }: StatementUploadDropzoneProps) {
+export default function StatementUploadDropzone({ onUploaded }: StatementUploadDropzoneProps) {
   const { toast } = useToast();
   const { batchProgress, setBatchProgress } = useGlobalState();
   const [isDragging, setIsDragging] = useState(false);
@@ -79,7 +78,17 @@ export default function StatementUploadDropzone({ onUploaded, onAccessDenied }: 
         setIsUploading(false);
       }
 
-      if (accessDenied) onAccessDenied();
+      // TASK-DESK-004 (Doc 30): a dismissable toast for this specific
+      // upload attempt, not a blocking modal -- macOS TCC file/folder
+      // access is a soft-fail, unlike the Keychain hard-fail case.
+      if (accessDenied) {
+        toast({
+          variant: 'destructive',
+          title: 'File Access Denied',
+          description:
+            'macOS blocked access to this file. Grant Dinero permission in System Settings > Privacy & Security > Files and Folders.',
+        });
+      }
       if (succeeded > 0) {
         toast({
           title: paths.length > 1 ? `${succeeded} of ${paths.length} Uploads Started` : 'Upload Started',
@@ -98,7 +107,7 @@ export default function StatementUploadDropzone({ onUploaded, onAccessDenied }: 
       }
       onUploaded();
     },
-    [onUploaded, onAccessDenied, toast, setBatchProgress],
+    [onUploaded, toast, setBatchProgress],
   );
 
   const handleFileUpload = useCallback(async () => {

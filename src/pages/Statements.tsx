@@ -56,8 +56,6 @@ export default function Statements() {
   const [instrumentError, setInstrumentError] = useState<string | null>(null);
   const [isSubmittingInstrument, setIsSubmittingInstrument] = useState(false);
 
-  const [accessDeniedModalOpen, setAccessDeniedModalOpen] = useState(false);
-
   useEffect(() => {
     if (instrumentModalOpen) {
       setInstrumentIssuer(pendingInstrumentIssuerHint || '');
@@ -95,7 +93,7 @@ export default function Statements() {
         <p className="text-muted-foreground mt-1">Upload and manage your bank statements securely.</p>
       </header>
 
-      <StatementUploadDropzone onUploaded={refresh} onAccessDenied={() => setAccessDeniedModalOpen(true)} />
+      <StatementUploadDropzone onUploaded={refresh} />
 
       <UnprocessedItemsQueue onEnterPassword={(statementId) => openPasswordModal(statementId)} />
 
@@ -247,30 +245,6 @@ export default function Statements() {
               aria-label="Confirm statement instrument details"
             >
               {isSubmittingInstrument ? 'Processing…' : 'Confirm & Continue'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Access Denied Modal */}
-      <Dialog open={accessDeniedModalOpen} onOpenChange={setAccessDeniedModalOpen}>
-        <DialogContent className="sm:max-w-[500px]" aria-labelledby="access-denied-title" aria-describedby="access-denied-desc">
-          <DialogHeader>
-            <DialogTitle id="access-denied-title" className="flex items-center gap-2 text-red-700">
-              <AlertTriangle className="w-5 h-5" aria-hidden="true" />
-              File Access Denied
-            </DialogTitle>
-            <DialogDescription id="access-denied-desc" className="text-base pt-2">
-              macOS blocked access to this file. To fix this, please grant Dinero permission to read files in this
-              folder by going to:
-            </DialogDescription>
-          </DialogHeader>
-          <div className="bg-secondary/50 p-4 rounded-md my-2 text-sm font-medium border border-border">
-            System Settings {'>'} Privacy &amp; Security {'>'} Files and Folders
-          </div>
-          <DialogFooter>
-            <Button onClick={() => setAccessDeniedModalOpen(false)} aria-label="Dismiss access denied dialog">
-              Dismiss
             </Button>
           </DialogFooter>
         </DialogContent>

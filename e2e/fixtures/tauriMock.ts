@@ -24,6 +24,7 @@ const tauriMockInitScript = `
     resolve_failure: false,
     instrument_conflict: false,
     instrument_delete_tied: false,
+    file_access_denied: false,
     unprocessed_statements: { awaiting_password: [], pending_retry: [], failed: [] },
   };
 
@@ -345,6 +346,13 @@ const tauriMockInitScript = `
       // fallback, whose .results is undefined, silently skipping the
       // for-of loop over results with zero iterations).
       const files = args?.files || [];
+      // TASK-DESK-004: lets a test simulate a macOS TCC file-access denial
+      // for a specific upload attempt (Doc 30's soft-fail, dismissable-toast
+      // case), distinct from any other per-file failure.
+      if (window.__MOCK_STATE__.file_access_denied) {
+        const results = files.map((f) => ({ status: 'error: File access denied', statement_id: null, filename: f.filename }));
+        return { results };
+      }
       const results = files.map((f) => ({ status: 'ok', statement_id: 'stmt_new_' + Math.random().toString(36).slice(2), filename: f.filename }));
       return { results };
     }
@@ -461,6 +469,28 @@ const tauriMockInitScript = `
         throw { code: 'NETWORK_ERROR', message: 'Failed to fetch network activity.' };
       }
       return { entries: window.__MOCK_STATE__.network_activity || [] };
+    }
+    if (cmd === 'plugin:fs|read_file') {
+      // TASK-DESK-004 fix: no mock existed -- paired with the
+      // plugin:dialog|open mock below, both needed for a real upload
+      // attempt (picker-selected or drag-drop, which falls back to the
+      // picker) to reach statements_upload at all instead of throwing on
+      // an unmocked command's byteLength access.
+      return Array.from(new TextEncoder().encode('%PDF-1.5 fake statement bytes'));
+    }
+    if (cmd === 'plugin:dialog|open') {
+      // TASK-DESK-004 fix: no mock existed at all -- StatementUploadDropzone's
+      // file picker (both click and drag-drop, the latter falling back to
+      // this same picker since browser drop events carry no real filesystem
+      // path) always resolved undefined here, so no test had ever driven a
+      // real upload attempt through to statements_upload end-to-end;
+      // every existing upload test stopped at a client-side validation
+      // toast before reaching this call. Returns one fake path by default,
+      // or none if a test sets __MOCK_STATE__.dialog_open_cancelled.
+      if (window.__MOCK_STATE__.dialog_open_cancelled) return null;
+      const multiple = args?.options?.multiple;
+      const fakePaths = window.__MOCK_STATE__.dialog_open_paths || ['/fake/path/statement.pdf'];
+      return multiple ? fakePaths : fakePaths[0];
     }
     if (cmd === 'plugin:dialog|message') {
       // TASK-FE-011 fix: no mock existed at all -- @tauri-apps/plugin-dialog's

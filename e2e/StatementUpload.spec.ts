@@ -131,4 +131,32 @@ test.describe('Statement Management - Rigorous Verification', () => {
     await retryBtn.click();
     await expect(page.locator('h2:has-text("Password Required")').or(page.locator('h2:has-text("Unlock Statement")')).first()).toBeVisible();
   });
+
+  // Doc 30 TASK-DESK-004 acceptance: `test_file_access_denial_shows_dismissable_toast`.
+  // A macOS TCC file-access denial is a soft-fail for this specific upload
+  // attempt -- a dismissable toast, not the blocking overlay Keychain
+  // denial gets (that's a hard-fail, tested separately in AppShell.spec.ts).
+  // A prior version of this handling opened a non-dismissable-by-default
+  // modal dialog instead of a toast; fixed as part of this task.
+  test('should show a dismissable toast (not a blocking modal) on file access denial', async ({ page }) => {
+    await page.evaluate(() => {
+      window.__MOCK_STATE__.file_access_denied = true;
+    });
+
+    const dataTransfer = await page.evaluateHandle(() => {
+      const dt = new DataTransfer();
+      const file = new File(['%PDF-1.5'], 'statement.pdf', { type: 'application/pdf' });
+      dt.items.add(file);
+      return dt;
+    });
+    await page.dispatchEvent('[data-testid="dropzone"]', 'drop', { dataTransfer });
+
+    const toast = page.getByText(/File Access Denied/i).first();
+    await expect(toast).toBeVisible();
+    await expect(page.getByText(/System Settings.*Privacy.*Files and Folders/i).first()).toBeVisible();
+
+    // Not a blocking dialog -- the rest of the page must stay interactive.
+    await expect(page.locator('[role="dialog"]')).not.toBeVisible();
+    await expect(page.locator('h1:has-text("Statements")')).toBeVisible();
+  });
 });

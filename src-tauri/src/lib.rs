@@ -15,6 +15,7 @@ pub mod llm_manager;
 pub mod menu;
 pub mod network_client;
 pub mod notifications;
+pub mod permissions;
 pub mod reconciliation;
 pub mod security;
 pub mod startup;
@@ -446,6 +447,14 @@ pub fn run() {
                 });
             }
 
+            // TASK-DESK-004: proactive permission-state check at launch --
+            // by this point DB init has already succeeded (Keychain access
+            // is therefore already confirmed), but this still runs the real
+            // check-and-emit path so a later mid-session Keychain revocation
+            // check (the daily maintenance loop, below) and this one share
+            // the exact same code path and event contract.
+            crate::permissions::macos_permissions::check_permissions_at_launch(&app.handle().clone());
+
             // TASK-DESK-002: request native-notification permission only if
             // the user has already passed the onboarding network-disclosure
             // screen -- never proactively at cold launch before that. A
@@ -692,6 +701,15 @@ pub fn run() {
                             }
                         }
                     }
+
+                    // TASK-DESK-004: re-checks permission state on the same
+                    // daily cadence as the rest of this maintenance loop --
+                    // the "proactive, ongoing" half of detection, covering a
+                    // Keychain access revoked (or notification permission
+                    // changed) mid-session, not just at cold launch.
+                    crate::permissions::macos_permissions::check_permissions_at_launch(
+                        &app_handle_for_backup,
+                    );
                 }
             });
 

@@ -21,6 +21,7 @@ import LicenseLockOverlay from '@/components/licensing/LicenseLockOverlay';
 import GracePeriodBanner from '@/components/licensing/GracePeriodBanner';
 import StatementOnlyModeBanner from '@/components/shell/StatementOnlyModeBanner';
 import BackgroundTaskIndicator from '@/components/shell/BackgroundTaskIndicator';
+import PermissionDeniedOverlay from '@/components/shell/PermissionDeniedOverlay';
 
 // HMR trigger 3
 const CORRUPTION_EVENT = 'db_corrupted';
@@ -292,6 +293,9 @@ export default function AppLayout() {
 
         {/* Global Background Task Indicator (TASK-DESK-003) */}
         <BackgroundTaskIndicator />
+
+        {/* OS-level permission denial states (TASK-DESK-004) */}
+        <PermissionDeniedOverlay />
 
         {/* Transient spend-threshold alert notice */}
         {alertMessage && (
