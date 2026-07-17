@@ -48,7 +48,7 @@ export default function DeleteAccountSection() {
 
   return (
     <div>
-      <p className="text-sm text-muted" style={{ marginBottom: '16px' }}>
+      <p className="text-sm text-muted-foreground" style={{ marginBottom: '16px' }}>
         Permanently delete all your data from this device: transactions, statements, instruments,
         connected Gmail accounts, and encryption keys. This action cannot be undone.
       </p>

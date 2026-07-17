@@ -19,7 +19,7 @@ export default function ConsentHistoryList({
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
-        <p className="text-sm text-muted" style={{ margin: 0 }}>
+        <p className="text-sm text-muted-foreground" style={{ margin: 0 }}>
           A record of what you've consented to and when — Gmail authorization, onboarding disclosures, and diagnostic bundle exports.
         </p>
         <button className="btn btn-secondary" onClick={onRefresh} disabled={isLoading} style={{ padding: '6px 12px', fontSize: '12px', flexShrink: 0, marginLeft: '12px' }} aria-label="Refresh consent history">

@@ -62,12 +62,12 @@ export default function PrivacySettings() {
           <ShieldAlert className="text-danger" size={24} color="#ef4444" />
           <h3 className="heading-md" style={{ color: '#ef4444' }}>Privacy &amp; Data</h3>
         </div>
-        <p className="text-sm text-muted" style={{ marginBottom: '20px' }}>
+        <p className="text-sm text-muted-foreground" style={{ marginBottom: '20px' }}>
           Your data is encrypted and stored locally on this device.
         </p>
 
         <div style={{ marginBottom: '24px', paddingBottom: '24px', borderBottom: '1px solid var(--border)' }}>
-          <p className="text-sm text-muted" style={{ marginBottom: '12px' }}>
+          <p className="text-sm text-muted-foreground" style={{ marginBottom: '12px' }}>
             A diagnostic bundle (app logs and error reports) helps troubleshoot issues. It never
             includes your financial data, and it is <strong>saved locally on this device only</strong> —
             it is never automatically uploaded anywhere. You choose if and when to share it.

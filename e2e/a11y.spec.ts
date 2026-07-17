@@ -25,7 +25,13 @@ test.describe('Accessibility Compliance - Rigorous Verification', () => {
     expect(criticalOrSerious).toHaveLength(0);
   }
 
-  const pagesToTest = ['/', '/#/transactions', '/#/statements', '/#/reconciliation', '/#/instruments', '/#/spending-limits', '/#/onboarding'];
+  // TASK-FE-019: added /#/settings -- the largest, most complex page in the
+  // app (Integrations, Mail Scan, Recovery Phrase, License & Billing,
+  // Appearance, LLM Config, Network Activity, Privacy/Consent History,
+  // Pattern Rules, Statement Passwords, Data Management) -- was never once
+  // included in the automated scan despite every other top-level route
+  // being covered since this file's introduction.
+  const pagesToTest = ['/', '/#/transactions', '/#/statements', '/#/reconciliation', '/#/instruments', '/#/spending-limits', '/#/onboarding', '/#/settings'];
 
   for (const p of pagesToTest) {
     test(`Page ${p} has no critical/serious a11y violations`, async ({ page }) => {
@@ -99,5 +105,21 @@ test.describe('Accessibility Compliance - Rigorous Verification', () => {
     // It should NOT close on Escape if it's a critical system error (unlike normal modals)
     await page.keyboard.press('Escape');
     await expect(dialog).toBeVisible();
+  });
+
+  // TASK-FE-019: Doc 30's own explicit example -- "Escape closes modals" for
+  // an ordinary modal, as distinct from the critical-error dialog above
+  // which deliberately does not. Every non-critical modal in this app uses
+  // Radix's Dialog primitive, which already handles this by default; this
+  // proves it for a real one rather than trusting the library blindly.
+  test('a normal modal (Add Instrument) closes on Escape and returns focus', async ({ page }) => {
+    await page.goto('/#/instruments');
+    await page.locator('button:has-text("Add Instrument")').click();
+
+    const dialog = page.locator('div[role="dialog"]');
+    await expect(dialog).toBeVisible();
+
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
   });
 });

@@ -275,7 +275,7 @@ export default function Settings() {
     >
       <div>
         <h1 className="heading-lg">Settings</h1>
-        <p className="text-sm text-muted" style={{ marginTop: '4px' }}>
+        <p className="text-sm text-muted-foreground" style={{ marginTop: '4px' }}>
           Manage your account, preferences, and local data.
         </p>
       </div>
@@ -289,7 +289,7 @@ export default function Settings() {
           <ScanLine className="text-accent" size={24} color="var(--accent-primary)" />
           <h3 className="heading-md">Mail Scan</h3>
         </div>
-        <p className="text-sm text-muted" style={{ marginBottom: '20px' }}>
+        <p className="text-sm text-muted-foreground" style={{ marginBottom: '20px' }}>
           Scan your Gmail inbox for financial emails within a custom date range.
           The scan runs locally — your emails never leave your device.
         </p>
@@ -475,7 +475,7 @@ export default function Settings() {
           <KeyRound className="text-accent" size={24} color="var(--accent-primary)" />
           <h3 className="heading-md">Secure Backup Recovery Phrase</h3>
         </div>
-        <p className="text-sm text-muted" style={{ marginBottom: '20px' }}>
+        <p className="text-sm text-muted-foreground" style={{ marginBottom: '20px' }}>
           Opt-in only — most people restoring via Migration Assistant or iCloud Keychain sync
           never need this. It exists for the rare case where you lose both your Mac and your
           Keychain with no other backup path.
@@ -682,6 +682,7 @@ export default function Settings() {
                 />
                 <select
                   className="form-select"
+                  aria-label="Billing interval"
                   value={activateBillingInterval}
                   onChange={(e) => setActivateBillingInterval(e.target.value)}
                 >
@@ -712,7 +713,7 @@ export default function Settings() {
           <Gauge className="text-accent" size={24} color="var(--accent-primary)" />
           <h3 className="heading-md">Spending Limits</h3>
         </div>
-        <p className="text-sm text-muted" style={{ marginBottom: '16px' }}>
+        <p className="text-sm text-muted-foreground" style={{ marginBottom: '16px' }}>
           Configure your global monthly limit, per-category budgets, and alert thresholds.
         </p>
         <Button onClick={() => navigate('/spending-limits')} aria-label="Manage spending limits">
@@ -726,7 +727,7 @@ export default function Settings() {
           <Palette className="text-accent" size={24} color="var(--accent-primary)" />
           <h3 className="heading-md">Appearance</h3>
         </div>
-        <p className="text-sm text-muted" style={{ marginBottom: '16px' }}>
+        <p className="text-sm text-muted-foreground" style={{ marginBottom: '16px' }}>
           Dinero currently ships dark-mode only. Light mode is planned for a future release.
         </p>
         <div style={{ display: 'flex', gap: '16px' }}>
@@ -745,7 +746,7 @@ export default function Settings() {
           <Cpu className="text-accent" size={24} color="var(--accent-primary)" />
           <h3 className="heading-md">LLM Configuration</h3>
         </div>
-        <p className="text-sm text-muted" style={{ marginBottom: '20px' }}>
+        <p className="text-sm text-muted-foreground" style={{ marginBottom: '20px' }}>
           Select the local AI model for parsing statements. Heavier models
           perform better but require more RAM.
         </p>
@@ -753,6 +754,7 @@ export default function Settings() {
           value={model}
           onChange={handleModelChange}
           className="form-select"
+          aria-label="Local AI model for statement parsing"
         >
           {availableModels.map((m) => (
             <option key={m.id} value={m.id}>
@@ -774,7 +776,7 @@ export default function Settings() {
           <Wand2 className="text-accent" size={24} color="var(--accent-primary)" />
           <h3 className="heading-md">Pattern Rules</h3>
         </div>
-        <p className="text-sm text-muted" style={{ marginBottom: '16px' }}>
+        <p className="text-sm text-muted-foreground" style={{ marginBottom: '16px' }}>
           Learned extraction rules per bank/field. Disable a rule if it's misfiring — extraction
           falls back to the standard pipeline for that field until you re-enable it.
         </p>
@@ -829,7 +831,7 @@ export default function Settings() {
           <FileText className="text-accent" size={24} color="var(--accent-primary)" />
           <h3 className="heading-md">Data Management</h3>
         </div>
-        <p className="text-sm text-muted" style={{ marginBottom: '20px' }}>
+        <p className="text-sm text-muted-foreground" style={{ marginBottom: '20px' }}>
           Export a full encrypted copy of your financial data, or restore from your most recent backup.
         </p>
         <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>

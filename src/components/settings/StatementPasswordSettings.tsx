@@ -61,7 +61,7 @@ export default function StatementPasswordSettings() {
         <Lock className="text-accent" size={24} color="var(--accent-primary)" />
         <h3 className="heading-md">Stored Statement Passwords</h3>
       </div>
-      <p className="text-sm text-muted" style={{ marginBottom: '16px' }}>
+      <p className="text-sm text-muted-foreground" style={{ marginBottom: '16px' }}>
         Passwords Dinero has learned for encrypted statements, encrypted at rest and never shown here.
         Forgetting one just means you'll be re-prompted next time.
       </p>

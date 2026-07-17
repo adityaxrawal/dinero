@@ -55,7 +55,7 @@ export default function ConnectedAccountsSettings() {
         <Mail className="text-accent" size={24} color="var(--accent-primary)" />
         <h3 className="heading-md">Connected Accounts</h3>
       </div>
-      <p className="text-sm text-muted" style={{ marginBottom: '20px' }}>
+      <p className="text-sm text-muted-foreground" style={{ marginBottom: '20px' }}>
         Connect Gmail securely via local OAuth to automate transaction
         syncing. We only request read access, and extraction happens locally.
         Up to 10 accounts can be connected; connecting a 2nd account or
