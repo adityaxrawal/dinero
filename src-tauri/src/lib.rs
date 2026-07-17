@@ -11,6 +11,7 @@ pub mod integrity;
 pub mod ipc;
 pub mod licensing;
 pub mod llm_manager;
+pub mod menu;
 pub mod network_client;
 pub mod reconciliation;
 pub mod security;
@@ -141,6 +142,16 @@ pub fn run() {
         // real file content, matching Document 19 §9.1's actual contract.
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
+            // TASK-DESK-001: the native macOS application menu bar. Built and
+            // attached before anything else so a working Quit item exists
+            // even if a later fatal-startup dialog (DB init failure, etc.)
+            // is the only other thing the user sees.
+            let app_menu = crate::menu::build_menu(app.handle())?;
+            app.set_menu(app_menu)?;
+            app.on_menu_event(|app_handle, event| {
+                crate::menu::handle_menu_event(app_handle, event);
+            });
+
             // I11 fix (Doc 26 T-10): verify the running binary's code signature
             // before doing anything else. Release-build-only — local dev builds
             // are typically unsigned/ad-hoc signed and would always fail this.

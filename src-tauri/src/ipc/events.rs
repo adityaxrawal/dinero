@@ -23,6 +23,13 @@ pub enum AppEvent {
     TaskStarted,
     TaskCompleted,
     SystemWarning,
+    /// TASK-DESK-001: native macOS menu items that need React (AppShell) to
+    /// act on them -- navigation, sidebar toggle, and the upload-statement
+    /// flow -- rather than a direct backend command invocation.
+    MenuNavigate,
+    MenuToggleSidebar,
+    MenuUploadStatementRequested,
+    MenuCheckForUpdates,
 }
 
 impl AppEvent {
@@ -48,6 +55,10 @@ impl AppEvent {
             Self::TaskStarted => "task_started",
             Self::TaskCompleted => "task_completed",
             Self::SystemWarning => "system_warning",
+            Self::MenuNavigate => "menu_navigate",
+            Self::MenuToggleSidebar => "menu_toggle_sidebar",
+            Self::MenuUploadStatementRequested => "menu_upload_statement_requested",
+            Self::MenuCheckForUpdates => "menu_check_for_updates",
         }
     }
 }
