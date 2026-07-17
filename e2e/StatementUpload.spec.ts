@@ -20,16 +20,26 @@ test.describe('Statement Management - Rigorous Verification', () => {
     });
 
     await page.dispatchEvent('[data-testid="dropzone"]', 'drop', { dataTransfer });
-    
-    // UI should show an error, not process it
-    await expect(page.locator('text="Only PDF files are allowed"').or(page.locator('text="Invalid file type"')).first()).toBeVisible();
+
+    // UI should show an error, not process it. TASK-FE-012 fix: was an
+    // exact-match `text="Only PDF files are allowed"` locator, but the real
+    // toast text has a trailing period ("...allowed.") -- Playwright's
+    // quoted text= is whole-string equality, so this never matched.
+    await expect(page.getByText(/Only PDF files are allowed/i).or(page.getByText(/Invalid file type/i)).first()).toBeVisible();
   });
 
   test('should rigorously handle password prompt: timeouts, incorrect retry, and success', async ({ page }) => {
     await expect(page.locator('aside')).toBeVisible();
+    // TASK-FE-012 fix: dispatched the illustrative dotted event name
+    // ('statement.password_required'), but GlobalStateContext's real
+    // listener is registered under the actual snake_case event string
+    // ('statement_password_required', AppEvent::StatementPasswordRequired
+    // in events.rs) -- the dispatch found no matching entry in
+    // window.__TAURI_LISTENERS__ and silently no-opped, so this test never
+    // actually opened the password modal before now.
     await page.evaluate(() => {
-      window.dispatchEvent(new CustomEvent('test-tauri-event', { 
-        detail: { event: 'statement.password_required', payload: { statement_id: 'stmt_123' } } 
+      window.dispatchEvent(new CustomEvent('test-tauri-event', {
+        detail: { event: 'statement_password_required', payload: { statement_id: 'stmt_123' } }
       }));
     });
     
@@ -46,8 +56,11 @@ test.describe('Statement Management - Rigorous Verification', () => {
     await page.fill('input[type="password"]', 'wrong');
     await page.click('button:has-text("Unlock & Parse")');
     
-    // Must re-prompt WITHOUT closing the modal
-    await expect(page.locator('text="Incorrect password"')).toBeVisible();
+    // Must re-prompt WITHOUT closing the modal. TASK-FE-012 fix: the mock
+    // now resolves a real attempts_remaining (matching the actual backend
+    // contract), so the message is "Incorrect password — N attempts
+    // remaining", not the bare exact string this used to check for.
+    await expect(page.getByText(/Incorrect password/i)).toBeVisible();
     await expect(modalTitle).toBeVisible();
     
     // Simulate successful password
@@ -59,21 +72,37 @@ test.describe('Statement Management - Rigorous Verification', () => {
     await expect(modalTitle).not.toBeVisible();
   });
 
-  test('should display UnprocessedStatementsQueue UI for retries on timeout', async ({ page }) => {
+  test('should display UnprocessedItemsQueue UI for retries on timeout', async ({ page }) => {
+    // TASK-FE-012: UnprocessedItemsQueue now reads the real TASK-STMT-010
+    // statements_list_unprocessed backend (3 status buckets) instead of the
+    // old page deriving its own list from statement history. A password-entry
+    // timeout maps to the "awaiting_password" bucket (still needs a
+    // password, just re-prompted), not a generic retry.
+    //
+    // Seed the mock's backing state on the already-loaded page (page.evaluate
+    // reaches the live window fine) and remount the query via *in-app*
+    // navigation rather than a browser-level page.goto/reload -- a hash-only
+    // goto() to the same route doesn't trigger a real navigation (so
+    // addInitScript overrides never re-run), and reload() re-runs the
+    // fixture's own addInitScript too, wiping the seeded state right back to
+    // empty. useUnprocessedStatements' refetchOnMount:'always' (this task)
+    // means remounting the page picks the seeded data up correctly.
     await expect(page.locator('aside')).toBeVisible();
-    // Trigger timeout event
     await page.evaluate(() => {
-      window.dispatchEvent(new CustomEvent('test-tauri-event', { 
-        detail: { event: 'statement.password_timeout', payload: { statement_id: 'stmt_123' } } 
-      }));
+      window.__MOCK_STATE__.unprocessed_statements = {
+        awaiting_password: [{ statement_id: 'stmt_123', filename: 'HDFC_Statement.pdf', failure_type: 'password_timeout', failure_reason: 'Password entry window expired' }],
+        pending_retry: [],
+        failed: [],
+      };
     });
+    await page.locator('a[href="#/instruments"]').click();
+    await page.locator('a[href="#/statements"]').click();
 
     await expect(page.locator('text="Unprocessed Statements"')).toBeVisible();
-    // Failed statement should show up here with a retry button
-    const retryBtn = page.locator('button:has-text("Retry Processing")').first();
+    const retryBtn = page.locator('button:has-text("Enter Password")').first();
     await expect(retryBtn).toBeVisible();
-    
-    // Clicking retry should reopen the password modal
+
+    // Clicking it should open the password modal.
     await retryBtn.click();
     await expect(page.locator('h2:has-text("Password Required")').or(page.locator('h2:has-text("Unlock Statement")')).first()).toBeVisible();
   });

@@ -24,6 +24,7 @@ const tauriMockInitScript = `
     resolve_failure: false,
     instrument_conflict: false,
     instrument_delete_tied: false,
+    unprocessed_statements: { awaiting_password: [], pending_retry: [], failed: [] },
   };
 
   window.__TAURI_INTERNALS__.invoke = async function (cmd, args) {
@@ -281,10 +282,41 @@ const tauriMockInitScript = `
       return 'oauth_completed';
     }
     if (cmd === 'statements_submit_password') {
+      // TASK-FE-012 fix: real backend resolves (never throws) with a
+      // {status, statement_id, attempts_remaining?} object for both
+      // wrong-password and success outcomes (see PasswordPromptModal's own
+      // "I9 fix" comment) -- this mock threw and returned a bare string
+      // 'success' instead, neither of which matches the real contract the
+      // frontend code (old and new) has always been written against.
       if (args?.password === 'wrong' || window.__MOCK_STATE__.password_failure) {
-        throw { code: 'INVALID_PASSWORD', message: 'Incorrect password. Please try again.' };
+        return { status: 'wrong_password', statement_id: args?.statementId, attempts_remaining: 2 };
       }
-      return 'success';
+      return { status: 'unlocked', statement_id: args?.statementId };
+    }
+    if (cmd === 'statements_confirm_instrument') {
+      return { status: 'confirmed', statement_id: args?.statementId };
+    }
+    if (cmd === 'statements_upload') {
+      // TASK-FE-012 fix: no mock existed at all for the real batch-upload
+      // command -- StatementUploadDropzone had never actually been driven
+      // end-to-end (it always fell through to the {} unhandled-command
+      // fallback, whose .results is undefined, silently skipping the
+      // for-of loop over results with zero iterations).
+      const files = args?.files || [];
+      const results = files.map((f) => ({ status: 'ok', statement_id: 'stmt_new_' + Math.random().toString(36).slice(2), filename: f.filename }));
+      return { results };
+    }
+    if (cmd === 'statements_list_unprocessed') {
+      // TASK-FE-012 fix: no mock existed -- the real TASK-STMT-010 3-bucket
+      // backend had zero frontend call sites (and therefore no mock) until
+      // this task built UnprocessedItemsQueue against it.
+      return window.__MOCK_STATE__.unprocessed_statements || { awaiting_password: [], pending_retry: [], failed: [] };
+    }
+    if (cmd === 'statements_retry_unprocessed') {
+      return { status: 'retry_queued', statement_id: args?.statementId };
+    }
+    if (cmd === 'statements_discard') {
+      return { status: 'discarded' };
     }
     if (cmd === 'reconciliation_clusters_resolve') {
       if (window.__MOCK_STATE__.resolve_failure) throw { code: 'NETWORK_ERROR', message: 'Resolution failed' };

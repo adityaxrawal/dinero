@@ -183,6 +183,19 @@ export interface EmiGroupSummary {
   installments: EmiInstallmentDetail[];
 }
 
+export interface UnprocessedStatementEntry {
+  statement_id: string;
+  filename: string;
+  failure_type: string | null;
+  failure_reason: string | null;
+}
+
+export interface UnprocessedStatementGroups {
+  awaiting_password: UnprocessedStatementEntry[];
+  pending_retry: UnprocessedStatementEntry[];
+  failed: UnprocessedStatementEntry[];
+}
+
 export interface CategoryRecord {
   id: string;
   parent_id: string | null;
@@ -458,6 +471,19 @@ export const API = {
         maskedIdentifier,
         instrumentType,
       }),
+    // TASK-FE-012: TASK-STMT-010 built this dedicated unprocessed-items
+    // retry/recovery backend (statements_list_unprocessed/_retry_unprocessed/
+    // _discard) with zero frontend call sites -- the pre-existing page
+    // instead derived its own ad-hoc "unprocessed" list by filtering the
+    // general statement history for PASSWORD_REQUIRED/FAILED, missing the
+    // real 3-bucket grouping (awaiting_password/pending_retry/failed) and
+    // the discard action entirely.
+    listUnprocessed: () =>
+      invokeCommand<UnprocessedStatementGroups>('statements_list_unprocessed'),
+    retryUnprocessed: (statementId: string) =>
+      invokeCommand<{ status: string; statement_id: string }>('statements_retry_unprocessed', { statementId }),
+    discard: (statementId: string) =>
+      invokeCommand<{ status: string }>('statements_discard', { statementId }),
     // Doc 30 TASK-API-004: `statements_list` now returns a real paginated
     // page ({ records, total }, matching Document 19 §3.3's pagination
     // convention -- it previously had no pagination at all). Unwrapped to

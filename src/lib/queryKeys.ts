@@ -33,6 +33,7 @@ export const queryKeys = {
     all: () => ['statements'] as const,
     list: () => ['statements', 'list'] as const,
     entries: (statementId: string) => ['statements', 'entries', statementId] as const,
+    unprocessed: () => ['statements', 'unprocessed'] as const,
   },
   pdfPasswords: {
     all: () => ['pdfPasswords'] as const,
