@@ -65,15 +65,21 @@ test.describe('AppShell & Navigation - Rigorous Verification', () => {
     await expect(page.locator('.bg-green-500').first()).toBeVisible();
   });
 
-  test('should display CorruptedDatabaseRecovery UI on db.corrupted event', async ({ page }) => {
+  // TASK-FE-018 fix (found while adjacent, same bug class already fixed
+  // repeatedly this session): AppLayout's real listener is registered
+  // under the actual snake_case event name (db_corrupted,
+  // AppEvent::DbCorrupted in events.rs), not the illustrative dotted name
+  // this test used to dispatch -- the wait/dispatch never matched anything
+  // real, even though the recovery UI itself was already correctly wired.
+  test('should display CorruptedDatabaseRecovery UI on db_corrupted event', async ({ page }) => {
     await expect(page.locator('aside')).toBeVisible();
 
     // Wait for AppLayout to dynamically load @tauri-apps/api/event and register the listener
-    await page.waitForFunction(() => (window as any).__TAURI_LISTENERS__ && (window as any).__TAURI_LISTENERS__['db.corrupted']);
+    await page.waitForFunction(() => (window as any).__TAURI_LISTENERS__ && (window as any).__TAURI_LISTENERS__['db_corrupted']);
 
     await page.evaluate(() => {
-      window.dispatchEvent(new CustomEvent('test-tauri-event', { 
-        detail: { event: 'db.corrupted', payload: {} } 
+      window.dispatchEvent(new CustomEvent('test-tauri-event', {
+        detail: { event: 'db_corrupted', payload: {} }
       }));
     });
 
@@ -170,16 +176,19 @@ test.describe('AppShell & Navigation - Rigorous Verification', () => {
     await expect(page.getByText(/grace period/i)).not.toBeVisible();
   });
 
+  // TASK-FE-018 fix: real event names are task_started/task_completed
+  // (snake_case, AppEvent::TaskStarted/TaskCompleted), not the illustrative
+  // dotted names this previously dispatched.
   test('should display global background task indicator without blocking UI', async ({ page }) => {
     await expect(page.locator('aside')).toBeVisible();
 
     // Wait for listener
-    await page.waitForFunction(() => (window as any).__TAURI_LISTENERS__ && (window as any).__TAURI_LISTENERS__['task.started']);
+    await page.waitForFunction(() => (window as any).__TAURI_LISTENERS__ && (window as any).__TAURI_LISTENERS__['task_started']);
 
     // Trigger start
     await page.evaluate(() => {
-      window.dispatchEvent(new CustomEvent('test-tauri-event', { 
-        detail: { event: 'task.started', payload: { id: 'task_1', message: 'Syncing with remote vault...' } } 
+      window.dispatchEvent(new CustomEvent('test-tauri-event', {
+        detail: { event: 'task_started', payload: { id: 'task_1', message: 'Syncing with remote vault...' } }
       }));
     });
 
@@ -193,8 +202,8 @@ test.describe('AppShell & Navigation - Rigorous Verification', () => {
 
     // Trigger complete
     await page.evaluate(() => {
-      window.dispatchEvent(new CustomEvent('test-tauri-event', { 
-        detail: { event: 'task.completed', payload: { id: 'task_1' } } 
+      window.dispatchEvent(new CustomEvent('test-tauri-event', {
+        detail: { event: 'task_completed', payload: { id: 'task_1' } }
       }));
     });
 

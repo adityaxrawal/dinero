@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react'
 import { invokeCommand } from '@/lib/ipc'
+import { toastAppError } from '@/lib/toastAppError'
 import type { AppError } from '@/types/ipc'
 
 interface UseIpcInvokeResult<TArgs, TReturn> {
@@ -35,6 +36,12 @@ export function useIpcInvoke<
         )
       } catch (err) {
         setError(err as AppError)
+        // TASK-FE-018 (Doc 30): "a global toast queue triggered
+        // automatically by any failed useIpcInvoke call" -- callers still
+        // get the thrown error/`error` state for their own local handling
+        // (e.g. inline field errors), they just don't have to *also*
+        // manually toast it.
+        toastAppError(err as AppError)
         throw err
       } finally {
         setLoading(false)

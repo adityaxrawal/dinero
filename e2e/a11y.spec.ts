@@ -74,12 +74,15 @@ test.describe('Accessibility Compliance - Rigorous Verification', () => {
     await page.goto('/');
     await expect(page.locator('aside')).toBeVisible();
     
-    // Wait for listener
-    await page.waitForFunction(() => (window as any).__TAURI_LISTENERS__ && (window as any).__TAURI_LISTENERS__['db.corrupted']);
+    // TASK-FE-018 fix: real event name is db_corrupted (snake_case,
+    // AppEvent::DbCorrupted), not the illustrative dotted name this
+    // previously dispatched -- same bug class fixed repeatedly this
+    // session (statement_password_required, license_state_changed, etc.).
+    await page.waitForFunction(() => (window as any).__TAURI_LISTENERS__ && (window as any).__TAURI_LISTENERS__['db_corrupted']);
 
     await page.evaluate(() => {
-      window.dispatchEvent(new CustomEvent('test-tauri-event', { 
-        detail: { event: 'db.corrupted', payload: {} } 
+      window.dispatchEvent(new CustomEvent('test-tauri-event', {
+        detail: { event: 'db_corrupted', payload: {} }
       }));
     });
     

@@ -420,6 +420,10 @@ const tauriMockInitScript = `
       // caught -- silently breaking the ENTIRE Settings page (not just the
       // Pattern Rules section) in every e2e test that ever visited
       // /#/settings, this whole session.
+      // TASK-FE-018: a deliberate escape hatch for ErrorBoundary.spec.ts to
+      // force a real render crash (mirrors the exact shape of the FE-014
+      // bug above) rather than needing a synthetic React error trigger.
+      if (window.__MOCK_STATE__.force_render_crash) return undefined;
       return window.__MOCK_STATE__.pattern_rules || [
         { id: 'pat_1', merchant_id: 'Uber', pattern_type: 'regex', pattern_value: 'Uber.*', is_active: true, success_count: 50, failure_count: 0 },
       ];

@@ -3,7 +3,7 @@ import { RouterProvider } from 'react-router-dom';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { API } from './lib/ipc';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import { Toaster } from '@/components/ui/toaster';
+import ToastProvider from '@/components/ToastProvider';
 import { router } from './routes';
 import { GlobalStateProvider } from './lib/GlobalStateContext';
 import { queryClient } from './lib/queryClient';
@@ -60,7 +60,7 @@ function App() {
 
   return (
     <ErrorBoundary>
-      <Toaster />
+      <ToastProvider />
       <QueryClientProvider client={queryClient}>
         <IpcEventBridge />
         <GlobalStateProvider>

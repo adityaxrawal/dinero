@@ -188,4 +188,9 @@ function useToast() {
   }
 }
 
-export { useToast }
+// TASK-FE-018: `toast` exported directly (not just via `useToast()`) so
+// non-component code (`ToastProvider`'s error-toast dispatcher,
+// `useIpcInvoke`) can queue a toast without needing a hook — this module's
+// state is already a plain module-level singleton, not React context, so
+// this requires no new plumbing.
+export { useToast, toast }
