@@ -249,8 +249,8 @@ export default function TransactionDetail() {
                 onKeyDown={(e) => e.key === 'Enter' && handleAddTag()}
               />
               <datalist id="tag-suggestions">
-                {availableTags.filter((t) => !tags.includes(t)).map((t) => (
-                  <option key={t} value={t} />
+                {availableTags.filter((t) => !tags.includes(t.name)).map((t) => (
+                  <option key={t.id} value={t.name} />
                 ))}
               </datalist>
               <Button variant="outline" size="icon" onClick={handleAddTag} aria-label="Add tag">

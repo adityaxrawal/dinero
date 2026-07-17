@@ -724,8 +724,7 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
         let app_handle_clone = app.clone();
         conn.interact(move |conn| {
             for obs in &obs_cloned {
-                let candidates = crate::reconciliation::engine::fetch_candidates(conn, obs).unwrap_or_default();
-                match crate::reconciliation::engine::reconcile(conn, obs, candidates) {
+                match crate::reconciliation::engine::reconcile_transactionally(conn, obs) {
                     Ok(decision) => {
                         tracing::debug!(
                             "Reconciliation decision for obs '{}': {:?}",
@@ -934,19 +933,11 @@ pub async fn statements_confirm_instrument(
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
     pending_bytes: tauri::State<'_, crate::statements::pending_bytes::PendingStatementBytes>,
 ) -> Result<serde_json::Value, crate::error::AppError> {
-    if !statement_id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return Err(crate::error::AppError::Unknown("Invalid ID format".into()));
-    }
+    crate::ipc::validation::validate_uuid("statement_id", &statement_id)?;
+    crate::ipc::validation::validate_non_empty("issuer_name", &issuer_name)?;
+    crate::ipc::validation::validate_non_empty("masked_identifier", &masked_identifier)?;
     let issuer_name = issuer_name.trim().to_string();
     let masked_identifier = masked_identifier.trim().to_string();
-    if issuer_name.is_empty() || masked_identifier.is_empty() {
-        return Err(crate::error::AppError::Unknown(
-            "Issuer name and masked account/card number are required".to_string(),
-        ));
-    }
 
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
@@ -1123,18 +1114,9 @@ pub async fn statements_submit_password(
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
     pending_bytes: tauri::State<'_, crate::statements::pending_bytes::PendingStatementBytes>,
 ) -> Result<serde_json::Value, crate::error::AppError> {
-    if !statement_id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return Err(crate::error::AppError::Unknown("Invalid ID format".into()));
-    }
-    if !instrument_id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return Err(crate::error::AppError::Unknown("Invalid ID format".into()));
-    }
+    crate::ipc::validation::validate_uuid("statement_id", &statement_id)?;
+    crate::ipc::validation::validate_uuid("instrument_id", &instrument_id)?;
+    crate::ipc::validation::validate_non_empty("password", &password)?;
 
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
@@ -1391,12 +1373,7 @@ pub async fn statements_retry_unprocessed(
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
     pending_bytes: tauri::State<'_, crate::statements::pending_bytes::PendingStatementBytes>,
 ) -> Result<serde_json::Value, crate::error::AppError> {
-    if !statement_id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return Err(crate::error::AppError::Unknown("Invalid ID format".into()));
-    }
+    crate::ipc::validation::validate_uuid("statement_id", &statement_id)?;
 
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
@@ -1592,12 +1569,7 @@ pub async fn statements_discard(
     statement_id: String,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
 ) -> Result<serde_json::Value, crate::error::AppError> {
-    if !statement_id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return Err(crate::error::AppError::Unknown("Invalid ID format".into()));
-    }
+    crate::ipc::validation::validate_uuid("statement_id", &statement_id)?;
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
     let conn = pool
@@ -1654,17 +1626,10 @@ pub async fn reconciliation_clusters_resolve(
     chosen_canonical_id: Option<String>,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
 ) -> Result<String, crate::error::AppError> {
-    if !cluster_id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return Err(crate::error::AppError::Unknown("Invalid ID format".into()));
-    }
-    if !observation_id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return Err(crate::error::AppError::Unknown("Invalid ID format".into()));
+    crate::ipc::validation::validate_uuid("cluster_id", &cluster_id)?;
+    crate::ipc::validation::validate_uuid("observation_id", &observation_id)?;
+    if let Some(ref chosen_canonical_id) = chosen_canonical_id {
+        crate::ipc::validation::validate_uuid("chosen_canonical_id", chosen_canonical_id)?;
     }
 
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
@@ -1721,17 +1686,10 @@ pub async fn correct_match(
     new_canonical_id: Option<String>,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
 ) -> Result<String, crate::error::AppError> {
-    if !observation_id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return Err(crate::error::AppError::Unknown("Invalid ID format".into()));
-    }
-    if !original_decision_id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return Err(crate::error::AppError::Unknown("Invalid ID format".into()));
+    crate::ipc::validation::validate_uuid("observation_id", &observation_id)?;
+    crate::ipc::validation::validate_uuid("original_decision_id", &original_decision_id)?;
+    if let Some(ref new_canonical_id) = new_canonical_id {
+        crate::ipc::validation::validate_uuid("new_canonical_id", new_canonical_id)?;
     }
 
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
@@ -1773,9 +1731,7 @@ pub async fn trigger_reconciliation(
     let observation_id = observation.id.clone();
     let decision = conn
         .interact(move |conn| {
-            let candidates = crate::reconciliation::engine::fetch_candidates(conn, &observation)
-                .unwrap_or_default();
-            crate::reconciliation::engine::reconcile(conn, &observation, candidates)
+            crate::reconciliation::engine::reconcile_transactionally(conn, &observation)
         })
         .await
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
@@ -1882,9 +1838,7 @@ pub async fn transactions_create(
             };
             crate::db::transaction_observations::insert_observation(conn, &obs_row)?;
 
-            let candidates =
-                crate::reconciliation::engine::fetch_candidates(conn, &obs).unwrap_or_default();
-            crate::reconciliation::engine::reconcile(conn, &obs, candidates)
+            crate::reconciliation::engine::reconcile_transactionally(conn, &obs)
         })
         .await
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
@@ -2190,12 +2144,7 @@ pub async fn settings_pdf_passwords_delete(
     id: String,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
 ) -> Result<(), crate::error::AppError> {
-    if !id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return Err(crate::error::AppError::Unknown("Invalid ID format".into()));
-    }
+    crate::ipc::validation::validate_uuid("id", &id)?;
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
     let conn = pool
         .get()
@@ -2254,6 +2203,8 @@ pub async fn settings_pattern_rules_update(
     new_status: String,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
 ) -> Result<(), crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("rule_id", &rule_id)?;
+    crate::ipc::validation::validate_non_empty("new_status", &new_status)?;
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
     let conn = pool
         .get()
@@ -2268,21 +2219,23 @@ pub async fn settings_pattern_rules_update(
 
 /// G13 fix: the full reusable-tag catalog, for autocomplete when tagging a
 /// transaction — previously tags were pure free-text with nothing behind
-/// them to autocomplete against.
+/// them to autocomplete against. Returns full rows (not just names) so the
+/// frontend can resolve a tag's real id and call the dedicated
+/// `transactions_add_tag`/`transactions_remove_tag` commands (Doc19
+/// §8.7/§8.8) instead of the name-based bulk-replace workaround this
+/// previously forced (Area 9 verification pass fix).
 #[tauri::command]
 pub async fn tags_list(
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
-) -> Result<Vec<String>, crate::error::AppError> {
+) -> Result<Vec<crate::db::tags::TagsRow>, crate::error::AppError> {
     let conn = pool
         .get()
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-    let tags = conn
-        .interact(|c| crate::db::tags::select_all(c))
+    conn.interact(|c| crate::db::tags::select_all(c))
         .await
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
-        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-    Ok(tags.into_iter().map(|t| t.name).collect())
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))
 }
 
 #[derive(serde::Deserialize)]
@@ -2299,9 +2252,7 @@ pub async fn tags_create(
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
 ) -> Result<serde_json::Value, crate::error::AppError> {
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
-    if payload.name.trim().is_empty() {
-        return Err(crate::error::AppError::Validation("name must not be empty".to_string()));
-    }
+    crate::ipc::validation::validate_non_empty("name", &payload.name)?;
     let conn = pool
         .get()
         .await
@@ -2329,6 +2280,7 @@ pub async fn tags_delete(
     id: String,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
 ) -> Result<String, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("id", &id)?;
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
     let conn = pool
         .get()
@@ -2348,6 +2300,7 @@ pub async fn fetch_transaction_tags(
     transaction_id: String,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
 ) -> Result<Vec<String>, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("transaction_id", &transaction_id)?;
     let conn = pool
         .get()
         .await
@@ -2490,12 +2443,7 @@ pub async fn transactions_delete(
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, crate::error::AppError> {
-    if !transaction_id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return Err(crate::error::AppError::Unknown("Invalid ID format".into()));
-    }
+    crate::ipc::validation::validate_uuid("transaction_id", &transaction_id)?;
 
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
@@ -2558,12 +2506,7 @@ pub async fn ipc_trigger_patch_sync(
     alert_id: String,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
 ) -> Result<String, crate::error::AppError> {
-    if !alert_id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
-        return Err(crate::error::AppError::Unknown("Invalid ID format".into()));
-    }
+    crate::ipc::validation::validate_uuid("alert_id", &alert_id)?;
 
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
@@ -3337,7 +3280,7 @@ mod tests {
             c.execute(
                 "INSERT INTO unprocessed_statements \
                  (id, statement_source_json, failure_type, failure_reason, status) \
-                 VALUES ('stmt_discard', '{}', 'password_required', '', 'awaiting_password')",
+                 VALUES ('11111111-1111-4111-8111-111111111111', '{}', 'password_required', '', 'awaiting_password')",
                 [],
             )
             .unwrap();
@@ -3351,7 +3294,7 @@ mod tests {
         app.manage(pool.clone());
 
         let result = statements_discard(
-            "stmt_discard".to_string(),
+            "11111111-1111-4111-8111-111111111111".to_string(),
             app.state::<deadpool_sqlite::Pool>(),
         )
         .await
@@ -3362,7 +3305,7 @@ mod tests {
         let remaining: i64 = conn2
             .interact(|c| {
                 c.query_row(
-                    "SELECT COUNT(*) FROM unprocessed_statements WHERE id = 'stmt_discard'",
+                    "SELECT COUNT(*) FROM unprocessed_statements WHERE id = '11111111-1111-4111-8111-111111111111'",
                     [],
                     |r| r.get(0),
                 )
@@ -3384,11 +3327,14 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(action, "statement_discarded");
-        assert_eq!(resource_id.as_deref(), Some("stmt_discard"));
+        assert_eq!(
+            resource_id.as_deref(),
+            Some("11111111-1111-4111-8111-111111111111")
+        );
 
         // Discarding again must fail — the row is really gone, not just hidden.
         let second_attempt = statements_discard(
-            "stmt_discard".to_string(),
+            "11111111-1111-4111-8111-111111111111".to_string(),
             app.state::<deadpool_sqlite::Pool>(),
         )
         .await;

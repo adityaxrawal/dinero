@@ -161,7 +161,19 @@ const tauriMockInitScript = `
     // availableTags resolved to the default '{}' fallback instead of an
     // array, crashing the detail panel's tag autocomplete
     // (availableTags.filter().map()) on every row click.
-    if (cmd === 'tags_list') return ['online', 'dinner', 'work', 'personal'];
+    // Area 9 verification fix: real tags_list returns full rows (id +
+    // name), not bare strings -- see commands/mod.rs tags_list.
+    if (cmd === 'tags_list') {
+      return [
+        { id: 'tag_online', name: 'online', color_hex: null, created_at: null },
+        { id: 'tag_dinner', name: 'dinner', color_hex: null, created_at: null },
+        { id: 'tag_work', name: 'work', color_hex: null, created_at: null },
+        { id: 'tag_personal', name: 'personal', color_hex: null, created_at: null },
+      ];
+    }
+    if (cmd === 'tags_create') return { id: 'tag_new', status: 'created' };
+    if (cmd === 'transactions_add_tag') return 'tag_added';
+    if (cmd === 'transactions_remove_tag') return 'tag_removed';
     if (cmd === 'categories_list') {
       // TASK-FE-009 fix: no mock existed at all -- categories_list has had
       // a real frontend call site (the transaction filter bar / quick

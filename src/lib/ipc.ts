@@ -209,6 +209,13 @@ export interface CategoryRecord {
   icon: string | null;
 }
 
+export interface TagRecord {
+  id: string;
+  name: string;
+  color_hex: string | null;
+  created_at: string | null;
+}
+
 export interface TransactionRecord {
   id: string;
   date: string;
@@ -434,8 +441,11 @@ export const API = {
       invokeCommand<EmiGroupSummary>('transactions_get_emi_group', { emiGroupId }),
   },
   tags: {
-    // G13 fix: the full reusable-tag catalog, for autocomplete.
-    list: () => invokeCommand<string[]>('tags_list'),
+    // G13 fix: the full reusable-tag catalog, for autocomplete. Returns
+    // full rows (id + name) so callers can resolve a name to the id
+    // `transactions_add_tag`/`_remove_tag` (Doc19 §8.7/§8.8) require.
+    list: () => invokeCommand<TagRecord[]>('tags_list'),
+    create: (name: string) => invokeCommand<{ id: string; status: string }>('tags_create', { payload: { name } }),
   },
   categories: {
     // TASK-API-007 built categories_list with no frontend call site at all

@@ -3,20 +3,20 @@ import { API } from '@/lib/ipc';
 import { queryKeys } from '@/lib/queryKeys';
 
 /**
- * TASK-FE-010: same bulk-replace workaround as `useAddTransactionTag`
- * (TASK-FE-009) — `transactions_remove_tag` needs a real tag UUID that
- * `tags_list` never exposes, so this goes through `transactions_update`'s
- * name-based `tags: string[]` replace instead.
+ * TASK-FE-010: resolves the tag name to its real id via `tags_list`, then
+ * calls the dedicated `transactions_remove_tag` command (Doc19 §8.8) —
+ * see `useAddTransactionTag` for why this no longer goes through
+ * `transactions_update`'s bulk-replace workaround.
  */
 export function useRemoveTransactionTag() {
   const queryClient = useQueryClient();
 
   return useMutation({
     mutationFn: async ({ transactionId, tagName }: { transactionId: string; tagName: string }) => {
-      const currentTags = await API.transactions.getTags(transactionId);
-      const nextTags = currentTags.filter((t) => t !== tagName);
-      await API.transactions.update(transactionId, { tags: nextTags });
-      return nextTags;
+      const existingTags = await queryClient.fetchQuery({ queryKey: queryKeys.tags.list(), queryFn: API.tags.list });
+      const tag = existingTags.find((t) => t.name.toLowerCase() === tagName.toLowerCase());
+      if (!tag) return;
+      await API.transactions.removeTag(transactionId, tag.id);
     },
     onSuccess: (_data, { transactionId }) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.transactions.tags(transactionId) });
