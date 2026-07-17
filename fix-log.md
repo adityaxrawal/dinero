@@ -1530,3 +1530,13 @@ Area 9 (FE) now 19/19 done -- Area 9 complete.
 **What I did:** Changed `tags_list` to return the full `TagsRow` (`id`, `name`, `color_hex`, `created_at`) instead of bare names. Added `TagRecord` to `src/lib/ipc.ts` and an `API.tags.create` wrapper for `tags_create`. Rewrote both mutation hooks to resolve the typed tag name against the id-bearing `tags_list` cache (case-insensitive), creating the tag via `tags_create` if new, then calling the real `API.transactions.addTag`/`removeTag` (which already existed, correctly wired, just unused). Fixed `TransactionDetail.tsx`'s tag-suggestion `<datalist>` for the new `TagRecord[]` shape. Fixed `e2e/fixtures/tauriMock.ts`: `tags_list` returned bare strings and `tags_create`/`transactions_add_tag`/`transactions_remove_tag` had zero mocks at all (would have silently no-opped/fallback-{}'d in every e2e run touching tags).
 
 **Verified:** `cargo check --lib` and `cargo test --lib tags`: clean, 3/3. `pnpm tsc --noEmit`: clean. `pnpm exec vitest run`: 51/51. `pnpm exec playwright test`: 70/70 (full suite, zero regressions).
+
+---
+
+## Area 9 Verification Pass — Fix 2: Statement-Only Mode banner missed the degraded-account (BR-01) case
+
+**Found:** Flagged honestly back in TASK-AUTH-016's own fix-log entry ("the already-connected-user-loses-access case does not [get covered]"). `StatementOnlyModeBanner.tsx` (TASK-FE-017) triggered only on `connectedAccounts.length === 0`. But `settings_get_connected_accounts` (`oauth.rs`) keeps a token-refresh-failed account in the returned list with `account_status = 'degraded'` rather than dropping it — only a full disconnect removes the row — and `polling.rs` only polls accounts with `account_status` `ACTIVE`/`active`. So the actual Document 01 BR-01 scenario this task exists for (Gmail access revoked/restricted while previously connected) left `connectedAccounts.length` at 1, and the banner silently never fired — exactly the gap TASK-AUTH-016 named.
+
+**What I did:** Changed the trigger from `connectedAccounts.length === 0` to `connectedAccounts.every(a => a.account_status?.toLowerCase() !== 'active')`, covering both the zero-accounts case and the degraded-only case in one check. Added a new e2e test (`StatementOnlyMode.spec.ts`) proving the banner shows when the sole connected account is `degraded`.
+
+**Verified:** `pnpm tsc --noEmit`: clean. `pnpm exec playwright test`: 71/71 (full suite, +1 new test, zero regressions).

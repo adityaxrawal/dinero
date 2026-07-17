@@ -19,13 +19,22 @@ import { useGlobalState } from '@/lib/GlobalStateContext';
  * backend. The real, already-available signal for "Gmail isn't a working
  * ingestion path right now" is `connectedAccounts` from
  * `GlobalStateContext` (backed by `settings_get_connected_accounts`,
- * TASK-FE-015's real per-account status): zero accounts means either the
- * user chose statement-only at onboarding (`GmailConsentScreen`'s "Skip —
- * I'll upload statements manually") or every previously-connected account
- * has since fully disconnected — CASA failure/revocation and plain user
- * choice are indistinguishable from here, but the correct UI response
- * ("Gmail sync isn't available, use Statement Upload") is identical either
- * way, so no fabricated reason is invented.
+ * TASK-FE-015's real per-account status).
+ *
+ * Area 9 verification-pass fix: originally checked `connectedAccounts.
+ * length === 0` only, which covers the new-user "skip Gmail at onboarding"
+ * case but misses the actual BR-01 scenario Doc 30 names ("gmail.readonly
+ * access is revoked/restricted") — `settings_get_connected_accounts`
+ * (`oauth.rs`) keeps a token-refresh-failed account in the list with
+ * `account_status = 'degraded'` rather than removing it (only a full
+ * disconnect drops the row), and `polling.rs` only polls `ACTIVE`/`active`
+ * accounts, so a degraded-only account list means Gmail sync has silently
+ * stopped while `connectedAccounts.length` is still > 0. Now treats "no
+ * account with an ACTIVE status" (case-insensitive) as the trigger, which
+ * covers both the zero-accounts case and the already-connected-user-loses-
+ * access case in one check — CASA failure/revocation, token expiry, and
+ * plain user choice are still indistinguishable from here, but the correct
+ * UI response is identical either way, so no fabricated reason is invented.
  *
  * Dismissable-but-recurring (same pattern as `GracePeriodBanner`): local
  * component state, not persisted, so it reappears on the next mount rather
@@ -39,13 +48,13 @@ export default function StatementOnlyModeBanner() {
   const navigate = useNavigate();
   const [dismissed, setDismissed] = useState(false);
 
-  const hasNoGmailAccount = connectedAccounts.length === 0;
+  const hasNoWorkingGmailAccount = connectedAccounts.every((a) => a.account_status?.toLowerCase() !== 'active');
 
   useEffect(() => {
-    if (!hasNoGmailAccount) setDismissed(false);
-  }, [hasNoGmailAccount]);
+    if (!hasNoWorkingGmailAccount) setDismissed(false);
+  }, [hasNoWorkingGmailAccount]);
 
-  if (!hasNoGmailAccount || dismissed || location.pathname === '/statements') return null;
+  if (!hasNoWorkingGmailAccount || dismissed || location.pathname === '/statements') return null;
 
   return (
     <div

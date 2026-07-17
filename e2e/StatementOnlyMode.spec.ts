@@ -29,6 +29,24 @@ test.describe('Statement-Only Mode Fallback Banner (TASK-FE-017)', () => {
     await expect(page.getByText(/Gmail sync isn't connected/i)).not.toBeVisible();
   });
 
+  test('shows when the only connected account has degraded (BR-01: revoked/restricted Gmail access)', async ({ page }) => {
+    // Area 9 verification-pass fix: a token-refresh-failed account stays in
+    // connected_accounts with account_status 'degraded' rather than being
+    // removed -- length > 0 but no ACTIVE account, so the banner must still
+    // fire rather than treating any non-empty list as "connected."
+    await page.goto('/');
+    await page.evaluate(() => {
+      window.__MOCK_STATE__.gmail_connected = true;
+      window.__MOCK_STATE__.connected_accounts = [
+        { email: 'degraded@gmail.com', account_id: 'acc_degraded', account_status: 'degraded' },
+      ];
+    });
+    await page.locator('a[href="#/instruments"]').click();
+    await page.locator('a[href="#/"]').first().click();
+
+    await expect(page.getByText(/Gmail sync isn't connected/i)).toBeVisible();
+  });
+
   test('dismissing hides it, without blocking any other part of the app', async ({ page }) => {
     await page.goto('/');
     await expect(page.getByText(/Gmail sync isn't connected/i)).toBeVisible();
