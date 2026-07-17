@@ -1,0 +1,65 @@
+name: Release
+
+# H8 fix (Doc 30): signing/notarization previously ran on every push to main
+# via rust.yml's build job. This workflow is the dedicated release path —
+# it only runs on a pushed version tag, matching the documented "tagged
+# release event" trigger, and is the only workflow that touches signing
+# secrets.
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    name: Build, Sign, Notarize, and Publish
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Run security hardening check
+        run: ./scripts/security_hardening_check.sh
+
+      - name: Build, Sign, and Notarize
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Dinero ${{ github.ref_name }}"
+          releaseBody: "See CHANGELOG for details."
+          releaseDraft: true
+          args: --target universal-apple-darwin
+
+      - name: Verify release notarization
+        run: ./scripts/notarize.sh --verify-only
