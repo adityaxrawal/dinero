@@ -299,7 +299,12 @@ pub fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
             );
         }
         MenuAction::CheckForUpdates => {
+            // TASK-DESK-005: the menu item now actually triggers a real
+            // update check (previously this only dispatched the event,
+            // deferring the real check to this task, per TASK-DESK-001's
+            // own fix-log note).
             let _ = emit_event(app, AppEvent::MenuCheckForUpdates, serde_json::json!({}));
+            crate::updater::trigger_manual_check(app);
         }
         MenuAction::RefreshNow => {
             let app = app.clone();

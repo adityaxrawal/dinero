@@ -20,6 +20,7 @@ pub mod reconciliation;
 pub mod security;
 pub mod startup;
 pub mod statements;
+pub mod updater;
 
 use std::path::PathBuf;
 use tauri::{Emitter, Manager};
@@ -724,6 +725,10 @@ pub fn run() {
                 .await;
             });
 
+            // TASK-DESK-005: checks once on launch, then every ~6 hours
+            // while running (Document 16 §9.1).
+            app.manage(crate::updater::PendingUpdate::default());
+            crate::updater::spawn_update_check_loop(app.handle().clone());
 
             Ok(())
         })

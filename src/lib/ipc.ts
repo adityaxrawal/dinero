@@ -729,6 +729,12 @@ export const API = {
     // Doc 19 §14.4 — same action the C11-fixed background loop calls every 6h.
     refresh: () => invokeCommand<LicenseRefreshResponse>('license_refresh'),
   },
+  updater: {
+    // Doc 30 TASK-DESK-005: not in Document 19's catalog (this task
+    // predates/extends it, same precedent as several Area 8 additive
+    // commands) -- installs whichever update the most recent check found.
+    confirmInstall: () => invokeCommand<void>('updater_confirm_install'),
+  },
 };
 
 export interface LicenseStatusResponse {

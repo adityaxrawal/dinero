@@ -5,11 +5,19 @@ import { onAction } from '@tauri-apps/plugin-notification';
 import { API } from './lib/ipc';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import ToastProvider from '@/components/ToastProvider';
+import { toast } from '@/hooks/use-toast';
+import { ToastAction } from '@/components/ui/toast';
 import { router } from './routes';
 import { GlobalStateProvider } from './lib/GlobalStateContext';
 import { queryClient } from './lib/queryClient';
 import { useIpcQueryInvalidation } from './hooks/useIpcQueryInvalidation';
 import './App.css';
+
+interface UpdateAvailablePayload {
+  version: string;
+  current_version: string;
+  notes: string | null;
+}
 
 // TASK-FE-003: mounted once, inside QueryClientProvider, so
 // useIpcQueryInvalidation can reach the client via useQueryClient(). Renders
@@ -36,6 +44,49 @@ function IpcEventBridge() {
         unlisten = () => handle.unregister();
       })
       .catch((e) => console.error('Failed to register notification action listener', e));
+    return () => unlisten?.();
+  }, []);
+
+  useEffect(() => {
+    // TASK-DESK-005: a non-intrusive "Update Now" / "Remind Me Later"
+    // prompt -- never a forced-restart popup. Implemented as a toast with
+    // a single action button (shadcn's Toast only supports one): clicking
+    // it installs; not clicking it *is* "Remind Me Later" -- the next
+    // scheduled check (~6h) or manual menu trigger re-prompts if the
+    // update is still available, so no separate snooze state is needed.
+    let unlisten: (() => void) | undefined;
+
+    const setup = async () => {
+      let listen;
+      try {
+        const m = await import('@tauri-apps/api/event');
+        listen = m.listen;
+      } catch {
+        return;
+      }
+      const handle = await listen<UpdateAvailablePayload>('update_available', (event) => {
+        const { version } = event.payload;
+        toast({
+          title: 'Update Available',
+          description: `Dinero ${version} is ready to install.`,
+          action: (
+            <ToastAction
+              altText="Update Now"
+              onClick={() => {
+                void API.updater.confirmInstall().catch((e) =>
+                  console.error('Failed to install update', e),
+                );
+              }}
+            >
+              Update Now
+            </ToastAction>
+          ),
+        });
+      });
+      unlisten = handle;
+    };
+
+    setup().catch((e) => console.error('Failed to listen for update_available', e));
     return () => unlisten?.();
   }, []);
 
