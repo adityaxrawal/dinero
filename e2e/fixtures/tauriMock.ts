@@ -373,6 +373,18 @@ const tauriMockInitScript = `
       // in TRIAL, not ACTIVE.
       return { state: 'TRIAL', is_active: true, license_key_masked: null, plan_id: null, billing_interval: null, expiry_date: '2026-07-30T00:00:00Z', days_remaining: 14 };
     }
+    if (cmd === 'license_refresh') {
+      // TASK-FE-016: the real command's own side effect (mirrored here so
+      // LicenseLockOverlay/GracePeriodBanner's "retry" actions are actually
+      // drivable to completion) is to emit a fresh license_state_changed
+      // broadcast -- useLicenseStore mirrors that reactively, dismissing
+      // the overlay/banner without any direct return-value handling.
+      const status = window.__MOCK_STATE__.license_refresh_result || {
+        state: 'ACTIVE', is_active: true, license_key_masked: null, plan_id: 'pro', billing_interval: 'monthly', expiry_date: null, days_remaining: null,
+      };
+      window.dispatchEvent(new CustomEvent('test-tauri-event', { detail: { event: 'license_state_changed', payload: status } }));
+      return status;
+    }
     if (cmd === 'auth_get_consent_history') {
       // TASK-FE-014: seeded with realistic data so ConsentHistoryList's
       // happy path (not just its empty state) is exercised by default.

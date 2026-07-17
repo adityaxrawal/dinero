@@ -84,27 +84,86 @@ test.describe('AppShell & Navigation - Rigorous Verification', () => {
     await expect(page.locator('aside')).not.toBeInViewport();
   });
 
-  test('should display LOCKED license state on license.clock_skew event and prevent dismissal', async ({ page }) => {
+  // TASK-FE-016 fix: this test previously dispatched an illustrative
+  // dotted event name ('license.clock_skew') that AppLayout never actually
+  // listened for -- the real backend event of that name
+  // (AppEvent::LicenseClockSkew -> "license_clock_skew") is defined but
+  // never emitted anywhere in the crate (grepped); the ad-hoc listener this
+  // test was built against was 100% dead code, unreachable in production
+  // regardless of the real lock cause (grace expiry, invalid JWT, etc, not
+  // just clock skew). The real, reactive channel is useLicenseStore
+  // mirroring the `license_state_changed` broadcast (Doc 30's own explicit
+  // spec for this task), which is what LicenseLockOverlay now subscribes
+  // to. Also: the old assertion that the sidebar leaves the viewport
+  // directly contradicted Doc 30's own task text ("blocking write
+  // interactions but explicitly still allowing navigation to read-only
+  // views ... and to the reactivation flow") -- corrected to assert the
+  // opposite, that navigation stays reachable.
+  test('should display License Locked overlay on license_state_changed(LOCKED) and prevent dismissal, without blocking navigation', async ({ page }) => {
     await expect(page.locator('aside')).toBeVisible();
 
-    // Wait for listener
-    await page.waitForFunction(() => (window as any).__TAURI_LISTENERS__ && (window as any).__TAURI_LISTENERS__['license.clock_skew']);
-
     await page.evaluate(() => {
-      window.dispatchEvent(new CustomEvent('test-tauri-event', { 
-        detail: { event: 'license.clock_skew', payload: {} } 
+      window.dispatchEvent(new CustomEvent('test-tauri-event', {
+        detail: {
+          event: 'license_state_changed',
+          payload: { state: 'LOCKED', is_active: false, license_key_masked: null, plan_id: null, billing_interval: null, expiry_date: null, days_remaining: null },
+        },
       }));
     });
 
     await expect(page.locator('text="License Locked"')).toBeVisible();
-    await expect(page.locator('text="Clock skew detected."')).toBeVisible();
 
-    // Should NOT have a close button
-    const closeBtn = page.locator('button:has-text("Close")');
-    await expect(closeBtn).toHaveCount(0);
-    
-    // Ensure it overlays the app entirely
-    await expect(page.locator('aside')).not.toBeInViewport();
+    // Should NOT have a close/dismiss button of any kind.
+    await expect(page.locator('button:has-text("Close")')).toHaveCount(0);
+    await expect(page.locator('button:has-text("Dismiss")')).toHaveCount(0);
+
+    // Per spec: read-only navigation and the reactivation flow both stay
+    // reachable -- the overlay covers the routed content pane, not the
+    // sidebar.
+    await expect(page.locator('aside')).toBeInViewport();
+    await page.locator('button:has-text("Reactivate in Settings")').click();
+    await expect(page).toHaveURL(/.*\/settings/);
+  });
+
+  test('License Locked overlay dismisses reactively when a background revalidation restores ACTIVE', async ({ page }) => {
+    await page.evaluate(() => {
+      window.dispatchEvent(new CustomEvent('test-tauri-event', {
+        detail: {
+          event: 'license_state_changed',
+          payload: { state: 'LOCKED', is_active: false, license_key_masked: null, plan_id: null, billing_interval: null, expiry_date: null, days_remaining: null },
+        },
+      }));
+    });
+    await expect(page.locator('text="License Locked"')).toBeVisible();
+
+    await page.evaluate(() => {
+      window.dispatchEvent(new CustomEvent('test-tauri-event', {
+        detail: {
+          event: 'license_state_changed',
+          payload: { state: 'ACTIVE', is_active: true, license_key_masked: null, plan_id: 'pro', billing_interval: 'monthly', expiry_date: null, days_remaining: null },
+        },
+      }));
+    });
+    await expect(page.locator('text="License Locked"')).not.toBeVisible();
+  });
+
+  test('Grace Period banner shows days remaining and a working Retry validation action', async ({ page }) => {
+    await page.evaluate(() => {
+      window.dispatchEvent(new CustomEvent('test-tauri-event', {
+        detail: {
+          event: 'license_state_changed',
+          payload: { state: 'GRACE', is_active: true, license_key_masked: null, plan_id: 'pro', billing_interval: 'monthly', expiry_date: null, days_remaining: 4 },
+        },
+      }));
+    });
+
+    await expect(page.getByText(/grace period/i)).toBeVisible();
+    await expect(page.getByText(/4 days remaining/i)).toBeVisible();
+
+    await page.locator('button:has-text("Retry validation now")').click();
+    // A successful refresh resolves ACTIVE via the mock; the banner should
+    // clear reactively, same as the overlay.
+    await expect(page.getByText(/grace period/i)).not.toBeVisible();
   });
 
   test('should display global background task indicator without blocking UI', async ({ page }) => {
