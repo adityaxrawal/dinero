@@ -1,16 +1,13 @@
-import { Mail, ShieldAlert, Palette, HardDrive, Cpu, CheckCircle, ScanLine, Loader2, CalendarRange, AlertCircle, FileText, Ban, AlertTriangle, KeyRound, CreditCard, RefreshCw, History, Wand2, Lock, Trash2, Gauge } from 'lucide-react';
-import { API, LlmModelInfo, LicenseStatusResponse, ConsentEventRecord, PatternRuleHealth, PdfPasswordSummary } from '../lib/ipc';
+import { Mail, Palette, Cpu, CheckCircle, ScanLine, Loader2, CalendarRange, AlertCircle, FileText, Ban, AlertTriangle, KeyRound, CreditCard, RefreshCw, Wand2, Lock, Trash2, Gauge } from 'lucide-react';
+import { API, LlmModelInfo, LicenseStatusResponse, PatternRuleHealth, PdfPasswordSummary } from '../lib/ipc';
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import NetworkActivity from '../components/NetworkActivity';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
+import PrivacySettings from '../components/settings/PrivacySettings';
+import RevokeGmailButton from '../components/settings/RevokeGmailButton';
 
 import { useGlobalState } from '../lib/GlobalStateContext';
-
-const RESET_CONFIRM_PHRASE = 'DELETE MY DATA';
 
 export default function Settings() {
   const navigate = useNavigate();
@@ -171,51 +168,6 @@ export default function Settings() {
     }
   };
 
-  // ── Reset Local Database: two-step typed-confirmation-phrase flow (C21) ──
-  const [resetModalOpen, setResetModalOpen] = useState(false);
-  const [resetStep, setResetStep] = useState<1 | 2>(1);
-  const [resetConfirmText, setResetConfirmText] = useState('');
-  const [isResetting, setIsResetting] = useState(false);
-
-  const closeResetModal = () => {
-    setResetModalOpen(false);
-    setResetStep(1);
-    setResetConfirmText('');
-  };
-
-  const handleConfirmReset = async () => {
-    if (resetConfirmText !== RESET_CONFIRM_PHRASE) return;
-    setIsResetting(true);
-    try {
-      await API.dev.resetDatabase();
-      window.location.reload();
-    } catch (e) {
-      console.error('Failed to reset database:', e);
-      alert('Failed to reset database');
-      setIsResetting(false);
-    }
-  };
-
-  // ── Consent History (Doc 25 §4.4, C20 fix) ───────────────────────────
-  const [consentHistory, setConsentHistory] = useState<ConsentEventRecord[]>([]);
-  const [isLoadingConsent, setIsLoadingConsent] = useState(true);
-
-  const loadConsentHistory = async () => {
-    setIsLoadingConsent(true);
-    try {
-      const events = await API.privacy.getConsentHistory();
-      setConsentHistory(events);
-    } catch (err) {
-      console.error('Failed to fetch consent history:', err);
-    } finally {
-      setIsLoadingConsent(false);
-    }
-  };
-
-  useEffect(() => {
-    loadConsentHistory();
-  }, []);
-
   // ── Pattern Rules (G14 fix: a real Settings toggle, not Debug-only/read-only) ──
   const [patternRules, setPatternRules] = useState<PatternRuleHealth[]>([]);
   const [isLoadingRules, setIsLoadingRules] = useState(true);
@@ -294,20 +246,7 @@ export default function Settings() {
   };
 
   // ── Data Export / Restore from Backup (G4 fix) ───────────────────────
-  const [isExporting, setIsExporting] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
-
-  const handleExportData = async () => {
-    setIsExporting(true);
-    try {
-      const result = await API.support.exportLogs();
-      alert('Export complete. Saved to: ' + result.file_path);
-    } catch (err: any) {
-      alert('Failed to export data: ' + (err?.message ?? String(err)));
-    } finally {
-      setIsExporting(false);
-    }
-  };
 
   // J7 fix: a real local encrypted export of the full dataset (transactions,
   // statements, instruments, etc.) — distinct from the diagnostic bundle
@@ -453,19 +392,7 @@ export default function Settings() {
                     {account.email}
                   </p>
                 </div>
-                <button
-                  className="btn btn-secondary"
-                  onClick={() => handleDisconnectGmail(account.account_id)}
-                  style={{
-                    padding: '6px 12px',
-                    fontSize: '12px',
-                    background: 'rgba(239,68,68,0.1)',
-                    color: 'var(--error)',
-                    border: '1px solid rgba(239,68,68,0.2)',
-                  }}
-                >
-                  Disconnect
-                </button>
+                <RevokeGmailButton email={account.email} onRevoke={() => handleDisconnectGmail(account.account_id)} />
               </div>
             ))}
           </div>
@@ -989,57 +916,8 @@ export default function Settings() {
       {/* ── Network Activity ─────────────────────────────────────────────── */}
       <NetworkActivity />
 
-      {/* ── Consent History (Doc 25 §4.4) ─────────────────────────────── */}
-      <div className="glass-panel" style={{ padding: '24px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <History className="text-accent" size={24} color="var(--accent-primary)" />
-            <h3 className="heading-md">Consent History</h3>
-          </div>
-          <button className="btn btn-secondary" onClick={loadConsentHistory} disabled={isLoadingConsent} style={{ padding: '6px 12px', fontSize: '12px' }}>
-            {isLoadingConsent ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-          </button>
-        </div>
-        <p className="text-sm text-muted" style={{ marginBottom: '16px' }}>
-          A record of what you've consented to and when — Gmail authorization, onboarding disclosures, and diagnostic bundle exports.
-        </p>
-
-        {isLoadingConsent ? (
-          <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Loading…</p>
-        ) : consentHistory.length === 0 ? (
-          <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>No consent events recorded yet.</p>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '280px', overflowY: 'auto' }}>
-            {consentHistory.map((event) => (
-              <div
-                key={event.id}
-                style={{
-                  padding: '10px 14px',
-                  borderRadius: '8px',
-                  background: 'var(--bg-secondary)',
-                  border: '1px solid var(--border)',
-                  fontSize: '12px',
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '12px' }}>
-                  <strong style={{ color: 'var(--text-primary)' }}>
-                    {event.event_type}
-                  </strong>
-                  <span style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
-                    {new Date(event.consented_at).toLocaleString()}
-                  </span>
-                </div>
-                <p style={{ color: 'var(--text-muted)', marginTop: '4px' }}>{event.disclosure_text}</p>
-                {event.withdrawn_at && (
-                  <p style={{ color: 'var(--text-muted)', marginTop: '4px', fontStyle: 'italic' }}>
-                    Withdrawn {new Date(event.withdrawn_at).toLocaleString()}
-                  </p>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      {/* ── Privacy & Consent History (TASK-FE-014) ──────────────────── */}
+      <PrivacySettings />
 
       {/* ── Pattern Rules (G14 fix) ───────────────────────────────────── */}
       <div className="glass-panel" style={{ padding: '24px' }}>
@@ -1136,129 +1014,31 @@ export default function Settings() {
         )}
       </div>
 
-      {/* ── Data & Privacy ─────────────────────────────────────────────── */}
-      <div
-        className="glass-panel"
-        style={{ padding: '24px', borderColor: 'rgba(239, 68, 68, 0.2)' }}
-      >
+      {/* ── Data Management ────────────────────────────────────────────── */}
+      {/* G4/J7 fix: Settings had no data export or restore-from-backup UI at
+          all. Diagnostic bundle export and the delete-my-data flow moved
+          into PrivacySettings (TASK-FE-014) above — this section keeps only
+          the full financial-data export/restore, which is distinct from
+          both. */}
+      <div className="glass-panel" style={{ padding: '24px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-          <ShieldAlert className="text-danger" size={24} color="#ef4444" />
-          <h3 className="heading-md" style={{ color: '#ef4444' }}>
-            Data &amp; Privacy
-          </h3>
+          <FileText className="text-accent" size={24} color="var(--accent-primary)" />
+          <h3 className="heading-md">Data Management</h3>
         </div>
         <p className="text-sm text-muted" style={{ marginBottom: '20px' }}>
-          Your data is encrypted and stored locally. You can completely wipe the
-          local database if you want to start fresh. This action cannot be
-          undone.
+          Export a full encrypted copy of your financial data, or restore from your most recent backup.
         </p>
-        {/* G4/J7 fix: Settings had no data export or restore-from-backup UI at all. */}
-        <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginBottom: '16px' }}>
+        <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
           <button className="btn btn-secondary" onClick={handleExportFullData} disabled={isExportingData}>
             <FileText size={18} />
             {isExportingData ? 'Exporting…' : 'Export My Data (Encrypted)'}
-          </button>
-          <button className="btn btn-secondary" onClick={handleExportData} disabled={isExporting}>
-            <FileText size={18} />
-            {isExporting ? 'Exporting…' : 'Export Diagnostic Data'}
           </button>
           <button className="btn btn-secondary" onClick={handleRestoreFromBackup} disabled={isRestoring}>
             <RefreshCw size={18} />
             {isRestoring ? 'Restoring…' : 'Restore from Backup'}
           </button>
         </div>
-        <button className="btn btn-danger" onClick={() => setResetModalOpen(true)}>
-          <HardDrive size={18} />
-          Reset Local Database
-        </button>
       </div>
-
-      {/* Reset Local Database — two-step typed-confirmation-phrase modal (C21) */}
-      <Dialog
-        open={resetModalOpen}
-        onOpenChange={(open) => {
-          if (!open && !isResetting) closeResetModal();
-        }}
-      >
-        <DialogContent
-          className="sm:max-w-[480px]"
-          aria-labelledby="reset-dialog-title"
-          aria-describedby="reset-dialog-desc"
-        >
-          {resetStep === 1 ? (
-            <>
-              <DialogHeader>
-                <DialogTitle id="reset-dialog-title" className="flex items-center gap-2 text-red-700">
-                  <AlertTriangle className="w-5 h-5" aria-hidden="true" />
-                  Reset Local Database
-                </DialogTitle>
-                <DialogDescription id="reset-dialog-desc" className="text-base pt-2">
-                  This permanently deletes, on this device:
-                </DialogDescription>
-              </DialogHeader>
-              <ul className="list-disc pl-5 space-y-1 text-sm text-muted-foreground">
-                <li>All transactions, statements, and instruments</li>
-                <li>All local database backups (daily and pre-migration)</li>
-                <li>Your connected Gmail account(s) and stored OAuth tokens</li>
-                <li>Your license/device binding (deactivated on the server)</li>
-                <li>Encryption keys stored in Keychain</li>
-              </ul>
-              <p className="text-sm font-medium text-red-700">This cannot be undone.</p>
-              <DialogFooter>
-                <Button variant="outline" onClick={closeResetModal} aria-label="Cancel database reset">
-                  Cancel
-                </Button>
-                <Button
-                  variant="destructive"
-                  onClick={() => setResetStep(2)}
-                  aria-label="I understand, continue to confirmation"
-                >
-                  I Understand, Continue
-                </Button>
-              </DialogFooter>
-            </>
-          ) : (
-            <>
-              <DialogHeader>
-                <DialogTitle id="reset-dialog-title" className="flex items-center gap-2 text-red-700">
-                  <AlertTriangle className="w-5 h-5" aria-hidden="true" />
-                  Confirm Reset
-                </DialogTitle>
-                <DialogDescription id="reset-dialog-desc">
-                  Type <strong>{RESET_CONFIRM_PHRASE}</strong> below to confirm. This is your last chance to cancel.
-                </DialogDescription>
-              </DialogHeader>
-              <div className="py-2 space-y-2">
-                <Label htmlFor="reset-confirm-text">Confirmation phrase</Label>
-                <Input
-                  id="reset-confirm-text"
-                  value={resetConfirmText}
-                  onChange={(e) => setResetConfirmText(e.target.value)}
-                  placeholder={RESET_CONFIRM_PHRASE}
-                  autoFocus
-                  aria-describedby="reset-confirm-hint"
-                />
-                <p id="reset-confirm-hint" className="text-xs text-muted-foreground">
-                  Must match exactly, including capitalization.
-                </p>
-              </div>
-              <DialogFooter>
-                <Button variant="outline" onClick={closeResetModal} disabled={isResetting} aria-label="Cancel database reset">
-                  Cancel
-                </Button>
-                <Button
-                  variant="destructive"
-                  onClick={handleConfirmReset}
-                  disabled={resetConfirmText !== RESET_CONFIRM_PHRASE || isResetting}
-                  aria-label="Permanently reset local database"
-                >
-                  {isResetting ? 'Resetting…' : 'Permanently Reset'}
-                </Button>
-              </DialogFooter>
-            </>
-          )}
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

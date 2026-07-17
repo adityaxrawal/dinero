@@ -295,6 +295,12 @@ const tauriMockInitScript = `
       window.__MOCK_STATE__.gmail_connected = true;
       return 'oauth_completed';
     }
+    if (cmd === 'auth_google_disconnect') {
+      // TASK-FE-014 fix: no mock existed at all -- RevokeGmailButton's real
+      // disconnect flow had never been driven through to completion.
+      window.__MOCK_STATE__.gmail_connected = false;
+      return undefined;
+    }
     if (cmd === 'statements_submit_password') {
       // TASK-FE-012 fix: real backend resolves (never throws) with a
       // {status, statement_id, attempts_remaining?} object for both
@@ -357,14 +363,52 @@ const tauriMockInitScript = `
       // in TRIAL, not ACTIVE.
       return { state: 'TRIAL', is_active: true, license_key_masked: null, plan_id: null, billing_interval: null, expiry_date: '2026-07-30T00:00:00Z', days_remaining: 14 };
     }
-    if (cmd === 'auth_get_consent_history') return [];
+    if (cmd === 'auth_get_consent_history') {
+      // TASK-FE-014: seeded with realistic data so ConsentHistoryList's
+      // happy path (not just its empty state) is exercised by default.
+      return window.__MOCK_STATE__.consent_history || [
+        { id: 'consent_1', event_type: 'gmail_authorization', disclosure_text: 'Read-only access to Gmail to scan for financial emails.', consented_at: '2026-06-01T10:00:00Z', withdrawn_at: null },
+        { id: 'consent_2', event_type: 'onboarding_network_disclosure', disclosure_text: 'Acknowledged the 5 outbound network destinations.', consented_at: '2026-06-01T09:58:00Z', withdrawn_at: null },
+      ];
+    }
     if (cmd === 'settings_pdf_passwords_list') return [];
     if (cmd === 'settings_pdf_passwords_delete') return undefined;
-    if (cmd === 'pattern_rule_set_status') return undefined;
+    if (cmd === 'settings_pattern_rules_list') {
+      // TASK-FE-014 fix: the real command is settings_pattern_rules_list
+      // (TASK-API-008), returning a bare array -- no mock existed at all
+      // (only the older debug-only debug_fetch_pattern_rule_health), so
+      // this always fell through to the {} unhandled-command fallback and
+      // Settings.tsx's patternRules.map(...) crashed with
+      // "patternRules.map is not a function", which an ErrorBoundary
+      // caught -- silently breaking the ENTIRE Settings page (not just the
+      // Pattern Rules section) in every e2e test that ever visited
+      // /#/settings, this whole session.
+      return window.__MOCK_STATE__.pattern_rules || [
+        { id: 'pat_1', merchant_id: 'Uber', pattern_type: 'regex', pattern_value: 'Uber.*', is_active: true, success_count: 50, failure_count: 0 },
+      ];
+    }
+    if (cmd === 'settings_pattern_rules_update') return undefined;
     if (cmd === 'record_consent_event') return undefined;
-    if (cmd === 'export_logs') return 'ok';
+    if (cmd === 'export_logs') {
+      // TASK-FE-014 fix: the real command resolves { success, file_path },
+      // not a bare string -- PrivacySettings' "Export Diagnostic Bundle"
+      // action reads result.file_path, which was always undefined against
+      // this mock.
+      return { success: true, file_path: '/Users/test/Library/Application Support/Dinero/diagnostic-bundle-2026-06-01.zip' };
+    }
     if (cmd === 'auth_get_recovery_phrase') return 'test test test test test test test test test test test ball';
-    if (cmd === 'settings_network_activity_list') return [];
+    if (cmd === 'settings_get_network_activity') {
+      // TASK-FE-014 fix: the real command is settings_get_network_activity,
+      // returning { entries: [...] } -- this mock was still on the stale
+      // pre-rename settings_network_activity_list name returning a bare
+      // array, so NetworkActivity.tsx's real call site always fell through
+      // to the {} unhandled-command fallback (whose .entries is undefined,
+      // crashing .then((r) => r.entries) into an unhandled rejection).
+      if (window.__MOCK_STATE__.network_activity_failure) {
+        throw { code: 'NETWORK_ERROR', message: 'Failed to fetch network activity.' };
+      }
+      return { entries: window.__MOCK_STATE__.network_activity || [] };
+    }
     if (cmd === 'plugin:dialog|message') {
       // TASK-FE-011 fix: no mock existed at all -- @tauri-apps/plugin-dialog's
       // ask()/confirm()/message() all route through this single IPC command.
