@@ -2191,6 +2191,37 @@ pub async fn settings_profile_update(
     Ok(serde_json::json!({ "status": "updated" }))
 }
 
+/// Doc 30 TASK-DESK-008: "toggleable in Settings." Not in Document 19's
+/// catalog (same precedent as several Area 8 additive commands).
+#[tauri::command]
+pub async fn settings_get_menu_bar_extra_enabled(
+    app: tauri::AppHandle,
+) -> Result<bool, crate::error::AppError> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e)))?;
+    Ok(crate::menu::status_item::read_menu_bar_extra_enabled(&dir))
+}
+
+/// Doc 30 TASK-DESK-008: toggling this immediately shows/hides the tray
+/// icon and applies (or reverts) the "Hide Dock icon" activation policy --
+/// no restart required.
+#[tauri::command]
+pub async fn settings_set_menu_bar_extra_enabled(
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<(), crate::error::AppError> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e)))?;
+    crate::menu::status_item::write_menu_bar_extra_enabled(&dir, enabled)
+        .map_err(|e| crate::error::AppError::Io(e.to_string()))?;
+    crate::menu::status_item::apply_menu_bar_extra_runtime_state(&app, enabled);
+    Ok(())
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct OnboardingPreferences {
     pub timezone: String,

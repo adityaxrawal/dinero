@@ -735,6 +735,12 @@ export const API = {
     // commands) -- installs whichever update the most recent check found.
     confirmInstall: () => invokeCommand<void>('updater_confirm_install'),
   },
+  menuBarExtra: {
+    // Doc 30 TASK-DESK-008: "toggleable in Settings."
+    getEnabled: () => invokeCommand<boolean>('settings_get_menu_bar_extra_enabled'),
+    setEnabled: (enabled: boolean) =>
+      invokeCommand<void>('settings_set_menu_bar_extra_enabled', { enabled }),
+  },
 };
 
 export interface LicenseStatusResponse {

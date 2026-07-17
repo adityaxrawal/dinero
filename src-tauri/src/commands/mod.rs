@@ -2574,6 +2574,8 @@ pub fn log_frontend_event(
 pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
     tauri::generate_handler![
         crate::updater::updater_confirm_install,
+        data::settings_get_menu_bar_extra_enabled,
+        data::settings_set_menu_bar_extra_enabled,
         auth_google_start,
         auth_logout,
         reconciliation_clusters_resolve,

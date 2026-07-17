@@ -730,6 +730,59 @@ pub fn run() {
             app.manage(crate::updater::PendingUpdate::default());
             crate::updater::spawn_update_check_loop(app.handle().clone());
 
+            // TASK-DESK-008: initialize the menu bar extra to match the
+            // persisted setting, then keep the Dock badge and (if enabled)
+            // the tray summary refreshed periodically. 30s, not instant --
+            // a Dock badge doesn't need sub-second latency, and this avoids
+            // needing to hook every single reconciliation-state-mutating
+            // call site individually (a fragile, easy-to-miss-one approach
+            // this run has repeatedly found bugs from elsewhere).
+            {
+                let menu_bar_extra_enabled =
+                    crate::menu::status_item::read_menu_bar_extra_enabled(&app_dir);
+                crate::menu::status_item::apply_menu_bar_extra_runtime_state(
+                    &app.handle().clone(),
+                    menu_bar_extra_enabled,
+                );
+
+                let pool_for_status = pool_clone.clone();
+                let app_handle_for_status = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        if let Ok(conn) = pool_for_status.get().await {
+                            let app_handle = app_handle_for_status.clone();
+                            let _ = conn
+                                .interact(move |c| {
+                                    let today = chrono::Utc::now().naive_utc().date();
+                                    let pending =
+                                        crate::commands::data::compute_unassigned_amount_pending_review(c)
+                                            .unwrap_or(crate::commands::data::PendingReviewMetric {
+                                                count: 0,
+                                                amount_minor: 0,
+                                            });
+                                    let month_spend = crate::commands::data::do_fetch_dashboard_summary(c)
+                                        .map(|s| s.month_to_date_spend)
+                                        .unwrap_or(0.0);
+                                    let upcoming_count =
+                                        crate::commands::data::do_fetch_upcoming_bills(c, &today)
+                                            .map(|bills| bills.len() as i64)
+                                            .unwrap_or(0);
+
+                                    crate::menu::status_item::update_dock_badge(&app_handle, pending.count);
+                                    crate::menu::status_item::update_tray_summary_if_present(
+                                        &app_handle,
+                                        month_spend,
+                                        pending.count,
+                                        upcoming_count,
+                                    );
+                                })
+                                .await;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(commands::get_handlers())

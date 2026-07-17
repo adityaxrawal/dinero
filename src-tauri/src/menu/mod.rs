@@ -16,6 +16,8 @@
 //! here. Keeping the spec free of any Tauri type means the acceptance tests
 //! can assert against it directly without ever constructing one.
 
+pub mod status_item;
+
 use tauri::menu::{Menu, MenuBuilder, MenuItem, Submenu, SubmenuBuilder};
 use tauri::{AppHandle, Manager, Runtime};
 
@@ -225,6 +227,14 @@ pub fn resolve_menu_action(id: &str) -> Option<MenuAction> {
         MENU_ID_DOCUMENTATION => Some(MenuAction::OpenUrl(DOCS_URL)),
         MENU_ID_REPORT_ISSUE => Some(MenuAction::ReportIssue),
         MENU_ID_PRIVACY_POLICY => Some(MenuAction::OpenUrl(PRIVACY_POLICY_URL)),
+        // TASK-DESK-008: the menu bar extra (status item)'s own dropdown
+        // menu shares this same global dispatch -- muda's menu-event system
+        // is global regardless of which menu (app menu bar or tray) an item
+        // belongs to, so no separate resolver is needed for it.
+        status_item::MENU_BAR_EXTRA_ID_OPEN_DASHBOARD => Some(MenuAction::Navigate("/")),
+        status_item::MENU_BAR_EXTRA_ID_OPEN_REVIEW_QUEUE => {
+            Some(MenuAction::Navigate("/reconciliation"))
+        }
         _ => None,
     }
 }

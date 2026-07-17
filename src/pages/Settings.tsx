@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import PrivacySettings from '../components/settings/PrivacySettings';
 import ConnectedAccountsSettings from '../components/settings/ConnectedAccountsSettings';
 import StatementPasswordSettings from '../components/settings/StatementPasswordSettings';
+import MenuBarExtraSettings from '../components/settings/MenuBarExtraSettings';
 
 import { useGlobalState } from '../lib/GlobalStateContext';
 
@@ -819,6 +820,9 @@ export default function Settings() {
 
       {/* ── Statement Passwords (TASK-FE-015) ─────────────────────────── */}
       <StatementPasswordSettings />
+
+      {/* ── Menu Bar Extra (TASK-DESK-008) ─────────────────────────────── */}
+      <MenuBarExtraSettings />
 
       {/* ── Data Management ────────────────────────────────────────────── */}
       {/* G4/J7 fix: Settings had no data export or restore-from-backup UI at
