@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Doc 30 TASK-DESK-009. Tauri merges this file with its own auto-generated
+  Info.plist (bundle identifier/version/category/minimum-OS-version are all
+  already configured directly in tauri.conf.json's `identifier`/`version`/
+  `bundle.category`/`bundle.macOS.minimumSystemVersion` fields -- no
+  override needed here for any of those).
+
+  Deliberately empty of CFBundleURLTypes: Document 30's own task text for
+  this task describes registering a custom URL scheme
+  (`dinero://oauth-callback`) for the OAuth PKCE redirect. That design is
+  explicitly superseded -- Document 22 (Security & Authentication Design)
+  §5 states plainly: "This is the authoritative, current design — the
+  local loopback listener model — per Document 16 §7 and Document 21
+  §2.1.2 ... [the deep-link callback] design is explicitly superseded and
+  must not be implemented." The real, already-implemented OAuth flow
+  (`ingestion::oauth`) binds a local `127.0.0.1:<ephemeral port>` HTTP
+  listener instead (confirmed directly in that module's source), which
+  needs no URL scheme, no Info.plist entry, and no entitlement at all.
+  Recorded here, in the one place a future engineer would look for this
+  exact omission, rather than silently leaving it unexplained.
+-->
+<plist version="1.0">
+<dict>
+</dict>
+</plist>

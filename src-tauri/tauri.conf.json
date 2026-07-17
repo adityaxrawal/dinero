@@ -39,6 +39,7 @@
   "bundle": {
     "active": true,
     "targets": ["app", "dmg"],
+    "category": "Finance",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -49,7 +50,8 @@
     "resources": ["binaries/*"],
     "macOS": {
       "entitlements": "Entitlements.plist",
-      "exceptionDomain": "api.dinero-app.com"
+      "exceptionDomain": "api.dinero-app.com",
+      "minimumSystemVersion": "10.13"
     }
   },
   "plugins": {
