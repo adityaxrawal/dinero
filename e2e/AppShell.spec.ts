@@ -56,7 +56,11 @@ test.describe('AppShell & Navigation - Rigorous Verification', () => {
 
   test('should display healthy core engine status', async ({ page }) => {
     await expect(page.locator('text=Core Engine')).toBeVisible();
-    await expect(page.locator('text=Connected')).toBeVisible();
+    // TASK-FE-017 fix: an unscoped `text=Connected` substring-matches the
+    // new StatementOnlyModeBanner's "Gmail sync isn't connected" copy too
+    // (shown by default since the fixture's gmail_connected starts false)
+    // — scope to the core-engine-status indicator specifically.
+    await expect(page.getByTestId('core-engine-status').getByText('Connected')).toBeVisible();
     // Validate visual indicator (e.g., green dot)
     await expect(page.locator('.bg-green-500').first()).toBeVisible();
   });

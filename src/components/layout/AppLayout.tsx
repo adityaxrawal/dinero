@@ -19,6 +19,7 @@ import { API } from '@/lib/ipc';
 import { useLicenseStore } from '@/stores/useLicenseStore';
 import LicenseLockOverlay from '@/components/licensing/LicenseLockOverlay';
 import GracePeriodBanner from '@/components/licensing/GracePeriodBanner';
+import StatementOnlyModeBanner from '@/components/shell/StatementOnlyModeBanner';
 
 // HMR trigger 3
 const CORRUPTION_EVENT = 'db_corrupted';
@@ -353,6 +354,7 @@ export default function AppLayout() {
 
         <div className="relative z-10 max-w-6xl mx-auto">
           <GracePeriodBanner />
+          <StatementOnlyModeBanner />
           {/* Per-route error boundary so one page crash doesn't kill the whole shell */}
           <ErrorBoundary>
             <Outlet />
