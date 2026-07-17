@@ -7,7 +7,7 @@
 
 use anyhow::Result;
 use regex::Regex;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
 
@@ -91,26 +91,31 @@ pub fn link_emi_installment(
 
     let group_id = compute_emi_group_id(instrument_id, merchant_normalized, original_amount, total);
 
-    // The earliest other member of this group, if any, is the parent
-    // (origination) transaction.
-    let parent_id: Option<String> = conn
-        .query_row(
-            "SELECT id FROM transactions \
-             WHERE emi_group_id = ?1 AND id != ?2 AND is_deleted = 0 \
-             ORDER BY best_event_time ASC LIMIT 1",
-            params![group_id, transaction_id],
-            |r| r.get(0),
-        )
-        .optional()?;
-
+    // Doc 30 TASK-TXN-012: parent-selection (the earliest other group
+    // member) and the link write are a single atomic statement -- a
+    // correlated subquery inside the same `UPDATE`, not a separate `SELECT`
+    // followed by a separate `UPDATE`. Two installment emails for the same
+    // EMI processed concurrently by two Transaction Queue workers could
+    // otherwise both `SELECT` before either `UPDATE` committed, both see
+    // zero existing group members, and both set `parent_transaction_id =
+    // NULL`. A single `UPDATE` has no such gap for another connection to
+    // interleave into, regardless of whether the caller itself is already
+    // inside a transaction. `COALESCE(subquery, parent_transaction_id)`
+    // preserves the original priority: prefer the freshly-computed parent
+    // if one is found, otherwise keep whatever was already linked.
     conn.execute(
         "UPDATE transactions SET
             emi_group_id = ?2,
             transaction_subtype = 'emi_installment',
-            parent_transaction_id = COALESCE(?3, parent_transaction_id),
+            parent_transaction_id = COALESCE(
+                (SELECT id FROM transactions t2
+                 WHERE t2.emi_group_id = ?2 AND t2.id != ?1 AND t2.is_deleted = 0
+                 ORDER BY t2.best_event_time ASC LIMIT 1),
+                parent_transaction_id
+            ),
             updated_at = CURRENT_TIMESTAMP
          WHERE id = ?1",
-        params![transaction_id, group_id, parent_id],
+        params![transaction_id, group_id],
     )?;
 
     Ok(())
@@ -127,6 +132,23 @@ pub fn link_emi_installment(
 pub struct EmiGroupSummary {
     pub installments_paid: i64,
     pub total_paid_minor: i64,
+    /// TASK-FE-010: `EmiInstallmentTimeline` needs a denominator to show
+    /// "3 of 12 paid" — resolved from the EMI detector's own parsed
+    /// `emi_total_installments` field on whichever observation(s) reported
+    /// it (Doc30 TASK-TXN-012's "EMI 3 of 12" phrasing), not carried on
+    /// `EmiGroupSummary` before this task since nothing consumed it yet.
+    pub total_installments: Option<i64>,
+    /// TASK-FE-010: the individual paid installments to actually render a
+    /// timeline with — the pre-existing `installments_paid`/`total_paid_minor`
+    /// aggregate alone can't draw "all installments," only a count and a sum.
+    pub installments: Vec<EmiInstallmentDetail>,
+}
+
+#[derive(serde::Serialize, Debug, PartialEq)]
+pub struct EmiInstallmentDetail {
+    pub transaction_id: String,
+    pub amount_minor: i64,
+    pub event_time: Option<chrono::NaiveDateTime>,
 }
 
 pub fn get_emi_group_summary(conn: &Connection, emi_group_id: &str) -> Result<EmiGroupSummary> {
@@ -136,9 +158,35 @@ pub fn get_emi_group_summary(conn: &Connection, emi_group_id: &str) -> Result<Em
         params![emi_group_id],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
+
+    let total_installments: Option<i64> = conn.query_row(
+        "SELECT MAX(o.emi_total_installments) FROM transaction_observations o \
+         JOIN transactions t ON t.id = o.canonical_transaction_id \
+         WHERE t.emi_group_id = ?1 AND o.is_deleted = 0",
+        params![emi_group_id],
+        |r| r.get::<_, Option<i64>>(0),
+    )?;
+
+    let mut stmt = conn.prepare(
+        "SELECT id, amount_minor, best_event_time FROM transactions \
+         WHERE emi_group_id = ?1 AND is_deleted = 0 ORDER BY best_event_time ASC",
+    )?;
+    let installments = stmt
+        .query_map(params![emi_group_id], |r| {
+            let amount_minor: Option<i64> = r.get(1)?;
+            Ok(EmiInstallmentDetail {
+                transaction_id: r.get(0)?,
+                amount_minor: amount_minor.unwrap_or(0),
+                event_time: r.get(2)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
     Ok(EmiGroupSummary {
         installments_paid: count,
         total_paid_minor: total,
+        total_installments,
+        installments,
     })
 }
 
@@ -245,5 +293,39 @@ mod tests {
 
         let group: Option<String> = conn.query_row("SELECT emi_group_id FROM transactions WHERE id = 'tx_1'", [], |r| r.get(0)).unwrap();
         assert_eq!(group, None);
+    }
+
+    /// TASK-FE-010 acceptance test: `EmiInstallmentTimeline` needs both a
+    /// denominator (`total_installments`, resolved from an observation's
+    /// parsed EMI phrasing) and the individual paid installments to render,
+    /// not just the pre-existing paid-count/sum aggregate.
+    #[test]
+    fn test_emi_group_summary_includes_total_installments_and_installment_list() {
+        let conn = setup_db();
+        insert_tx(&conn, "tx_1", "2026-01-15 10:00:00", 500000);
+        insert_tx(&conn, "tx_2", "2026-02-15 10:00:00", 500000);
+        link_emi_installment(&conn, "tx_1", "inst_1", Some("acme electronics"), Some(12), Some(6000000)).unwrap();
+        link_emi_installment(&conn, "tx_2", "inst_1", Some("acme electronics"), Some(12), Some(6000000)).unwrap();
+
+        // One of the two installments' source observation reported "3 of 12"
+        // -- the group-wide total should resolve from it even though only
+        // one observation carries it.
+        conn.execute(
+            "INSERT INTO transaction_observations (id, canonical_transaction_id, source_pipeline, emi_total_installments, is_deleted) \
+             VALUES ('obs_1', 'tx_2', 'gmail_transaction', 12, 0)",
+            [],
+        ).unwrap();
+
+        let group_id: String = conn.query_row("SELECT emi_group_id FROM transactions WHERE id = 'tx_1'", [], |r| r.get(0)).unwrap();
+        let summary = get_emi_group_summary(&conn, &group_id).unwrap();
+
+        assert_eq!(summary.installments_paid, 2);
+        assert_eq!(summary.total_paid_minor, 1_000_000);
+        assert_eq!(summary.total_installments, Some(12));
+        assert_eq!(summary.installments.len(), 2);
+        // Ordered by event time ascending.
+        assert_eq!(summary.installments[0].transaction_id, "tx_1");
+        assert_eq!(summary.installments[1].transaction_id, "tx_2");
+        assert_eq!(summary.installments[0].amount_minor, 500000);
     }
 }

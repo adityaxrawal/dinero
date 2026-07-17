@@ -22,6 +22,7 @@ export const queryKeys = {
     observations: (id: string) => ['transactions', 'observations', id] as const,
     tags: (id: string) => ['transactions', 'tags', id] as const,
     emiGroup: (emiGroupId: string) => ['transactions', 'emiGroup', emiGroupId] as const,
+    sourceLog: (id: string) => ['transactions', 'sourceLog', id] as const,
   },
   instruments: {
     all: () => ['instruments'] as const,

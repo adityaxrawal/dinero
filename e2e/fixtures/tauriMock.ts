@@ -92,6 +92,70 @@ const tauriMockInitScript = `
       return allTxns.filter((t) => t.merchant.toLowerCase().includes(query));
     }
     if (cmd === 'fetch_transaction_tags') return ['online'];
+    if (cmd === 'transactions_get') {
+      // TASK-FE-010 fix: no mock existed at all -- transactions_get had no
+      // real frontend call site until this task's detail page.
+      return {
+        transaction: {
+          id: args?.id || 'tx_1', unique_event_id: null, instrument_id: 'inst_1', instrument_type: 'credit_card',
+          direction: 'debit', amount: -1499.0, amount_minor: -149900, currency: 'INR',
+          authorization_time: '2026-06-10T14:32:00', best_event_time: '2026-06-10T14:32:00',
+          event_time_confidence: 'high', best_posting_date: null, posting_date_confidence: null,
+          merchant_display_name: 'Amazon Pay India', merchant_normalized_name: 'amazon pay india',
+          merchant_entity_id: null, reference_id: null, location: null, original_amount_minor: null,
+          original_currency: null, exchange_rate: null, balance_after_transaction: null, status: 'POSTED',
+          match_confidence: 'high', source_mix: 'merged', alert_fired: false, parent_transaction_id: null,
+          transaction_subtype: null, emi_group_id: null, category_id: 'SHOPPING', is_deleted: false,
+          created_at: '2026-06-10T14:32:00', updated_at: '2026-06-10T14:32:00', notes: null,
+        },
+        observations: [
+          {
+            id: 'obs_1', canonical_transaction_id: args?.id || 'tx_1', source_pipeline: 'gmail_transaction',
+            source_record_id: null, source_message_id: 'msg_1', source_thread_id: null, statement_id: null,
+            statement_entry_id: null, instrument_id: 'inst_1', direction: 'debit', amount: -1499.0,
+            amount_minor: -149900, currency: 'INR', event_time: '2026-06-10T14:32:00', event_time_confidence: 'high',
+            posting_date: null, merchant_raw: 'AMAZON PAY INDIA', merchant_normalized: 'amazon pay india',
+            reference_id: null, original_amount_minor: null, original_currency: null, exchange_rate: null,
+            balance_after_transaction: null, timezone_at_ingestion: 'Asia/Kolkata', fingerprint: 'fp_1',
+            extraction_method: 'layer2_template', confidence_score: 0.95, raw_payload_json: null,
+            parser_version: 'v1', emi_total_installments: null, emi_installment_number: null,
+            emi_original_amount_minor: null, is_deleted: false, created_at: '2026-06-10T14:32:00', updated_at: '2026-06-10T14:32:00',
+          },
+        ],
+        match_decisions: [],
+      };
+    }
+    if (cmd === 'fetch_transaction_observations') {
+      return [
+        {
+          id: 'obs_1', canonical_transaction_id: args?.transactionId || 'tx_1', source_pipeline: 'gmail_transaction',
+          source_record_id: null, source_message_id: 'msg_1', source_thread_id: null, statement_id: null,
+          statement_entry_id: null, instrument_id: 'inst_1', direction: 'debit', amount: -1499.0,
+          amount_minor: -149900, currency: 'INR', event_time: '2026-06-10T14:32:00', event_time_confidence: 'high',
+          posting_date: null, merchant_raw: 'AMAZON PAY INDIA', merchant_normalized: 'amazon pay india',
+          reference_id: null, original_amount_minor: null, original_currency: null, exchange_rate: null,
+          balance_after_transaction: null, timezone_at_ingestion: 'Asia/Kolkata', fingerprint: 'fp_1',
+          extraction_method: 'layer2_template', confidence_score: 0.95, raw_payload_json: null,
+          parser_version: 'v1', emi_total_installments: null, emi_installment_number: null,
+          emi_original_amount_minor: null, is_deleted: false, created_at: '2026-06-10T14:32:00', updated_at: '2026-06-10T14:32:00',
+        },
+      ];
+    }
+    if (cmd === 'transactions_get_emi_group') {
+      return {
+        installments_paid: 3,
+        total_paid_minor: 1500000,
+        total_installments: 12,
+        installments: [
+          { transaction_id: 'tx_1', amount_minor: 500000, event_time: '2026-04-15T10:00:00' },
+          { transaction_id: 'tx_2', amount_minor: 500000, event_time: '2026-05-15T10:00:00' },
+          { transaction_id: 'tx_3', amount_minor: 500000, event_time: '2026-06-15T10:00:00' },
+        ],
+      };
+    }
+    if (cmd === 'fetch_transaction_source_log') {
+      return JSON.stringify({ subject: 'Your Amazon Pay transaction', from: 'alerts@amazon.in' });
+    }
     // Pre-existing gap (found during the G20/H10/J8 rename): unmocked, so
     // availableTags resolved to the default '{}' fallback instead of an
     // array, crashing the detail panel's tag autocomplete

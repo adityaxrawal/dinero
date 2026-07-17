@@ -15,9 +15,7 @@ test.describe('Transactions List & Detail', () => {
   test('should navigate to the transaction detail page when a row is clicked, and back again', async ({ page }) => {
     // TASK-FE-009: Doc30 splits List (this page) and Detail into separate
     // routes/tasks -- a row click now navigates to /transactions/:id instead
-    // of opening an inline drawer. Full detail-page content assertions
-    // (editable fields, tags, evidence panel) move to TASK-FE-010, which
-    // replaces the current minimal placeholder route.
+    // of opening an inline drawer.
     const firstRow = page.locator('tbody tr').first();
     await expect(firstRow).toBeVisible();
     await firstRow.click();
@@ -28,6 +26,29 @@ test.describe('Transactions List & Detail', () => {
     await page.click('button:has-text("Back")');
     await expect(page).toHaveURL(/\/transactions$/);
     await expect(page.locator('h1:has-text("Transactions")')).toBeVisible();
+  });
+
+  test('detail page: edit and save corrections shows the feedback-log confirmation', async ({ page }) => {
+    // TASK-FE-010
+    await page.locator('tbody tr').first().click();
+    await expect(page).toHaveURL(/\/transactions\/.+/);
+
+    const merchantInput = page.locator('#merchant-name');
+    await expect(merchantInput).toBeVisible();
+    await merchantInput.fill('Amazon Pay India (corrected)');
+
+    await page.click('button:has-text("Save Corrections")');
+    await expect(page.locator('text="Thanks, we\'ll remember this."')).toBeVisible();
+  });
+
+  test('detail page: renders source evidence and view-source dialog', async ({ page }) => {
+    // TASK-FE-010
+    await page.locator('tbody tr').first().click();
+    await expect(page).toHaveURL(/\/transactions\/.+/);
+
+    await expect(page.locator('text="Source Evidence"')).toBeVisible();
+    await page.click('button:has-text("View Raw Source")');
+    await expect(page.locator('text="Transaction Source Data"')).toBeVisible();
   });
 
   test('should filter transactions based on search query', async ({ page }) => {

@@ -73,6 +73,116 @@ export interface PendingReviewMetric {
   amount_minor: number;
 }
 
+// TASK-FE-010: matches src-tauri's TransactionsRow/TransactionObservationsRow/
+// MatchDecisionsRow/TransactionDetail/EmiGroupSummary exactly (transactions_get
+// and transactions_get_emi_group's real response shapes — was typed `any`
+// before this task, with no frontend consumer to have caught a mismatch).
+export interface CanonicalTransaction {
+  id: string;
+  unique_event_id: string | null;
+  instrument_id: string | null;
+  instrument_type: string | null;
+  direction: string | null;
+  amount: number | null;
+  amount_minor: number | null;
+  currency: string | null;
+  authorization_time: string | null;
+  best_event_time: string | null;
+  event_time_confidence: string | null;
+  best_posting_date: string | null;
+  posting_date_confidence: string | null;
+  merchant_display_name: string | null;
+  merchant_normalized_name: string | null;
+  merchant_entity_id: string | null;
+  reference_id: string | null;
+  location: string | null;
+  original_amount_minor: number | null;
+  original_currency: string | null;
+  exchange_rate: number | null;
+  balance_after_transaction: number | null;
+  status: string | null;
+  match_confidence: string | null;
+  source_mix: string | null;
+  alert_fired: boolean | null;
+  parent_transaction_id: string | null;
+  transaction_subtype: string | null;
+  emi_group_id: string | null;
+  category_id: string | null;
+  is_deleted: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+  notes: string | null;
+}
+
+export interface TransactionObservation {
+  id: string;
+  canonical_transaction_id: string | null;
+  source_pipeline: string | null;
+  source_record_id: string | null;
+  source_message_id: string | null;
+  source_thread_id: string | null;
+  statement_id: string | null;
+  statement_entry_id: string | null;
+  instrument_id: string | null;
+  direction: string | null;
+  amount: number | null;
+  amount_minor: number | null;
+  currency: string | null;
+  event_time: string | null;
+  event_time_confidence: string | null;
+  posting_date: string | null;
+  merchant_raw: string | null;
+  merchant_normalized: string | null;
+  reference_id: string | null;
+  original_amount_minor: number | null;
+  original_currency: string | null;
+  exchange_rate: number | null;
+  balance_after_transaction: number | null;
+  timezone_at_ingestion: string | null;
+  fingerprint: string | null;
+  extraction_method: string | null;
+  confidence_score: number | null;
+  raw_payload_json: string | null;
+  parser_version: string | null;
+  emi_total_installments: number | null;
+  emi_installment_number: number | null;
+  emi_original_amount_minor: number | null;
+  is_deleted: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface MatchDecision {
+  id: string;
+  observation_id: string | null;
+  matched_transaction_id: string | null;
+  decision: string | null;
+  score: number | null;
+  rules_triggered_json: string | null;
+  review_status: string | null;
+  reviewed_by: string | null;
+  created_at: string | null;
+}
+
+export interface TransactionDetailResponse {
+  transaction: CanonicalTransaction;
+  observations: TransactionObservation[];
+  match_decisions: MatchDecision[];
+}
+
+export interface EmiInstallmentDetail {
+  transaction_id: string;
+  amount_minor: number;
+  event_time: string | null;
+}
+
+export interface EmiGroupSummary {
+  installments_paid: number;
+  total_paid_minor: number;
+  total_installments: number | null;
+  installments: EmiInstallmentDetail[];
+}
+
 export interface CategoryRecord {
   id: string;
   parent_id: string | null;
@@ -273,8 +383,9 @@ export const API = {
           tags: updates.tags,
         },
       }),
-    get: (id: string) => invokeCommand<any>('transactions_get', { id }),
-    getObservations: (id: string) => invokeCommand<any[]>('fetch_transaction_observations', { transactionId: id }),
+    get: (id: string) => invokeCommand<TransactionDetailResponse>('transactions_get', { id }),
+    getObservations: (id: string) =>
+      invokeCommand<TransactionObservation[]>('fetch_transaction_observations', { transactionId: id }),
     getSourceLog: (id: string) => invokeCommand<string>('fetch_transaction_source_log', { transactionId: id }),
     // G13 fix: the tag names currently on a transaction (relational, not free-text).
     getTags: (id: string) => invokeCommand<string[]>('fetch_transaction_tags', { transactionId: id }),
@@ -283,7 +394,7 @@ export const API = {
     removeTag: (transactionId: string, tagId: string) =>
       invokeCommand<string>('transactions_remove_tag', { transactionId, tagId }),
     getEmiGroup: (emiGroupId: string) =>
-      invokeCommand<{ installments_paid: number; total_paid_minor: number }>('transactions_get_emi_group', { emiGroupId }),
+      invokeCommand<EmiGroupSummary>('transactions_get_emi_group', { emiGroupId }),
   },
   tags: {
     // G13 fix: the full reusable-tag catalog, for autocomplete.
