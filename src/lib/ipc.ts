@@ -741,6 +741,23 @@ export const API = {
     setEnabled: (enabled: boolean) =>
       invokeCommand<void>('settings_set_menu_bar_extra_enabled', { enabled }),
   },
+  lifecycle: {
+    // Doc 30 TASK-DESK-010: "Launch at Login" (real macOS Launch Agent).
+    getLaunchAtLogin: () => invokeCommand<boolean>('settings_get_launch_at_login'),
+    setLaunchAtLogin: (enabled: boolean) =>
+      invokeCommand<void>('settings_set_launch_at_login', { enabled }),
+    // Doc 30 TASK-DESK-010: "Continue syncing when app is closed."
+    getBackgroundSyncEnabled: () => invokeCommand<boolean>('settings_get_background_sync_enabled'),
+    setBackgroundSyncEnabled: (enabled: boolean) =>
+      invokeCommand<void>('settings_set_background_sync_enabled', { enabled }),
+    // Doc 30 TASK-DESK-010: "a configurable charge threshold."
+    getLowBatteryPollThresholdPercent: () =>
+      invokeCommand<number>('settings_get_low_battery_poll_threshold_percent'),
+    setLowBatteryPollThresholdPercent: (thresholdPercent: number) =>
+      invokeCommand<void>('settings_set_low_battery_poll_threshold_percent', {
+        thresholdPercent,
+      }),
+  },
 };
 
 export interface LicenseStatusResponse {

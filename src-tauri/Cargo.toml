@@ -69,6 +69,8 @@ bip39 = "2"
 hex = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 sqlx = { version = "0.9.0", features = ["sqlite", "migrate", "runtime-tokio"] }
+tauri-plugin-autostart = "2"
+battery = "0.7"
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }

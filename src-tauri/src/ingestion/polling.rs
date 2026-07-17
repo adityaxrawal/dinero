@@ -51,7 +51,12 @@ fn jittered(d: Duration) -> Duration {
     Duration::from_secs_f64((d.as_secs_f64() * factor).max(0.0)).min(Duration::from_secs(60))
 }
 
-/// Background task that polls Gmail for new history events every 60 seconds.
+/// Background task that polls Gmail for new history events, normally every
+/// 60 seconds. TASK-DESK-010: this interval is throttled to 5 minutes while
+/// operating in background-only mode ("continue syncing when closed") on
+/// battery power below the configured threshold -- see
+/// `lifecycle::launch_agent::PollingIntervalState`, refreshed independently
+/// of this loop's own cycle.
 pub async fn start_polling_loop<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     pool: Pool,
@@ -60,12 +65,16 @@ pub async fn start_polling_loop<R: tauri::Runtime>(
     tracing::info!("Starting Gmail smart polling loop...");
 
     loop {
+        let interval_secs = app
+            .try_state::<crate::lifecycle::launch_agent::PollingIntervalState>()
+            .map(|s| s.load_secs())
+            .unwrap_or(60);
         tokio::select! {
             _ = cancel_token.cancelled() => {
                 tracing::info!("Polling loop cancelled.");
                 break;
             }
-            _ = sleep(Duration::from_secs(60)) => {
+            _ = sleep(Duration::from_secs(interval_secs)) => {
                 let paused = crate::commands::debug::GMAIL_POLL_PAUSED.load(std::sync::atomic::Ordering::Relaxed);
                 if paused {
                     tracing::info!("Gmail polling is currently paused. Skipping cycle.");
@@ -263,7 +272,7 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
 
         let response = loop {
             let builder = network.client().get(&url).bearer_auth(&token);
-            let resp = network.execute(builder).await;
+            let resp = network.execute("gmail_api", builder).await;
 
             match resp {
                 Ok(res) => {

@@ -2222,6 +2222,86 @@ pub async fn settings_set_menu_bar_extra_enabled(
     Ok(())
 }
 
+/// Doc 30 TASK-DESK-010: "Launch at Login" via `tauri_plugin_autostart`
+/// (`SMAppService`/Launch Agent-backed on macOS). Reads the plugin's own
+/// state directly -- the real Launch Agent registration is the source of
+/// truth, not a separate marker file that could drift from it.
+#[tauri::command]
+pub async fn settings_get_launch_at_login(
+    app: tauri::AppHandle,
+) -> Result<bool, crate::error::AppError> {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch()
+        .is_enabled()
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn settings_set_launch_at_login(
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<(), crate::error::AppError> {
+    let controller = crate::lifecycle::launch_agent::TauriAutoLaunchController::new(&app);
+    crate::lifecycle::launch_agent::apply_launch_at_login(&controller, enabled)
+        .map_err(crate::error::AppError::Unknown)
+}
+
+/// Doc 30 TASK-DESK-010: "Continue syncing when app is closed." Enabled
+/// keeps the process running (window hidden, Dock icon hidden) after the
+/// window's close button is used, so Gmail polling continues; disabled
+/// (the default) fully quits on window close.
+#[tauri::command]
+pub async fn settings_get_background_sync_enabled(
+    app: tauri::AppHandle,
+) -> Result<bool, crate::error::AppError> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e)))?;
+    Ok(crate::lifecycle::launch_agent::read_background_sync_enabled(&dir))
+}
+
+#[tauri::command]
+pub async fn settings_set_background_sync_enabled(
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<(), crate::error::AppError> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e)))?;
+    crate::lifecycle::launch_agent::write_background_sync_enabled(&dir, enabled)
+        .map_err(|e| crate::error::AppError::Io(e.to_string()))?;
+    Ok(())
+}
+
+/// Doc 30 TASK-DESK-010: "a configurable charge threshold" below which
+/// background-only-mode polling throttles to every 5 minutes.
+#[tauri::command]
+pub async fn settings_get_low_battery_poll_threshold_percent(
+    app: tauri::AppHandle,
+) -> Result<f32, crate::error::AppError> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e)))?;
+    Ok(crate::lifecycle::launch_agent::read_low_battery_threshold_percent(&dir))
+}
+
+#[tauri::command]
+pub async fn settings_set_low_battery_poll_threshold_percent(
+    app: tauri::AppHandle,
+    threshold_percent: f32,
+) -> Result<(), crate::error::AppError> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e)))?;
+    crate::lifecycle::launch_agent::write_low_battery_threshold_percent(&dir, threshold_percent)
+        .map_err(|e| crate::error::AppError::Io(e.to_string()))?;
+    Ok(())
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct OnboardingPreferences {
     pub timezone: String,

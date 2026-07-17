@@ -11,6 +11,7 @@ pub mod ingestion;
 pub mod integrity;
 pub mod ipc;
 pub mod licensing;
+pub mod lifecycle;
 pub mod llm_manager;
 pub mod menu;
 pub mod network_client;
@@ -147,6 +148,40 @@ pub fn run() {
         // dialog-selected statement PDF so `statements_upload` can be sent
         // real file content, matching Document 19 §9.1's actual contract.
         .plugin(tauri_plugin_fs::init())
+        // TASK-DESK-010: "Launch at Login" -- a real macOS Launch Agent
+        // (not a mere app-side preference), registered/removed via this
+        // plugin only in response to an explicit user toggle.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
+        // TASK-DESK-010: "Continue syncing when app is closed." Disabled by
+        // default (`read_background_sync_enabled` defaults to `false`), the
+        // window's close ("red traffic light") button quits the process
+        // normally -- Tauri's own default when the last window closes.
+        // Enabled, the close is intercepted (hidden + Dock icon hidden)
+        // instead, keeping the already-independent background workers
+        // (polling/queues/reconciliation) running. The Quit menu/tray items
+        // bypass this entirely (`AppHandle::exit`, no `CloseRequested`).
+        .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let app_dir = window
+                    .app_handle()
+                    .path()
+                    .app_data_dir()
+                    .unwrap_or_else(|_| PathBuf::from(".dinero"));
+                let background_sync_enabled =
+                    crate::lifecycle::launch_agent::read_background_sync_enabled(&app_dir);
+                crate::lifecycle::launch_agent::handle_main_window_close_requested(
+                    window,
+                    api,
+                    background_sync_enabled,
+                );
+            }
+        })
         .setup(|app| {
             // TASK-DESK-001: the native macOS application menu bar. Built and
             // attached before anything else so a working Quit item exists
@@ -492,6 +527,20 @@ pub fn run() {
             let app_handle_for_polling = app.handle().clone();
             let cancel_token = tokio_util::sync::CancellationToken::new();
             app.manage(cancel_token.clone());
+
+            // TASK-DESK-010: the battery-aware polling-interval policy this
+            // task frames as the resolution to Document 16 §20 OQ-01 --
+            // shared state the polling loop below reads every cycle.
+            app.manage(crate::lifecycle::launch_agent::PollingIntervalState::default());
+            let app_handle_for_battery_loop = app.handle().clone();
+            let cancel_token_for_battery_loop = cancel_token.clone();
+            tauri::async_runtime::spawn(async move {
+                crate::lifecycle::launch_agent::run_battery_aware_polling_interval_loop(
+                    app_handle_for_battery_loop,
+                    cancel_token_for_battery_loop,
+                )
+                .await;
+            });
 
             tauri::async_runtime::spawn(async move {
                 crate::ingestion::polling::start_polling_loop(

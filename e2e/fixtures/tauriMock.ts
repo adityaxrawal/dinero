@@ -450,6 +450,16 @@ const tauriMockInitScript = `
     }
     if (cmd === 'settings_pattern_rules_update') return undefined;
     if (cmd === 'record_consent_event') return undefined;
+    // TASK-DESK-010: without explicit stubs, the generic `{}` fallback
+    // below would make LifecycleSettings' `backgroundSync &&` conditional
+    // render truthy with a non-boolean value -- explicit booleans/number
+    // here instead, matching this file's established explicit-stub pattern.
+    if (cmd === 'settings_get_launch_at_login') return false;
+    if (cmd === 'settings_set_launch_at_login') return undefined;
+    if (cmd === 'settings_get_background_sync_enabled') return false;
+    if (cmd === 'settings_set_background_sync_enabled') return undefined;
+    if (cmd === 'settings_get_low_battery_poll_threshold_percent') return 20;
+    if (cmd === 'settings_set_low_battery_poll_threshold_percent') return undefined;
     if (cmd === 'export_logs') {
       // TASK-FE-014 fix: the real command resolves { success, file_path },
       // not a bare string -- PrivacySettings' "Export Diagnostic Bundle"
