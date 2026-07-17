@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Download Dinero</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      max-width: 32rem;
+      margin: 4rem auto;
+      padding: 0 1.5rem;
+      line-height: 1.6;
+      color: #1a1a1a;
+      background: #ffffff;
+    }
+    @media (prefers-color-scheme: dark) {
+      body {
+        color: #e8e8e8;
+        background: #14161a;
+      }
+      .requirements {
+        background: #1e2126;
+        border-color: #333;
+      }
+      a.download-button {
+        background: #2563eb;
+        color: #fff;
+      }
+    }
+    h1 {
+      font-size: 1.75rem;
+      margin-bottom: 0.25rem;
+    }
+    p.tagline {
+      color: #6b7280;
+      margin-top: 0;
+    }
+    a.download-button {
+      display: inline-block;
+      background: #2563eb;
+      color: #fff;
+      text-decoration: none;
+      padding: 0.75rem 1.5rem;
+      border-radius: 0.5rem;
+      font-weight: 600;
+      margin: 1.5rem 0;
+    }
+    .requirements {
+      background: #f3f4f6;
+      border: 1px solid #e5e7eb;
+      border-radius: 0.5rem;
+      padding: 1rem 1.25rem;
+      font-size: 0.9rem;
+    }
+  </style>
+</head>
+<body>
+  <!--
+    Doc 30 TASK-DESK-007: minimal static landing page for first-time
+    installs arriving outside the auto-update flow (an existing install
+    checking for updates goes through TASK-DESK-005's in-app flow
+    instead, never this page). Deliberately unstyled beyond basic
+    legibility -- Document 14 §11's brand assets (logo, wordmark) are
+    still an open question; this page intentionally doesn't invent a
+    "final" look ahead of that decision. See docs/release-checklist.md
+    item 4 for hosting/deployment scope.
+  -->
+  <h1>Dinero</h1>
+  <p class="tagline">A privacy-first financial tracker for macOS. Your data never leaves your Mac.</p>
+
+  <a class="download-button" href="https://github.com/dinero-app/dinero-app/releases/latest">
+    Download for macOS
+  </a>
+
+  <div class="requirements">
+    <strong>System requirements:</strong> macOS 10.13 or later, Apple
+    Silicon or Intel. The download is a notarized <code>.dmg</code> —
+    macOS Gatekeeper will verify it automatically on first launch.
+  </div>
+
+  <p>
+    Already have Dinero installed? It checks for updates automatically —
+    you don't need to download it again from here.
+  </p>
+</body>
+</html>
