@@ -59,6 +59,7 @@ mod unassigned_transactions_tests;
 pub mod unprocessed_statements;
 #[cfg(test)]
 mod unprocessed_statements_tests;
+pub mod unresolved_mandate_cancellations;
 
 use anyhow::{Context, Result};
 use deadpool_sqlite::{Config, Pool, Runtime};
@@ -72,7 +73,7 @@ use tracing::{error, info, warn};
 pub enum DbInitError {
     /// The on-disk database file cannot be decrypted with the current key.
     /// This happens when the macOS Keychain entry is deleted/rotated while a
-    /// previously-encrypted `data.db` still exists on disk.  The caller should
+    /// previously-encrypted `finance.db` still exists on disk.  The caller should
     /// surface a user-facing dialog and exit cleanly rather than panic.
     #[error(
         "The local database cannot be opened — the encryption key no longer matches. \
@@ -150,7 +151,7 @@ fn is_keychain_access_denied(msg: &str) -> bool {
 /// and returns a connection pool.
 ///
 /// Returns `DbInitError::KeyMismatch` (rather than panicking) when the
-/// existing on-disk `data.db` cannot be decrypted with the current key.
+/// existing on-disk `finance.db` cannot be decrypted with the current key.
 pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
     // 1. Get or derive the SQLite encryption key
     let db_key = crypto::derive_database_key().map_err(|e| {
@@ -198,6 +199,7 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
                         PRAGMA synchronous = NORMAL;
                         PRAGMA foreign_keys = ON;
                         PRAGMA auto_vacuum = INCREMENTAL;
+                        PRAGMA busy_timeout = 5000;
                         ",
                     )?;
                     // SQLCipher's own header/salt write on `PRAGMA key` means
@@ -260,7 +262,7 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
                 }
                 Ok(false) => {
                     error!(
-                        "DB key mismatch: existing data.db cannot be decrypted with the current Keychain \
+                        "DB key mismatch: existing finance.db cannot be decrypted with the current Keychain \
                         key, and no hardware-UUID migration marker applies. The Keychain entry was likely \
                         cleared. Error: {}",
                         msg
