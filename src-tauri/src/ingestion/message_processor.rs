@@ -1,5 +1,4 @@
 use crate::db::audit_log::{self, AuditLogRow};
-use tokio::io::AsyncWriteExt;
 use crate::ingestion::content_classifier::{ContentClass, ContentClassifier};
 use crate::ingestion::gmail_client::{FetchFormat, GmailClient, Message};
 use crate::ingestion::mime_sanitization::{extract_body_and_attachments, ExtractedMessage};
@@ -9,7 +8,14 @@ use chrono::Utc;
 use deadpool_sqlite::Pool;
 use serde_json::json;
 use std::sync::OnceLock;
+use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MandateEventType {
+    Registration,
+    Cancellation,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProcessResult {
@@ -18,6 +24,11 @@ pub enum ProcessResult {
         Box<crate::extraction::ladder::ExtractionResult>,
     ),
     StatementEmail(ExtractedMessage),
+    MandateEvent(
+        ExtractedMessage,
+        crate::extraction::mandate_extractor::MandateExtraction,
+        MandateEventType,
+    ),
 }
 
 pub struct MessageProcessor;
@@ -53,7 +64,14 @@ impl MessageProcessor {
             }
             SenderVerificationResult::VerifiedNoise => {
                 crate::ingestion::gmail_telemetry::gmail_telemetry().record_gate_rejection("gate1");
-                Self::append_to_scan_log(message_id, "REJECTED", "gate1_verified_noise", Some(&serde_json::to_value(&metadata_msg).unwrap_or_default()), None).await;
+                Self::append_to_scan_log(
+                    message_id,
+                    "REJECTED",
+                    "gate1_verified_noise",
+                    Some(&serde_json::to_value(&metadata_msg).unwrap_or_default()),
+                    None,
+                )
+                .await;
                 return Ok(None);
             }
             SenderVerificationResult::UnverifiedReject(reason)
@@ -61,7 +79,14 @@ impl MessageProcessor {
                 // Log to audit log and return None
                 crate::ingestion::gmail_telemetry::gmail_telemetry().record_gate_rejection("gate1");
                 Self::log_rejection(pool, message_id, &reason).await?;
-                Self::append_to_scan_log(message_id, "REJECTED", &reason, Some(&serde_json::to_value(&metadata_msg).unwrap_or_default()), None).await;
+                Self::append_to_scan_log(
+                    message_id,
+                    "REJECTED",
+                    &reason,
+                    Some(&serde_json::to_value(&metadata_msg).unwrap_or_default()),
+                    None,
+                )
+                .await;
                 return Ok(None);
             }
         };
@@ -95,32 +120,87 @@ impl MessageProcessor {
                 | ContentClass::Marketing
                 | ContentClass::Kyc
                 | ContentClass::Reminder => {
-                    crate::ingestion::gmail_telemetry::gmail_telemetry().record_gate_rejection("gate2");
+                    crate::ingestion::gmail_telemetry::gmail_telemetry()
+                        .record_gate_rejection("gate2");
                     let reason = format!("gate2_reject_{:?}", content_class);
-                    Self::log_rejection(
-                        pool,
+                    Self::log_rejection(pool, message_id, &reason).await?;
+                    Self::append_to_scan_log(
                         message_id,
+                        "REJECTED",
                         &reason,
+                        Some(&serde_json::to_value(&full_msg).unwrap_or_default()),
+                        Some(body_text),
                     )
-                    .await?;
-                    Self::append_to_scan_log(message_id, "REJECTED", &reason, Some(&serde_json::to_value(&full_msg).unwrap_or_default()), Some(body_text)).await;
+                    .await;
                     return Ok(None);
                 }
                 ContentClass::Noise | ContentClass::Unknown => {
-                    crate::ingestion::gmail_telemetry::gmail_telemetry().record_gate_rejection("gate2");
+                    crate::ingestion::gmail_telemetry::gmail_telemetry()
+                        .record_gate_rejection("gate2");
                     let reason = format!("gate2_reject_{:?}", content_class);
-                    Self::log_rejection(
-                        pool,
+                    Self::log_rejection(pool, message_id, &reason).await?;
+                    Self::append_to_scan_log(
                         message_id,
+                        "REJECTED",
                         &reason,
+                        Some(&serde_json::to_value(&full_msg).unwrap_or_default()),
+                        Some(body_text),
                     )
-                    .await?;
-                    Self::append_to_scan_log(message_id, "REJECTED", &reason, Some(&serde_json::to_value(&full_msg).unwrap_or_default()), Some(body_text)).await;
+                    .await;
                     return Ok(None);
                 }
                 ContentClass::StatementEmail => {
-                    Self::append_to_scan_log(message_id, "SELECTED", "statement_email", Some(&serde_json::to_value(&full_msg).unwrap_or_default()), Some(body_text)).await;
+                    Self::append_to_scan_log(
+                        message_id,
+                        "SELECTED",
+                        "statement_email",
+                        Some(&serde_json::to_value(&full_msg).unwrap_or_default()),
+                        Some(body_text),
+                    )
+                    .await;
                     return Ok(Some(ProcessResult::StatementEmail(extracted)));
+                }
+                ContentClass::MandateRegistration | ContentClass::MandateCancellation => {
+                    // Mandate Queue routing
+                    // (docs/superpowers/specs/2026-07-18-mandate-tracking-design.md §4.1/§4.3).
+                    let event_type = if content_class == ContentClass::MandateRegistration {
+                        MandateEventType::Registration
+                    } else {
+                        MandateEventType::Cancellation
+                    };
+                    match crate::extraction::mandate_extractor::extract_mandate_fields(
+                        &current_bank_name,
+                        body_text,
+                    ) {
+                        Some(extraction) => {
+                            Self::append_to_scan_log(
+                                message_id,
+                                "SELECTED",
+                                "mandate_event",
+                                Some(&serde_json::to_value(&full_msg).unwrap_or_default()),
+                                Some(body_text),
+                            )
+                            .await;
+                            return Ok(Some(ProcessResult::MandateEvent(
+                                extracted, extraction, event_type,
+                            )));
+                        }
+                        None => {
+                            crate::ingestion::gmail_telemetry::gmail_telemetry()
+                                .record_gate_rejection("gate3");
+                            Self::log_rejection(pool, message_id, "mandate_missing_merchant")
+                                .await?;
+                            Self::append_to_scan_log(
+                                message_id,
+                                "REJECTED",
+                                "mandate_missing_merchant",
+                                Some(&serde_json::to_value(&full_msg).unwrap_or_default()),
+                                Some(body_text),
+                            )
+                            .await;
+                            return Ok(None);
+                        }
+                    }
                 }
                 ContentClass::TransactionAlert | ContentClass::BalanceUpdate => {
                     // GATE 3: Extraction and Mandatory Field Gate
@@ -128,7 +208,8 @@ impl MessageProcessor {
                     // search window needs an anchor date even when the email
                     // body itself yields none — Gmail's internalDate is the
                     // only signal always available at this point.
-                    let internal_date_seconds = Self::internal_date_fallback(&full_msg.internal_date);
+                    let internal_date_seconds =
+                        Self::internal_date_fallback(&full_msg.internal_date);
                     let extracted_data = crate::extraction::ladder::run_extraction_ladder(
                         pool,
                         &current_bank_name,
@@ -166,27 +247,63 @@ impl MessageProcessor {
                         }
 
                         if Self::evaluate_mandatory_field_gate(&obs) {
-                            Self::append_to_scan_log(message_id, "SELECTED", "transaction_alert", Some(&serde_json::to_value(&full_msg).unwrap_or_default()), Some(body_text)).await;
+                            Self::append_to_scan_log(
+                                message_id,
+                                "SELECTED",
+                                "transaction_alert",
+                                Some(&serde_json::to_value(&full_msg).unwrap_or_default()),
+                                Some(body_text),
+                            )
+                            .await;
                             return Ok(Some(ProcessResult::TransactionAlert(
                                 extracted,
                                 Box::new(obs),
                             )));
                         } else {
-                            crate::ingestion::gmail_telemetry::gmail_telemetry().record_gate_rejection("gate3");
+                            crate::ingestion::gmail_telemetry::gmail_telemetry()
+                                .record_gate_rejection("gate3");
                             let reason = Self::gate3_failure_reason(&obs);
                             Self::log_rejection(pool, message_id, reason).await?;
-                            Self::append_to_scan_log(message_id, "REJECTED", reason, Some(&serde_json::to_value(&full_msg).unwrap_or_default()), Some(body_text)).await;
+                            Self::append_to_scan_log(
+                                message_id,
+                                "REJECTED",
+                                reason,
+                                Some(&serde_json::to_value(&full_msg).unwrap_or_default()),
+                                Some(body_text),
+                            )
+                            .await;
                             return Ok(None);
                         }
                     } else {
                         Self::log_rejection(pool, message_id, "extraction_failed").await?;
-                        Self::append_to_scan_log(message_id, "REJECTED", "extraction_failed", Some(&serde_json::to_value(&full_msg).unwrap_or_default()), Some(body_text)).await;
+                        Self::record_unassigned_transaction(
+                            pool,
+                            message_id,
+                            body_text,
+                            "extraction_failed",
+                        )
+                        .await?;
+                        Self::append_to_scan_log(
+                            message_id,
+                            "REJECTED",
+                            "extraction_failed",
+                            Some(&serde_json::to_value(&full_msg).unwrap_or_default()),
+                            Some(body_text),
+                        )
+                        .await;
                         return Ok(None);
                     }
                 }
             }
         } else {
-             Self::append_to_scan_log(message_id, "REJECTED", "no_payload", Some(&serde_json::to_value(&full_msg).unwrap_or_default()), None).await;
+            Self::append_to_scan_log(
+                message_id,
+                "REJECTED",
+                "no_payload",
+                Some(&serde_json::to_value(&full_msg).unwrap_or_default()),
+                None,
+            )
+            .await;
         }
 
         Ok(None)
@@ -218,7 +335,9 @@ impl MessageProcessor {
     /// Structured gate3_failed reason code (missing_amount / missing_counterparty,
     /// Doc 30 TASK-GMAIL-006) for the audit trail — only meaningful to call
     /// when `evaluate_mandatory_field_gate` has already returned `false`.
-    pub(crate) fn gate3_failure_reason(obs: &crate::extraction::ladder::ExtractionResult) -> &'static str {
+    pub(crate) fn gate3_failure_reason(
+        obs: &crate::extraction::ladder::ExtractionResult,
+    ) -> &'static str {
         let has_amount = obs.amount_minor.is_some();
         let has_entity = obs.merchant_raw.is_some();
         match (has_amount, has_entity) {
@@ -258,13 +377,20 @@ impl MessageProcessor {
         let verify_result = get_sender_validator().verify_sender(&email, display_name.as_deref());
 
         match verify_result {
-            SenderVerificationResult::UnverifiedReject(_) | SenderVerificationResult::SpoofReject(_) => {
+            SenderVerificationResult::UnverifiedReject(_)
+            | SenderVerificationResult::SpoofReject(_) => {
                 // Requirement 6 fallback: Check subject before outright rejection
-                let classification = crate::ingestion::content_classifier::ContentClassifier::classify(&subject_header, "");
+                let classification =
+                    crate::ingestion::content_classifier::ContentClassifier::classify(
+                        &subject_header,
+                        "",
+                    );
                 match classification {
-                    crate::ingestion::content_classifier::ContentClass::TransactionAlert 
+                    crate::ingestion::content_classifier::ContentClass::TransactionAlert
                     | crate::ingestion::content_classifier::ContentClass::BalanceUpdate => {
-                        SenderVerificationResult::VerifiedTransactionCandidate("Unknown Bank".to_string())
+                        SenderVerificationResult::VerifiedTransactionCandidate(
+                            "Unknown Bank".to_string(),
+                        )
                     }
                     _ => verify_result, // return original rejection
                 }
@@ -316,6 +442,83 @@ impl MessageProcessor {
         Ok(())
     }
 
+    /// Doc 30 TASK-TXN-001: "If no layer succeeds, route the observation to
+    /// `unassigned_transactions` with `reason = 'extraction_failed'`." A
+    /// `transaction_observations` row is a required FK for
+    /// `unassigned_transactions`, so a minimal observation (raw body only,
+    /// no extracted fields) is recorded first, mirroring the
+    /// `source_pipeline`/`source_record_id` convention used by the
+    /// successful-extraction path.
+    async fn record_unassigned_transaction(
+        pool: &Pool,
+        message_id: &str,
+        body_text: &str,
+        reason: &str,
+    ) -> Result<()> {
+        let obs_row = crate::db::transaction_observations::TransactionObservationsRow {
+            id: Uuid::new_v4().to_string(),
+            canonical_transaction_id: None,
+            source_pipeline: Some("gmail_transaction".to_string()),
+            source_record_id: Some(message_id.to_string()),
+            source_message_id: Some(message_id.to_string()),
+            source_thread_id: None,
+            statement_id: None,
+            statement_entry_id: None,
+            instrument_id: None,
+            direction: None,
+            amount: None,
+            amount_minor: None,
+            currency: None,
+            event_time: None,
+            event_time_confidence: None,
+            posting_date: None,
+            merchant_raw: None,
+            merchant_normalized: None,
+            reference_id: None,
+            original_amount_minor: None,
+            original_currency: None,
+            exchange_rate: None,
+            balance_after_transaction: None,
+            timezone_at_ingestion: None,
+            fingerprint: None,
+            extraction_method: Some("extraction_failed".to_string()),
+            confidence_score: None,
+            raw_payload_json: Some(json!({ "body": body_text }).to_string()),
+            parser_version: None,
+            emi_total_installments: None,
+            emi_installment_number: None,
+            emi_original_amount_minor: None,
+            is_deleted: false,
+            created_at: Some(Utc::now().naive_utc()),
+            updated_at: Some(Utc::now().naive_utc()),
+        };
+        let reason_owned = reason.to_string();
+
+        let conn = pool.get().await?;
+        conn.interact(move |c| -> Result<()> {
+            use crate::db::transaction_observations::InsertObservationOutcome;
+            let outcome =
+                crate::db::transaction_observations::insert_observation_idempotent(c, &obs_row)?;
+            if let InsertObservationOutcome::Inserted = outcome {
+                crate::db::unassigned_transactions::insert(
+                    c,
+                    &crate::db::unassigned_transactions::UnassignedTransactionRow {
+                        id: Uuid::new_v4().to_string(),
+                        observation_id: obs_row.id.clone(),
+                        reason: reason_owned.clone(),
+                        status: "open".to_string(),
+                        created_at: None,
+                    },
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Interact error: {}", e))??;
+
+        Ok(())
+    }
+
     async fn append_to_scan_log(
         message_id: &str,
         decision: &str,
@@ -331,7 +534,10 @@ impl MessageProcessor {
             if let Some(snip) = payload_val.get("snippet").and_then(|s| s.as_str()) {
                 snippet = snip.to_string();
             }
-            if let Some(headers) = payload_val.pointer("/payload/headers").and_then(|h| h.as_array()) {
+            if let Some(headers) = payload_val
+                .pointer("/payload/headers")
+                .and_then(|h| h.as_array())
+            {
                 for h in headers {
                     if let (Some(name), Some(value)) = (
                         h.get("name").and_then(|n| n.as_str()),
@@ -371,7 +577,9 @@ impl MessageProcessor {
                 s.push('\n');
             }
         }
-        s.push_str("================================================================================\n\n");
+        s.push_str(
+            "================================================================================\n\n",
+        );
 
         let path_str = if decision == "SELECTED" {
             "email_scan_selected.log"
