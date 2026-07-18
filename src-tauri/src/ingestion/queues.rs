@@ -87,12 +87,26 @@ impl BatchProgressTracker {
     }
 }
 
-/// Senders for both queues, stored as Tauri managed state so every entry point
-/// (Gmail polling, historical scan, manual upload) reaches the same two queues.
+/// One classified, Gate-3-equivalent mandate registration/cancellation
+/// event, ready for recurring_payments upsert/cancellation-matching
+/// (docs/superpowers/specs/2026-07-18-mandate-tracking-design.md §4.2-§4.4).
+pub struct MandateJob {
+    pub extraction: crate::extraction::mandate_extractor::MandateExtraction,
+    pub event_type: crate::ingestion::message_processor::MandateEventType,
+    pub source_pipeline: String,
+    pub source_record_id: String,
+    pub connected_account_id: String,
+    pub raw_body: Option<String>,
+}
+
+/// Senders for all three queues, stored as Tauri managed state so every
+/// entry point (Gmail polling, historical scan, manual upload) reaches the
+/// same queues.
 #[derive(Clone)]
 pub struct QueueHandles {
     pub transaction_tx: mpsc::Sender<TransactionJob>,
     pub statement_tx: mpsc::Sender<StatementJob>,
+    pub mandate_tx: mpsc::Sender<MandateJob>,
 }
 
 /// Multi-parallel worker pool size for the Transaction Queue (Doc 15 §5: 2–8 workers).
@@ -102,6 +116,7 @@ const STATEMENT_QUEUE_MAX_CONCURRENT: usize = 5;
 
 pub(crate) const TRANSACTION_QUEUE_CAPACITY: usize = 256;
 pub(crate) const STATEMENT_QUEUE_CAPACITY: usize = 64;
+pub(crate) const MANDATE_QUEUE_CAPACITY: usize = 64;
 
 /// Doc 19 §14a / Doc 12 §12.9 (FR-052): "independent pause/resume of the
 /// Transaction Queue and Statement Queue" -- distinct from `commands::debug`'s
@@ -226,13 +241,139 @@ pub fn spawn_queues<R: tauri::Runtime>(
     let (transaction_tx, transaction_rx) =
         mpsc::channel::<TransactionJob>(TRANSACTION_QUEUE_CAPACITY);
     let (statement_tx, statement_rx) = mpsc::channel::<StatementJob>(STATEMENT_QUEUE_CAPACITY);
+    let (mandate_tx, mandate_rx) = mpsc::channel::<MandateJob>(MANDATE_QUEUE_CAPACITY);
 
     spawn_transaction_workers(transaction_rx, pool.clone(), app.clone());
-    spawn_statement_dispatcher(statement_rx, pool, app, pending_bytes);
+    spawn_statement_dispatcher(statement_rx, pool.clone(), app, pending_bytes);
+    spawn_mandate_workers(mandate_rx, pool, transaction_tx.clone());
 
     QueueHandles {
         transaction_tx,
         statement_tx,
+        mandate_tx,
+    }
+}
+
+/// Single dispatcher for the Mandate Queue -- mandate volume is expected to
+/// be far lower than transaction volume (registrations/cancellations, not
+/// every transaction), so one sequential consumer is sufficient; no worker
+/// pool needed unlike the Transaction Queue's 4 parallel workers.
+fn spawn_mandate_workers(
+    mut rx: mpsc::Receiver<MandateJob>,
+    pool: Pool,
+    transaction_tx: mpsc::Sender<TransactionJob>,
+) {
+    tauri::async_runtime::spawn(async move {
+        while let Some(job) = rx.recv().await {
+            process_mandate_job(job, &pool, &transaction_tx).await;
+        }
+    });
+}
+
+/// Processes one mandate event: upserts/matches-and-cancels the
+/// recurring_payments row, then sends a synthesized TransactionJob onto the
+/// *existing* Transaction Queue for the ₹0.00 transaction side effect --
+/// reusing process_transaction_job unmodified rather than calling
+/// reconciliation internals directly
+/// (docs/superpowers/specs/2026-07-18-mandate-tracking-design.md §4.4: the
+/// real single entry point is reconcile_transactionally via
+/// process_transaction_job, not create_canonical_transaction alone).
+async fn process_mandate_job(job: MandateJob, pool: &Pool, transaction_tx: &mpsc::Sender<TransactionJob>) {
+    let extraction = job.extraction.clone();
+    let event_type = job.event_type.clone();
+    let merchant_raw = extraction.merchant.clone();
+
+    if let Ok(conn) = pool.get().await {
+        let _ = conn
+            .interact(move |c| -> Option<String> {
+                let instrument_id = if let (Some(itype), Some(iname), Some(masked)) = (
+                    &extraction.instrument_type,
+                    &extraction.issuer_name,
+                    &extraction.masked_identifier,
+                ) {
+                    crate::db::instruments::get_or_create_instrument(c, itype, iname, masked, None).ok()
+                } else {
+                    None
+                };
+                let merchant_entity_id = extraction
+                    .merchant
+                    .as_deref()
+                    .and_then(|m| crate::extraction::merchant_normalizer::normalize_merchant_sync(c, m).ok())
+                    .map(|(entity_id, _)| entity_id);
+
+                match event_type {
+                    crate::ingestion::message_processor::MandateEventType::Registration => {
+                        if let (Some(instrument_id), Some(merchant_entity_id)) =
+                            (&instrument_id, &merchant_entity_id)
+                        {
+                            let _ = crate::db::recurring_payments::upsert_explicit(
+                                c,
+                                instrument_id,
+                                merchant_entity_id,
+                                extraction.max_limit_amount,
+                                "INR",
+                                extraction.cadence.as_deref(),
+                                extraction.external_mandate_id.as_deref(),
+                            );
+                        }
+                    }
+                    crate::ingestion::message_processor::MandateEventType::Cancellation => {
+                        let candidates =
+                            crate::db::recurring_payments::find_active_candidates_for_cancellation(
+                                c,
+                                instrument_id.as_deref(),
+                                merchant_entity_id.as_deref(),
+                                extraction.external_mandate_id.as_deref(),
+                            )
+                            .unwrap_or_default();
+                        match candidates.len() {
+                            1 => {
+                                let _ = crate::db::recurring_payments::mark_cancelled(c, &candidates[0].id);
+                            }
+                            _ => {
+                                let raw_signal = serde_json::json!({
+                                    "merchant": extraction.merchant,
+                                    "external_mandate_id": extraction.external_mandate_id,
+                                    "instrument_id": instrument_id,
+                                })
+                                .to_string();
+                                let candidate_ids: Vec<String> =
+                                    candidates.iter().map(|r| r.id.clone()).collect();
+                                let _ = crate::db::unresolved_mandate_cancellations::insert_unresolved(
+                                    c,
+                                    &raw_signal,
+                                    &candidate_ids,
+                                );
+                            }
+                        }
+                    }
+                }
+                instrument_id
+            })
+            .await;
+    }
+
+    // Both registration and (successfully matched) cancellation also
+    // produce the ₹0 transaction, via the unmodified Transaction Queue.
+    let tx_job = TransactionJob {
+        obs: crate::extraction::ladder::ExtractionResult {
+            amount_minor: Some(0),
+            currency: Some("INR".to_string()),
+            direction: Some("debit".to_string()),
+            merchant_raw,
+            extraction_method: "mandate_event".to_string(),
+            instrument_type: job.extraction.instrument_type.clone(),
+            issuer_name: job.extraction.issuer_name.clone(),
+            masked_identifier: job.extraction.masked_identifier.clone(),
+            ..Default::default()
+        },
+        source_pipeline: job.source_pipeline,
+        source_record_id: job.source_record_id,
+        connected_account_id: job.connected_account_id,
+        raw_body: job.raw_body,
+    };
+    if transaction_tx.send(tx_job).await.is_err() {
+        tracing::error!("Transaction Queue closed — dropping mandate-generated ₹0 transaction job");
     }
 }
 
