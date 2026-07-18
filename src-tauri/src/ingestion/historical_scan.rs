@@ -39,7 +39,7 @@ fn clear_scan_cancellation(account_id: &str) {
 
 #[tauri::command]
 pub async fn scans_cancel(account_id: String) -> Result<String, crate::error::AppError> {
-    crate::ipc::validation::validate_uuid("account_id", &account_id)?;
+    crate::ipc::validation::validate_account_id("account_id", &account_id)?;
     cancelled_scans().lock().unwrap().insert(account_id);
     Ok("cancel_requested".to_string())
 }
@@ -53,6 +53,7 @@ pub struct ScanStatusResponse {
     pub total: usize,
     pub transactions_found: usize,
     pub statements_found: usize,
+    pub mandate_events_found: usize,
     pub errors: usize,
 }
 
@@ -64,6 +65,7 @@ fn checkpoint_to_status(checkpoint: Option<ProcessingCheckpointRow>) -> ScanStat
             total: 0,
             transactions_found: 0,
             statements_found: 0,
+            mandate_events_found: 0,
             errors: 0,
         },
         Some(cp) => {
@@ -75,6 +77,7 @@ fn checkpoint_to_status(checkpoint: Option<ProcessingCheckpointRow>) -> ScanStat
                 total: state.all_message_ids.len(),
                 transactions_found: state.transactions_found,
                 statements_found: state.statements_found,
+                mandate_events_found: state.mandate_events_found,
                 errors: state.errors,
             }
         }
@@ -86,7 +89,7 @@ pub async fn scans_status(
     account_id: String,
     pool: State<'_, Pool>,
 ) -> Result<ScanStatusResponse, crate::error::AppError> {
-    crate::ipc::validation::validate_uuid("account_id", &account_id)?;
+    crate::ipc::validation::validate_account_id("account_id", &account_id)?;
     let conn = pool
         .get()
         .await
@@ -112,7 +115,7 @@ pub async fn scans_resume<R: tauri::Runtime>(
     pool: State<'_, Pool>,
     account_id: String,
 ) -> Result<String, crate::error::AppError> {
-    crate::ipc::validation::validate_uuid("account_id", &account_id)?;
+    crate::ipc::validation::validate_account_id("account_id", &account_id)?;
     let account_id_clone = account_id.clone();
     let checkpoint = pool
         .get()
@@ -149,6 +152,7 @@ struct ScanProgressPayload {
     total: usize,
     transactions_found: usize,
     statements_found: usize,
+    mandate_events_found: usize,
     non_financial: usize,
     errors: usize,
     error_message: Option<String>,
@@ -165,6 +169,8 @@ struct ScanCheckpointState {
     #[serde(default)]
     statements_found: usize,
     #[serde(default)]
+    mandate_events_found: usize,
+    #[serde(default)]
     non_financial: usize,
     #[serde(default)]
     errors: usize,
@@ -178,7 +184,7 @@ pub async fn scans_historical<R: tauri::Runtime>(
     start_date: String,
     end_date: String,
 ) -> Result<String, crate::error::AppError> {
-    crate::ipc::validation::validate_uuid("account_id", &account_id)?;
+    crate::ipc::validation::validate_account_id("account_id", &account_id)?;
     crate::ipc::validation::validate_date_range(&start_date, &end_date)?;
     // Doc 22 §11.5: LOCKED blocks "all writes, including new ingestion on both
     // queues" — a historical scan is new ingestion.
@@ -310,6 +316,7 @@ pub async fn scans_historical<R: tauri::Runtime>(
                     total: 0,
                     transactions_found: 0,
                     statements_found: 0,
+                    mandate_events_found: 0,
                     non_financial: 0,
                     errors: 1,
                     error_message: Some(e.to_string()),
@@ -451,6 +458,7 @@ async fn run_scan_batches<R: tauri::Runtime>(
             total,
             transactions_found: state.transactions_found,
             statements_found: state.statements_found,
+            mandate_events_found: state.mandate_events_found,
             non_financial: state.non_financial,
             errors: state.errors,
             error_message: None,
@@ -618,6 +626,30 @@ async fn run_scan_batches<R: tauri::Runtime>(
                             }
                         }
                     }
+                    Ok(Some(ProcessResult::MandateEvent(extracted, mandate_extraction, event_type))) => {
+                        // docs/superpowers/specs/2026-07-18-mandate-tracking-design.md
+                        // §4.2: route to the Mandate Queue, same shared worker logic
+                        // as the live-poll entry point.
+                        state.mandate_events_found += 1;
+                        let job = crate::ingestion::queues::MandateJob {
+                            extraction: mandate_extraction,
+                            event_type,
+                            source_pipeline: "gmail_transaction".to_string(),
+                            source_record_id: msg_id.clone(),
+                            connected_account_id: account_id.clone(),
+                            raw_body: extracted.text_body.clone(),
+                        };
+                        let mandate_tx = app
+                            .state::<crate::ingestion::queues::QueueHandles>()
+                            .mandate_tx
+                            .clone();
+                        if mandate_tx.send(job).await.is_err() {
+                            tracing::error!(
+                                "Mandate Queue closed — dropping job for msg_id='{}'",
+                                msg_id
+                            );
+                        }
+                    }
                     Ok(None) => {
                         state.non_financial += 1;
                     }
@@ -670,6 +702,7 @@ async fn run_scan_batches<R: tauri::Runtime>(
                     total,
                     transactions_found: state.transactions_found,
                     statements_found: state.statements_found,
+                    mandate_events_found: state.mandate_events_found,
                     non_financial: state.non_financial,
                     errors: state.errors,
                     error_message: None,
@@ -732,6 +765,7 @@ async fn run_scan_batches<R: tauri::Runtime>(
                 total,
                 transactions_found: state.transactions_found,
                 statements_found: state.statements_found,
+                mandate_events_found: state.mandate_events_found,
                 non_financial: state.non_financial,
                 errors: state.errors,
                 error_message: None,
@@ -783,6 +817,7 @@ mod tests {
             processed_count: 2,
             transactions_found: 1,
             statements_found: 0,
+            mandate_events_found: 0,
             non_financial: 1,
             errors: 0,
         };
@@ -888,6 +923,7 @@ mod tests {
             processed_count: 0,
             transactions_found: 0,
             statements_found: 0,
+            mandate_events_found: 0,
             non_financial: 0,
             errors: 0,
         };
@@ -945,6 +981,7 @@ mod tests {
             processed_count: 5,
             transactions_found: 0,
             statements_found: 0,
+            mandate_events_found: 0,
             non_financial: 0,
             errors: 0,
         };

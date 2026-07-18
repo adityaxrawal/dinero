@@ -474,7 +474,27 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                     }
                                 }
                             }
-                            Ok(_) => {}
+                            Ok(Some(crate::ingestion::message_processor::ProcessResult::MandateEvent(extracted, mandate_extraction, event_type))) => {
+                                // docs/superpowers/specs/2026-07-18-mandate-tracking-design.md
+                                // §4.2: route to the Mandate Queue, same shared worker logic
+                                // as the historical-scan entry point.
+                                let job = crate::ingestion::queues::MandateJob {
+                                    extraction: mandate_extraction,
+                                    event_type,
+                                    source_pipeline: "gmail_transaction".to_string(),
+                                    source_record_id: msg_id.clone(),
+                                    connected_account_id: account.id.clone(),
+                                    raw_body: extracted.text_body.clone(),
+                                };
+                                let mandate_tx = app
+                                    .state::<crate::ingestion::queues::QueueHandles>()
+                                    .mandate_tx
+                                    .clone();
+                                if mandate_tx.send(job).await.is_err() {
+                                    tracing::error!("Mandate Queue closed — dropping job for msg_id='{}'", msg_id);
+                                }
+                            }
+                            Ok(None) => {}
                             Err(e) => {
                                 tracing::error!("Failed to process message {} for account {}: {}", msg_id, account.id, e);
                             }
