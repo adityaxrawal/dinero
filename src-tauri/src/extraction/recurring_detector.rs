@@ -145,6 +145,8 @@ pub fn detect_and_update_recurring(
                 next_predicted_amount: Some(amount_minor as f64 / 100.0),
                 confidence: Some(confidence),
                 status: Some("active".to_string()),
+                source: "inferred".to_string(),
+                external_mandate_id: None,
                 created_at: now,
                 updated_at: now,
             };
