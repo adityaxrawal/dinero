@@ -6,6 +6,7 @@ pub mod emi_detector;
 pub mod fingerprint;
 pub mod ladder;
 pub mod llm;
+pub mod mandate_extractor;
 pub mod merchant_normalizer;
 pub mod normalization;
 pub mod pdf_parser;
