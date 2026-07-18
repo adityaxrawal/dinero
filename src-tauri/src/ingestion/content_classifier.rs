@@ -6,6 +6,8 @@ pub enum ContentClass {
     TransactionAlert,
     BalanceUpdate,
     StatementEmail,
+    MandateRegistration,
+    MandateCancellation,
     Noise,
     Otp,
     Kyc,
@@ -36,6 +38,36 @@ fn has_transaction_verb(content: &str) -> bool {
         || content.contains("transaction alert")
         || content.contains("payment of")
         || content.contains("purchase of")
+        // Neobank/UPI-app confirmation phrasing (e.g. Jupiter: "You paid
+        // ₹300.00. Paid to <merchant>") -- narrower than bare "paid" so it
+        // doesn't also match "not paid"/"already paid"/"please pay" noise.
+        || content.contains("you paid")
+}
+
+/// docs/superpowers/specs/2026-07-18-mandate-tracking-design.md §4.1.
+/// Checked before any transaction-verb logic (see `classify()`) since
+/// mandate emails legitimately contain debit-shaped language ("authorised
+/// debit of INR 0.00") that must not fall through to TransactionAlert.
+fn is_mandate_cancellation(content: &str) -> bool {
+    content.contains("mandate cancelled")
+        || content.contains("mandate cancellation")
+        || content.contains("e-mandate cancellation")
+        || content.contains("mandate stands cancelled")
+        || content.contains("autopay deactivated")
+        || content.contains("autopay cancelled")
+}
+
+/// docs/superpowers/specs/2026-07-18-mandate-tracking-design.md §4.1.
+/// Supersedes Cluster D's original `has_transaction_verb` addition for
+/// "successful autopay transaction" -- that phrase now routes here instead,
+/// before transaction-verb logic ever runs.
+fn is_mandate_registration(content: &str) -> bool {
+    content.contains("mandate registered")
+        || content.contains("mandate set at merchant")
+        || content.contains("e-mandate created")
+        || content.contains("registration success")
+        || content.contains("autopay activated")
+        || content.contains("successful autopay transaction")
 }
 
 impl ContentClassifier {
@@ -67,6 +99,19 @@ impl ContentClassifier {
         // a statement email").
         if subject_lower.contains("statement") || subject_lower.contains("e-statement") {
             return ContentClass::StatementEmail;
+        }
+
+        // 3b. Mandate lifecycle events -- checked before any transaction-verb
+        // logic (docs/superpowers/specs/2026-07-18-mandate-tracking-design.md
+        // §4.1). Cancellation checked before registration since some
+        // wording could plausibly overlap ("mandate ... cancelled" contains
+        // no registration phrase, but keeping cancellation first is the
+        // more conservative order if that ever changes).
+        if is_mandate_cancellation(&content) {
+            return ContentClass::MandateCancellation;
+        }
+        if is_mandate_registration(&content) {
+            return ContentClass::MandateRegistration;
         }
 
         // A settled-transaction signal — computed once, used to keep a real
