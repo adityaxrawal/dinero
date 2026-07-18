@@ -128,19 +128,32 @@ function process_mandate_event(extracted, event_type, instrument_id):
                 return BLOCKED
 
     # Both registration and (successfully matched) cancellation also write
-    # the ₹0 transaction, through the *same* canonical-write function the
-    # Transaction Queue uses -- not a second write path.
-    create_canonical_transaction(conn, &IncomingObservation {
-        amount_minor: 0,
-        direction: "debit",
-        merchant_raw: extracted.merchant,
-        instrument_id,
-        extraction_method: "mandate_event",
-        ...
+    # the ₹0 transaction -- NOT by calling create_canonical_transaction
+    # directly (that would skip fingerprint computation, the
+    # insert_observation_idempotent dedup check, and match-precedence
+    # scoring inside reconcile_transactionally -- a second, incomplete
+    # write path). Instead, send a synthesized TransactionJob onto the
+    # *existing* Transaction Queue channel and let the unmodified
+    # process_transaction_job (queues.rs:358) do exactly what it already
+    # does for every other transaction.
+    send_to_transaction_queue(TransactionJob {
+        obs: ExtractionResult {
+            amount_minor: Some(0),
+            direction: Some("debit"),
+            merchant_raw: Some(extracted.merchant),
+            currency: Some("INR"),
+            event_time: extracted.event_time,
+            extraction_method: "mandate_event",
+            ...
+        },
+        source_pipeline: "gmail_transaction",
+        source_record_id,
+        connected_account_id,
+        raw_body,
     })
 ```
 
-`create_canonical_transaction` is `src-tauri/src/reconciliation/canonical.rs:31` — the real function Doc 12 §8.2a's pseudocode calls `ingest_observation()` (Finding F3, Phase 1 Discovery Report: that name doesn't exist literally in code). This spec calls the real name throughout and does not introduce a second one.
+Corrected during implementation planning (verified against the real call chain, not assumed from this spec's first draft): the actual single entry point Doc 12 §8.2a's pseudocode calls `ingest_observation()` is `reconcile_transactionally()` (`src-tauri/src/reconciliation/engine.rs:133`), reached only through `process_transaction_job` (`queues.rs:358`) — `create_canonical_transaction` (`canonical.rs:31`) is one internal decision branch *inside* that call, not the entry point itself. Routing the mandate-generated transaction through the *existing* Transaction Queue, rather than calling any reconciliation-internal function directly, is both simpler and correctly reuses the one real pipeline (Finding F3, Phase 1 Discovery Report — the spec's named `ingest_observation()`/`resolve_instrument()` don't exist as such; the actual pipeline is this queue-and-worker chain).
 
 ## 5. Data model changes
 
