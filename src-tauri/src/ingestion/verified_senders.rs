@@ -69,7 +69,43 @@ impl SenderValidator {
 
         // 2. Spoof detection: Domain is not verified, but looks similar or uses subdomains of verified domains
 
-        // Subdomain nesting (e.g., alerts.hdfcbank.net.scammer.com)
+        // Genuine subdomain of an already-verified apex (e.g.
+        // "alerts.hdfcbank.net" when "hdfcbank.net" is registered) is
+        // first-party infrastructure under that bank's own DNS -- SPF/DKIM
+        // for such subdomains are configured by the bank itself, so the
+        // suffix relationship is safe to trust and avoids requiring every
+        // subdomain rotation to be hand-added to the registry. This is
+        // distinct from a verified domain appearing as a substring anywhere
+        // else (e.g. "hdfcbank.net.scammer.com", handled below) -- the
+        // verified domain isn't at the suffix position there, so it can't be
+        // legitimate first-party infrastructure. Longest-matching registry
+        // domain wins when more than one is a suffix, so the most specific
+        // verified entry governs classification.
+        let mut best_suffix_match: Option<&VerifiedSenderConfig> = None;
+        for config in &self.registry.senders {
+            if domain.ends_with(&format!(".{}", config.domain))
+                && best_suffix_match
+                    .map(|c| config.domain.len() > c.domain.len())
+                    .unwrap_or(true)
+            {
+                best_suffix_match = Some(config);
+            }
+        }
+        if let Some(config) = best_suffix_match {
+            return match config.classification.as_str() {
+                "transaction_candidate" => {
+                    SenderVerificationResult::VerifiedTransactionCandidate(config.bank_name.clone())
+                }
+                "statement_candidate" => {
+                    SenderVerificationResult::VerifiedStatementCandidate(config.bank_name.clone())
+                }
+                _ => SenderVerificationResult::VerifiedNoise,
+            };
+        }
+
+        // True nesting attack: a verified domain appears as a substring but
+        // NOT at the suffix position -- e.g. "hdfcbank.net.scammer.com"
+        // contains "hdfcbank.net" in the middle, not at the end.
         for config in &self.registry.senders {
             if domain.contains(&config.domain) {
                 return SenderVerificationResult::SpoofReject(format!(
@@ -79,15 +115,22 @@ impl SenderValidator {
             }
         }
 
-        // Homoglyph / IDN look-alike detection: normalize confusable Unicode
-        // characters (e.g. Cyrillic "а" U+0430 standing in for Latin "a")
-        // and re-check for an exact match — catches domains that render
-        // identically to a verified one but use a different script, which
-        // plain string equality and even Levenshtein distance can miss once
-        // more than 2 characters are substituted.
+        // Homoglyph / confusable-script detection via Unicode Technical
+        // Standard #39's skeleton algorithm (`unicode-security` crate) --
+        // the actual standard confusables table, rather than an 11-character
+        // hand-picked list (previously Cyrillic + one Roman numeral only).
+        // Two strings that render identically or near-identically map to the
+        // same skeleton regardless of which script(s) they borrow confusable
+        // glyphs from (Greek, full-width forms, etc. are all covered, not
+        // just Cyrillic) -- this is what plain string equality and even
+        // Levenshtein distance can miss once more than 2-3 characters are
+        // substituted from a different script.
         if domain.chars().any(|c| !c.is_ascii()) {
-            let normalized = normalize_confusables(&domain);
-            if let Some(config) = self.registry.senders.iter().find(|s| s.domain == normalized) {
+            let candidate_skeleton: String = unicode_security::skeleton(&domain).collect();
+            if let Some(config) = self.registry.senders.iter().find(|s| {
+                let registry_skeleton: String = unicode_security::skeleton(&s.domain).collect();
+                registry_skeleton == candidate_skeleton
+            }) {
                 return SenderVerificationResult::SpoofReject(format!(
                     "Homoglyph/look-alike domain mimicking {}",
                     config.domain
@@ -102,11 +145,20 @@ impl SenderValidator {
             );
         }
 
-        // Levenshtein distance typo-squatting (Doc 30 TASK-GMAIL-004: "via strsim")
+        // Typo-squatting via length-normalized Damerau-Levenshtein similarity
+        // (Doc 30 TASK-GMAIL-004: "via strsim"). A flat edit-distance
+        // threshold (the previous `dist <= 2`) is miscalibrated across
+        // domain lengths: 2 edits out of a 6-char domain is a near-total
+        // rewrite (should NOT flag), while 2 edits out of a 20-char domain
+        // is a near-exact typo (should flag). `normalized_damerau_levenshtein`
+        // returns a 0..1 similarity already scaled by the longer string's
+        // length, and Damerau (vs plain Levenshtein) also catches adjacent
+        // transpositions ("hdfcbnak.com") as a single edit, the single most
+        // common real-world typo pattern that plain Levenshtein counts as two.
+        const TYPOSQUAT_SIMILARITY_THRESHOLD: f64 = 0.85;
         for config in &self.registry.senders {
-            let dist = strsim::levenshtein(&domain, &config.domain);
-            // Threshold of 1 or 2 is considered a typo/spoof
-            if dist <= 2 {
+            let similarity = strsim::normalized_damerau_levenshtein(&domain, &config.domain);
+            if similarity >= TYPOSQUAT_SIMILARITY_THRESHOLD && domain != config.domain {
                 return SenderVerificationResult::SpoofReject(format!(
                     "Typo-squatted domain similar to {}",
                     config.domain
@@ -131,29 +183,4 @@ impl SenderValidator {
         // 3. Fallback: Unknown sender
         SenderVerificationResult::UnverifiedReject("Unknown sender domain".into())
     }
-}
-
-/// Maps common homoglyph/look-alike Unicode characters (mostly Cyrillic,
-/// visually near-identical to Latin in most fonts) to their Latin
-/// equivalent, so an IDN homograph domain normalizes to the same string a
-/// verified-registry exact-match check can catch (Doc 30 TASK-GMAIL-004).
-fn normalize_confusables(input: &str) -> String {
-    input
-        .chars()
-        .map(|c| match c {
-            'а' => 'a', // Cyrillic а U+0430
-            'е' => 'e', // Cyrillic е U+0435
-            'о' => 'o', // Cyrillic о U+043E
-            'р' => 'p', // Cyrillic р U+0440
-            'с' => 'c', // Cyrillic с U+0441
-            'х' => 'x', // Cyrillic х U+0445
-            'у' => 'y', // Cyrillic у U+0443
-            'і' => 'i', // Cyrillic і U+0456
-            'ѕ' => 's', // Cyrillic ѕ U+0455
-            'ј' => 'j', // Cyrillic ј U+0458
-            'ԁ' => 'd', // Cyrillic ԁ U+0501
-            'ⅰ' => 'i', // Roman numeral one, commonly used as a look-alike
-            _ => c,
-        })
-        .collect()
 }
