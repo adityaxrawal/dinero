@@ -82,11 +82,17 @@ mod tests {
         .unwrap();
 
         let summaries = pdf_passwords::select_all_with_instrument(&conn).unwrap();
-        let hint = summaries.iter().find(|s| s.id == "pw-hint").expect("summary must be present");
+        let hint = summaries
+            .iter()
+            .find(|s| s.id == "pw-hint")
+            .expect("summary must be present");
         assert_eq!(hint.issuer_name, "Hint Test Issuer");
         assert_eq!(hint.success_count, 3);
 
         let json = serde_json::to_string(&summaries).unwrap();
-        assert!(!json.contains(secret_ciphertext), "the ciphertext must never appear in the settings-facing JSON response");
+        assert!(
+            !json.contains(secret_ciphertext),
+            "the ciphertext must never appear in the settings-facing JSON response"
+        );
     }
 }

@@ -130,7 +130,16 @@ async fn try_pdfium_unlock(pdf_bytes: &[u8], password: &str) -> bool {
             unlocked
         }
         Err(e) => {
-            tracing::warn!("pdf_sidecar unlock_check failed: {} — treating as unlock failure", e);
+            // This is an infrastructure failure (e.g. pdfium library not found,
+            // sidecar binary missing, or I/O error) — NOT a wrong password.
+            // The root cause of "Incorrect password" errors when the sidecar
+            // cannot locate libpdfium.dylib is fixed in sidecar/mod.rs by
+            // setting current_dir to the binary's parent directory.
+            tracing::error!(
+                "pdf_sidecar unlock_check infrastructure error: {} — treating as unlock failure \
+                 (check that libpdfium.dylib is present next to the sidecar binary)",
+                e
+            );
             false
         }
     }
@@ -286,7 +295,10 @@ pub async fn try_all_stored_passwords(
             .await
             .map_err(|e| anyhow!("DB interact error (update success_count): {}", e))??;
 
-            tracing::info!("Stored password row '{}' unlocked the PDF (cross-instrument scan)", row_id);
+            tracing::info!(
+                "Stored password row '{}' unlocked the PDF (cross-instrument scan)",
+                row_id
+            );
             return Ok(PasswordResolutionResult::UnlockedWithStored(plaintext));
         }
     }
@@ -327,28 +339,149 @@ pub async fn save_password(
     Ok(())
 }
 
+/// Outcome of `resolve_statement_password`: whether the caller may enqueue a
+/// `StatementJob` for parsing, or must stop because a password prompt was
+/// created instead.
+pub enum StatementPasswordResolution {
+    /// Safe to enqueue for parsing now. `Some(password)` when a stored
+    /// password actually unlocked the PDF — that password must be threaded
+    /// into the parse call, pdfium needs it again to open the same bytes.
+    /// `None` when the PDF was never encrypted.
+    Proceed(Option<String>),
+    /// All stored passwords failed (or none exist). An `unprocessed_statements`
+    /// row for `stmt_id` is now `awaiting_password` and `PASSWORD_REQUIRED` has
+    /// been emitted — the caller must NOT enqueue a `StatementJob` for it.
+    PromptCreated,
+}
+
+/// Single choke point for "does this PDF need a password before it can be
+/// queued for parsing" — every Statement Queue entry point (manual upload,
+/// Gmail-attachment email detection in `historical_scan`/`polling`) must call
+/// this before building a `StatementJob`.
+///
+/// Real bug this fixes (field error log: "Statement Queue job failed ...
+/// PdfiumLibraryInternalError(PasswordError)"): a stored password unlocking
+/// the PDF here is worthless on its own — pdfium needs that same password
+/// passed again at actual parse time (it doesn't decrypt bytes in place), and
+/// the email-detected path previously never called password resolution at
+/// all, enqueueing encrypted bytes with no password unconditionally.
+pub async fn resolve_statement_password<R: tauri::Runtime>(
+    stmt_id: &str,
+    bytes: &[u8],
+    filename: &str,
+    file_hash: &str,
+    pool: &deadpool_sqlite::Pool,
+    app: &tauri::AppHandle<R>,
+    pending_bytes: &crate::statements::pending_bytes::PendingStatementBytes,
+    email_meta: Option<crate::ingestion::message_processor::EmailMetadata>,
+) -> Result<StatementPasswordResolution> {
+    use tauri::Emitter;
+
+    if is_pdf_unencrypted(bytes).await {
+        return Ok(StatementPasswordResolution::Proceed(None));
+    }
+
+    match try_all_stored_passwords(bytes, pool).await? {
+        PasswordResolutionResult::NotEncrypted => Ok(StatementPasswordResolution::Proceed(None)),
+        PasswordResolutionResult::UnlockedWithStored(password) => {
+            tracing::info!("PDF unlocked with stored password");
+            Ok(StatementPasswordResolution::Proceed(Some(password)))
+        }
+        _ => {
+            create_awaiting_password_row(stmt_id, file_hash, filename, pool, email_meta.as_ref()).await?;
+            pending_bytes.insert(stmt_id.to_string(), bytes.to_vec(), None).await;
+
+            let mut payload_map = serde_json::Map::new();
+            payload_map.insert("statement_id".to_string(), serde_json::json!(stmt_id));
+            payload_map.insert("filename".to_string(), serde_json::json!(filename));
+            
+            if let Some(meta) = email_meta {
+                payload_map.insert("sender".to_string(), serde_json::json!(meta.sender));
+                payload_map.insert("to".to_string(), serde_json::json!(meta.recipient));
+                payload_map.insert("subject".to_string(), serde_json::json!(meta.subject));
+                payload_map.insert("date".to_string(), serde_json::json!(meta.date));
+                payload_map.insert("snippet".to_string(), serde_json::json!(meta.snippet));
+                payload_map.insert("html".to_string(), serde_json::json!(meta.html));
+            }
+
+            let payload = serde_json::Value::Object(payload_map);
+            crate::statements::events::emit(
+                crate::statements::events::PASSWORD_REQUIRED,
+                payload.clone(),
+            );
+            app.emit(crate::statements::events::PASSWORD_REQUIRED, payload)
+                .ok();
+
+            Ok(StatementPasswordResolution::PromptCreated)
+        }
+    }
+}
+
+/// Creates an `unprocessed_statements` row with status = 'awaiting_password' (Doc 10 §7.2).
+async fn create_awaiting_password_row(
+    statement_id: &str,
+    file_hash: &str,
+    filename: &str,
+    pool: &deadpool_sqlite::Pool,
+    email_meta: Option<&crate::ingestion::message_processor::EmailMetadata>,
+) -> Result<()> {
+    let stmt_id = statement_id.to_string();
+    let mut source_json_obj = serde_json::json!({
+        "file_hash": file_hash,
+        "filename": filename,
+    });
+    
+    if let Some(meta) = email_meta {
+        if let Some(obj) = source_json_obj.as_object_mut() {
+            obj.insert("sender".to_string(), serde_json::json!(meta.sender));
+            obj.insert("to".to_string(), serde_json::json!(meta.recipient));
+            obj.insert("subject".to_string(), serde_json::json!(meta.subject));
+            obj.insert("date".to_string(), serde_json::json!(meta.date));
+            obj.insert("snippet".to_string(), serde_json::json!(meta.snippet));
+            obj.insert("html".to_string(), serde_json::json!(meta.html));
+        }
+    }
+    let source_json = source_json_obj.to_string();
+
+    let conn = pool.get().await?;
+    conn.interact(move |c| {
+        c.execute(
+            "INSERT INTO unprocessed_statements \
+             (id, statement_source_json, failure_type, failure_reason, status) \
+             VALUES (?, ?, 'password_required', '', 'awaiting_password')",
+            rusqlite::params![stmt_id, source_json],
+        )
+    })
+    .await
+    .map_err(|e| anyhow!("DB interact error (create_awaiting_password_row): {}", e))??;
+
+    tracing::info!(
+        "Created awaiting_password row for statement_id='{}'",
+        statement_id
+    );
+    Ok(())
+}
+
 /// Verifies a user-entered password against the PDF bytes.
 /// On success: encrypts and saves to `pdf_passwords`, updates unprocessed_statements row,
 /// and returns `UnlockedWithUserInput`.
 /// On failure: returns `WrongPassword` — the unprocessed_statements row is NOT deleted
 /// (Doc 10 §7.3 — re-prompt without losing context).
 pub async fn try_user_password(
-    instrument_id: &str,
     statement_id: &str,
     password: &str,
     pdf_bytes: &[u8],
     pool: &deadpool_sqlite::Pool,
 ) -> Result<PasswordResolutionResult> {
     tracing::info!(
-        "Trying user-entered password for statement_id='{}' instrument_id='{}'",
-        statement_id,
-        instrument_id
+        "Trying user-entered password for statement_id='{}'",
+        statement_id
     );
 
     // Never log the password itself
     if try_pdfium_unlock(pdf_bytes, password).await {
-        // Save password for future use
-        save_password(instrument_id, password, pool).await?;
+        // We do NOT save password here, because instrument_id is unknown.
+        // It will be saved by run_parse_pipeline later when instrument is resolved.
 
         // Update unprocessed_statements to reflect password resolved
         let stmt_id = statement_id.to_string();
@@ -446,6 +579,70 @@ pub async fn handle_password_timeout<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression test for the shared choke point this fix introduces
+    /// (`resolve_statement_password`, used by manual upload AND the
+    /// previously-unprotected Gmail-attachment path in
+    /// `historical_scan`/`polling`): when nothing can unlock the PDF, it must
+    /// create the `awaiting_password` row, stash the bytes for a later
+    /// resume, and emit `PASSWORD_REQUIRED` — exactly what `statements_upload`
+    /// did inline before this was factored out, now proven for every caller.
+    /// (Bytes pdfium can't even parse take the same "no password worked"
+    /// path as a real encrypted PDF with no matching stored password — this
+    /// repo has no encryption-capable dependency to author a real encrypted
+    /// fixture with, so this is the closest exercise of that branch that
+    /// doesn't require Keychain-backed encryption in a unit test.)
+    #[tokio::test]
+    async fn resolve_statement_password_prompts_when_nothing_unlocks_it() {
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+
+        let unparseable_bytes: &[u8] = b"not a real pdf";
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap()
+            .handle()
+            .clone();
+        let pending_bytes = crate::statements::pending_bytes::PendingStatementBytes::default();
+
+        let resolution = resolve_statement_password(
+            "stmt_resolve_test",
+            unparseable_bytes,
+            "statement.pdf",
+            "file_hash_resolve_test",
+            &pool,
+            &app,
+            &pending_bytes,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            resolution,
+            StatementPasswordResolution::PromptCreated
+        ));
+
+        let conn = pool.get().await.unwrap();
+        let status: String = conn
+            .interact(|c| {
+                c.query_row(
+                    "SELECT status FROM unprocessed_statements WHERE id = ?",
+                    ["stmt_resolve_test"],
+                    |row| row.get(0),
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(status, "awaiting_password");
+
+        assert_eq!(
+            pending_bytes.take("stmt_resolve_test").await.map(|(b, _)| b),
+            Some(unparseable_bytes.to_vec())
+        );
+    }
 
     // ── test_password_encrypted_before_storage ───────────────────────────────
     //
@@ -582,7 +779,9 @@ mod tests {
             .unwrap()
             .handle()
             .clone();
-        handle_password_timeout("stmt_to", &pool, &app).await.unwrap();
+        handle_password_timeout("stmt_to", &pool, &app)
+            .await
+            .unwrap();
 
         // Verify status transitioned
         let conn2 = pool.get().await.unwrap();
