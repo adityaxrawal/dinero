@@ -1,0 +1,12 @@
+# Pyrefly configuration for the Dinero project
+#
+# gmail_export/reviewer_app.py is a standalone HTTP server script that embeds
+# a large HTML+JavaScript template as a triple-quoted string. Pyrefly tries to
+# parse the JavaScript inside the string literal as Python, producing hundreds
+# of false-positive "Parse error" and "Could not find name" diagnostics.
+# Excluding the directory silences all those phantom errors.
+
+[python]
+exclude = [
+    "gmail_export/**",
+]

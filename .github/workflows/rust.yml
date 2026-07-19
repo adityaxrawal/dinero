@@ -1,0 +1,93 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  lint:
+    # H7 fix (Doc 20 §7): rusqlite's bundled-sqlcipher feature needs macOS SDK
+    # headers to build at all — running this job on ubuntu-latest contradicted
+    # the doc's own stated rationale and risked masking macOS-only build errors.
+    name: Rust Lint (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Run cargo fmt
+        run: cargo fmt --all -- --check
+        working-directory: src-tauri
+      - name: Run cargo clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+        working-directory: src-tauri
+
+  # K4 fix: dependency-vulnerability scanning was cited as "Resolved"/Accepted
+  # (Doc 39 §7, Doc 48 ADR-014) but no cargo audit step, and no Dependabot
+  # config, actually existed.
+  audit:
+    name: Rust Dependency Audit
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Run cargo audit
+        run: cargo audit
+        working-directory: src-tauri
+
+  test:
+    name: Rust Tests (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Run cargo test
+        run: cargo test --all-features
+        working-directory: src-tauri
+
+  # H8 fix (Doc 30): signing/notarization now only ever runs from release.yml
+  # on a tagged release event — this job just verifies the app still builds
+  # on every push, with no signing secrets involved.
+  build-check:
+    name: Build Check (unsigned, macOS)
+    needs: [lint, test]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Build Tauri (debug, unsigned)
+        run: pnpm tauri build --debug --no-bundle

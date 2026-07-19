@@ -1,0 +1,21 @@
+# K4 fix (Doc 39 §7, Doc 48 ADR-014): dependency-vulnerability scanning was
+# cited as an accepted/resolved decision, but this file — and the cargo
+# audit / pnpm audit CI steps it complements — didn't actually exist.
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/src-tauri"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

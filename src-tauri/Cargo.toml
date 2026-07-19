@@ -60,9 +60,6 @@ tauri-plugin-updater = "2"
 tauri-plugin-notification = "2"
 aes-gcm = "0.10"
 strsim = "0.11"
-candle-core = "0.8.2"
-candle-transformers = "0.8.2"
-tokenizers = "0.19.1"
 jsonwebtoken = "9"
 machine-uid = "0.5"
 bip39 = "2"
@@ -71,6 +68,14 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 sqlx = { version = "0.9.0", features = ["sqlite", "migrate", "runtime-tokio"] }
 tauri-plugin-autostart = "2"
 battery = "0.7"
+unicode-security = "0.1.2"
+# Sanitizes source-email HTML for display in the password-prompt modal
+# (Doc 30 TASK-FE-012 follow-up) -- strips scripts/event-handlers/forms and,
+# deliberately, all <img> tags (remote images in a fetched bank email are a
+# tracking-pixel vector this offline-first app doesn't want to phone home
+# for) while keeping layout/typography tags so the rendered email still
+# looks like the original.
+ammonia = "4"
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }

@@ -47,7 +47,7 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": ["binaries/*"],
+    "resources": ["binaries/*", "libpdfium.dylib"],
     "macOS": {
       "entitlements": "Entitlements.plist",
       "exceptionDomain": "api.dinero-app.com",

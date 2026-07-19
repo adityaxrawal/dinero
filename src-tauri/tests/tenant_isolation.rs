@@ -24,7 +24,9 @@ fn test_data_isolation_ipc_parameter_attack() {
     let mut violations = Vec::new();
 
     fn scan(dir: &std::path::Path, violations: &mut Vec<String>) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
@@ -34,7 +36,9 @@ fn test_data_isolation_ipc_parameter_attack() {
             if path.extension().map(|e| e == "rs") != Some(true) {
                 continue;
             }
-            let Ok(content) = std::fs::read_to_string(&path) else { continue };
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue;
+            };
             let lines: Vec<&str> = content.lines().collect();
             for (i, line) in lines.iter().enumerate() {
                 if line.trim() != "#[tauri::command]" {
@@ -73,7 +77,10 @@ fn test_data_isolation_ipc_parameter_attack() {
 fn require_active_session_never_falls_back_to_a_default_identity() {
     let state = SessionState::default();
     let result = require_active_session(&state);
-    assert!(result.is_err(), "an empty SessionState must never resolve to a usable session id");
+    assert!(
+        result.is_err(),
+        "an empty SessionState must never resolve to a usable session id"
+    );
 
     *state.0.lock().unwrap() = Some("real_session_id".to_string());
     assert_eq!(

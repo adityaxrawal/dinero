@@ -1,0 +1,15 @@
+{
+  "bank_name": "Axis Bank",
+  "version": 1,
+  "patterns": [
+    {
+      "name": "credit_card_spend",
+      "regex": "(?i)(?:Rs\\.?|INR)\\s*([\\d,]+(?:\\.\\d+)?)\\s+spent\\s+on\\s+.*?Axis.*?Card.*?at\\s+(.*?)\\s+on\\s+(\\d{2}-[a-zA-Z]{3}-\\d{2,4})",
+      "amount_group": 1,
+      "merchant_group": 2,
+      "date_group": 3,
+      "date_fallback_epoch": null,
+      "direction": "debit"
+    }
+  ]
+}

@@ -17,7 +17,10 @@ use rusqlite::Connection;
 /// directly against a fresh temp file instead, matching production schema
 /// exactly rather than hand-duplicating a parallel one here.
 fn conn_with_fk_off() -> Connection {
-    let dir = std::env::temp_dir().join(format!("dinero_reconciliation_regression_{}", uuid::Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!(
+        "dinero_reconciliation_regression_{}",
+        uuid::Uuid::new_v4()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let db_path = dir.join("test.db");
     tokio::runtime::Runtime::new()
@@ -89,7 +92,10 @@ fn test_regression_email_then_statement_overrides() {
 
     let candidates = fetch_candidates(&conn, &stmt_obs).unwrap();
     let decision = reconcile(&conn, &stmt_obs, candidates).unwrap();
-    assert!(matches!(decision, DecisionType::AutoMatchedExact | DecisionType::AutoMatchedScored));
+    assert!(matches!(
+        decision,
+        DecisionType::AutoMatchedExact | DecisionType::AutoMatchedScored
+    ));
 
     let (merchant, source_mix): (String, String) = conn
         .query_row(
@@ -98,7 +104,10 @@ fn test_regression_email_then_statement_overrides() {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    assert_eq!(merchant, "Uber Statement", "statement must override email-sourced merchant");
+    assert_eq!(
+        merchant, "Uber Statement",
+        "statement must override email-sourced merchant"
+    );
     assert_eq!(source_mix, "merged");
 }
 
@@ -156,8 +165,14 @@ fn test_regression_statement_then_email_fills_nulls_only() {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    assert_eq!(merchant, "Uber Email", "NULL merchant must be filled from email");
-    assert_eq!(reference_id, "REF_R2", "existing statement reference_id must never be overwritten by email");
+    assert_eq!(
+        merchant, "Uber Email",
+        "NULL merchant must be filled from email"
+    );
+    assert_eq!(
+        reference_id, "REF_R2",
+        "existing statement reference_id must never be overwritten by email"
+    );
 }
 
 // ── Scenario 3: two emails, different connected accounts, same instrument ──
@@ -189,9 +204,16 @@ fn test_regression_two_accounts_same_instrument_still_merges() {
     );
 
     let canonical_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM transactions WHERE is_deleted = 0", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM transactions WHERE is_deleted = 0",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
-    assert_eq!(canonical_count, 1, "must merge into a single canonical, not create two");
+    assert_eq!(
+        canonical_count, 1,
+        "must merge into a single canonical, not create two"
+    );
 }
 
 // ── Scenario 4: genuinely distinct transactions, same amount/merchant/day ──
@@ -236,15 +258,25 @@ fn test_regression_refund_is_distinct_canonical_not_matched_to_debit() {
     insert_observation_row(&conn, "obs_refund", None);
     let obs_refund = base_obs("obs_refund", 30000, "credit", "2026-06-10 11:00:00");
     let candidates = fetch_candidates(&conn, &obs_refund).unwrap();
-    assert!(candidates.is_empty(), "opposite-direction candidate search must never surface the original debit");
+    assert!(
+        candidates.is_empty(),
+        "opposite-direction candidate search must never surface the original debit"
+    );
 
     let decision = reconcile(&conn, &obs_refund, candidates).unwrap();
     assert_eq!(decision, DecisionType::NewCanonical);
 
     let canonical_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM transactions WHERE is_deleted = 0", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM transactions WHERE is_deleted = 0",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
-    assert_eq!(canonical_count, 2, "debit and refund must remain two distinct canonicals");
+    assert_eq!(
+        canonical_count, 2,
+        "debit and refund must remain two distinct canonicals"
+    );
 }
 
 // ── Scenario 6: EMI conversion arriving after the original purchase ────────
@@ -287,7 +319,12 @@ fn test_regression_emi_conversion_links_to_original_purchase() {
     )
     .unwrap();
     dinero_app_lib::extraction::emi_detector::link_emi_installment(
-        &conn, &installment_1_id, "inst_1", Some("uber"), Some(6), Some(600000),
+        &conn,
+        &installment_1_id,
+        "inst_1",
+        Some("uber"),
+        Some(6),
+        Some(600000),
     )
     .unwrap();
 
@@ -318,7 +355,12 @@ fn test_regression_emi_conversion_links_to_original_purchase() {
     )
     .unwrap();
     dinero_app_lib::extraction::emi_detector::link_emi_installment(
-        &conn, &installment_2_id, "inst_1", Some("uber"), Some(6), Some(600000),
+        &conn,
+        &installment_2_id,
+        "inst_1",
+        Some("uber"),
+        Some(6),
+        Some(600000),
     )
     .unwrap();
 
@@ -375,7 +417,10 @@ fn test_false_merge_and_false_separation_rates() {
         dup.fingerprint = Some(fp);
         let candidates = fetch_candidates(&conn, &dup).unwrap();
         let decision = reconcile(&conn, &dup, candidates).unwrap();
-        if !matches!(decision, DecisionType::AutoMatchedExact | DecisionType::AutoMatchedScored) {
+        if !matches!(
+            decision,
+            DecisionType::AutoMatchedExact | DecisionType::AutoMatchedScored
+        ) {
             false_separations += 1;
         }
     }
@@ -397,7 +442,10 @@ fn test_false_merge_and_false_separation_rates() {
         let candidates = fetch_candidates(&conn, &b).unwrap();
         assert!(candidates.is_empty(), "candidate search is instrument-scoped -- a different instrument must never surface as a candidate");
         let decision = reconcile(&conn, &b, candidates).unwrap();
-        if matches!(decision, DecisionType::AutoMatchedExact | DecisionType::AutoMatchedScored) {
+        if matches!(
+            decision,
+            DecisionType::AutoMatchedExact | DecisionType::AutoMatchedScored
+        ) {
             false_merges += 1;
         }
     }
@@ -416,5 +464,8 @@ fn test_false_merge_and_false_separation_rates() {
         "false-merge rate {:.4}% exceeds the 0.1% target ({false_merges}/{should_not_merge_total})",
         false_merge_rate * 100.0
     );
-    assert_eq!(false_separations, 0, "every genuine same-fingerprint duplicate in this batch must merge");
+    assert_eq!(
+        false_separations, 0,
+        "every genuine same-fingerprint duplicate in this batch must merge"
+    );
 }

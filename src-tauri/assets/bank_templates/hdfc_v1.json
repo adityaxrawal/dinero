@@ -1,0 +1,33 @@
+{
+  "bank_name": "HDFC Bank",
+  "version": 1,
+  "patterns": [
+    {
+      "name": "credit_card_spend",
+      "regex": "(?i)(?:Rs\\.?|INR)\\s*([\\d,]+(?:\\.\\d+)?)\\s+spent\\s+on\\s+.*?credit\\s+card.*?at\\s+(.*?)\\s+on\\s+(\\d{2}-[a-zA-Z]{3}-\\d{2,4})",
+      "amount_group": 1,
+      "merchant_group": 2,
+      "date_group": 3,
+      "date_fallback_epoch": null,
+      "direction": "debit"
+    },
+    {
+      "name": "debit_card_debit",
+      "regex": "(?i)(?:Rs\\.?|INR)\\s*([\\d,]+(?:\\.\\d+)?)\\s+debited\\s+from\\s+.*?A/c.*?at\\s+(.*?)(?:\\s+on\\s+(\\d{2}-[a-zA-Z]{3}-\\d{2,4})|$)",
+      "amount_group": 1,
+      "merchant_group": 2,
+      "date_group": 3,
+      "date_fallback_epoch": 1704067200,
+      "direction": "debit"
+    },
+    {
+      "name": "account_credit",
+      "regex": "(?i)(?:Rs\\.?|INR)\\s*([\\d,]+(?:\\.\\d+)?)\\s+credited\\s+to\\s+.*?A/c.*?(?:from|by)\\s+(.*?)(?:\\s+on\\s+(\\d{2}-[a-zA-Z]{3}-\\d{2,4})|$)",
+      "amount_group": 1,
+      "merchant_group": 2,
+      "date_group": 3,
+      "date_fallback_epoch": 1704067200,
+      "direction": "credit"
+    }
+  ]
+}

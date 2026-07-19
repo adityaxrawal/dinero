@@ -52,7 +52,10 @@ impl<'a, R: Runtime> LoginItemController for TauriAutoLaunchController<'a, R> {
 
     fn is_enabled(&self) -> Result<bool, String> {
         use tauri_plugin_autostart::ManagerExt;
-        self.app.autolaunch().is_enabled().map_err(|e| e.to_string())
+        self.app
+            .autolaunch()
+            .is_enabled()
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -198,7 +201,9 @@ pub fn read_battery_power_state() -> Option<(bool, f32)> {
         battery.state(),
         battery::State::Discharging | battery::State::Empty
     );
-    let percent = battery.state_of_charge().get::<battery::units::ratio::percent>();
+    let percent = battery
+        .state_of_charge()
+        .get::<battery::units::ratio::percent>();
     Some((on_battery, percent))
 }
 
@@ -318,11 +323,17 @@ mod tests {
         assert!(!controller.is_enabled().unwrap());
 
         apply_launch_at_login(&controller, true).unwrap();
-        assert!(controller.is_enabled().unwrap(), "toggling on must register the login item");
+        assert!(
+            controller.is_enabled().unwrap(),
+            "toggling on must register the login item"
+        );
         assert_eq!(*controller.enable_calls.borrow(), 1);
 
         apply_launch_at_login(&controller, false).unwrap();
-        assert!(!controller.is_enabled().unwrap(), "toggling off must remove the login item");
+        assert!(
+            !controller.is_enabled().unwrap(),
+            "toggling off must remove the login item"
+        );
         assert_eq!(*controller.disable_calls.borrow(), 1);
     }
 

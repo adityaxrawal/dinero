@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Doc 20 §3.2/§3.4: Direct Distribution (.dmg) outside the Mac App
+         Store was chosen specifically because the App Store sandbox does not
+         permit com.apple.security.cs.allow-jit, which the in-process Candle
+         LLM runtime requires — App Sandbox must not be enabled here, or the
+         entire rationale for avoiding App Store distribution is moot. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+</dict>
+</plist>

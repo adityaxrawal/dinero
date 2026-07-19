@@ -131,8 +131,7 @@ fn test_unsigned_dev_and_signed_release_profiles_are_separate_workflows() {
         .parent()
         .expect("src-tauri must have a parent (the repo root)");
     let rust_yml = fs::read_to_string(repo_root.join(".github/workflows/rust.yml")).unwrap();
-    let release_yml =
-        fs::read_to_string(repo_root.join(".github/workflows/release.yml")).unwrap();
+    let release_yml = fs::read_to_string(repo_root.join(".github/workflows/release.yml")).unwrap();
 
     assert!(
         !rust_yml.contains("APPLE_CERTIFICATE"),

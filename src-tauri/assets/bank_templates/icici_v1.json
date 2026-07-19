@@ -1,0 +1,24 @@
+{
+  "bank_name": "ICICI Bank",
+  "version": 1,
+  "patterns": [
+    {
+      "name": "credit_card_spend",
+      "regex": "(?i)(?:INR|Rs\\.?)\\s*([\\d,]+(?:\\.\\d+)?)\\s+spent\\s+on\\s+.*?Card.*?on\\s+(\\d{2}-[a-zA-Z]{3}-\\d{2,4})\\s+at\\s+(.*?)(?:\\.|$)",
+      "amount_group": 1,
+      "date_group": 2,
+      "merchant_group": 3,
+      "date_fallback_epoch": null,
+      "direction": "debit"
+    },
+    {
+      "name": "upi_debit",
+      "regex": "(?i)Acct\\s+.*?\\s+debited\\s+with\\s+(?:INR|Rs\\.?)\\s*([\\d,]+(?:\\.\\d+)?)\\s+on\\s+(\\d{2}-[a-zA-Z]{3}-\\d{2,4}).*?Info:\\s*UPI/[^/]+/(.*?)(?:\\.|$)",
+      "amount_group": 1,
+      "date_group": 2,
+      "merchant_group": 3,
+      "date_fallback_epoch": null,
+      "direction": "debit"
+    }
+  ]
+}

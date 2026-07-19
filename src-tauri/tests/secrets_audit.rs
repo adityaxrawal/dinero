@@ -20,7 +20,9 @@ fn temp_db_dir() -> std::path::PathBuf {
 fn any_file_contains(dir: &std::path::Path, needle: &[u8]) -> Option<std::path::PathBuf> {
     let mut stack = vec![dir.to_path_buf()];
     while let Some(current) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&current) else { continue };
+        let Ok(entries) = std::fs::read_dir(&current) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
@@ -45,12 +47,18 @@ async fn test_sqlite_file_unreadable_without_keychain_key() {
     let db_path = dir.join("finance.db");
 
     let pool = db::init_db(db_path.clone()).await;
-    assert!(pool.is_ok(), "init_db should succeed with a real Keychain-derived key");
+    assert!(
+        pool.is_ok(),
+        "init_db should succeed with a real Keychain-derived key"
+    );
 
     let raw_conn = rusqlite::Connection::open(&db_path).unwrap();
     let res = raw_conn.execute("SELECT count(*) FROM license_state", []);
 
-    assert!(res.is_err(), "the database must be unreadable without PRAGMA key");
+    assert!(
+        res.is_err(),
+        "the database must be unreadable without PRAGMA key"
+    );
     let err_str = res.unwrap_err().to_string();
     assert!(
         err_str.contains("file is not a database") || err_str.contains("encrypted"),
@@ -73,9 +81,15 @@ fn test_pdf_passwords_never_plaintext() {
     let plaintext = "hunter2_super_secret_pdf_password";
     let blob = encrypt_password(plaintext).expect("encryption must succeed");
 
-    assert_ne!(blob, plaintext.as_bytes(), "ciphertext must not equal the plaintext bytes");
+    assert_ne!(
+        blob,
+        plaintext.as_bytes(),
+        "ciphertext must not equal the plaintext bytes"
+    );
     assert!(
-        !blob.windows(plaintext.len()).any(|w| w == plaintext.as_bytes()),
+        !blob
+            .windows(plaintext.len())
+            .any(|w| w == plaintext.as_bytes()),
         "ciphertext must not contain the plaintext as a substring anywhere"
     );
 
@@ -99,10 +113,15 @@ async fn test_sqlite_key_never_written_to_disk() {
     let dir = temp_db_dir();
     let db_path = dir.join("finance.db");
 
-    let _pool = db::init_db(db_path.clone()).await.expect("init_db should succeed");
+    let _pool = db::init_db(db_path.clone())
+        .await
+        .expect("init_db should succeed");
 
     let key = db::crypto::derive_database_key().expect("key derivation should succeed");
-    assert!(key.len() > 16, "sanity check: derived key should be a substantial string, not trivially short");
+    assert!(
+        key.len() > 16,
+        "sanity check: derived key should be a substantial string, not trivially short"
+    );
 
     if let Some(offender) = any_file_contains(&dir, key.as_bytes()) {
         panic!(
@@ -125,7 +144,9 @@ async fn test_sqlite_key_never_written_to_disk() {
 async fn test_gmail_tokens_stored_only_in_keychain() {
     let dir = temp_db_dir();
     let db_path = dir.join("finance.db");
-    let pool = db::init_db(db_path.clone()).await.expect("init_db should succeed");
+    let pool = db::init_db(db_path.clone())
+        .await
+        .expect("init_db should succeed");
     let conn = pool.get().await.unwrap();
 
     // Exhaustive field list (no `..`) — a new field here that isn't also
@@ -214,7 +235,9 @@ fn test_tokens_never_returned_to_react() {
     let mut violations = Vec::new();
 
     fn scan(dir: &std::path::Path, violations: &mut Vec<String>) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
@@ -224,7 +247,9 @@ fn test_tokens_never_returned_to_react() {
             if path.extension().map(|e| e == "rs") != Some(true) {
                 continue;
             }
-            let Ok(content) = std::fs::read_to_string(&path) else { continue };
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue;
+            };
             let lines: Vec<&str> = content.lines().collect();
             for (i, line) in lines.iter().enumerate() {
                 if line.trim() == "#[tauri::command]" {
@@ -252,7 +277,11 @@ fn test_tokens_never_returned_to_react() {
     }
 
     scan(&src_dir, &mut violations);
-    assert!(violations.is_empty(), "IPC commands must never expose raw tokens: {:#?}", violations);
+    assert!(
+        violations.is_empty(),
+        "IPC commands must never expose raw tokens: {:#?}",
+        violations
+    );
 }
 
 /// Sanity guard: none of the above should silently no-op due to a path
