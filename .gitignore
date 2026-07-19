@@ -1,0 +1,64 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Secrets — Doc 33 §3 / Doc 24: never committed, live OAuth client credentials
+.env
+.env.*
+!.env.example
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Docs
+dinero-docs
+
+# data
+/real-test-data
+
+# Gmail export dataset — raw email/PII + OAuth token, never committed
+/gmail_export
+
+# Playwright test-run artifacts
+/test-results
+
+.codegraph
+.fallow
+.vscode
+
+# Untracked development, testing, and documentation files
+/src-tauri/src/tests/
+/src-tauri/src/commands/data_tests.rs
+/src-tauri/src/commands/debug.rs
+/src-tauri/src/dev_review.rs
+/src-tauri/src/bin.rs
+/src/test/
+/e2e/
+/playwright-report/
+playwright.config.ts
+vitest.config.ts
+test_shutdown.sh
+/scripts/
+audit.md
+fix-log.md
+implementation-log.md
+README.md
+/docs/
