@@ -174,12 +174,20 @@ impl ExtractionLayer for LearnedPatternLayer {
                                             result.direction = Some(matched_str.to_string());
                                         }
                                         "event_time" => {
-                                            if let Ok(ts) = matched_str.parse::<i64>() {
-                                                result.event_time = Some(ts);
-                                            } else {
-                                                // Fallback for test mocking
-                                                result.event_time = Some(1704067200);
-                                            }
+                                            // A learned rule's capture is either a literal
+                                            // epoch timestamp (rare, direct DB-authored
+                                            // rules) or a date string in the same shape
+                                            // Layer 2/LLM-synthesized rules hint at (see
+                                            // `synthesize_pending_rule`'s `event_time`
+                                            // regex, which captures "25-May-2023" style
+                                            // text, not a raw integer) -- try both parses.
+                                            // Neither succeeding leaves this field `None`
+                                            // (not a fabricated date), which correctly
+                                            // fails `ExtractionResult::is_valid()`.
+                                            result.event_time = matched_str
+                                                .parse::<i64>()
+                                                .ok()
+                                                .or_else(|| parse_date_generic(matched_str));
                                         }
                                         _ => {}
                                     }
@@ -204,20 +212,54 @@ impl ExtractionLayer for LearnedPatternLayer {
 
 use std::sync::OnceLock;
 
-static HDFC_CC_RE: OnceLock<Regex> = OnceLock::new();
-static HDFC_DC_RE: OnceLock<Regex> = OnceLock::new();
-static ICICI_CC_RE: OnceLock<Regex> = OnceLock::new();
-static ICICI_UPI_RE: OnceLock<Regex> = OnceLock::new();
-static SBI_CC_RE: OnceLock<Regex> = OnceLock::new();
-static AXIS_CC_RE: OnceLock<Regex> = OnceLock::new();
-static KOTAK_CC_RE: OnceLock<Regex> = OnceLock::new();
-static YES_CC_RE: OnceLock<Regex> = OnceLock::new();
-
 static GENERIC_CURRENCY_AMOUNT_PREFIX_RE: OnceLock<Regex> = OnceLock::new();
 static GENERIC_CURRENCY_AMOUNT_SUFFIX_RE: OnceLock<Regex> = OnceLock::new();
 static GENERIC_MERCHANT_RE: OnceLock<Regex> = OnceLock::new();
+static GENERIC_MERCHANT_RE_STRICT: OnceLock<Regex> = OnceLock::new();
+static GENERIC_SELF_REFERENTIAL_MERCHANT_RE: OnceLock<Regex> = OnceLock::new();
 static GENERIC_DATE_RE: OnceLock<Regex> = OnceLock::new();
 static GENERIC_REF_RE: OnceLock<Regex> = OnceLock::new();
+static GENERIC_CREDIT_DIRECTION_RE: OnceLock<Regex> = OnceLock::new();
+static GENERIC_DEBIT_DIRECTION_RE: OnceLock<Regex> = OnceLock::new();
+
+/// gmail false-negative remediation: `GenericRegexLayer`, `Layer5StatementCrossrefLayer`,
+/// and `cross_check_amount` each used to independently call
+/// `GENERIC_CURRENCY_AMOUNT_PREFIX_RE.get_or_init(|| Regex::new(<pattern>))`
+/// with their own copy of the pattern string -- `OnceLock::get_or_init`
+/// only ever runs the *first* caller's closure (whichever layer happens to
+/// run first for the process), so three independently-edited copies could
+/// silently drift out of sync with only the first one ever taking effect.
+/// One shared function is the only way to guarantee all three call sites
+/// see the same pattern. Also fixes a real false negative: a body stating
+/// an amount as a spelled-out ISO code ("USD 1.00", e.g. a declined
+/// international card transaction) matched neither the ₹/Rs/INR nor the
+/// bare `$` alternatives.
+fn generic_currency_amount_regexes() -> (&'static Regex, &'static Regex) {
+    let prefix = GENERIC_CURRENCY_AMOUNT_PREFIX_RE.get_or_init(|| {
+        Regex::new(r"(?i)(rs\.?|inr|₹|\$|usd|eur|gbp|aed|sgd|aud|cad|jpy|chf)\s*([\d,]+(?:\.\d+)?)")
+            .unwrap()
+    });
+    let suffix = GENERIC_CURRENCY_AMOUNT_SUFFIX_RE.get_or_init(|| {
+        Regex::new(r"(?i)([\d,]+(?:\.\d+)?)\s*(inr|rs\.?|₹|usd|eur|gbp|aed|sgd|aud|cad|jpy|chf)")
+            .unwrap()
+    });
+    (prefix, suffix)
+}
+
+/// gmail false-negative remediation: a neobank "money credited" template
+/// (e.g. Jupiter) says "...was credited **to your account**" before it
+/// separately labels the real counterparty further down ("Payment
+/// **from**: ADITYA RAWAL"). The single-match ambiguous-tier lookup used to
+/// stop at the first "to/from/at/for/by" hit and take "your account" itself
+/// as the merchant -- a real value (not empty), so nothing downstream caught
+/// it. Matches self-referential captures ("your account", "my savings
+/// account", "the account") so the caller can skip them and keep scanning
+/// for the real counterparty instead.
+fn is_self_referential_account(candidate: &str) -> bool {
+    let re = GENERIC_SELF_REFERENTIAL_MERCHANT_RE
+        .get_or_init(|| Regex::new(r"(?i)^(?:your|my|the)\b.*\baccount$|^account$").unwrap());
+    re.is_match(candidate.trim())
+}
 
 // Instrument signal detection statics
 static INSTR_CARD_LAST4_RE: OnceLock<Regex> = OnceLock::new();
@@ -347,18 +389,118 @@ fn parse_amount(s: &str) -> Option<i64> {
         .map(|v| (v * 100.0).round() as i64)
 }
 
-fn parse_date(s: &str) -> i64 {
+/// Returns `None` on an unparseable date string -- NEVER a fabricated
+/// fallback timestamp. A silently-invented date here would corrupt
+/// `best_event_time` downstream, and specifically Layer 5's ±3-day
+/// statement crossref window and reconciliation's time-proximity scoring;
+/// callers must let a `None` here fail `ExtractionResult::is_valid()`
+/// (or fall through to an explicit, intentional fallback like
+/// `BankPatternTemplate::date_fallback_epoch`) rather than treat this as
+/// always succeeding.
+fn parse_date(s: &str) -> Option<i64> {
     if let Ok(naive_date) = chrono::NaiveDate::parse_from_str(s, "%d-%b-%y") {
         if let Some(naive_datetime) = naive_date.and_hms_opt(0, 0, 0) {
-            return naive_datetime.and_utc().timestamp();
+            return Some(naive_datetime.and_utc().timestamp());
         }
     }
     if let Ok(naive_date) = chrono::NaiveDate::parse_from_str(s, "%d-%b-%Y") {
         if let Some(naive_datetime) = naive_date.and_hms_opt(0, 0, 0) {
-            return naive_datetime.and_utc().timestamp();
+            return Some(naive_datetime.and_utc().timestamp());
         }
     }
-    1704067200
+    None
+}
+
+/// Doc 30 TASK-TXN-003: "Each template stored as versioned JSON under
+/// `bank_templates/<bank>_<version>.json` so templates can ship via app
+/// updates without an extraction-engine rewrite." Regex *data* (pattern
+/// string + which capture group is amount/merchant/date) lives in these
+/// JSON files, not as `Regex::new(...)` literals in match arms -- adding or
+/// adjusting a bank's format is now a data-file change, not a Rust-code
+/// change to this dispatch logic. Embedded via `include_str!` (compiled
+/// into the binary, parsed once at first use) rather than read from a
+/// runtime resource directory: a new/updated template still ships in the
+/// next app release either way, and this avoids Tauri resource-path
+/// resolution being a new failure mode for a financial-data-critical path.
+fn default_pattern_direction() -> String {
+    "debit".to_string()
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct BankPatternTemplate {
+    #[allow(dead_code)]
+    name: String,
+    regex: String,
+    amount_group: usize,
+    merchant_group: usize,
+    date_group: usize,
+    #[serde(default)]
+    date_fallback_epoch: Option<i64>,
+    /// Fixed direction this pattern implies ("debit" or "credit") --
+    /// templates are single-purpose per regex (one pattern matches one
+    /// transaction shape, e.g. "spent"/"debited" vs "credited"/"refund"),
+    /// so a fixed per-pattern value is sufficient; no capture group is
+    /// needed. Defaults to "debit" so the 6 existing bundled templates
+    /// (all debit-shaped) don't need every entry rewritten, but every new
+    /// pattern should set this explicitly rather than rely on the default.
+    #[serde(default = "default_pattern_direction")]
+    direction: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct BankTemplateFile {
+    bank_name: String,
+    #[allow(dead_code)]
+    version: u32,
+    patterns: Vec<BankPatternTemplate>,
+}
+
+struct CompiledBankPattern {
+    regex: Regex,
+    amount_group: usize,
+    merchant_group: usize,
+    date_group: usize,
+    date_fallback_epoch: Option<i64>,
+    direction: String,
+}
+
+/// The full set of `assets/bank_templates/*.json` files, embedded at
+/// compile time. Adding a bank means adding a JSON file here plus one
+/// `include_str!` line -- no changes to `BankTemplateLayer::extract` below.
+const BANK_TEMPLATE_FILES: &[&str] = &[
+    include_str!("../../assets/bank_templates/hdfc_v1.json"),
+    include_str!("../../assets/bank_templates/icici_v1.json"),
+    include_str!("../../assets/bank_templates/sbi_v1.json"),
+    include_str!("../../assets/bank_templates/axis_v1.json"),
+    include_str!("../../assets/bank_templates/kotak_v1.json"),
+    include_str!("../../assets/bank_templates/yes_bank_v1.json"),
+];
+
+fn bank_templates() -> &'static std::collections::HashMap<String, Vec<CompiledBankPattern>> {
+    static TEMPLATES: OnceLock<std::collections::HashMap<String, Vec<CompiledBankPattern>>> =
+        OnceLock::new();
+    TEMPLATES.get_or_init(|| {
+        let mut map = std::collections::HashMap::new();
+        for raw in BANK_TEMPLATE_FILES {
+            let file: BankTemplateFile = serde_json::from_str(raw)
+                .expect("bundled bank_templates/*.json must parse as valid BankTemplateFile");
+            let compiled: Vec<CompiledBankPattern> = file
+                .patterns
+                .into_iter()
+                .map(|p| CompiledBankPattern {
+                    regex: Regex::new(&p.regex)
+                        .expect("bundled bank_templates/*.json regex must compile"),
+                    amount_group: p.amount_group,
+                    merchant_group: p.merchant_group,
+                    date_group: p.date_group,
+                    date_fallback_epoch: p.date_fallback_epoch,
+                    direction: p.direction,
+                })
+                .collect();
+            map.insert(file.bank_name, compiled);
+        }
+        map
+    })
 }
 
 // Layer 2: Bank-specific template regex
@@ -374,7 +516,6 @@ impl ExtractionLayer for BankTemplateLayer {
             let mut result = ExtractionResult {
                 extraction_method: "bank_templates".to_string(),
                 currency: Some("INR".to_string()),
-                direction: Some("debit".to_string()),
                 ..Default::default()
             };
 
@@ -382,70 +523,35 @@ impl ExtractionLayer for BankTemplateLayer {
             // (regardless of which bank/format branch produced it) can seed a
             // `pending` pattern_rules candidate below before returning.
             let matched: Option<ExtractionResult> = 'm: {
-                if bank_name == "HDFC Bank" {
-                    let re_cc = HDFC_CC_RE.get_or_init(|| Regex::new(r"(?i)(?:Rs\.?|INR)\s*([\d,]+(?:\.\d+)?)\s+spent\s+on\s+.*?credit\s+card.*?at\s+(.*?)\s+on\s+(\d{2}-[a-zA-Z]{3}-\d{2,4})").unwrap());
-                    if let Some(caps) = re_cc.captures(body) {
-                        result.amount_minor = parse_amount(caps.get(1)?.as_str());
-                        result.merchant_raw = Some(caps.get(2)?.as_str().trim().to_string());
-                        result.event_time = Some(parse_date(caps.get(3)?.as_str()));
-                        break 'm Some(result);
-                    }
-
-                    let re_dc = HDFC_DC_RE.get_or_init(|| Regex::new(r"(?i)(?:Rs\.?|INR)\s*([\d,]+(?:\.\d+)?)\s+debited\s+from\s+.*?A/c.*?at\s+(.*?)(?:\s+on\s+(\d{2}-[a-zA-Z]{3}-\d{2,4})|$)").unwrap());
-                    if let Some(caps) = re_dc.captures(body) {
-                        result.amount_minor = parse_amount(caps.get(1)?.as_str());
-                        result.merchant_raw = Some(caps.get(2)?.as_str().trim().to_string());
-                        result.event_time =
-                            Some(caps.get(3).map_or(1704067200, |m| parse_date(m.as_str())));
-                        break 'm Some(result);
-                    }
-                } else if bank_name == "ICICI Bank" {
-                    let re_cc = ICICI_CC_RE.get_or_init(|| Regex::new(r"(?i)(?:INR|Rs\.?)\s*([\d,]+(?:\.\d+)?)\s+spent\s+on\s+.*?Card.*?on\s+(\d{2}-[a-zA-Z]{3}-\d{2,4})\s+at\s+(.*?)(?:\.|$)").unwrap());
-                    if let Some(caps) = re_cc.captures(body) {
-                        result.amount_minor = parse_amount(caps.get(1)?.as_str());
-                        result.event_time = Some(parse_date(caps.get(2)?.as_str()));
-                        result.merchant_raw = Some(caps.get(3)?.as_str().trim().to_string());
-                        break 'm Some(result);
-                    }
-
-                    let re_upi = ICICI_UPI_RE.get_or_init(|| Regex::new(r"(?i)Acct\s+.*?\s+debited\s+with\s+(?:INR|Rs\.?)\s*([\d,]+(?:\.\d+)?)\s+on\s+(\d{2}-[a-zA-Z]{3}-\d{2,4}).*?Info:\s*UPI/[^/]+/(.*?)(?:\.|$)").unwrap());
-                    if let Some(caps) = re_upi.captures(body) {
-                        result.amount_minor = parse_amount(caps.get(1)?.as_str());
-                        result.event_time = Some(parse_date(caps.get(2)?.as_str()));
-                        result.merchant_raw = Some(caps.get(3)?.as_str().trim().to_string());
-                        break 'm Some(result);
-                    }
-                } else if bank_name == "State Bank of India" {
-                    let re_sbi = SBI_CC_RE.get_or_init(|| Regex::new(r"(?i)(?:Rs\.?|INR)\s*([\d,]+(?:\.\d+)?)\s+spent\s+on\s+.*?SBI\s+Credit\s+Card.*?at\s+(.*?)\s+on\s+(\d{2}-[a-zA-Z]{3}-\d{2,4})").unwrap());
-                    if let Some(caps) = re_sbi.captures(body) {
-                        result.amount_minor = parse_amount(caps.get(1)?.as_str());
-                        result.merchant_raw = Some(caps.get(2)?.as_str().trim().to_string());
-                        result.event_time = Some(parse_date(caps.get(3)?.as_str()));
-                        break 'm Some(result);
-                    }
-                } else if bank_name == "Axis Bank" {
-                    let re_axis = AXIS_CC_RE.get_or_init(|| Regex::new(r"(?i)(?:Rs\.?|INR)\s*([\d,]+(?:\.\d+)?)\s+spent\s+on\s+.*?Axis.*?Card.*?at\s+(.*?)\s+on\s+(\d{2}-[a-zA-Z]{3}-\d{2,4})").unwrap());
-                    if let Some(caps) = re_axis.captures(body) {
-                        result.amount_minor = parse_amount(caps.get(1)?.as_str());
-                        result.merchant_raw = Some(caps.get(2)?.as_str().trim().to_string());
-                        result.event_time = Some(parse_date(caps.get(3)?.as_str()));
-                        break 'm Some(result);
-                    }
-                } else if bank_name == "Kotak Mahindra Bank" {
-                    let re_kotak = KOTAK_CC_RE.get_or_init(|| Regex::new(r"(?i)(?:Rs\.?|INR)\s*([\d,]+(?:\.\d+)?)\s+spent\s+on\s+.*?Kotak.*?Card.*?at\s+(.*?)\s+on\s+(\d{2}-[a-zA-Z]{3}-\d{2,4})").unwrap());
-                    if let Some(caps) = re_kotak.captures(body) {
-                        result.amount_minor = parse_amount(caps.get(1)?.as_str());
-                        result.merchant_raw = Some(caps.get(2)?.as_str().trim().to_string());
-                        result.event_time = Some(parse_date(caps.get(3)?.as_str()));
-                        break 'm Some(result);
-                    }
-                } else if bank_name == "YES Bank" {
-                    let re_yes = YES_CC_RE.get_or_init(|| Regex::new(r"(?i)(?:Rs\.?|INR)\s*([\d,]+(?:\.\d+)?)\s+spent\s+on\s+.*?YES.*?Card.*?at\s+(.*?)\s+on\s+(\d{2}-[a-zA-Z]{3}-\d{2,4})").unwrap());
-                    if let Some(caps) = re_yes.captures(body) {
-                        result.amount_minor = parse_amount(caps.get(1)?.as_str());
-                        result.merchant_raw = Some(caps.get(2)?.as_str().trim().to_string());
-                        result.event_time = Some(parse_date(caps.get(3)?.as_str()));
-                        break 'm Some(result);
+                if let Some(patterns) = bank_templates().get(bank_name) {
+                    for p in patterns {
+                        if let Some(caps) = p.regex.captures(body) {
+                            // Fixed per-pattern direction (see
+                            // `BankPatternTemplate::direction`'s doc comment)
+                            // -- NOT a blanket "debit" default applied to
+                            // every match regardless of which pattern
+                            // actually fired, which previously mislabeled
+                            // any credit/refund-shaped template as a debit.
+                            result.direction = Some(p.direction.clone());
+                            result.amount_minor = caps
+                                .get(p.amount_group)
+                                .and_then(|m| parse_amount(m.as_str()));
+                            result.merchant_raw = caps
+                                .get(p.merchant_group)
+                                .map(|m| m.as_str().trim().to_string());
+                            // `date_fallback_epoch` is an explicit,
+                            // template-authored fallback (Doc 30
+                            // TASK-TXN-003) for banks whose alert doesn't
+                            // always print a date -- distinct from `None`,
+                            // which means the capture group genuinely
+                            // didn't parse and must fail validation, not
+                            // silently default to any date at all.
+                            result.event_time = caps
+                                .get(p.date_group)
+                                .and_then(|m| parse_date(m.as_str()))
+                                .or(p.date_fallback_epoch);
+                            break 'm Some(result);
+                        }
                     }
                 }
 
@@ -484,6 +590,20 @@ impl ExtractionLayer for BankTemplateLayer {
     }
 }
 
+/// Doc 30 TASK-TXN-004's documented Layer 3 confidence floor: the weakest
+/// possible passing result (bare amount+currency, no explicit direction
+/// verb, no merchant, no reference ID -- i.e. the `has_balance_update` path
+/// through `ExtractionResult::is_valid()`) scores here.
+const LAYER3_BASE_CONFIDENCE: f64 = 0.5;
+/// Doc 30 TASK-TXN-004's documented Layer 3 confidence ceiling -- must stay
+/// below Layer 1/2's typical 0.9+, regardless of how many bonuses stack.
+const LAYER3_MAX_CONFIDENCE: f64 = 0.7;
+const LAYER3_AMOUNT_CURRENCY_BONUS: f64 = 0.10;
+const LAYER3_EXPLICIT_DIRECTION_BONUS: f64 = 0.10;
+const LAYER3_STRICT_MERCHANT_BONUS: f64 = 0.15;
+const LAYER3_AMBIGUOUS_MERCHANT_BONUS: f64 = 0.05;
+const LAYER3_REFERENCE_ID_BONUS: f64 = 0.05;
+
 // Layer 3: Generic heuristic regex
 pub struct GenericRegexLayer;
 impl ExtractionLayer for GenericRegexLayer {
@@ -496,19 +616,11 @@ impl ExtractionLayer for GenericRegexLayer {
         Box::pin(async move {
             let mut result = ExtractionResult {
                 extraction_method: "generic_regex".to_string(),
-                // Doc 30 TASK-TXN-004: "a lower confidence score (0.5-0.7)
-                // than Layer 1/2 (typically 0.9+), which flows directly into
-                // the reconciliation scoring engine." No document pins an
-                // exact figure within that range; 0.6 is the midpoint.
-                confidence_score: Some(0.6),
                 ..Default::default()
             };
 
             // 1. Amount & Currency
-            let prefix_re = GENERIC_CURRENCY_AMOUNT_PREFIX_RE
-                .get_or_init(|| Regex::new(r"(?i)(rs\.?|inr|₹|\$)\s*([\d,]+(?:\.\d+)?)").unwrap());
-            let suffix_re = GENERIC_CURRENCY_AMOUNT_SUFFIX_RE
-                .get_or_init(|| Regex::new(r"(?i)([\d,]+(?:\.\d+)?)\s*(inr|rs\.?|₹)").unwrap());
+            let (prefix_re, suffix_re) = generic_currency_amount_regexes();
 
             if let Some(caps) = prefix_re.captures(body) {
                 result.currency = Some(normalize_currency(caps.get(1)?.as_str()));
@@ -518,38 +630,162 @@ impl ExtractionLayer for GenericRegexLayer {
                 result.currency = Some(normalize_currency(caps.get(2)?.as_str()));
             }
 
-            // Direction
-            if Regex::new(r"(?i)\b(?:credited|received|refund|deposited|reversal|added|returned|transfer from|cashback)\b")
-                .unwrap()
-                .is_match(body)
-            {
+            // Direction (shared lexicon -- see extraction/lexicon.rs's doc
+            // comment for why these lists are no longer duplicated
+            // per-layer). Previously recompiled a fresh `Regex` on every
+            // single call instead of caching via `OnceLock` like every
+            // other regex in this layer; now fixed alongside the lexicon
+            // consolidation.
+            let credit_re = GENERIC_CREDIT_DIRECTION_RE.get_or_init(|| {
+                let alternation = crate::extraction::lexicon::CREDIT_VERBS
+                    .iter()
+                    .chain(crate::extraction::lexicon::CREDIT_PHRASES)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("|");
+                Regex::new(&format!(r"(?i)\b(?:{alternation})\b")).unwrap()
+            });
+            let debit_re = GENERIC_DEBIT_DIRECTION_RE.get_or_init(|| {
+                let alternation = crate::extraction::lexicon::DEBIT_VERBS
+                    .iter()
+                    .chain(crate::extraction::lexicon::DEBIT_PHRASES)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("|");
+                Regex::new(&format!(r"(?i)\b(?:{alternation})\b")).unwrap()
+            });
+            // Tracked separately from `result.direction` for confidence
+            // scoring below: an explicit verb match ("debited"/"credited"
+            // etc.) is real evidence; the `result.amount_minor.is_some()`
+            // branch below is a bare guess with no direction-specific
+            // signal at all, and must not be scored the same.
+            let direction_from_explicit_verb;
+            if credit_re.is_match(body) {
                 result.direction = Some("credit".to_string());
-            } else if Regex::new(r"(?i)\b(?:debited|spent|paid|withdrawn|payment|sent|deducted|purchase|transfer to)\b")
-                .unwrap()
-                .is_match(body)
-            {
+                direction_from_explicit_verb = true;
+            } else if debit_re.is_match(body) {
                 result.direction = Some("debit".to_string());
+                direction_from_explicit_verb = true;
             } else {
+                direction_from_explicit_verb = false;
                 if result.amount_minor.is_some() {
                     result.direction = Some("debit".to_string());
                 }
             }
 
             // 2. Merchant
-            let merchant_re = GENERIC_MERCHANT_RE.get_or_init(|| Regex::new(r"(?i)\b(?:at|to|from|for|paid to|by|merchant|beneficiary|in favor of|purchased at|txn at)\s+([A-Za-z0-9\s]{2,40}?)(?:\s+on\b|\s+via\b|\s+using\b|\s+with\b|\s+ref\b|\s+card\b|\s+date\b|\s+a/c\b|\s+branch\b|\s+upi\b|[,.\n\-]|$)").unwrap());
-            if let Some(caps) = merchant_re.captures(body) {
-                let m = caps.get(1)?.as_str().trim();
-                if !m.is_empty() {
-                    result.merchant_raw = Some(m.to_string());
+            // Doc 30 TASK-TXN-004: "merchant via capitalized-token or
+            // at/to/towards/info: heuristics" -- `towards` and `info:` were
+            // missing from the proximity-keyword alternation (only Layer 2's
+            // ICICI template hardcoded `Info:` for that one bank). Any other
+            // bank's UPI alert using the same "Info: <merchant>" convention,
+            // with no dedicated Layer 2 template, previously fell through
+            // this fallback with no merchant extracted at all.
+            //
+            // gmail false-negative remediation, Cluster E: the capture class
+            // also excluded `*`, so card-network settlement descriptors
+            // (`RAZ*SWIGGY`, `PYTM*...`) truncated at the `*` and never
+            // reached a terminator, producing no merchant at all.
+            //
+            // Cluster G: the keyword must be followed immediately by
+            // whitespace, so label-style phrasing ("Payment from:   NAME",
+            // colon before the value) never matched either -- `:?` makes the
+            // colon optional between the keyword and the required
+            // whitespace, for every keyword in the alternation.
+            //
+            // Two-tier lookup, discovered while verifying Cluster E against
+            // the real HDFC body text: "at|to|from|for|by" are ambiguous --
+            // "debited from your HDFC Bank Credit Card" uses "from" to name
+            // the *source* instrument, not the counterparty, and since the
+            // `regex` crate has no lookaround, a single alternation always
+            // prefers whichever keyword occurs leftmost in the body
+            // regardless of which is semantically the merchant label. The
+            // unambiguous merchant-labeling keywords ("towards", "paid to",
+            // "info:", etc.) are tried first, on the whole body, before
+            // falling back to the ambiguous generic set -- this fixes
+            // "debited from your HDFC Bank Credit Card ... towards
+            // RAZ*SWIGGY" resolving to "your HDFC Bank Credit" instead of
+            // "RAZ*SWIGGY", without weakening the ambiguous-keyword fallback
+            // for bodies (e.g. Jupiter's "Payment from: NAME") that have no
+            // unambiguous keyword at all.
+            //
+            // gmail false-negative remediation, Cluster D: Axis Bank's
+            // AutoPay-activation template labels the counterparty as
+            // "Merchant Name:" (two words) on its own line, followed by the
+            // value on the *next* line -- bare "merchant" matched only the
+            // first word, leaving "Name:" unconsumed immediately after (the
+            // capture class excludes `:`, and `:` isn't a terminator
+            // either), so the whole match failed at that position. Listed
+            // before bare "merchant" since the `regex` crate prefers
+            // whichever alternative is listed first at a given position,
+            // not the longest one.
+            // gmail false-negative remediation: a declined international-
+            // transaction template ("at OPENAI is declined because
+            // International Ecom/online transactions are disabled...") has
+            // no comma/period or any of the above keywords within 40 chars
+            // of the merchant name -- the lazy capture kept expanding
+            // through the surrounding prose looking for a terminator,
+            // exhausted the 40-char cap, and the whole match failed at that
+            // position, falling through to a later unrelated "To enable,"
+            // match instead. "is"/"was" cover this and the equally common
+            // "at MERCHANT was successful/declined" phrasing, the same
+            // class of generic sentence-continuation word as the existing
+            // on/via/using/with keywords.
+            const MERCHANT_TERMINATOR: &str = r":?\s+([A-Za-z0-9\s*]{2,40}?)(?:\s+on\b|\s+via\b|\s+using\b|\s+with\b|\s+ref\b|\s+card\b|\s+date\b|\s+a/c\b|\s+branch\b|\s+upi\b|\s+is\b|\s+was\b|[,.\n\-]|$)";
+            // Shared lexicon (extraction/lexicon.rs) -- see its doc comment
+            // for why Layer 3 and Layer 4's keyword lists used to drift.
+            let merchant_re_strict = GENERIC_MERCHANT_RE_STRICT.get_or_init(|| {
+                let alternation = crate::extraction::lexicon::MERCHANT_LABEL_STRICT.join("|");
+                Regex::new(&format!(r"(?i)\b(?:{alternation}){MERCHANT_TERMINATOR}")).unwrap()
+            });
+            let merchant_re = GENERIC_MERCHANT_RE.get_or_init(|| {
+                let alternation = crate::extraction::lexicon::MERCHANT_LABEL_AMBIGUOUS.join("|");
+                Regex::new(&format!(r"(?i)\b(?:{alternation}){MERCHANT_TERMINATOR}")).unwrap()
+            });
+            // Tracked for confidence scoring below: a strict-tier match is
+            // an unambiguous merchant label; an ambiguous-tier match
+            // ("at"/"to"/"from"/"for"/"by") can also name the *source*
+            // instrument rather than the counterparty (see the two-tier
+            // lookup comment above), so it's real but weaker evidence.
+            //
+            // gmail false-negative remediation: each tier now scans ALL of
+            // its matches (`captures_iter`, not just the first) and skips
+            // any that are self-referential ("to your account") rather than
+            // taking the first match unconditionally -- a neobank
+            // "credited to your account ... Payment from: NAME" body has
+            // exactly this shape, where the real counterparty label comes
+            // *after* the self-referential one.
+            let mut merchant_matched_strict = false;
+            let mut merchant_value: Option<String> = None;
+            for caps in merchant_re_strict.captures_iter(body) {
+                if let Some(m) = caps.get(1) {
+                    let val = m.as_str().trim();
+                    if !val.is_empty() && !is_self_referential_account(val) {
+                        merchant_value = Some(val.to_string());
+                        merchant_matched_strict = true;
+                        break;
+                    }
                 }
             }
+            if merchant_value.is_none() {
+                for caps in merchant_re.captures_iter(body) {
+                    if let Some(m) = caps.get(1) {
+                        let val = m.as_str().trim();
+                        if !val.is_empty() && !is_self_referential_account(val) {
+                            merchant_value = Some(val.to_string());
+                            break;
+                        }
+                    }
+                }
+            }
+            result.merchant_raw = merchant_value;
 
             // 3. Date
             let date_re = GENERIC_DATE_RE.get_or_init(|| {
-                Regex::new(r"(?i)(\d{2}[-/]\d{2}[-/]\d{2,4}|\d{2}-[a-zA-Z]{3}-\d{2,4})").unwrap()
+                Regex::new(r"(?i)(\d{2}[-/]\d{2}[-/]\d{2,4}|\d{2}-[a-zA-Z]{3}-\d{2,4}|\d{2}\s+[a-zA-Z]{3},?\s+\d{2,4}|[a-zA-Z]{3}\s+\d{2},\s*\d{4})").unwrap()
             });
             if let Some(caps) = date_re.captures(body) {
-                result.event_time = Some(parse_date_generic(caps.get(1)?.as_str()));
+                result.event_time = parse_date_generic(caps.get(1)?.as_str());
             }
 
             // 4. Reference ID
@@ -557,6 +793,34 @@ impl ExtractionLayer for GenericRegexLayer {
             if let Some(caps) = ref_re.captures(body) {
                 result.reference_id = Some(caps.get(1)?.as_str().to_string());
             }
+
+            // Doc 30 TASK-TXN-004: "a lower confidence score (0.5-0.7) than
+            // Layer 1/2 (typically 0.9+), which flows directly into the
+            // reconciliation scoring engine" -- previously a flat 0.6
+            // regardless of whether every field matched cleanly or fell
+            // through to the weakest fallback branch, which starved
+            // reconciliation's email-vs-email precedence logic
+            // (`canonical.rs`'s `EMAIL_VS_EMAIL_CONFIDENCE_MARGIN`) of any
+            // real signal. Built from which branch actually fired for each
+            // field, floored/ceilinged to the documented 0.5-0.7 range.
+            let mut confidence = LAYER3_BASE_CONFIDENCE;
+            if result.amount_minor.is_some() && result.currency.is_some() {
+                confidence += LAYER3_AMOUNT_CURRENCY_BONUS;
+            }
+            if direction_from_explicit_verb {
+                confidence += LAYER3_EXPLICIT_DIRECTION_BONUS;
+            }
+            if result.merchant_raw.is_some() {
+                confidence += if merchant_matched_strict {
+                    LAYER3_STRICT_MERCHANT_BONUS
+                } else {
+                    LAYER3_AMBIGUOUS_MERCHANT_BONUS
+                };
+            }
+            if result.reference_id.is_some() {
+                confidence += LAYER3_REFERENCE_ID_BONUS;
+            }
+            result.confidence_score = Some(confidence.min(LAYER3_MAX_CONFIDENCE));
 
             if result.is_valid() {
                 Some(result)
@@ -581,17 +845,76 @@ fn normalize_currency(c: &str) -> String {
     }
 }
 
-fn parse_date_generic(s: &str) -> i64 {
-    let formats = ["%d-%b-%Y", "%d-%b-%y", "%d/%m/%Y", "%m-%d-%Y", "%d-%m-%Y"];
+/// Returns `None` on an unparseable date string -- see `parse_date`'s doc
+/// comment for why this must never fabricate a fallback timestamp.
+fn parse_date_generic(s: &str) -> Option<i64> {
+    let formats = [
+        "%d-%b-%Y",
+        "%d-%b-%y",
+        "%d/%m/%Y",
+        "%m-%d-%Y",
+        "%d-%m-%Y",
+        "%d %b %Y",
+        "%d %b %y",
+        "%d %b, %Y",
+        "%d %b, %y",
+        "%b %d, %Y",
+    ];
 
     for fmt in formats {
         if let Ok(naive_date) = chrono::NaiveDate::parse_from_str(s, fmt) {
             if let Some(naive_datetime) = naive_date.and_hms_opt(0, 0, 0) {
-                return naive_datetime.and_utc().timestamp();
+                return Some(naive_datetime.and_utc().timestamp());
             }
         }
     }
-    1704067200
+    None
+}
+
+/// Collects merchant-name tokens starting at `tokens[start]`, stopping at
+/// the same terminator keywords/punctuation Layer 3's `MERCHANT_TERMINATOR`
+/// regex stops at (`extraction/lexicon.rs`'s doc comment covers why the two
+/// layers' keyword *lists* are shared; this window-collection logic is
+/// NlpLayer-specific since Layer 3 does the equivalent via a single regex
+/// capture group instead).
+fn collect_merchant_window(
+    tokens: &[&str],
+    lower_tokens: &[String],
+    start: usize,
+) -> Option<String> {
+    let mut merchant_parts = Vec::new();
+    let mut j = start;
+    // Expanded window to capture larger merchant names
+    while j < tokens.len() && j < start + 5 {
+        let next_token_lower = &lower_tokens[j];
+        if next_token_lower == "on"
+            || next_token_lower == "via"
+            || next_token_lower == "bal"
+            || next_token_lower.starts_with("ref")
+            || next_token_lower == "balance"
+            || next_token_lower == "with"
+            || next_token_lower == "card"
+            || next_token_lower == "date"
+            || next_token_lower == "a/c"
+            || next_token_lower == "branch"
+            || next_token_lower == "upi"
+        {
+            break;
+        }
+        let cleaned = tokens[j].trim_end_matches(&['.', ',', ';', ':'][..]);
+        if !cleaned.is_empty() {
+            merchant_parts.push(cleaned);
+        }
+        if tokens[j].ends_with('.') || tokens[j].ends_with(',') {
+            break;
+        }
+        j += 1;
+    }
+    if merchant_parts.is_empty() {
+        None
+    } else {
+        Some(merchant_parts.join(" "))
+    }
 }
 
 // Layer 4: Basic NLP
@@ -612,30 +935,49 @@ impl ExtractionLayer for NlpLayer {
             let tokens: Vec<&str> = body.split_whitespace().collect();
             let lower_tokens: Vec<String> = tokens.iter().map(|s| s.to_lowercase()).collect();
 
+            // Merchant: strict-label pre-pass (shared lexicon,
+            // extraction/lexicon.rs). Layer 3 already tries its
+            // unambiguous keyword set ("towards", "paid to", "purchased
+            // at", "txn at", "in favor of", "merchant name", plus
+            // "info"/"merchant"/"beneficiary") before its ambiguous
+            // at/to/from/for/by fallback -- this layer never had that
+            // strict tier at all, so a body whose *only* merchant signal is
+            // one of those unambiguous keywords (no ambiguous keyword, no
+            // UPI VPA token) previously extracted no merchant here and, if
+            // nothing else in the ladder resolved it either, failed
+            // `is_valid()` entirely. Computed once, upfront, and applied
+            // below only as a rescue when nothing later in this layer's
+            // existing (unchanged) logic found a merchant -- this must
+            // never override the ambiguous-keyword/UPI-VPA paths' existing,
+            // already-tested behavior, only fill in what they'd otherwise
+            // leave empty.
+            let mut strict_merchant_candidate: Option<String> = None;
+            for idx in 0..lower_tokens.len() {
+                if let Some(consumed) = crate::extraction::lexicon::match_label_at(
+                    &lower_tokens,
+                    idx,
+                    crate::extraction::lexicon::MERCHANT_LABEL_STRICT,
+                ) {
+                    strict_merchant_candidate =
+                        collect_merchant_window(&tokens, &lower_tokens, idx + consumed);
+                    break;
+                }
+            }
+
             let mut i = 0;
             while i < tokens.len() {
                 let token = &lower_tokens[i];
                 let orig_token = tokens[i];
 
-                // Direction
-                if token.contains("debited")
-                    || token.contains("spent")
-                    || token.contains("paid")
-                    || token.contains("withdrawn")
-                    || token.contains("payment")
-                    || token.contains("sent")
-                    || token.contains("deducted")
-                    || token.contains("purchase")
+                // Direction (shared lexicon -- see extraction/lexicon.rs).
+                if crate::extraction::lexicon::DEBIT_VERBS
+                    .iter()
+                    .any(|v| token.contains(v))
                 {
                     result.direction = Some("debit".to_string());
-                } else if token.contains("credited")
-                    || token.contains("received")
-                    || token.contains("refund")
-                    || token.contains("deposited")
-                    || token.contains("reversal")
-                    || token.contains("added")
-                    || token.contains("returned")
-                    || token.contains("cashback")
+                } else if crate::extraction::lexicon::CREDIT_VERBS
+                    .iter()
+                    .any(|v| token.contains(v))
                 {
                     result.direction = Some("credit".to_string());
                 }
@@ -734,8 +1076,7 @@ impl ExtractionLayer for NlpLayer {
                 // Date
                 if token == "on" && i + 1 < tokens.len() {
                     let dt_str = tokens[i + 1].trim_end_matches(&['.', ','][..]);
-                    let parsed_date = parse_date_generic(dt_str);
-                    if parsed_date != 1704067200 {
+                    if let Some(parsed_date) = parse_date_generic(dt_str) {
                         result.event_time = Some(parsed_date);
                     }
                 }
@@ -743,12 +1084,20 @@ impl ExtractionLayer for NlpLayer {
                 i += 1;
             }
 
+            // Merchant: apply the strict-label pre-pass candidate only as a
+            // rescue -- never overriding whatever the ambiguous-keyword or
+            // UPI-VPA logic above already found.
+            if result.merchant_raw.is_none() {
+                if let Some(candidate) = strict_merchant_candidate {
+                    result.merchant_raw = Some(candidate);
+                }
+            }
+
             // Fallback for Date
             if result.event_time.is_none() {
                 for t in &tokens {
                     let cleaned = t.trim_end_matches(&['.', ','][..]);
-                    let parsed = parse_date_generic(cleaned);
-                    if parsed != 1704067200 {
+                    if let Some(parsed) = parse_date_generic(cleaned) {
                         result.event_time = Some(parsed);
                         break;
                     }
@@ -870,10 +1219,7 @@ impl Layer5CrossrefLayer {
         // Reuse the same partial-field regexes Layer 3 uses -- Layer 5 rescues
         // emails that failed *overall* validation (missing a mandatory field
         // like merchant), not emails with zero extractable signal at all.
-        let prefix_re = GENERIC_CURRENCY_AMOUNT_PREFIX_RE
-            .get_or_init(|| Regex::new(r"(?i)(rs\.?|inr|₹|\$)\s*([\d,]+(?:\.\d+)?)").unwrap());
-        let suffix_re = GENERIC_CURRENCY_AMOUNT_SUFFIX_RE
-            .get_or_init(|| Regex::new(r"(?i)([\d,]+(?:\.\d+)?)\s*(inr|rs\.?|₹)").unwrap());
+        let (prefix_re, suffix_re) = generic_currency_amount_regexes();
         let ref_re = GENERIC_REF_RE.get_or_init(|| Regex::new(r"\b(\d{12})\b").unwrap());
 
         let amount_minor = prefix_re
@@ -964,7 +1310,7 @@ pub struct Layer6LlmLayer {
 impl ExtractionLayer for Layer6LlmLayer {
     fn extract<'a>(
         &'a self,
-        _pool: &'a Pool,
+        pool: &'a Pool,
         bank_name: &'a str,
         body: &'a str,
     ) -> BoxFuture<'a, Option<ExtractionResult>> {
@@ -977,28 +1323,33 @@ impl ExtractionLayer for Layer6LlmLayer {
                 }
             };
 
-            // For now, hardcode to gemma-4-e4b or fetch active model ID.
-            let model_id = "gemma-4-e4b";
-            let model_path = match crate::llm_manager::get_model_path(app_dir, model_id) {
-                Some(p) => p,
-                None => {
-                    tracing::warn!("Layer 6: Model file not found for {}", model_id);
-                    return None;
-                }
+            // Whichever model the user actually selected in Settings
+            // (`local_profile.llm_model`, written by `llm_set_active_model`
+            // and by onboarding's `onboarding_save_preferences`) —
+            // previously hardcoded to a misspelled id ("gemma-4-e4b" vs the
+            // catalog's real "gemma4_e4b") that could never match a
+            // downloaded file, and ignored the user's selection entirely
+            // regardless. Falls back to the same default Settings' picker
+            // itself defaults to when nothing has been chosen yet.
+            let model_id = match pool.get().await {
+                Ok(conn) => conn
+                    .interact(|c| crate::db::local_profile::get_llm_model(c))
+                    .await
+                    .ok()
+                    .and_then(|r| r.ok())
+                    .flatten()
+                    .unwrap_or_else(|| crate::llm_manager::DEFAULT_ACTIVE_MODEL_ID.to_string()),
+                Err(_) => crate::llm_manager::DEFAULT_ACTIVE_MODEL_ID.to_string(),
             };
-
-            let tokenizer_path = match crate::llm_manager::get_tokenizer_path(app_dir, model_id) {
-                Some(p) => p,
-                None => {
-                    tracing::warn!("Layer 6: Tokenizer file not found for {}", model_id);
-                    return None;
-                }
-            };
+            if crate::llm_manager::get_model_path(app_dir, &model_id).is_none() {
+                tracing::warn!("Layer 6: Model file not found for {}", model_id);
+                return None;
+            }
 
             tracing::info!(bank_name = bank_name, "Layer 6 (LLM) extraction invoked");
 
-            let engine = crate::extraction::llm::LlmEngine::new(&model_path, &tokenizer_path);
-            let result = engine.extract(body);
+            let engine = crate::extraction::llm::LlmEngine::new(app_dir, &model_id);
+            let result = engine.extract(bank_name, body).await;
 
             // Track Layer 5 usage rate in structured logs
             tracing::info!(
@@ -1033,6 +1384,83 @@ impl ExtractionLayer for Layer6LlmLayer {
 /// synthesise a `pending` `pattern_rule` candidate for a human reviewer to
 /// promote (feeding Layer 1's learning loop) — it is a side effect, not a
 /// precondition, of Layer 5 running.
+/// Outcome of [`cross_check_amount`].
+#[derive(Debug, PartialEq)]
+enum AmountAgreement {
+    /// The independent regex found the same amount.
+    Agrees,
+    /// The independent regex found a *different* amount -- real
+    /// disagreement, not just absence of a second opinion.
+    Disagrees,
+    /// The independent regex found no amount-shaped signal at all --
+    /// not evidence either way, so callers must not penalize this.
+    Inconclusive,
+}
+
+/// Doc 30-style ensemble-lite check (Gate 2 hardening: "no ensemble/cross-
+/// check anywhere -- the ladder stops at first schema-valid layer, so a
+/// wrong-but-complete extraction is never caught by a disagreeing layer,
+/// because later layers never run"). Re-derives an amount from `body`
+/// using the same cheap currency-prefix/suffix regex `GenericRegexLayer`
+/// already uses, and compares it against whichever layer actually won.
+/// Cheap because it's a single regex pass reusing already-cached
+/// `OnceLock` regexes, not a second full layer execution.
+fn cross_check_amount(body: &str, claimed_amount_minor: i64) -> AmountAgreement {
+    let (prefix_re, suffix_re) = generic_currency_amount_regexes();
+
+    let independent_amount = prefix_re
+        .captures(body)
+        .and_then(|c| c.get(2))
+        .and_then(|m| parse_amount(m.as_str()))
+        .or_else(|| {
+            suffix_re
+                .captures(body)
+                .and_then(|c| c.get(1))
+                .and_then(|m| parse_amount(m.as_str()))
+        });
+
+    match independent_amount {
+        None => AmountAgreement::Inconclusive,
+        Some(independent) if independent == claimed_amount_minor => AmountAgreement::Agrees,
+        Some(_) => AmountAgreement::Disagrees,
+    }
+}
+
+/// Confidence assigned on disagreement when the winning layer had no
+/// confidence score of its own (Layers 1/2/5 don't set one today) -- below
+/// Layer 3's documented 0.5 floor, since "schema-valid but an independent
+/// check disagrees" is a weaker signal than even Layer 3's weakest result.
+const CROSS_CHECK_DISAGREEMENT_CONFIDENCE: f64 = 0.4;
+/// Multiplicative penalty applied to an existing confidence score on
+/// disagreement (Layer 3/6 already set one).
+const CROSS_CHECK_DISAGREEMENT_PENALTY_FACTOR: f64 = 0.8;
+
+/// Applies [`cross_check_amount`] to a layer's about-to-be-returned result.
+/// Only ever lowers confidence on disagreement -- never raises it on
+/// agreement, and never rejects the result outright (a disagreement is
+/// suspicious, not proof of a wrong amount; the independent regex is itself
+/// just a heuristic, not a ground truth). No-op for `GenericRegexLayer`
+/// itself: its own amount already comes from this exact regex, so
+/// cross-checking it against itself would trivially always agree.
+fn apply_amount_cross_check(obs: &mut ExtractionResult, body: &str) {
+    let Some(claimed) = obs.amount_minor else {
+        return;
+    };
+    if cross_check_amount(body, claimed) == AmountAgreement::Disagrees {
+        let downgraded = match obs.confidence_score {
+            Some(existing) => (existing * CROSS_CHECK_DISAGREEMENT_PENALTY_FACTOR).max(0.0),
+            None => CROSS_CHECK_DISAGREEMENT_CONFIDENCE,
+        };
+        tracing::warn!(
+            layer = obs.extraction_method,
+            claimed_amount_minor = claimed,
+            new_confidence = downgraded,
+            "Ensemble-lite amount cross-check disagreement -- confidence downgraded"
+        );
+        obs.confidence_score = Some(downgraded);
+    }
+}
+
 pub async fn run_extraction_ladder(
     pool: &Pool,
     bank_name: &str,
@@ -1064,19 +1492,24 @@ pub async fn run_extraction_ladder(
                 // which layer produced the core fields, since EMI phrasing
                 // detection is language-level, not tied to any one layer's
                 // own bank-specific/generic regex templates.
-                if let Some((number, total)) = crate::extraction::emi_detector::detect_emi_installment_numbers(body) {
+                if let Some((number, total)) =
+                    crate::extraction::emi_detector::detect_emi_installment_numbers(body)
+                {
                     obs.emi_installment_number = Some(number);
                     obs.emi_total_installments = Some(total);
-                    obs.emi_original_amount_minor = crate::extraction::emi_detector::detect_emi_original_amount_minor(body);
+                    obs.emi_original_amount_minor =
+                        crate::extraction::emi_detector::detect_emi_original_amount_minor(body);
                 }
                 // Doc 30 TASK-TXN-013: foreign-currency evidence, same
                 // "applies regardless of which layer produced the core
                 // fields" reasoning as EMI detection above.
                 let settled_currency = obs.currency.clone().unwrap_or_else(|| "INR".to_string());
-                let fx = crate::extraction::currency_handler::detect_fx_fields(body, &settled_currency);
+                let fx =
+                    crate::extraction::currency_handler::detect_fx_fields(body, &settled_currency);
                 obs.original_amount_minor = fx.original_amount_minor;
                 obs.original_currency = fx.original_currency;
                 obs.exchange_rate = fx.exchange_rate;
+                apply_amount_cross_check(&mut obs, body);
                 tracing::info!(
                     layer = layer_name,
                     status = "success",
@@ -1095,11 +1528,12 @@ pub async fn run_extraction_ladder(
     // ── Layer 5: statement-row cross-reference (Doc 30 TASK-TXN-005) ─────────
     let anchor_date = internal_date
         .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0).map(|dt| dt.naive_utc().date()));
-    if let Some(crossref_result) = Layer5CrossrefLayer
+    if let Some(mut crossref_result) = Layer5CrossrefLayer
         .extract(pool, bank_name, body, anchor_date)
         .await
     {
         if crossref_result.is_valid() {
+            apply_amount_cross_check(&mut crossref_result, body);
             tracing::info!(
                 layer = "layer5_statement_crossref",
                 status = "success",
@@ -1141,6 +1575,7 @@ pub async fn run_extraction_ladder(
             llm_result.masked_identifier = signals.masked_identifier;
             llm_result.network = signals.network;
             llm_result.upi_vpa = signals.upi_vpa;
+            apply_amount_cross_check(&mut llm_result, body);
 
             // ── Best-effort: synthesise a pending pattern-rule candidate ─────
             // Only when this bank's known rules had drifted from the current
@@ -1304,6 +1739,99 @@ mod tests {
 
         assert!(result.is_some());
         assert_eq!(result.unwrap().extraction_method, "learned_patterns");
+    }
+
+    /// Ensemble-lite regression test: a Layer 1 learned rule whose "amount"
+    /// regex is simply wrong (captures a transaction ID instead of the real
+    /// amount) must have its confidence downgraded once the cheap
+    /// independent currency-regex cross-check finds a *different* amount
+    /// elsewhere in the same body -- the ladder previously trusted whatever
+    /// the first schema-valid layer said with no second opinion at all.
+    #[tokio::test]
+    async fn test_ensemble_lite_amount_disagreement_downgrades_confidence() {
+        let body = "Txn ID 999900 INR for your purchase. Rs 500.00 debited at Amazon on 25-May-23";
+        let pool = dummy_migrated_pool().await;
+        let conn = pool.get().await.unwrap();
+        let body_owned = body.to_string();
+        conn.interact(move |c| {
+            let template_hash = compute_template_hash(&body_owned);
+            let base = crate::db::pattern_rules::PatternRulesRow {
+                id: "wr1".to_string(),
+                bank_name: "WrongRuleBank".to_string(),
+                template_hash: template_hash.clone(),
+                field_name: "amount".to_string(),
+                // Deliberately wrong: captures the transaction ID, not the
+                // real "Rs 500.00" amount elsewhere in the body.
+                rule_payload_json: serde_json::json!({"regex": "Txn ID (\\d+)"}),
+                status: "active".to_string(),
+                success_count: 0,
+                failure_count: 0,
+                confidence: 1.0,
+                created_at: Some(chrono::Utc::now().naive_utc()),
+                updated_at: Some(chrono::Utc::now().naive_utc()),
+            };
+            crate::db::pattern_rules::insert(c, &base).unwrap();
+            crate::db::pattern_rules::insert(
+                c,
+                &crate::db::pattern_rules::PatternRulesRow {
+                    id: "wr2".to_string(),
+                    field_name: "merchant".to_string(),
+                    rule_payload_json: serde_json::json!({"regex": "at ([A-Za-z]+)"}),
+                    ..base.clone()
+                },
+            )
+            .unwrap();
+            crate::db::pattern_rules::insert(
+                c,
+                &crate::db::pattern_rules::PatternRulesRow {
+                    id: "wr3".to_string(),
+                    field_name: "currency".to_string(),
+                    rule_payload_json: serde_json::json!({"regex": "([A-Z]{3})"}),
+                    ..base.clone()
+                },
+            )
+            .unwrap();
+            crate::db::pattern_rules::insert(
+                c,
+                &crate::db::pattern_rules::PatternRulesRow {
+                    id: "wr4".to_string(),
+                    field_name: "direction".to_string(),
+                    rule_payload_json: serde_json::json!({"regex": "(debited)"}),
+                    ..base.clone()
+                },
+            )
+            .unwrap();
+            crate::db::pattern_rules::insert(
+                c,
+                &crate::db::pattern_rules::PatternRulesRow {
+                    id: "wr5".to_string(),
+                    field_name: "event_time".to_string(),
+                    rule_payload_json: serde_json::json!({"regex": "on (\\d{2}-[A-Za-z]{3}-\\d{2})"}),
+                    ..base
+                },
+            )
+            .unwrap();
+        })
+        .await
+        .unwrap();
+
+        let result = run_extraction_ladder(&pool, "WrongRuleBank", body, None, false, None)
+            .await
+            .unwrap()
+            .expect("the (wrong) learned rule is schema-valid and must still be returned");
+
+        assert_eq!(result.extraction_method, "learned_patterns");
+        assert_eq!(
+            result.amount_minor,
+            Some(99_990_000),
+            "the buggy rule's own (wrong) captured amount is still what's returned"
+        );
+        assert_eq!(
+            result.confidence_score,
+            Some(CROSS_CHECK_DISAGREEMENT_CONFIDENCE),
+            "disagreement with the independent Rs 500.00 signal must downgrade confidence, \
+             even though Layer 1 itself never set one before"
+        );
     }
 
     /// Doc 30 TASK-TXN-001 acceptance test. Exercises the real
@@ -1536,7 +2064,33 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result_4.amount_minor, Some(150000));
-        assert_eq!(result_4.event_time.unwrap(), parse_date("25-May-2023"));
+        assert_eq!(result_4.event_time, parse_date("25-May-2023"));
+    }
+
+    /// Regression test for the date-sentinel bug (BankTemplateLayer path): a
+    /// capture that doesn't parse as any recognized date format, with no
+    /// `date_fallback_epoch` configured for this pattern (the
+    /// `credit_card_spent` HDFC pattern has none), must leave `event_time`
+    /// unset -- not silently default to the fabricated 2024-01-01 epoch the
+    /// old code returned on any parse failure.
+    #[tokio::test]
+    async fn test_bank_template_invalid_date_no_fallback_leaves_event_time_none() {
+        let pool = dummy_pool();
+        let layer = BankTemplateLayer;
+        // Day "35" doesn't exist -- syntactically matches the date capture
+        // group's character class, but fails every chrono format attempted.
+        let body =
+            "Rs 1500.00 spent on your HDFC Bank CREDIT Card ending 1234 at Amazon on 35-May-23.";
+        let result = layer.extract(&pool, "HDFC Bank", body).await.unwrap();
+        assert_eq!(
+            result.event_time, None,
+            "an invalid date with no configured fallback must not fabricate a timestamp"
+        );
+        assert!(
+            !result.is_valid(),
+            "a result with no event_time must fail is_valid(), which is what makes the \
+             orchestrator correctly skip past this layer instead of accepting a corrupted date"
+        );
     }
 
     /// Doc 30 TASK-TXN-003: "A successful Layer 2 match seeds a
@@ -1595,6 +2149,35 @@ mod tests {
         let result = layer.extract(&pool, "HDFC Bank", body).await.unwrap();
         assert_eq!(result.amount_minor, Some(50000));
         assert_eq!(result.merchant_raw, Some("Amazon".to_string()));
+        assert_eq!(
+            result.direction,
+            Some("debit".to_string()),
+            "debit-shaped pattern must resolve to debit direction"
+        );
+    }
+
+    /// Regression test for the hardcoded-direction bug: `BankTemplateLayer`
+    /// used to initialize `direction: Some("debit")` unconditionally and
+    /// never override it per-pattern, so a credit/refund-shaped bank
+    /// template match was silently mislabeled debit. `BankPatternTemplate`
+    /// now carries a per-pattern `direction` field (see the
+    /// `account_credit` pattern added to `hdfc_v1.json`), and this proves a
+    /// credit-shaped match actually resolves to `"credit"`, not the old
+    /// blanket default.
+    #[tokio::test]
+    async fn test_hdfc_credit_pattern_resolves_credit_direction_not_hardcoded_debit() {
+        let pool = dummy_pool();
+        let layer = BankTemplateLayer;
+        let body =
+            "Rs 5000.00 credited to your HDFC Bank A/c ending 1234 from John Doe on 25-May-23";
+        let result = layer.extract(&pool, "HDFC Bank", body).await.unwrap();
+        assert_eq!(result.amount_minor, Some(500000));
+        assert_eq!(
+            result.direction,
+            Some("credit".to_string()),
+            "a credit-shaped template match must not be mislabeled debit"
+        );
+        assert_eq!(result.extraction_method, "bank_templates");
     }
 
     #[tokio::test]
@@ -1688,6 +2271,33 @@ mod tests {
         assert!(result.is_none());
     }
 
+    /// Regression test for the date-sentinel bug (GenericRegexLayer path):
+    /// "99/99/9999" is date-shaped enough to match `GENERIC_DATE_RE` but
+    /// isn't a real calendar date, so it must fail every parse format and
+    /// leave `event_time` unset -- which then fails `is_valid()` entirely
+    /// (event_time is unconditionally required), rather than the old
+    /// behavior of silently returning a result dated 2024-01-01.
+    #[tokio::test]
+    async fn test_generic_regex_invalid_date_fails_validation_not_fake_date() {
+        let pool = dummy_pool();
+        let layer = GenericRegexLayer;
+        let body = "You have paid Rs 500.00 to Zomato via UPI on 99/99/9999. Ref: 123456789012.";
+        let result = layer.extract(&pool, "Any Bank", body).await;
+        assert!(
+            result.is_none(),
+            "an unparseable date must fail the layer entirely, not fabricate a fake timestamp"
+        );
+    }
+
+    /// Direct unit test on the two date parsers themselves: `None` on
+    /// failure, never the old hardcoded `1704067200` (2024-01-01) sentinel.
+    #[test]
+    fn test_date_parsers_return_none_not_fake_sentinel_on_failure() {
+        assert_eq!(parse_date("not a date"), None);
+        assert_eq!(parse_date_generic("not a date"), None);
+        assert_eq!(parse_date("35-May-23"), None);
+    }
+
     /// Doc 30 TASK-TXN-004 acceptance test: generic currency-prefixed amount
     /// regex, proximate to a debit/credit verb.
     #[tokio::test]
@@ -1698,10 +2308,51 @@ mod tests {
         let result = layer.extract(&pool, "Any Bank", body).await.unwrap();
         assert_eq!(result.amount_minor, Some(150050));
         assert_eq!(result.currency, Some("INR".to_string()));
+        assert!(
+            result.confidence_score.unwrap() > 0.5 && result.confidence_score.unwrap() <= 0.7,
+            "Layer 3 confidence must stay within the documented 0.5-0.7 range, below \
+             Layer 1/2's 0.9+, got {:?}",
+            result.confidence_score
+        );
+    }
+
+    /// Regression test for the "fake precision" bug: Layer 3 used to report
+    /// a flat `0.6` regardless of which regex branch actually matched or
+    /// how many fields resolved cleanly. This proves the score now varies:
+    /// a weak extraction (amount-implied direction, ambiguous-tier
+    /// merchant, no reference ID) scores strictly lower than a strong one
+    /// (explicit direction verb, strict-tier merchant, reference ID
+    /// present), which scores at the documented ceiling.
+    #[tokio::test]
+    async fn test_generic_confidence_varies_by_field_strength() {
+        let pool = dummy_pool();
+        let layer = GenericRegexLayer;
+
+        // Strong: explicit "paid to" (strict-tier merchant label) verb +
+        // reference ID present.
+        let strong_body =
+            "You have paid Rs 1,500.50 paid to Zomato via UPI on 25/05/2023. Ref: 123456789012.";
+        let strong = layer.extract(&pool, "Any Bank", strong_body).await.unwrap();
+        assert_eq!(strong.confidence_score, Some(LAYER3_MAX_CONFIDENCE));
+
+        // Weak: amount+currency present, no explicit direction verb (the
+        // amount-implies-debit fallback fires instead), ambiguous-tier
+        // merchant only, no reference ID.
+        let weak_body = "Rs 500.00 at Zomato on 25/05/2023.";
+        let weak = layer.extract(&pool, "Any Bank", weak_body).await.unwrap();
+        assert!(
+            weak.confidence_score.unwrap() < strong.confidence_score.unwrap(),
+            "a weaker extraction must score strictly lower than a strong one, got weak={:?} strong={:?}",
+            weak.confidence_score,
+            strong.confidence_score
+        );
         assert_eq!(
-            result.confidence_score,
-            Some(0.6),
-            "Layer 3 must assign a lower confidence than Layer 1/2"
+            weak.confidence_score,
+            Some(
+                LAYER3_BASE_CONFIDENCE
+                    + LAYER3_AMOUNT_CURRENCY_BONUS
+                    + LAYER3_AMBIGUOUS_MERCHANT_BONUS
+            )
         );
     }
 
@@ -1730,6 +2381,145 @@ mod tests {
         let body = "Rs 1,500.50 paid to Zomato via UPI on 25/05/2023.";
         let result = layer.extract(&pool, "Any Bank", body).await.unwrap();
         assert_eq!(result.merchant_raw, Some("Zomato".to_string()));
+    }
+
+    /// Doc 30 TASK-TXN-004 acceptance test: "towards" is a required
+    /// proximity keyword, not just "at"/"to"/"from"/"for".
+    #[tokio::test]
+    async fn test_generic_merchant_heuristic_towards() {
+        let pool = dummy_pool();
+        let layer = GenericRegexLayer;
+        let body = "Rs 250.00 paid towards Swiggy via UPI on 25/05/2023.";
+        let result = layer.extract(&pool, "Any Bank", body).await.unwrap();
+        assert_eq!(result.merchant_raw, Some("Swiggy".to_string()));
+    }
+
+    /// Doc 30 TASK-TXN-004 acceptance test: "Info: <merchant>" is a common
+    /// Indian UPI alert convention -- previously only hardcoded into
+    /// Layer 2's ICICI template, so any *other* bank using the same
+    /// convention with no dedicated Layer 2 template fell through this
+    /// fallback with no merchant extracted at all.
+    #[tokio::test]
+    async fn test_generic_merchant_heuristic_info_colon() {
+        let pool = dummy_pool();
+        let layer = GenericRegexLayer;
+        let body = "Rs 99.00 debited on 25/05/2023. Info: Starbucks Coffee";
+        let result = layer.extract(&pool, "Any Bank", body).await.unwrap();
+        assert_eq!(result.merchant_raw, Some("Starbucks Coffee".to_string()));
+    }
+
+    /// gmail false-negative remediation, Cluster E: card-network settlement
+    /// descriptors (`RAZ*SWIGGY`) contain `*`, which the merchant capture
+    /// class previously excluded, truncating the match before any
+    /// terminator was reached and yielding no merchant at all.
+    #[tokio::test]
+    async fn test_generic_merchant_heuristic_asterisk_descriptor() {
+        let pool = dummy_pool();
+        let layer = GenericRegexLayer;
+        let body = "Rs. 2590.00 has been debited from your HDFC Bank Credit Card ending 0364 towards RAZ*SWIGGY on 24 May, 2026 at 19:34:18 .";
+        let result = layer.extract(&pool, "HDFC Bank", body).await.unwrap();
+        assert_eq!(result.merchant_raw, Some("RAZ*SWIGGY".to_string()));
+        assert_eq!(result.amount_minor, Some(259000));
+    }
+
+    /// gmail false-negative remediation, Cluster F: IDFC FIRST Bank's debit
+    /// template uses a space-separated "DD Mon YYYY" date ("23 MAY 2026"),
+    /// which no prior date-regex alternative covered -- `is_valid()`
+    /// requires `event_time`, so the whole extraction was discarded even
+    /// though amount/direction/merchant all matched.
+    #[tokio::test]
+    async fn test_generic_date_space_separated_day_month_year() {
+        let pool = dummy_pool();
+        let layer = GenericRegexLayer;
+        let body = "Transaction Successful! INR 193.92 spent on your IDFC FIRST BANK Credit Card ending XX1920 at CRED TELECOM on 23 MAY 2026.";
+        let result = layer.extract(&pool, "IDFC FIRST Bank", body).await.unwrap();
+        assert_eq!(result.merchant_raw, Some("CRED TELECOM".to_string()));
+        assert_eq!(result.amount_minor, Some(19392));
+        assert!(result.event_time.is_some());
+    }
+
+    /// gmail false-negative remediation, Cluster G: Jupiter's
+    /// Federal-Bank-Savings "Money credited" template labels the
+    /// counterparty as "Payment from:" (colon immediately after the
+    /// keyword, before the mandatory whitespace the regex required) and
+    /// dates as "Month DD, YYYY" ("May 30, 2026"), neither of which any
+    /// prior pattern covered.
+    #[tokio::test]
+    async fn test_generic_merchant_heuristic_colon_label_and_month_first_date() {
+        let pool = dummy_pool();
+        let layer = GenericRegexLayer;
+        let body = "You've received ₹15563.0 in Federal Bank Savings Account ending with 1527.\nPayment from:                                ADITYA RAWAL\nDate                                May 30, 2026";
+        let result = layer.extract(&pool, "Jupiter", body).await.unwrap();
+        assert_eq!(result.merchant_raw, Some("ADITYA RAWAL".to_string()));
+        assert_eq!(result.amount_minor, Some(1556300));
+        assert_eq!(result.direction, Some("credit".to_string()));
+        assert!(result.event_time.is_some());
+    }
+
+    /// gmail false-negative remediation, Cluster D: Axis Bank's AutoPay
+    /// activation confirmation labels the counterparty "Merchant Name:"
+    /// (two words) on its own line, with the value on the *next* line.
+    /// Aditya's decision: capture this as a real ₹0.00 debit despite no
+    /// funds moving, since it's a dated pipeline event he wants visible.
+    #[tokio::test]
+    async fn test_generic_merchant_heuristic_two_word_label_next_line() {
+        let pool = dummy_pool();
+        let layer = GenericRegexLayer;
+        let body = "24-04-2026\n\nDear Customer,\n\nHere's the summary of your successful AutoPay transaction:\n\nTransaction Amount:\n\nINR 0.00\n\nMerchant Name:\n\nScribdInc\n\nAutoPay ID:\n\nYPXvrvJ1jr\n\nAxis Bank Credit Card No.\n\nXX3825\n\nMax Limit:\n\nINR 1000.00\n\nYou'll receive a notification mentioning the transaction amount prior to any subsequent debit initiated by ScribdInc.";
+        let result = layer.extract(&pool, "Axis Bank", body).await.unwrap();
+        assert_eq!(result.merchant_raw, Some("ScribdInc".to_string()));
+        assert_eq!(result.amount_minor, Some(0));
+        assert_eq!(result.direction, Some("debit".to_string()));
+        assert!(result.event_time.is_some());
+    }
+
+    /// gmail false-negative remediation, Cluster H: a neobank "money
+    /// credited" template (Jupiter, Federal Bank Savings) says "...was
+    /// credited **to your account**" before separately labeling the real
+    /// counterparty further down ("Payment **from**: NAME"). The single-
+    /// match ambiguous-tier lookup used to stop at the first "to/from/at/
+    /// for/by" hit and take "your account" itself as the merchant, since it
+    /// was a non-empty capture and nothing downstream caught it.
+    #[tokio::test]
+    async fn test_generic_merchant_skips_self_referential_account() {
+        let pool = dummy_pool();
+        let layer = GenericRegexLayer;
+        let body = "₹17000.0 was credited to your account\nYou've received ₹17000.0 in Federal Bank Savings Account ending with 1527.\nPayment from:                                ADITYA RAWAL\nDate                                Jun 30, 2026";
+        let result = layer.extract(&pool, "Jupiter", body).await.unwrap();
+        assert_eq!(result.merchant_raw, Some("ADITYA RAWAL".to_string()));
+        assert_eq!(result.amount_minor, Some(1700000));
+    }
+
+    /// gmail false-negative remediation, Cluster H: a declined
+    /// international-card-transaction template states the amount in a
+    /// spelled-out ISO currency code ("USD 1.00") rather than ₹/Rs/INR/$ --
+    /// none of which the amount regex recognized, so extraction found
+    /// nothing at all despite every other field being present.
+    #[tokio::test]
+    async fn test_generic_amount_recognizes_spelled_out_iso_currency_code() {
+        let pool = dummy_pool();
+        let layer = GenericRegexLayer;
+        let body = "A transaction of USD 1.00 on your YES BANK Credit Card ending 2982 on 20-05-2026 at 11:57:54 pm at OPENAI is declined because International Ecom/online transactions are disabled on your card.";
+        let result = layer.extract(&pool, "Yes Bank", body).await.unwrap();
+        assert_eq!(result.amount_minor, Some(100));
+        assert_eq!(result.currency, Some("USD".to_string()));
+    }
+
+    /// gmail false-negative remediation, Cluster H: same body as above --
+    /// "at OPENAI is declined because International Ecom/online
+    /// transactions are disabled..." has no comma/period or any prior
+    /// terminator keyword within 40 chars of the merchant name, so the
+    /// lazy capture kept expanding through the surrounding prose looking
+    /// for one, exhausted the cap, and the whole match failed at that
+    /// position -- falling through to an unrelated later "To enable," match
+    /// instead of the real merchant.
+    #[tokio::test]
+    async fn test_generic_merchant_terminates_before_declined_prose() {
+        let pool = dummy_pool();
+        let layer = GenericRegexLayer;
+        let body = "A transaction of USD 1.00 on your YES BANK Credit Card ending 2982 on 20-05-2026 at 11:57:54 pm at OPENAI is declined because International Ecom/online transactions are disabled on your card. To enable,please visit iris by YES BANK app.";
+        let result = layer.extract(&pool, "Yes Bank", body).await.unwrap();
+        assert_eq!(result.merchant_raw, Some("OPENAI".to_string()));
     }
 
     /// Doc 30 TASK-TXN-004 acceptance test: when Layer 3's own date regex
@@ -1795,6 +2585,29 @@ mod tests {
         assert_eq!(result.merchant_raw, Some("AmazonPay".to_string()));
         assert!(result.event_time.is_some());
         assert_eq!(result.extraction_method, "nlp");
+    }
+
+    /// New capability test (shared lexicon consolidation): NlpLayer
+    /// previously had zero support for Layer 3's unambiguous merchant-label
+    /// keywords ("towards", "paid to", "purchased at", "in favor of",
+    /// etc.) -- a body whose only merchant signal is one of those, with no
+    /// ambiguous at/to/from/for/by keyword and no UPI VPA token present,
+    /// previously extracted no merchant here at all and failed
+    /// `is_valid()` entirely (no merchant, no balance_after). The
+    /// strict-label pre-pass rescue fixes this without touching the
+    /// existing ambiguous/UPI-VPA paths' behavior (both still pass above).
+    #[tokio::test]
+    async fn test_nlp_strict_label_rescue_finds_merchant_ambiguous_tier_would_miss() {
+        let pool = dummy_pool();
+        let layer = NlpLayer;
+        let body = "Rs 500.00 debited towards Zomato on 25-May-23";
+        let result = layer
+            .extract(&pool, "Any Bank", body)
+            .await
+            .expect("must extract successfully via the strict-label rescue");
+        assert_eq!(result.merchant_raw, Some("Zomato".to_string()));
+        assert_eq!(result.direction, Some("debit".to_string()));
+        assert_eq!(result.amount_minor, Some(50000));
     }
 
     // -----------------------------------------------------------------------

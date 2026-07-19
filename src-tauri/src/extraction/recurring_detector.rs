@@ -51,7 +51,11 @@ fn confidence_from_intervals(intervals_days: &[f64]) -> f64 {
     if mean <= 0.0 {
         return 0.0;
     }
-    let variance = intervals_days.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / n;
+    let variance = intervals_days
+        .iter()
+        .map(|d| (d - mean).powi(2))
+        .sum::<f64>()
+        / n;
     let stddev = variance.sqrt();
     let coefficient_of_variation = stddev / mean;
     (1.0 - coefficient_of_variation).clamp(0.0, 1.0)
@@ -119,8 +123,11 @@ pub fn detect_and_update_recurring(
     .to_string();
     let next_predicted_date = chrono::NaiveDate::parse_from_str(&next_predicted_date, "%Y-%m-%d")?;
 
-    let existing =
-        recurring_payments::find_by_instrument_and_merchant(conn, instrument_id, merchant_entity_id)?;
+    let existing = recurring_payments::find_by_instrument_and_merchant(
+        conn,
+        instrument_id,
+        merchant_entity_id,
+    )?;
 
     match existing {
         Some(mut row) => {
@@ -180,7 +187,8 @@ mod tests {
     }
 
     fn insert_occurrence(conn: &Connection, id: &str, amount_minor: i64, date: &str) {
-        let dt = NaiveDateTime::parse_from_str(&format!("{date} 10:00:00"), "%Y-%m-%d %H:%M:%S").unwrap();
+        let dt = NaiveDateTime::parse_from_str(&format!("{date} 10:00:00"), "%Y-%m-%d %H:%M:%S")
+            .unwrap();
         insert_transaction(
             conn,
             &TransactionsRow {
@@ -214,7 +222,8 @@ mod tests {
                 transaction_subtype: None,
                 emi_group_id: None,
                 category_id: None,
-                notes: None,                is_deleted: false,
+                notes: None,
+                is_deleted: false,
                 created_at: None,
                 updated_at: None,
             },
@@ -253,7 +262,10 @@ mod tests {
             .expect("a recurring_payments row must have been created");
         assert_eq!(row.cadence, Some("monthly".to_string()));
         assert_eq!(row.next_predicted_amount, Some(499.0));
-        assert!(row.confidence.unwrap() > 0.9, "near-perfectly-regular monthly interval should score high confidence");
+        assert!(
+            row.confidence.unwrap() > 0.9,
+            "near-perfectly-regular monthly interval should score high confidence"
+        );
     }
 
     /// Doc 30 TASK-TXN-011 acceptance test.

@@ -5,6 +5,9 @@ pub mod deduplication_gate;
 pub mod emi_detector;
 pub mod fingerprint;
 pub mod ladder;
+pub mod lexicon;
+#[cfg(test)]
+mod lexicon_tests;
 pub mod llm;
 pub mod mandate_extractor;
 pub mod merchant_normalizer;

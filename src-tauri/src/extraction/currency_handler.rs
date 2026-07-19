@@ -31,7 +31,10 @@ const KNOWN_CURRENCY_CODES: &[&str] = &[
 ];
 
 fn parse_amount(raw: &str) -> Option<i64> {
-    let cleaned: String = raw.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect();
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
     let val: f64 = cleaned.parse().ok()?;
     Some((val * 100.0).round() as i64)
 }
@@ -41,8 +44,10 @@ fn parse_amount(raw: &str) -> Option<i64> {
 /// `exchange_rate` when a bank explicitly states it."
 pub fn detect_fx_fields(body: &str, settled_currency: &str) -> FxFields {
     let amount_re = FOREIGN_AMOUNT_RE.get_or_init(|| {
-        Regex::new(r"(?i)\b(USD|EUR|GBP|AED|SGD|AUD|CAD|JPY|CHF|HKD|THB|MYR|NZD)\s*([\d,]+(?:\.\d+)?)\b")
-            .unwrap()
+        Regex::new(
+            r"(?i)\b(USD|EUR|GBP|AED|SGD|AUD|CAD|JPY|CHF|HKD|THB|MYR|NZD)\s*([\d,]+(?:\.\d+)?)\b",
+        )
+        .unwrap()
     });
 
     let mut fields = FxFields::default();

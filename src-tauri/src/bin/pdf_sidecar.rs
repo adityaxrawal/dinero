@@ -86,12 +86,10 @@ fn run() -> anyhow::Result<()> {
             let resp = extract_text(&pdf_bytes, request.password.as_deref());
             write_line(&resp)
         }
-        other => {
-            write_line(&serde_json::json!({
-                "success": false,
-                "error": format!("unknown operation: {}", other)
-            }))
-        }
+        other => write_line(&serde_json::json!({
+            "success": false,
+            "error": format!("unknown operation: {}", other)
+        })),
     }
 }
 
@@ -111,7 +109,11 @@ fn unlock_check(pdf_bytes: &[u8], password: &str) -> UnlockCheckResponse {
         }
     };
     let pdfium = Pdfium::new(bindings);
-    let pw = if password.is_empty() { None } else { Some(password) };
+    let pw = if password.is_empty() {
+        None
+    } else {
+        Some(password)
+    };
     let unlocked = pdfium.load_pdf_from_byte_slice(pdf_bytes, pw).is_ok();
     UnlockCheckResponse {
         success: true,

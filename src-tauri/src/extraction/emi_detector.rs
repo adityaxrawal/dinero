@@ -43,7 +43,10 @@ pub fn detect_emi_original_amount_minor(body: &str) -> Option<i64> {
     });
     let caps = re.captures(body)?;
     let raw = caps.get(1)?.as_str();
-    let cleaned: String = raw.chars().filter(|c| c.is_ascii_digit() || *c == '.').collect();
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
     let val: f64 = cleaned.parse().ok()?;
     Some((val * 100.0).round() as i64)
 }
@@ -83,9 +86,11 @@ pub fn link_emi_installment(
     emi_total_installments: Option<i32>,
     emi_original_amount_minor: Option<i64>,
 ) -> Result<()> {
-    let (Some(merchant_normalized), Some(total), Some(original_amount)) =
-        (merchant_normalized, emi_total_installments, emi_original_amount_minor)
-    else {
+    let (Some(merchant_normalized), Some(total), Some(original_amount)) = (
+        merchant_normalized,
+        emi_total_installments,
+        emi_original_amount_minor,
+    ) else {
         return Ok(());
     };
 
@@ -217,9 +222,13 @@ mod tests {
 
     #[test]
     fn test_detect_emi_original_amount_minor() {
-        let body = "Your purchase of Rs 60,000.00 has been converted to EMI. Original amount: Rs 60000.00";
+        let body =
+            "Your purchase of Rs 60,000.00 has been converted to EMI. Original amount: Rs 60000.00";
         assert_eq!(detect_emi_original_amount_minor(body), Some(6000000));
-        assert_eq!(detect_emi_original_amount_minor("no emi mention here"), None);
+        assert_eq!(
+            detect_emi_original_amount_minor("no emi mention here"),
+            None
+        );
     }
 
     #[test]
@@ -256,12 +265,43 @@ mod tests {
         insert_tx(&conn, "tx_1", "2026-01-15 10:00:00", 500000);
         insert_tx(&conn, "tx_2", "2026-02-15 10:00:00", 500000);
 
-        link_emi_installment(&conn, "tx_1", "inst_1", Some("acme electronics"), Some(12), Some(6000000)).unwrap();
-        link_emi_installment(&conn, "tx_2", "inst_1", Some("acme electronics"), Some(12), Some(6000000)).unwrap();
+        link_emi_installment(
+            &conn,
+            "tx_1",
+            "inst_1",
+            Some("acme electronics"),
+            Some(12),
+            Some(6000000),
+        )
+        .unwrap();
+        link_emi_installment(
+            &conn,
+            "tx_2",
+            "inst_1",
+            Some("acme electronics"),
+            Some(12),
+            Some(6000000),
+        )
+        .unwrap();
 
-        let group1: String = conn.query_row("SELECT emi_group_id FROM transactions WHERE id = 'tx_1'", [], |r| r.get(0)).unwrap();
-        let group2: String = conn.query_row("SELECT emi_group_id FROM transactions WHERE id = 'tx_2'", [], |r| r.get(0)).unwrap();
-        assert_eq!(group1, group2, "installments of the same EMI purchase must share emi_group_id");
+        let group1: String = conn
+            .query_row(
+                "SELECT emi_group_id FROM transactions WHERE id = 'tx_1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let group2: String = conn
+            .query_row(
+                "SELECT emi_group_id FROM transactions WHERE id = 'tx_2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            group1, group2,
+            "installments of the same EMI purchase must share emi_group_id"
+        );
         assert!(!group1.is_empty());
     }
 
@@ -272,13 +312,45 @@ mod tests {
         insert_tx(&conn, "tx_1", "2026-01-15 10:00:00", 500000);
         insert_tx(&conn, "tx_2", "2026-02-15 10:00:00", 500000);
 
-        link_emi_installment(&conn, "tx_1", "inst_1", Some("acme electronics"), Some(12), Some(6000000)).unwrap();
-        link_emi_installment(&conn, "tx_2", "inst_1", Some("acme electronics"), Some(12), Some(6000000)).unwrap();
+        link_emi_installment(
+            &conn,
+            "tx_1",
+            "inst_1",
+            Some("acme electronics"),
+            Some(12),
+            Some(6000000),
+        )
+        .unwrap();
+        link_emi_installment(
+            &conn,
+            "tx_2",
+            "inst_1",
+            Some("acme electronics"),
+            Some(12),
+            Some(6000000),
+        )
+        .unwrap();
 
-        let parent: Option<String> = conn.query_row("SELECT parent_transaction_id FROM transactions WHERE id = 'tx_2'", [], |r| r.get(0)).unwrap();
-        assert_eq!(parent, Some("tx_1".to_string()), "the later installment must link back to the earlier (origination) one");
+        let parent: Option<String> = conn
+            .query_row(
+                "SELECT parent_transaction_id FROM transactions WHERE id = 'tx_2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            parent,
+            Some("tx_1".to_string()),
+            "the later installment must link back to the earlier (origination) one"
+        );
 
-        let subtype: String = conn.query_row("SELECT transaction_subtype FROM transactions WHERE id = 'tx_2'", [], |r| r.get(0)).unwrap();
+        let subtype: String = conn
+            .query_row(
+                "SELECT transaction_subtype FROM transactions WHERE id = 'tx_2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(subtype, "emi_installment");
     }
 
@@ -291,7 +363,13 @@ mod tests {
         // No EMI fields provided -- must be a no-op.
         link_emi_installment(&conn, "tx_1", "inst_1", None, None, None).unwrap();
 
-        let group: Option<String> = conn.query_row("SELECT emi_group_id FROM transactions WHERE id = 'tx_1'", [], |r| r.get(0)).unwrap();
+        let group: Option<String> = conn
+            .query_row(
+                "SELECT emi_group_id FROM transactions WHERE id = 'tx_1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(group, None);
     }
 
@@ -304,8 +382,24 @@ mod tests {
         let conn = setup_db();
         insert_tx(&conn, "tx_1", "2026-01-15 10:00:00", 500000);
         insert_tx(&conn, "tx_2", "2026-02-15 10:00:00", 500000);
-        link_emi_installment(&conn, "tx_1", "inst_1", Some("acme electronics"), Some(12), Some(6000000)).unwrap();
-        link_emi_installment(&conn, "tx_2", "inst_1", Some("acme electronics"), Some(12), Some(6000000)).unwrap();
+        link_emi_installment(
+            &conn,
+            "tx_1",
+            "inst_1",
+            Some("acme electronics"),
+            Some(12),
+            Some(6000000),
+        )
+        .unwrap();
+        link_emi_installment(
+            &conn,
+            "tx_2",
+            "inst_1",
+            Some("acme electronics"),
+            Some(12),
+            Some(6000000),
+        )
+        .unwrap();
 
         // One of the two installments' source observation reported "3 of 12"
         // -- the group-wide total should resolve from it even though only
@@ -316,7 +410,13 @@ mod tests {
             [],
         ).unwrap();
 
-        let group_id: String = conn.query_row("SELECT emi_group_id FROM transactions WHERE id = 'tx_1'", [], |r| r.get(0)).unwrap();
+        let group_id: String = conn
+            .query_row(
+                "SELECT emi_group_id FROM transactions WHERE id = 'tx_1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         let summary = get_emi_group_summary(&conn, &group_id).unwrap();
 
         assert_eq!(summary.installments_paid, 2);

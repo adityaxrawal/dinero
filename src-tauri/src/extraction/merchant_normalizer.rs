@@ -9,6 +9,7 @@ use anyhow::Result;
 use chrono::Utc;
 use deadpool_sqlite::Pool;
 use regex::Regex;
+use rusqlite::Connection;
 use std::sync::OnceLock;
 use uuid::Uuid;
 
@@ -50,34 +51,26 @@ pub fn strip_noise_tokens(merchant_raw: &str) -> String {
 }
 
 /// Runs the full pipeline: clean -> exact alias match -> fuzzy match ->
-/// create-new-merchant-if-none. Returns the canonical `normalized_name` to
-/// store on the observation/transaction.
-pub async fn normalize_merchant(pool: &Pool, merchant_raw: &str) -> Result<String> {
+/// create-new-merchant-if-none. Returns `(merchant_entity_id,
+/// normalized_name)`. Synchronous over an already-open `&Connection` since
+/// the real production caller (`post_processing::run_post_processing`) runs
+/// deep inside a `conn.interact()` blocking closure alongside the rest of
+/// the reconciliation pipeline, with no async/pool access at that point.
+pub fn normalize_merchant_sync(conn: &Connection, merchant_raw: &str) -> Result<(String, String)> {
     let cleaned = strip_noise_tokens(merchant_raw);
     if cleaned.is_empty() {
-        return Ok(cleaned);
+        return Ok((String::new(), cleaned));
     }
 
-    let conn = pool.get().await?;
-
     // 1. Exact alias match.
-    let cleaned_for_exact = cleaned.clone();
-    let exact = conn
-        .interact(move |c| merchants::select_by_alias(c, &cleaned_for_exact))
-        .await
-        .map_err(|e| anyhow::anyhow!("pool interact error: {:?}", e))??;
-    if let Some(m) = exact {
-        return Ok(m.normalized_name);
+    if let Some(m) = merchants::select_by_alias(conn, &cleaned)? {
+        return Ok((m.id, m.normalized_name));
     }
 
     // 2. Fuzzy match against existing merchants, highest score wins, must
-    //    clear the threshold. A DB round trip per candidate is avoided by
-    //    scoring in memory -- merchant counts are small enough (hundreds,
-    //    not millions) for this to be cheap.
-    let all_merchants = conn
-        .interact(|c| merchants::select_all(c))
-        .await
-        .map_err(|e| anyhow::anyhow!("pool interact error: {:?}", e))??;
+    //    clear the threshold. Merchant counts are small enough (hundreds,
+    //    not millions) for in-memory scoring to be cheap.
+    let all_merchants = merchants::select_all(conn)?;
 
     let mut best: Option<(f64, MerchantsRow)> = None;
     for m in all_merchants {
@@ -102,10 +95,8 @@ pub async fn normalize_merchant(pool: &Pool, merchant_raw: &str) -> Result<Strin
             confidence: score,
             created_at: Some(Utc::now().naive_utc()),
         };
-        let _ = conn
-            .interact(move |c| merchants::insert_alias(c, &alias))
-            .await;
-        return Ok(m.normalized_name);
+        let _ = merchants::insert_alias(conn, &alias);
+        return Ok((m.id, m.normalized_name));
     }
 
     // 3. No match at all -- auto-discover a new merchant, plus an alias for
@@ -123,13 +114,11 @@ pub async fn normalize_merchant(pool: &Pool, merchant_raw: &str) -> Result<Strin
         created_at: now,
         updated_at: now,
     };
-    conn.interact(move |c| merchants::insert(c, &merchant_row))
-        .await
-        .map_err(|e| anyhow::anyhow!("pool interact error: {:?}", e))??;
+    merchants::insert(conn, &merchant_row)?;
 
     let alias_row = MerchantAliasesRow {
         id: Uuid::new_v4().to_string(),
-        merchant_entity_id: new_id,
+        merchant_entity_id: new_id.clone(),
         alias_raw: merchant_raw.to_string(),
         alias_normalized: cleaned.clone(),
         country_code: None,
@@ -137,11 +126,22 @@ pub async fn normalize_merchant(pool: &Pool, merchant_raw: &str) -> Result<Strin
         confidence: 1.0,
         created_at: now,
     };
-    let _ = conn
-        .interact(move |c| merchants::insert_alias(c, &alias_row))
-        .await;
+    let _ = merchants::insert_alias(conn, &alias_row);
 
-    Ok(cleaned)
+    Ok((new_id, cleaned))
+}
+
+/// Async/pool-based wrapper around [`normalize_merchant_sync`] for callers
+/// that only have a `&Pool`, not an open `&Connection`. Returns just the
+/// canonical `normalized_name`.
+pub async fn normalize_merchant(pool: &Pool, merchant_raw: &str) -> Result<String> {
+    let conn = pool.get().await?;
+    let merchant_raw = merchant_raw.to_string();
+    let (_, normalized_name) = conn
+        .interact(move |c| normalize_merchant_sync(c, &merchant_raw))
+        .await
+        .map_err(|e| anyhow::anyhow!("pool interact error: {:?}", e))??;
+    Ok(normalized_name)
 }
 
 #[cfg(test)]
@@ -182,7 +182,10 @@ mod tests {
     fn test_noise_token_stripping() {
         assert_eq!(strip_noise_tokens("Amazon Pay*Order4821"), "AMAZON PAY");
         assert_eq!(strip_noise_tokens("Swiggy*Bangalore"), "SWIGGY");
-        assert_eq!(strip_noise_tokens("FLIPKART INTERNET 123456789"), "FLIPKART INTERNET");
+        assert_eq!(
+            strip_noise_tokens("FLIPKART INTERNET 123456789"),
+            "FLIPKART INTERNET"
+        );
         assert_eq!(strip_noise_tokens("  netflix.com  "), "NETFLIX.COM");
         assert_eq!(strip_noise_tokens("Uber *Trip Help.Uber.Com"), "UBER");
     }
@@ -256,9 +259,7 @@ mod tests {
              above the fuzzy-match threshold for this test to be meaningful"
         );
 
-        let result = normalize_merchant(&pool, "Netflix Cinemas")
-            .await
-            .unwrap();
+        let result = normalize_merchant(&pool, "Netflix Cinemas").await.unwrap();
         assert_eq!(result, "NETFLIX CINEMAS");
         assert_eq!(
             merchant_count(&pool).await,
@@ -270,7 +271,9 @@ mod tests {
     #[tokio::test]
     async fn test_no_match_creates_merchant_and_alias() {
         let pool = dummy_migrated_pool().await;
-        let result = normalize_merchant(&pool, "Brand New Cafe*HQ").await.unwrap();
+        let result = normalize_merchant(&pool, "Brand New Cafe*HQ")
+            .await
+            .unwrap();
         assert_eq!(result, "BRAND NEW CAFE");
 
         let conn = pool.get().await.unwrap();
@@ -279,7 +282,10 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(found.is_some(), "a fresh alias must resolve on the next lookup");
+        assert!(
+            found.is_some(),
+            "a fresh alias must resolve on the next lookup"
+        );
     }
 
     #[tokio::test]

@@ -44,15 +44,19 @@ pub fn extract_mandate_fields(bank_name: &str, body: &str) -> Option<MandateExtr
         .map(|m| m.as_str().trim().to_string())
         .filter(|m| !m.is_empty())?;
 
-    let cadence_re = CADENCE_RE
-        .get_or_init(|| Regex::new(r"(?i)frequency:?\s+(monthly|weekly|daily|yearly|quarterly)").unwrap());
+    let cadence_re = CADENCE_RE.get_or_init(|| {
+        Regex::new(r"(?i)frequency:?\s+(monthly|weekly|daily|yearly|quarterly)").unwrap()
+    });
     let cadence = cadence_re
         .captures(body)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().to_lowercase());
 
     let amount_re = AMOUNT_RE.get_or_init(|| {
-        Regex::new(r"(?i)(?:limit amount|max limit)\s*(?:\(inr\))?:?\s*(?:inr)?\s*([\d,]+(?:\.\d{1,2})?)").unwrap()
+        Regex::new(
+            r"(?i)(?:limit amount|max limit)\s*(?:\(inr\))?:?\s*(?:inr)?\s*([\d,]+(?:\.\d{1,2})?)",
+        )
+        .unwrap()
     });
     let max_limit_amount = amount_re
         .captures(body)
@@ -61,7 +65,8 @@ pub fn extract_mandate_fields(bank_name: &str, body: &str) -> Option<MandateExtr
         .map(|f| (f * 100.0).round() as i64);
 
     let mandate_id_re = MANDATE_ID_RE.get_or_init(|| {
-        Regex::new(r"(?i)(?:sihub id|mandate id|mandate reference|umrn):?\s+([A-Za-z0-9]{4,20})").unwrap()
+        Regex::new(r"(?i)(?:sihub id|mandate id|mandate reference|umrn):?\s+([A-Za-z0-9]{4,20})")
+            .unwrap()
     });
     let external_mandate_id = mandate_id_re
         .captures(body)
