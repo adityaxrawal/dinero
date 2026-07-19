@@ -556,7 +556,10 @@ mod tests {
         let id2 = resolve_or_create_instrument("credit_card", "HDFC", "4321", Some("VISA"), &pool)
             .await
             .unwrap();
-        assert_eq!(id1, id2, "resolving the same key twice must reuse the same instrument");
+        assert_eq!(
+            id1, id2,
+            "resolving the same key twice must reuse the same instrument"
+        );
 
         let count: i64 = conn
             .interact(|c| {
@@ -569,7 +572,10 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(count, 1, "exactly one instrument row must exist, never a duplicate");
+        assert_eq!(
+            count, 1,
+            "exactly one instrument row must exist, never a duplicate"
+        );
     }
 
     // ── Async DB test: write_statement_row ────────────────────────────────────
@@ -591,7 +597,8 @@ mod tests {
                 [],
             )
             .unwrap();
-            crate::db::statements::insert_queued(c, "stmt_wr", "manual_upload", None, None).unwrap();
+            crate::db::statements::insert_queued(c, "stmt_wr", "manual_upload", None, None)
+                .unwrap();
         })
         .await
         .unwrap();

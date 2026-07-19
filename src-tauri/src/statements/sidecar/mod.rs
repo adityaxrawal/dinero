@@ -140,8 +140,22 @@ async fn run_with_timeout(
     payload: &[u8],
     timeout: Duration,
 ) -> Result<Vec<u8>> {
+    // ROOT CAUSE FIX: the sidecar looks for libpdfium.dylib via
+    // `Pdfium::pdfium_platform_library_name_at_path("./")`, which resolves
+    // relative to the *child process's* CWD — not relative to the sidecar
+    // binary. Without `.current_dir()` the child inherits the Tauri app's
+    // CWD (e.g. the user's home or app bundle root), where libpdfium.dylib
+    // does not exist. Setting CWD to the binary's parent directory ensures
+    // `./libpdfium.dylib` resolves to the copy placed alongside the binary
+    // by the build system.
+    let binary_dir = binary
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+
     let mut child = Command::new(&binary)
         .args(args)
+        .current_dir(&binary_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

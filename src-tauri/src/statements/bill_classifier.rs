@@ -255,10 +255,15 @@ mod tests {
         );
 
         // Run full classify_and_update pipeline
-        let is_upcoming =
-            classify_and_update("inst_bill", "stmt_bill", &meta, &pool, None::<&tauri::AppHandle>)
-                .await
-                .unwrap();
+        let is_upcoming = classify_and_update(
+            "inst_bill",
+            "stmt_bill",
+            &meta,
+            &pool,
+            None::<&tauri::AppHandle>,
+        )
+        .await
+        .unwrap();
         assert!(is_upcoming);
 
         // Verify instrument was updated

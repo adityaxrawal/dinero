@@ -184,14 +184,11 @@ fn parse_amount_minor(s: &str) -> Option<i64> {
 /// that does *not* itself start with a date is joined into one line before
 /// any bank-specific regex sees it.
 fn merge_broken_line_boundaries(text: &str) -> String {
-    let date_only_re = Regex::new(
-        r"^\s*(?:\d{2}[/\-]\d{2}[/\-]\d{4}|\d{2}-[A-Za-z]{3}-\d{4})\s*$",
-    )
-    .expect("static regex must compile");
-    let starts_with_date_re = Regex::new(
-        r"^\s*(?:\d{2}[/\-]\d{2}[/\-]\d{4}|\d{2}-[A-Za-z]{3}-\d{4})",
-    )
-    .expect("static regex must compile");
+    let date_only_re = Regex::new(r"^\s*(?:\d{2}[/\-]\d{2}[/\-]\d{4}|\d{2}-[A-Za-z]{3}-\d{4})\s*$")
+        .expect("static regex must compile");
+    let starts_with_date_re =
+        Regex::new(r"^\s*(?:\d{2}[/\-]\d{2}[/\-]\d{4}|\d{2}-[A-Za-z]{3}-\d{4})")
+            .expect("static regex must compile");
 
     let lines: Vec<&str> = text.lines().collect();
     let mut merged_lines: Vec<String> = Vec::with_capacity(lines.len());
@@ -1046,11 +1043,17 @@ mod tests {
 
         let withdrawal = &rows[0];
         assert_eq!(withdrawal.transaction_date, "2023-12-01");
-        assert_eq!(withdrawal.direction, "debit", "withdrawal column populated → debit");
+        assert_eq!(
+            withdrawal.direction, "debit",
+            "withdrawal column populated → debit"
+        );
         assert_eq!(withdrawal.amount_minor, 250_000);
 
         let deposit = &rows[1];
-        assert_eq!(deposit.direction, "credit", "deposit column populated → credit");
+        assert_eq!(
+            deposit.direction, "credit",
+            "deposit column populated → credit"
+        );
         assert_eq!(deposit.amount_minor, 5_000_000);
     }
 

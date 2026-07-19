@@ -55,21 +55,24 @@ pub fn build_observation(
         // statement rows, so this is correctly left unpopulated here.
         emi_total_installments: None,
         emi_original_amount_minor: None,
-        // FLAGGED, not fixed (Doc 30 TASK-DEDUP-001 architectural gap, out
-        // of this task's scope): Doc 30 TASK-TXN-008's fingerprint formula
-        // requires connected_accounts.id as a hash input, but statement rows
-        // have no connected-account concept at all (Doc 18 §4.7's
-        // `statements` table carries only instrument_id) -- so a statement
-        // observation can never produce a fingerprint that would collide
-        // with its corresponding email observation for the same real-world
-        // transaction, even though that is the exact scenario the
-        // fingerprint pre-filter's own doc comment (TASK-TXN-008) names as
-        // its purpose. Left `None` here rather than guessing a substitute
-        // input: the windowed candidate search + scoring engine (Doc 30
-        // TASK-DEDUP-003/004, which already scores cross-pipeline
-        // complementarity) still correctly reconciles this case -- just
-        // without the fingerprint performance shortcut.
-        fingerprint: None,
+        // Doc 30 TASK-TXN-008: the fingerprint formula's 5th input
+        // (`connected_accounts.id` for email observations, "to prevent
+        // cross-account false merges") has no equivalent concept for
+        // statement rows (Doc 18 §4.7's `statements` table carries only
+        // instrument_id). Substituting `instrument_id` itself for that slot
+        // -- a statement is already instrument-scoped, so it's a stable,
+        // always-available stand-in -- means a re-imported/duplicate
+        // statement row now hits the fast fingerprint pre-filter instead of
+        // always paying the full windowed-scoring cost. Statement rows also
+        // carry only day precision (no time-of-day column), so the minute
+        // bucket is fixed at midnight UTC for that date.
+        fingerprint: Some(crate::extraction::fingerprint::compute_fingerprint(
+            instrument_id,
+            &row.direction,
+            row.amount_minor,
+            &format!("{}T00:00", row.transaction_date),
+            instrument_id,
+        )),
         // Statement rows always win precedence outright (Doc 30
         // TASK-DEDUP-008) regardless of confidence -- this field only
         // matters for the email-vs-email comparison, irrelevant here.
@@ -100,4 +103,51 @@ pub fn build_all_observations(
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_row() -> StatementRow {
+        StatementRow {
+            transaction_date: "2026-06-10".to_string(),
+            merchant_raw: "AMAZON PAY".to_string(),
+            amount_minor: 150000,
+            currency: "INR".to_string(),
+            direction: "debit".to_string(),
+            reference_id: Some("REF123".to_string()),
+            row_index: 0,
+            llm_extracted: false,
+        }
+    }
+
+    /// Doc 30 TASK-TXN-008: statement observations must produce a real
+    /// fingerprint (not `None`) so the fast pre-filter can fire on a
+    /// re-imported/duplicate statement row instead of always falling
+    /// through to the full windowed scoring engine.
+    #[test]
+    fn test_statement_observation_has_fingerprint() {
+        let obs = build_observation("stmt_1", "entry_1", "inst_1", &base_row()).unwrap();
+        assert!(obs.fingerprint.is_some());
+    }
+
+    /// Same instrument/amount/direction/date must fingerprint identically
+    /// across two separately-built observations (e.g. the same statement
+    /// re-imported) -- the property the fast pre-filter actually relies on.
+    #[test]
+    fn test_statement_fingerprint_deterministic_for_same_row() {
+        let obs1 = build_observation("stmt_1", "entry_1", "inst_1", &base_row()).unwrap();
+        let obs2 = build_observation("stmt_2", "entry_2", "inst_1", &base_row()).unwrap();
+        assert_eq!(obs1.fingerprint, obs2.fingerprint);
+    }
+
+    /// A different instrument must fingerprint differently even for an
+    /// otherwise-identical row.
+    #[test]
+    fn test_statement_fingerprint_differs_across_instruments() {
+        let obs1 = build_observation("stmt_1", "entry_1", "inst_1", &base_row()).unwrap();
+        let obs2 = build_observation("stmt_1", "entry_1", "inst_2", &base_row()).unwrap();
+        assert_ne!(obs1.fingerprint, obs2.fingerprint);
+    }
 }

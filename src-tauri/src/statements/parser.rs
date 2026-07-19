@@ -50,7 +50,10 @@ pub async fn parse_in_memory(pdf_bytes: &[u8]) -> Result<ParseResult> {
 /// the rest of this pipeline) must be told the password on every open, not
 /// just once. `parse_in_memory` (unencrypted/already-resolved callers) is the
 /// thin `None`-password wrapper above.
-pub async fn parse_in_memory_with_password(pdf_bytes: &[u8], password: Option<&str>) -> Result<ParseResult> {
+pub async fn parse_in_memory_with_password(
+    pdf_bytes: &[u8],
+    password: Option<&str>,
+) -> Result<ParseResult> {
     tracing::info!(
         "Parsing {} PDF bytes in-memory (bytes will not touch disk)",
         pdf_bytes.len()
@@ -201,7 +204,11 @@ impl Drop for TesseractChildGuard {
 /// INVARIANT: Rendered bitmap is held in memory only — never written to disk (§8.5).
 /// GRACEFUL DEGRADATION: If tesseract binary is unavailable, returns Err with a
 /// structured log entry. The pipeline continues without OCR text.
-fn try_ocr_page(pdf_bytes: &[u8], page_number: usize, password: Option<&str>) -> Result<Option<String>> {
+fn try_ocr_page(
+    pdf_bytes: &[u8],
+    page_number: usize,
+    password: Option<&str>,
+) -> Result<Option<String>> {
     // Render page to in-memory PNG bytes via pdfium (96 DPI for OCR quality)
     let png_bytes = render_page_to_png(pdf_bytes, page_number, 200, password)?;
 
@@ -235,7 +242,12 @@ fn try_ocr_full_document(pdf_bytes: &[u8], password: Option<&str>) -> Result<Vec
 
 /// Renders a single PDF page to an in-memory PNG byte buffer using pdfium-render.
 /// DPI 200 provides adequate OCR accuracy for Indian bank numeric fields (target ≥90%).
-fn render_page_to_png(pdf_bytes: &[u8], page_number: usize, _dpi: u32, password: Option<&str>) -> Result<Vec<u8>> {
+fn render_page_to_png(
+    pdf_bytes: &[u8],
+    page_number: usize,
+    _dpi: u32,
+    password: Option<&str>,
+) -> Result<Vec<u8>> {
     use pdfium_render::prelude::*;
 
     let bindings = Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./"))
