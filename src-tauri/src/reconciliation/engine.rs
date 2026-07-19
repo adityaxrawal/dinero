@@ -113,6 +113,42 @@ fn to_canonical_candidate(r: crate::db::transactions::TransactionsRow) -> Canoni
     }
 }
 
+/// Doc 30 TASK-DEDUP-003/005/006: every production call site fetches
+/// candidates and reconciles as two separate, un-transacted statements. In
+/// WAL mode with multiple pooled connections (the Transaction Queue's 4
+/// workers, plus statement-import and manual-entry call sites, each on
+/// their own connection), two callers racing to reconcile the same
+/// real-world transaction (e.g. an email alert and a statement row for the
+/// same purchase) can both `fetch_candidates` and see "no match" before
+/// either commits, then both independently create a canonical transaction
+/// or ambiguity cluster -- a real duplicate. `BEGIN IMMEDIATE` takes
+/// SQLite's write lock up front rather than deferring it to the first
+/// write, so the second caller's `BEGIN IMMEDIATE` blocks (via `PRAGMA
+/// busy_timeout`, set once per pooled connection in `db::init_db`) until
+/// the first caller's transaction commits -- at which point its own
+/// `fetch_candidates` sees the just-committed row and matches against it
+/// instead of creating a duplicate. All production callers should route
+/// through this function rather than calling `fetch_candidates`/`reconcile`
+/// directly.
+pub fn reconcile_transactionally(
+    conn: &Connection,
+    obs: &IncomingObservation,
+) -> Result<DecisionType> {
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result =
+        fetch_candidates(conn, obs).and_then(|candidates| reconcile(conn, obs, candidates));
+    match result {
+        Ok(decision) => {
+            conn.execute_batch("COMMIT")?;
+            Ok(decision)
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
 /// Main reconciliation entry point: takes an observation and a set of candidate canonical
 /// transactions fetched from the DB for that instrument/amount/direction/window.
 /// Returns the decision type taken.

@@ -105,13 +105,13 @@ pub fn log_user_correction(
     new_value: &str,
 ) -> Result<()> {
     // Find the observation ID and source pipeline for this transaction
-    let obs_info: rusqlite::Result<(String, Option<String>, Option<String>)> = conn.query_row(
-        "SELECT id, source_pipeline, source_record_id FROM transaction_observations WHERE canonical_transaction_id = ?1 LIMIT 1",
+    let obs_info: rusqlite::Result<(String, Option<String>, Option<String>, Option<String>)> = conn.query_row(
+        "SELECT id, source_pipeline, source_record_id, raw_payload_json FROM transaction_observations WHERE canonical_transaction_id = ?1 LIMIT 1",
         rusqlite::params![tx_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
     );
 
-    let (obs_id, source_pipeline, source_record_id) = match obs_info {
+    let (obs_id, source_pipeline, source_record_id, raw_payload_json) = match obs_info {
         Ok(info) => info,
         Err(_) => return Ok(()), // No observation found
     };
@@ -139,11 +139,23 @@ pub fn log_user_correction(
 
     // For gmail pipelines, we synthesize a candidate pattern rule to learn from this correction
     if let Some(record_id) = source_record_id {
-        // We do a mock template hash using the source_record_id for now as we don't have the original body in memory
-        let template_hash = crate::extraction::ladder::compute_template_hash(&format!(
-            "mock body for {}",
-            record_id
-        ));
+        // Doc 30 TASK-TXN-002: the real template hash needs the real
+        // extracted email body (persisted as raw_payload_json's "body" field
+        // at extraction time) -- a fabricated string here means the lookup
+        // below almost never finds the rule that actually produced
+        // old_value. Falls back to the old placeholder only when no body
+        // was persisted for this observation (e.g. non-gmail pipelines).
+        let real_body = raw_payload_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+            .and_then(|v| {
+                v.get("body")
+                    .and_then(|b| b.as_str())
+                    .map(|s| s.to_string())
+            });
+        let template_hash = crate::extraction::ladder::compute_template_hash(
+            &real_body.unwrap_or_else(|| format!("mock body for {}", record_id)),
+        );
 
         let existing_rule: rusqlite::Result<String> = conn.query_row(
             "SELECT id FROM pattern_rules WHERE template_hash = ?1 AND field_name = ?2 LIMIT 1",
@@ -152,7 +164,10 @@ pub fn log_user_correction(
         );
 
         if let Ok(rule_id) = existing_rule {
-            let _ = crate::db::pattern_rules::record_rule_success(conn, &rule_id);
+            // Doc 30 TASK-TXN-002: "on a later user correction, increment
+            // failure_count and trigger confidence decay" -- a correction
+            // means the matched rule got it wrong, so decay it, not reward it.
+            let _ = crate::db::pattern_rules::record_rule_failure(conn, &rule_id);
         } else {
             let rule = crate::db::pattern_rules::PatternRulesRow {
                 id: Uuid::new_v4().to_string(),

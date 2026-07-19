@@ -1,4 +1,3 @@
-
 use anyhow::Result;
 use chrono::NaiveDateTime;
 use rusqlite::Connection;
@@ -60,27 +59,23 @@ pub fn run_post_processing(
     let mut final_merchant_normalized_name = None;
 
     if let Some(merchant) = merchant_raw {
-        let m = merchant.to_uppercase();
-
-        // Query DB for matching aliases using LIKE %alias%
-        // Document 18 §4.10 doesn't give `merchants` a `category_id` column
-        // (categorization lives only on `transactions`, assigned by the user
-        // or by the heuristics below) — merchant resolution here only
-        // establishes entity linking, not category.
-        let resolved: rusqlite::Result<(String, String)> = conn.query_row(
-            "SELECT m.id, m.name
-                 FROM merchant_aliases ma
-                 JOIN merchants m ON ma.merchant_entity_id = m.id
-                 WHERE ?1 LIKE '%' || ma.alias_normalized || '%'
-                 ORDER BY LENGTH(ma.alias_normalized) DESC
-                 LIMIT 1",
-            rusqlite::params![m],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        );
-
-        if let Ok((entity_id, normalized_name)) = resolved {
-            final_merchant_entity_id = Some(entity_id);
-            final_merchant_normalized_name = Some(normalized_name);
+        // Doc 30 TASK-TXN-007: real normalization pipeline (uppercase +
+        // noise-token stripping, exact alias match, fuzzy match >= 0.92,
+        // else auto-create a new merchant + alias) -- replaces the previous
+        // inline LIKE-substring query, which never stripped noise tokens,
+        // never fuzzy-matched, and left merchant_entity_id/
+        // merchant_normalized_name permanently NULL on no-match instead of
+        // auto-creating. Document 18 §4.10 doesn't give `merchants` a
+        // `category_id` column (categorization lives only on `transactions`,
+        // assigned by the user or by the heuristics below) — merchant
+        // resolution here only establishes entity linking, not category.
+        if let Ok((entity_id, normalized_name)) =
+            crate::extraction::merchant_normalizer::normalize_merchant_sync(conn, merchant)
+        {
+            if !normalized_name.is_empty() {
+                final_merchant_entity_id = Some(entity_id);
+                final_merchant_normalized_name = Some(normalized_name);
+            }
         }
 
         // Heuristics fallback if no category resolved from merchants DB

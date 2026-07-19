@@ -7,10 +7,10 @@
 
 use crate::reconciliation::engine::{CanonicalCandidate, IncomingObservation};
 use chrono::NaiveDateTime;
-use strsim::levenshtein;
+use strsim::jaro_winkler;
 
-/// Merchant name similarity (Jaro-Winkler-style via Levenshtein ratio),
-/// full weight on an exact case-insensitive match.
+/// Merchant name similarity (Jaro-Winkler via `strsim`), full weight on an
+/// exact case-insensitive match.
 pub const MERCHANT_SIMILARITY_WEIGHT: f64 = 0.30;
 /// Time delta proximity — smooth decay within the ±3-day candidate window,
 /// not a hard cutoff (Doc 30 TASK-DEDUP-004). Ceiling of the range returned
@@ -56,23 +56,22 @@ pub fn score_candidates(
         .map(|c| {
             let mut score: f64 = 0.0;
 
-            // Merchant name similarity using Levenshtein distance
+            // Doc 30 TASK-DEDUP-004: merchant similarity via Jaro-Winkler
+            // (strsim::jaro_winkler), which specifically rewards shared
+            // prefixes -- the common merchant-string case (e.g. "UBER
+            // *EATS" vs "UBER EATS BANGALORE") -- and behaves very
+            // differently from a Levenshtein edit-distance ratio on strings
+            // of different lengths. jaro_winkler(a, a) == 1.0, so an exact
+            // case-insensitive match already gets full weight with no
+            // separate branch needed.
             if let (Some(obs_merchant), Some(cand_merchant)) =
                 (&obs.merchant_raw, &c.merchant_normalized_name)
             {
                 let obs_lower = obs_merchant.to_lowercase();
                 let cand_lower = cand_merchant.to_lowercase();
-                if obs_lower == cand_lower {
-                    score += MERCHANT_SIMILARITY_WEIGHT;
-                } else {
-                    let dist = levenshtein(&obs_lower, &cand_lower) as f64;
-                    let max_len = obs_lower.len().max(cand_lower.len()) as f64;
-                    if max_len > 0.0 {
-                        let similarity = 1.0 - (dist / max_len);
-                        if similarity > 0.0 {
-                            score += MERCHANT_SIMILARITY_WEIGHT * similarity;
-                        }
-                    }
+                let similarity = jaro_winkler(&obs_lower, &cand_lower);
+                if similarity > 0.0 {
+                    score += MERCHANT_SIMILARITY_WEIGHT * similarity;
                 }
             }
 
@@ -131,7 +130,10 @@ pub fn score_candidates(
 /// candidate's own `source_pipeline` — canonical transactions don't carry
 /// one, `source_mix` is the field Doc 18 §4.3 gives for exactly this
 /// purpose.
-fn is_cross_source_complementary(obs_source_pipeline: &str, candidate_source_mix: Option<&str>) -> bool {
+fn is_cross_source_complementary(
+    obs_source_pipeline: &str,
+    candidate_source_mix: Option<&str>,
+) -> bool {
     matches!(
         (obs_source_pipeline, candidate_source_mix),
         ("statement_pdf", Some("email_only")) | ("gmail_transaction", Some("statement_only"))
@@ -214,7 +216,8 @@ mod tests {
             emi_total_installments: None,
             emi_original_amount_minor: None,
             fingerprint: None,
-            confidence_score: None,        }
+            confidence_score: None,
+        }
     }
 
     fn base_candidate() -> CanonicalCandidate {
@@ -240,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn test_levenshtein_distance_calculation() {
+    fn test_jaro_winkler_merchant_similarity() {
         let mut obs = base_obs();
         obs.merchant_raw = Some("AMZN Mktp US".to_string());
         obs.reference_id = None;
@@ -362,7 +365,13 @@ mod tests {
         let scored_without_bonus = score_candidates(&obs_statement, &[cand_no_provenance]);
 
         assert!(scored_with_bonus[0].score > scored_without_bonus[0].score);
-        assert!((scored_with_bonus[0].score - scored_without_bonus[0].score - CROSS_SOURCE_COMPLEMENTARITY_BONUS).abs() < 1e-9);
+        assert!(
+            (scored_with_bonus[0].score
+                - scored_without_bonus[0].score
+                - CROSS_SOURCE_COMPLEMENTARITY_BONUS)
+                .abs()
+                < 1e-9
+        );
     }
 
     #[test]

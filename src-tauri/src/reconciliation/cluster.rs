@@ -48,13 +48,9 @@ pub fn create_ambiguity_cluster(
     top_score: f64,
     competing_candidate_ids: &[String],
 ) -> Result<String> {
-    if let Some(existing_cluster_id) = find_overlapping_open_cluster(
-        conn,
-        instrument_id,
-        amount_minor,
-        direction,
-        event_time,
-    )? {
+    if let Some(existing_cluster_id) =
+        find_overlapping_open_cluster(conn, instrument_id, amount_minor, direction, event_time)?
+    {
         conn.execute(
             "INSERT INTO reconciliation_cluster_members (id, cluster_id, observation_id, member_role, added_at)
              VALUES (?1, ?2, ?3, 'incoming', CURRENT_TIMESTAMP)",
@@ -351,10 +347,15 @@ mod cluster_creation_tests {
         )
         .unwrap();
 
-        assert_eq!(first_cluster_id, second_cluster_id, "must extend the existing cluster, not create a duplicate");
+        assert_eq!(
+            first_cluster_id, second_cluster_id,
+            "must extend the existing cluster, not create a duplicate"
+        );
 
         let cluster_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM reconciliation_clusters", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM reconciliation_clusters", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(cluster_count, 1);
 

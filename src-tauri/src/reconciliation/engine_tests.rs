@@ -63,7 +63,8 @@ fn test_exact_match_success() {
         emi_total_installments: None,
         emi_original_amount_minor: None,
         fingerprint: Some("fp_shared".to_string()),
-        confidence_score: None,    };
+        confidence_score: None,
+    };
 
     // Empty candidate set: proves the fingerprint pre-filter resolves this
     // on its own, without ever needing the windowed search's results.
@@ -93,7 +94,8 @@ fn test_prefilter_miss_falls_through_to_scoring() {
         emi_original_amount_minor: None,
         // No prior observation carries this fingerprint.
         fingerprint: Some("fp_no_match_anywhere".to_string()),
-        confidence_score: None,    };
+        confidence_score: None,
+    };
 
     let cand = CanonicalCandidate {
         id: "cand_1".to_string(),
@@ -177,7 +179,8 @@ fn test_clear_winner_margin_exceeds_15_percent_auto_matches() {
         emi_total_installments: None,
         emi_original_amount_minor: None,
         fingerprint: None,
-        confidence_score: None,    };
+        confidence_score: None,
+    };
 
     // Strong candidate: exact reference ID + exact merchant + close time.
     let strong = CanonicalCandidate {
@@ -229,7 +232,8 @@ fn test_ambiguity_margin_within_15_percent_routes_ambiguous() {
         emi_total_installments: None,
         emi_original_amount_minor: None,
         fingerprint: None,
-        confidence_score: None,    };
+        confidence_score: None,
+    };
 
     // Two near-identical candidates -- same merchant, same amount, close
     // times -- neither one clearly better than the other.
@@ -281,7 +285,8 @@ fn test_below_viability_floor_routes_new_canonical() {
         emi_total_installments: None,
         emi_original_amount_minor: None,
         fingerprint: None,
-        confidence_score: None,    };
+        confidence_score: None,
+    };
 
     // Same instrument/amount/direction (required just to be a windowed
     // candidate at all) but a wildly different merchant and a time far from
@@ -307,7 +312,10 @@ fn test_below_viability_floor_routes_new_canonical() {
 #[test]
 fn test_viability_floor_and_margin_are_named_constants() {
     assert_eq!(crate::reconciliation::engine::BASE_VIABILITY_FLOOR, 0.55);
-    assert_eq!(crate::reconciliation::engine::AMBIGUITY_MARGIN_THRESHOLD, 0.15);
+    assert_eq!(
+        crate::reconciliation::engine::AMBIGUITY_MARGIN_THRESHOLD,
+        0.15
+    );
 }
 
 #[test]
@@ -444,7 +452,10 @@ fn test_new_canonical_created_from_single_observation() {
             |r| r.get(0),
         )
         .unwrap();
-    assert!(linked.is_some(), "observation must be linked to the new canonical row");
+    assert!(
+        linked.is_some(),
+        "observation must be linked to the new canonical row"
+    );
 }
 
 /// Doc 30 TASK-TXN-010 acceptance test: on `decision = 'ambiguous_pending'`,
@@ -500,7 +511,10 @@ fn test_ambiguous_decision_creates_no_canonical_row() {
     let tx_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM transactions", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(tx_count, 0, "no canonical transaction may be created for an ambiguous decision");
+    assert_eq!(
+        tx_count, 0,
+        "no canonical transaction may be created for an ambiguous decision"
+    );
 
     let linked: Option<String> = conn
         .query_row(
@@ -509,7 +523,10 @@ fn test_ambiguous_decision_creates_no_canonical_row() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(linked, None, "an ambiguous observation must not be linked to any canonical row");
+    assert_eq!(
+        linked, None,
+        "an ambiguous observation must not be linked to any canonical row"
+    );
 }
 
 /// Doc 30 TASK-TXN-010 / TASK-DEDUP-008 acceptance test (renamed from
@@ -583,10 +600,19 @@ fn test_statement_overwrites_email_sourced_fields() {
     let posting_date: String = row.get(1).unwrap();
     let reference_id: String = row.get(2).unwrap();
     let source_mix: String = row.get(3).unwrap();
-    assert_eq!(merchant, "Uber Statement", "statement merchant must overwrite email merchant");
-    assert_eq!(posting_date, "2026-06-12", "statement posting_date must overwrite email posting_date");
+    assert_eq!(
+        merchant, "Uber Statement",
+        "statement merchant must overwrite email merchant"
+    );
+    assert_eq!(
+        posting_date, "2026-06-12",
+        "statement posting_date must overwrite email posting_date"
+    );
     assert_eq!(reference_id, "REF_EXACT");
-    assert_eq!(source_mix, "merged", "email_only canonical must become merged once statement evidence arrives");
+    assert_eq!(
+        source_mix, "merged",
+        "email_only canonical must become merged once statement evidence arrives"
+    );
 
     // Observation must be linked for traceability.
     let linked: Option<String> = conn
@@ -666,8 +692,14 @@ fn test_email_only_fills_null_fields_when_statement_present() {
     let merchant: String = row.get(0).unwrap();
     let reference_id: String = row.get(1).unwrap();
     let source_mix: String = row.get(2).unwrap();
-    assert_eq!(merchant, "Refund Co (Email)", "NULL merchant must be filled from email");
-    assert_eq!(reference_id, "REF_STATEMENT", "existing non-NULL reference_id must NOT be overwritten by email");
+    assert_eq!(
+        merchant, "Refund Co (Email)",
+        "NULL merchant must be filled from email"
+    );
+    assert_eq!(
+        reference_id, "REF_STATEMENT",
+        "existing non-NULL reference_id must NOT be overwritten by email"
+    );
     assert_eq!(source_mix, "merged");
 }
 
@@ -775,6 +807,121 @@ fn test_email_vs_email_uses_confidence_score() {
     );
 }
 
+/// Doc 30 TASK-DEDUP-008 acceptance test (3+ observations): the email-vs-
+/// email precedence comparison must use whichever observation *last won*
+/// the field values, not the oldest-linked one. obs1 (0.5) sets the fields;
+/// obs2 (0.9) materially overwrites (margin 0.4 > 0.15); obs3 (0.92) then
+/// arrives. Comparing obs3 against the still-oldest obs1 (margin 0.42)
+/// would wrongly overwrite again; comparing against obs2's current 0.9
+/// (margin only 0.02) correctly does not qualify as "materially higher".
+#[test]
+fn test_email_vs_email_compares_against_last_winner_not_oldest() {
+    let conn = setup_test_db();
+
+    conn.execute(
+        "INSERT INTO transactions (id, instrument_id, amount_minor, currency, direction, best_posting_date, merchant_display_name, reference_id, source_mix, is_deleted)
+         VALUES ('tx_5', 'inst_1', 1000, 'USD', 'debit', '2026-06-10', 'Obs1 Merchant', 'REF_SHARED_5', 'email_only', 0)",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint, canonical_transaction_id, confidence_score, created_at) \
+         VALUES ('obs1', 'gmail_transaction', 'msg_obs1', 'fp_obs1', 'tx_5', 0.5, '2026-06-10 09:00:00')",
+        [],
+    ).unwrap();
+
+    let cand = CanonicalCandidate {
+        id: "tx_5".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 1000,
+        currency: "USD".to_string(),
+        direction: "debit".to_string(),
+        event_time: "2026-06-10 09:04:00".to_string(),
+        reference_id: Some("REF_SHARED_5".to_string()),
+        merchant_normalized_name: Some("Obs1 Merchant".to_string()),
+        source_mix: Some("email_only".to_string()),
+    };
+
+    // obs2 (0.9): margin over obs1 (0.5) is 0.4 > 0.15 -- must overwrite.
+    // confidence_score is persisted here to mirror the real production
+    // path (queues.rs inserts the full observation row, confidence_score
+    // included, before reconcile() ever runs) -- the fix reads this
+    // column via a match_decisions join, not the in-memory
+    // IncomingObservation field alone.
+    conn.execute(
+        "INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint, confidence_score) \
+         VALUES ('obs2', 'gmail_transaction', 'msg_obs2', 'fp_obs2', 0.9)",
+        [],
+    ).unwrap();
+    let obs2 = IncomingObservation {
+        id: "obs2".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 1000,
+        currency: "USD".to_string(),
+        direction: "debit".to_string(),
+        event_time: "2026-06-10 09:05:00".to_string(),
+        reference_id: Some("REF_SHARED_5".to_string()),
+        merchant_raw: Some("Obs2 Merchant".to_string()),
+        source_pipeline: "gmail_transaction".to_string(),
+        source_record_id: "msg_obs2".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
+        fingerprint: None,
+        confidence_score: Some(0.9),
+    };
+    reconcile(&conn, &obs2, vec![cand.clone()]).unwrap();
+
+    let merchant_after_obs2: String = conn
+        .query_row(
+            "SELECT merchant_display_name FROM transactions WHERE id = 'tx_5'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        merchant_after_obs2, "Obs2 Merchant",
+        "obs2 must win over obs1 (margin 0.4)"
+    );
+
+    // obs3 (0.92): margin over the STALE obs1 (0.5) would be 0.42 (would
+    // wrongly overwrite under the old oldest-linked-row bug); margin over
+    // the CURRENT winner obs2 (0.9) is only 0.02 -- must NOT overwrite.
+    conn.execute(
+        "INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint, confidence_score) \
+         VALUES ('obs3', 'gmail_transaction', 'msg_obs3', 'fp_obs3', 0.92)",
+        [],
+    ).unwrap();
+    let obs3 = IncomingObservation {
+        id: "obs3".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 1000,
+        currency: "USD".to_string(),
+        direction: "debit".to_string(),
+        event_time: "2026-06-10 09:06:00".to_string(),
+        reference_id: Some("REF_SHARED_5".to_string()),
+        merchant_raw: Some("Obs3 Merchant".to_string()),
+        source_pipeline: "gmail_transaction".to_string(),
+        source_record_id: "msg_obs3".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
+        fingerprint: None,
+        confidence_score: Some(0.92),
+    };
+    reconcile(&conn, &obs3, vec![cand]).unwrap();
+
+    let merchant_after_obs3: String = conn
+        .query_row(
+            "SELECT merchant_display_name FROM transactions WHERE id = 'tx_5'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        merchant_after_obs3, "Obs2 Merchant",
+        "obs3 (0.92) must be compared against obs2's current 0.9 (margin 0.02, not material), \
+         not obs1's stale 0.5 (margin 0.42) -- must NOT overwrite"
+    );
+}
+
 /// Doc 30 TASK-DEDUP-008 acceptance test: every precedence-driven overwrite
 /// is logged to `audit_log` with actual before/after values, not just a bare
 /// event marker.
@@ -835,8 +982,14 @@ fn test_precedence_overwrite_logged_to_audit() {
         )
         .unwrap();
 
-    assert!(before_json.contains("Uber Email"), "before_json must capture the pre-overwrite value: {before_json}");
-    assert!(after_json.contains("Uber Statement"), "after_json must capture the post-overwrite value: {after_json}");
+    assert!(
+        before_json.contains("Uber Email"),
+        "before_json must capture the pre-overwrite value: {before_json}"
+    );
+    assert!(
+        after_json.contains("Uber Statement"),
+        "after_json must capture the post-overwrite value: {after_json}"
+    );
 }
 
 #[test]
@@ -966,7 +1119,8 @@ fn test_original_ambiguous_decision_row_never_modified() {
         emi_total_installments: None,
         emi_original_amount_minor: None,
         fingerprint: None,
-        confidence_score: None,    };
+        confidence_score: None,
+    };
     let cand1 = CanonicalCandidate {
         id: "cand_1".to_string(),
         instrument_id: "inst_1".to_string(),
@@ -1052,7 +1206,10 @@ fn test_original_ambiguous_decision_row_never_modified() {
             |r| r.get(0),
         )
         .unwrap();
-    assert!(manual_reviewed_by.is_some(), "manual resolution must set reviewed_by (Doc 30 TASK-DEDUP-007)");
+    assert!(
+        manual_reviewed_by.is_some(),
+        "manual resolution must set reviewed_by (Doc 30 TASK-DEDUP-007)"
+    );
 }
 
 /// Doc 30 TASK-DEDUP-007 acceptance test (renamed from
@@ -1060,8 +1217,24 @@ fn test_original_ambiguous_decision_row_never_modified() {
 /// `treat_as_separate`; the real, already-built allowlist names it
 /// `keep_separate`, Document 19 §10.3).
 #[test]
-fn test_resolve_keep_separate_creates_new_canonical() {
+/// Doc 30 TASK-DEDUP-007 acceptance test (spec name:
+/// `test_resolve_treat_as_separate_creates_multiple_canonicals`): resolving
+/// a cluster as "keep separate" must leave *multiple* distinct canonical
+/// transactions -- the cluster's candidate member (`cand_1`) plus a newly
+/// created one for the observation. Seeds `cand_1` into `transactions` (the
+/// previous version of this test never did, so its `count >= 1` assertion
+/// passed identically whether one or two canonicals existed -- it never
+/// actually proved "multiple").
+fn test_resolve_treat_as_separate_creates_multiple_canonicals() {
     let conn = setup_test_db();
+
+    conn.execute(
+        "INSERT INTO transactions (id, instrument_id, amount_minor, currency, direction, best_event_time, reference_id, merchant_normalized_name, source_mix, is_deleted) \
+         VALUES ('cand_1', 'inst_1', 1000, 'USD', 'debit', '2026-06-10 11:00:00', 'REF123', 'Test Merchant', 'email_only', 0)",
+        [],
+    )
+    .unwrap();
+
     crate::reconciliation::cluster::create_ambiguity_cluster(
         &conn,
         "obs_1",
@@ -1091,16 +1264,26 @@ fn test_resolve_keep_separate_creates_new_canonical() {
     )
     .unwrap();
 
-    // Check if new canonical was created
-    // A new transaction should have been created (id != cand_1)
-    let count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM transactions WHERE amount_minor = 1000",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert!(count >= 1);
+    // "keep separate" must leave two distinct canonicals: cand_1 (already
+    // existed) and a fresh one created for obs_1.
+    let ids: Vec<String> = {
+        let mut stmt = conn
+            .prepare("SELECT id FROM transactions WHERE amount_minor = 1000")
+            .unwrap();
+        stmt.query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    };
+    assert_eq!(
+        ids.len(),
+        2,
+        "expected two distinct canonical transactions, got {:?}",
+        ids
+    );
+    assert!(ids.contains(&"cand_1".to_string()));
+    let new_id = ids.iter().find(|id| *id != "cand_1").unwrap();
+    assert_ne!(new_id, "cand_1");
 
     let decision: String = conn.query_row("SELECT decision FROM match_decisions WHERE observation_id = 'obs_1' AND decision = 'manually_confirmed'", [], |r| r.get(0)).unwrap();
     assert_eq!(decision, "manually_confirmed");
@@ -1462,7 +1645,15 @@ fn test_merchant_alias_resolves_normalized_name() {
         direction: "debit".to_string(),
         event_time: "2026-06-10 12:00:00".to_string(),
         reference_id: None,
-        merchant_raw: Some("PAYMENT TO AMAZON PAY INDIA BLR".to_string()),
+        // Doc 30 TASK-TXN-007: realistic bank-alert format ('*'-separated
+        // noise, per the real normalize_merchant pipeline's own strip rule)
+        // -- strips to "AMAZON PAY INDIA", an exact match against the
+        // seeded 'alias_amz2' alias. The old inline LIKE-substring query
+        // this replaced would also match an arbitrary sentence like
+        // "PAYMENT TO AMAZON PAY INDIA BLR", but that was never the spec's
+        // noise-stripping contract (Doc 30: '*'-separator + trailing
+        // numeric codes, not free-text prefix/suffix words).
+        merchant_raw: Some("AMAZON PAY INDIA*ORDER48219".to_string()),
         source_pipeline: "manual".to_string(),
         source_record_id: "manual_3".to_string(),
         emi_total_installments: None,
@@ -1482,7 +1673,10 @@ fn test_merchant_alias_resolves_normalized_name() {
     ).unwrap();
 
     assert_eq!(entity_id, "merch_amazon");
-    assert_eq!(normalized_name, "Amazon");
+    // merchants.normalized_name is the uppercase normalized form (seeded as
+    // 'AMAZON'), not the mixed-case display name -- the old inline query
+    // this replaced incorrectly selected m.name instead.
+    assert_eq!(normalized_name, "AMAZON");
 }
 
 #[test]

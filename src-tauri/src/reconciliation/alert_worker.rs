@@ -29,8 +29,7 @@ pub async fn evaluate_alerts_for_observations<R: tauri::Runtime>(
         return Ok(());
     }
 
-    pool
-        .get()
+    pool.get()
         .await?
         .interact(move |conn| -> Result<()> {
             evaluate_alerts_internal(conn, Some(app_handle), observation_ids)

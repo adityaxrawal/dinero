@@ -40,7 +40,7 @@ pub fn create_canonical_transaction(conn: &Connection, obs: &IncomingObservation
     let new_tx = TransactionsRow {
         id: tx_id.clone(),
         unique_event_id: None,
-        instrument_id: Some(obs.instrument_id.clone()),
+        instrument_id: if obs.instrument_id == "unknown" { None } else { Some(obs.instrument_id.clone()) },
         instrument_type: None,
         direction: Some(obs.direction.clone()),
         amount: Some((obs.amount_minor as f64) / 100.0),
@@ -74,7 +74,8 @@ pub fn create_canonical_transaction(conn: &Connection, obs: &IncomingObservation
         transaction_subtype: None,
         emi_group_id: None,
         category_id: None,
-        notes: None,        is_deleted: false,
+        notes: None,
+        is_deleted: false,
         created_at: None,
         updated_at: None,
     };
@@ -248,16 +249,44 @@ fn maybe_overwrite_from_higher_confidence_email(
         return Ok(()); // No confidence signal on the new observation -- can't compare, keep first-arriving.
     };
 
+    // Doc 30 TASK-DEDUP-008: compare against the observation that actually
+    // last *won* the field values, not just the oldest linked email. The
+    // oldest-linked row can go stale: if obs1 (confidence 0.5) sets the
+    // fields, obs2 (0.9) later materially overwrites them, and obs3 (0.92)
+    // arrives after that, comparing against obs1's stale 0.5 wrongly
+    // triggers another overwrite (large margin) instead of comparing
+    // against obs2's current 0.9 (small margin, correctly not "materially
+    // higher"). The latest `auto_matched_exact`/`auto_matched_scored`/
+    // `manually_confirmed` `match_decisions` row for this canonical
+    // identifies whichever observation most recently won; if none exists
+    // yet (no overwrite has ever happened), fall back to the founding
+    // (oldest-linked) email observation, which is the only correct
+    // reference point at that point in the canonical's history anyway.
     let existing_confidence: Option<f64> = conn
         .query_row(
-            "SELECT confidence_score FROM transaction_observations \
-             WHERE canonical_transaction_id = ?1 AND source_pipeline = 'gmail_transaction' AND id != ?2 \
-             ORDER BY created_at ASC LIMIT 1",
+            "SELECT o.confidence_score
+             FROM match_decisions md
+             JOIN transaction_observations o ON o.id = md.observation_id
+             WHERE md.matched_transaction_id = ?1
+               AND md.decision IN ('auto_matched_exact', 'auto_matched_scored', 'manually_confirmed')
+               AND o.source_pipeline = 'gmail_transaction' AND o.id != ?2
+             ORDER BY md.created_at DESC LIMIT 1",
             params![canonical_id, obs.id],
             |row| row.get(0),
         )
         .ok()
-        .flatten();
+        .flatten()
+        .or_else(|| {
+            conn.query_row(
+                "SELECT confidence_score FROM transaction_observations \
+                 WHERE canonical_transaction_id = ?1 AND source_pipeline = 'gmail_transaction' AND id != ?2 \
+                 ORDER BY created_at ASC LIMIT 1",
+                params![canonical_id, obs.id],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten()
+        });
 
     let Some(existing_confidence) = existing_confidence else {
         return Ok(()); // Nothing to compare against -- keep first-arriving.
@@ -346,9 +375,9 @@ pub fn apply_match_precedence_and_link(
     // (which now also runs recurring-payment detection) must run here too,
     // not just from `create_canonical_transaction`.
     let fmt = "%Y-%m-%d %H:%M:%S";
-    if let Ok(event_time_dt) = NaiveDateTime::parse_from_str(&obs.event_time, fmt).or_else(|_| {
-        NaiveDateTime::parse_from_str(&format!("{} 00:00:00", obs.event_time), fmt)
-    }) {
+    if let Ok(event_time_dt) = NaiveDateTime::parse_from_str(&obs.event_time, fmt)
+        .or_else(|_| NaiveDateTime::parse_from_str(&format!("{} 00:00:00", obs.event_time), fmt))
+    {
         let _ = crate::reconciliation::post_processing::run_post_processing(
             conn,
             matched_id,

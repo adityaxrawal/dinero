@@ -47,7 +47,12 @@ fn time_within_tolerance(a: &str, b: &str, tolerance_seconds: i64) -> bool {
 mod tests {
     use super::*;
 
-    fn obs(instrument_id: &str, direction: &str, amount_minor: i64, event_time: &str) -> IncomingObservation {
+    fn obs(
+        instrument_id: &str,
+        direction: &str,
+        amount_minor: i64,
+        event_time: &str,
+    ) -> IncomingObservation {
         IncomingObservation {
             id: "obs_1".to_string(),
             instrument_id: instrument_id.to_string(),
@@ -62,10 +67,16 @@ mod tests {
             emi_total_installments: None,
             emi_original_amount_minor: None,
             fingerprint: Some("fp_1".to_string()),
-            confidence_score: None,        }
+            confidence_score: None,
+        }
     }
 
-    fn candidate(instrument_id: &str, direction: &str, amount_minor: i64, event_time: &str) -> CanonicalCandidate {
+    fn candidate(
+        instrument_id: &str,
+        direction: &str,
+        amount_minor: i64,
+        event_time: &str,
+    ) -> CanonicalCandidate {
         CanonicalCandidate {
             id: "cand_1".to_string(),
             instrument_id: instrument_id.to_string(),
