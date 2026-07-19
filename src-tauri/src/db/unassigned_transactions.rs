@@ -3,6 +3,8 @@ use chrono::NaiveDateTime;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
+const BODY_SNIPPET_MAX_CHARS: usize = 240;
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UnassignedTransactionRow {
     pub id: String,
@@ -60,4 +62,79 @@ pub fn select_open(conn: &Connection) -> Result<Vec<UnassignedTransactionRow>> {
         results.push(row?);
     }
     Ok(results)
+}
+
+/// The plain `select_open` result gives the UI nothing to show the user
+/// beyond a raw reason code and an opaque UUID -- joins the linked
+/// `transaction_observations` row (a required FK, so an inner join never
+/// silently drops a row) for whatever partial signal extraction *did*
+/// recover (merchant/amount/currency), plus a short snippet of the original
+/// email body (stored verbatim as `{"body": "..."}` in `raw_payload_json`
+/// for the `extraction_failed` case -- see
+/// `message_processor.rs::record_unassigned_transaction`), so the user has
+/// enough context to actually understand what failed without digging
+/// through logs.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct UnassignedTransactionDetail {
+    pub id: String,
+    pub observation_id: String,
+    pub reason: String,
+    pub status: String,
+    pub created_at: Option<NaiveDateTime>,
+    pub merchant_raw: Option<String>,
+    pub amount_minor: Option<i64>,
+    pub currency: Option<String>,
+    pub source_message_id: Option<String>,
+    pub body_snippet: Option<String>,
+}
+
+pub fn select_open_with_context(conn: &Connection) -> Result<Vec<UnassignedTransactionDetail>> {
+    let mut stmt = conn.prepare(
+        "SELECT u.id, u.observation_id, u.reason, u.status, u.created_at, \
+                o.merchant_raw, o.amount_minor, o.currency, o.source_message_id, o.raw_payload_json \
+         FROM unassigned_transactions u \
+         JOIN transaction_observations o ON o.id = u.observation_id \
+         WHERE u.status = 'open' \
+         ORDER BY u.created_at DESC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let raw_payload_json: Option<String> = row.get(9)?;
+        let body_snippet = raw_payload_json.as_deref().and_then(extract_body_snippet);
+        Ok(UnassignedTransactionDetail {
+            id: row.get(0)?,
+            observation_id: row.get(1)?,
+            reason: row.get(2)?,
+            status: row.get(3)?,
+            created_at: row.get(4)?,
+            merchant_raw: row.get(5)?,
+            amount_minor: row.get(6)?,
+            currency: row.get(7)?,
+            source_message_id: row.get(8)?,
+            body_snippet,
+        })
+    })?;
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row?);
+    }
+    Ok(results)
+}
+
+/// Collapses whitespace (the stored body is the raw, unwrapped email text --
+/// newlines and repeated spaces make for a poor one-line preview) and caps
+/// to [`BODY_SNIPPET_MAX_CHARS`] on a char boundary (not a byte slice --
+/// email bodies routinely contain multi-byte characters like `₹`).
+fn extract_body_snippet(raw_payload_json: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(raw_payload_json).ok()?;
+    let body = value.get("body")?.as_str()?;
+    let collapsed = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    Some(if collapsed.chars().count() > BODY_SNIPPET_MAX_CHARS {
+        let truncated: String = collapsed.chars().take(BODY_SNIPPET_MAX_CHARS).collect();
+        format!("{truncated}…")
+    } else {
+        collapsed
+    })
 }

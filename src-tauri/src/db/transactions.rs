@@ -519,11 +519,33 @@ mod candidate_search_tests {
     #[test]
     fn test_candidate_search_filters_by_instrument_and_direction() {
         let conn = setup_test_db();
-        seed_transaction(&conn, "match", "inst_1", 1000, "debit", "2026-06-10 12:00:00");
-        seed_transaction(&conn, "wrong_instrument", "inst_2", 1000, "debit", "2026-06-10 12:00:00");
-        seed_transaction(&conn, "wrong_direction", "inst_1", 1000, "credit", "2026-06-10 12:00:00");
+        seed_transaction(
+            &conn,
+            "match",
+            "inst_1",
+            1000,
+            "debit",
+            "2026-06-10 12:00:00",
+        );
+        seed_transaction(
+            &conn,
+            "wrong_instrument",
+            "inst_2",
+            1000,
+            "debit",
+            "2026-06-10 12:00:00",
+        );
+        seed_transaction(
+            &conn,
+            "wrong_direction",
+            "inst_1",
+            1000,
+            "credit",
+            "2026-06-10 12:00:00",
+        );
 
-        let anchor = NaiveDateTime::parse_from_str("2026-06-10 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
+        let anchor =
+            NaiveDateTime::parse_from_str("2026-06-10 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
         let results =
             find_candidates_within_window(&conn, "inst_1", 1000, "debit", &anchor, 3).unwrap();
 
@@ -537,10 +559,25 @@ mod candidate_search_tests {
     #[test]
     fn test_candidate_search_date_window_boundary() {
         let conn = setup_test_db();
-        seed_transaction(&conn, "within_window", "inst_1", 1000, "debit", "2026-06-13 12:00:00"); // +3 days exactly
-        seed_transaction(&conn, "outside_window", "inst_1", 1000, "debit", "2026-06-14 12:00:00"); // +4 days
+        seed_transaction(
+            &conn,
+            "within_window",
+            "inst_1",
+            1000,
+            "debit",
+            "2026-06-13 12:00:00",
+        ); // +3 days exactly
+        seed_transaction(
+            &conn,
+            "outside_window",
+            "inst_1",
+            1000,
+            "debit",
+            "2026-06-14 12:00:00",
+        ); // +4 days
 
-        let anchor = NaiveDateTime::parse_from_str("2026-06-10 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
+        let anchor =
+            NaiveDateTime::parse_from_str("2026-06-10 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
         let results =
             find_candidates_within_window(&conn, "inst_1", 1000, "debit", &anchor, 3).unwrap();
 
@@ -555,9 +592,17 @@ mod candidate_search_tests {
     #[test]
     fn test_candidate_search_returns_empty_for_new_transaction() {
         let conn = setup_test_db();
-        seed_transaction(&conn, "unrelated", "inst_1", 5000, "debit", "2026-06-10 12:00:00");
+        seed_transaction(
+            &conn,
+            "unrelated",
+            "inst_1",
+            5000,
+            "debit",
+            "2026-06-10 12:00:00",
+        );
 
-        let anchor = NaiveDateTime::parse_from_str("2026-06-10 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
+        let anchor =
+            NaiveDateTime::parse_from_str("2026-06-10 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
         let results =
             find_candidates_within_window(&conn, "inst_1", 1000, "debit", &anchor, 3).unwrap();
 

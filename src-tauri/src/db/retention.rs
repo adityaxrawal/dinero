@@ -24,7 +24,11 @@ const ARCHIVE_AGE_YEARS: i64 = 5;
 /// etc. is a product decision this function does not make unilaterally —
 /// pruning can be layered on once that's decided, reusing the same
 /// `is_deleted`/status convention already used elsewhere in this schema.
-pub fn archive_old_transactions(conn: &Connection, archive_dir: &Path, db_key: &str) -> Result<usize> {
+pub fn archive_old_transactions(
+    conn: &Connection,
+    archive_dir: &Path,
+    db_key: &str,
+) -> Result<usize> {
     std::fs::create_dir_all(archive_dir).context("Failed to create archive directory")?;
 
     let years: Vec<i64> = {
@@ -131,7 +135,8 @@ mod tests {
 
     fn setup_db() -> Connection {
         let conn = crate::db::test_helpers::setup_test_db();
-        conn.execute("INSERT INTO local_profile (id) VALUES (1)", []).unwrap();
+        conn.execute("INSERT INTO local_profile (id) VALUES (1)", [])
+            .unwrap();
         conn.execute(
             "INSERT INTO instruments (id, type, issuer_name, masked_identifier, status) \
              VALUES ('inst_1', 'credit_card', 'HDFC', '1234', 'active')",
@@ -221,7 +226,8 @@ mod tests {
         )
         .unwrap();
 
-        let dir = std::env::temp_dir().join(format!("dinero_archive_test_{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("dinero_archive_test_{}", uuid::Uuid::new_v4()));
         let archived = archive_old_transactions(&conn, &dir, test_key).unwrap();
         assert_eq!(archived, 1);
 
@@ -235,7 +241,9 @@ mod tests {
             .execute_batch(&format!("PRAGMA key = '{}';", test_key))
             .unwrap();
         let id: String = archive_conn
-            .query_row("SELECT id FROM transactions WHERE id = 'old_tx'", [], |r| r.get(0))
+            .query_row("SELECT id FROM transactions WHERE id = 'old_tx'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(id, "old_tx");
 

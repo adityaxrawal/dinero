@@ -83,3 +83,33 @@ fn row_to_profile(row: &Row) -> rusqlite::Result<LocalProfileRow> {
         updated_at: row.get("updated_at")?,
     })
 }
+
+/// `llm_model` (migration `20260101000019_local_profile_onboarding_fields`)
+/// was only ever written, via `onboarding_save_preferences`'s raw SQL — not
+/// modeled on `LocalProfileRow`, and nothing anywhere ever read it back.
+/// `extraction/ladder.rs`'s `Layer6LlmLayer` needs exactly this: which
+/// catalog model id the user actually selected.
+pub fn get_llm_model(conn: &Connection) -> Result<Option<String>> {
+    let result: rusqlite::Result<Option<String>> = conn.query_row(
+        "SELECT llm_model FROM local_profile WHERE id = 1",
+        [],
+        |row| row.get(0),
+    );
+    match result {
+        Ok(model) => Ok(model),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Settings' model picker writes here directly — a single-column update,
+/// deliberately not routed through `onboarding_save_preferences` (which
+/// would require resending every other onboarding field just to change
+/// one).
+pub fn set_llm_model(conn: &Connection, model_id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE local_profile SET llm_model = ?1 WHERE id = 1",
+        params![model_id],
+    )?;
+    Ok(())
+}

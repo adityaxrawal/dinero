@@ -20,9 +20,23 @@ const KEYCHAIN_USER: &str = "dinero-base-key";
 /// not a UUIDv4 (~122 bits). This only changes what a *newly created* Keychain
 /// entry looks like — an entry already written by a previous run is returned
 /// as-is, so no already-encrypted database is ever re-keyed by this change.
+#[cfg(debug_assertions)]
 pub fn get_or_create_base_key() -> Result<String> {
-    let entry = Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER)
-        .context("Failed to create keyring entry")?;
+    let dev_key_path = std::env::temp_dir().join("dinero_dev_base_key.txt");
+    if let Ok(key) = std::fs::read_to_string(&dev_key_path) {
+        return Ok(key);
+    }
+    let mut bytes = [0u8; 32];
+    OsRng.fill_bytes(&mut bytes);
+    let new_key = hex::encode(bytes);
+    let _ = std::fs::write(dev_key_path, &new_key);
+    Ok(new_key)
+}
+
+#[cfg(not(debug_assertions))]
+pub fn get_or_create_base_key() -> Result<String> {
+    let entry =
+        Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER).context("Failed to create keyring entry")?;
 
     match entry.get_password() {
         Ok(key) => Ok(key),
@@ -48,7 +62,11 @@ pub fn get_or_create_base_key() -> Result<String> {
 fn classify_keychain_error(e: keyring::Error, action: &str) -> anyhow::Error {
     match e {
         keyring::Error::NoStorageAccess(inner) => {
-            anyhow::anyhow!("KEYCHAIN_ACCESS_DENIED: failed to {} Keychain: {}", action, inner)
+            anyhow::anyhow!(
+                "KEYCHAIN_ACCESS_DENIED: failed to {} Keychain: {}",
+                action,
+                inner
+            )
         }
         other => anyhow::anyhow!("Keychain error: {}", other),
     }
@@ -72,7 +90,10 @@ fn bytes_to_base_key(bytes: &[u8]) -> Result<String> {
     match bytes.len() {
         16 => Ok(Uuid::from_slice(bytes)?.to_string()),
         32 => Ok(hex::encode(bytes)),
-        n => Err(anyhow::anyhow!("Unexpected recovered key length: {} bytes", n)),
+        n => Err(anyhow::anyhow!(
+            "Unexpected recovered key length: {} bytes",
+            n
+        )),
     }
 }
 
@@ -142,6 +163,13 @@ pub fn restore_base_key_from_phrase(phrase: &str, db_path: &std::path::Path) -> 
 /// Doc 28 §4.4 step 6 ("Reset App Data" full wipe): clears the SQLite base
 /// encryption key from Keychain. Best-effort — a missing/already-deleted
 /// entry is not an error.
+#[cfg(debug_assertions)]
+pub fn delete_base_key() {
+    let dev_key_path = std::env::temp_dir().join("dinero_dev_base_key.txt");
+    let _ = std::fs::remove_file(dev_key_path);
+}
+
+#[cfg(not(debug_assertions))]
 pub fn delete_base_key() {
     if let Ok(entry) = Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER) {
         let _ = entry.delete_credential();
@@ -278,7 +306,10 @@ pub fn hw_uuid_marker_indicates_migration(app_data_dir: &std::path::Path) -> boo
 /// hardware — this is some other kind of key mismatch, not a hardware
 /// change), and `Err` if a migration was attempted but failed (e.g. the old
 /// key didn't decrypt the file either — the marker is stale/irrelevant).
-pub fn try_migrate_hardware_uuid(db_path: &std::path::Path, app_data_dir: &std::path::Path) -> Result<bool> {
+pub fn try_migrate_hardware_uuid(
+    db_path: &std::path::Path,
+    app_data_dir: &std::path::Path,
+) -> Result<bool> {
     let marker_path = hw_uuid_marker_path(app_data_dir);
     let Ok(old_hw_uuid) = std::fs::read_to_string(&marker_path) else {
         return Ok(false);
@@ -302,15 +333,20 @@ pub fn try_migrate_hardware_uuid(db_path: &std::path::Path, app_data_dir: &std::
     )?;
     // SQLCipher's PRAGMA key never itself errors, even for a wrong key — only
     // a real query proves the old-hardware key actually decrypts this file.
-    conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))
-        .context("Old hardware-UUID key did not decrypt the database — not a hardware migration")?;
+    conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| {
+        r.get::<_, i64>(0)
+    })
+    .context("Old hardware-UUID key did not decrypt the database — not a hardware migration")?;
 
     conn.execute_batch(&format!("PRAGMA rekey = '{}';", new_key))
         .context("Failed to rekey database to the current hardware UUID")?;
     drop(conn);
 
     if let Err(e) = std::fs::write(&marker_path, &current_hw_uuid) {
-        tracing::warn!("Rekeyed successfully but failed to update hardware UUID marker: {}", e);
+        tracing::warn!(
+            "Rekeyed successfully but failed to update hardware UUID marker: {}",
+            e
+        );
     }
 
     tracing::info!("Hardware UUID migration: re-keyed database to the current machine's hardware");
@@ -341,7 +377,8 @@ mod hardware_migration_tests {
 
     #[test]
     fn rekey_round_trip_old_key_stops_working_new_key_opens() {
-        let dir = std::env::temp_dir().join(format!("dinero_hw_migration_test_{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("dinero_hw_migration_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let db_path = dir.join("data.db");
 
@@ -351,41 +388,54 @@ mod hardware_migration_tests {
         // Create and encrypt with the "old hardware" key.
         {
             let conn = rusqlite::Connection::open(&db_path).unwrap();
-            conn.execute_batch(&format!("PRAGMA key = '{}';", old_key)).unwrap();
+            conn.execute_batch(&format!("PRAGMA key = '{}';", old_key))
+                .unwrap();
             conn.execute_batch(
                 "PRAGMA cipher_page_size = 4096; PRAGMA kdf_iter = 256000; \
                  PRAGMA cipher_hmac_algorithm = HMAC_SHA512;",
             )
             .unwrap();
-            conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)", []).unwrap();
+            conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)", [])
+                .unwrap();
         }
 
         // Simulate the migration's rekey step directly.
         {
             let conn = rusqlite::Connection::open(&db_path).unwrap();
-            conn.execute_batch(&format!("PRAGMA key = '{}';", old_key)).unwrap();
+            conn.execute_batch(&format!("PRAGMA key = '{}';", old_key))
+                .unwrap();
             conn.execute_batch(
                 "PRAGMA cipher_page_size = 4096; PRAGMA kdf_iter = 256000; \
                  PRAGMA cipher_hmac_algorithm = HMAC_SHA512;",
             )
             .unwrap();
-            conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))
+            conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap();
+            conn.execute_batch(&format!("PRAGMA rekey = '{}';", new_key))
                 .unwrap();
-            conn.execute_batch(&format!("PRAGMA rekey = '{}';", new_key)).unwrap();
         }
 
         // Old key must no longer decrypt the (now rekeyed) database.
         {
             let conn = rusqlite::Connection::open(&db_path).unwrap();
-            conn.execute_batch(&format!("PRAGMA key = '{}';", old_key)).unwrap();
-            let result = conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0));
-            assert!(result.is_err(), "old key should no longer decrypt the rekeyed database");
+            conn.execute_batch(&format!("PRAGMA key = '{}';", old_key))
+                .unwrap();
+            let result = conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| {
+                r.get::<_, i64>(0)
+            });
+            assert!(
+                result.is_err(),
+                "old key should no longer decrypt the rekeyed database"
+            );
         }
 
         // New key must decrypt it.
         {
             let conn = rusqlite::Connection::open(&db_path).unwrap();
-            conn.execute_batch(&format!("PRAGMA key = '{}';", new_key)).unwrap();
+            conn.execute_batch(&format!("PRAGMA key = '{}';", new_key))
+                .unwrap();
             let count: i64 = conn
                 .query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get(0))
                 .unwrap();
@@ -397,7 +447,8 @@ mod hardware_migration_tests {
 
     #[test]
     fn hw_uuid_marker_migration_detection() {
-        let dir = std::env::temp_dir().join(format!("dinero_hw_marker_test_{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("dinero_hw_marker_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
 
         // No marker file at all -> never a migration signal.

@@ -1,8 +1,8 @@
 pub mod alerts;
 pub mod audit_log;
-pub mod backup;
 #[cfg(test)]
 mod audit_log_tests;
+pub mod backup;
 pub mod batch_writer;
 pub mod categories;
 #[cfg(test)]
@@ -40,6 +40,9 @@ pub mod recurring_payments;
 mod recurring_payments_tests;
 pub mod retention;
 pub mod scoping;
+pub mod sender_reputation;
+#[cfg(test)]
+mod sender_reputation_tests;
 pub mod sessions;
 #[cfg(test)]
 mod sessions_tests;

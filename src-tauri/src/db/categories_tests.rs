@@ -140,7 +140,10 @@ mod tests {
     fn test_system_category_delete_rejected() {
         let conn = setup_db();
         let categories = categories::select_all(&conn).unwrap();
-        let food_cat = categories.iter().find(|c| c.name == "Food & Dining").unwrap();
+        let food_cat = categories
+            .iter()
+            .find(|c| c.name == "Food & Dining")
+            .unwrap();
 
         let result = categories::soft_delete(&conn, &food_cat.id, false);
         assert!(result.is_err(), "a system category must never be deletable");
@@ -156,17 +159,25 @@ mod tests {
     fn test_system_category_icon_update_allowed() {
         let conn = setup_db();
         let categories = categories::select_all(&conn).unwrap();
-        let food_cat = categories.iter().find(|c| c.name == "Food & Dining").unwrap();
+        let food_cat = categories
+            .iter()
+            .find(|c| c.name == "Food & Dining")
+            .unwrap();
 
         let mut restyled = food_cat.clone();
         restyled.icon = Some("new-icon".to_string());
         restyled.color = Some("#123456".to_string());
         categories::update(&conn, &restyled).unwrap();
 
-        let refetched = categories::select_by_id(&conn, &food_cat.id).unwrap().unwrap();
+        let refetched = categories::select_by_id(&conn, &food_cat.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(refetched.icon.as_deref(), Some("new-icon"));
         assert_eq!(refetched.color.as_deref(), Some("#123456"));
-        assert_eq!(refetched.name, "Food & Dining", "name must remain untouched by an icon/color-only update");
+        assert_eq!(
+            refetched.name, "Food & Dining",
+            "name must remain untouched by an icon/color-only update"
+        );
     }
 
     /// Doc 30 TASK-API-007 acceptance test: deleting a user category with
@@ -200,17 +211,26 @@ mod tests {
         // Without confirmation, the delete is rejected rather than silently
         // reassigning.
         let unconfirmed = categories::soft_delete(&conn, "cat_user_custom", false);
-        assert!(unconfirmed.is_err(), "must require confirm_reassign when transactions are linked");
+        assert!(
+            unconfirmed.is_err(),
+            "must require confirm_reassign when transactions are linked"
+        );
 
         let reassigned_count = categories::soft_delete(&conn, "cat_user_custom", true).unwrap();
         assert_eq!(reassigned_count, 1);
 
         let category_id: String = conn
-            .query_row("SELECT category_id FROM transactions WHERE id = 'tx_1'", [], |r| r.get(0))
+            .query_row(
+                "SELECT category_id FROM transactions WHERE id = 'tx_1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(category_id, "cat_others");
 
-        assert!(categories::select_by_id(&conn, "cat_user_custom").unwrap().is_none());
+        assert!(categories::select_by_id(&conn, "cat_user_custom")
+            .unwrap()
+            .is_none());
     }
 
     #[test]

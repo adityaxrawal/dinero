@@ -124,7 +124,10 @@ pub fn select_by_id(conn: &Connection, id: &str) -> Result<Option<UnprocessedSta
 
 /// Doc 30 TASK-STMT-010: `statements_discard(id)` — permanent removal.
 pub fn delete(conn: &Connection, id: &str) -> Result<bool> {
-    let count = conn.execute("DELETE FROM unprocessed_statements WHERE id = ?1", params![id])?;
+    let count = conn.execute(
+        "DELETE FROM unprocessed_statements WHERE id = ?1",
+        params![id],
+    )?;
     Ok(count > 0)
 }
 

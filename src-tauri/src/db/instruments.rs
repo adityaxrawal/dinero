@@ -431,7 +431,11 @@ mod tests {
         let bills = list_upcoming_bills(&conn, &today).unwrap();
 
         let ids: Vec<&str> = bills.iter().map(|b| b.id.as_str()).collect();
-        assert_eq!(ids, vec!["inst_near", "inst_mid", "inst_far"], "must be ascending by due date, excluding NULL and past-due");
+        assert_eq!(
+            ids,
+            vec!["inst_near", "inst_mid", "inst_far"],
+            "must be ascending by due date, excluding NULL and past-due"
+        );
     }
 
     /// Doc 30 TASK-API-002 acceptance test: simulates the exact
@@ -459,9 +463,19 @@ mod tests {
         update_instrument(&conn, &row).unwrap();
 
         let after = get_instrument(&conn, "inst_1").unwrap().unwrap();
-        assert_eq!(after.issuer_name, "HDFC Bank", "issuer_name must never change via update");
-        assert_eq!(after.masked_identifier, "1234", "masked_identifier must never change via update");
-        assert_eq!(after.billing_cycle_day, Some(15), "user-editable fields must still update");
+        assert_eq!(
+            after.issuer_name, "HDFC Bank",
+            "issuer_name must never change via update"
+        );
+        assert_eq!(
+            after.masked_identifier, "1234",
+            "masked_identifier must never change via update"
+        );
+        assert_eq!(
+            after.billing_cycle_day,
+            Some(15),
+            "user-editable fields must still update"
+        );
     }
 
     /// Doc 30 TASK-API-002 acceptance test: soft-deleting an instrument
@@ -486,7 +500,11 @@ mod tests {
         delete_instrument(&conn, "inst_1").unwrap();
 
         let is_deleted: bool = conn
-            .query_row("SELECT is_deleted FROM instruments WHERE id = 'inst_1'", [], |r| r.get(0))
+            .query_row(
+                "SELECT is_deleted FROM instruments WHERE id = 'inst_1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert!(is_deleted, "the instrument itself must be soft-deleted");
 
@@ -497,7 +515,13 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        assert_eq!(tx_amount, 1000, "the transaction row must be completely untouched");
-        assert!(!tx_deleted, "the transaction must remain queryable, not cascade-deleted");
+        assert_eq!(
+            tx_amount, 1000,
+            "the transaction row must be completely untouched"
+        );
+        assert!(
+            !tx_deleted,
+            "the transaction must remain queryable, not cascade-deleted"
+        );
     }
 }

@@ -53,7 +53,7 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<RecurringPaymentsRow>> 
         "SELECT id, merchant_entity_id, instrument_id, amount_minor, currency, cadence,
                 next_billing_date, next_predicted_date, next_predicted_amount, confidence, status,
                 source, external_mandate_id, created_at, updated_at
-         FROM recurring_payments WHERE id = ?1"
+         FROM recurring_payments WHERE id = ?1",
     )?;
     let row = stmt
         .query_row(params![id], |r| {
@@ -128,7 +128,7 @@ pub fn find_by_instrument_and_merchant(
         "SELECT id, merchant_entity_id, instrument_id, amount_minor, currency, cadence,
                 next_billing_date, next_predicted_date, next_predicted_amount, confidence, status,
                 source, external_mandate_id, created_at, updated_at
-         FROM recurring_payments WHERE instrument_id = ?1 AND merchant_entity_id = ?2"
+         FROM recurring_payments WHERE instrument_id = ?1 AND merchant_entity_id = ?2",
     )?;
     let row = stmt
         .query_row(params![instrument_id, merchant_entity_id], |r| {

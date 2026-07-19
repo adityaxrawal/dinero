@@ -6,7 +6,11 @@ use rusqlite::{params, Connection};
 /// exactly one active recurring_payments row (zero or multiple candidates)
 /// is never guessed at -- logged here instead
 /// (docs/superpowers/specs/2026-07-18-mandate-tracking-design.md §5).
-pub fn insert_unresolved(conn: &Connection, raw_signal: &str, candidate_ids: &[String]) -> Result<String> {
+pub fn insert_unresolved(
+    conn: &Connection,
+    raw_signal: &str,
+    candidate_ids: &[String],
+) -> Result<String> {
     let id = uuid::Uuid::new_v4().to_string();
     let candidate_ids_json = serde_json::to_string(candidate_ids)?;
     conn.execute(

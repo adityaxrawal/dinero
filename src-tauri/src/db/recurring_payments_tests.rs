@@ -103,11 +103,23 @@ fn test_upsert_explicit_inserts_new_row_when_none_exists() {
 fn test_upsert_explicit_updates_existing_explicit_row_not_duplicate() {
     let conn = setup_db_with_instrument_and_merchant();
     let id1 = recurring_payments::upsert_explicit(
-        &conn, "instr-1", "merchant-1", Some(0), "INR", Some("monthly"), Some("SIHUB123"),
+        &conn,
+        "instr-1",
+        "merchant-1",
+        Some(0),
+        "INR",
+        Some("monthly"),
+        Some("SIHUB123"),
     )
     .unwrap();
     let id2 = recurring_payments::upsert_explicit(
-        &conn, "instr-1", "merchant-1", Some(0), "INR", Some("monthly"), Some("SIHUB123"),
+        &conn,
+        "instr-1",
+        "merchant-1",
+        Some(0),
+        "INR",
+        Some("monthly"),
+        Some("SIHUB123"),
     )
     .unwrap();
     assert_eq!(
@@ -120,7 +132,13 @@ fn test_upsert_explicit_updates_existing_explicit_row_not_duplicate() {
 fn test_find_active_candidates_matches_by_external_mandate_id_first() {
     let conn = setup_db_with_instrument_and_merchant();
     recurring_payments::upsert_explicit(
-        &conn, "instr-1", "merchant-1", Some(0), "INR", Some("monthly"), Some("SIHUB123"),
+        &conn,
+        "instr-1",
+        "merchant-1",
+        Some(0),
+        "INR",
+        Some("monthly"),
+        Some("SIHUB123"),
     )
     .unwrap();
     let candidates = recurring_payments::find_active_candidates_for_cancellation(
@@ -150,7 +168,13 @@ fn test_find_active_candidates_zero_when_no_active_row() {
 fn test_mark_cancelled_sets_status() {
     let conn = setup_db_with_instrument_and_merchant();
     let id = recurring_payments::upsert_explicit(
-        &conn, "instr-1", "merchant-1", Some(0), "INR", Some("monthly"), None,
+        &conn,
+        "instr-1",
+        "merchant-1",
+        Some(0),
+        "INR",
+        Some("monthly"),
+        None,
     )
     .unwrap();
     recurring_payments::mark_cancelled(&conn, &id).unwrap();

@@ -13,11 +13,19 @@ fn setup_db() -> Connection {
 #[test]
 fn test_match_decisions_no_update_path() -> Result<()> {
     let conn = setup_db();
-    
+
     // Insert dummy rows to satisfy FK constraints
     conn.execute("INSERT INTO instruments (id, type, issuer_name, masked_identifier) VALUES ('inst_1', 'credit_card', 'Test Bank', '1234')", params![]).unwrap();
-    conn.execute("INSERT INTO transaction_observations (id, instrument_id) VALUES ('obs_123', 'inst_1')", params![]).unwrap();
-    conn.execute("INSERT INTO transactions (id, instrument_id, amount_minor) VALUES ('tx_456', 'inst_1', 0)", params![]).unwrap();
+    conn.execute(
+        "INSERT INTO transaction_observations (id, instrument_id) VALUES ('obs_123', 'inst_1')",
+        params![],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO transactions (id, instrument_id, amount_minor) VALUES ('tx_456', 'inst_1', 0)",
+        params![],
+    )
+    .unwrap();
 
     let id = Uuid::new_v4().to_string();
     let row = MatchDecisionsRow {

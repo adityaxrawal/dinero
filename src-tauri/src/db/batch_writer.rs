@@ -58,7 +58,10 @@ impl BatchWriter {
     /// bound (size or duration) and should be flushed by the caller —
     /// callers own the actual `flush()` call so a connection is only ever
     /// acquired at a point the caller controls, never mid-`.await`.
-    pub fn push(&mut self, write: impl Fn(&Connection) -> rusqlite::Result<()> + Send + 'static) -> bool {
+    pub fn push(
+        &mut self,
+        write: impl Fn(&Connection) -> rusqlite::Result<()> + Send + 'static,
+    ) -> bool {
         if self.pending.is_empty() {
             self.batch_started_at = Some(Instant::now());
         }
@@ -160,7 +163,10 @@ mod tests {
         for i in 0..MAX_BATCH_ROWS {
             was_full = writer.push(insert_tx_write(format!("tx_{}", i)));
         }
-        assert!(was_full, "batch must report full once it reaches MAX_BATCH_ROWS");
+        assert!(
+            was_full,
+            "batch must report full once it reaches MAX_BATCH_ROWS"
+        );
         assert_eq!(writer.len(), MAX_BATCH_ROWS);
     }
 
@@ -210,6 +216,9 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM transactions", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, 0, "the whole batch must roll back, not just the failing write");
+        assert_eq!(
+            count, 0,
+            "the whole batch must roll back, not just the failing write"
+        );
     }
 }

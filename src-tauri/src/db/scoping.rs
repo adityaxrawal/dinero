@@ -48,11 +48,8 @@ mod tests {
     #[test]
     fn forged_profile_id_is_rejected_by_the_db_layer() {
         let conn = crate::db::test_helpers::setup_test_db();
-        conn.execute(
-            "INSERT INTO local_profile (id) VALUES (1)",
-            [],
-        )
-        .unwrap();
+        conn.execute("INSERT INTO local_profile (id) VALUES (1)", [])
+            .unwrap();
 
         let forged_insert = conn.execute(
             "INSERT INTO connected_accounts (id, profile_id, email_address) VALUES ('acc_forged', 999, 'attacker@example.com')",

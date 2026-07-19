@@ -238,66 +238,52 @@ pub fn select_active_rules_by_bank_and_hash(
     Ok(result)
 }
 
+/// Doc 30 TASK-TXN-002: a single atomic `UPDATE` -- SQLite evaluates every
+/// column expression in an `UPDATE` against the pre-update row, so
+/// `success_count`/`confidence`/`status` all derive from the same
+/// consistent snapshot within one statement. Replaces a prior
+/// `SELECT` -> mutate-in-Rust -> `UPDATE` (absolute value) round trip, which
+/// lost updates when the Transaction Queue's concurrent workers both read
+/// the same starting count for the same rule before either wrote back.
 pub fn record_rule_success(conn: &Connection, id: &str) -> Result<()> {
-    let mut rule = match select_by_id(conn, id)? {
-        Some(r) => r,
-        None => return Err(anyhow::anyhow!("Rule not found")),
-    };
-
-    rule.success_count += 1;
-    let total = rule.success_count + rule.failure_count;
-    rule.confidence = if total > 0 {
-        rule.success_count as f64 / total as f64
-    } else {
-        0.0
-    };
-
-    // State machine logic
-    if rule.status == "pending" && rule.success_count >= 3 {
-        rule.status = "active".to_string();
-    } else if rule.status == "active" && rule.success_count >= 10 {
-        rule.status = "trusted".to_string();
-    }
-
-    conn.execute(
-        "UPDATE pattern_rules 
-         SET success_count = ?2, confidence = ?3, status = ?4, updated_at = CURRENT_TIMESTAMP 
+    let updated = conn.execute(
+        "UPDATE pattern_rules
+         SET success_count = success_count + 1,
+             confidence = CAST(success_count + 1 AS REAL) / (success_count + 1 + failure_count),
+             status = CASE
+                 WHEN status = 'pending' AND success_count + 1 >= 3 THEN 'active'
+                 WHEN status = 'active' AND success_count + 1 >= 10 THEN 'trusted'
+                 ELSE status
+             END,
+             updated_at = CURRENT_TIMESTAMP
          WHERE id = ?1",
-        params![id, rule.success_count, rule.confidence, rule.status],
+        params![id],
     )?;
-
+    if updated == 0 {
+        return Err(anyhow::anyhow!("Rule not found"));
+    }
     Ok(())
 }
 
+/// Doc 30 TASK-TXN-002: see [`record_rule_success`] -- same atomic-`UPDATE`
+/// fix applied to the failure/decay path.
 pub fn record_rule_failure(conn: &Connection, id: &str) -> Result<()> {
-    let mut rule = match select_by_id(conn, id)? {
-        Some(r) => r,
-        None => return Err(anyhow::anyhow!("Rule not found")),
-    };
-
-    rule.failure_count += 1;
-    let total = rule.success_count + rule.failure_count;
-    rule.confidence = if total > 0 {
-        rule.success_count as f64 / total as f64
-    } else {
-        0.0
-    };
-
-    // State machine and decay logic
-    if rule.failure_count >= 3 {
-        rule.status = "inactive".to_string();
-    } else if rule.confidence < 0.70 {
-        // Confidence decay logic: if < 70%, demote to inactive
-        rule.status = "inactive".to_string();
-    }
-
-    conn.execute(
-        "UPDATE pattern_rules 
-         SET failure_count = ?2, confidence = ?3, status = ?4, updated_at = CURRENT_TIMESTAMP 
+    let updated = conn.execute(
+        "UPDATE pattern_rules
+         SET failure_count = failure_count + 1,
+             confidence = CAST(success_count AS REAL) / (success_count + failure_count + 1),
+             status = CASE
+                 WHEN failure_count + 1 >= 3 THEN 'inactive'
+                 WHEN CAST(success_count AS REAL) / (success_count + failure_count + 1) < 0.70 THEN 'inactive'
+                 ELSE status
+             END,
+             updated_at = CURRENT_TIMESTAMP
          WHERE id = ?1",
-        params![id, rule.failure_count, rule.confidence, rule.status],
+        params![id],
     )?;
-
+    if updated == 0 {
+        return Err(anyhow::anyhow!("Rule not found"));
+    }
     Ok(())
 }
 

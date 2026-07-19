@@ -88,7 +88,10 @@ mod tests {
         let blob = encrypt_backup(original, "correct-horse-battery-staple").unwrap();
 
         let result = decrypt_backup(&blob, "wrong-password");
-        assert!(result.is_err(), "a wrong password must fail cleanly, not silently produce garbage plaintext");
+        assert!(
+            result.is_err(),
+            "a wrong password must fail cleanly, not silently produce garbage plaintext"
+        );
     }
 
     #[test]

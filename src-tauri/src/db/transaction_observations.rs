@@ -261,7 +261,11 @@ mod tests {
         crate::db::test_helpers::setup_test_db()
     }
 
-    fn make_row(id: &str, source_pipeline: &str, source_record_id: &str) -> TransactionObservationsRow {
+    fn make_row(
+        id: &str,
+        source_pipeline: &str,
+        source_record_id: &str,
+    ) -> TransactionObservationsRow {
         TransactionObservationsRow {
             id: id.to_string(),
             canonical_transaction_id: None,
@@ -314,7 +318,10 @@ mod tests {
         let fetched = get_observation(&conn, &id).unwrap().unwrap();
         assert_eq!(fetched.amount_minor, Some(150000));
         assert_eq!(fetched.merchant_raw, Some("Amazon".to_string()));
-        assert_eq!(fetched.raw_payload_json, Some(r#"{"body":"test"}"#.to_string()));
+        assert_eq!(
+            fetched.raw_payload_json,
+            Some(r#"{"body":"test"}"#.to_string())
+        );
     }
 
     /// Doc 30 TASK-TXN-009 acceptance test: "a re-processed message... is

@@ -159,8 +159,14 @@ mod tests {
     fn different_trigger_kinds_have_independent_counters() {
         let monitor = IncidentMonitor::default();
         assert!(!record_trigger(&monitor, TriggerKind::RepeatedOAuthFailure));
-        assert!(!record_trigger(&monitor, TriggerKind::RepeatedDbDecryptionFailure));
-        assert!(!record_trigger(&monitor, TriggerKind::RepeatedDbDecryptionFailure));
+        assert!(!record_trigger(
+            &monitor,
+            TriggerKind::RepeatedDbDecryptionFailure
+        ));
+        assert!(!record_trigger(
+            &monitor,
+            TriggerKind::RepeatedDbDecryptionFailure
+        ));
         // OAuth failure at 1, DB decryption at 2 (threshold 3 for both) —
         // neither has fired yet, and one more OAuth failure alone must not
         // be enough to cross DB decryption's independent counter.

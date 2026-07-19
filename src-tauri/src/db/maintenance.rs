@@ -35,7 +35,10 @@ pub fn run_integrity_check(conn: &Connection) -> Result<bool> {
 pub fn check_integrity_and_report(conn: &Connection, app_handle: &AppHandle) -> Result<bool> {
     let ok = run_integrity_check(conn)?;
     if !ok {
-        let _ = app_handle.emit(crate::ipc::events::AppEvent::DbCorrupted.as_str(), serde_json::json!({}));
+        let _ = app_handle.emit(
+            crate::ipc::events::AppEvent::DbCorrupted.as_str(),
+            serde_json::json!({}),
+        );
         crate::db::audit_log::insert(
             conn,
             &crate::db::audit_log::AuditLogRow {

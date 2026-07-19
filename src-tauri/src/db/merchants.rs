@@ -147,8 +147,7 @@ pub fn select_aliases_by_merchant_id(
     conn: &Connection,
     merchant_entity_id: &str,
 ) -> Result<Vec<MerchantAliasesRow>> {
-    let mut stmt =
-        conn.prepare("SELECT * FROM merchant_aliases WHERE merchant_entity_id = ?1")?;
+    let mut stmt = conn.prepare("SELECT * FROM merchant_aliases WHERE merchant_entity_id = ?1")?;
     let rows = stmt.query_map([merchant_entity_id], row_to_alias)?;
 
     let mut aliases = Vec::new();
