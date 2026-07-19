@@ -37,7 +37,7 @@ fn test_metadata_gate_passes() {
     ]);
 
     assert_eq!(
-        MessageProcessor::evaluate_metadata_gate(&msg),
+        MessageProcessor::evaluate_metadata_gate(&msg, false, &[]),
         SenderVerificationResult::VerifiedTransactionCandidate("HDFC Bank".to_string())
     );
 }
@@ -46,7 +46,7 @@ fn test_metadata_gate_passes() {
 fn test_metadata_gate_fails_no_sender() {
     let msg = create_metadata_message(vec![("Subject", "Your Amazon.com order")]);
 
-    match MessageProcessor::evaluate_metadata_gate(&msg) {
+    match MessageProcessor::evaluate_metadata_gate(&msg, false, &[]) {
         SenderVerificationResult::UnverifiedReject(_) => {}
         _ => panic!("Expected UnverifiedReject"),
     }
@@ -56,7 +56,7 @@ fn test_metadata_gate_fails_no_sender() {
 fn test_metadata_gate_fails_empty_sender() {
     let msg = create_metadata_message(vec![("From", "   "), ("Subject", "Receipt")]);
 
-    match MessageProcessor::evaluate_metadata_gate(&msg) {
+    match MessageProcessor::evaluate_metadata_gate(&msg, false, &[]) {
         SenderVerificationResult::UnverifiedReject(_) => {}
         _ => panic!("Expected UnverifiedReject"),
     }
@@ -69,12 +69,66 @@ fn test_metadata_gate_spoof_detection() {
         ("Subject", "Urgent Action Required"),
     ]);
 
-    match MessageProcessor::evaluate_metadata_gate(&msg) {
+    match MessageProcessor::evaluate_metadata_gate(&msg, false, &[]) {
         SenderVerificationResult::SpoofReject(reason) => {
             assert!(reason.contains("Typo-squatted"));
         }
         _ => panic!("Expected SpoofReject"),
     }
+}
+
+/// The subject-based "Unknown Bank" rescue must not fire on a domain's
+/// very first-ever sighting (`domain_previously_seen = false`) even when
+/// the subject is transaction-shaped -- it should fall through to the
+/// original rejection instead.
+#[test]
+fn test_metadata_gate_unknown_bank_rescue_requires_prior_sighting() {
+    let msg = create_metadata_message(vec![
+        ("From", "alerts@some-unregistered-bank.example"),
+        ("Subject", "You spent Rs. 500 today"),
+    ]);
+
+    match MessageProcessor::evaluate_metadata_gate(&msg, false, &[]) {
+        SenderVerificationResult::UnverifiedReject(_) => {}
+        other => panic!(
+            "Expected UnverifiedReject on first sighting, got {:?}",
+            other
+        ),
+    }
+
+    match MessageProcessor::evaluate_metadata_gate(&msg, true, &[]) {
+        SenderVerificationResult::VerifiedTransactionCandidate(bank) => {
+            assert_eq!(bank, "Unknown Bank");
+        }
+        other => panic!(
+            "Expected the Unknown Bank rescue once previously seen, got {:?}",
+            other
+        ),
+    }
+}
+
+/// A user-approved pending sender must resolve as verified even though its
+/// domain would otherwise fail every string-based heuristic.
+#[test]
+fn test_metadata_gate_approved_pending_sender_verified() {
+    let msg = create_metadata_message(vec![
+        ("From", "alerts@newfintech.example"),
+        ("Subject", "Transaction Alert"),
+    ]);
+
+    let approved = vec![crate::db::sender_reputation::PendingSenderRow {
+        id: "id1".to_string(),
+        domain: "newfintech.example".to_string(),
+        bank_name: "New Fintech".to_string(),
+        classification: "transaction_candidate".to_string(),
+        status: "approved".to_string(),
+        reject_count: 3,
+    }];
+
+    assert_eq!(
+        MessageProcessor::evaluate_metadata_gate(&msg, false, &approved),
+        SenderVerificationResult::VerifiedTransactionCandidate("New Fintech".to_string())
+    );
 }
 
 use crate::extraction::ladder::ExtractionResult;
@@ -164,12 +218,16 @@ async fn test_metadata_fetch_before_full_fetch() {
     std::fs::create_dir_all(&temp_dir).unwrap();
     let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
 
-    let client = GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url());
+    let client =
+        GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
 
     let result = MessageProcessor::process_message(&pool, &client, "msg1", None, false)
         .await
         .unwrap();
-    assert!(result.is_none(), "unverified sender must be rejected at Gate 1");
+    assert!(
+        result.is_none(),
+        "unverified sender must be rejected at Gate 1"
+    );
 
     metadata_mock.assert_async().await;
     full_mock.assert_async().await;

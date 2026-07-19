@@ -50,6 +50,13 @@ pub struct StatementJob {
     pub file_hash: String,
     pub stmt_id: String,
     pub batch_progress: Option<Arc<BatchProgressTracker>>,
+    /// The password that unlocked `bytes` during `resolve_statement_password`,
+    /// when it was encrypted — pdfium needs it passed again at actual parse
+    /// time (a resolved password doesn't decrypt `bytes` in place). `None`
+    /// for an unencrypted PDF. Every entry point must call
+    /// `password::resolve_statement_password` before constructing this job;
+    /// see that function's doc comment for the bug this field fixes.
+    pub password: Option<String>,
 }
 
 /// Doc 30 TASK-STMT-009: "emit periodic scan.progress { parsed, total,
@@ -221,12 +228,21 @@ pub async fn pipeline_status(
     Ok(PipelineStatusResponse {
         transaction_queue: TransactionQueueStatus {
             state: if tx_paused { "paused" } else { "running" }.to_string(),
-            active_workers: if tx_paused { 0 } else { TRANSACTION_QUEUE_WORKERS },
-            queued_jobs: TRANSACTION_QUEUE_CAPACITY.saturating_sub(handles.transaction_tx.capacity()),
+            active_workers: if tx_paused {
+                0
+            } else {
+                TRANSACTION_QUEUE_WORKERS
+            },
+            queued_jobs: TRANSACTION_QUEUE_CAPACITY
+                .saturating_sub(handles.transaction_tx.capacity()),
         },
         statement_queue: StatementQueueStatus {
             state: if stmt_paused { "paused" } else { "running" }.to_string(),
-            active_parsers: if stmt_paused { 0 } else { STATEMENT_QUEUE_MAX_CONCURRENT },
+            active_parsers: if stmt_paused {
+                0
+            } else {
+                STATEMENT_QUEUE_MAX_CONCURRENT
+            },
             queued_jobs: STATEMENT_QUEUE_CAPACITY.saturating_sub(handles.statement_tx.capacity()),
         },
     })
@@ -278,7 +294,11 @@ fn spawn_mandate_workers(
 /// (docs/superpowers/specs/2026-07-18-mandate-tracking-design.md §4.4: the
 /// real single entry point is reconcile_transactionally via
 /// process_transaction_job, not create_canonical_transaction alone).
-async fn process_mandate_job(job: MandateJob, pool: &Pool, transaction_tx: &mpsc::Sender<TransactionJob>) {
+async fn process_mandate_job(
+    job: MandateJob,
+    pool: &Pool,
+    transaction_tx: &mpsc::Sender<TransactionJob>,
+) {
     let extraction = job.extraction.clone();
     let event_type = job.event_type.clone();
     let merchant_raw = extraction.merchant.clone();
@@ -291,14 +311,17 @@ async fn process_mandate_job(job: MandateJob, pool: &Pool, transaction_tx: &mpsc
                     &extraction.issuer_name,
                     &extraction.masked_identifier,
                 ) {
-                    crate::db::instruments::get_or_create_instrument(c, itype, iname, masked, None).ok()
+                    crate::db::instruments::get_or_create_instrument(c, itype, iname, masked, None)
+                        .ok()
                 } else {
                     None
                 };
                 let merchant_entity_id = extraction
                     .merchant
                     .as_deref()
-                    .and_then(|m| crate::extraction::merchant_normalizer::normalize_merchant_sync(c, m).ok())
+                    .and_then(|m| {
+                        crate::extraction::merchant_normalizer::normalize_merchant_sync(c, m).ok()
+                    })
                     .map(|(entity_id, _)| entity_id);
 
                 match event_type {
@@ -328,7 +351,10 @@ async fn process_mandate_job(job: MandateJob, pool: &Pool, transaction_tx: &mpsc
                             .unwrap_or_default();
                         match candidates.len() {
                             1 => {
-                                let _ = crate::db::recurring_payments::mark_cancelled(c, &candidates[0].id);
+                                let _ = crate::db::recurring_payments::mark_cancelled(
+                                    c,
+                                    &candidates[0].id,
+                                );
                             }
                             _ => {
                                 let raw_signal = serde_json::json!({
@@ -339,11 +365,12 @@ async fn process_mandate_job(job: MandateJob, pool: &Pool, transaction_tx: &mpsc
                                 .to_string();
                                 let candidate_ids: Vec<String> =
                                     candidates.iter().map(|r| r.id.clone()).collect();
-                                let _ = crate::db::unresolved_mandate_cancellations::insert_unresolved(
-                                    c,
-                                    &raw_signal,
-                                    &candidate_ids,
-                                );
+                                let _ =
+                                    crate::db::unresolved_mandate_cancellations::insert_unresolved(
+                                        c,
+                                        &raw_signal,
+                                        &candidate_ids,
+                                    );
                             }
                         }
                     }
@@ -431,7 +458,7 @@ fn spawn_statement_dispatcher<R: tauri::Runtime>(
                     &app,
                     &pending_bytes,
                     None,
-                    None,
+                    job.password.as_deref(),
                     Some(job.stmt_id),
                 )
                 .await;
@@ -462,7 +489,7 @@ fn spawn_statement_dispatcher<R: tauri::Runtime>(
                 // Statement-Instrument-Gate-resume commands already emit.
                 use crate::statements::events;
                 match &result {
-                    Ok(stmt_id) => {
+                    Ok(crate::commands::PipelineOutcome::Parsed(stmt_id)) => {
                         events::emit(
                             events::PARSED,
                             serde_json::json!({ "statement_id": stmt_id, "filename": job.filename }),
@@ -471,6 +498,9 @@ fn spawn_statement_dispatcher<R: tauri::Runtime>(
                             events::PARSED,
                             serde_json::json!({ "statement_id": stmt_id, "filename": job.filename }),
                         );
+                    }
+                    Ok(crate::commands::PipelineOutcome::BlockedAwaitingInstrument(_unprocessed_id)) => {
+                        // The gate already emitted INSTRUMENT_CONFIRMATION_REQUIRED, we don't need to do anything here.
                     }
                     Err(e) => {
                         tracing::warn!(
@@ -524,118 +554,126 @@ async fn process_transaction_job<R: tauri::Runtime>(
 
     if let Ok(conn) = pool.get().await {
         let outcome = conn
-            .interact(move |c| -> Option<(crate::reconciliation::audit::DecisionType, String)> {
-                if let (Some(ref itype), Some(ref iname), Some(ref masked)) =
-                    (instrument_type, issuer_name, masked_identifier)
-                {
-                    match crate::db::instruments::get_or_create_instrument(
-                        c,
-                        itype,
-                        iname,
-                        masked,
-                        network.as_deref(),
-                    ) {
-                        Ok(instr_id) => {
-                            row.instrument_id = Some(instr_id);
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to resolve instrument: {}", e);
-                        }
-                    }
-                }
-
-                // Doc 30 TASK-TXN-008: fingerprint must be keyed on the
-                // *resolved* instrument_id, which is only known from this
-                // point on — computed here, not inside normalize_observation
-                // (which runs before instrument resolution and has no way
-                // to produce a spec-correct fingerprint yet).
-                if let (Some(ref instrument_id), Some(ref direction), Some(amount_minor)) =
-                    (&row.instrument_id, &row.direction, row.amount_minor)
-                {
-                    let event_bucket = row
-                        .event_time
-                        .map(|dt| dt.format("%Y-%m-%dT%H:%M").to_string())
-                        .unwrap_or_default();
-                    row.fingerprint = Some(crate::extraction::fingerprint::compute_fingerprint(
-                        instrument_id,
-                        direction,
-                        amount_minor,
-                        &event_bucket,
-                        &connected_account_id,
-                    ));
-                }
-
-                use crate::db::transaction_observations::InsertObservationOutcome;
-                match crate::db::transaction_observations::insert_observation_idempotent(c, &row) {
-                    Err(e) => {
-                        tracing::warn!("Observation insert failed: {}", e);
-                        None
-                    }
-                    Ok(InsertObservationOutcome::DuplicateSkipped) => {
-                        // Doc 30 TASK-TXN-009: a re-processed message is
-                        // silently skipped, never an error and never
-                        // re-run through reconciliation a second time.
-                        None
-                    }
-                    Ok(InsertObservationOutcome::Inserted) => {
-                        let incoming_obs = crate::reconciliation::engine::IncomingObservation {
-                            id: row.id.clone(),
-                            instrument_id: row
-                                .instrument_id
-                                .clone()
-                                .unwrap_or_else(|| "unknown".to_string()),
-                            amount_minor: row.amount_minor.unwrap_or(0),
-                            currency: row.currency.clone().unwrap_or_else(|| "INR".to_string()),
-                            direction: row.direction.clone().unwrap_or_else(|| "debit".to_string()),
-                            event_time: row
-                                .event_time
-                                .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-                                .unwrap_or_default(),
-                            reference_id: row.reference_id.clone(),
-                            merchant_raw: row.merchant_raw.clone(),
-                            source_pipeline: row
-                                .source_pipeline
-                                .clone()
-                                .unwrap_or_else(|| "unknown".to_string()),
-                            source_record_id: row.source_record_id.clone().unwrap_or_default(),
-                            emi_total_installments: row.emi_total_installments,
-                            emi_original_amount_minor: row.emi_original_amount_minor,
-                            // Doc 30 TASK-DEDUP-001: thread the fingerprint
-                            // computed above into the reconciliation engine's
-                            // input so the fast pre-filter can actually run —
-                            // previously computed and persisted but never
-                            // consumed anywhere.
-                            fingerprint: row.fingerprint.clone(),
-                            // Doc 30 TASK-DEDUP-008: threaded into the
-                            // reconciliation engine's input for the
-                            // email-vs-email precedence comparison.
-                            confidence_score: row.confidence_score,
-                        };
-
-                        match crate::reconciliation::engine::reconcile_transactionally(
+            .interact(
+                move |c| -> Option<(crate::reconciliation::audit::DecisionType, String)> {
+                    if let (Some(ref itype), Some(ref iname), Some(ref masked)) =
+                        (instrument_type, issuer_name, masked_identifier)
+                    {
+                        match crate::db::instruments::get_or_create_instrument(
                             c,
-                            &incoming_obs,
+                            itype,
+                            iname,
+                            masked,
+                            network.as_deref(),
                         ) {
-                            Ok(decision) => {
-                                tracing::debug!(
-                                    "Reconciliation decision for obs '{}': {:?}",
-                                    incoming_obs.id,
-                                    decision
-                                );
-                                Some((decision, incoming_obs.id.clone()))
+                            Ok(instr_id) => {
+                                row.instrument_id = Some(instr_id);
                             }
                             Err(e) => {
-                                tracing::warn!(
-                                    "Reconciliation failed for obs '{}': {}",
-                                    incoming_obs.id,
-                                    e
-                                );
-                                None
+                                tracing::warn!("Failed to resolve instrument: {}", e);
                             }
                         }
                     }
-                }
-            })
+
+                    // Doc 30 TASK-TXN-008: fingerprint must be keyed on the
+                    // *resolved* instrument_id, which is only known from this
+                    // point on — computed here, not inside normalize_observation
+                    // (which runs before instrument resolution and has no way
+                    // to produce a spec-correct fingerprint yet).
+                    if let (Some(ref instrument_id), Some(ref direction), Some(amount_minor)) =
+                        (&row.instrument_id, &row.direction, row.amount_minor)
+                    {
+                        let event_bucket = row
+                            .event_time
+                            .map(|dt| dt.format("%Y-%m-%dT%H:%M").to_string())
+                            .unwrap_or_default();
+                        row.fingerprint =
+                            Some(crate::extraction::fingerprint::compute_fingerprint(
+                                instrument_id,
+                                direction,
+                                amount_minor,
+                                &event_bucket,
+                                &connected_account_id,
+                            ));
+                    }
+
+                    use crate::db::transaction_observations::InsertObservationOutcome;
+                    match crate::db::transaction_observations::insert_observation_idempotent(
+                        c, &row,
+                    ) {
+                        Err(e) => {
+                            tracing::warn!("Observation insert failed: {}", e);
+                            None
+                        }
+                        Ok(InsertObservationOutcome::DuplicateSkipped) => {
+                            // Doc 30 TASK-TXN-009: a re-processed message is
+                            // silently skipped, never an error and never
+                            // re-run through reconciliation a second time.
+                            None
+                        }
+                        Ok(InsertObservationOutcome::Inserted) => {
+                            let incoming_obs = crate::reconciliation::engine::IncomingObservation {
+                                id: row.id.clone(),
+                                instrument_id: row
+                                    .instrument_id
+                                    .clone()
+                                    .unwrap_or_else(|| "unknown".to_string()),
+                                amount_minor: row.amount_minor.unwrap_or(0),
+                                currency: row.currency.clone().unwrap_or_else(|| "INR".to_string()),
+                                direction: row
+                                    .direction
+                                    .clone()
+                                    .unwrap_or_else(|| "debit".to_string()),
+                                event_time: row
+                                    .event_time
+                                    .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                                    .unwrap_or_default(),
+                                reference_id: row.reference_id.clone(),
+                                merchant_raw: row.merchant_raw.clone(),
+                                source_pipeline: row
+                                    .source_pipeline
+                                    .clone()
+                                    .unwrap_or_else(|| "unknown".to_string()),
+                                source_record_id: row.source_record_id.clone().unwrap_or_default(),
+                                emi_total_installments: row.emi_total_installments,
+                                emi_original_amount_minor: row.emi_original_amount_minor,
+                                // Doc 30 TASK-DEDUP-001: thread the fingerprint
+                                // computed above into the reconciliation engine's
+                                // input so the fast pre-filter can actually run —
+                                // previously computed and persisted but never
+                                // consumed anywhere.
+                                fingerprint: row.fingerprint.clone(),
+                                // Doc 30 TASK-DEDUP-008: threaded into the
+                                // reconciliation engine's input for the
+                                // email-vs-email precedence comparison.
+                                confidence_score: row.confidence_score,
+                            };
+
+                            match crate::reconciliation::engine::reconcile_transactionally(
+                                c,
+                                &incoming_obs,
+                            ) {
+                                Ok(decision) => {
+                                    tracing::debug!(
+                                        "Reconciliation decision for obs '{}': {:?}",
+                                        incoming_obs.id,
+                                        decision
+                                    );
+                                    Some((decision, incoming_obs.id.clone()))
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "Reconciliation failed for obs '{}': {}",
+                                        incoming_obs.id,
+                                        e
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                    }
+                },
+            )
             .await;
 
         // Doc 19 §15 / TASK-DESK-002: this queue-driven path previously
@@ -649,7 +687,8 @@ async fn process_transaction_job<R: tauri::Runtime>(
         // "new confirmed transaction" notification possible for the
         // real-world case this task is actually about.
         if let Ok(Some((decision, obs_id))) = outcome {
-            if let crate::reconciliation::audit::DecisionType::AmbiguousPending(cluster_id) = &decision
+            if let crate::reconciliation::audit::DecisionType::AmbiguousPending(cluster_id) =
+                &decision
             {
                 let _ = crate::ipc::events::emit_event(
                     app,

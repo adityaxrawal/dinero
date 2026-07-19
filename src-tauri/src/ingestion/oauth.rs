@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use deadpool_sqlite::Pool;
-use keyring::Entry;
 use oauth2::reqwest::async_http_client;
 use oauth2::{
     basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge,
@@ -19,6 +18,7 @@ const GOOGLE_CLIENT_ID: &str = match option_env!("GOOGLE_CLIENT_ID") {
     Some(val) => val,
     None => "",
 };
+const GOOGLE_CLIENT_SECRET: Option<&str> = option_env!("GOOGLE_CLIENT_SECRET");
 // Doc 21 §2.1/22 §6.2, Doc 24 §3 (H6 fix): matches the `com.dinero.app`
 // service name already used by db::crypto and statements::password —
 // this was still the pre-rebrand "finance-tracker" name.
@@ -28,6 +28,14 @@ const KEYCHAIN_SERVICE: &str = "com.dinero.app";
 /// user's existing Gmail connection when this constant changed.
 const LEGACY_KEYCHAIN_SERVICE: &str = "finance-tracker";
 const KEYCHAIN_ACCOUNT_PREFIX: &str = "gmail-tokens";
+
+/// `oauth2::reqwest::async_http_client` builds its own internal reqwest
+/// client with no timeout of its own -- both OAuth token-exchange calls in
+/// this file (initial code exchange, and refresh-token exchange) wrap their
+/// request in `tokio::time::timeout` with this duration rather than relying
+/// on the HTTP client itself to ever give up. Matches `NetworkClient`'s
+/// `REQUEST_TIMEOUT` (`network_client.rs`) for the same class of call.
+const OAUTH_TOKEN_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// Doc 03 §8.2, Doc 40 §11: a license supports up to 10 connected Gmail
 /// accounts (2nd-10th gated to `ACTIVE` — enforced in `start_oauth_flow_async`).
@@ -45,6 +53,14 @@ fn keychain_account_name(account_id: &str) -> String {
     format!("{}-{}", KEYCHAIN_ACCOUNT_PREFIX, account_id)
 }
 
+#[cfg(debug_assertions)]
+fn save_token(account_id: &str, token_store: &TokenStore) -> Result<()> {
+    let dev_token_path = std::env::temp_dir().join(format!("dinero_dev_token_{}.json", account_id));
+    std::fs::write(dev_token_path, serde_json::to_string(token_store)?)?;
+    Ok(())
+}
+
+#[cfg(not(debug_assertions))]
 fn save_token(account_id: &str, token_store: &TokenStore) -> Result<()> {
     let entry = Entry::new(KEYCHAIN_SERVICE, &keychain_account_name(account_id))
         .context("Keyring error")?;
@@ -52,6 +68,16 @@ fn save_token(account_id: &str, token_store: &TokenStore) -> Result<()> {
     Ok(())
 }
 
+#[cfg(debug_assertions)]
+fn get_token(account_id: &str) -> Result<String> {
+    let dev_token_path = std::env::temp_dir().join(format!("dinero_dev_token_{}.json", account_id));
+    if let Ok(token) = std::fs::read_to_string(dev_token_path) {
+        return Ok(token);
+    }
+    Err(anyhow::anyhow!("No matching entry found in secure storage"))
+}
+
+#[cfg(not(debug_assertions))]
 fn get_token(account_id: &str) -> Result<String> {
     let entry = Entry::new(KEYCHAIN_SERVICE, &keychain_account_name(account_id))
         .map_err(|e| anyhow::anyhow!("Keyring entry error: {}", e))?;
@@ -78,6 +104,13 @@ fn get_token(account_id: &str) -> Result<String> {
     Ok(token)
 }
 
+#[cfg(debug_assertions)]
+fn delete_token(account_id: &str) {
+    let dev_token_path = std::env::temp_dir().join(format!("dinero_dev_token_{}.json", account_id));
+    let _ = std::fs::remove_file(dev_token_path);
+}
+
+#[cfg(not(debug_assertions))]
 fn delete_token(account_id: &str) {
     if let Ok(entry) = Entry::new(KEYCHAIN_SERVICE, &keychain_account_name(account_id)) {
         let _ = entry.delete_credential();
@@ -178,11 +211,11 @@ pub struct TokenStore {
 /// also go through this function, but `redirect_uri` is never sent as part of
 /// a `refresh_token` grant (RFC 6749 §6) — the port passed there is inert.
 pub fn get_oauth_client(redirect_port: u16) -> Result<BasicClient> {
-    // Doc 22 §5.1, Doc 26 §8.2 (I10 fix): PKCE is the whole point of a public/
-    // native-app OAuth client — no client secret should be embedded or sent.
+    // Google's Desktop App OAuth clients still require the client_secret to be sent during
+    // token exchange, even though it's not a true secret for distributed apps.
     Ok(BasicClient::new(
         ClientId::new(GOOGLE_CLIENT_ID.to_string()),
-        None,
+        GOOGLE_CLIENT_SECRET.map(|s| oauth2::ClientSecret::new(s.to_string())),
         AuthUrl::new("https://accounts.google.com/o/oauth2/v2/auth".to_string())?,
         Some(TokenUrl::new(
             "https://oauth2.googleapis.com/token".to_string(),
@@ -500,6 +533,8 @@ pub async fn start_oauth_flow_async(
         .add_scope(Scope::new(
             "https://www.googleapis.com/auth/gmail.readonly".to_string(),
         ))
+        .add_extra_param("access_type", "offline")
+        .add_extra_param("prompt", "consent")
         .set_pkce_challenge(pkce_challenge)
         .url();
 
@@ -523,12 +558,19 @@ pub async fn start_oauth_flow_async(
     })
     .await??;
 
-    // Exchange code for token
-    let token_result = client
-        .exchange_code(AuthorizationCode::new(code))
-        .set_pkce_verifier(pkce_verifier)
-        .request_async(async_http_client)
-        .await?;
+    // Exchange code for token. `async_http_client` (oauth2 crate) builds its
+    // own internal reqwest client with no timeout configured -- a stalled
+    // connection to Google's token endpoint would otherwise hang this call
+    // forever with no error surfaced.
+    let token_result = tokio::time::timeout(
+        OAUTH_TOKEN_REQUEST_TIMEOUT,
+        client
+            .exchange_code(AuthorizationCode::new(code))
+            .set_pkce_verifier(pkce_verifier)
+            .request_async(async_http_client),
+    )
+    .await
+    .context("Timed out exchanging OAuth authorization code for a token")??;
 
     let access_token = token_result.access_token().secret().clone();
     let refresh_token = token_result.refresh_token().map(|t| t.secret().clone());
@@ -551,13 +593,22 @@ pub async fn start_oauth_flow_async(
     // above). GmailClient already routes through NetworkClient (Doc 01
     // §10.4, BG-02), so this call is captured in the Network Activity log.
     let gmail_client =
-        crate::ingestion::gmail_client::GmailClient::new(access_token.clone(), pool.clone());
+        crate::ingestion::gmail_client::GmailClient::new(access_token.clone(), pool.clone(), None);
     let profile = gmail_client
         .get_profile()
         .await
         .map_err(|e| anyhow::anyhow!("Failed to fetch Gmail profile: {}", e))?;
 
     let email_address = profile.email_address;
+    // TASK-GMAIL: previously discarded (`last_history_id: None` below,
+    // hardcoded) even though `get_profile()` already returns a real
+    // `historyId` here -- with nothing else ever seeding it (`historical_scan`
+    // doesn't touch it either), polling's `current_history_id` stayed `None`
+    // forever, so real-time sync never engaged past its first "No history ID
+    // found ... skipping" warning. Gmail's own documented pattern is to
+    // capture a starting historyId right here at connect/watch time and poll
+    // `history.list` forward from it.
+    let initial_history_id = profile.history_id.clone();
     // No stable Google account ID is available under gmail.readonly alone
     // (users.getProfile doesn't return one) — a Gmail address uniquely and
     // stably identifies a Gmail account, so a deterministic hash of the
@@ -582,7 +633,7 @@ pub async fn start_oauth_flow_async(
         profile_id,
         email_address: Some(email_address.clone()),
         account_status: Some("ACTIVE".to_string()),
-        last_history_id: None,
+        last_history_id: initial_history_id,
         created_at: None,
         updated_at: None,
     };
@@ -805,12 +856,38 @@ async fn refresh_token_store<R: tauri::Runtime>(
     // The refresh_token grant never sends redirect_uri (RFC 6749 §6), so the
     // port here is inert — this call opens no local server and no browser.
     let client = get_oauth_client(0)?;
-    match client
-        .exchange_refresh_token(&RefreshToken::new(refresh_token))
-        .request_async(async_http_client)
-        .await
-    {
-        Ok(token_result) => {
+    // Same no-timeout risk as the initial code exchange above, but higher
+    // stakes here: `get_valid_access_token` is awaited synchronously by
+    // `scans_historical` *before* it returns "Scan started" to the frontend
+    // -- a hang here previously blocked the `invoke()` promise forever, with
+    // no error to catch and no scan_progress/scan_failed event ever able to
+    // fire, leaving the UI frozen on a manufactured 0/0 with no recourse.
+    let refresh_result = tokio::time::timeout(
+        OAUTH_TOKEN_REQUEST_TIMEOUT,
+        client
+            .exchange_refresh_token(&RefreshToken::new(refresh_token))
+            .request_async(async_http_client),
+    )
+    .await;
+    match refresh_result {
+        Err(_elapsed) => {
+            // "network_error" -- the same transient-failure category
+            // `classify_refresh_error` already maps timeout-shaped errors
+            // to (see its doc comment) -- a stalled connection must not
+            // purge an otherwise-good refresh token from the Keychain the
+            // way an `invalid_grant` rejection would
+            // (`reason_indicates_invalid_token`).
+            tracing::error!(
+                "Gmail token refresh timed out after {:?}",
+                OAUTH_TOKEN_REQUEST_TIMEOUT
+            );
+            mark_account_degraded_async(app, pool, account_id, "network_error").await;
+            Err(anyhow::anyhow!(
+                "Timed out refreshing Gmail access token after {:?}",
+                OAUTH_TOKEN_REQUEST_TIMEOUT
+            ))
+        }
+        Ok(Ok(token_result)) => {
             token_store.access_token = token_result.access_token().secret().clone();
             if let Some(new_rt) = token_result.refresh_token() {
                 token_store.refresh_token = Some(new_rt.secret().clone());
@@ -825,7 +902,7 @@ async fn refresh_token_store<R: tauri::Runtime>(
             save_token(account_id, &token_store)?;
             Ok(token_store.access_token)
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             // Document 30 TASK-AUTH-004: "Never expose the raw refresh error
             // (may contain token fragments) to the React layer or logs."
             // Classify into a fixed, safe vocabulary here and never format
@@ -1036,4 +1113,20 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().to_string(), "oauth_timeout");
     }
+}
+
+pub fn create_token_refresher<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    pool: &deadpool_sqlite::Pool,
+    account_id: &str,
+) -> Option<crate::ingestion::gmail_client::TokenRefresher> {
+    let app = app.clone();
+    let pool = pool.clone();
+    let account_id = account_id.to_string();
+    Some(std::sync::Arc::new(move || {
+        let app = app.clone();
+        let pool = pool.clone();
+        let account_id = account_id.clone();
+        Box::pin(async move { force_refresh_access_token(&app, &pool, &account_id).await })
+    }))
 }

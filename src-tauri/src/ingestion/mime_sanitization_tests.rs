@@ -125,4 +125,120 @@ fn test_pdf_attachment_detection() {
     let extracted = extract_body_and_attachments(&parent_part);
     assert!(extracted.has_pdf_attachment);
     assert_eq!(extracted.text_body.unwrap(), "See attachment");
+    assert_eq!(extracted.pdf_attachments.len(), 1);
+    assert_eq!(
+        extracted.pdf_attachments[0].attachment_id.as_deref(),
+        Some("att123")
+    );
+    assert_eq!(extracted.pdf_attachments[0].inline_bytes, None);
+}
+
+/// Regression test for the field bug report ("StatementEmail ... has
+/// has_pdf_attachment=true but no downloadable attachment_ids — skipping
+/// parse"): when Gmail inlines the attachment bytes directly (`body.data`,
+/// no `attachmentId`) instead of requiring a separate fetch, those bytes
+/// must still end up in `pdf_attachments` — previously this case set
+/// `has_pdf_attachment` but silently produced zero entries, so the caller
+/// saw an empty list and dropped the statement.
+#[test]
+fn test_pdf_attachment_with_inline_data_is_not_dropped() {
+    let pdf_bytes = b"%PDF-1.4 fake pdf bytes";
+    let pdf_part = MessagePart {
+        part_id: Some("2".to_string()),
+        mime_type: "application/pdf".to_string(),
+        filename: Some("invoice.pdf".to_string()),
+        headers: None,
+        body: Some(MessagePartBody {
+            size: Some(pdf_bytes.len() as i32),
+            data: Some(URL_SAFE.encode(pdf_bytes)),
+            attachment_id: None,
+        }),
+        parts: None,
+    };
+
+    let parent_part = MessagePart {
+        part_id: None,
+        mime_type: "multipart/mixed".to_string(),
+        filename: None,
+        headers: None,
+        body: None,
+        parts: Some(vec![pdf_part]),
+    };
+
+    let extracted = extract_body_and_attachments(&parent_part);
+    assert!(extracted.has_pdf_attachment);
+    assert_eq!(
+        extracted.pdf_attachments.len(),
+        1,
+        "inline PDF data must not be silently dropped"
+    );
+    assert_eq!(extracted.pdf_attachments[0].attachment_id, None);
+    assert_eq!(
+        extracted.pdf_attachments[0].inline_bytes.as_deref(),
+        Some(&pdf_bytes[..])
+    );
+}
+
+// ── sanitize_html_for_display ────────────────────────────────────────────
+//
+// Unlike `sanitize_html` (which reduces everything to plain text), this is
+// the password-prompt modal's "show the email like Gmail did" renderer --
+// it must keep layout/typography markup while still closing off the actual
+// attack surface: script execution, tracking pixels (both `<img src>` and
+// CSS `url(...)` in a `style` attribute), and clickable links out of a
+// password-entry surface.
+
+#[test]
+fn test_sanitize_html_for_display_strips_script_and_event_handlers() {
+    let html = r#"<div onclick="alert(1)">hi<script>alert('xss')</script></div>"#;
+    let out = sanitize_html_for_display(html);
+    assert!(!out.contains("<script"), "script tag must be removed: {out}");
+    assert!(!out.contains("alert"), "script contents must be removed: {out}");
+    assert!(!out.contains("onclick"), "event handler attribute must be stripped: {out}");
+    assert!(out.contains("hi"));
+}
+
+#[test]
+fn test_sanitize_html_for_display_strips_img_tracking_pixel() {
+    let html = r#"<p>Statement attached.</p><img src="https://tracker.example/pixel.gif" width="1" height="1">"#;
+    let out = sanitize_html_for_display(html);
+    assert!(!out.contains("<img"), "img tag must be removed entirely: {out}");
+    assert!(!out.contains("tracker.example"), "tracking URL must not survive: {out}");
+    assert!(out.contains("Statement attached"));
+}
+
+#[test]
+fn test_sanitize_html_for_display_strips_links_but_keeps_text() {
+    let html = r#"<a href="https://bank.example/click">Manage your account</a>"#;
+    let out = sanitize_html_for_display(html);
+    assert!(!out.contains("<a "), "anchor tag must be removed: {out}");
+    assert!(!out.contains("href"), "href must not survive: {out}");
+    assert!(
+        out.contains("Manage your account"),
+        "link text should still be visible, just not clickable: {out}"
+    );
+}
+
+#[test]
+fn test_sanitize_html_for_display_neutralizes_css_background_tracking() {
+    let html = r#"<div style="background-image:url(https://tracker.example/pixel.gif);color:red">hi</div>"#;
+    let out = sanitize_html_for_display(html);
+    assert!(
+        !out.contains("tracker.example"),
+        "CSS url() tracking reference must be neutralized: {out}"
+    );
+    assert!(
+        out.contains("color:red") || out.contains("color: red"),
+        "harmless style properties should survive: {out}"
+    );
+}
+
+#[test]
+fn test_sanitize_html_for_display_preserves_table_layout_and_inline_style() {
+    let html = r#"<table><tr><td style="font-weight:bold;color:#c8102e">Total Due</td><td>Rs. 24,560.00</td></tr></table>"#;
+    let out = sanitize_html_for_display(html);
+    assert!(out.contains("<table"), "table structure must survive: {out}");
+    assert!(out.contains("<td"), "table cells must survive: {out}");
+    assert!(out.contains("Total Due"));
+    assert!(out.contains("style="), "inline style must survive so the email still looks like the original: {out}");
 }

@@ -5,8 +5,7 @@ mod tests {
     use crate::db::local_profile::{self, LocalProfileRow};
     use crate::db::processing_checkpoints;
     use crate::ingestion::polling::{
-        is_force_poll_allowed, next_backoff, poll_all_accounts, save_history_id,
-        start_polling_loop,
+        is_force_poll_allowed, next_backoff, poll_all_accounts, save_history_id, start_polling_loop,
     };
     use std::fs;
     use std::sync::{Arc, Mutex};
@@ -24,7 +23,10 @@ mod tests {
     #[test]
     fn test_force_poll_debounced() {
         let t0 = std::time::Instant::now();
-        assert!(is_force_poll_allowed(t0, None), "the very first call is always allowed");
+        assert!(
+            is_force_poll_allowed(t0, None),
+            "the very first call is always allowed"
+        );
 
         let just_after = t0 + Duration::from_secs(1);
         assert!(

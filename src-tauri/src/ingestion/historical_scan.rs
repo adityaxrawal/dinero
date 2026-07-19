@@ -127,7 +127,9 @@ pub async fn scans_resume<R: tauri::Runtime>(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
 
     let cp = checkpoint.ok_or_else(|| {
-        crate::error::AppError::Validation("no prior scan found for this account to resume".to_string())
+        crate::error::AppError::Validation(
+            "no prior scan found for this account to resume".to_string(),
+        )
     })?;
     let state: ScanCheckpointState = serde_json::from_str(&cp.checkpoint_state_json)
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
@@ -284,7 +286,9 @@ pub async fn scans_historical<R: tauri::Runtime>(
                     TaskStatus::Completed,
                     "Historical scan completed",
                 ),
-                Err(e) => registry.deregister(&app, &account_id, TaskStatus::Failed, &e.to_string()),
+                Err(e) => {
+                    registry.deregister(&app, &account_id, TaskStatus::Failed, &e.to_string())
+                }
             }
         }
 
@@ -342,7 +346,8 @@ async fn run_scan<R: tauri::Runtime>(
     // previous, already-finished run.
     clear_scan_cancellation(&account_id);
 
-    let client = GmailClient::new(access_token, pool.clone());
+    let refresher = crate::ingestion::oauth::create_token_refresher(&app, &pool, &account_id);
+    let client = GmailClient::new(access_token, pool.clone(), refresher);
 
     let mut state = if let Some(cp) = existing_checkpoint {
         if cp.status == "paused" || cp.status == "failed" || cp.status == "cancelled" {
@@ -379,7 +384,35 @@ async fn run_scan<R: tauri::Runtime>(
             start_date,
             inclusive_end.format("%Y-%m-%d")
         );
-        let ids = client.search_messages(&query).await?;
+        // The search/pagination phase (`search_messages`) is one long
+        // `await` from here -- for a wide date range on a large mailbox it
+        // can take many sequential page fetches before returning at all,
+        // and `run_scan_batches` doesn't emit its first `scan_progress`
+        // until this whole phase is done and the real `total` is known.
+        // Without this, the UI's counters sit frozen at "0 / 0" for however
+        // long the search takes, indistinguishable from a genuine hang.
+        // `on_page` fires after every page with the running count found so
+        // far, so at minimum the numbers visibly move.
+        let account_id_for_search_progress = account_id.clone();
+        let app_for_search_progress = app.clone();
+        let ids = client
+            .search_messages(&query, move |found_so_far| {
+                let _ = app_for_search_progress.emit(
+                    "scan_progress",
+                    ScanProgressPayload {
+                        account_id: account_id_for_search_progress.clone(),
+                        processed: 0,
+                        total: found_so_far,
+                        transactions_found: 0,
+                        statements_found: 0,
+                        mandate_events_found: 0,
+                        non_financial: 0,
+                        errors: 0,
+                        error_message: None,
+                    },
+                );
+            })
+            .await?;
         state.all_message_ids = ids;
         state.processed_count = 0;
 
@@ -555,7 +588,7 @@ async fn run_scan_batches<R: tauri::Runtime>(
                             );
                         }
                     }
-                    Ok(Some(ProcessResult::StatementEmail(extracted))) => {
+                    Ok(Some(ProcessResult::StatementEmail(extracted, email_meta))) => {
                         // Doc 15 §2 principle 7 / Doc 12 §7.2: email-detected statements
                         // route onto the same Statement Queue as manual uploads — no
                         // lesser-validated path for either entry point.
@@ -568,14 +601,61 @@ async fn run_scan_batches<R: tauri::Runtime>(
                             );
                         } else {
                             for att in &extracted.pdf_attachments {
-                                let att_id = &att.attachment_id;
                                 let filename = &att.filename;
-                                match client.fetch_attachment(&msg_id, att_id).await {
+                                // Prefer bytes Gmail already inlined in the payload
+                                // (`body.data`) — no network round-trip needed, and this
+                                // is exactly the case that used to be silently dropped
+                                // (see `PdfAttachmentMeta::inline_bytes`'s doc comment).
+                                let fetch_result: anyhow::Result<Vec<u8>> =
+                                    if let Some(bytes) = &att.inline_bytes {
+                                        Ok(bytes.clone())
+                                    } else if let Some(att_id) = &att.attachment_id {
+                                        client.fetch_attachment(&msg_id, att_id).await
+                                    } else {
+                                        // push_pdf_attachment never inserts an entry with
+                                        // neither source, so this is unreachable in practice.
+                                        continue;
+                                    };
+                                match fetch_result {
                                     Ok(pdf_bytes) => {
                                         // Doc 18 §4.7: the `statements` row must exist in
                                         // `queued` state before parsing begins, regardless
                                         // of entry point — same invariant as manual upload.
                                         let stmt_id = uuid::Uuid::new_v4().to_string();
+
+                                        // TASK-GMAIL: this path previously skipped password
+                                        // resolution entirely — an encrypted attachment was
+                                        // enqueued with no password and died in pdfium with
+                                        // PasswordError. Same choke point manual upload uses
+                                        // (see `resolve_statement_password`'s doc comment).
+                                        let pending_bytes = app.state::<
+                                            crate::statements::pending_bytes::PendingStatementBytes,
+                                        >();
+                                        let password = match crate::statements::password::resolve_statement_password(
+                                            &stmt_id,
+                                            &pdf_bytes,
+                                            filename,
+                                            &msg_id,
+                                            &pool,
+                                            &app,
+                                            pending_bytes.inner(),
+                                            email_meta.clone(),
+                                        )
+                                        .await
+                                        {
+                                            Ok(crate::statements::password::StatementPasswordResolution::Proceed(password)) => password,
+                                            Ok(crate::statements::password::StatementPasswordResolution::PromptCreated) => {
+                                                continue;
+                                            }
+                                            Err(e) => {
+                                                tracing::error!(
+                                                    "Password resolution failed for msg_id='{}' file='{}': {}",
+                                                    msg_id, filename, e
+                                                );
+                                                continue;
+                                            }
+                                        };
+
                                         if let Ok(conn) = pool.get().await {
                                             let id = stmt_id.clone();
                                             let msg_id_for_row = msg_id.clone();
@@ -601,6 +681,7 @@ async fn run_scan_batches<R: tauri::Runtime>(
                                             // Doc 30 TASK-STMT-009: batch progress is a
                                             // manual-upload-batch concept only.
                                             batch_progress: None,
+                                            password,
                                         };
                                         let st_tx = app
                                             .state::<crate::ingestion::queues::QueueHandles>()
@@ -617,7 +698,7 @@ async fn run_scan_batches<R: tauri::Runtime>(
                                         tracing::warn!(
                                             "Failed to fetch PDF attachment '{}' for \
                                                  msg_id='{}': {}",
-                                            att_id,
+                                            filename,
                                             msg_id,
                                             e
                                         );
@@ -626,7 +707,11 @@ async fn run_scan_batches<R: tauri::Runtime>(
                             }
                         }
                     }
-                    Ok(Some(ProcessResult::MandateEvent(extracted, mandate_extraction, event_type))) => {
+                    Ok(Some(ProcessResult::MandateEvent(
+                        extracted,
+                        mandate_extraction,
+                        event_type,
+                    ))) => {
                         // docs/superpowers/specs/2026-07-18-mandate-tracking-design.md
                         // §4.2: route to the Mandate Queue, same shared worker logic
                         // as the live-poll entry point.
@@ -655,12 +740,32 @@ async fn run_scan_batches<R: tauri::Runtime>(
                     }
                     Err(e) => {
                         state.errors += 1;
+                        crate::dev_review::record(
+                            "error",
+                            serde_json::json!({ "id": msg_id }),
+                            None,
+                            None,
+                            None,
+                            None,
+                            Some(&e.to_string()),
+                            Vec::new(),
+                        );
                         tracing::error!("Failed to process message {}: {}", msg_id, e);
                     }
                 }
             }
             Err(e) => {
                 state.errors += 1;
+                crate::dev_review::record(
+                    "error",
+                    serde_json::json!({}),
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(&format!("join_error: {e}")),
+                    Vec::new(),
+                );
                 tracing::error!("Join error: {}", e);
             }
         }
@@ -736,13 +841,22 @@ async fn run_scan_batches<R: tauri::Runtime>(
 
     state.processed_count = processed_count;
 
+    // Dev-mode manual-review export (Doc: gmail_export/reviewer_app.py) --
+    // flush now so a short scan's last (< FLUSH_EVERY) buffered records
+    // aren't left stranded in memory. No-op in release builds.
+    crate::dev_review::flush();
+
     let final_cp = ProcessingCheckpointRow {
         id: Uuid::new_v4().to_string(),
         job_type: "historical_scan".to_string(),
         job_key: account_id.clone(),
         checkpoint_state_json: serde_json::to_string(&state).unwrap_or_default(),
         last_processed_token: None,
-        status: if was_cancelled { "cancelled".to_string() } else { "completed".to_string() },
+        status: if was_cancelled {
+            "cancelled".to_string()
+        } else {
+            "completed".to_string()
+        },
         updated_at: Some(Utc::now().naive_utc()),
     };
 
@@ -754,24 +868,30 @@ async fn run_scan_batches<R: tauri::Runtime>(
 
     // A cancelled scan didn't actually complete -- `scan_completed` would
     // misrepresent it to the UI (progress bar shows 100%, "Sync Now" button
-    // re-enables as if nothing is pending). `scan_progress`'s last emission
-    // from inside the loop already reflects the true processed/total split.
-    if !was_cancelled {
-        let _ = app.emit(
-            "scan_completed",
-            ScanProgressPayload {
-                account_id: account_id.clone(),
-                processed: processed_count,
-                total,
-                transactions_found: state.transactions_found,
-                statements_found: state.statements_found,
-                mandate_events_found: state.mandate_events_found,
-                non_financial: state.non_financial,
-                errors: state.errors,
-                error_message: None,
-            },
-        );
-    }
+    // re-enables as if nothing is pending). Emits a dedicated `scan_cancelled`
+    // event instead so the frontend has a definitive signal that the scan
+    // has actually stopped -- previously nothing was emitted at all here,
+    // leaving the UI's "Scanning..." state with no way to ever learn the
+    // cancellation it requested had taken effect.
+    let final_payload = ScanProgressPayload {
+        account_id: account_id.clone(),
+        processed: processed_count,
+        total,
+        transactions_found: state.transactions_found,
+        statements_found: state.statements_found,
+        mandate_events_found: state.mandate_events_found,
+        non_financial: state.non_financial,
+        errors: state.errors,
+        error_message: None,
+    };
+    let _ = app.emit(
+        if was_cancelled {
+            "scan_cancelled"
+        } else {
+            "scan_completed"
+        },
+        final_payload,
+    );
 
     Ok(())
 }
@@ -928,7 +1048,7 @@ mod tests {
             errors: 0,
         };
 
-        let client = GmailClient::new("fake_token".into(), pool.clone());
+        let client = GmailClient::new("fake_token".into(), pool.clone(), None);
 
         // This will process all 7 messages. It should checkpoint at 5, and at 7 (completion).
         run_scan_batches(app, pool.clone(), account_id.clone(), state, client)
@@ -949,6 +1069,100 @@ mod tests {
         let final_state: ScanCheckpointState =
             serde_json::from_str(&cp.checkpoint_state_json).unwrap();
         assert_eq!(final_state.processed_count, 7);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    /// Regression test: a cancelled scan previously emitted nothing at all
+    /// once its loop broke, leaving the frontend's "Scanning..." state with
+    /// no definitive signal the cancellation actually took effect. Must now
+    /// emit `scan_cancelled` (not `scan_completed`, which would misrepresent
+    /// a stopped-early scan as having finished) and checkpoint `"cancelled"`.
+    #[tokio::test]
+    async fn test_historical_scan_cancellation_emits_scan_cancelled_not_scan_completed() {
+        use tauri::Listener;
+
+        let app = mock_builder()
+            .build(mock_context(tauri::test::noop_assets()))
+            .unwrap()
+            .handle()
+            .clone();
+
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let db_path = temp_dir.join("test_scan_cancel.db");
+        let pool = init_db(db_path.clone()).await.expect("DB init failed");
+
+        // `scans_cancel` validates the `gmail_<uuid>` shape (unlike the
+        // other tests in this module, which construct a `ScanCheckpointState`
+        // directly and never pass their plain "acc_..." id through that
+        // validator).
+        let account_id = format!("gmail_{}", uuid::Uuid::new_v4());
+
+        // Pre-request cancellation. `run_scan_batches` is called directly
+        // here (bypassing `run_scan`'s own `clear_scan_cancellation` at scan
+        // start), so this flag is already set the first time the loop's
+        // per-checkpoint cancellation check runs, after the first
+        // `CHECKPOINT_INTERVAL` (5) messages are processed.
+        scans_cancel(account_id.clone()).await.unwrap();
+
+        let ids: Vec<String> = (0..7).map(|i| format!("msg_{i}")).collect();
+        let state = ScanCheckpointState {
+            start_date: "2023-01-01".into(),
+            end_date: "2023-01-31".into(),
+            all_message_ids: ids,
+            processed_count: 0,
+            transactions_found: 0,
+            statements_found: 0,
+            mandate_events_found: 0,
+            non_financial: 0,
+            errors: 0,
+        };
+
+        let client = GmailClient::new("fake_token".into(), pool.clone(), None);
+
+        let captured_events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let captured_clone = captured_events.clone();
+        app.listen_any("scan_cancelled", move |_| {
+            captured_clone
+                .lock()
+                .unwrap()
+                .push("scan_cancelled".to_string());
+        });
+        let captured_clone2 = captured_events.clone();
+        app.listen_any("scan_completed", move |_| {
+            captured_clone2
+                .lock()
+                .unwrap()
+                .push("scan_completed".to_string());
+        });
+
+        run_scan_batches(app, pool.clone(), account_id.clone(), state, client)
+            .await
+            .expect("run_scan_batches failed");
+
+        let conn = pool.get().await.unwrap();
+        let cp = conn
+            .interact(move |c| {
+                get_checkpoint(c, "historical_scan", &account_id)
+                    .unwrap()
+                    .unwrap()
+            })
+            .await
+            .unwrap();
+        assert_eq!(cp.status, "cancelled");
+
+        let captured = captured_events.lock().unwrap();
+        assert!(
+            captured.contains(&"scan_cancelled".to_string()),
+            "expected scan_cancelled to fire, got {:?}",
+            *captured
+        );
+        assert!(
+            !captured.contains(&"scan_completed".to_string()),
+            "scan_completed must NOT fire for a cancelled scan, got {:?}",
+            *captured
+        );
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
@@ -986,7 +1200,7 @@ mod tests {
             errors: 0,
         };
 
-        let client = GmailClient::new("fake_token".into(), pool.clone());
+        let client = GmailClient::new("fake_token".into(), pool.clone(), None);
 
         run_scan_batches(app, pool.clone(), account_id.clone(), state, client)
             .await

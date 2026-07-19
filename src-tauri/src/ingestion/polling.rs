@@ -142,16 +142,21 @@ pub async fn sync_force_poll_now<R: tauri::Runtime>(
         let mut last = last_force_poll_at().lock().unwrap();
         if !is_force_poll_allowed(now, *last) {
             return Err(crate::error::AppError::Validation(
-                "Sync Now was used too recently -- please wait a few seconds and try again".to_string(),
+                "Sync Now was used too recently -- please wait a few seconds and try again"
+                    .to_string(),
             ));
         }
         *last = Some(now);
     }
 
     let pool = pool.inner().clone();
-    poll_all_accounts(&app, &pool, crate::ingestion::gmail_client::GMAIL_API_BASE_URL)
-        .await
-        .map_err(|e| crate::error::AppError::Network(e.to_string()))?;
+    poll_all_accounts(
+        &app,
+        &pool,
+        crate::ingestion::gmail_client::GMAIL_API_BASE_URL,
+    )
+    .await
+    .map_err(|e| crate::error::AppError::Network(e.to_string()))?;
 
     Ok("synced".to_string())
 }
@@ -235,10 +240,12 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
     let mut token = token;
     let mut refreshed_after_401 = false;
 
+    let refresher = crate::ingestion::oauth::create_token_refresher(app, pool, &account.id);
     let mut gmail_client = crate::ingestion::gmail_client::GmailClient::new_with_base_url(
         token.clone(),
         pool.clone(),
         base_url.to_string(),
+        refresher.clone(),
     );
     // Doc 01 §10.4 (BG-02): the history-poll loop below built its own bare
     // client, invisible to the Network Activity audit trail — routed through
@@ -314,6 +321,7 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                         token.clone(),
                                         pool.clone(),
                                         base_url.to_string(),
+                                        refresher.clone(),
                                     );
                             }
                             Err(e) => {
@@ -409,25 +417,74 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                     tracing::error!("Transaction Queue closed — dropping job for msg_id='{}'", msg_id);
                                 }
                             }
-                            Ok(Some(crate::ingestion::message_processor::ProcessResult::StatementEmail(extracted))) => {
-                                // Doc 15 §2 principle 7 / Doc 12 §7.2: email-detected statements
-                                // route onto the same Statement Queue as manual uploads.
-                                if extracted.pdf_attachments.is_empty() {
-                                    tracing::warn!(
-                                        "Realtime poll: StatementEmail msg_id='{}' has no \
-                                         downloadable PDF attachment_ids — skipping parse",
+                            Ok(Some(crate::ingestion::message_processor::ProcessResult::StatementEmail(extracted, email_meta))) => {
+                            // Doc 15 §2 principle 7 / Doc 12 §7.2: route to the Statement Queue.
+                            if extracted.pdf_attachments.is_empty() {
+                                tracing::warn!(
+                                    "Realtime poll: StatementEmail msg_id='{}' has no \
+                                         downloadable attachment_ids — skipping parse",
                                         msg_id
                                     );
                                 } else {
                                     for att in &extracted.pdf_attachments {
-                                        let att_id = &att.attachment_id;
                                         let filename = &att.filename;
-                                        match gmail_client.fetch_attachment(&msg_id, att_id).await {
+                                        // Prefer bytes Gmail already inlined in the payload
+                                        // (`body.data`) — no network round-trip needed, and
+                                        // this is exactly the case that used to be silently
+                                        // dropped (see `PdfAttachmentMeta::inline_bytes`'s
+                                        // doc comment).
+                                        let fetch_result: anyhow::Result<Vec<u8>> =
+                                            if let Some(bytes) = &att.inline_bytes {
+                                                Ok(bytes.clone())
+                                            } else if let Some(att_id) = &att.attachment_id {
+                                                gmail_client.fetch_attachment(&msg_id, att_id).await
+                                            } else {
+                                                // push_pdf_attachment never inserts an entry
+                                                // with neither source, so this is
+                                                // unreachable in practice.
+                                                continue;
+                                            };
+                                        match fetch_result {
                                             Ok(pdf_bytes) => {
                                                 // Doc 18 §4.7: the `statements` row must exist in
                                                 // `queued` state before parsing begins, regardless
                                                 // of entry point — same invariant as manual upload.
                                                 let stmt_id = uuid::Uuid::new_v4().to_string();
+
+                                                // TASK-GMAIL: this path previously skipped
+                                                // password resolution entirely — an encrypted
+                                                // attachment was enqueued with no password and
+                                                // died in pdfium with PasswordError. Same choke
+                                                // point manual upload uses (see
+                                                // `resolve_statement_password`'s doc comment).
+                                                let pending_bytes = app.state::<
+                                                    crate::statements::pending_bytes::PendingStatementBytes,
+                                                >();
+                                                let password = match crate::statements::password::resolve_statement_password(
+                                                    &stmt_id,
+                                                    &pdf_bytes,
+                                                    filename,
+                                                    &msg_id,
+                                                    &pool,
+                                                    &app,
+                                                    pending_bytes.inner(),
+                                                    email_meta.clone(),
+                                                )
+                                                .await
+                                                {
+                                                    Ok(crate::statements::password::StatementPasswordResolution::Proceed(password)) => password,
+                                                    Ok(crate::statements::password::StatementPasswordResolution::PromptCreated) => {
+                                                        continue;
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::error!(
+                                                            "Password resolution failed for msg_id='{}' file='{}': {}",
+                                                            msg_id, filename, e
+                                                        );
+                                                        continue;
+                                                    }
+                                                };
+
                                                 if let Ok(conn) = pool.get().await {
                                                     let id = stmt_id.clone();
                                                     let msg_id_for_row = msg_id.clone();
@@ -451,6 +508,7 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                                     // Doc 30 TASK-STMT-009: batch progress is a
                                                     // manual-upload-batch concept only.
                                                     batch_progress: None,
+                                                    password,
                                                 };
                                                 let st_tx = app
                                                     .state::<crate::ingestion::queues::QueueHandles>()
@@ -467,7 +525,7 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                                 tracing::warn!(
                                                     "Realtime poll: failed to fetch attachment \
                                                      '{}' for msg_id='{}': {}",
-                                                    att_id, msg_id, e
+                                                    filename, msg_id, e
                                                 );
                                             }
                                         }

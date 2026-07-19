@@ -17,13 +17,27 @@ pub enum MandateEventType {
     Cancellation,
 }
 
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct EmailMetadata {
+    pub sender: String,
+    pub recipient: String,
+    pub subject: String,
+    pub date: String,
+    pub snippet: String,
+    /// Sanitized-for-display original HTML body (see
+    /// `mime_sanitization::sanitize_html_for_display`) -- `None` when the
+    /// message had no `text/html` part, in which case the caller falls back
+    /// to rendering `snippet` as plain text.
+    pub html: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProcessResult {
     TransactionAlert(
         ExtractedMessage,
         Box<crate::extraction::ladder::ExtractionResult>,
     ),
-    StatementEmail(ExtractedMessage),
+    StatementEmail(ExtractedMessage, Option<EmailMetadata>),
     MandateEvent(
         ExtractedMessage,
         crate::extraction::mandate_extractor::MandateExtraction,
@@ -54,8 +68,70 @@ impl MessageProcessor {
             .await?;
 
         // 2. Sender Verification Gate
-        let gate_result = Self::evaluate_metadata_gate(&metadata_msg);
+        let sender_domain = Self::extract_sender_domain(&metadata_msg);
 
+        // Reputation/approved-senders lookups are best-effort: a DB error
+        // here must fall back to the conservative defaults (no prior
+        // history, no approved override) rather than fail the whole
+        // message -- Gate 1's string/auth checks still run either way.
+        let (domain_previously_seen, approved_senders) = match &sender_domain {
+            Some(domain) => {
+                let domain_owned = domain.clone();
+                let conn = pool.get().await?;
+                conn.interact(move |c| {
+                    let seen = crate::db::sender_reputation::has_prior_sighting(c, &domain_owned)
+                        .unwrap_or(false);
+                    let approved = crate::db::sender_reputation::select_approved_domains(c)
+                        .unwrap_or_default();
+                    (seen, approved)
+                })
+                .await
+                .unwrap_or((false, Vec::new()))
+            }
+            None => (false, Vec::new()),
+        };
+
+        let gate_result =
+            Self::evaluate_metadata_gate(&metadata_msg, domain_previously_seen, &approved_senders);
+
+        // Best-effort history/learning-loop bookkeeping -- never blocks or
+        // fails the gate decision itself, only records it for next time.
+        if let Some(domain) = &sender_domain {
+            let domain_owned = domain.clone();
+            let tag = Self::classification_tag(&gate_result).to_string();
+            let subject_looks_like_transaction =
+                Self::subject_looks_like_transaction(&metadata_msg);
+            let gate_result_owned = gate_result.clone();
+            if let Ok(conn) = pool.get().await {
+                let _ = conn
+                    .interact(move |c| -> anyhow::Result<()> {
+                        crate::db::sender_reputation::record_sighting(c, &domain_owned, &tag)?;
+                        // Only flag rejections that plausibly look like a
+                        // real bank alert (transaction-shaped subject) for
+                        // human review -- otherwise every random rejected
+                        // domain (marketing spam, unrelated mail) would
+                        // flood the promotion queue.
+                        if matches!(
+                            gate_result_owned,
+                            SenderVerificationResult::UnverifiedReject(_)
+                                | SenderVerificationResult::SpoofReject(_)
+                        ) && subject_looks_like_transaction
+                        {
+                            crate::db::sender_reputation::record_rejection_candidate(
+                                c,
+                                &Uuid::new_v4().to_string(),
+                                &domain_owned,
+                                &domain_owned,
+                                "transaction_candidate",
+                            )?;
+                        }
+                        Ok(())
+                    })
+                    .await;
+            }
+        }
+
+        let gate1_variant = crate::dev_review::gate1_variant_name(&gate_result);
         let current_bank_name = match gate_result {
             SenderVerificationResult::VerifiedTransactionCandidate(bank_name)
             | SenderVerificationResult::VerifiedStatementCandidate(bank_name) => {
@@ -64,6 +140,16 @@ impl MessageProcessor {
             }
             SenderVerificationResult::VerifiedNoise => {
                 crate::ingestion::gmail_telemetry::gmail_telemetry().record_gate_rejection("gate1");
+                crate::dev_review::record(
+                    "non_transaction",
+                    serde_json::to_value(&metadata_msg).unwrap_or_default(),
+                    Some(gate1_variant),
+                    None,
+                    None,
+                    None,
+                    Some("gate1_verified_noise"),
+                    Vec::new(),
+                );
                 Self::append_to_scan_log(
                     message_id,
                     "REJECTED",
@@ -79,6 +165,16 @@ impl MessageProcessor {
                 // Log to audit log and return None
                 crate::ingestion::gmail_telemetry::gmail_telemetry().record_gate_rejection("gate1");
                 Self::log_rejection(pool, message_id, &reason).await?;
+                crate::dev_review::record(
+                    "non_transaction",
+                    serde_json::to_value(&metadata_msg).unwrap_or_default(),
+                    Some(gate1_variant),
+                    None,
+                    None,
+                    None,
+                    Some(&reason),
+                    Vec::new(),
+                );
                 Self::append_to_scan_log(
                     message_id,
                     "REJECTED",
@@ -94,23 +190,60 @@ impl MessageProcessor {
         // 3. If gate passes, fetch full body
         let full_msg = client.fetch_message(message_id, FetchFormat::Full).await?;
 
-        // Extract subject for Gate 2
+        // Extract headers and metadata
         let mut subject = String::new();
+        let mut sender = String::new();
+        let mut recipient = String::new();
+        let mut date = String::new();
+
         if let Some(payload) = &full_msg.payload {
             if let Some(headers) = &payload.headers {
                 for header in headers {
                     if header.name.eq_ignore_ascii_case("subject") {
                         subject = header.value.clone();
-                        break;
+                    } else if header.name.eq_ignore_ascii_case("from") {
+                        sender = header.value.clone();
+                    } else if header.name.eq_ignore_ascii_case("to") {
+                        recipient = header.value.clone();
+                    } else if header.name.eq_ignore_ascii_case("date") {
+                        date = header.value.clone();
                     }
                 }
             }
         }
-
+        
         // 4. Extract and sanitize
-        if let Some(payload) = &full_msg.payload {
-            let extracted = extract_body_and_attachments(payload);
-            let body_text = extracted.text_body.as_deref().unwrap_or("");
+        let mut body_string = String::new();
+        let extracted_opt = if let Some(payload) = &full_msg.payload {
+            let ext = extract_body_and_attachments(payload);
+            body_string = ext.text_body.clone().unwrap_or_default();
+            Some(ext)
+        } else {
+            None
+        };
+
+        let snippet_text = if !body_string.trim().is_empty() {
+            body_string.clone()
+        } else {
+            full_msg.snippet.clone().unwrap_or_default()
+        };
+
+        let html_for_display = extracted_opt
+            .as_ref()
+            .and_then(|ext| ext.html_body.as_deref())
+            .map(crate::ingestion::mime_sanitization::sanitize_html_for_display);
+
+        let email_meta = EmailMetadata {
+            sender,
+            recipient,
+            subject: subject.clone(),
+            date,
+            snippet: snippet_text,
+            html: html_for_display,
+        };
+
+        if let Some(extracted) = extracted_opt {
+            let body_text = body_string.as_str();
 
             // GATE 2: Content Classification
             let content_class = ContentClassifier::classify(&subject, body_text);
@@ -124,6 +257,16 @@ impl MessageProcessor {
                         .record_gate_rejection("gate2");
                     let reason = format!("gate2_reject_{:?}", content_class);
                     Self::log_rejection(pool, message_id, &reason).await?;
+                    crate::dev_review::record(
+                        "non_transaction",
+                        serde_json::to_value(&full_msg).unwrap_or_default(),
+                        Some(gate1_variant),
+                        Some(&current_bank_name),
+                        Some(&format!("{content_class:?}")),
+                        None,
+                        Some(&reason),
+                        Vec::new(),
+                    );
                     Self::append_to_scan_log(
                         message_id,
                         "REJECTED",
@@ -139,6 +282,16 @@ impl MessageProcessor {
                         .record_gate_rejection("gate2");
                     let reason = format!("gate2_reject_{:?}", content_class);
                     Self::log_rejection(pool, message_id, &reason).await?;
+                    crate::dev_review::record(
+                        "non_transaction",
+                        serde_json::to_value(&full_msg).unwrap_or_default(),
+                        Some(gate1_variant),
+                        Some(&current_bank_name),
+                        Some(&format!("{content_class:?}")),
+                        None,
+                        Some(&reason),
+                        Vec::new(),
+                    );
                     Self::append_to_scan_log(
                         message_id,
                         "REJECTED",
@@ -150,6 +303,21 @@ impl MessageProcessor {
                     return Ok(None);
                 }
                 ContentClass::StatementEmail => {
+                    let attachment_names: Vec<String> = extracted
+                        .pdf_attachments
+                        .iter()
+                        .map(|a| a.filename.clone())
+                        .collect();
+                    crate::dev_review::record(
+                        "statement",
+                        serde_json::to_value(&full_msg).unwrap_or_default(),
+                        Some(gate1_variant),
+                        Some(&current_bank_name),
+                        Some(&format!("{content_class:?}")),
+                        None,
+                        None,
+                        attachment_names,
+                    );
                     Self::append_to_scan_log(
                         message_id,
                         "SELECTED",
@@ -158,7 +326,7 @@ impl MessageProcessor {
                         Some(body_text),
                     )
                     .await;
-                    return Ok(Some(ProcessResult::StatementEmail(extracted)));
+                    return Ok(Some(ProcessResult::StatementEmail(extracted, Some(email_meta))));
                 }
                 ContentClass::MandateRegistration | ContentClass::MandateCancellation => {
                     // Mandate Queue routing
@@ -190,6 +358,16 @@ impl MessageProcessor {
                                 .record_gate_rejection("gate3");
                             Self::log_rejection(pool, message_id, "mandate_missing_merchant")
                                 .await?;
+                            crate::dev_review::record(
+                                "non_transaction",
+                                serde_json::to_value(&full_msg).unwrap_or_default(),
+                                Some(gate1_variant),
+                                Some(&current_bank_name),
+                                Some(&format!("{content_class:?}")),
+                                None,
+                                Some("mandate_missing_merchant"),
+                                Vec::new(),
+                            );
                             Self::append_to_scan_log(
                                 message_id,
                                 "REJECTED",
@@ -247,6 +425,16 @@ impl MessageProcessor {
                         }
 
                         if Self::evaluate_mandatory_field_gate(&obs) {
+                            crate::dev_review::record(
+                                "transaction",
+                                serde_json::to_value(&full_msg).unwrap_or_default(),
+                                Some(gate1_variant),
+                                Some(&current_bank_name),
+                                Some(&format!("{content_class:?}")),
+                                Some(crate::dev_review::extraction_to_json(&obs)),
+                                None,
+                                Vec::new(),
+                            );
                             Self::append_to_scan_log(
                                 message_id,
                                 "SELECTED",
@@ -264,6 +452,16 @@ impl MessageProcessor {
                                 .record_gate_rejection("gate3");
                             let reason = Self::gate3_failure_reason(&obs);
                             Self::log_rejection(pool, message_id, reason).await?;
+                            crate::dev_review::record(
+                                "non_transaction",
+                                serde_json::to_value(&full_msg).unwrap_or_default(),
+                                Some(gate1_variant),
+                                Some(&current_bank_name),
+                                Some(&format!("{content_class:?}")),
+                                Some(crate::dev_review::extraction_to_json(&obs)),
+                                Some(reason),
+                                Vec::new(),
+                            );
                             Self::append_to_scan_log(
                                 message_id,
                                 "REJECTED",
@@ -283,6 +481,16 @@ impl MessageProcessor {
                             "extraction_failed",
                         )
                         .await?;
+                        crate::dev_review::record(
+                            "non_transaction",
+                            serde_json::to_value(&full_msg).unwrap_or_default(),
+                            Some(gate1_variant),
+                            Some(&current_bank_name),
+                            Some(&format!("{content_class:?}")),
+                            None,
+                            Some("extraction_failed"),
+                            Vec::new(),
+                        );
                         Self::append_to_scan_log(
                             message_id,
                             "REJECTED",
@@ -296,6 +504,16 @@ impl MessageProcessor {
                 }
             }
         } else {
+            crate::dev_review::record(
+                "non_transaction",
+                serde_json::to_value(&full_msg).unwrap_or_default(),
+                Some(gate1_variant),
+                Some(&current_bank_name),
+                None,
+                None,
+                Some("no_payload"),
+                Vec::new(),
+            );
             Self::append_to_scan_log(
                 message_id,
                 "REJECTED",
@@ -347,7 +565,22 @@ impl MessageProcessor {
         }
     }
 
-    pub(crate) fn evaluate_metadata_gate(msg: &Message) -> SenderVerificationResult {
+    /// `domain_previously_seen`: whether this sender's domain has at least
+    /// one prior recorded sighting (see `db::sender_reputation`) -- gates the
+    /// subject-based "Unknown Bank" rescue below so a domain's very
+    /// first-ever message can't be auto-accepted purely off subject-line
+    /// wording, with no history yet to weigh against a spoofed subject.
+    ///
+    /// `approved_senders`: user-confirmed domains that repeatedly failed
+    /// string-based verification (see `db::sender_reputation::PendingSenderRow`,
+    /// the runtime learning-loop layer alongside the compiled-in registry
+    /// JSON) -- checked before the registry so a manually-approved sender
+    /// isn't still rejected by the same heuristics that flagged it originally.
+    pub(crate) fn evaluate_metadata_gate(
+        msg: &Message,
+        domain_previously_seen: bool,
+        approved_senders: &[crate::db::sender_reputation::PendingSenderRow],
+    ) -> SenderVerificationResult {
         let headers = match &msg.payload {
             Some(payload) => match &payload.headers {
                 Some(h) => h,
@@ -374,12 +607,31 @@ impl MessageProcessor {
 
         let (email, display_name) = Self::parse_from_header(&from_header);
 
-        let verify_result = get_sender_validator().verify_sender(&email, display_name.as_deref());
+        let domain = email.rsplit('@').next().unwrap_or("").to_lowercase();
+        let approved_match = approved_senders.iter().find(|p| p.domain == domain);
 
-        match verify_result {
+        let verify_result = if let Some(approved) = approved_match {
+            match approved.classification.as_str() {
+                "statement_candidate" => {
+                    SenderVerificationResult::VerifiedStatementCandidate(approved.bank_name.clone())
+                }
+                _ => SenderVerificationResult::VerifiedTransactionCandidate(
+                    approved.bank_name.clone(),
+                ),
+            }
+        } else {
+            get_sender_validator().verify_sender(&email, display_name.as_deref())
+        };
+
+        let verify_result = match verify_result {
             SenderVerificationResult::UnverifiedReject(_)
-            | SenderVerificationResult::SpoofReject(_) => {
-                // Requirement 6 fallback: Check subject before outright rejection
+            | SenderVerificationResult::SpoofReject(_)
+                if domain_previously_seen =>
+            {
+                // Requirement 6 fallback: Check subject before outright
+                // rejection. Only reachable once this domain has at least
+                // one prior recorded sighting -- see `domain_previously_seen`
+                // doc comment above.
                 let classification =
                     crate::ingestion::content_classifier::ContentClassifier::classify(
                         &subject_header,
@@ -396,7 +648,75 @@ impl MessageProcessor {
                 }
             }
             _ => verify_result,
+        };
+
+        // Cross-check against SPF/DKIM/DMARC (Doc 30 Gate 1 hardening): a
+        // domain-string match alone never proves the message actually
+        // originated from that domain's real infrastructure. Only ever
+        // downgrades Verified* -> SpoofReject; see
+        // `auth_results::apply_auth_results_check` for why it can't be used
+        // to promote a rejection instead.
+        crate::ingestion::auth_results::apply_auth_results_check(verify_result, headers)
+    }
+
+    /// Pulls just the sender's domain out of a *metadata*-format message's
+    /// From header, for the reputation/approved-senders lookups that must
+    /// happen before `evaluate_metadata_gate` runs (it needs `pool`, which
+    /// that function deliberately doesn't take -- see its doc comment).
+    fn extract_sender_domain(msg: &Message) -> Option<String> {
+        let headers = msg.payload.as_ref()?.headers.as_ref()?;
+        let from_header = headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case("from"))?
+            .value
+            .as_str();
+        let (email, _display_name) = Self::parse_from_header(from_header);
+        let domain = email.rsplit('@').next()?.trim().to_lowercase();
+        if domain.is_empty() {
+            None
+        } else {
+            Some(domain)
         }
+    }
+
+    /// Short tag persisted to `sender_reputation.last_verification_result`
+    /// (and used to decide `verified_pass_count`) -- see
+    /// `db::sender_reputation::record_sighting`.
+    fn classification_tag(result: &SenderVerificationResult) -> &'static str {
+        match result {
+            SenderVerificationResult::VerifiedTransactionCandidate(_) => {
+                "verified_transaction_candidate"
+            }
+            SenderVerificationResult::VerifiedStatementCandidate(_) => {
+                "verified_statement_candidate"
+            }
+            SenderVerificationResult::VerifiedNoise => "verified_noise",
+            SenderVerificationResult::UnverifiedReject(_) => "unverified_reject",
+            SenderVerificationResult::SpoofReject(_) => "spoof_reject",
+        }
+    }
+
+    /// Whether the metadata-format message's Subject line alone looks like a
+    /// transaction alert -- the same signal `evaluate_metadata_gate`'s
+    /// subject-rescue fallback uses, re-derived here (not passed out of that
+    /// function) so a rejected sender's pending-promotion candidacy
+    /// (`db::sender_reputation::record_rejection_candidate`) only ever
+    /// covers domains that plausibly look like a real bank alert, not every
+    /// rejected domain indiscriminately.
+    fn subject_looks_like_transaction(msg: &Message) -> bool {
+        let Some(headers) = msg.payload.as_ref().and_then(|p| p.headers.as_ref()) else {
+            return false;
+        };
+        let subject = headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case("subject"))
+            .map(|h| h.value.as_str())
+            .unwrap_or("");
+        matches!(
+            crate::ingestion::content_classifier::ContentClassifier::classify(subject, ""),
+            crate::ingestion::content_classifier::ContentClass::TransactionAlert
+                | crate::ingestion::content_classifier::ContentClass::BalanceUpdate
+        )
     }
 
     fn parse_from_header(from: &str) -> (String, Option<String>) {
