@@ -85,7 +85,12 @@ pub struct MetricResult {
 }
 
 impl MetricResult {
-    pub fn new(value_pct: f64, threshold_pct: f64, sample_count: usize, higher_is_better: bool) -> Self {
+    pub fn new(
+        value_pct: f64,
+        threshold_pct: f64,
+        sample_count: usize,
+        higher_is_better: bool,
+    ) -> Self {
         let gate_passed = if higher_is_better {
             value_pct >= threshold_pct
         } else {
@@ -157,7 +162,8 @@ impl BenchmarkReport {
 /// can control the artifact-upload location; falls back to
 /// `target/benchmark/` for local runs.
 pub fn report_path(metric: &str) -> std::path::PathBuf {
-    let dir = std::env::var("BENCHMARK_REPORT_DIR").unwrap_or_else(|_| "target/benchmark".to_string());
+    let dir =
+        std::env::var("BENCHMARK_REPORT_DIR").unwrap_or_else(|_| "target/benchmark".to_string());
     std::path::PathBuf::from(dir).join(format!("{}_report.json", metric))
 }
 
@@ -167,7 +173,10 @@ mod tests {
 
     #[test]
     fn test_layer_stats_accuracy_pct() {
-        let stats = LayerStats { total: 4, correct: 3 };
+        let stats = LayerStats {
+            total: 4,
+            correct: 3,
+        };
         assert_eq!(stats.accuracy_pct(), 75.0);
     }
 
@@ -186,9 +195,27 @@ mod tests {
         tracker.record(None, false);
 
         let breakdown = tracker.into_breakdown();
-        assert_eq!(breakdown["bank_templates"], LayerStats { total: 2, correct: 1 });
-        assert_eq!(breakdown["nlp"], LayerStats { total: 1, correct: 1 });
-        assert_eq!(breakdown["no_extraction"], LayerStats { total: 1, correct: 0 });
+        assert_eq!(
+            breakdown["bank_templates"],
+            LayerStats {
+                total: 2,
+                correct: 1
+            }
+        );
+        assert_eq!(
+            breakdown["nlp"],
+            LayerStats {
+                total: 1,
+                correct: 1
+            }
+        );
+        assert_eq!(
+            breakdown["no_extraction"],
+            LayerStats {
+                total: 1,
+                correct: 0
+            }
+        );
     }
 
     #[test]
@@ -225,7 +252,8 @@ mod tests {
 
     #[test]
     fn test_write_to_path_creates_parent_dirs() {
-        let tmp = std::env::temp_dir().join(format!("dinero_benchmark_test_{}", uuid::Uuid::new_v4()));
+        let tmp =
+            std::env::temp_dir().join(format!("dinero_benchmark_test_{}", uuid::Uuid::new_v4()));
         let report = BenchmarkReport::new(
             "false_positive_rate",
             MetricResult::new(0.0, FALSE_POSITIVE_GATE_THRESHOLD_PCT, 10, false),

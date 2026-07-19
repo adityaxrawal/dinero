@@ -1,0 +1,407 @@
+use anyhow::Result;
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
+use tauri::{AppHandle, Emitter};
+use tokio::fs::{self, File};
+use tokio::io::AsyncWriteExt;
+
+/// Emitted to the frontend while a catalog model's `.gguf` downloads, so
+/// Settings' model picker can show a real progress bar instead of an
+/// indeterminate spinner for what's often a multi-GB, multi-minute
+/// download. `total_bytes` is `None` on the rare server that omits
+/// `Content-Length` — the frontend falls back to indeterminate in that case.
+#[derive(Debug, Clone, Serialize)]
+pub struct LlmDownloadProgress {
+    pub model_id: String,
+    pub bytes_downloaded: u64,
+    pub total_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmModelInfo {
+    pub id: String,
+    pub name: String,
+    /// Ollama-style tag from Doc 16 §12.3's hardware matrix (e.g. `gemma4:e4b`)
+    /// — informational only; `id` (not this) is what's used for file paths.
+    pub tag: String,
+    pub tier: u8,
+    pub min_ram_gb: f64,
+    pub approx_size_gb: f64,
+    pub rationale: String,
+    pub gguf_url: String,
+    pub expected_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DownloadState {
+    pub model_id: String,
+    pub bytes_downloaded: u64,
+    pub total_bytes: Option<u64>,
+    pub status: String, // "downloading", "verifying", "ready", "failed"
+}
+
+/// Doc 16 §12.3 "Dinero Local LLM Hardware Matrix" — the single, authoritative
+/// 5-tier catalog. Every field except `gguf_url`/`expected_sha256` is taken
+/// directly from that table.
+///
+/// Real artifacts, verified (not fabricated — see the prior revision's own
+/// warning about that exact mistake). Each `gguf_url` points at a real
+/// HuggingFace `resolve/main` path; each hash is the file's own git-lfs
+/// `oid` (HF's LFS storage is content-addressed by SHA-256, so the LFS
+/// pointer's `oid` *is* the file's real SHA-256 — read directly via
+/// `.../raw/main/<file>`, not computed by downloading and hashing multi-GB
+/// files locally). Quantization: Q4_K_M for the four dense tiers (closest
+/// available to Doc 16's `approx_size_gb` without materially degrading
+/// extraction-task accuracy), MXFP4_MOE for the one MoE tier (Unsloth's own
+/// recommended default quant for their MoE conversions). Retrieved
+/// 2026-07-19 from the `unsloth/*-GGUF` repos; re-verify if these ever need
+/// to change (a repo can rename/retag files upstream).
+///
+/// No separate `tokenizer_url` — GGUF embeds its own tokenizer vocab/merges
+/// (`tokenizer.ggml.*` metadata), and inference runs through `llama_sidecar`
+/// (llama.cpp's `llama-server`), which reads that directly. The Candle path
+/// this catalog previously targeted needed an external `tokenizer.json`;
+/// that requirement went away along with Candle itself (see
+/// `llama_sidecar.rs`'s module doc for why: no released `candle-transformers`
+/// version has a loader for either of these families' actual GGUF
+/// architectures — Gemma 4's own `"gemma4"` tag, Qwen3.6's
+/// Gated-DeltaNet-hybrid MoE).
+pub fn get_available_models() -> Vec<LlmModelInfo> {
+    vec![
+        LlmModelInfo {
+            id: "gemma4_e4b".to_string(),
+            name: "Gemma 4 E4B".to_string(),
+            tag: "gemma4:e4b".to_string(),
+            tier: 1,
+            min_ram_gb: 8.0,
+            approx_size_gb: 5.0,
+            rationale: "The floor for customers who can't run anything bigger. Native structured JSON output and function calling. Covers the entry-level market.".to_string(),
+            gguf_url: "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf?download=true".to_string(),
+            expected_sha256: "85a896a047553e842f25297ee5b031d64ff30147d9c4af17b1e4b394cd1fab87".to_string(),
+        },
+        LlmModelInfo {
+            id: "gemma4_12b".to_string(),
+            name: "Gemma 4 12B".to_string(),
+            tag: "gemma4:12b".to_string(),
+            tier: 2,
+            min_ram_gb: 16.0,
+            approx_size_gb: 9.0,
+            rationale: "The default and sweet spot. Highly capable on 16GB, quality matching models twice its size.".to_string(),
+            gguf_url: "https://huggingface.co/unsloth/gemma-4-12b-it-GGUF/resolve/main/gemma-4-12b-it-Q4_K_M.gguf?download=true".to_string(),
+            expected_sha256: "0a270ec9fe6b34f4a0d33992b6135117b484ebc4766ab76b51d4ae8c457e4c42".to_string(),
+        },
+        LlmModelInfo {
+            id: "qwen3_6_27b".to_string(),
+            name: "Qwen3.6-27B (Dense)".to_string(),
+            tag: "qwen3.6:27b".to_string(),
+            tier: 3,
+            min_ram_gb: 16.0,
+            approx_size_gb: 15.0,
+            rationale: "Strong alternative/cross-check to Gemma 12B. Dense architecture means it is consistent and predictable for narrow extraction tasks.".to_string(),
+            gguf_url: "https://huggingface.co/unsloth/Qwen3.6-27B-GGUF/resolve/main/Qwen3.6-27B-Q4_K_M.gguf?download=true".to_string(),
+            expected_sha256: "5ed60d0af4650a854b1755bd392f9aef4872643dc25a254bc68043fa638392a0".to_string(),
+        },
+        LlmModelInfo {
+            id: "qwen3_6_35b_a3b".to_string(),
+            name: "Qwen3.6-35B-A3B (MoE)".to_string(),
+            tag: "qwen3.6:35b".to_string(),
+            tier: 4,
+            min_ram_gb: 32.0,
+            approx_size_gb: 21.0,
+            rationale: "Highest accuracy ceiling realistic for a consumer Mac. MoE makes it fast despite size (70-80 tok/s on MLX). The \"best case\" tier.".to_string(),
+            gguf_url: "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-MXFP4_MOE.gguf?download=true".to_string(),
+            expected_sha256: "2fdd20997c4d88ee25f70f500c61f8b999378d92ab055f9d450fc70d617158d3".to_string(),
+        },
+        LlmModelInfo {
+            id: "gemma4_31b".to_string(),
+            name: "Gemma 4 31B (Dense)".to_string(),
+            tag: "gemma4:31b".to_string(),
+            tier: 5,
+            min_ram_gb: 32.0,
+            approx_size_gb: 20.0,
+            rationale: "Currently the strongest Gemma 4 model. Pick it for maximum quality if memory allows. Keeps prompt engineering consistent with Tier 2.".to_string(),
+            gguf_url: "https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/resolve/main/gemma-4-31B-it-Q4_K_M.gguf?download=true".to_string(),
+            expected_sha256: "38bd64c852c4b460434cc7162fa9bdcf242faf86502581a754cb72956bb17f84".to_string(),
+        },
+    ]
+}
+
+pub async fn download_model(
+    app_dir: &Path,
+    model_info: &LlmModelInfo,
+    progress_app: Option<&AppHandle>,
+) -> Result<()> {
+    // Defensive: catches any future catalog entry that ships without a real
+    // artifact yet, same check that caught all 5 entries before this fix.
+    if model_info.gguf_url.starts_with("PLACEHOLDER_") {
+        anyhow::bail!(
+            "Model '{}' has no real download URL configured yet (placeholder artifact, see llm_manager.rs)",
+            model_info.id
+        );
+    }
+
+    let models_dir = app_dir.join("models");
+    fs::create_dir_all(&models_dir).await?;
+
+    let model_path = models_dir.join(format!("{}.gguf", model_info.id));
+
+    // Download GGUF — no separate tokenizer download needed, GGUF embeds
+    // its own vocab/merges and `llama_sidecar`'s `llama-server` reads that
+    // directly.
+    download_file_with_hash(
+        &model_info.gguf_url,
+        &model_path,
+        &model_info.expected_sha256,
+        progress_app.map(|app| (app, model_info.id.as_str())),
+    )
+    .await?;
+
+    Ok(())
+}
+
+/// Deletes a downloaded model and its verification marker from disk.
+pub fn delete_model(app_dir: &Path, model_id: &str) -> Result<()> {
+    let model_path = app_dir.join("models").join(format!("{}.gguf", model_id));
+    let marker_path = verified_marker_path(&model_path);
+    let _ = std::fs::remove_file(&model_path);
+    let _ = std::fs::remove_file(&marker_path);
+    Ok(())
+}
+
+/// `progress` — when `Some((app, model_id))`, emits throttled
+/// `llm_download_progress` events (~every 1MB, plus a final one) so the
+/// frontend can render a real percentage instead of an indeterminate
+/// spinner. `None` for callers that don't need progress UI (the
+/// `llama_sidecar` binary download, currently).
+pub(crate) async fn download_file_with_hash(
+    url: &str,
+    dest_path: &Path,
+    expected_hash: &str,
+    progress: Option<(&AppHandle, &str)>,
+) -> Result<()> {
+    const PROGRESS_EMIT_INTERVAL_BYTES: u64 = 1_000_000;
+
+    let client = Client::new();
+    let mut res = client.get(url).send().await?.error_for_status()?;
+    let total_bytes = res.content_length();
+
+    let mut file = File::create(dest_path).await?;
+    let mut hasher = Sha256::new();
+    let mut downloaded: u64 = 0;
+    let mut last_emitted: u64 = 0;
+
+    while let Some(item) = res.chunk().await? {
+        file.write_all(&item).await?;
+        hasher.update(&item);
+        downloaded += item.len() as u64;
+
+        if let Some((app, model_id)) = progress {
+            if downloaded - last_emitted >= PROGRESS_EMIT_INTERVAL_BYTES {
+                last_emitted = downloaded;
+                let _ = app.emit(
+                    "llm_download_progress",
+                    LlmDownloadProgress {
+                        model_id: model_id.to_string(),
+                        bytes_downloaded: downloaded,
+                        total_bytes,
+                    },
+                );
+            }
+        }
+    }
+    file.flush().await?;
+
+    if let Some((app, model_id)) = progress {
+        let _ = app.emit(
+            "llm_download_progress",
+            LlmDownloadProgress {
+                model_id: model_id.to_string(),
+                bytes_downloaded: downloaded,
+                total_bytes,
+            },
+        );
+    }
+
+    // Validate hash if expected_hash is a real (non-empty, non-placeholder) value.
+    if !expected_hash.is_empty() && !expected_hash.starts_with("PLACEHOLDER_") {
+        let actual_hash = format!("{:x}", hasher.finalize());
+        if actual_hash != expected_hash {
+            fs::remove_file(dest_path).await.ok();
+            return Err(anyhow::anyhow!(
+                "SHA-256 validation failed. Expected: {}, got: {}",
+                expected_hash,
+                actual_hash
+            ));
+        }
+        // Marks this exact file as hash-verified so `get_model_path` can
+        // trust it on a cheap existence check instead of re-hashing a
+        // multi-GB file on every startup. A download interrupted by a
+        // crash/network drop never reaches this line, so a corrupt partial
+        // file is never marked verified even though it's left on disk.
+        fs::write(verified_marker_path(dest_path), &actual_hash).await.ok();
+    }
+
+    Ok(())
+}
+
+fn verified_marker_path(dest_path: &Path) -> PathBuf {
+    let mut marker = dest_path.as_os_str().to_owned();
+    marker.push(".verified");
+    PathBuf::from(marker)
+}
+
+/// A model file that's just present on disk isn't necessarily usable --
+/// an interrupted/crashed download can leave a truncated `.gguf` that
+/// `llama-server` will only discover is broken once it's already spawned
+/// (`tensor data is not within the file bounds`), crashing Layer 6
+/// extraction for every email until someone notices. `download_file_with_hash`
+/// writes a `.verified` marker once a download's SHA-256 has actually been
+/// checked, so a marker's presence is trusted outright. Its absence doesn't
+/// necessarily mean corruption though -- installs from before this marker
+/// existed are real and shouldn't be forced through a redundant multi-GB
+/// redownload, so those fall back to a cheap size sanity check: a truncated
+/// download is drastically undersized (this app's real-world case was 302MB
+/// against an ~9GB model), not off by a few percent.
+pub fn get_model_path(app_dir: &Path, model_id: &str) -> Option<PathBuf> {
+    let path = app_dir.join("models").join(format!("{}.gguf", model_id));
+    if !path.exists() {
+        return None;
+    }
+    if verified_marker_path(&path).exists() {
+        return Some(path);
+    }
+
+    const MIN_FRACTION_OF_EXPECTED_SIZE: f64 = 0.5;
+    let expected_bytes = get_available_models()
+        .into_iter()
+        .find(|m| m.id == model_id)
+        .map(|m| m.approx_size_gb * 1_000_000_000.0);
+    let Some(expected_bytes) = expected_bytes else {
+        // Unknown model id (not in the current catalog) -- nothing to
+        // compare against, fall back to trusting existence as before.
+        return Some(path);
+    };
+
+    match std::fs::metadata(&path) {
+        Ok(meta) if (meta.len() as f64) >= expected_bytes * MIN_FRACTION_OF_EXPECTED_SIZE => {
+            Some(path)
+        }
+        Ok(meta) => {
+            tracing::error!(
+                model_id,
+                actual_bytes = meta.len(),
+                expected_bytes = expected_bytes as u64,
+                "model file is drastically undersized -- likely a truncated/corrupt download, refusing to load it"
+            );
+            None
+        }
+        Err(_) => None,
+    }
+}
+
+/// Default active model when `local_profile.llm_model` is unset — matches
+/// the frontend's own `localStorage.getItem('llm_model') || 'gemma4_12b'`
+/// default (`src/pages/Settings.tsx`), so an unconfigured backend and an
+/// unconfigured frontend agree on the same model without either side having
+/// to special-case "nothing chosen yet."
+pub const DEFAULT_ACTIVE_MODEL_ID: &str = "gemma4_12b";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_ids_and_filenames_agree_with_ladder_layer() {
+        // Regression test for the exact bug this fix addresses: ladder.rs's
+        // Layer6LlmLayer must resolve to a real catalog id, never a
+        // hardcoded string that silently drifts from this list.
+        let models = get_available_models();
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert!(ids.contains(&DEFAULT_ACTIVE_MODEL_ID));
+    }
+
+    #[test]
+    fn every_catalog_entry_has_a_real_non_placeholder_artifact() {
+        for model in get_available_models() {
+            assert!(
+                !model.gguf_url.starts_with("PLACEHOLDER_"),
+                "{} still has a placeholder gguf_url",
+                model.id
+            );
+            assert_eq!(
+                model.expected_sha256.len(),
+                64,
+                "{} expected_sha256 is not a 64-char hex sha256",
+                model.id
+            );
+            assert!(
+                model.expected_sha256.chars().all(|c| c.is_ascii_hexdigit()),
+                "{} expected_sha256 contains non-hex characters",
+                model.id
+            );
+        }
+    }
+
+    fn temp_models_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("dinero_llm_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("models")).unwrap();
+        dir
+    }
+
+    /// Regression test for the field bug this fix addresses: a truncated
+    /// download (real-world case was 302MB against an ~9GB expected model)
+    /// left on disk with no `.verified` marker must not be handed to
+    /// `llama-server` as if it were usable.
+    #[test]
+    fn get_model_path_rejects_drastically_undersized_unverified_file() {
+        let app_dir = temp_models_dir();
+        let model_path = app_dir.join("models").join("gemma4_12b.gguf");
+        std::fs::write(&model_path, vec![0u8; 1024]).unwrap(); // far below ~9GB, no .verified marker
+
+        assert!(get_model_path(&app_dir, "gemma4_12b").is_none());
+    }
+
+    /// A `.verified` marker (written only after a real SHA-256 match --
+    /// see `download_file_with_hash`) must be trusted outright, even for a
+    /// file too small to pass the size heuristic on its own -- the marker
+    /// is stronger evidence than a size guess.
+    #[test]
+    fn get_model_path_trusts_verified_marker_regardless_of_size() {
+        let app_dir = temp_models_dir();
+        let model_path = app_dir.join("models").join("gemma4_12b.gguf");
+        std::fs::write(&model_path, vec![0u8; 1024]).unwrap();
+        std::fs::write(verified_marker_path(&model_path), "somehash").unwrap();
+
+        assert_eq!(
+            get_model_path(&app_dir, "gemma4_12b"),
+            Some(model_path)
+        );
+    }
+
+    /// Installs from before the `.verified` marker existed are real,
+    /// correctly-downloaded models and must not be forced through a
+    /// redundant multi-GB redownload just because the marker is missing.
+    #[test]
+    fn get_model_path_accepts_correctly_sized_unmarked_legacy_file() {
+        let app_dir = temp_models_dir();
+        let model_path = app_dir.join("models").join("gemma4_12b.gguf");
+        let approx_bytes = (get_available_models()
+            .into_iter()
+            .find(|m| m.id == "gemma4_12b")
+            .unwrap()
+            .approx_size_gb
+            * 1_000_000_000.0) as u64;
+        // Sparse file via `set_len` -- a real multi-GB write here would make
+        // this test itself slow and disk-hungry; only the reported length
+        // matters to the size-heuristic under test, not real file content.
+        let file = std::fs::File::create(&model_path).unwrap();
+        file.set_len(approx_bytes).unwrap();
+
+        assert_eq!(
+            get_model_path(&app_dir, "gemma4_12b"),
+            Some(model_path)
+        );
+    }
+}

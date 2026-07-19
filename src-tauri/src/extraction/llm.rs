@@ -1,17 +1,19 @@
 use super::ladder::ExtractionResult;
-use anyhow::{anyhow, Result};
-use candle_core::{Device, Tensor};
-use candle_transformers::generation::LogitsProcessor;
-use candle_transformers::models::quantized_llama as model;
 use serde::Deserialize;
-use std::panic;
 use std::path::Path;
-use tokenizers::Tokenizer;
 use tracing::{debug, error};
 
+/// Runs inference via the `llama_sidecar` process (llama.cpp's
+/// `llama-server`), not in-process -- no released `candle-transformers`
+/// version has a loader for either of this catalog's actual GGUF
+/// architectures (Gemma 4's `"gemma4"` tag; Qwen3.6's Gated-DeltaNet-hybrid
+/// MoE), and the crash/OOM isolation a separate OS process gives is
+/// strictly better than the old `catch_unwind`-around-an-OS-thread approach
+/// anyway (a genuine OOM there could still take down this process; a
+/// `llama-server` OOM can't).
 pub struct LlmEngine {
-    model_path: std::path::PathBuf,
-    tokenizer_path: std::path::PathBuf,
+    app_dir: std::path::PathBuf,
+    model_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -25,17 +27,24 @@ struct LlmJsonOutput {
 }
 
 impl LlmEngine {
-    pub fn new(model_path: &Path, tokenizer_path: &Path) -> Self {
+    pub fn new(app_dir: &Path, model_id: &str) -> Self {
         Self {
-            model_path: model_path.to_path_buf(),
-            tokenizer_path: tokenizer_path.to_path_buf(),
+            app_dir: app_dir.to_path_buf(),
+            model_id: model_id.to_string(),
         }
     }
 
-    /// Generates a constrained prompt for extraction
-    pub fn generate_prompt(body_text: &str) -> String {
+    /// Generates a constrained prompt for extraction. `bank_name` is
+    /// whatever Gate 1 already resolved the sender to (e.g. "HDFC Bank", or
+    /// "Unknown Bank" for the subject-rescue path) -- previously available
+    /// to every caller but never actually included in the prompt, even
+    /// though the model can use it as real context (bank-specific phrasing
+    /// conventions, which fields that bank typically states) rather than
+    /// extracting blind.
+    pub fn generate_prompt(bank_name: &str, body_text: &str) -> String {
         format!(
-            "Extract the following fields from the email body. Return ONLY valid JSON and nothing else.\n\
+            "Extract the following fields from a bank transaction alert email sent by {bank_name}. \
+             Return ONLY valid JSON and nothing else.\n\
              Fields:\n\
              - amount: number (e.g., 1500.50)\n\
              - currency: string (e.g., \"INR\", \"USD\")\n\
@@ -45,10 +54,9 @@ impl LlmEngine {
              - reference_id: string (e.g., \"1234567890\")\n\n\
              Email Body:\n\
              \"\"\"\n\
-             {}\n\
+             {body_text}\n\
              \"\"\"\n\
-             JSON Output:",
-            body_text
+             JSON Output:"
         )
     }
 
@@ -58,39 +66,53 @@ impl LlmEngine {
     /// persistence in).
     const INFERENCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-    /// Executes the LLM with an OOM guard via `catch_unwind`, a hard
-    /// timeout, and a source-text sanity check on the result.
-    pub fn extract(&self, body_text: &str) -> Option<ExtractionResult> {
-        let prompt = Self::generate_prompt(body_text);
-        let model_path = self.model_path.clone();
-        let tokenizer_path = self.tokenizer_path.clone();
+    /// Runs the completion against the `llama_sidecar` server (starting it
+    /// first if needed), bounded by a hard timeout, then a source-text
+    /// sanity check on the result. OOM/crash isolation now comes from
+    /// `llama-server` being a separate OS process (see the struct-level doc
+    /// comment) rather than an in-process `catch_unwind`.
+    pub async fn extract(&self, bank_name: &str, body_text: &str) -> Option<ExtractionResult> {
+        let prompt = Self::generate_prompt(bank_name, body_text);
 
-        // Run the heavy lifting in a blocking thread to avoid blocking the
-        // async executor and to catch panics (like OOM or device errors)
-        // safely. A channel (rather than `JoinHandle::join()`) is what makes
-        // the timeout below possible: Rust has no safe way to forcibly kill
-        // a running thread, so a slow/hung inference keeps running in the
-        // background after this function returns its timeout `None` — but
-        // the caller is never blocked past `INFERENCE_TIMEOUT`, which is the
-        // actual requirement.
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let res = panic::catch_unwind(|| {
-                Self::run_inference(&model_path, &tokenizer_path, &prompt)
-            });
-            let result: Result<String> = match res {
-                Ok(Ok(output)) => Ok(output),
-                Ok(Err(e)) => Err(anyhow!("LLM Inference failed: {}", e)),
-                Err(_) => Err(anyhow!("LLM Inference panicked (possible OOM)")),
-            };
-            let _ = tx.send(result);
-        });
+        let mut retry_delay = std::time::Duration::from_millis(1000);
+        let max_delay = std::time::Duration::from_millis(2000);
+        let max_total_wait = std::time::Duration::from_secs(120);
+        let start_time = std::time::Instant::now();
 
-        let result = Self::wait_with_timeout(rx, Self::INFERENCE_TIMEOUT);
+        let raw_output = loop {
+            let result = tokio::time::timeout(
+                Self::INFERENCE_TIMEOUT,
+                crate::llama_sidecar::complete(&self.app_dir, &self.model_id, &prompt),
+            )
+            .await;
 
-        match result {
-            Some(Ok(json_str)) => {
-                let parsed = self.parse_json_to_result(&json_str)?;
+            match result {
+                Ok(Ok(output)) => break Some(output),
+                Ok(Err(e)) => {
+                    let msg = e.to_string();
+                    if (msg.contains("starting") || msg.contains("try again shortly"))
+                        && start_time.elapsed() < max_total_wait
+                    {
+                        tokio::time::sleep(retry_delay).await;
+                        retry_delay = std::cmp::min(retry_delay * 2, max_delay);
+                        continue;
+                    }
+                    error!("Layer 6 LLM Failure: {}", e);
+                    break None;
+                }
+                Err(_) => {
+                    error!(
+                        "Layer 6 LLM Failure: inference exceeded {:?} timeout",
+                        Self::INFERENCE_TIMEOUT
+                    );
+                    break None;
+                }
+            }
+        };
+
+        match raw_output {
+            Some(raw) => {
+                let parsed = self.parse_json_to_result(&raw)?;
                 if Self::validate_against_source(&parsed, body_text) {
                     Some(parsed)
                 } else {
@@ -98,41 +120,24 @@ impl LlmEngine {
                     None
                 }
             }
-            Some(Err(e)) => {
-                error!("Layer 6 LLM Failure: {}", e);
-                None
-            }
-            None => {
-                error!(
-                    "Layer 6 LLM Failure: inference exceeded {:?} timeout",
-                    Self::INFERENCE_TIMEOUT
-                );
-                None
-            }
+            None => None,
         }
-    }
-
-    /// Blocks on `rx` for up to `timeout`, returning `None` rather than
-    /// waiting indefinitely. Factored out from `extract()` so the timeout
-    /// behavior itself is directly testable without a real Candle model —
-    /// see `test_llm_timeout_routes_to_unassigned`.
-    fn wait_with_timeout<T: Send + 'static>(
-        rx: std::sync::mpsc::Receiver<T>,
-        timeout: std::time::Duration,
-    ) -> Option<T> {
-        rx.recv_timeout(timeout).ok()
     }
 
     /// Doc 30 TASK-TXN-006: "sanity-check values against the source text via
     /// substring/fuzzy matching; reject anything malformed or containing
     /// fabricated fields." A syntactically valid JSON object is not enough —
-    /// checks only `merchant_raw` and `reference_id` (case-insensitive
-    /// substring of the original email body), the free-text/identifier
-    /// fields an LLM could plausibly invent a plausible-looking value for.
-    /// `amount`/`currency`/`direction` are left unchecked here: they're
-    /// already schema-constrained by `LlmJsonOutput`'s types, and formatting
-    /// differences (e.g. "1,500.50" vs "1500.5") would make a substring
-    /// check on them fragile rather than a real hallucination guard.
+    /// checks `merchant_raw`, `reference_id` (case-insensitive substring of
+    /// the original email body) and `amount_minor` (numeral-tolerant
+    /// substring, see `amount_appears_in_source`). `amount` was previously
+    /// the one unchecked field here despite being the single most
+    /// safety-critical value in a finance pipeline -- a hallucinated
+    /// merchant name is a data-quality problem, a hallucinated amount is a
+    /// wrong-dollar-figure transaction. `currency`/`direction` stay
+    /// unchecked: both are closed, small enum-like vocabularies (a handful
+    /// of ISO currency codes / "credit"/"debit") where a substring check
+    /// adds little -- there's no meaningfully "fabricated" value to catch
+    /// the way there is for free-text merchant/reference or a numeral.
     pub fn validate_against_source(result: &ExtractionResult, source_body: &str) -> bool {
         let source_lower = source_body.to_lowercase();
         if let Some(merchant) = &result.merchant_raw {
@@ -145,66 +150,38 @@ impl LlmEngine {
                 return false;
             }
         }
+        if let Some(amount_minor) = result.amount_minor {
+            if !Self::amount_appears_in_source(amount_minor, source_body) {
+                return false;
+            }
+        }
         true
     }
 
-    /// Performs the actual Candle inference. This assumes a Llama-like architecture for the GGUF.
-    fn run_inference(
-        model_path: &Path,
-        tokenizer_path: &Path,
-        prompt: &str,
-    ) -> Result<String> {
-        // Load tokenizer
-        let tokenizer = Tokenizer::from_file(tokenizer_path)
-            .map_err(|e| anyhow::anyhow!("Failed to load tokenizer: {}", e))?;
-
-        // Setup CPU Device (safest fallback)
-        let device = Device::Cpu;
-
-        // Load GGUF file
-        let mut file = std::fs::File::open(model_path)?;
-        let content = candle_core::quantized::gguf_file::Content::read(&mut file)?;
-        
-        let mut model = model::ModelWeights::from_gguf(content, &mut file, &device)?;
-
-        let tokens = tokenizer
-            .encode(prompt, true)
-            .map_err(|e| anyhow::anyhow!("Tokenizer encode failed: {}", e))?
-            .get_ids()
-            .to_vec();
-
-        let mut logits_processor = LogitsProcessor::new(299792458, None, None);
-        let mut all_tokens = vec![];
-        let mut next_token = *tokens.last().unwrap();
-        let mut token_str = String::new();
-
-        // Pre-fill
-        let input = Tensor::new(tokens.as_slice(), &device)?.unsqueeze(0)?;
-        let _ = model.forward(&input, 0)?; // Initial prefill
-
-        // Generate loop (capped to 256 tokens for JSON)
-        for index in 0..256 {
-            let input = Tensor::new(&[next_token], &device)?.unsqueeze(0)?;
-            let logits = model.forward(&input, tokens.len() + index)?;
-            let logits = logits.squeeze(0)?.squeeze(0)?;
-            next_token = logits_processor.sample(&logits)?;
-            all_tokens.push(next_token);
-
-            if let Some(t) = tokenizer.id_to_token(next_token) {
-                token_str.push_str(&t);
-            }
-
-            // Stop if we see an end token or closing brace if we think we're done
-            if next_token == 2 || next_token == 0 {
-                break;
+    /// Whether `amount_minor` (in minor units, e.g. paise) appears
+    /// anywhere in `source_body` as a plain numeral -- tolerant of
+    /// thousands-separator commas ("1,500.50" vs "1500.50") and of a
+    /// whole-rupee amount being printed without decimals at all ("500" for
+    /// what this pipeline stores as 50000 minor units), the two formatting
+    /// variances real bank emails actually exhibit. Not a general
+    /// currency-formatting parser -- just enough tolerance that a genuine
+    /// value isn't rejected by this guard for cosmetic reasons, while a
+    /// truly fabricated amount (absent from the source in any form) still
+    /// is.
+    fn amount_appears_in_source(amount_minor: i64, source_body: &str) -> bool {
+        let normalized_source: String = source_body.chars().filter(|c| *c != ',').collect();
+        let major = amount_minor as f64 / 100.0;
+        let with_decimals = format!("{major:.2}");
+        if normalized_source.contains(&with_decimals) {
+            return true;
+        }
+        if amount_minor % 100 == 0 {
+            let whole = format!("{}", amount_minor / 100);
+            if normalized_source.contains(&whole) {
+                return true;
             }
         }
-
-        let decoded = tokenizer
-            .decode(&all_tokens, true)
-            .map_err(|e| anyhow::anyhow!("Decode failed: {}", e))?;
-        
-        Ok(decoded)
+        false
     }
 
     /// Parses the raw text output from the LLM, extracting JSON and converting to ExtractionResult.
@@ -273,7 +250,7 @@ mod tests {
     /// Doc 30 TASK-TXN-006 acceptance test.
     #[test]
     fn test_llm_output_schema_validation_rejects_malformed_json() {
-        let engine = LlmEngine::new(&PathBuf::from("dummy"), &PathBuf::from("dummy"));
+        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
         let malformed = r#"{ "amount": 50.0, "currency": "USD" "merchant": "Netflix" "#;
         assert!(engine.parse_json_to_result(malformed).is_none());
 
@@ -331,33 +308,89 @@ mod tests {
         ));
     }
 
-    /// Doc 30 TASK-TXN-006 acceptance test. Exercising the real Candle
-    /// inference path would require a real `.gguf` model and GPU/CPU time
-    /// this environment doesn't have; this proves the actual mechanism
-    /// `extract()` relies on (`wait_with_timeout`, a channel `recv_timeout`
-    /// wrapper) genuinely never blocks past its deadline, using a slow dummy
-    /// sender in place of real inference — the same substitution pattern
-    /// this codebase already uses elsewhere for infra it doesn't have
-    /// locally (e.g. `/bin/sleep` standing in for a hung pdfium process).
+    /// Regression test: `amount` was previously the one field
+    /// `validate_against_source` didn't check at all, despite being the
+    /// single most safety-critical value in a finance pipeline. A
+    /// hallucinated amount absent from the source in any numeral form must
+    /// now be rejected.
     #[test]
-    fn test_llm_timeout_routes_to_unassigned() {
-        let (tx, rx) = std::sync::mpsc::channel::<Result<String>>();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(300));
-            let _ = tx.send(Ok("late result".to_string()));
-        });
+    fn test_llm_output_rejects_hallucinated_amount() {
+        let source_body = "You spent Rs 500 on your HDFC Bank card ending 1234.";
+
+        let hallucinated_amount = ExtractionResult {
+            amount_minor: Some(999999), // Rs 9,999.99 -- nowhere in the source
+            ..Default::default()
+        };
+        assert!(
+            !LlmEngine::validate_against_source(&hallucinated_amount, source_body),
+            "an amount absent from the source body in any numeral form must be rejected"
+        );
+    }
+
+    /// The amount check must tolerate the two formatting variances real
+    /// bank emails actually exhibit: thousands-separator commas, and a
+    /// whole-rupee amount printed with no decimals at all.
+    #[test]
+    fn test_llm_output_accepts_amount_formatting_variance() {
+        let comma_source = "You spent Rs 1,500.50 on your HDFC Bank card ending 1234.";
+        let whole_rupee_source = "You spent Rs 500 on your HDFC Bank card ending 1234.";
+
+        let with_commas = ExtractionResult {
+            amount_minor: Some(150050), // Rs 1500.50
+            ..Default::default()
+        };
+        assert!(LlmEngine::validate_against_source(
+            &with_commas,
+            comma_source
+        ));
+
+        let whole_rupee = ExtractionResult {
+            amount_minor: Some(50000), // Rs 500.00, printed as bare "500"
+            ..Default::default()
+        };
+        assert!(LlmEngine::validate_against_source(
+            &whole_rupee,
+            whole_rupee_source
+        ));
+    }
+
+    /// `bank_name` was previously available to every caller but never
+    /// actually included in the generated prompt.
+    #[test]
+    fn test_prompt_includes_bank_name() {
+        let prompt = LlmEngine::generate_prompt("HDFC Bank", "You spent Rs 500 at Amazon.");
+        assert!(
+            prompt.contains("HDFC Bank"),
+            "prompt must include the bank name Gate 1 already resolved: {prompt}"
+        );
+    }
+
+    /// Doc 30 TASK-TXN-006 acceptance test. Exercising real `llama-server`
+    /// inference would require a running sidecar and a real `.gguf` model
+    /// this environment doesn't have; this proves the actual mechanism
+    /// `extract()` relies on (`tokio::time::timeout` around the sidecar
+    /// call) genuinely cuts a slow response off rather than waiting
+    /// indefinitely — the same substitution pattern this codebase already
+    /// uses elsewhere for infra it doesn't have locally (e.g. `/bin/sleep`
+    /// standing in for a hung pdfium process).
+    #[tokio::test]
+    async fn test_llm_timeout_routes_to_unassigned() {
+        let slow_call = async {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            "late result".to_string()
+        };
 
         let start = std::time::Instant::now();
-        let result = LlmEngine::wait_with_timeout(rx, std::time::Duration::from_millis(50));
+        let result = tokio::time::timeout(std::time::Duration::from_millis(50), slow_call).await;
         let elapsed = start.elapsed();
 
         assert!(
-            result.is_none(),
-            "a computation that outlives the timeout must yield None, not the late result"
+            result.is_err(),
+            "a computation that outlives the timeout must yield a timeout error, not the late result"
         );
         assert!(
             elapsed < std::time::Duration::from_millis(250),
-            "wait_with_timeout must not block anywhere near as long as the slow computation \
+            "tokio::time::timeout must not block anywhere near as long as the slow computation \
              takes, got {:?}",
             elapsed
         );
