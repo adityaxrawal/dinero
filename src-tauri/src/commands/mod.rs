@@ -2,7 +2,6 @@ pub mod network;
 use crate::statements::{
     duplicate_check::{check_file_hash_duplicate, DuplicateCheckResult},
     events,
-    password::{is_pdf_unencrypted, try_all_stored_passwords, PasswordResolutionResult},
     validator::validate_and_hash,
 };
 use tauri::{Emitter, Manager};
@@ -383,71 +382,41 @@ async fn upload_one_statement(
 
     // ── Step 5: Password resolution ───────────────────────────────────────────
     //
-    // If PDF is unencrypted: proceed immediately.
-    // If encrypted: try stored passwords (AES-256-GCM decrypted from DB).
-    // If all stored passwords fail: create unprocessed_statements row → emit password_required event.
-    // The password submit flow continues via statements_submit_password.
+    // Doc 15 §2 principle 7 / Doc 12 §7.2: manual upload is a Statement Queue
+    // job, subject to the same bounded 5-concurrent cap as email-detected
+    // statements — there is no separate, weaker-validated path for uploads
+    // (§7.6.10). `stmt_id` is minted once, up front, and reused whichever way
+    // resolution goes (queued row vs. awaiting_password row), matching Doc 18
+    // §4.7's crash-recovery invariant either way.
     //
-    // Real bug fixed here (Doc 30 TASK-STMT-010): the instrument this PDF
-    // belongs to isn't known yet at this point in the pipeline — metadata
-    // extraction (Step 7, after unlocking) is what discovers it — so a
-    // per-instrument stored-password lookup can never have a real
-    // `instrument_id` to scope by. Scans across every instrument's stored
-    // passwords instead, which is what actually makes "try stored passwords
-    // before prompting" work at all for a fresh upload.
-    let pdf_is_encrypted = !is_pdf_unencrypted(&bytes).await;
-    if pdf_is_encrypted {
-        let pw_result = try_all_stored_passwords(&bytes, pool_ref)
-            .await
-            .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
-
-        match pw_result {
-            PasswordResolutionResult::NotEncrypted => {
-                // Shouldn't happen — proceed
-            }
-            PasswordResolutionResult::UnlockedWithStored(_) => {
-                tracing::info!("PDF unlocked with stored password");
-            }
-            PasswordResolutionResult::PromptRequired => {
-                // Create unprocessed_statements row and notify UI
-                let stmt_id = uuid::Uuid::new_v4().to_string();
-                create_awaiting_password_row(&stmt_id, &file_hash, &filename, pool_ref)
-                    .await
-                    .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-
-                // H3 fix: hold the bytes in memory (never on disk) so
-                // statements_submit_password can actually re-check the
-                // password against the real PDF instead of an empty slice.
-                pending_bytes.insert(stmt_id.clone(), bytes.clone()).await;
-
-                let payload = serde_json::json!({
-                    "statement_id": stmt_id,
-                    "filename": filename,
-                });
-                events::emit(events::PASSWORD_REQUIRED, payload.clone());
-                app.emit(events::PASSWORD_REQUIRED, payload).ok();
-
-                return Ok(UploadResult {
-                    statement_id: stmt_id,
-                    filename,
-                    status: "awaiting_password".to_string(),
-                });
-            }
-            _ => {}
+    // `resolve_statement_password` is the single choke point shared with the
+    // email-detected entry points (`historical_scan`/`polling`) — see its own
+    // doc comment for the bug this replaced (a resolved stored password was
+    // previously discarded before parsing, and the email path never resolved
+    // a password at all).
+    let stmt_id = uuid::Uuid::new_v4().to_string();
+    let resolved_password = match crate::statements::password::resolve_statement_password(
+        &stmt_id, &bytes, &filename, &file_hash, pool_ref, &app, &pending_bytes, None,
+    )
+    .await
+    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+    {
+        crate::statements::password::StatementPasswordResolution::Proceed(password) => password,
+        crate::statements::password::StatementPasswordResolution::PromptCreated => {
+            return Ok(UploadResult {
+                statement_id: stmt_id,
+                filename,
+                status: "awaiting_password".to_string(),
+            });
         }
-    }
+    };
 
     // ── Steps 6–15: Parse → Metadata → Rows → Reconcile → Classify → Cleanup ─
-    // Doc 15 §2 principle 7 / Doc 12 §7.2: manual upload is a Statement Queue job,
-    // subject to the same bounded 5-concurrent cap as email-detected statements —
-    // there is no separate, weaker-validated path for uploads (§7.6.10).
-    //
     // Doc 18 §4.7 / Doc 19 §9.1: the `statements` row is written in `queued`
     // state right here, immediately before enqueueing — before any parsing
     // begins, satisfying the crash-recovery invariant — and the command
     // returns immediately after enqueueing rather than blocking on the parse
     // (Doc 19 §3.6: expensive operations are async, never block the IPC call).
-    let stmt_id = uuid::Uuid::new_v4().to_string();
     {
         let conn = pool_ref
             .get()
@@ -469,6 +438,7 @@ async fn upload_one_statement(
         file_hash: file_hash.clone(),
         stmt_id: stmt_id.clone(),
         batch_progress,
+        password: resolved_password,
     };
     if queues.statement_tx.send(job).await.is_err() {
         return Err(crate::error::AppError::Unknown(
@@ -487,6 +457,12 @@ async fn upload_one_statement(
         filename,
         status: "queued".to_string(),
     })
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub enum PipelineOutcome {
+    Parsed(String),
+    BlockedAwaitingInstrument(String),
 }
 
 /// Runs steps 6–14 of the PDF statement processing pipeline.
@@ -519,7 +495,7 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
     confirmed_instrument: Option<ConfirmedInstrument>,
     password: Option<&str>,
     stmt_id: Option<String>,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<PipelineOutcome> {
     use crate::statements::{
         bill_classifier,
         duplicate_check::{check_billing_cycle_duplicate, DuplicateCheckResult},
@@ -579,7 +555,7 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
                         anyhow::anyhow!("DB error creating awaiting_instrument row: {}", e)
                     })?;
                 pending_bytes
-                    .insert(unprocessed_id.clone(), bytes.to_vec())
+                    .insert(unprocessed_id.clone(), bytes.to_vec(), password.map(|s| s.to_string()))
                     .await;
                 let payload = serde_json::json!({
                     "statement_id": unprocessed_id,
@@ -595,7 +571,7 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
                     unprocessed_id,
                     _filename
                 );
-                return Ok(unprocessed_id);
+                return Ok(PipelineOutcome::BlockedAwaitingInstrument(unprocessed_id));
             }
         };
         let masked = match meta.masked_identifier.clone() {
@@ -609,7 +585,7 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
                         anyhow::anyhow!("DB error creating awaiting_instrument row: {}", e)
                     })?;
                 pending_bytes
-                    .insert(unprocessed_id.clone(), bytes.to_vec())
+                    .insert(unprocessed_id.clone(), bytes.to_vec(), password.map(|s| s.to_string()))
                     .await;
                 let payload = serde_json::json!({
                     "statement_id": unprocessed_id,
@@ -627,7 +603,7 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
                     unprocessed_id,
                     _filename
                 );
-                return Ok(unprocessed_id);
+                return Ok(PipelineOutcome::BlockedAwaitingInstrument(unprocessed_id));
             }
         };
         // Instrument type: default "credit_card" now that both issuer and masked are confirmed by gate.
@@ -764,41 +740,7 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
 
     // ── Step 15 note: Caller drops raw bytes after this function returns ──────
 
-    Ok(stmt_id)
-}
-
-/// Creates an `unprocessed_statements` row with status = 'awaiting_password' (Doc 10 §7.2).
-async fn create_awaiting_password_row(
-    statement_id: &str,
-    file_hash: &str,
-    filename: &str,
-    pool: &deadpool_sqlite::Pool,
-) -> anyhow::Result<()> {
-    let _id = uuid::Uuid::new_v4().to_string();
-    let stmt_id = statement_id.to_string();
-    let source_json = serde_json::json!({
-        "file_hash": file_hash,
-        "filename": filename,
-    })
-    .to_string();
-
-    let conn = pool.get().await?;
-    conn.interact(move |c| {
-        c.execute(
-            "INSERT INTO unprocessed_statements \
-             (id, statement_source_json, failure_type, failure_reason, status) \
-             VALUES (?, ?, 'password_required', '', 'awaiting_password')",
-            rusqlite::params![stmt_id, source_json],
-        )
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!("DB interact error (create_awaiting_password_row): {}", e))??;
-
-    tracing::info!(
-        "Created awaiting_password row for statement_id='{}'",
-        statement_id
-    );
-    Ok(())
+    Ok(PipelineOutcome::Parsed(stmt_id))
 }
 
 /// Doc 30 TASK-STMT-002: "Every skip is logged to audit_log
@@ -941,7 +883,7 @@ pub async fn statements_confirm_instrument(
 
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
-    let bytes = pending_bytes.take(&statement_id).await.ok_or_else(|| {
+    let (bytes, saved_password) = pending_bytes.take(&statement_id).await.ok_or_else(|| {
         crate::error::AppError::Unknown(
             "This statement's session has expired or was already resolved — please re-upload the file".to_string(),
         )
@@ -996,13 +938,13 @@ pub async fn statements_confirm_instrument(
         &app,
         pending_bytes.inner(),
         Some(confirmed),
-        None,
+        saved_password.as_deref(),
         None,
     )
     .await;
 
     match result {
-        Ok(new_stmt_id) => {
+        Ok(PipelineOutcome::Parsed(new_stmt_id)) => {
             let conn = pool
                 .get()
                 .await
@@ -1034,6 +976,14 @@ pub async fn statements_confirm_instrument(
             Ok(serde_json::json!({
                 "status": "parsed",
                 "statement_id": new_stmt_id
+            }))
+        }
+        Ok(PipelineOutcome::BlockedAwaitingInstrument(unprocessed_id)) => {
+            // It should theoretically not happen here because we bypass the gate,
+            // but if it does, we return the unprocessed status.
+            Ok(serde_json::json!({
+                "status": "awaiting_instrument_confirmation",
+                "statement_id": unprocessed_id
             }))
         }
         Err(e) => {
@@ -1108,14 +1058,12 @@ async fn check_filename_billing_cycle_all_instruments(
 #[tauri::command]
 pub async fn statements_submit_password(
     statement_id: String,
-    instrument_id: String,
     password: String,
     app: tauri::AppHandle,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
     pending_bytes: tauri::State<'_, crate::statements::pending_bytes::PendingStatementBytes>,
 ) -> Result<serde_json::Value, crate::error::AppError> {
     crate::ipc::validation::validate_uuid("statement_id", &statement_id)?;
-    crate::ipc::validation::validate_uuid("instrument_id", &instrument_id)?;
     crate::ipc::validation::validate_non_empty("password", &password)?;
 
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
@@ -1128,14 +1076,13 @@ pub async fn statements_submit_password(
     // H3 fix: the real bytes, held in memory (never on disk) since the
     // original statements_upload call — `peek` so a wrong attempt doesn't
     // discard them before the next retry.
-    let pdf_bytes = pending_bytes.peek(&statement_id).await.ok_or_else(|| {
+    let (pdf_bytes, _) = pending_bytes.peek(&statement_id).await.ok_or_else(|| {
         crate::error::AppError::Unknown(
             "This statement's session has expired — please re-upload the file".to_string(),
         )
     })?;
 
     let result = try_user_password(
-        &instrument_id,
         &statement_id,
         &password,
         &pdf_bytes,
@@ -1199,7 +1146,7 @@ pub async fn statements_submit_password(
             .await;
 
             match pipeline_result {
-                Ok(new_stmt_id) => {
+                Ok(PipelineOutcome::Parsed(new_stmt_id)) => {
                     let conn = pool
                         .get()
                         .await
@@ -1218,6 +1165,21 @@ pub async fn statements_submit_password(
                     .map_err(|e| crate::error::AppError::Db(e.to_string()))?
                     .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
 
+                    // Save the password to the resolved instrument
+                    let pool_clone = pool.inner().clone();
+                    let resolved_id_for_instr = new_stmt_id.clone();
+                    let pwd_clone = password.clone();
+                    let conn_instr = pool.get().await.map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+                    if let Ok(Ok(instr_id)) = conn_instr.interact(move |c| {
+                        c.query_row(
+                            "SELECT instrument_id FROM statements WHERE id = ?",
+                            [&resolved_id_for_instr],
+                            |row| row.get::<_, String>(0)
+                        )
+                    }).await {
+                        crate::statements::password::save_password(&instr_id, &pwd_clone, &pool_clone).await.ok();
+                    }
+
                     app.emit(
                         events::PARSED,
                         serde_json::json!({ "statement_id": new_stmt_id, "filename": filename }),
@@ -1226,6 +1188,28 @@ pub async fn statements_submit_password(
                     Ok(serde_json::json!({
                         "status": "unlocked",
                         "statement_id": new_stmt_id
+                    }))
+                }
+                Ok(PipelineOutcome::BlockedAwaitingInstrument(unprocessed_id)) => {
+                    // Password unlocked it, but it got blocked by the Instrument Gate.
+                    // The old awaiting_password row should be deleted (or marked resolved?),
+                    // since run_parse_pipeline already created a NEW awaiting_instrument_confirmation row.
+                    let conn = pool
+                        .get()
+                        .await
+                        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+                    let orig_id = statement_id.clone();
+                    conn.interact(move |c| {
+                        // Mark the old password row as resolved, but since there's no statements row yet,
+                        // we can't link resolved_statement_id. We just delete it.
+                        let _ = crate::db::unprocessed_statements::delete(c, &orig_id);
+                    })
+                    .await
+                    .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+
+                    Ok(serde_json::json!({
+                        "status": "awaiting_instrument_confirmation",
+                        "statement_id": unprocessed_id
                     }))
                 }
                 Err(e) => {
@@ -1414,13 +1398,28 @@ pub async fn statements_retry_unprocessed(
         .unwrap_or_default();
 
     // Doc 15 Core Principle 4/10: raw PDFs are never persisted — if the
-    // bytes are no longer cached (the 30-minute pending_bytes TTL elapsed),
-    // there is genuinely nothing left to retry with; the user must re-upload.
-    let Some(pdf_bytes) = pending_bytes.peek(&statement_id).await else {
-        return Err(crate::error::AppError::Unknown(
-            "This statement's cached data has expired — please re-upload the file to retry"
-                .to_string(),
-        ));
+    // bytes are no longer cached (the 30-minute pending_bytes TTL elapsed,
+    // or the app restarted), there is genuinely nothing left to retry with.
+    //
+    // ROOT CAUSE FIX: for `awaiting_password` rows that survive an app restart,
+    // `pending_bytes` is empty (in-memory, reset on restart). Previously this
+    // path threw an INTERNAL_ERROR which the frontend showed as "session expired"
+    // inside the password modal — confusing because the user hadn't done anything
+    // wrong. Now we return a structured `bytes_expired` status so the UI can
+    // display a clear "please re-upload this file" message instead.
+    let Some((pdf_bytes, _)) = pending_bytes.peek(&statement_id).await else {
+        tracing::warn!(
+            "statements_retry_unprocessed: bytes not in cache for statement_id='{}' \
+             (app likely restarted) — returning bytes_expired",
+            statement_id
+        );
+        return Ok(serde_json::json!({
+            "status": "bytes_expired",
+            "statement_id": statement_id,
+            "filename": filename,
+            "message": "This statement's PDF is no longer in memory (the app may have restarted). \
+                        Please re-upload the file to continue."
+        }));
     };
 
     let stored_result = try_all_stored_passwords(&pdf_bytes, pool.inner())
@@ -1453,7 +1452,7 @@ pub async fn statements_retry_unprocessed(
             .await;
 
             match pipeline_result {
-                Ok(new_stmt_id) => {
+                Ok(PipelineOutcome::Parsed(new_stmt_id)) => {
                     let conn = pool
                         .get()
                         .await
@@ -1478,6 +1477,25 @@ pub async fn statements_retry_unprocessed(
                     )
                     .ok();
                     Ok(serde_json::json!({ "status": "unlocked", "statement_id": new_stmt_id }))
+                }
+                Ok(PipelineOutcome::BlockedAwaitingInstrument(unprocessed_id)) => {
+                    // Password unlocked it, but blocked by the Instrument Gate.
+                    // The old pending_retry row should be deleted.
+                    let conn = pool
+                        .get()
+                        .await
+                        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+                    let orig_id = statement_id.clone();
+                    conn.interact(move |c| {
+                        let _ = crate::db::unprocessed_statements::delete(c, &orig_id);
+                    })
+                    .await
+                    .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+
+                    Ok(serde_json::json!({
+                        "status": "awaiting_instrument_confirmation",
+                        "statement_id": unprocessed_id
+                    }))
                 }
                 Err(e) => {
                     tracing::error!(
@@ -1534,15 +1552,29 @@ fn group_unprocessed_by_status(
     let mut failed = Vec::new();
 
     for row in rows {
-        let filename = serde_json::from_str::<serde_json::Value>(&row.statement_source_json)
-            .ok()
+        let source_json = serde_json::from_str::<serde_json::Value>(&row.statement_source_json).ok();
+        let filename = source_json.as_ref()
             .and_then(|v| v["filename"].as_str().map(|s| s.to_string()))
             .unwrap_or_default();
+            
+        let sender = source_json.as_ref().and_then(|v| v["sender"].as_str().map(|s| s.to_string()));
+        let to = source_json.as_ref().and_then(|v| v["to"].as_str().map(|s| s.to_string()));
+        let subject = source_json.as_ref().and_then(|v| v["subject"].as_str().map(|s| s.to_string()));
+        let date = source_json.as_ref().and_then(|v| v["date"].as_str().map(|s| s.to_string()));
+        let snippet = source_json.as_ref().and_then(|v| v["snippet"].as_str().map(|s| s.to_string()));
+        let html = source_json.as_ref().and_then(|v| v["html"].as_str().map(|s| s.to_string()));
+
         let entry = serde_json::json!({
             "statement_id": row.id,
             "filename": filename,
             "failure_type": row.failure_type,
             "failure_reason": row.failure_reason,
+            "sender": sender,
+            "to": to,
+            "subject": subject,
+            "date": date,
+            "snippet": snippet,
+            "html": html,
         });
         match row.status.as_str() {
             "awaiting_password" => awaiting_password.push(entry),
@@ -1920,7 +1952,11 @@ fn apply_transaction_field_update(
             // Doc 30 TASK-API-003 acceptance test: category changes must
             // write a feedback_log entry too, same as merchant.
             let _ = crate::reconciliation::audit::log_user_correction(
-                conn, tx_id, "category_id", &old_val, &cat,
+                conn,
+                tx_id,
+                "category_id",
+                &old_val,
+                &cat,
             );
         }
         new_category_id = Some(cat);
@@ -1954,7 +1990,8 @@ fn apply_transaction_field_update(
                             id: uuid::Uuid::new_v4().to_string(),
                             merchant_entity_id: existing.id,
                             alias_raw: old_val,
-                            alias_normalized: crate::extraction::merchant_normalizer::strip_noise_tokens(&merch),
+                            alias_normalized:
+                                crate::extraction::merchant_normalizer::strip_noise_tokens(&merch),
                             country_code: None,
                             issuer_name: None,
                             confidence: 1.0,
@@ -1981,7 +2018,10 @@ fn apply_transaction_field_update(
                                 id: uuid::Uuid::new_v4().to_string(),
                                 merchant_entity_id: new_merchant_id,
                                 alias_raw: old_val,
-                                alias_normalized: crate::extraction::merchant_normalizer::strip_noise_tokens(&merch),
+                                alias_normalized:
+                                    crate::extraction::merchant_normalizer::strip_noise_tokens(
+                                        &merch,
+                                    ),
                                 country_code: None,
                                 issuer_name: None,
                                 confidence: 1.0,
@@ -2350,16 +2390,24 @@ pub async fn transactions_get(
     conn.interact(move |c| {
         let transaction = crate::db::transactions::get_transaction(c, &id)
             .map_err(|e| crate::error::AppError::Db(e.to_string()))?
-            .ok_or_else(|| crate::error::AppError::Validation("transaction not found".to_string()))?;
-        let observations = crate::db::transaction_observations::get_observations_for_transaction(c, &id)
-            .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+            .ok_or_else(|| {
+                crate::error::AppError::Validation("transaction not found".to_string())
+            })?;
+        let observations =
+            crate::db::transaction_observations::get_observations_for_transaction(c, &id)
+                .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
         let mut match_decisions = Vec::new();
         for obs in &observations {
-            if let Ok(decisions) = crate::db::match_decisions::select_by_observation_id(c, &obs.id) {
+            if let Ok(decisions) = crate::db::match_decisions::select_by_observation_id(c, &obs.id)
+            {
                 match_decisions.extend(decisions);
             }
         }
-        Ok(TransactionDetail { transaction, observations, match_decisions })
+        Ok(TransactionDetail {
+            transaction,
+            observations,
+            match_decisions,
+        })
     })
     .await
     .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
@@ -2556,11 +2604,7 @@ pub async fn ipc_trigger_patch_sync(
 }
 
 #[tauri::command]
-pub fn log_frontend_event(
-    level: String,
-    message: String,
-    data: Option<serde_json::Value>,
-) {
+pub fn log_frontend_event(level: String, message: String, data: Option<serde_json::Value>) {
     let data_str = data.map(|d| format!("| Data: {}", d)).unwrap_or_default();
     match level.to_lowercase().as_str() {
         "error" => tracing::error!("FRONTEND: {} {}", message, data_str),
@@ -2640,10 +2684,15 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         data::reconciliation_clusters_list,
         data::reconciliation_clusters_get,
         data::reconciliation_get_unassigned_transactions,
+        data::reconciliation_dismiss_unassigned_transaction,
         data::reconciliation_clusters_unmerge,
         data::reconciliation_clusters_bulk_resolve,
         llm::llm_get_available_models,
         llm::llm_download_model,
+        llm::llm_delete_model,
+        llm::llm_get_downloaded_models,
+        llm::llm_get_active_model,
+        llm::llm_set_active_model,
         data::instruments_list,
         data::instruments_get,
         data::instruments_create,
@@ -2704,7 +2753,9 @@ mod tests {
     /// literal tauri-command attribute text in this comment -- it would
     /// match its own scan below and self-report as an offender.)
     fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
@@ -2720,7 +2771,10 @@ mod tests {
         let src_dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
         let mut files = Vec::new();
         collect_rs_files(src_dir, &mut files);
-        assert!(!files.is_empty(), "the source scan itself must find files, or this test is vacuous");
+        assert!(
+            !files.is_empty(),
+            "the source scan itself must find files, or this test is vacuous"
+        );
 
         // Built via `format!` rather than written as a literal in this file
         // -- if the literal substring appeared here, this test would find
@@ -2739,7 +2793,10 @@ mod tests {
                 // Capture from the marker up to the function's opening `{`
                 // (the full attribute + signature block, matching
                 // test_no_command_returns_pdf_bytes' own block-capture style).
-                let Some(brace_offset) = src[abs_marker..].find("{\n").or_else(|| src[abs_marker..].find("{ ")) else {
+                let Some(brace_offset) = src[abs_marker..]
+                    .find("{\n")
+                    .or_else(|| src[abs_marker..].find("{ "))
+                else {
                     search_from = abs_marker + marker.len();
                     continue;
                 };
@@ -2781,7 +2838,9 @@ mod tests {
         let needle_generic = format!("fn {name}<");
         for path in &files {
             let src = std::fs::read_to_string(path).ok()?;
-            let found = src.find(&needle_plain).or_else(|| src.find(&needle_generic));
+            let found = src
+                .find(&needle_plain)
+                .or_else(|| src.find(&needle_generic));
             if let Some(fn_pos) = found {
                 let brace_start = src[fn_pos..].find('{')? + fn_pos;
                 let mut depth = 0i32;
@@ -2845,6 +2904,7 @@ mod tests {
             "reconciliation_clusters_resolve",
             "reconciliation_clusters_unmerge",
             "reconciliation_clusters_bulk_resolve",
+            "reconciliation_dismiss_unassigned_transaction",
             "correct_match",
             "trigger_reconciliation",
             "auth_google_start",
@@ -2863,7 +2923,9 @@ mod tests {
         for name in write_commands {
             match find_function_body(name) {
                 Some(body) if body.contains("assert_write_allowed") => {}
-                Some(_) => missing.push(format!("{name} (found, but no assert_write_allowed call)")),
+                Some(_) => {
+                    missing.push(format!("{name} (found, but no assert_write_allowed call)"))
+                }
                 None => missing.push(format!("{name} (function not found by the source scan)")),
             }
         }
@@ -2952,7 +3014,15 @@ mod tests {
     #[test]
     fn test_category_update_writes_feedback_log() {
         let conn = setup_tx_test_db();
-        apply_transaction_field_update(&conn, "tx_1", None, Some("cat_new".to_string()), None, None).unwrap();
+        apply_transaction_field_update(
+            &conn,
+            "tx_1",
+            None,
+            Some("cat_new".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
 
         let count: i64 = conn
             .query_row(
@@ -2964,7 +3034,11 @@ mod tests {
         assert_eq!(count, 1);
 
         let new_cat: String = conn
-            .query_row("SELECT category_id FROM transactions WHERE id = 'tx_1'", [], |r| r.get(0))
+            .query_row(
+                "SELECT category_id FROM transactions WHERE id = 'tx_1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(new_cat, "cat_new");
     }
@@ -2980,7 +3054,15 @@ mod tests {
         // per TASK-TXN-007/011's own established test-fixture precedent),
         // so a real brand name here would collide with seed data instead
         // of exercising the "genuinely new merchant" code path.
-        apply_transaction_field_update(&conn, "tx_1", Some("Acme Streaming".to_string()), None, None, None).unwrap();
+        apply_transaction_field_update(
+            &conn,
+            "tx_1",
+            Some("Acme Streaming".to_string()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
         let alias_count: i64 = conn
             .query_row(
@@ -2989,7 +3071,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(alias_count, 1, "the old raw merchant text must be recorded as a new alias");
+        assert_eq!(
+            alias_count, 1,
+            "the old raw merchant text must be recorded as a new alias"
+        );
 
         let (merchant, entity_id): (String, Option<String>) = conn
             .query_row(
@@ -2999,14 +3084,20 @@ mod tests {
             )
             .unwrap();
         assert_eq!(merchant, "Acme Streaming");
-        assert!(entity_id.is_some(), "the transaction must be linked to a resolved merchant entity");
+        assert!(
+            entity_id.is_some(),
+            "the transaction must be linked to a resolved merchant entity"
+        );
     }
 
     /// Doc 30 TASK-API-004 acceptance test.
     #[test]
     fn test_upload_command_rejects_missing_file() {
         assert!(validate_upload_files_non_empty(&[]).is_err());
-        let one_file = vec![UploadFile { file_bytes: vec![1, 2, 3], filename: "a.pdf".to_string() }];
+        let one_file = vec![UploadFile {
+            file_bytes: vec![1, 2, 3],
+            filename: "a.pdf".to_string(),
+        }];
         assert!(validate_upload_files_non_empty(&one_file).is_ok());
     }
 
@@ -3019,31 +3110,48 @@ mod tests {
     fn test_no_command_returns_pdf_bytes() {
         fn struct_field_block(src: &str, struct_name: &str) -> String {
             let marker = format!("struct {struct_name} {{");
-            let start = src.find(&marker).unwrap_or_else(|| panic!("struct {struct_name} not found"));
+            let start = src
+                .find(&marker)
+                .unwrap_or_else(|| panic!("struct {struct_name} not found"));
             let body_start = start + marker.len();
             let end = src[body_start..].find('}').unwrap();
             src[body_start..body_start + end].to_string()
         }
 
-        let commands_mod_src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/commands/mod.rs")).unwrap();
-        let commands_data_src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/commands/data.rs")).unwrap();
-        let statement_entries_src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/db/statement_entries.rs")).unwrap();
+        let commands_mod_src =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/commands/mod.rs"))
+                .unwrap();
+        let commands_data_src =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/commands/data.rs"))
+                .unwrap();
+        let statement_entries_src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/db/statement_entries.rs"
+        ))
+        .unwrap();
 
-        for (src, name) in [
-            (&commands_mod_src, "UploadResult"),
-        ] {
+        for (src, name) in [(&commands_mod_src, "UploadResult")] {
             let block = struct_field_block(src, name);
-            assert!(!block.contains("Vec<u8>"), "{name} must never carry raw byte content: {block}");
+            assert!(
+                !block.contains("Vec<u8>"),
+                "{name} must never carry raw byte content: {block}"
+            );
         }
         for (src, name) in [
             (&commands_data_src, "StatementRecord"),
             (&commands_data_src, "StatementsPage"),
         ] {
             let block = struct_field_block(src, name);
-            assert!(!block.contains("Vec<u8>"), "{name} must never carry raw byte content: {block}");
+            assert!(
+                !block.contains("Vec<u8>"),
+                "{name} must never carry raw byte content: {block}"
+            );
         }
         let entries_block = struct_field_block(&statement_entries_src, "StatementEntriesRow");
-        assert!(!entries_block.contains("Vec<u8>"), "StatementEntriesRow must never carry raw byte content");
+        assert!(
+            !entries_block.contains("Vec<u8>"),
+            "StatementEntriesRow must never carry raw byte content"
+        );
     }
 
     /// §5.8 Integration test: Verify that the raw PDF bytes do not persist

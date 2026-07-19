@@ -111,7 +111,11 @@ pub(crate) async fn emit_license_state_changed<R: tauri::Runtime>(
     let Ok(Ok(status)) = conn.interact(|c| compute_license_status(&*c)).await else {
         return;
     };
-    if let Err(e) = crate::ipc::events::emit_event(app_handle, crate::ipc::events::AppEvent::LicenseStateChanged, status) {
+    if let Err(e) = crate::ipc::events::emit_event(
+        app_handle,
+        crate::ipc::events::AppEvent::LicenseStateChanged,
+        status,
+    ) {
         tracing::error!("Failed to emit license_state_changed: {}", e);
     }
 }

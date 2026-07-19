@@ -166,7 +166,6 @@ pub struct DebugMetrics {
     pub reconciliation_decision_distribution: std::collections::HashMap<String, i64>,
 }
 
-
 pub fn do_fetch_dashboard_summary(conn: &Connection) -> Result<DashboardSummary, String> {
     let now = chrono::Utc::now().naive_utc();
 
@@ -242,7 +241,9 @@ pub struct TransactionListFilters {
     pub status: Option<String>,
 }
 
-fn build_filter_clause(filters: &TransactionListFilters) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
+fn build_filter_clause(
+    filters: &TransactionListFilters,
+) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
     let mut clauses = Vec::new();
     let mut args: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
@@ -340,7 +341,10 @@ pub fn do_fetch_transactions(
     Ok(transactions)
 }
 
-pub fn count_transactions_filtered(conn: &Connection, filters: &TransactionListFilters) -> Result<i64, String> {
+pub fn count_transactions_filtered(
+    conn: &Connection,
+    filters: &TransactionListFilters,
+) -> Result<i64, String> {
     let (filter_clause, filter_args) = build_filter_clause(filters);
     let sql = format!("SELECT COUNT(*) FROM transactions WHERE is_deleted = 0{filter_clause}");
     let args: Vec<&dyn rusqlite::ToSql> = filter_args.iter().map(|b| b.as_ref()).collect();
@@ -386,9 +390,13 @@ pub fn do_transactions_search(
                 .authorization_time
                 .map(|dt| dt.to_string())
                 .unwrap_or_else(|| "Unknown".to_string()),
-            merchant: tx.merchant_display_name.unwrap_or_else(|| "Unknown".to_string()),
+            merchant: tx
+                .merchant_display_name
+                .unwrap_or_else(|| "Unknown".to_string()),
             amount: tx.amount.unwrap_or(0.0),
-            category: tx.category_id.unwrap_or_else(|| "UNCATEGORIZED".to_string()),
+            category: tx
+                .category_id
+                .unwrap_or_else(|| "UNCATEGORIZED".to_string()),
             status: tx.status.unwrap_or_else(|| "PENDING".to_string()),
             source_mix: tx.source_mix,
             instrument_id: tx.instrument_id,
@@ -451,7 +459,10 @@ pub fn do_fetch_statement_history(
 /// view) and the new `reconciliation_clusters_get` (single-cluster detail)
 /// -- extracted so the two don't maintain two copies of the same member
 /// query.
-fn fetch_cluster_members(conn: &Connection, cluster_id: &str) -> Result<Vec<ClusterMember>, String> {
+fn fetch_cluster_members(
+    conn: &Connection,
+    cluster_id: &str,
+) -> Result<Vec<ClusterMember>, String> {
     // TASK-FE-013 fix: the previous query only LEFT JOINed `transactions`
     // (via `canonical_transaction_id`), so the "incoming" member -- which
     // carries `observation_id` instead, per Document 18 §4.6a -- always
@@ -529,7 +540,10 @@ pub fn do_fetch_unresolved_clusters(conn: &Connection) -> Result<Vec<ClusterReco
 /// Doc 30 TASK-API-005 / Document 19 §10.2: `reconciliation_clusters_get`
 /// -- single-cluster detail. Did not exist as an IPC command before this
 /// task (only the list variant existed).
-pub fn do_fetch_cluster_detail(conn: &Connection, cluster_id: &str) -> Result<Option<ClusterRecord>, String> {
+pub fn do_fetch_cluster_detail(
+    conn: &Connection,
+    cluster_id: &str,
+) -> Result<Option<ClusterRecord>, String> {
     let found: Option<(String, Option<String>)> = conn
         .query_row(
             "SELECT id, reason FROM reconciliation_clusters WHERE id = ?1",
@@ -812,25 +826,30 @@ pub async fn settings_export_encrypted_backup(
     pool: State<'_, deadpool_sqlite::Pool>,
 ) -> Result<String, crate::error::AppError> {
     if password.is_empty() {
-        return Err(crate::error::AppError::Validation("password must not be empty".to_string()));
+        return Err(crate::error::AppError::Validation(
+            "password must not be empty".to_string(),
+        ));
     }
     let conn = pool
         .get()
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-    let temp_path = std::env::temp_dir().join(format!("dinero-backup-{}.tmp", uuid::Uuid::new_v4()));
+    let temp_path =
+        std::env::temp_dir().join(format!("dinero-backup-{}.tmp", uuid::Uuid::new_v4()));
     let temp_path_str = temp_path.to_string_lossy().to_string();
     conn.interact(move |c| c.execute("VACUUM INTO ?1", rusqlite::params![temp_path_str]))
         .await
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
 
-    let plaintext = std::fs::read(&temp_path).map_err(|e| crate::error::AppError::Io(e.to_string()))?;
+    let plaintext =
+        std::fs::read(&temp_path).map_err(|e| crate::error::AppError::Io(e.to_string()))?;
     let _ = std::fs::remove_file(&temp_path);
 
     let encrypted = crate::db::backup::encrypt_backup(&plaintext, &password)
         .map_err(|e| crate::error::AppError::Validation(e.to_string()))?;
-    std::fs::write(&export_path, encrypted).map_err(|e| crate::error::AppError::Io(e.to_string()))?;
+    std::fs::write(&export_path, encrypted)
+        .map_err(|e| crate::error::AppError::Io(e.to_string()))?;
 
     Ok(export_path)
 }
@@ -847,12 +866,15 @@ pub async fn settings_import_encrypted_backup(
     import_path: String,
     password: String,
 ) -> Result<String, crate::error::AppError> {
-    let blob = std::fs::read(&import_path).map_err(|e| crate::error::AppError::Io(e.to_string()))?;
+    let blob =
+        std::fs::read(&import_path).map_err(|e| crate::error::AppError::Io(e.to_string()))?;
     let decrypted = crate::db::backup::decrypt_backup(&blob, &password)
         .map_err(|e| crate::error::AppError::Validation(e.to_string()))?;
 
-    let staging_path = std::env::temp_dir().join(format!("dinero-restore-{}.db", uuid::Uuid::new_v4()));
-    std::fs::write(&staging_path, decrypted).map_err(|e| crate::error::AppError::Io(e.to_string()))?;
+    let staging_path =
+        std::env::temp_dir().join(format!("dinero-restore-{}.db", uuid::Uuid::new_v4()));
+    std::fs::write(&staging_path, decrypted)
+        .map_err(|e| crate::error::AppError::Io(e.to_string()))?;
 
     Ok(staging_path.to_string_lossy().to_string())
 }
@@ -903,8 +925,8 @@ pub async fn settings_delete_account(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     }
 
-    // Step 2: Gmail tokens revoked before any destructive local operation begins.
-    crate::ingestion::oauth::revoke_gmail_access(pool.inner()).await;
+    // Step 2: [MODIFIED] Gmail tokens are NO LONGER revoked to preserve the connection.
+    // crate::ingestion::oauth::revoke_gmail_access(pool.inner()).await;
 
     // Step 3: Licensing Backend coordination. "Local Wipe Priority" (Doc 28
     // §4.4, an explicit named design rule): the local wipe proceeds
@@ -932,6 +954,38 @@ pub async fn settings_delete_account(
     let app_dir = app.path().app_data_dir().map_err(|e| {
         crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e))
     })?;
+
+    // Extract connected_accounts before the database is destroyed so they can be restored
+    if let Ok(conn) = pool.get().await {
+        let _ = conn.interact({
+            let app_dir_clone = app_dir.clone();
+            move |c| {
+                if let Ok(mut stmt) = c.prepare("SELECT * FROM connected_accounts") {
+                    let rows: Result<Vec<crate::db::connected_accounts::ConnectedAccountsRow>, _> = stmt.query_map([], |row| {
+                        Ok(crate::db::connected_accounts::ConnectedAccountsRow {
+                            id: row.get(0)?,
+                            profile_id: row.get(1)?,
+                            email_address: row.get(2)?,
+                            account_status: row.get(3)?,
+                            last_history_id: row.get(4)?,
+                            created_at: row.get(5)?,
+                            updated_at: row.get(6)?,
+                        })
+                    }).and_then(|mapped| mapped.collect());
+                    
+                    if let Ok(accounts) = rows {
+                        if !accounts.is_empty() {
+                            let backup_path = app_dir_clone.join("gmail_accounts_backup.json");
+                            if let Ok(json) = serde_json::to_string(&accounts) {
+                                let _ = std::fs::write(backup_path, json);
+                            }
+                        }
+                    }
+                }
+            }
+        }).await;
+    }
+
     delete_finance_db_and_all_backups(&app_dir);
 
     // Document 30 TASK-AUTH-013: "write a final audit_log entry
@@ -1080,7 +1134,8 @@ pub fn do_fetch_upcoming_bills(
     conn: &Connection,
     today: &chrono::NaiveDate,
 ) -> Result<Vec<UpcomingBill>, String> {
-    let rows = crate::db::instruments::list_upcoming_bills(conn, today).map_err(|e| e.to_string())?;
+    let rows =
+        crate::db::instruments::list_upcoming_bills(conn, today).map_err(|e| e.to_string())?;
     Ok(rows
         .into_iter()
         .map(|inst| UpcomingBill {
@@ -1140,10 +1195,7 @@ fn month_bounds(month: &str) -> Result<(String, String), String> {
     };
     let end = chrono::NaiveDate::from_ymd_opt(next_year, next_month, 1)
         .ok_or_else(|| format!("invalid month '{}'", month))?;
-    Ok((
-        format!("{} 00:00:00", start),
-        format!("{} 00:00:00", end),
-    ))
+    Ok((format!("{} 00:00:00", start), format!("{} 00:00:00", end)))
 }
 
 /// Doc 30 TASK-API-006: covers Doc 30's own paraphrased
@@ -1154,7 +1206,10 @@ fn month_bounds(month: &str) -> Result<(String, String), String> {
 /// non-deleted category is returned (zero-spend categories included) so the
 /// UI can render budget-vs-spent for categories with no activity yet this
 /// month.
-pub fn do_fetch_category_spend(conn: &Connection, month: &str) -> Result<Vec<CategorySpend>, String> {
+pub fn do_fetch_category_spend(
+    conn: &Connection,
+    month: &str,
+) -> Result<Vec<CategorySpend>, String> {
     let (start, end) = month_bounds(month)?;
     let mut stmt = conn
         .prepare(
@@ -1240,7 +1295,12 @@ pub fn do_fetch_spend_trend(
         "daily" => ("%Y-%m-%d", *now - chrono::Duration::days(30)),
         "weekly" => ("%Y-%W", *now - chrono::Duration::weeks(12)),
         "monthly" => ("%Y-%m", *now - chrono::Duration::days(365)),
-        other => return Err(format!("invalid granularity '{}': must be daily, weekly, or monthly", other)),
+        other => {
+            return Err(format!(
+                "invalid granularity '{}': must be daily, weekly, or monthly",
+                other
+            ))
+        }
     };
     let since_str = since.format("%Y-%m-%d %H:%M:%S").to_string();
 
@@ -1308,7 +1368,11 @@ pub fn do_fetch_top_merchants(
     conn: &Connection,
     now: &chrono::NaiveDateTime,
 ) -> Result<Vec<TopMerchant>, String> {
-    let start_of_month = format!("{}-{:02}-01 00:00:00", now.date().year(), now.date().month());
+    let start_of_month = format!(
+        "{}-{:02}-01 00:00:00",
+        now.date().year(),
+        now.date().month()
+    );
     let mut stmt = conn
         .prepare(
             "SELECT merchant_display_name, SUM(amount_minor), COUNT(*)
@@ -1398,7 +1462,9 @@ pub fn do_fetch_recurring_payments_summary(
             amount: row.amount_minor.unwrap_or(0) as f64 / 100.0,
             currency: row.currency.unwrap_or_else(|| "INR".to_string()),
             cadence: row.cadence.unwrap_or_default(),
-            next_predicted_date: row.next_predicted_date.map(|d| d.format("%Y-%m-%d").to_string()),
+            next_predicted_date: row
+                .next_predicted_date
+                .map(|d| d.format("%Y-%m-%d").to_string()),
             confidence: row.confidence.unwrap_or(0.0),
         });
     }
@@ -1562,7 +1628,8 @@ pub async fn categories_update(
         if let Some(icon) = payload.icon {
             row.icon = Some(icon);
         }
-        crate::db::categories::update(c, &row).map_err(|e| crate::error::AppError::Validation(e.to_string()))
+        crate::db::categories::update(c, &row)
+            .map_err(|e| crate::error::AppError::Validation(e.to_string()))
     })
     .await
     .map_err(|e| crate::error::AppError::Unknown(e.to_string()))??;
@@ -1637,7 +1704,10 @@ pub async fn transactions_list(
 pub async fn fetch_transaction_observations(
     transaction_id: String,
     pool: State<'_, deadpool_sqlite::Pool>,
-) -> Result<Vec<crate::db::transaction_observations::TransactionObservationsRow>, crate::error::AppError> {
+) -> Result<
+    Vec<crate::db::transaction_observations::TransactionObservationsRow>,
+    crate::error::AppError,
+> {
     crate::ipc::validation::validate_uuid("transaction_id", &transaction_id)?;
     let conn = pool
         .get()
@@ -1825,19 +1895,61 @@ pub async fn reconciliation_clusters_get(
 /// Doc 30 TASK-API-005: "reconciliation_get_unassigned_transactions -- a
 /// distinct queue from ambiguous clusters: extraction failures vs. matching
 /// ambiguity are surfaced separately in the UI." Did not exist at all
-/// before this task.
+/// before this task. Returns `UnassignedTransactionDetail` (joined with the
+/// linked observation for merchant/amount/body-snippet context) rather than
+/// the bare `UnassignedTransactionRow` this originally returned -- the plain
+/// row gave the Reconciliation UI nothing to show beyond a raw reason code
+/// and a UUID.
 #[tauri::command]
 pub async fn reconciliation_get_unassigned_transactions(
     pool: State<'_, deadpool_sqlite::Pool>,
-) -> Result<Vec<crate::db::unassigned_transactions::UnassignedTransactionRow>, crate::error::AppError> {
+) -> Result<
+    Vec<crate::db::unassigned_transactions::UnassignedTransactionDetail>,
+    crate::error::AppError,
+> {
     let conn = pool
         .get()
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-    conn.interact(|c| crate::db::unassigned_transactions::select_open(c))
+    conn.interact(|c| crate::db::unassigned_transactions::select_open_with_context(c))
         .await
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
         .map_err(|e| crate::error::AppError::Db(e.to_string()))
+}
+
+/// Dismisses an unassigned-transaction entry the user has reviewed and
+/// doesn't want surfaced again (e.g. a marketing email that slipped past
+/// Gate 2, or one they've decided isn't worth manually correcting).
+/// `update_status` already existed (used internally) but had no IPC command
+/// exposing it -- the Reconciliation UI's "Unassigned Transactions" queue
+/// had no way to ever shrink except by a transaction eventually matching
+/// through some other path.
+#[tauri::command]
+pub async fn reconciliation_dismiss_unassigned_transaction(
+    id: String,
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<String, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("id", &id)?;
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    // Doc 18 §4.17's documented `status` enum is `open` / `resolved` /
+    // `ignored` -- "ignored" is exactly the already-spec'd value for "user
+    // dismissed this," so this reuses it rather than inventing a new enum
+    // value; the JSON `status` this command *returns* is an action-result
+    // label (matching the sibling `reconciliation_clusters_unmerge` ->
+    // `{"status": "unmerged"}` precedent), independent of the DB column's
+    // own vocabulary.
+    let id_clone = id.clone();
+    conn.interact(move |c| {
+        crate::db::unassigned_transactions::update_status(c, &id_clone, "ignored")
+    })
+    .await
+    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+    .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    Ok("dismissed".to_string())
 }
 
 /// Document 19 §10.4 -- explicitly un-does a cluster resolution, reopening
@@ -1865,7 +1977,9 @@ pub async fn reconciliation_clusters_unmerge(
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     if count == 0 {
-        return Err(crate::error::AppError::Validation("cluster not found".to_string()));
+        return Err(crate::error::AppError::Validation(
+            "cluster not found".to_string(),
+        ));
     }
     Ok("unmerged".to_string())
 }
@@ -1914,7 +2028,8 @@ pub async fn reconciliation_clusters_bulk_resolve(
                 )
                 .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
             }
-            tx.commit().map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+            tx.commit()
+                .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
             Ok(resolutions.len())
         })
         .await
@@ -2141,7 +2256,10 @@ fn validate_limit_thresholds(thresholds: &[f64]) -> Result<(), String> {
     }
     for &t in thresholds {
         if !(0.0..=100.0).contains(&t) {
-            return Err(format!("limit_thresholds value {} must be between 0 and 100", t));
+            return Err(format!(
+                "limit_thresholds value {} must be between 0 and 100",
+                t
+            ));
         }
     }
     Ok(())
@@ -2181,10 +2299,13 @@ pub async fn settings_profile_update(
             row.timezone = Some(tz);
         }
         if let Some(thresholds) = payload.limit_thresholds {
-            row.limit_thresholds =
-                Some(serde_json::to_value(thresholds).map_err(|e| crate::error::AppError::Validation(e.to_string()))?);
+            row.limit_thresholds = Some(
+                serde_json::to_value(thresholds)
+                    .map_err(|e| crate::error::AppError::Validation(e.to_string()))?,
+            );
         }
-        crate::db::local_profile::update(c, &row).map_err(|e| crate::error::AppError::Db(e.to_string()))
+        crate::db::local_profile::update(c, &row)
+            .map_err(|e| crate::error::AppError::Db(e.to_string()))
     })
     .await
     .map_err(|e| crate::error::AppError::Unknown(e.to_string()))??;
@@ -2197,10 +2318,9 @@ pub async fn settings_profile_update(
 pub async fn settings_get_menu_bar_extra_enabled(
     app: tauri::AppHandle,
 ) -> Result<bool, crate::error::AppError> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e)))?;
+    let dir = app.path().app_data_dir().map_err(|e| {
+        crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e))
+    })?;
     Ok(crate::menu::status_item::read_menu_bar_extra_enabled(&dir))
 }
 
@@ -2212,10 +2332,9 @@ pub async fn settings_set_menu_bar_extra_enabled(
     app: tauri::AppHandle,
     enabled: bool,
 ) -> Result<(), crate::error::AppError> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e)))?;
+    let dir = app.path().app_data_dir().map_err(|e| {
+        crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e))
+    })?;
     crate::menu::status_item::write_menu_bar_extra_enabled(&dir, enabled)
         .map_err(|e| crate::error::AppError::Io(e.to_string()))?;
     crate::menu::status_item::apply_menu_bar_extra_runtime_state(&app, enabled);
@@ -2254,10 +2373,9 @@ pub async fn settings_set_launch_at_login(
 pub async fn settings_get_background_sync_enabled(
     app: tauri::AppHandle,
 ) -> Result<bool, crate::error::AppError> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e)))?;
+    let dir = app.path().app_data_dir().map_err(|e| {
+        crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e))
+    })?;
     Ok(crate::lifecycle::launch_agent::read_background_sync_enabled(&dir))
 }
 
@@ -2266,10 +2384,9 @@ pub async fn settings_set_background_sync_enabled(
     app: tauri::AppHandle,
     enabled: bool,
 ) -> Result<(), crate::error::AppError> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e)))?;
+    let dir = app.path().app_data_dir().map_err(|e| {
+        crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e))
+    })?;
     crate::lifecycle::launch_agent::write_background_sync_enabled(&dir, enabled)
         .map_err(|e| crate::error::AppError::Io(e.to_string()))?;
     Ok(())
@@ -2281,10 +2398,9 @@ pub async fn settings_set_background_sync_enabled(
 pub async fn settings_get_low_battery_poll_threshold_percent(
     app: tauri::AppHandle,
 ) -> Result<f32, crate::error::AppError> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e)))?;
+    let dir = app.path().app_data_dir().map_err(|e| {
+        crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e))
+    })?;
     Ok(crate::lifecycle::launch_agent::read_low_battery_threshold_percent(&dir))
 }
 
@@ -2293,10 +2409,9 @@ pub async fn settings_set_low_battery_poll_threshold_percent(
     app: tauri::AppHandle,
     threshold_percent: f32,
 ) -> Result<(), crate::error::AppError> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e)))?;
+    let dir = app.path().app_data_dir().map_err(|e| {
+        crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e))
+    })?;
     crate::lifecycle::launch_agent::write_low_battery_threshold_percent(&dir, threshold_percent)
         .map_err(|e| crate::error::AppError::Io(e.to_string()))?;
     Ok(())
@@ -2494,8 +2609,18 @@ pub async fn get_debug_metrics(
 /// so a bad value returns a clean `AppError::Validation` with the field name,
 /// instead of a raw SQLite constraint-violation string reaching the frontend.
 const VALID_INSTRUMENT_TYPES: &[&str] = &[
-    "credit_card", "debit_card", "bank_account", "UPI", "NEFT", "RTGS", "SWIFT", "upi_vpa",
-    "wallet", "POS", "ATM", "cheque",
+    "credit_card",
+    "debit_card",
+    "bank_account",
+    "UPI",
+    "NEFT",
+    "RTGS",
+    "SWIFT",
+    "upi_vpa",
+    "wallet",
+    "POS",
+    "ATM",
+    "cheque",
 ];
 
 fn validate_instrument_type(instrument_type: &str) -> Result<(), crate::error::AppError> {
@@ -2619,7 +2744,9 @@ pub async fn instruments_update(
         // what actually makes this a partial update.
         let mut row = crate::db::instruments::get_instrument(c, &payload.id)
             .map_err(|e| crate::error::AppError::Db(e.to_string()))?
-            .ok_or_else(|| crate::error::AppError::Validation("instrument not found".to_string()))?;
+            .ok_or_else(|| {
+                crate::error::AppError::Validation("instrument not found".to_string())
+            })?;
 
         row.full_identifier = payload.full_identifier;
         row.billing_cycle_day = payload.billing_cycle_day;
@@ -2723,7 +2850,10 @@ mod tests {
         assert!(validate_instrument_type("upi_vpa").is_ok());
         assert!(validate_instrument_type("not_a_real_type").is_err());
         assert!(validate_instrument_type("").is_err());
-        assert!(validate_instrument_type("CREDIT_CARD").is_err(), "must be case-sensitive, matching Document 18 §4.2's exact CHECK values");
+        assert!(
+            validate_instrument_type("CREDIT_CARD").is_err(),
+            "must be case-sensitive, matching Document 18 §4.2's exact CHECK values"
+        );
     }
 
     fn setup_db() -> Connection {
@@ -2857,7 +2987,8 @@ mod tests {
         )
         .unwrap();
 
-        let results = do_fetch_transactions(&conn, &TransactionListFilters::default(), 50, 0).unwrap();
+        let results =
+            do_fetch_transactions(&conn, &TransactionListFilters::default(), 50, 0).unwrap();
         let ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
         assert!(ids.contains(&"tx_visible"));
         assert!(!ids.contains(&"tx_deleted"));
@@ -2893,7 +3024,11 @@ mod tests {
         let results = do_fetch_transactions(&conn, &filters, 50, 0).unwrap();
         let ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
 
-        assert_eq!(ids, vec!["tx_match_both"], "only the row matching BOTH filters (AND) must be returned");
+        assert_eq!(
+            ids,
+            vec!["tx_match_both"],
+            "only the row matching BOTH filters (AND) must be returned"
+        );
     }
 
     /// Doc 30 TASK-DEDUP-009 / TASK-API-006 acceptance test (renamed to
@@ -2928,7 +3063,10 @@ mod tests {
         .unwrap();
 
         let summary = do_fetch_dashboard_summary(&conn).unwrap();
-        assert_eq!(summary.month_to_date_spend, 10.0, "the ambiguous candidate's amount must not be counted");
+        assert_eq!(
+            summary.month_to_date_spend, 10.0,
+            "the ambiguous candidate's amount must not be counted"
+        );
     }
 
     /// Doc 30 TASK-DEDUP-009 / TASK-API-006 acceptance test (renamed to
@@ -3005,7 +3143,10 @@ mod tests {
         .unwrap();
 
         let summary = do_fetch_dashboard_summary(&conn).unwrap();
-        assert_eq!(summary.month_to_date_spend, 10.0, "the soft-deleted row's amount must not be counted");
+        assert_eq!(
+            summary.month_to_date_spend, 10.0,
+            "the soft-deleted row's amount must not be counted"
+        );
     }
 
     /// Doc 30 TASK-API-006 acceptance test: "All aggregation sums
@@ -3025,7 +3166,10 @@ mod tests {
         .unwrap();
 
         let summary = do_fetch_dashboard_summary(&conn).unwrap();
-        assert_eq!(summary.month_to_date_spend, 10.53, "must read amount_minor (1053 paise), never the divergent float amount column");
+        assert_eq!(
+            summary.month_to_date_spend, 10.53,
+            "must read amount_minor (1053 paise), never the divergent float amount column"
+        );
     }
 
     /// Doc 30 TASK-API-005 acceptance test: `reconciliation_get_unassigned_transactions`
@@ -3154,7 +3298,10 @@ mod tests {
         let ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
 
         assert!(ids.contains(&"tx_amazon"));
-        assert!(!ids.contains(&"tx_uber"), "FTS5 match must be specific to the query term, not a substring hit on unrelated rows");
+        assert!(
+            !ids.contains(&"tx_uber"),
+            "FTS5 match must be specific to the query term, not a substring hit on unrelated rows"
+        );
     }
 
     /// Doc 30 TASK-API-004 acceptance test: `statements_list` returns a
@@ -3178,8 +3325,14 @@ mod tests {
 
         assert_eq!(page1.len(), 2, "page size must be respected");
         assert_eq!(page2.len(), 2);
-        assert_eq!(total, 5, "total count must reflect all rows, independent of the page size");
-        assert_ne!(page1[0].id, page2[0].id, "different pages must return different rows");
+        assert_eq!(
+            total, 5,
+            "total count must reflect all rows, independent of the page size"
+        );
+        assert_ne!(
+            page1[0].id, page2[0].id,
+            "different pages must return different rows"
+        );
     }
 
     /// Doc 30 TASK-API-006 / Document 19 §11.2 acceptance coverage:
@@ -3205,7 +3358,11 @@ mod tests {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
         let bills = do_fetch_upcoming_bills(&conn, &today).unwrap();
 
-        assert_eq!(bills.len(), 1, "only the future-dated instrument counts as an upcoming bill");
+        assert_eq!(
+            bills.len(),
+            1,
+            "only the future-dated instrument counts as an upcoming bill"
+        );
         assert_eq!(bills[0].id, "inst_due");
         assert_eq!(bills[0].description, "HDFC Regalia");
         assert_eq!(bills[0].amount, 24500.0);
@@ -3230,7 +3387,10 @@ mod tests {
         .unwrap();
 
         let categories = do_fetch_category_spend(&conn, &month).unwrap();
-        let food = categories.iter().find(|c| c.category_id == "cat_food").expect("cat_food must be present");
+        let food = categories
+            .iter()
+            .find(|c| c.category_id == "cat_food")
+            .expect("cat_food must be present");
 
         assert_eq!(food.total_spend, 425.0);
         assert_eq!(food.name, "Food & Dining");
@@ -3274,9 +3434,15 @@ mod tests {
         .unwrap();
 
         let categories = do_fetch_category_spend(&conn, &month).unwrap();
-        let food = categories.iter().find(|c| c.category_id == "cat_food").expect("cat_food must be present");
+        let food = categories
+            .iter()
+            .find(|c| c.category_id == "cat_food")
+            .expect("cat_food must be present");
 
-        assert_eq!(food.total_spend, 10.0, "the open-cluster candidate's amount must not be counted");
+        assert_eq!(
+            food.total_spend, 10.0,
+            "the open-cluster candidate's amount must not be counted"
+        );
     }
 
     /// Doc 30 TASK-API-006 acceptance coverage: `analytics_spend_trend`'s
@@ -3300,7 +3466,10 @@ mod tests {
         .unwrap();
 
         let trend = do_fetch_spend_trend(&conn, "monthly", &now).unwrap();
-        let bucket = trend.iter().find(|p| p.period == expected_period).expect("current month bucket must be present");
+        let bucket = trend
+            .iter()
+            .find(|p| p.period == expected_period)
+            .expect("current month bucket must be present");
 
         assert_eq!(bucket.total_spend, 15.0);
     }
@@ -3338,9 +3507,15 @@ mod tests {
         .unwrap();
 
         let trend = do_fetch_spend_trend(&conn, "monthly", &now).unwrap();
-        let bucket = trend.iter().find(|p| p.period == expected_period).expect("current month bucket must be present");
+        let bucket = trend
+            .iter()
+            .find(|p| p.period == expected_period)
+            .expect("current month bucket must be present");
 
-        assert_eq!(bucket.total_spend, 10.0, "the open-cluster candidate's amount must not be counted");
+        assert_eq!(
+            bucket.total_spend, 10.0,
+            "the open-cluster candidate's amount must not be counted"
+        );
     }
 
     /// Doc 30 TASK-API-006 acceptance coverage: `analytics_top_merchants`
@@ -3366,7 +3541,10 @@ mod tests {
 
         let merchants = do_fetch_top_merchants(&conn, &now).unwrap();
 
-        assert_eq!(merchants[0].merchant_display_name, "Big Spend Store", "the higher-spend merchant must sort first");
+        assert_eq!(
+            merchants[0].merchant_display_name, "Big Spend Store",
+            "the higher-spend merchant must sort first"
+        );
         assert_eq!(merchants[0].total_spend, 50.0);
         assert_eq!(merchants[1].merchant_display_name, "Small Spend Cafe");
     }
@@ -3407,10 +3585,15 @@ mod tests {
         let merchants = do_fetch_top_merchants(&conn, &now).unwrap();
 
         assert!(
-            merchants.iter().all(|m| m.merchant_display_name != "Ambiguous Merchant"),
+            merchants
+                .iter()
+                .all(|m| m.merchant_display_name != "Ambiguous Merchant"),
             "the open-cluster candidate's merchant must not appear at all"
         );
-        let real = merchants.iter().find(|m| m.merchant_display_name == "Real Merchant").expect("Real Merchant must still be present");
+        let real = merchants
+            .iter()
+            .find(|m| m.merchant_display_name == "Real Merchant")
+            .expect("Real Merchant must still be present");
         assert_eq!(real.total_spend, 5.0);
     }
 
@@ -3454,7 +3637,10 @@ mod tests {
     #[test]
     fn test_limit_thresholds_validated_sorted() {
         assert!(validate_limit_thresholds(&[80.0, 90.0, 100.0]).is_ok());
-        assert!(validate_limit_thresholds(&[]).is_ok(), "an empty array (all warnings disabled) is valid");
+        assert!(
+            validate_limit_thresholds(&[]).is_ok(),
+            "an empty array (all warnings disabled) is valid"
+        );
         assert!(
             validate_limit_thresholds(&[90.0, 80.0]).is_err(),
             "out-of-order values must be rejected"

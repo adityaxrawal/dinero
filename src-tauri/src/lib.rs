@@ -3,6 +3,7 @@ pub mod background_tasks;
 pub mod commands;
 pub mod crash_reporter;
 pub mod db;
+pub mod dev_review;
 pub mod diagnostics;
 pub mod error;
 pub mod extraction;
@@ -12,6 +13,7 @@ pub mod integrity;
 pub mod ipc;
 pub mod licensing;
 pub mod lifecycle;
+pub mod llama_sidecar;
 pub mod llm_manager;
 pub mod menu;
 pub mod network_client;
@@ -254,6 +256,27 @@ pub fn run() {
                             }),
                         );
                     }
+                    
+                    // Restore connected_accounts if they were backed up during "Delete My Data"
+                    let backup_path = app_dir.join("gmail_accounts_backup.json");
+                    if backup_path.exists() {
+                        if let Ok(json) = std::fs::read_to_string(&backup_path) {
+                            if let Ok(accounts) = serde_json::from_str::<Vec<crate::db::connected_accounts::ConnectedAccountsRow>>(&json) {
+                                let pool_clone = p.clone();
+                                tauri::async_runtime::block_on(async move {
+                                    if let Ok(conn) = pool_clone.get().await {
+                                        let _ = conn.interact(move |c| {
+                                            for account in accounts {
+                                                let _ = crate::db::connected_accounts::insert_account(c, &account);
+                                            }
+                                        }).await;
+                                    }
+                                });
+                            }
+                        }
+                        let _ = std::fs::remove_file(backup_path);
+                    }
+
                     p
                 }
                 Err(db::DbInitError::KeyMismatch) => {
@@ -775,9 +798,15 @@ pub fn run() {
             });
 
             // TASK-DESK-005: checks once on launch, then every ~6 hours
-            // while running (Document 16 §9.1).
+            // while running (Document 16 §9.1). Skipped in debug builds --
+            // the updater endpoint (tauri.conf.json) points at GitHub
+            // Releases, which doesn't exist until the first release ships,
+            // so every dev run would otherwise log a spurious error on a
+            // fixed interval.
             app.manage(crate::updater::PendingUpdate::default());
-            crate::updater::spawn_update_check_loop(app.handle().clone());
+            if !cfg!(debug_assertions) {
+                crate::updater::spawn_update_check_loop(app.handle().clone());
+            }
 
             // TASK-DESK-008: initialize the menu bar extra to match the
             // persisted setting, then keep the Dock badge and (if enabled)
@@ -835,22 +864,16 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(commands::get_handlers())
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| match event {
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+                if let Some(cancel_token) = app_handle.try_state::<tokio_util::sync::CancellationToken>() {
+                    cancel_token.cancel();
+                }
+            }
+            _ => {}
+        });
 }
 #[cfg(test)]
-mod llm_manager_tests;
-#[cfg(test)]
-mod phase10_quality_gates_tests;
-#[cfg(test)]
-mod phase10_rigorous_tests;
-#[cfg(test)]
-mod phase11_llm_tests;
-#[cfg(test)]
-mod phase11_rigorous_tests;
-#[cfg(test)]
-mod phase8_telemetry_tests;
-#[cfg(test)]
-mod phase9_rigorous_tests;
-#[cfg(test)]
-mod phase9_security_tests;
+mod tests;

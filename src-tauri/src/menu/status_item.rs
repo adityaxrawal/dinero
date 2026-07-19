@@ -35,13 +35,23 @@ pub fn badge_count_for(pending_review_count: i64) -> Option<i64> {
 /// Updates the Dock icon badge on the main window. Best-effort: no main
 /// window (e.g. a test `AppHandle`) or a platform without Dock badges must
 /// never surface as an application error.
+///
+/// Dispatched via `run_on_main_thread` -- this is called from the periodic
+/// refresh loop (`lib.rs`) inside a `deadpool_sqlite` `conn.interact`
+/// closure, which runs on a blocking-pool thread, never the main thread.
+/// AppKit window/status-bar APIs are main-thread-only; see this file's
+/// other `run_on_main_thread` uses for the crash this exact pattern causes
+/// when skipped.
 pub fn update_dock_badge<R: Runtime>(app: &AppHandle<R>, pending_review_count: i64) {
-    let Some(window) = app.get_webview_window("main") else {
-        return;
-    };
-    if let Err(e) = window.set_badge_count(badge_count_for(pending_review_count)) {
-        tracing::warn!("Failed to update Dock badge: {}", e);
-    }
+    let app_handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let Some(window) = app_handle.get_webview_window("main") else {
+            return;
+        };
+        if let Err(e) = window.set_badge_count(badge_count_for(pending_review_count)) {
+            tracing::warn!("Failed to update Dock badge: {}", e);
+        }
+    });
 }
 
 // ---------------------------------------------------------------------
@@ -121,7 +131,11 @@ pub fn update_tray_summary<R: Runtime>(
     pending_review_count: i64,
     upcoming_bills_count: i64,
 ) {
-    let summary = format_tray_summary(month_to_date_spend, pending_review_count, upcoming_bills_count);
+    let summary = format_tray_summary(
+        month_to_date_spend,
+        pending_review_count,
+        upcoming_bills_count,
+    );
     if let Err(e) = tray.set_title(Some(&summary)) {
         tracing::warn!("Failed to update menu bar extra summary: {}", e);
     }
@@ -137,9 +151,17 @@ pub fn update_tray_summary_if_present<R: Runtime>(
     pending_review_count: i64,
     upcoming_bills_count: i64,
 ) {
-    if let Some(tray) = app.tray_by_id(TRAY_ICON_ID) {
-        update_tray_summary(&tray, month_to_date_spend, pending_review_count, upcoming_bills_count);
-    }
+    let app_handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(tray) = app_handle.tray_by_id(TRAY_ICON_ID) {
+            update_tray_summary(
+                &tray,
+                month_to_date_spend,
+                pending_review_count,
+                upcoming_bills_count,
+            );
+        }
+    });
 }
 
 /// Builds (if not already present) or removes the tray icon to match
@@ -147,15 +169,36 @@ pub fn update_tray_summary_if_present<R: Runtime>(
 /// rather than tracking a separate handle -- idempotent, so it's safe to
 /// call both at startup (to match the persisted setting) and from the
 /// settings-toggle command.
+///
+/// Real crash, not just a theoretical race: `settings_set_menu_bar_extra_enabled`
+/// (the Settings toggle's command handler) runs on Tauri's async command
+/// runtime, not the main thread. `TrayIcon::new` (the enable path, via
+/// `build_tray_icon`) checks for the main thread itself and fails soft
+/// (`Error::NotMainThread`, caught below) -- but `remove_tray_by_id`'s
+/// underlying `NSStatusBar.removeStatusItem` call (the disable path) has no
+/// such guard at all (`tray-icon` crate v0.24.1,
+/// `platform_impl::macos::TrayIcon::remove`) and calls straight into AppKit
+/// unconditionally. AppKit status-bar mutations off the main thread crash
+/// the process -- exactly the "enabling works, disabling crashes" asymmetry
+/// this was reported as. `run_on_main_thread` schedules both branches onto
+/// the actual main thread instead of assuming the caller is already there.
 pub fn apply_menu_bar_extra_runtime_state<R: Runtime>(app: &AppHandle<R>, enabled: bool) {
-    if enabled {
-        if app.tray_by_id(TRAY_ICON_ID).is_none() {
-            if let Err(e) = build_tray_icon(app) {
-                tracing::warn!("Failed to build menu bar extra: {}", e);
+    let app_handle = app.clone();
+    if let Err(e) = app.run_on_main_thread(move || {
+        if enabled {
+            if app_handle.tray_by_id(TRAY_ICON_ID).is_none() {
+                if let Err(e) = build_tray_icon(&app_handle) {
+                    tracing::warn!("Failed to build menu bar extra: {}", e);
+                }
             }
+        } else {
+            app_handle.remove_tray_by_id(TRAY_ICON_ID);
         }
-    } else {
-        app.remove_tray_by_id(TRAY_ICON_ID);
+    }) {
+        tracing::warn!(
+            "Failed to schedule menu bar extra toggle on main thread: {}",
+            e
+        );
     }
 }
 
@@ -224,7 +267,11 @@ mod tests {
     #[test]
     fn test_dock_badge_clears_at_zero() {
         assert_eq!(badge_count_for(0), None);
-        assert_eq!(badge_count_for(-1), None, "a negative count is not meaningful; must also clear");
+        assert_eq!(
+            badge_count_for(-1),
+            None,
+            "a negative count is not meaningful; must also clear"
+        );
     }
 
     /// Doc 30 TASK-DESK-008 acceptance: `test_menu_bar_extra_toggle_persists_setting`.
@@ -250,7 +297,10 @@ mod tests {
         assert_eq!(format_tray_summary(0.0, 0, 0), "₹0");
         assert_eq!(format_tray_summary(24500.60, 0, 0), "₹24501");
         assert_eq!(format_tray_summary(24500.0, 3, 0), "₹24500 · 3 pending");
-        assert_eq!(format_tray_summary(24500.0, 3, 2), "₹24500 · 3 pending · 2 due");
+        assert_eq!(
+            format_tray_summary(24500.0, 3, 2),
+            "₹24500 · 3 pending · 2 due"
+        );
         assert_eq!(format_tray_summary(24500.0, 0, 1), "₹24500 · 1 due");
     }
 

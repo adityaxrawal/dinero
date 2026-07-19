@@ -63,7 +63,7 @@ pub fn get_license_state(conn: &Connection) -> SqliteResult<Option<LicenseStateR
         "SELECT id, license_jwt, subscription_status_cached, plan_id_cached,
                 current_period_end_cached, jwt_expires_at, last_server_validated_at,
                 last_known_valid_time, device_fingerprint, source, billing_interval_cached
-         FROM license_state WHERE id = 1"
+         FROM license_state WHERE id = 1",
     )?;
 
     let mut rows = stmt.query([])?;

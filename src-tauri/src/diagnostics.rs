@@ -48,13 +48,22 @@ fn scan_for_pii(sections: &[(&str, &str)]) -> Result<()> {
 
     for (name, content) in sections {
         if email_re.is_match(content) {
-            anyhow::bail!("PII scan blocked export: email-shaped match found in '{}'", name);
+            anyhow::bail!(
+                "PII scan blocked export: email-shaped match found in '{}'",
+                name
+            );
         }
         if card_re.is_match(content) {
-            anyhow::bail!("PII scan blocked export: card-number-shaped match found in '{}'", name);
+            anyhow::bail!(
+                "PII scan blocked export: card-number-shaped match found in '{}'",
+                name
+            );
         }
         if rupee_amount_re.is_match(content) {
-            anyhow::bail!("PII scan blocked export: ₹-amount-shaped match found in '{}'", name);
+            anyhow::bail!(
+                "PII scan blocked export: ₹-amount-shaped match found in '{}'",
+                name
+            );
         }
     }
     Ok(())
@@ -337,7 +346,8 @@ mod tests {
 
     #[test]
     fn redact_catches_email_card_and_rupee_amount() {
-        let input = "Contact user@example.com about card 4111 1111 1111 1111 for the ₹49,999.50 charge";
+        let input =
+            "Contact user@example.com about card 4111 1111 1111 1111 for the ₹49,999.50 charge";
         let redacted = redact(input);
         assert!(!redacted.contains("user@example.com"));
         assert!(!redacted.contains("4111 1111 1111 1111"));
@@ -409,7 +419,8 @@ mod tests {
         )
         .unwrap();
 
-        let temp_dir = std::env::temp_dir().join(format!("dinero_bundle_test_{}", uuid::Uuid::new_v4()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("dinero_bundle_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).unwrap();
 
         let zip_path = generate_diagnostic_bundle(&temp_dir, &conn, None).unwrap();

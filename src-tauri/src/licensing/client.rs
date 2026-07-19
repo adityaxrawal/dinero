@@ -58,7 +58,7 @@ impl LicensingClient {
     pub async fn activate(&self, req: ActivateRequest) -> Result<LicenseResponse> {
         let url = format!("{}/api/license/activate", self.base_url);
         let builder = self.network.client().post(&url).json(&req);
-        let res = self.network.execute(builder).await?;
+        let res = self.network.execute("licensing_backend", builder).await?;
 
         // Document 19 §14.2/Document 30 TASK-AUTH-011: `DEVICE_ALREADY_BOUND`
         // must be surfaced clearly, with guidance to deactivate elsewhere
@@ -79,7 +79,7 @@ impl LicensingClient {
     pub async fn validate(&self, req: ValidateRequest) -> Result<LicenseResponse> {
         let url = format!("{}/api/license/validate", self.base_url);
         let builder = self.network.client().post(&url).json(&req);
-        let res = self.network.execute(builder).await?;
+        let res = self.network.execute("licensing_backend", builder).await?;
         res.error_for_status_ref()?;
         let data = res.json::<LicenseResponse>().await?;
         Ok(data)
@@ -88,7 +88,7 @@ impl LicensingClient {
     pub async fn deactivate(&self, req: ValidateRequest) -> Result<()> {
         let url = format!("{}/api/license/deactivate", self.base_url);
         let builder = self.network.client().post(&url).json(&req);
-        let res = self.network.execute(builder).await?;
+        let res = self.network.execute("licensing_backend", builder).await?;
         res.error_for_status_ref()?;
         Ok(())
     }

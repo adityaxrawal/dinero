@@ -77,10 +77,7 @@ pub fn should_request_permission(network_disclosure_acknowledged: bool) -> bool 
 /// equality (not a `<=` range) is what makes a once-daily scheduled check
 /// self-deduplicating -- it becomes true on exactly one day per bill, so no
 /// separate "already reminded" tracking is needed.
-pub fn is_three_days_before_due(
-    due_date: chrono::NaiveDate,
-    today: chrono::NaiveDate,
-) -> bool {
+pub fn is_three_days_before_due(due_date: chrono::NaiveDate, today: chrono::NaiveDate) -> bool {
     (due_date - today).num_days() == 3
 }
 
@@ -139,7 +136,9 @@ pub async fn request_permission_if_disclosed<R: Runtime>(
         return;
     };
     let acknowledged = conn
-        .interact(|c| crate::auth::consent::has_active_consent(c, NETWORK_DISCLOSURE_CONSENT_EVENT_TYPE))
+        .interact(|c| {
+            crate::auth::consent::has_active_consent(c, NETWORK_DISCLOSURE_CONSENT_EVENT_TYPE)
+        })
         .await;
     if matches!(acknowledged, Ok(Ok(true))) && should_request_permission(true) {
         if let Err(e) = notification.request_permission() {

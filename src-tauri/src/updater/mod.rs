@@ -87,12 +87,9 @@ pub async fn updater_confirm_install(
     app: AppHandle,
     pending: tauri::State<'_, PendingUpdate>,
 ) -> Result<(), crate::error::AppError> {
-    let update = pending
-        .0
-        .lock()
-        .await
-        .take()
-        .ok_or_else(|| crate::error::AppError::NotFound("No pending update to install".to_string()))?;
+    let update = pending.0.lock().await.take().ok_or_else(|| {
+        crate::error::AppError::NotFound("No pending update to install".to_string())
+    })?;
     download_and_install(&app, update)
         .await
         .map_err(crate::error::AppError::Unknown)
@@ -219,9 +216,16 @@ mod tests {
     #[tokio::test]
     async fn test_graceful_shutdown_cancels_in_flight_historical_scans() {
         let app = mock_app();
-        let registry =
-            crate::background_tasks::indicator::BackgroundTaskRegistry::default();
-        registry.register_or_update(&app, "acct_1", "historical_scan", "Scanning acct_1", 1, 10, "Scanning…");
+        let registry = crate::background_tasks::indicator::BackgroundTaskRegistry::default();
+        registry.register_or_update(
+            &app,
+            "acct_1",
+            "historical_scan",
+            "Scanning acct_1",
+            1,
+            10,
+            "Scanning…",
+        );
         app.manage(registry);
 
         // Not asserting scans_cancel's DB side effect here (that's Area 4's
@@ -291,7 +295,9 @@ mod tests {
         let app = mock_app();
         let updater = app
             .updater_builder()
-            .endpoints(vec![format!("http://127.0.0.1:{port}/latest.json").parse().unwrap()])
+            .endpoints(vec![format!("http://127.0.0.1:{port}/latest.json")
+                .parse()
+                .unwrap()])
             .unwrap()
             .target("darwin")
             .build()
@@ -301,7 +307,9 @@ mod tests {
             .check()
             .await
             .expect("check() itself must succeed -- the manifest is well-formed JSON")
-            .expect("999.0.0 must compare as newer than whatever mock_context's current version is");
+            .expect(
+                "999.0.0 must compare as newer than whatever mock_context's current version is",
+            );
 
         let download_result = update.download(|_, _| {}, || {}).await;
 

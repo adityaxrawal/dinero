@@ -24,7 +24,11 @@ pub struct ConsentEventsRow {
 /// Records a consent event. `disclosure_text` must be the exact verbatim
 /// text shown to the user at consent time (Document 18 §4.21) — not a
 /// paraphrase of what happened.
-pub fn insert_consent_event(conn: &Connection, event_type: &str, disclosure_text: &str) -> Result<String> {
+pub fn insert_consent_event(
+    conn: &Connection,
+    event_type: &str,
+    disclosure_text: &str,
+) -> Result<String> {
     let id = uuid::Uuid::new_v4().to_string();
     conn.execute(
         "INSERT INTO consent_events (id, event_type, disclosure_text, consented_at) VALUES (?1, ?2, ?3, ?4)",
@@ -71,7 +75,11 @@ pub fn has_active_consent(conn: &Connection, event_type: &str) -> Result<bool> {
 
 /// Read-only history for Settings → Privacy → Consent History
 /// (`auth_get_consent_history`, Document 19 §5.6).
-pub fn fetch_consent_history(conn: &Connection, limit: u32, offset: u32) -> Result<Vec<ConsentEventsRow>> {
+pub fn fetch_consent_history(
+    conn: &Connection,
+    limit: u32,
+    offset: u32,
+) -> Result<Vec<ConsentEventsRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, event_type, disclosure_text, consented_at, withdrawn_at
          FROM consent_events ORDER BY rowid DESC LIMIT ?1 OFFSET ?2",
@@ -88,7 +96,9 @@ pub fn get_by_id(conn: &Connection, id: &str) -> Result<Option<ConsentEventsRow>
     let mut stmt = conn.prepare(
         "SELECT id, event_type, disclosure_text, consented_at, withdrawn_at FROM consent_events WHERE id = ?1",
     )?;
-    Ok(stmt.query_row(params![id], row_to_consent_event).optional()?)
+    Ok(stmt
+        .query_row(params![id], row_to_consent_event)
+        .optional()?)
 }
 
 fn row_to_consent_event(row: &rusqlite::Row) -> rusqlite::Result<ConsentEventsRow> {
@@ -112,7 +122,8 @@ mod tests {
     #[test]
     fn insert_and_fetch_roundtrip() {
         let conn = setup_db();
-        let id = insert_consent_event(&conn, "gmail_oauth_consent", "verbatim disclosure text").unwrap();
+        let id =
+            insert_consent_event(&conn, "gmail_oauth_consent", "verbatim disclosure text").unwrap();
 
         let fetched = get_by_id(&conn, &id).unwrap().unwrap();
         assert_eq!(fetched.event_type, "gmail_oauth_consent");
@@ -154,8 +165,16 @@ mod tests {
 
         withdraw_consent_event(&conn, "gmail_oauth_consent").unwrap();
 
-        assert!(get_by_id(&conn, &second).unwrap().unwrap().withdrawn_at.is_some());
-        assert!(get_by_id(&conn, &first).unwrap().unwrap().withdrawn_at.is_none());
+        assert!(get_by_id(&conn, &second)
+            .unwrap()
+            .unwrap()
+            .withdrawn_at
+            .is_some());
+        assert!(get_by_id(&conn, &first)
+            .unwrap()
+            .unwrap()
+            .withdrawn_at
+            .is_none());
     }
 
     #[test]

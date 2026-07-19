@@ -115,7 +115,13 @@ impl BackgroundTaskRegistry {
     /// final event carrying the terminal `status` -- this is the signal the
     /// frontend removes the task from its active list on, not an inferred
     /// `current == total`.
-    pub fn deregister<R: Runtime>(&self, app: &AppHandle<R>, task_id: &str, status: TaskStatus, status_message: &str) {
+    pub fn deregister<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        task_id: &str,
+        status: TaskStatus,
+        status_message: &str,
+    ) {
         let removed = self.tasks.lock().unwrap().remove(task_id);
         let Some((mut progress, _)) = removed else {
             return;
@@ -159,16 +165,44 @@ mod tests {
         let app = mock_app();
         let registry = BackgroundTaskRegistry::default();
 
-        registry.register_or_update(&app, "scan_1", "historical_scan", "Scanning acct_1", 10, 100, "Scanning...");
-        registry.register_or_update(&app, "scan_2", "historical_scan", "Scanning acct_2", 50, 200, "Scanning...");
+        registry.register_or_update(
+            &app,
+            "scan_1",
+            "historical_scan",
+            "Scanning acct_1",
+            10,
+            100,
+            "Scanning...",
+        );
+        registry.register_or_update(
+            &app,
+            "scan_2",
+            "historical_scan",
+            "Scanning acct_2",
+            50,
+            200,
+            "Scanning...",
+        );
 
         assert_eq!(registry.active_count(), 2);
-        let mut ids: Vec<String> = registry.active_tasks().iter().map(|t| t.task_id.clone()).collect();
+        let mut ids: Vec<String> = registry
+            .active_tasks()
+            .iter()
+            .map(|t| t.task_id.clone())
+            .collect();
         ids.sort();
         assert_eq!(ids, vec!["scan_1".to_string(), "scan_2".to_string()]);
 
         // Updating an already-registered task must not create a duplicate entry.
-        registry.register_or_update(&app, "scan_1", "historical_scan", "Scanning acct_1", 20, 100, "Scanning...");
+        registry.register_or_update(
+            &app,
+            "scan_1",
+            "historical_scan",
+            "Scanning acct_1",
+            20,
+            100,
+            "Scanning...",
+        );
         assert_eq!(registry.active_count(), 2);
         let updated = registry
             .active_tasks()
@@ -184,7 +218,15 @@ mod tests {
         let app = mock_app();
         let registry = BackgroundTaskRegistry::default();
 
-        registry.register_or_update(&app, "scan_1", "historical_scan", "Scanning", 10, 100, "Scanning...");
+        registry.register_or_update(
+            &app,
+            "scan_1",
+            "historical_scan",
+            "Scanning",
+            10,
+            100,
+            "Scanning...",
+        );
         assert_eq!(registry.active_count(), 1);
 
         registry.deregister(&app, "scan_1", TaskStatus::Completed, "Done");
@@ -239,10 +281,20 @@ mod tests {
         assert_eq!(compute_progress_pct(0, 0), 0.0);
         assert_eq!(compute_progress_pct(50, 100), 50.0);
         assert_eq!(compute_progress_pct(100, 100), 100.0);
-        assert_eq!(compute_progress_pct(150, 100), 100.0, "must clamp, never exceed 100%");
+        assert_eq!(
+            compute_progress_pct(150, 100),
+            100.0,
+            "must clamp, never exceed 100%"
+        );
 
-        assert_eq!(compute_eta_seconds(0, 100, std::time::Duration::from_secs(10)), None);
-        assert_eq!(compute_eta_seconds(100, 100, std::time::Duration::from_secs(10)), None);
+        assert_eq!(
+            compute_eta_seconds(0, 100, std::time::Duration::from_secs(10)),
+            None
+        );
+        assert_eq!(
+            compute_eta_seconds(100, 100, std::time::Duration::from_secs(10)),
+            None
+        );
         // 10 units in 10s -> 1s/unit; 90 remaining -> ~90s.
         assert_eq!(
             compute_eta_seconds(10, 100, std::time::Duration::from_secs(10)),

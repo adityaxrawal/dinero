@@ -10,6 +10,16 @@ use thiserror::Error;
 /// Document 19 §4's full ~25-code catalog is TASK-API-010's explicit scope
 /// ("Standardized Error Response Contract Across All Commands"), not this
 /// setup task's. `Parse`/`Io`/`Internal`/`Validation` are added additively.
+///
+/// TASK-API-010 follow-up: the domain-specific variants below (grouped by
+/// area) round out `code()` to cover Document 19 §4's full catalog. Wiring
+/// every one of the ~66 commands to use the *most specific* applicable
+/// variant instead of a generic one is a materially larger sweep than this
+/// pass covers (the audit that flagged this gap says as much) — these
+/// variants are added so callers *can* produce the documented code, and are
+/// wired at the specific call sites the audit named (`scans_historical` ->
+/// `ScanAlreadyRunning`, `instruments_create`/`categories_create` ->
+/// `Conflict`), not retrofitted everywhere.
 #[derive(Debug, Error)]
 pub enum AppError {
     #[error("Database error: {0}")]
@@ -41,6 +51,73 @@ pub enum AppError {
 
     #[error("Validation error: {0}")]
     Validation(String),
+
+    // ── Generic (Document 19 §4) ─────────────────────────────────────────
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
+
+    #[error("Not found: {0}")]
+    NotFound(String),
+
+    #[error("Rate limited: {0}")]
+    RateLimited(String),
+
+    #[error("Conflict: {0}")]
+    Conflict(String),
+
+    // ── Gmail / ingestion ─────────────────────────────────────────────────
+    #[error("Gmail not connected: {0}")]
+    GmailNotConnected(String),
+
+    #[error("Gmail API error: {0}")]
+    GmailApiError(String),
+
+    // ── Scan (historical scan) ──────────────────────────────────────────
+    #[error("Scan already running: {0}")]
+    ScanAlreadyRunning(String),
+
+    #[error("Scan not found: {0}")]
+    ScanNotFound(String),
+
+    // ── Statement / file upload ─────────────────────────────────────────
+    #[error("File too large: {0}")]
+    FileTooLarge(String),
+
+    #[error("PDF page limit exceeded: {0}")]
+    PdfPageLimitExceeded(String),
+
+    #[error("Invalid file type: {0}")]
+    InvalidFileType(String),
+
+    #[error("Password incorrect: {0}")]
+    PasswordIncorrect(String),
+
+    #[error("Statement not awaiting password: {0}")]
+    StatementNotAwaitingPassword(String),
+
+    #[error("Statement not awaiting instrument confirmation: {0}")]
+    StatementNotAwaitingInstrumentConfirmation(String),
+
+    // ── Reconciliation clusters ─────────────────────────────────────────
+    #[error("Cluster not found: {0}")]
+    ClusterNotFound(String),
+
+    #[error("Invalid resolution action: {0}")]
+    InvalidResolutionAction(String),
+
+    // ── Licensing ────────────────────────────────────────────────────────
+    #[error("License invalid: {0}")]
+    LicenseInvalid(String),
+
+    #[error("Device already bound: {0}")]
+    DeviceAlreadyBound(String),
+
+    #[error("Payment verification failed: {0}")]
+    PaymentVerificationFailed(String),
+
+    // ── Security ─────────────────────────────────────────────────────────
+    #[error("Keychain access denied: {0}")]
+    KeychainAccessDenied(String),
 }
 
 impl AppError {
@@ -63,6 +140,28 @@ impl AppError {
             Self::Io(_) => "INTERNAL_ERROR",
             Self::Internal(_) => "INTERNAL_ERROR",
             Self::Validation(_) => "VALIDATION_ERROR",
+            Self::Forbidden(_) => "FORBIDDEN",
+            Self::NotFound(_) => "NOT_FOUND",
+            Self::RateLimited(_) => "RATE_LIMITED",
+            Self::Conflict(_) => "CONFLICT",
+            Self::GmailNotConnected(_) => "GMAIL_NOT_CONNECTED",
+            Self::GmailApiError(_) => "GMAIL_API_ERROR",
+            Self::ScanAlreadyRunning(_) => "SCAN_ALREADY_RUNNING",
+            Self::ScanNotFound(_) => "SCAN_NOT_FOUND",
+            Self::FileTooLarge(_) => "FILE_TOO_LARGE",
+            Self::PdfPageLimitExceeded(_) => "PDF_PAGE_LIMIT_EXCEEDED",
+            Self::InvalidFileType(_) => "INVALID_FILE_TYPE",
+            Self::PasswordIncorrect(_) => "PASSWORD_INCORRECT",
+            Self::StatementNotAwaitingPassword(_) => "STATEMENT_NOT_AWAITING_PASSWORD",
+            Self::StatementNotAwaitingInstrumentConfirmation(_) => {
+                "STATEMENT_NOT_AWAITING_INSTRUMENT_CONFIRMATION"
+            }
+            Self::ClusterNotFound(_) => "CLUSTER_NOT_FOUND",
+            Self::InvalidResolutionAction(_) => "INVALID_RESOLUTION_ACTION",
+            Self::LicenseInvalid(_) => "LICENSE_INVALID",
+            Self::DeviceAlreadyBound(_) => "DEVICE_ALREADY_BOUND",
+            Self::PaymentVerificationFailed(_) => "PAYMENT_VERIFICATION_FAILED",
+            Self::KeychainAccessDenied(_) => "KEYCHAIN_ACCESS_DENIED",
         }
     }
 }
@@ -84,6 +183,36 @@ impl Serialize for AppError {
         state.serialize_field("code", self.code())?;
         state.serialize_field("message", &self.to_string())?;
         state.end()
+    }
+}
+
+/// Doc 30 TASK-API-002 / Document 19 §12.2: "`instruments_create` errors:
+/// `VALIDATION_ERROR`, `CONFLICT` (duplicate instrument -- same `(type,
+/// issuer_name, masked_identifier)`)" -- and the identical pattern for
+/// `categories_create`'s `UNIQUE(name)`. Both commands previously caught
+/// their DB layer's `UNIQUE` constraint violation with a generic
+/// `.map_err(|e| AppError::Db(e.to_string()))`, so the duplicate was still
+/// rejected but the raw SQLite message reached the frontend under
+/// `INTERNAL_ERROR` instead of the documented `CONFLICT`, giving the
+/// frontend no clean way to distinguish "this was a duplicate" from any
+/// other DB failure. Detects the constraint-violation error kind
+/// specifically (rather than string-matching the message) and maps only
+/// that case to `Conflict`; any other DB error still maps to `Db` unchanged.
+pub fn map_insert_conflict(e: anyhow::Error, conflict_message: &str) -> AppError {
+    let is_constraint_violation = e
+        .downcast_ref::<rusqlite::Error>()
+        .map(|re| {
+            matches!(
+                re,
+                rusqlite::Error::SqliteFailure(err, _)
+                    if err.code == rusqlite::ErrorCode::ConstraintViolation
+            )
+        })
+        .unwrap_or(false);
+    if is_constraint_violation {
+        AppError::Conflict(conflict_message.to_string())
+    } else {
+        AppError::Db(e.to_string())
     }
 }
 
@@ -192,6 +321,213 @@ mod tests {
         assert_eq!(
             serialized(&err),
             json!({ "code": "VALIDATION_ERROR", "message": "Validation error: field required" })
+        );
+    }
+
+    #[test]
+    fn forbidden_error_serializes_with_code_and_message() {
+        let err = AppError::Forbidden("not allowed".to_string());
+        assert_eq!(
+            serialized(&err),
+            json!({ "code": "FORBIDDEN", "message": "Forbidden: not allowed" })
+        );
+    }
+
+    #[test]
+    fn not_found_error_serializes_with_code_and_message() {
+        let err = AppError::NotFound("missing row".to_string());
+        assert_eq!(
+            serialized(&err),
+            json!({ "code": "NOT_FOUND", "message": "Not found: missing row" })
+        );
+    }
+
+    #[test]
+    fn rate_limited_error_serializes_with_code_and_message() {
+        let err = AppError::RateLimited("too many requests".to_string());
+        assert_eq!(
+            serialized(&err),
+            json!({ "code": "RATE_LIMITED", "message": "Rate limited: too many requests" })
+        );
+    }
+
+    #[test]
+    fn conflict_error_serializes_with_code_and_message() {
+        let err = AppError::Conflict("duplicate instrument".to_string());
+        assert_eq!(
+            serialized(&err),
+            json!({ "code": "CONFLICT", "message": "Conflict: duplicate instrument" })
+        );
+    }
+
+    #[test]
+    fn gmail_not_connected_error_serializes_with_code_and_message() {
+        let err = AppError::GmailNotConnected("no account linked".to_string());
+        assert_eq!(
+            serialized(&err),
+            json!({ "code": "GMAIL_NOT_CONNECTED", "message": "Gmail not connected: no account linked" })
+        );
+    }
+
+    #[test]
+    fn gmail_api_error_serializes_with_code_and_message() {
+        let err = AppError::GmailApiError("quota exceeded".to_string());
+        assert_eq!(
+            serialized(&err),
+            json!({ "code": "GMAIL_API_ERROR", "message": "Gmail API error: quota exceeded" })
+        );
+    }
+
+    #[test]
+    fn scan_already_running_error_serializes_with_code_and_message() {
+        let err = AppError::ScanAlreadyRunning("account already scanning".to_string());
+        assert_eq!(
+            serialized(&err),
+            json!({ "code": "SCAN_ALREADY_RUNNING", "message": "Scan already running: account already scanning" })
+        );
+    }
+
+    #[test]
+    fn scan_not_found_error_serializes_with_code_and_message() {
+        let err = AppError::ScanNotFound("no checkpoint".to_string());
+        assert_eq!(
+            serialized(&err),
+            json!({ "code": "SCAN_NOT_FOUND", "message": "Scan not found: no checkpoint" })
+        );
+    }
+
+    #[test]
+    fn file_too_large_error_serializes_with_code_and_message() {
+        let err = AppError::FileTooLarge("exceeds 25MB".to_string());
+        assert_eq!(
+            serialized(&err),
+            json!({ "code": "FILE_TOO_LARGE", "message": "File too large: exceeds 25MB" })
+        );
+    }
+
+    #[test]
+    fn pdf_page_limit_exceeded_error_serializes_with_code_and_message() {
+        let err = AppError::PdfPageLimitExceeded("exceeds 200 pages".to_string());
+        assert_eq!(
+            serialized(&err),
+            json!({ "code": "PDF_PAGE_LIMIT_EXCEEDED", "message": "PDF page limit exceeded: exceeds 200 pages" })
+        );
+    }
+
+    #[test]
+    fn invalid_file_type_error_serializes_with_code_and_message() {
+        let err = AppError::InvalidFileType("not a PDF".to_string());
+        assert_eq!(
+            serialized(&err),
+            json!({ "code": "INVALID_FILE_TYPE", "message": "Invalid file type: not a PDF" })
+        );
+    }
+
+    #[test]
+    fn password_incorrect_error_serializes_with_code_and_message() {
+        let err = AppError::PasswordIncorrect("wrong password".to_string());
+        assert_eq!(
+            serialized(&err),
+            json!({ "code": "PASSWORD_INCORRECT", "message": "Password incorrect: wrong password" })
+        );
+    }
+
+    #[test]
+    fn statement_not_awaiting_password_error_serializes_with_code_and_message() {
+        let err = AppError::StatementNotAwaitingPassword("wrong state".to_string());
+        assert_eq!(
+            serialized(&err),
+            json!({ "code": "STATEMENT_NOT_AWAITING_PASSWORD", "message": "Statement not awaiting password: wrong state" })
+        );
+    }
+
+    #[test]
+    fn statement_not_awaiting_instrument_confirmation_error_serializes_with_code_and_message() {
+        let err = AppError::StatementNotAwaitingInstrumentConfirmation("wrong state".to_string());
+        assert_eq!(
+            serialized(&err),
+            json!({ "code": "STATEMENT_NOT_AWAITING_INSTRUMENT_CONFIRMATION", "message": "Statement not awaiting instrument confirmation: wrong state" })
+        );
+    }
+
+    #[test]
+    fn cluster_not_found_error_serializes_with_code_and_message() {
+        let err = AppError::ClusterNotFound("no such cluster".to_string());
+        assert_eq!(
+            serialized(&err),
+            json!({ "code": "CLUSTER_NOT_FOUND", "message": "Cluster not found: no such cluster" })
+        );
+    }
+
+    #[test]
+    fn invalid_resolution_action_error_serializes_with_code_and_message() {
+        let err = AppError::InvalidResolutionAction("unknown action".to_string());
+        assert_eq!(
+            serialized(&err),
+            json!({ "code": "INVALID_RESOLUTION_ACTION", "message": "Invalid resolution action: unknown action" })
+        );
+    }
+
+    #[test]
+    fn license_invalid_error_serializes_with_code_and_message() {
+        let err = AppError::LicenseInvalid("signature mismatch".to_string());
+        assert_eq!(
+            serialized(&err),
+            json!({ "code": "LICENSE_INVALID", "message": "License invalid: signature mismatch" })
+        );
+    }
+
+    #[test]
+    fn device_already_bound_error_serializes_with_code_and_message() {
+        let err = AppError::DeviceAlreadyBound("seat taken".to_string());
+        assert_eq!(
+            serialized(&err),
+            json!({ "code": "DEVICE_ALREADY_BOUND", "message": "Device already bound: seat taken" })
+        );
+    }
+
+    #[test]
+    fn payment_verification_failed_error_serializes_with_code_and_message() {
+        let err = AppError::PaymentVerificationFailed("receipt invalid".to_string());
+        assert_eq!(
+            serialized(&err),
+            json!({ "code": "PAYMENT_VERIFICATION_FAILED", "message": "Payment verification failed: receipt invalid" })
+        );
+    }
+
+    #[test]
+    fn map_insert_conflict_maps_real_unique_violation_to_conflict() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t (name TEXT NOT NULL UNIQUE);")
+            .unwrap();
+        conn.execute("INSERT INTO t (name) VALUES ('a')", [])
+            .unwrap();
+        let insert_err = conn
+            .execute("INSERT INTO t (name) VALUES ('a')", [])
+            .unwrap_err();
+        let mapped = map_insert_conflict(anyhow::Error::new(insert_err), "duplicate name");
+        assert_eq!(
+            serialized(&mapped),
+            json!({ "code": "CONFLICT", "message": "Conflict: duplicate name" })
+        );
+    }
+
+    #[test]
+    fn map_insert_conflict_leaves_other_errors_as_db() {
+        let other_err = anyhow::anyhow!("connection lost");
+        let mapped = map_insert_conflict(other_err, "duplicate name");
+        assert_eq!(
+            serialized(&mapped),
+            json!({ "code": "INTERNAL_ERROR", "message": "Database error: connection lost" })
+        );
+    }
+
+    #[test]
+    fn keychain_access_denied_error_serializes_with_code_and_message() {
+        let err = AppError::KeychainAccessDenied("user denied prompt".to_string());
+        assert_eq!(
+            serialized(&err),
+            json!({ "code": "KEYCHAIN_ACCESS_DENIED", "message": "Keychain access denied: user denied prompt" })
         );
     }
 }

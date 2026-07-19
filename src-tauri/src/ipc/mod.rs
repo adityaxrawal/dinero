@@ -49,7 +49,9 @@ where
         }
         Err(join_err) => {
             tracing::error!("IPC command task join error (not a panic): {}", join_err);
-            Err(AppError::Internal(format!("IPC task join error: {join_err}")))
+            Err(AppError::Internal(format!(
+                "IPC task join error: {join_err}"
+            )))
         }
     }
 }
@@ -67,8 +69,7 @@ mod tests {
     #[tokio::test]
     async fn err_future_passes_through_unchanged() {
         let result =
-            with_panic_boundary(async { Err::<i32, _>(AppError::Validation("bad".into())) })
-                .await;
+            with_panic_boundary(async { Err::<i32, _>(AppError::Validation("bad".into())) }).await;
         assert!(matches!(result, Err(AppError::Validation(m)) if m == "bad"));
     }
 

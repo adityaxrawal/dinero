@@ -102,7 +102,11 @@ pub fn check_notification_permission<R: Runtime>(app: &AppHandle<R>) -> bool {
 /// consistent with this codebase's existing `db::crypto` test convention
 /// (see that module's `hardware_migration_tests` doc comment) of avoiding
 /// real Keychain calls in unit tests.
-fn emit_denied_permissions<R: Runtime>(app: &AppHandle<R>, keychain_ok: bool, notification_ok: bool) {
+fn emit_denied_permissions<R: Runtime>(
+    app: &AppHandle<R>,
+    keychain_ok: bool,
+    notification_ok: bool,
+) {
     if !keychain_ok {
         emit_permission_denied(
             app,
@@ -143,8 +147,14 @@ mod tests {
 
     #[test]
     fn test_keychain_is_hard_fail_notification_is_soft_fail() {
-        assert_eq!(severity_for(PermissionKind::Keychain), PermissionSeverity::HardFail);
-        assert_eq!(severity_for(PermissionKind::Notification), PermissionSeverity::SoftFail);
+        assert_eq!(
+            severity_for(PermissionKind::Keychain),
+            PermissionSeverity::HardFail
+        );
+        assert_eq!(
+            severity_for(PermissionKind::Notification),
+            PermissionSeverity::SoftFail
+        );
     }
 
     /// Doc 30 TASK-DESK-004 acceptance: `test_keychain_denial_shows_blocking_overlay`.
@@ -160,7 +170,10 @@ mod tests {
         // (severity: "hard_fail", warning_type: "keychain_denied") is what
         // the frontend test in this same task asserts against.
         emit_denied_permissions(&app, false, true);
-        assert_eq!(severity_for(PermissionKind::Keychain), PermissionSeverity::HardFail);
+        assert_eq!(
+            severity_for(PermissionKind::Keychain),
+            PermissionSeverity::HardFail
+        );
     }
 
     /// Doc 30 TASK-DESK-004 acceptance: `test_permission_states_checked_proactively_at_launch`.

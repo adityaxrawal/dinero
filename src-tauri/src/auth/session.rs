@@ -118,7 +118,9 @@ mod tests {
     #[test]
     fn ensure_active_session_creates_a_row_when_none_exists() {
         let conn = setup_db();
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0)).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(count, 0);
 
         // Directly exercise the DB-level logic ensure_active_session uses,
@@ -154,7 +156,10 @@ mod tests {
         sessions::revoke(&conn, &id, Utc::now()).unwrap();
 
         let fetched = sessions::get(&conn, &id).unwrap().unwrap();
-        assert!(fetched.revoked_at.is_some(), "session must still exist, just revoked");
+        assert!(
+            fetched.revoked_at.is_some(),
+            "session must still exist, just revoked"
+        );
     }
 
     #[test]

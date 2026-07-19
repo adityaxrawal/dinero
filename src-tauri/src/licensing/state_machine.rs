@@ -58,11 +58,7 @@ pub fn transition(conn: &Connection, to: LicenseStatus) -> Result<()> {
         return Ok(());
     }
     if !is_legal_transition(&from, &to) {
-        bail!(
-            "Illegal license state transition: {:?} -> {:?}",
-            from,
-            to
-        );
+        bail!("Illegal license state transition: {:?} -> {:?}", from, to);
     }
 
     conn.execute(
@@ -109,42 +105,63 @@ mod tests {
         seed_state(&conn, LicenseStatus::AnonymousEval);
         transition(&conn, LicenseStatus::Trial).unwrap();
         assert_eq!(
-            get_license_state(&conn).unwrap().unwrap().subscription_status_cached,
+            get_license_state(&conn)
+                .unwrap()
+                .unwrap()
+                .subscription_status_cached,
             LicenseStatus::Trial
         );
 
         transition(&conn, LicenseStatus::Active).unwrap();
         assert_eq!(
-            get_license_state(&conn).unwrap().unwrap().subscription_status_cached,
+            get_license_state(&conn)
+                .unwrap()
+                .unwrap()
+                .subscription_status_cached,
             LicenseStatus::Active
         );
 
         transition(&conn, LicenseStatus::Grace).unwrap();
         assert_eq!(
-            get_license_state(&conn).unwrap().unwrap().subscription_status_cached,
+            get_license_state(&conn)
+                .unwrap()
+                .unwrap()
+                .subscription_status_cached,
             LicenseStatus::Grace
         );
 
         transition(&conn, LicenseStatus::Active).unwrap();
         assert_eq!(
-            get_license_state(&conn).unwrap().unwrap().subscription_status_cached,
+            get_license_state(&conn)
+                .unwrap()
+                .unwrap()
+                .subscription_status_cached,
             LicenseStatus::Active
         );
 
         transition(&conn, LicenseStatus::Locked).unwrap();
         assert_eq!(
-            get_license_state(&conn).unwrap().unwrap().subscription_status_cached,
+            get_license_state(&conn)
+                .unwrap()
+                .unwrap()
+                .subscription_status_cached,
             LicenseStatus::Locked
         );
 
         // Illegal: LOCKED -> ACTIVE without reactivation (Document 30's own
         // named example) must be rejected.
         let result = transition(&conn, LicenseStatus::Active);
-        assert!(result.is_err(), "LOCKED -> ACTIVE must be rejected without a real reactivation");
+        assert!(
+            result.is_err(),
+            "LOCKED -> ACTIVE must be rejected without a real reactivation"
+        );
 
         // Still LOCKED after the rejected attempt.
         assert_eq!(
-            get_license_state(&conn).unwrap().unwrap().subscription_status_cached,
+            get_license_state(&conn)
+                .unwrap()
+                .unwrap()
+                .subscription_status_cached,
             LicenseStatus::Locked
         );
     }
@@ -155,7 +172,10 @@ mod tests {
         seed_state(&conn, LicenseStatus::Active);
         transition(&conn, LicenseStatus::Active).unwrap();
         assert_eq!(
-            get_license_state(&conn).unwrap().unwrap().subscription_status_cached,
+            get_license_state(&conn)
+                .unwrap()
+                .unwrap()
+                .subscription_status_cached,
             LicenseStatus::Active
         );
     }
@@ -166,7 +186,10 @@ mod tests {
         seed_state(&conn, LicenseStatus::Grace);
         transition(&conn, LicenseStatus::Locked).unwrap();
         assert_eq!(
-            get_license_state(&conn).unwrap().unwrap().subscription_status_cached,
+            get_license_state(&conn)
+                .unwrap()
+                .unwrap()
+                .subscription_status_cached,
             LicenseStatus::Locked
         );
     }

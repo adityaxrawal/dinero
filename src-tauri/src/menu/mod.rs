@@ -296,7 +296,11 @@ pub fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
 
     match action {
         MenuAction::Navigate(route) => {
-            let _ = emit_event(app, AppEvent::MenuNavigate, serde_json::json!({ "route": route }));
+            let _ = emit_event(
+                app,
+                AppEvent::MenuNavigate,
+                serde_json::json!({ "route": route }),
+            );
         }
         MenuAction::ToggleSidebar => {
             let _ = emit_event(app, AppEvent::MenuToggleSidebar, serde_json::json!({}));
@@ -320,7 +324,9 @@ pub fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
             let app = app.clone();
             tauri::async_runtime::spawn(async move {
                 let pool = app.state::<deadpool_sqlite::Pool>();
-                if let Err(e) = crate::ingestion::polling::sync_force_poll_now(app.clone(), pool).await {
+                if let Err(e) =
+                    crate::ingestion::polling::sync_force_poll_now(app.clone(), pool).await
+                {
                     tracing::warn!("Menu-triggered refresh failed: {}", e);
                 }
             });
@@ -380,9 +386,18 @@ mod tests {
 
         let edit_menu = &MENU_SPEC[2];
         assert!(!edit_menu.entries.is_empty());
-        assert!(edit_menu.entries.iter().any(|e| matches!(e, EntrySpec::PredefinedCut)));
-        assert!(edit_menu.entries.iter().any(|e| matches!(e, EntrySpec::PredefinedCopy)));
-        assert!(edit_menu.entries.iter().any(|e| matches!(e, EntrySpec::PredefinedPaste)));
+        assert!(edit_menu
+            .entries
+            .iter()
+            .any(|e| matches!(e, EntrySpec::PredefinedCut)));
+        assert!(edit_menu
+            .entries
+            .iter()
+            .any(|e| matches!(e, EntrySpec::PredefinedCopy)));
+        assert!(edit_menu
+            .entries
+            .iter()
+            .any(|e| matches!(e, EntrySpec::PredefinedPaste)));
 
         let view_menu = &MENU_SPEC[3];
         assert!(find_custom(view_menu, MENU_ID_REFRESH).is_some());
@@ -428,7 +443,10 @@ mod tests {
 
     #[test]
     fn test_refresh_and_toggle_sidebar_resolve_correctly() {
-        assert_eq!(resolve_menu_action(MENU_ID_REFRESH), Some(MenuAction::RefreshNow));
+        assert_eq!(
+            resolve_menu_action(MENU_ID_REFRESH),
+            Some(MenuAction::RefreshNow)
+        );
         assert_eq!(
             resolve_menu_action(MENU_ID_TOGGLE_SIDEBAR),
             Some(MenuAction::ToggleSidebar)
@@ -445,7 +463,10 @@ mod tests {
             resolve_menu_action(MENU_ID_PRIVACY_POLICY),
             Some(MenuAction::OpenUrl(PRIVACY_POLICY_URL))
         );
-        assert_eq!(resolve_menu_action(MENU_ID_REPORT_ISSUE), Some(MenuAction::ReportIssue));
+        assert_eq!(
+            resolve_menu_action(MENU_ID_REPORT_ISSUE),
+            Some(MenuAction::ReportIssue)
+        );
         assert_eq!(
             resolve_menu_action(MENU_ID_CHECK_FOR_UPDATES),
             Some(MenuAction::CheckForUpdates)
