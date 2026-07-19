@@ -1,0 +1,13 @@
+-- TASK-API-006: Document 18 §4.21b's authoritative `network_activity_log`
+-- schema names `channel` (gmail_api/licensing_backend/google_oauth/
+-- github_releases/huggingface) as the primary field -- which of the 5
+-- disclosed network channels made a given outbound call, the entire point
+-- of the privacy-transparency feature. The table never had this column;
+-- `settings_get_network_activity` worked around it by inferring the
+-- channel at read time from the destination hostname, which produces
+-- "unknown" for any hostname it doesn't recognize and isn't the documented
+-- mechanism. `NetworkClient::execute` now takes an explicit channel
+-- parameter from each of its real call sites and writes it directly.
+-- Existing rows (written before this column existed) get NULL; the
+-- read-side hostname inference remains as a fallback for those only.
+ALTER TABLE network_activity_log ADD COLUMN channel TEXT;
