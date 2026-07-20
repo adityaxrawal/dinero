@@ -1,14 +1,25 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { API } from '../../lib/ipc';
 import { DebugTableLayout } from './DebugTableLayout';
 import { Badge } from '../ui/badge';
 
+interface AuditLog {
+  id: string;
+  created_at: string;
+  action: string;
+  resource_type: string;
+  resource_id: string | null;
+  actor_type: string;
+  actor_id: string;
+  after_json: unknown;
+}
+
 export function AuditLogViewer() {
-  const [logs, setLogs] = useState<any[]>([]);
+  const [logs, setLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [resourceFilter, setResourceFilter] = useState<string>('');
 
-  const fetchLogs = async () => {
+  const fetchLogs = useCallback(async () => {
     setLoading(true);
     try {
       const data = await API.debug.fetchAuditLog(resourceFilter || undefined, 100, 0);
@@ -18,11 +29,11 @@ export function AuditLogViewer() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [resourceFilter]);
 
   useEffect(() => {
     fetchLogs();
-  }, [resourceFilter]);
+  }, [fetchLogs]);
 
 
 

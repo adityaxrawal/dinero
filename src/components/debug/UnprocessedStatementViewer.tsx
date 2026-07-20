@@ -4,8 +4,16 @@ import { Badge } from '../ui/badge';
 
 import { DebugTableLayout } from './DebugTableLayout';
 
+interface UnprocessedStatement {
+  id: string;
+  created_at: string;
+  original_filename: string;
+  file_hash: string | null;
+  needs_password: boolean;
+}
+
 export function UnprocessedStatementViewer() {
-  const [statements, setStatements] = useState<any[]>([]);
+  const [statements, setStatements] = useState<UnprocessedStatement[]>([]);
   const [loading, setLoading] = useState(true);
 
   const fetchStatements = async () => {
@@ -48,7 +56,7 @@ export function UnprocessedStatementViewer() {
           <td className="p-2 text-sm font-mono">{stmt.id.substring(0, 8)}</td>
           <td className="p-2 text-sm">{new Date(stmt.created_at).toLocaleString()}</td>
           <td className="p-2 text-sm">{stmt.original_filename}</td>
-          <td className="p-2 text-sm font-mono text-muted-foreground">{stmt.file_hash.substring(0, 12)}...</td>
+          <td className="p-2 text-sm font-mono text-muted-foreground">{stmt.file_hash?.substring(0, 12) ?? 'N/A'}...</td>
           <td className="p-2 text-sm">
             {stmt.needs_password ? (
               <Badge variant="destructive">Needs Password</Badge>

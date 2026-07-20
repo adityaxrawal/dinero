@@ -4,8 +4,18 @@ import { Badge } from '../ui/badge';
 
 import { DebugTableLayout } from './DebugTableLayout';
 
+interface PatternRule {
+  id: string;
+  merchant_id: string;
+  pattern_type: string;
+  pattern_value: string;
+  is_active: boolean;
+  success_count: number;
+  failure_count: number;
+}
+
 export function PatternRuleHealthViewer() {
-  const [rules, setRules] = useState<any[]>([]);
+  const [rules, setRules] = useState<PatternRule[]>([]);
   const [loading, setLoading] = useState(true);
 
   const fetchRules = async () => {

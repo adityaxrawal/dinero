@@ -3,8 +3,15 @@ import { API } from '../../lib/ipc';
 
 import { DebugTableLayout } from './DebugTableLayout';
 
+interface ParseError {
+  id: string;
+  instrument_id: string | null;
+  created_at: string;
+  raw_payload_json: string | null;
+}
+
 export function ParseErrorViewer() {
-  const [errors, setErrors] = useState<any[]>([]);
+  const [errors, setErrors] = useState<ParseError[]>([]);
   const [loading, setLoading] = useState(true);
 
   const fetchErrors = async () => {

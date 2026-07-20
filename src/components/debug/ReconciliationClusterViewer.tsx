@@ -4,8 +4,17 @@ import { Badge } from '../ui/badge';
 
 import { DebugTableLayout } from './DebugTableLayout';
 
+interface ReconciliationCluster {
+  id: string;
+  created_at: string;
+  status: string;
+  total_amount_minor: number | null;
+  currency: string;
+  observation_id: string | null;
+}
+
 export function ReconciliationClusterViewer() {
-  const [clusters, setClusters] = useState<any[]>([]);
+  const [clusters, setClusters] = useState<ReconciliationCluster[]>([]);
   const [loading, setLoading] = useState(true);
 
   const fetchClusters = async () => {

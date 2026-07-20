@@ -1,12 +1,11 @@
-import { useState } from 'react';
+
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Loader2, GitMerge, X, SplitSquareHorizontal, Clock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { useToast } from '@/hooks/use-toast';
-import { getErrorMessage } from '@/lib/getErrorMessage';
+
 import { useReconciliationCluster } from '@/hooks/queries/useReconciliationCluster';
-import { useResolveCluster } from '@/hooks/mutations/useResolveCluster';
+import { useResolveClusterActions } from '@/hooks/useResolveClusterActions';
 import ClusterMemberComparison from '@/components/reconciliation/ClusterMemberComparison';
 import type { ClusterMember } from '@/lib/ipc';
 
@@ -23,114 +22,44 @@ import type { ClusterMember } from '@/lib/ipc';
  * pre-rewrite page never sent one at all.
  */
 export default function ReconciliationClusterDetail() {
-  const { clusterId } = useParams<{ clusterId: string }>();
+
   const navigate = useNavigate();
-  const { toast } = useToast();
-  const { data: cluster, isLoading, isError } = useReconciliationCluster(clusterId);
-  const resolveCluster = useResolveCluster();
+  const { clusterId } = useParams<{ clusterId: string }>();
 
-  const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
+  const { data: cluster, isLoading, error } = useReconciliationCluster(clusterId);
 
-  if (!clusterId) return null;
+  const {
+    candidates,
+    selectedCandidateId,
+    setSelectedCandidateId,
+    handleConfirmMatch,
+    handleRejectCandidates,
+    handleKeepSeparate,
+    handleReviewLater,
+    isPending,
+  } = useResolveClusterActions({
+    cluster,
+    onSuccess: () => {
+      navigate('/reconciliation');
+    },
+  });
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-40" role="status" aria-label="Loading cluster">
-        <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" aria-hidden="true" />
+      <div className="flex items-center justify-center h-[50vh]">
+        <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" aria-hidden="true" />
       </div>
     );
   }
 
-  if (isError || !cluster) {
+  if (error || !cluster) {
     return (
-      <div className="max-w-3xl mx-auto space-y-4">
-        <Button variant="ghost" size="sm" onClick={() => navigate('/reconciliation')}>
-          <ArrowLeft className="w-4 h-4 mr-1" aria-hidden="true" /> Back
-        </Button>
+      <div className="flex flex-col items-center justify-center h-[50vh] space-y-4">
+        <p className="text-xl font-semibold">Cluster Not Found</p>
         <p className="text-sm text-muted-foreground">This cluster could not be found. It may already be resolved.</p>
       </div>
     );
   }
-
-  const incoming = cluster.members.find((m) => m.member_role === 'incoming');
-  const candidates = cluster.members.filter((m) => m.member_role !== 'incoming');
-
-  const confirmAndResolve = async (
-    title: string,
-    plainLanguageExplanation: string,
-    action: 'confirm_match' | 'reject_candidate' | 'keep_separate' | 'mark_unresolved',
-    chosenCanonicalId?: string,
-  ) => {
-    if (!incoming?.observation_id) {
-      toast({ variant: 'destructive', title: 'Cannot resolve', description: 'This cluster has no incoming evidence to act on.' });
-      return;
-    }
-
-    let confirmed: boolean;
-    try {
-      const { ask } = await import('@tauri-apps/plugin-dialog');
-      confirmed = await ask(plainLanguageExplanation, { title, kind: 'warning' });
-    } catch {
-      confirmed = confirm(plainLanguageExplanation);
-    }
-    if (!confirmed) return;
-
-    resolveCluster.mutate(
-      { clusterId, observationId: incoming.observation_id, action, chosenCanonicalId },
-      {
-        onSuccess: () => {
-          toast(
-            action === 'mark_unresolved'
-              ? { title: 'Marked for Later Review', description: 'This cluster will stay in your queue.' }
-              : { title: 'Cluster Resolved', description: 'Your decision has been recorded.' },
-          );
-          navigate('/reconciliation');
-        },
-        onError: (err) =>
-          toast({ variant: 'destructive', title: 'Resolution Failed', description: getErrorMessage(err) }),
-      },
-    );
-  };
-
-  const handleConfirmMatch = () => {
-    const candidate = candidates.find((c) => c.canonical_transaction_id === selectedCandidateId);
-    if (!candidate) {
-      toast({ variant: 'destructive', title: 'Pick a match first', description: 'Select which existing transaction this matches before confirming.' });
-      return;
-    }
-    confirmAndResolve(
-      'Confirm Match',
-      `Link this transaction to "${candidate.merchant}" (₹${Math.abs(candidate.amount).toFixed(2)})? The two records will be merged as the same transaction.`,
-      'confirm_match',
-      selectedCandidateId ?? undefined,
-    );
-  };
-
-  const handleRejectCandidates = () => {
-    confirmAndResolve(
-      'Reject Matches',
-      'None of the existing transactions shown are a match. The new evidence will be recorded as a separate, unmatched transaction.',
-      'reject_candidate',
-    );
-  };
-
-  const handleKeepSeparate = () => {
-    confirmAndResolve(
-      'Keep Separate',
-      'This transaction is genuinely distinct from the ones shown, even though they look similar. It will be kept as its own separate transaction.',
-      'keep_separate',
-    );
-  };
-
-  const handleReviewLater = () => {
-    confirmAndResolve(
-      'Review Later',
-      "This cluster will stay in your queue and won't be resolved yet.",
-      'mark_unresolved',
-    );
-  };
-
-  const isPending = resolveCluster.isPending;
 
   return (
     <div className="space-y-6 max-w-4xl mx-auto">
