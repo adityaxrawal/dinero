@@ -48,12 +48,12 @@ export default function DeleteAccountSection() {
 
   return (
     <div>
-      <p className="text-sm text-muted-foreground" style={{ marginBottom: '16px' }}>
+      <p className="text-[13px] font-medium text-[#064E3B]/70 mb-4">
         Permanently delete all your data from this device: transactions, statements, instruments,
         connected Gmail accounts, and encryption keys. This action cannot be undone.
       </p>
-      <button className="btn btn-danger" onClick={() => setResetModalOpen(true)}>
-        <HardDrive size={18} />
+      <button className="h-9 px-4 rounded-lg font-semibold bg-red-500/10 border border-red-500/20 text-red-600 hover:bg-red-500/20 transition-colors inline-flex items-center justify-center gap-2" onClick={() => setResetModalOpen(true)}>
+        <HardDrive className="w-4 h-4" />
         Delete My Data
       </button>
 
@@ -64,7 +64,7 @@ export default function DeleteAccountSection() {
         }}
       >
         <DialogContent
-          className="sm:max-w-[480px]"
+          className="sm:max-w-[480px] bg-[#F8E7C9] border-[#064E3B]/20 text-[#064E3B]"
           aria-labelledby="reset-dialog-title"
           aria-describedby="reset-dialog-desc"
         >
@@ -75,24 +75,24 @@ export default function DeleteAccountSection() {
                   <AlertTriangle className="w-5 h-5" aria-hidden="true" />
                   Delete My Data
                 </DialogTitle>
-                <DialogDescription id="reset-dialog-desc" className="text-base pt-2">
+                <DialogDescription id="reset-dialog-desc" className="text-[14px] pt-2 text-[#064E3B]">
                   This permanently deletes, on this device:
                 </DialogDescription>
               </DialogHeader>
-              <ul className="list-disc pl-5 space-y-1 text-sm text-muted-foreground">
+              <ul className="list-disc pl-5 space-y-1 text-[13px] text-[#064E3B]/70 font-medium">
                 <li>All transactions, statements, and instruments</li>
                 <li>All local database backups (daily and pre-migration)</li>
                 <li>Your connected Gmail account(s) and stored OAuth tokens</li>
                 <li>Your license/device binding (deactivated on the server)</li>
                 <li>Encryption keys stored in Keychain</li>
               </ul>
-              <p className="text-sm font-medium text-red-700">This cannot be undone.</p>
+              <p className="text-[13px] font-bold text-red-700">This cannot be undone.</p>
               <DialogFooter>
-                <Button variant="outline" onClick={closeResetModal} aria-label="Cancel data deletion">
+                <Button variant="outline" className="border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5" onClick={closeResetModal} aria-label="Cancel data deletion">
                   Cancel
                 </Button>
                 <Button
-                  variant="destructive"
+                  className="bg-red-600 text-white hover:bg-red-700"
                   onClick={() => setResetStep(2)}
                   aria-label="I understand, continue to confirmation"
                 >
@@ -107,12 +107,12 @@ export default function DeleteAccountSection() {
                   <AlertTriangle className="w-5 h-5" aria-hidden="true" />
                   Confirm Deletion
                 </DialogTitle>
-                <DialogDescription id="reset-dialog-desc">
-                  Type <strong>{RESET_CONFIRM_PHRASE}</strong> below to confirm. This is your last chance to cancel.
+                <DialogDescription id="reset-dialog-desc" className="text-[#064E3B]/80 font-medium">
+                  Type <strong className="text-[#064E3B]">{RESET_CONFIRM_PHRASE}</strong> below to confirm. This is your last chance to cancel.
                 </DialogDescription>
               </DialogHeader>
               <div className="py-2 space-y-2">
-                <Label htmlFor="reset-confirm-text">Confirmation phrase</Label>
+                <Label htmlFor="reset-confirm-text" className="text-[#064E3B]">Confirmation phrase</Label>
                 <Input
                   id="reset-confirm-text"
                   value={resetConfirmText}
@@ -120,17 +120,18 @@ export default function DeleteAccountSection() {
                   placeholder={RESET_CONFIRM_PHRASE}
                   autoFocus
                   aria-describedby="reset-confirm-hint"
+                  className="bg-[#F8E7C9]/50 border-[#064E3B]/20 focus-visible:ring-[#064E3B]"
                 />
-                <p id="reset-confirm-hint" className="text-xs text-muted-foreground">
+                <p id="reset-confirm-hint" className="text-xs text-[#064E3B]/60">
                   Must match exactly, including capitalization.
                 </p>
               </div>
               <DialogFooter>
-                <Button variant="outline" onClick={closeResetModal} disabled={isResetting} aria-label="Cancel data deletion">
+                <Button variant="outline" className="border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5" onClick={closeResetModal} disabled={isResetting} aria-label="Cancel data deletion">
                   Cancel
                 </Button>
                 <Button
-                  variant="destructive"
+                  className="bg-red-600 text-white hover:bg-red-700"
                   onClick={handleConfirmReset}
                   disabled={resetConfirmText !== RESET_CONFIRM_PHRASE || isResetting}
                   aria-label="Permanently delete my data"

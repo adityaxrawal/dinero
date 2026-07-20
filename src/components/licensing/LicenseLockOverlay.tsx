@@ -1,9 +1,8 @@
-import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AlertTriangle, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useLicenseStore } from '@/stores/useLicenseStore';
-import { API } from '@/lib/ipc';
+import { useLicenseRefresh } from '@/hooks/useLicenseRefresh';
 
 /**
  * TASK-FE-016 (Doc 30): "full-screen, non-dismissable, rendered at the
@@ -46,23 +45,9 @@ import { API } from '@/lib/ipc';
 export default function LicenseLockOverlay() {
   const isLocked = useLicenseStore((s) => s.isLocked);
   const navigate = useNavigate();
-  const [isRetrying, setIsRetrying] = useState(false);
+  const { isRetrying, handleRetry } = useLicenseRefresh();
 
   if (!isLocked) return null;
-
-  const handleRetry = async () => {
-    setIsRetrying(true);
-    try {
-      await API.licensing.refresh();
-      // A successful refresh emits license_state_changed, which
-      // useLicenseStore mirrors -- isLocked flips to false reactively,
-      // dismissing this banner without any local state change here.
-    } catch (err) {
-      console.error('License refresh failed:', err);
-    } finally {
-      setIsRetrying(false);
-    }
-  };
 
   return (
     <div

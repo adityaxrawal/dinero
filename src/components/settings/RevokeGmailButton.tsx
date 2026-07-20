@@ -38,16 +38,9 @@ export default function RevokeGmailButton({
 
   return (
     <button
-      className="btn btn-secondary"
+      className="px-3 py-1.5 text-[12px] font-semibold rounded-lg bg-red-500/10 text-red-700 border border-red-500/20 hover:bg-red-500/20 transition-colors disabled:opacity-50"
       onClick={handleClick}
       disabled={isRevoking}
-      style={{
-        padding: '6px 12px',
-        fontSize: '12px',
-        background: 'rgba(239,68,68,0.1)',
-        color: 'var(--error)',
-        border: '1px solid rgba(239,68,68,0.2)',
-      }}
     >
       {isRevoking ? 'Disconnecting…' : 'Disconnect'}
     </button>

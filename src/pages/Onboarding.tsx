@@ -102,8 +102,8 @@ export default function Onboarding() {
       // finishing onboarding immediately — a connected account is exactly
       // what that step needs to actually trigger a scan.
       setStep(3);
-    } catch (e: any) {
-      setOauthError(mapOauthError(e?.message));
+    } catch (e: unknown) {
+      setOauthError(mapOauthError(e instanceof Error ? e.message : String(e)));
     } finally {
       setLoading(false);
     }

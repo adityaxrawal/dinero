@@ -9,7 +9,7 @@ import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { useToast } from '@/hooks/use-toast';
 import { API } from '@/lib/ipc';
-import { getErrorMessage } from '@/lib/getErrorMessage';
+import { getErrorToast } from '@/lib/errorMapping';
 import { queryKeys } from '@/lib/queryKeys';
 import { useInstrumentDetail } from '@/hooks/queries/useInstrumentDetail';
 import { useTransactionsInfiniteList } from '@/hooks/queries/useTransactionsInfiniteList';
@@ -83,7 +83,7 @@ export default function InstrumentDetail() {
       queryClient.invalidateQueries({ queryKey: queryKeys.instruments.detail(id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.instruments.all() });
     } catch (err) {
-      toast({ title: 'Error', description: getErrorMessage(err), variant: 'destructive' });
+      toast({ variant: 'destructive', ...getErrorToast(err) });
     } finally {
       setIsSaving(false);
     }
@@ -104,7 +104,7 @@ export default function InstrumentDetail() {
       toast({ title: 'Instrument deleted' });
       navigate('/instruments');
     } catch (err) {
-      toast({ title: 'Error', description: getErrorMessage(err), variant: 'destructive' });
+      toast({ variant: 'destructive', ...getErrorToast(err) });
     } finally {
       setIsDeleting(false);
     }
@@ -113,7 +113,7 @@ export default function InstrumentDetail() {
   const handleForgetPassword = (passwordId: string) => {
     forgetPassword.mutate(passwordId, {
       onSuccess: () => toast({ title: 'Saved password forgotten' }),
-      onError: (err) => toast({ variant: 'destructive', title: 'Failed to forget password', description: getErrorMessage(err) }),
+      onError: (err) => toast({ variant: 'destructive', ...getErrorToast(err) }),
     });
   };
 

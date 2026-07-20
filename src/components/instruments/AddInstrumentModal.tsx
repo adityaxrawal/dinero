@@ -7,7 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
 import { API } from '@/lib/ipc';
-import { getErrorMessage } from '@/lib/getErrorMessage';
+import { getErrorToast } from '@/lib/errorMapping';
 import { queryKeys } from '@/lib/queryKeys';
 import { INSTRUMENT_TYPES } from './instrumentTypes';
 
@@ -66,7 +66,7 @@ export default function AddInstrumentModal({ open, onOpenChange }: AddInstrument
       queryClient.invalidateQueries({ queryKey: queryKeys.instruments.all() });
       close();
     } catch (err) {
-      toast({ title: 'Error', description: getErrorMessage(err), variant: 'destructive' });
+      toast({ variant: 'destructive', ...getErrorToast(err) });
     } finally {
       setIsSaving(false);
     }

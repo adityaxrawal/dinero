@@ -68,48 +68,46 @@ export default function LifecycleSettings() {
   };
 
   return (
-    <div className="rounded-lg border border-border bg-card p-6 space-y-5">
-      <div className="flex items-center gap-2">
-        <Power className="w-5 h-5 text-muted-foreground" aria-hidden="true" />
-        <h3 className="text-lg font-semibold">Startup & Background Sync</h3>
+    <div className="space-y-6">
+      <div className="flex items-center gap-2 mb-4">
+        <Power className="w-5 h-5 text-[#064E3B]" aria-hidden="true" />
+        <h3 className="text-xl font-bold text-[#064E3B]">Startup & Background Sync</h3>
       </div>
 
-      <label className="flex items-center gap-2 text-sm font-medium text-foreground">
+      <label className="flex items-center gap-2 text-[13px] font-semibold text-[#064E3B] cursor-pointer">
         <input
           type="checkbox"
           checked={launchAtLogin}
           disabled={isLoading || isSavingLaunch}
           onChange={(e) => handleToggleLaunchAtLogin(e.target.checked)}
           aria-label="Launch Dinero at login"
-          className="w-4 h-4 border border-border rounded"
-          style={{ accentColor: 'var(--accent-primary)' }}
+          className="w-4 h-4 border-[#064E3B]/20 rounded bg-[#F8E7C9] text-[#064E3B] focus:ring-[#064E3B]"
         />
         Launch Dinero at login
       </label>
 
       <div className="space-y-2">
-        <label className="flex items-center gap-2 text-sm font-medium text-foreground">
+        <label className="flex items-center gap-2 text-[13px] font-semibold text-[#064E3B] cursor-pointer">
           <input
             type="checkbox"
             checked={backgroundSync}
             disabled={isLoading || isSavingSync}
             onChange={(e) => handleToggleBackgroundSync(e.target.checked)}
             aria-label="Continue syncing when app is closed"
-            className="w-4 h-4 border border-border rounded"
-            style={{ accentColor: 'var(--accent-primary)' }}
+            className="w-4 h-4 border-[#064E3B]/20 rounded bg-[#F8E7C9] text-[#064E3B] focus:ring-[#064E3B]"
           />
           Continue syncing when app is closed
         </label>
-        <p className="text-sm text-muted-foreground pl-6">
+        <p className="text-[13px] font-medium text-[#064E3B]/70 pl-6">
           When enabled, closing the window keeps Dinero running in the background (no Dock icon)
           so Gmail syncing continues. When disabled, closing the window quits Dinero.
         </p>
       </div>
 
       {backgroundSync && (
-        <div className="flex items-center gap-2 pl-6">
-          <RefreshCw className="w-4 h-4 text-muted-foreground" aria-hidden="true" />
-          <label htmlFor="low-battery-threshold" className="text-sm text-foreground">
+        <div className="flex items-center gap-2 pl-6 mt-4">
+          <RefreshCw className="w-4 h-4 text-[#064E3B]/50" aria-hidden="true" />
+          <label htmlFor="low-battery-threshold" className="text-[13px] font-semibold text-[#064E3B]">
             Slow down background syncing below
           </label>
           <input
@@ -121,9 +119,9 @@ export default function LifecycleSettings() {
             value={thresholdPercent}
             disabled={isLoading}
             onChange={(e) => handleThresholdChange(Number(e.target.value))}
-            className="w-16 rounded border border-border bg-background px-2 py-1 text-sm"
+            className="w-16 px-2 py-1.5 rounded-lg border text-[13px] font-medium bg-[#F8E7C9]/50 border-[#064E3B]/20 text-[#064E3B] focus:border-[#064E3B] focus:ring-1 focus:ring-[#064E3B]"
           />
-          <span className="text-sm text-muted-foreground">% battery on AC-disconnected</span>
+          <span className="text-[13px] font-medium text-[#064E3B]/70">% battery on AC-disconnected</span>
         </div>
       )}
     </div>

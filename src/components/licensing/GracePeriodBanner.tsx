@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { AlertTriangle, Loader2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useLicenseStore } from '@/stores/useLicenseStore';
-import { API } from '@/lib/ipc';
+import { useLicenseRefresh } from '@/hooks/useLicenseRefresh';
 
 /**
  * TASK-FE-016 (Doc 30): "dismissable-but-recurring, showing days remaining
@@ -20,7 +20,7 @@ export default function GracePeriodBanner() {
   const state = useLicenseStore((s) => s.state);
   const daysRemainingInTrial = useLicenseStore((s) => s.daysRemainingInTrial);
   const [dismissed, setDismissed] = useState(false);
-  const [isRetrying, setIsRetrying] = useState(false);
+  const { isRetrying, handleRetry } = useLicenseRefresh();
 
   const isGrace = state === 'GRACE';
 
@@ -29,17 +29,6 @@ export default function GracePeriodBanner() {
   }, [isGrace]);
 
   if (!isGrace || dismissed) return null;
-
-  const handleRetry = async () => {
-    setIsRetrying(true);
-    try {
-      await API.licensing.refresh();
-    } catch (err) {
-      console.error('License refresh failed:', err);
-    } finally {
-      setIsRetrying(false);
-    }
-  };
 
   return (
     <div

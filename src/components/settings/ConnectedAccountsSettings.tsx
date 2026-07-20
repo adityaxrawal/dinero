@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Mail, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react';
 import { API } from '@/lib/ipc';
-import { getErrorMessage } from '@/lib/getErrorMessage';
+import { getErrorMessage } from '@/lib/errorMapping';
 import RevokeGmailButton from './RevokeGmailButton';
 import { useGlobalState } from '@/lib/GlobalStateContext';
 
@@ -50,12 +50,12 @@ export default function ConnectedAccountsSettings() {
   };
 
   return (
-    <div className="glass-panel" style={{ padding: '24px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-        <Mail className="text-accent" size={24} color="var(--accent-primary)" />
-        <h3 className="heading-md">Connected Accounts</h3>
+    <div className="space-y-5">
+      <div className="flex items-center gap-2 mb-4">
+        <Mail className="w-5 h-5 text-[#064E3B]" />
+        <h3 className="text-xl font-bold text-[#064E3B]">Connected Accounts</h3>
       </div>
-      <p className="text-sm text-muted-foreground" style={{ marginBottom: '20px' }}>
+      <p className="text-sm text-[#064E3B]/70 mb-5">
         Connect Gmail securely via local OAuth to automate transaction
         syncing. We only request read access, and extraction happens locally.
         Up to 10 accounts can be connected; connecting a 2nd account or
@@ -63,38 +63,32 @@ export default function ConnectedAccountsSettings() {
       </p>
 
       {connectedAccounts.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px' }}>
+        <div className="flex flex-col gap-3 mb-4">
           {connectedAccounts.map((account) => {
             const isDegraded = account.account_status?.toLowerCase() === 'degraded';
             return (
               <div
                 key={account.account_id}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '12px',
-                  padding: '12px 16px',
-                  borderRadius: '8px',
-                  background: isDegraded ? 'rgba(245,158,11,0.08)' : 'rgba(34,197,94,0.08)',
-                  border: `1px solid ${isDegraded ? 'rgba(245,158,11,0.25)' : 'rgba(34,197,94,0.25)'}`,
-                }}
+                className={`flex items-center gap-3 p-4 rounded-xl border ${
+                  isDegraded ? 'bg-amber-500/10 border-amber-500/20' : 'bg-[#064E3B]/5 border-[#064E3B]/10'
+                }`}
               >
-                {isDegraded ? <AlertTriangle size={18} color="#b45309" /> : <CheckCircle size={18} color="var(--success)" />}
-                <div style={{ flex: 1 }}>
-                  <p style={{ fontSize: '13px', fontWeight: 600, color: isDegraded ? '#b45309' : '#047857' }}>
+                {isDegraded ? <AlertTriangle className="w-5 h-5 text-amber-600" /> : <CheckCircle className="w-5 h-5 text-emerald-600" />}
+                <div className="flex-1">
+                  <p className={`text-[13px] font-bold ${isDegraded ? 'text-amber-700' : 'text-emerald-700'}`}>
                     {isDegraded ? 'Needs Reconnection' : 'Gmail Connected'}
                   </p>
-                  <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                  <p className="text-[12px] font-medium text-[#064E3B]/70 mt-0.5">
                     {account.email}
                   </p>
                   {isDegraded && (
-                    <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                    <p className="text-[12px] font-medium text-[#064E3B]/70 mt-0.5">
                       Syncing has stopped — Gmail access expired or was revoked outside Dinero.
                     </p>
                   )}
                 </div>
                 {isDegraded && (
-                  <button className="btn btn-secondary" onClick={handleConnectGmail} disabled={isConnecting} style={{ padding: '6px 12px', fontSize: '12px' }}>
+                  <button className="px-3 py-1.5 text-[12px] font-semibold rounded-lg bg-amber-500/20 text-amber-800 hover:bg-amber-500/30 transition-colors" onClick={handleConnectGmail} disabled={isConnecting}>
                     {isConnecting ? 'Reconnecting…' : 'Reconnect'}
                   </button>
                 )}
@@ -106,31 +100,21 @@ export default function ConnectedAccountsSettings() {
       )}
 
       {connectError && (
-        <div
-          style={{
-            padding: '12px 16px',
-            borderRadius: '8px',
-            background: 'rgba(245,158,11,0.08)',
-            border: '1px solid rgba(245,158,11,0.2)',
-            marginBottom: '16px',
-            fontSize: '13px',
-            color: 'var(--text-muted)',
-          }}
-        >
+        <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 mb-4 text-[13px] font-medium text-amber-700">
           {connectError}
         </div>
       )}
 
       {connectedAccounts.length < 10 && (
         <button
-          className="btn btn-primary"
+          className="h-9 px-4 rounded-lg font-semibold bg-[#064E3B] text-[#F8E7C9] hover:bg-[#064E3B]/90 transition-colors inline-flex items-center justify-center disabled:opacity-50"
           onClick={handleConnectGmail}
           disabled={isConnecting}
           id="connect-gmail-btn"
         >
           {isConnecting ? (
-            <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <Loader2 size={16} className="animate-spin" /> Connecting…
+            <span className="flex items-center gap-2">
+              <Loader2 className="w-4 h-4 animate-spin" /> Connecting…
             </span>
           ) : connectedAccounts.length === 0 ? (
             'Connect Gmail'

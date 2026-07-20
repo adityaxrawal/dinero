@@ -37,24 +37,23 @@ export default function MenuBarExtraSettings() {
   };
 
   return (
-    <div className="rounded-lg border border-border bg-card p-6 space-y-3">
-      <div className="flex items-center gap-2">
-        <AppWindow className="w-5 h-5 text-muted-foreground" aria-hidden="true" />
-        <h3 className="text-lg font-semibold">Menu Bar Extra</h3>
+    <div className="space-y-5">
+      <div className="flex items-center gap-2 mb-4">
+        <AppWindow className="w-5 h-5 text-[#064E3B]" />
+        <h3 className="text-xl font-bold text-[#064E3B]">Menu Bar Extra</h3>
       </div>
-      <p className="text-sm text-muted-foreground">
+      <p className="text-sm text-[#064E3B]/70 mb-5">
         Show a quick summary (month spend, pending review count, upcoming bills) in the macOS menu
         bar, with quick actions.
       </p>
-      <label className="flex items-center gap-2 text-sm font-medium text-foreground">
+      <label className="flex items-center gap-2 text-[13px] font-semibold text-[#064E3B] cursor-pointer">
         <input
           type="checkbox"
           checked={enabled}
           disabled={isLoading || isSaving}
           onChange={(e) => handleToggle(e.target.checked)}
           aria-label="Show menu bar extra"
-          className="w-4 h-4 border border-border rounded"
-          style={{ accentColor: 'var(--accent-primary)' }}
+          className="w-4 h-4 border-[#064E3B]/20 rounded bg-[#F8E7C9] text-[#064E3B] focus:ring-[#064E3B]"
         />
         Show menu bar extra
       </label>

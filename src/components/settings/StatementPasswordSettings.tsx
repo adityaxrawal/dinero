@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Lock, Trash2 } from 'lucide-react';
 import { API, PdfPasswordSummary } from '@/lib/ipc';
-import { getErrorMessage } from '@/lib/getErrorMessage';
+import { getErrorMessage } from '@/lib/errorMapping';
 
 /**
  * TASK-FE-015 (Doc 30): "instruments with a saved-password indicator
@@ -56,46 +56,41 @@ export default function StatementPasswordSettings() {
   };
 
   return (
-    <div className="glass-panel" style={{ padding: '24px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-        <Lock className="text-accent" size={24} color="var(--accent-primary)" />
-        <h3 className="heading-md">Stored Statement Passwords</h3>
+    <div className="space-y-5">
+      <div className="flex items-center gap-2 mb-4">
+        <Lock className="w-5 h-5 text-[#064E3B]" />
+        <h3 className="text-xl font-bold text-[#064E3B]">Stored Statement Passwords</h3>
       </div>
-      <p className="text-sm text-muted-foreground" style={{ marginBottom: '16px' }}>
+      <p className="text-sm text-[#064E3B]/70 mb-4">
         Passwords Dinero has learned for encrypted statements, encrypted at rest and never shown here.
         Forgetting one just means you'll be re-prompted next time.
       </p>
 
       {isLoadingPasswords ? (
-        <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>Loading…</p>
+        <p className="text-[13px] font-medium text-[#064E3B]/70">Loading…</p>
       ) : pdfPasswords.length === 0 ? (
-        <p style={{ fontSize: '13px', color: 'var(--text-muted)' }}>No stored passwords yet.</p>
+        <p className="text-[13px] font-medium text-[#064E3B]/70">No stored passwords yet.</p>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        <div className="flex flex-col gap-3">
           {pdfPasswords.map((pw) => (
             <div
               key={pw.id}
-              style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px',
-                padding: '10px 14px', borderRadius: '8px',
-                background: 'var(--bg-secondary)', border: '1px solid var(--border)', fontSize: '12px',
-              }}
+              className="flex items-center justify-between gap-4 p-4 rounded-xl border border-[#064E3B]/10 bg-[#064E3B]/5"
             >
               <div>
-                <strong style={{ color: 'var(--text-primary)' }}>{pw.issuer_name}</strong>
-                <span style={{ color: 'var(--text-muted)' }}> •••• {pw.masked_identifier}</span>
-                <div style={{ color: 'var(--text-muted)', marginTop: '2px' }}>
+                <strong className="text-[14px] font-bold text-[#064E3B]">{pw.issuer_name}</strong>
+                <span className="text-[13px] font-medium text-[#064E3B]/70"> •••• {pw.masked_identifier}</span>
+                <div className="text-[12px] font-medium text-[#064E3B]/60 mt-1">
                   Used successfully {pw.success_count} time{pw.success_count === 1 ? '' : 's'}
                   {pw.last_used_at ? ` — last on ${new Date(pw.last_used_at).toLocaleDateString()}` : ''}
                 </div>
               </div>
               <button
-                className="btn btn-secondary"
-                style={{ padding: '6px 12px', fontSize: '12px', color: '#ef4444', display: 'flex', alignItems: 'center', gap: '6px' }}
+                className="h-8 px-3 text-[12px] font-semibold rounded-lg border border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700 hover:border-red-300 transition-colors flex items-center gap-1.5 disabled:opacity-50"
                 onClick={() => handleDeletePassword(pw)}
                 disabled={deletingPasswordId === pw.id}
               >
-                <Trash2 size={12} /> {deletingPasswordId === pw.id ? 'Forgetting…' : 'Forget'}
+                <Trash2 className="w-3.5 h-3.5" /> {deletingPasswordId === pw.id ? 'Forgetting…' : 'Forget'}
               </button>
             </div>
           ))}

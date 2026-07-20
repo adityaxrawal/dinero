@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { History, ShieldAlert, FileText } from 'lucide-react';
 import { API, ConsentEventRecord } from '@/lib/ipc';
-import { getErrorMessage } from '@/lib/getErrorMessage';
+import { getErrorMessage } from '@/lib/errorMapping';
 import ConsentHistoryList from './ConsentHistoryList';
 import DeleteAccountSection from './DeleteAccountSection';
 
@@ -48,36 +48,38 @@ export default function PrivacySettings() {
   };
 
   return (
-    <>
-      <div className="glass-panel" style={{ padding: '24px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-          <History className="text-accent" size={24} color="var(--accent-primary)" />
-          <h3 className="heading-md">Consent History</h3>
+    <div className="space-y-12">
+      <div className="space-y-5">
+        <div className="flex items-center gap-2 mb-4">
+          <History className="w-5 h-5 text-[#064E3B]" />
+          <h3 className="text-xl font-bold text-[#064E3B]">Consent History</h3>
         </div>
         <ConsentHistoryList events={consentHistory} isLoading={isLoadingConsent} onRefresh={loadConsentHistory} />
       </div>
 
-      <div className="glass-panel" style={{ padding: '24px', borderColor: 'rgba(239, 68, 68, 0.2)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
-          <ShieldAlert className="text-danger" size={24} color="#ef4444" />
-          <h3 className="heading-md" style={{ color: '#ef4444' }}>Privacy &amp; Data</h3>
+      <div className="h-px w-full bg-[#064E3B]/10" />
+
+      <div className="space-y-5">
+        <div className="flex items-center gap-2 mb-4">
+          <ShieldAlert className="w-5 h-5 text-red-600" />
+          <h3 className="text-xl font-bold text-red-600">Privacy &amp; Data</h3>
         </div>
-        <p className="text-sm text-muted-foreground" style={{ marginBottom: '20px' }}>
+        <p className="text-sm text-[#064E3B]/70 mb-5">
           Your data is encrypted and stored locally on this device.
         </p>
 
-        <div style={{ marginBottom: '24px', paddingBottom: '24px', borderBottom: '1px solid var(--border)' }}>
-          <p className="text-sm text-muted-foreground" style={{ marginBottom: '12px' }}>
+        <div className="mb-6 pb-6 border-b border-[#064E3B]/10">
+          <p className="text-sm text-[#064E3B]/70 mb-4">
             A diagnostic bundle (app logs and error reports) helps troubleshoot issues. It never
             includes your financial data, and it is <strong>saved locally on this device only</strong> —
             it is never automatically uploaded anywhere. You choose if and when to share it.
           </p>
-          <button className="btn btn-secondary" onClick={handleExportDiagnosticBundle} disabled={isExporting}>
-            <FileText size={18} />
+          <button className="h-9 px-4 rounded-lg font-semibold bg-[#064E3B]/5 border border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/10 transition-colors inline-flex items-center justify-center gap-2 disabled:opacity-50" onClick={handleExportDiagnosticBundle} disabled={isExporting}>
+            <FileText className="w-4 h-4" />
             {isExporting ? 'Exporting…' : 'Export Diagnostic Bundle'}
           </button>
           {exportedPath && (
-            <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '8px' }}>
+            <p className="text-[12px] font-medium text-[#064E3B]/70 mt-3">
               Saved locally to: {exportedPath}
             </p>
           )}
@@ -85,6 +87,6 @@ export default function PrivacySettings() {
 
         <DeleteAccountSection />
       </div>
-    </>
+    </div>
   );
 }
