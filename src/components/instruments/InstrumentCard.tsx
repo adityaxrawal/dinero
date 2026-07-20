@@ -16,7 +16,7 @@ export default function InstrumentCard({ inst }: InstrumentCardProps) {
 
   return (
     <Card
-      className="cursor-pointer hover:border-[#2563eb]/40 hover:shadow-md transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className="cursor-pointer hover:border-[#064E3B]/40 hover:shadow-md transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       onClick={() => navigate(`/instruments/${inst.id}`)}
       tabIndex={0}
       role="button"

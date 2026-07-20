@@ -273,18 +273,18 @@ export default function SpendingLimits() {
                   }
                   className={cn(
                     'relative flex flex-col items-center px-6 py-5 rounded-xl text-sm transition-all duration-200 ease-out outline-none',
-                    'focus-visible:ring-2 focus-visible:ring-[#2563eb]/60 focus-visible:ring-offset-2',
+                    'focus-visible:ring-2 focus-visible:ring-[#064E3B]/60 focus-visible:ring-offset-2',
                     'min-w-[110px]',
                     isActive
                       ? [
-                          'border-[1.5px] border-[#2563eb]/60',
-                          'bg-[#2563eb]/8',
+                          'border-[1.5px] border-[#064E3B]/60',
+                          'bg-[#064E3B]/8',
                           'shadow-[0_0_0_1px_rgba(37,99,235,0.15)]',
-                          'text-[#1d4ed8]',
+                          'text-[#053d2f]',
                         ].join(' ')
                       : [
                           'border-[1.5px] border-border bg-background text-muted-foreground',
-                          'hover:border-[#2563eb]/30 hover:bg-[#2563eb]/[0.04] hover:text-foreground',
+                          'hover:border-[#064E3B]/30 hover:bg-[#064E3B]/[0.04] hover:text-foreground',
                           'hover:-translate-y-0.5',
                         ].join(' '),
                   )}
@@ -294,7 +294,7 @@ export default function SpendingLimits() {
                     aria-hidden="true"
                     className={cn(
                       'absolute top-2 right-2 w-5 h-5 rounded-full flex items-center justify-center',
-                      'bg-[#2563eb]',
+                      'bg-[#064E3B]',
                       'transition-all duration-200 ease-out',
                       isActive ? 'opacity-100 scale-100' : 'opacity-0 scale-0'
                     )}
@@ -305,14 +305,14 @@ export default function SpendingLimits() {
                   </span>
                   <span className={cn(
                     'text-2xl font-bold tracking-tight transition-colors',
-                    isActive ? 'text-[#1d4ed8]' : 'text-foreground/70',
+                    isActive ? 'text-[#053d2f]' : 'text-foreground/70',
                   )}>{label}</span>
                   <span className="text-xs font-normal mt-1 opacity-70">{description}</span>
                   {/* ON/OFF pill */}
                   <span className={cn(
                     'mt-3 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all',
                     isActive
-                      ? 'bg-[#2563eb]/15 text-[#1d4ed8] border border-[#2563eb]/30'
+                      ? 'bg-[#064E3B]/15 text-[#053d2f] border border-[#064E3B]/30'
                       : 'bg-muted text-muted-foreground/50 border border-border',
                   )}>
                     {isActive ? 'ON' : 'OFF'}

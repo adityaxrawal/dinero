@@ -48,7 +48,7 @@ export default function EmiInstallmentTimeline({ emiGroupId }: EmiInstallmentTim
           aria-valuemax={100}
           aria-label="EMI installments paid"
         >
-          <div className="h-full bg-[#2563eb] transition-all duration-300" style={{ width: `${pct}%` }} />
+          <div className="h-full bg-[#064E3B] transition-all duration-300" style={{ width: `${pct}%` }} />
         </div>
 
         <ul className="space-y-1.5" aria-label="Installment list">
