@@ -4,12 +4,6 @@
 /// Emitted when all stored passwords fail — UI must present a password modal.
 pub const PASSWORD_REQUIRED: &str = "statement_password_required";
 
-/// Emitted when the user fails to provide a password in time
-pub const PASSWORD_TIMEOUT: &str = "statement_password_timeout";
-
-/// Emitted when the wrong-password attempt cap (I9 fix) is reached — UI must
-/// stop re-prompting and show a permanent-failure state instead.
-pub const PASSWORD_MAX_ATTEMPTS_EXCEEDED: &str = "statement_password_max_attempts_exceeded";
 
 /// Emitted when a PDF statement is successfully parsed
 pub const PARSED: &str = "statement_parsed";

@@ -32,8 +32,6 @@ pub enum PasswordResolutionResult {
     UnlockedWithUserInput,
     /// User-entered password was wrong — re-prompt without losing context.
     WrongPassword,
-    /// User did not respond within 2.5 minutes — create pending_retry row.
-    Timeout,
 }
 
 // ── Keychain ─────────────────────────────────────────────────────────────────
@@ -511,69 +509,6 @@ pub async fn try_user_password(
     }
 }
 
-/// Transitions `unprocessed_statements` row to `pending_retry` when the password timeout
-/// (2.5 minutes) elapses without a correct user response (Doc 10 §7.6).
-///
-/// TASK-DESK-002: also fires a native "password prompt timed out"
-/// notification -- flagged honestly in this task's fix-log: this function
-/// itself has no real production caller anywhere in the codebase yet (a
-/// pre-existing TASK-STMT-003 gap, confirmed via a full-crate grep turning
-/// up only this function's own unit test), so the notification is real and
-/// correctly wired for whenever that timer gets built, but doesn't yet fire
-/// in a running app. Wiring the actual 2.5-minute scheduler is a separate,
-/// larger piece of work belonging to TASK-STMT-003, not this task.
-pub async fn handle_password_timeout<R: tauri::Runtime>(
-    statement_id: &str,
-    pool: &deadpool_sqlite::Pool,
-    app: &tauri::AppHandle<R>,
-) -> Result<()> {
-    tracing::warn!(
-        "Password timeout for statement_id='{}' — transitioning to pending_retry",
-        statement_id
-    );
-    let stmt_id = statement_id.to_string();
-    let stmt_id_for_log = stmt_id.clone();
-    let conn = pool.get().await?;
-    conn.interact(move |c| {
-        c.execute(
-            "UPDATE unprocessed_statements \
-             SET status = 'pending_retry', updated_at = datetime('now') \
-             WHERE id = ? AND status = 'awaiting_password'",
-            [&stmt_id],
-        )?;
-        // J6 fix: PDF-password lifecycle event (Doc 25 §6.1).
-        if let Err(e) = crate::db::audit_log::insert(
-            c,
-            &crate::db::audit_log::AuditLogRow {
-                id: uuid::Uuid::new_v4().to_string(),
-                actor_type: Some("system".to_string()),
-                actor_id: None,
-                action: Some("pdf_password_timeout".to_string()),
-                resource_type: Some("statement".to_string()),
-                resource_id: Some(stmt_id_for_log),
-                before_json: None,
-                after_json: None,
-                created_at: chrono::Utc::now(),
-            },
-        ) {
-            tracing::warn!("Failed to record pdf_password_timeout audit event: {}", e);
-        }
-        Ok::<(), rusqlite::Error>(())
-    })
-    .await
-    .map_err(|e| anyhow!("DB interact error (password timeout): {}", e))??;
-
-    crate::notifications::send_notification(
-        app,
-        crate::notifications::NotificationKind::StatementPasswordTimeout,
-        "Statement Password Needed",
-        "A statement's password prompt timed out. Tap to re-enter it.",
-        None,
-    );
-
-    Ok(())
-}
-
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -740,67 +675,6 @@ mod tests {
         let result = try_pdfium_unlock(garbage, "wrongpassword").await;
         // pdfium will fail to open garbage bytes regardless of password
         assert!(!result, "garbage bytes must not unlock successfully");
-    }
-
-    // ── test_password_timeout_creates_pending_retry ──────────────────────────
-    //
-    // Verifies that `handle_password_timeout` transitions the unprocessed_statements
-    // row status from 'awaiting_password' to 'pending_retry'.
-    #[tokio::test]
-    async fn test_password_timeout_creates_pending_retry() {
-        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&temp_dir).unwrap();
-        let db_path = temp_dir.join("test.db");
-        let pool = crate::db::init_db(db_path).await.unwrap();
-
-        // Seed: instrument + unprocessed_statements row in 'awaiting_password'
-        let conn = pool.get().await.unwrap();
-        conn.interact(|c| {
-            c.execute(
-                "INSERT INTO instruments (id, type, issuer_name, masked_identifier) \
-                 VALUES ('inst_to', 'credit_card', 'ICICI', '0001')",
-                [],
-            )
-            .unwrap();
-            c.execute(
-                "INSERT INTO unprocessed_statements \
-                 (id, statement_source_json, failure_type, failure_reason, status) \
-                 VALUES ('stmt_to', '{}', 'password_timeout', '', 'awaiting_password')",
-                [],
-            )
-            .unwrap();
-        })
-        .await
-        .unwrap();
-
-        // Trigger timeout
-        let app = tauri::test::mock_builder()
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .unwrap()
-            .handle()
-            .clone();
-        handle_password_timeout("stmt_to", &pool, &app)
-            .await
-            .unwrap();
-
-        // Verify status transitioned
-        let conn2 = pool.get().await.unwrap();
-        let status: String = conn2
-            .interact(|c| {
-                c.query_row(
-                    "SELECT status FROM unprocessed_statements WHERE id = ?",
-                    ["stmt_to"],
-                    |row| row.get(0),
-                )
-            })
-            .await
-            .unwrap()
-            .unwrap();
-
-        assert_eq!(
-            status, "pending_retry",
-            "Status must be pending_retry after timeout"
-        );
     }
 
     // ── test_password_rotation_success ─────────────────────────────────────

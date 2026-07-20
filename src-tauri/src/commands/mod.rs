@@ -1234,15 +1234,12 @@ pub async fn statements_submit_password(
             );
             record_pdf_password_event(pool.inner(), &statement_id, "pdf_password_wrong").await;
 
-            // I9 fix: cap wrong-password attempts at 3 — previously only the
-            // 2.5-minute timeout was enforced, allowing unlimited guesses.
-            const MAX_PASSWORD_ATTEMPTS: i64 = 3;
             let conn = pool
                 .get()
                 .await
                 .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
             let stmt_id_for_attempts = statement_id.clone();
-            let attempts = conn
+            let _attempts = conn
                 .interact(move |c| {
                     crate::db::unprocessed_statements::increment_password_attempts(
                         c,
@@ -1253,55 +1250,19 @@ pub async fn statements_submit_password(
                 .map_err(|e| crate::error::AppError::Db(e.to_string()))?
                 .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
 
-            if attempts >= MAX_PASSWORD_ATTEMPTS {
-                tracing::warn!(
-                    "Password attempt cap reached for statement_id='{}' ({} attempts) — locking out",
-                    statement_id,
-                    attempts
-                );
-                let conn = pool
-                    .get()
-                    .await
-                    .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-                let stmt_id_for_status = statement_id.clone();
-                conn.interact(move |c| {
-                    crate::db::unprocessed_statements::update_status(
-                        c,
-                        &stmt_id_for_status,
-                        "password_failed_max_attempts",
-                        None,
-                    )
-                })
-                .await
-                .map_err(|e| crate::error::AppError::Db(e.to_string()))?
-                .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
-
-                app.emit(
-                    events::PASSWORD_MAX_ATTEMPTS_EXCEEDED,
-                    serde_json::json!({ "statement_id": statement_id }),
-                )
-                .ok();
-
-                return Ok(serde_json::json!({
-                    "status": "max_attempts_exceeded",
-                    "statement_id": statement_id
-                }));
-            }
 
             // Re-emit password_required so UI re-prompts without closing modal
             app.emit(
                 events::PASSWORD_REQUIRED,
                 serde_json::json!({
                     "statement_id": statement_id,
-                    "error": "wrong_password",
-                    "attempts_remaining": MAX_PASSWORD_ATTEMPTS - attempts
+                    "error": "wrong_password"
                 }),
             )
             .ok();
             Ok(serde_json::json!({
                 "status": "wrong_password",
-                "statement_id": statement_id,
-                "attempts_remaining": MAX_PASSWORD_ATTEMPTS - attempts
+                "statement_id": statement_id
             }))
         }
         _ => {
@@ -1363,8 +1324,6 @@ pub async fn statements_retry_unprocessed(
 
     use crate::statements::{events, password::try_all_stored_passwords};
 
-    tracing::info!("Retrying unprocessed statement_id='{}'", statement_id);
-
     let conn = pool
         .get()
         .await
@@ -1381,16 +1340,6 @@ pub async fn statements_retry_unprocessed(
                 statement_id
             ))
         })?;
-
-    // I9 fix: a statement locked out by the 3-attempt cap must not be
-    // reopened for further password guesses via retry.
-    if row.status == "password_failed_max_attempts" {
-        return Err(crate::error::AppError::Unknown(
-            "This statement is locked after too many incorrect password attempts. \
-             Please re-upload the file to try again."
-                .to_string(),
-        ));
-    }
 
     let filename = serde_json::from_str::<serde_json::Value>(&row.statement_source_json)
         .ok()

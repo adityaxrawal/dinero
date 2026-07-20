@@ -115,11 +115,7 @@ pub fn build_tray_icon<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayIcon
         .show_menu_on_left_click(true)
         .title(format_tray_summary(0.0, 0, 0))
         .tooltip("Dinero")
-        .icon(
-            app.default_window_icon()
-                .cloned()
-                .ok_or_else(|| tauri::Error::AssetNotFound("default window icon".into()))?,
-        )
+        .icon(tauri::image::Image::from_bytes(include_bytes!("../../icons/tray@2x.png"))?)
         .icon_as_template(true)
         .build(app)
 }

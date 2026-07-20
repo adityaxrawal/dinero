@@ -2,8 +2,8 @@
 //! Tauri's notification plugin (`UNUserNotificationCenter`), distinct from
 //! the in-app toast/banner system (TASK-FE-018). Fires for four event
 //! kinds: a new confirmed transaction above a user threshold, a
-//! spending-limit threshold crossing, a statement password prompt timing
-//! out, and an approaching bill due date (3 days before). Clicking a
+//! spending-limit threshold crossing, and an approaching bill due date
+//! (3 days before). Clicking a
 //! notification foregrounds the app and deep-links to the relevant view.
 //! macOS Do Not Disturb/Focus modes are respected automatically by the OS
 //! -- no custom suppression logic is implemented or needed here.
@@ -29,7 +29,6 @@ pub const NETWORK_DISCLOSURE_CONSENT_EVENT_TYPE: &str = "network_disclosure_ackn
 pub enum NotificationKind {
     TransactionAboveThreshold,
     SpendingLimitThreshold,
-    StatementPasswordTimeout,
     UpcomingBillDue,
 }
 
@@ -48,7 +47,6 @@ impl NotificationKind {
             // Dashboard is the router's index route ("/"), not "/dashboard"
             // (Doc 30 TASK-FE-001, `routes/index.tsx`).
             Self::SpendingLimitThreshold => "/".to_string(),
-            Self::StatementPasswordTimeout => "/statements".to_string(),
             Self::UpcomingBillDue => match instrument_id {
                 Some(id) => format!("/instruments/{id}"),
                 None => "/instruments".to_string(),
@@ -170,10 +168,6 @@ mod tests {
         assert_eq!(
             NotificationKind::SpendingLimitThreshold.deep_link_route(None),
             "/"
-        );
-        assert_eq!(
-            NotificationKind::StatementPasswordTimeout.deep_link_route(None),
-            "/statements"
         );
         assert_eq!(
             NotificationKind::UpcomingBillDue.deep_link_route(Some("inst_1")),

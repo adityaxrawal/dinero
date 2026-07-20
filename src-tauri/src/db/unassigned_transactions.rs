@@ -86,6 +86,7 @@ pub struct UnassignedTransactionDetail {
     pub currency: Option<String>,
     pub source_message_id: Option<String>,
     pub body_snippet: Option<String>,
+    pub raw_payload_json: Option<String>,
 }
 
 pub fn select_open_with_context(conn: &Connection) -> Result<Vec<UnassignedTransactionDetail>> {
@@ -111,6 +112,7 @@ pub fn select_open_with_context(conn: &Connection) -> Result<Vec<UnassignedTrans
             currency: row.get(7)?,
             source_message_id: row.get(8)?,
             body_snippet,
+            raw_payload_json,
         })
     })?;
     let mut results = Vec::new();

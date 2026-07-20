@@ -255,10 +255,32 @@ fn generic_currency_amount_regexes() -> (&'static Regex, &'static Regex) {
 /// it. Matches self-referential captures ("your account", "my savings
 /// account", "the account") so the caller can skip them and keep scanning
 /// for the real counterparty instead.
-fn is_self_referential_account(candidate: &str) -> bool {
+fn is_invalid_merchant(candidate: &str, bank_name: &str) -> bool {
     let re = GENERIC_SELF_REFERENTIAL_MERCHANT_RE
         .get_or_init(|| Regex::new(r"(?i)^(?:your|my|the)\b.*\baccount$|^account$").unwrap());
-    re.is_match(candidate.trim())
+    if re.is_match(candidate.trim()) {
+        return true;
+    }
+    
+    let candidate_lower = candidate.trim().to_lowercase();
+    let bank_lower = bank_name.to_lowercase();
+    
+    if candidate_lower == bank_lower {
+        return true;
+    }
+    
+    if !bank_lower.is_empty() && candidate_lower.starts_with(&bank_lower) {
+        let remaining = candidate_lower.strip_prefix(&bank_lower).unwrap().trim();
+        if remaining.is_empty() || remaining == "bank" || remaining == "alerts" {
+            return true;
+        }
+    }
+    
+    if candidate_lower == "bank" {
+        return true;
+    }
+    
+    false
 }
 
 // Instrument signal detection statics
@@ -610,7 +632,7 @@ impl ExtractionLayer for GenericRegexLayer {
     fn extract<'a>(
         &'a self,
         _pool: &'a Pool,
-        _bank_name: &'a str,
+        bank_name: &'a str,
         body: &'a str,
     ) -> BoxFuture<'a, Option<ExtractionResult>> {
         Box::pin(async move {
@@ -660,16 +682,32 @@ impl ExtractionLayer for GenericRegexLayer {
             // branch below is a bare guess with no direction-specific
             // signal at all, and must not be scored the same.
             let direction_from_explicit_verb;
-            if credit_re.is_match(body) {
-                result.direction = Some("credit".to_string());
-                direction_from_explicit_verb = true;
-            } else if debit_re.is_match(body) {
-                result.direction = Some("debit".to_string());
-                direction_from_explicit_verb = true;
-            } else {
-                direction_from_explicit_verb = false;
-                if result.amount_minor.is_some() {
+            let credit_match = credit_re.find(body);
+            let debit_match = debit_re.find(body);
+
+            match (credit_match, debit_match) {
+                (Some(c), Some(d)) => {
+                    if c.start() < d.start() {
+                        result.direction = Some("credit".to_string());
+                        direction_from_explicit_verb = true;
+                    } else {
+                        result.direction = Some("debit".to_string());
+                        direction_from_explicit_verb = true;
+                    }
+                }
+                (Some(_), None) => {
+                    result.direction = Some("credit".to_string());
+                    direction_from_explicit_verb = true;
+                }
+                (None, Some(_)) => {
                     result.direction = Some("debit".to_string());
+                    direction_from_explicit_verb = true;
+                }
+                (None, None) => {
+                    direction_from_explicit_verb = false;
+                    if result.amount_minor.is_some() {
+                        result.direction = Some("debit".to_string());
+                    }
                 }
             }
 
@@ -760,7 +798,7 @@ impl ExtractionLayer for GenericRegexLayer {
             for caps in merchant_re_strict.captures_iter(body) {
                 if let Some(m) = caps.get(1) {
                     let val = m.as_str().trim();
-                    if !val.is_empty() && !is_self_referential_account(val) {
+                    if !val.is_empty() && !is_invalid_merchant(val, bank_name) {
                         merchant_value = Some(val.to_string());
                         merchant_matched_strict = true;
                         break;
@@ -771,7 +809,7 @@ impl ExtractionLayer for GenericRegexLayer {
                 for caps in merchant_re.captures_iter(body) {
                     if let Some(m) = caps.get(1) {
                         let val = m.as_str().trim();
-                        if !val.is_empty() && !is_self_referential_account(val) {
+                        if !val.is_empty() && !is_invalid_merchant(val, bank_name) {
                             merchant_value = Some(val.to_string());
                             break;
                         }
