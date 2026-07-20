@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <g fill="none" stroke="black" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Window -->
+    <rect x="3.5" y="4" width="17" height="16" rx="3"/>
+    <!-- Header -->
+    <path d="M3.5 9H20.5"/>
+    <!-- KPI -->
+    <path d="M6.5 6.5H10"/>
+    <!-- Chart -->
+    <path d="M7 16 L10 13 L13 15 L17 10"/>
+  </g>
+</svg>

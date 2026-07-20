@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<defs>
+<linearGradient id="folder" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0%" stop-color="#FFF5E6"/>
+<stop offset="100%" stop-color="#F8E7C9"/>
+</linearGradient>
+<linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+<stop offset="0%" stop-color="#0A644A"/>
+<stop offset="100%" stop-color="#064E3B"/>
+</linearGradient>
+<filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+<feDropShadow dx="0" dy="18" stdDeviation="28" flood-opacity=".22"/>
+</filter>
+</defs>
+<!-- Folder -->
+<path d=" M132 250 C132 212 160 184 198 184 H350 L414 250 H826 C870 250 892 274 892 318 V760 C892 816 850 856 794 856 H198 C158 856 132 830 132 790 Z" fill="url(#folder)" stroke="#E4D5B6" stroke-width="6"/>
+<!-- Floating Dashboard -->
+<g filter="url(#shadow)">
+<rect x="236" y="270" width="552" height="430" rx="44" fill="url(#panel)"/>
+<!-- Header -->
+<rect x="286" y="324" width="188" height="22" rx="11" fill="#F8E7C9"/>
+<rect x="496" y="324" width="94" height="22" rx="11" fill="#9CB6AA"/>
+<!-- KPI Cards -->
+<rect x="286" y="388" width="112" height="74" rx="20" fill="#0E6E53"/>
+<rect x="418" y="388" width="112" height="74" rx="20" fill="#0E6E53"/>
+<rect x="550" y="388" width="112" height="74" rx="20" fill="#0E6E53"/>
+<!-- Chart -->
+<path d=" M306 610 L390 540 L462 584 L548 498 L642 560 L716 448" fill="none" stroke="#F8E7C9" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+<!-- Endpoint -->
+<circle cx="716" cy="448" r="12" fill="#F8E7C9"/>
+</g>
+</svg>
