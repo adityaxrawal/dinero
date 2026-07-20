@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
-import { getErrorMessage } from '@/lib/getErrorMessage';
+import { getErrorToast } from '@/lib/errorMapping';
 import type { UnprocessedStatementEntry } from '@/lib/ipc';
 import { useUnprocessedStatements } from '@/hooks/queries/useUnprocessedStatements';
 import { useRetryUnprocessedStatement } from '@/hooks/mutations/useRetryUnprocessedStatement';
@@ -46,14 +46,14 @@ export default function UnprocessedItemsQueue({ onEnterPassword }: UnprocessedIt
     }
     retry.mutate(item.statement_id, {
       onSuccess: () => toast({ title: 'Retrying', description: `${item.filename} queued for another attempt.` }),
-      onError: (err) => toast({ variant: 'destructive', title: 'Retry failed', description: getErrorMessage(err) }),
+      onError: (err) => toast({ variant: 'destructive', ...getErrorToast(err) }),
     });
   };
 
   const handleDiscard = (item: UnprocessedStatementEntry) => {
     discard.mutate(item.statement_id, {
       onSuccess: () => toast({ title: 'Discarded', description: `${item.filename} removed from the queue.` }),
-      onError: (err) => toast({ variant: 'destructive', title: 'Discard failed', description: getErrorMessage(err) }),
+      onError: (err) => toast({ variant: 'destructive', ...getErrorToast(err) }),
     });
   };
 

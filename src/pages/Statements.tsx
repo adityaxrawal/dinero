@@ -1,36 +1,30 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { FileText, Lock, AlertTriangle, FileSearch, CreditCard } from 'lucide-react';
+import { FileText, Lock, AlertTriangle, FileSearch, CreditCard, ChevronRight, Upload } from 'lucide-react';
 import { API } from '@/lib/ipc';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { useToast } from '@/hooks/use-toast';
-import { getErrorMessage } from '@/lib/getErrorMessage';
+import { getErrorMessage } from '@/lib/errorMapping';
 import { useGlobalState } from '@/lib/GlobalStateContext';
 import { useStatementsList } from '@/hooks/queries/useStatementsList';
 import { queryKeys } from '@/lib/queryKeys';
+import { cn } from '@/lib/utils';
+import { SidebarNavItem } from '@/components/ui/sidebar-nav-item';
 import StatementUploadDropzone from '@/components/statements/StatementUploadDropzone';
 import UnprocessedItemsQueue from '@/components/statements/UnprocessedItemsQueue';
 import PasswordPromptModal from '@/components/statements/PasswordPromptModal';
+import { formatCustomDate } from '@/lib/formatCustomDate';
 
-/**
- * TASK-FE-012 (Doc 30): StatementsList orchestrator — the upload dropzone,
- * unprocessed-items queue, and password modal are now their own named
- * components; this page keeps the processing-history table plus the
- * Statement Instrument Gate confirmation and access-denied modals (real,
- * necessary functionality Doc30 doesn't name a file for, kept inline —
- * same precedent as Dashboard/Instruments preserving un-named real UI).
- */
 export default function Statements() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const currentSection = searchParams.get('section') || 'upload';
+  const setSection = (section: string) => setSearchParams({ section });
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const {
@@ -86,95 +80,168 @@ export default function Statements() {
     }
   }, [pendingInstrumentStatementId, instrumentIssuer, instrumentMasked, instrumentType, closeInstrumentModal, refresh, toast]);
 
+  const SECTIONS = [
+    { id: 'upload', label: 'Upload Statements', icon: Upload },
+    { id: 'queue', label: 'Action Needed', icon: AlertTriangle },
+    { id: 'history', label: 'Processing History', icon: FileSearch },
+  ] as const;
+
   return (
-    <div className="space-y-8 animate-in fade-in duration-500 h-[calc(100vh-80px)] flex flex-col">
-      <header>
-        <h1 className="text-3xl font-bold tracking-tight">Statements</h1>
-        <p className="text-muted-foreground mt-1">Upload and manage your bank statements securely.</p>
-      </header>
+    <div className="flex h-full w-full overflow-hidden">
+      {/* ── Column 2: Navigation (Statements) ─────────────────────────────────── */}
+      <div 
+        className="flex-shrink-0 flex flex-col h-full border-r border-[#064E3B]/20"
+        style={{ width: '320px', backgroundColor: 'var(--bg-canvas)' }}
+      >
+        <div className="flex flex-col gap-3 px-4 py-3 flex-shrink-0 border-b border-[#064E3B]/10">
+          <h1 className="text-[14px] font-semibold text-[#064E3B] tracking-tight">
+            Statements
+          </h1>
+        </div>
 
-      <StatementUploadDropzone onUploaded={refresh} />
+        <div className="flex-1 overflow-y-auto py-2">
+          <nav className="flex flex-col gap-1">
+            {SECTIONS.map((s) => {
+              const isSelected = currentSection === s.id;
+              return (
+                <SidebarNavItem
+                  key={s.id}
+                  isSelected={isSelected}
+                  onClick={() => setSection(s.id)}
+                  icon={<s.icon className="w-4 h-4" />}
+                  label={s.label}
+                />
+              );
+            })}
+          </nav>
+        </div>
+      </div>
 
-      <UnprocessedItemsQueue onEnterPassword={(statementId) => openPasswordModal(statementId)} />
+      {/* ── Column 3: Content Area ────────────────────────────────────────── */}
+      <div className="flex-1 h-full bg-[#F8E7C9] relative overflow-y-auto p-8 lg:p-12">
+        <div className="max-w-3xl mx-auto space-y-8">
+          {/* Zone 1: Upload */}
+          {currentSection === 'upload' && (
+            <section aria-label="Upload Statements" className="animate-in fade-in duration-300">
+              <div className="mb-6">
+                <h2 className="text-xl font-bold flex items-center gap-2 text-[#064E3B]">
+                  <Upload className="w-5 h-5" /> Upload Statements
+                </h2>
+                <p className="text-sm mt-1 text-[#064E3B]/70">
+                  Drop PDF statements here to parse and extract transactions.
+                </p>
+              </div>
+              <StatementUploadDropzone onUploaded={refresh} />
+            </section>
+          )}
 
-      {/* Processing History Table */}
-      <Card className="flex-1 flex flex-col min-h-0 border-border/60">
-        <CardHeader className="pb-3">
-          <CardTitle>Processing History</CardTitle>
-          <CardDescription>Recent uploads and their parsing status.</CardDescription>
-        </CardHeader>
-        <CardContent className="flex-1 p-0 flex flex-col overflow-hidden">
-          <ScrollArea className="flex-1">
-            <div tabIndex={0} className="min-w-full">
-              <Table aria-label="Statement processing history">
-                <TableHeader className="sticky top-0 bg-card z-10 border-b border-border/40">
-                  <TableRow>
-                    <TableHead scope="col">Date</TableHead>
-                    <TableHead scope="col">File Name</TableHead>
-                    <TableHead scope="col">Status</TableHead>
-                    <TableHead scope="col" className="text-right">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
+          {/* Zone 2: Action Needed Queue */}
+          {currentSection === 'queue' && (
+            <section aria-label="Action Needed" className="animate-in fade-in duration-300">
+              <div className="mb-6">
+                <h2 className="text-xl font-bold flex items-center gap-2 text-[#064E3B]">
+                  <AlertTriangle className="w-5 h-5 text-amber-600" /> Action Needed
+                </h2>
+                <p className="text-sm mt-1 text-[#064E3B]/70">
+                  Statements requiring a password or further attention.
+                </p>
+              </div>
+              <UnprocessedItemsQueue onEnterPassword={(statementId) => openPasswordModal(statementId)} />
+            </section>
+          )}
+
+          {/* Zone 3: Processing History */}
+          {currentSection === 'history' && (
+            <section aria-label="Processing History" className="animate-in fade-in duration-300">
+              <div className="mb-6">
+                <h2 className="text-xl font-bold flex items-center gap-2 text-[#064E3B]">
+                  <FileSearch className="w-5 h-5" /> Processing History
+                </h2>
+                <p className="text-sm mt-1 text-[#064E3B]/70">
+                  Previously parsed and extracted statements.
+                </p>
+              </div>
+                
+              <div className="bg-[#F8E7C9]/50 rounded-xl overflow-hidden border border-[#064E3B]/10 flex flex-col">
                   {loading ? (
-                    <TableRow>
-                      <TableCell colSpan={4} className="text-center h-24" aria-live="polite">
-                        Loading history…
-                      </TableCell>
-                    </TableRow>
+                    <div className="p-8 text-center text-[13px] text-[#064E3B]/70">Loading history…</div>
                   ) : history.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={4} className="text-center h-24 text-muted-foreground">
-                        No statements uploaded yet.
-                      </TableCell>
-                    </TableRow>
+                    <div className="p-8 text-center text-[13px] text-[#064E3B]/70">No statements uploaded yet.</div>
                   ) : (
-                    history.map((stmt) => {
-                      const isProcessed = stmt.status === 'PROCESSED';
-                      const isLocked = stmt.status === 'PASSWORD_REQUIRED';
-                      const isOCR = stmt.status === 'OCR_FALLBACK';
-                      return (
-                        <TableRow key={stmt.id}>
-                          <TableCell className="text-muted-foreground w-1/4">
-                            {new Date(stmt.date).toLocaleDateString()}
-                          </TableCell>
-                          <TableCell className="font-medium">
-                            <div className="flex items-center gap-2">
-                              <FileText className="w-4 h-4 text-muted-foreground shrink-0" aria-hidden="true" />
-                              {stmt.file_name}
+                    <div className="divide-y divide-[#064E3B]/5">
+                      {history.map((stmt) => {
+                        const isProcessed = stmt.status === 'PROCESSED';
+                        const isLocked = stmt.status === 'PASSWORD_REQUIRED';
+                        const isOCR = stmt.status === 'OCR_FALLBACK';
+                        
+                        return (
+                          <div key={stmt.id} className="p-4 flex items-center justify-between transition-colors hover:bg-[#064E3B]/5">
+                            <div className="min-w-0 pr-4 flex-1">
+                              <div className="flex items-center gap-2 mb-1">
+                                <FileText className="w-4 h-4 flex-shrink-0 text-[#064E3B]/70" />
+                                <span className="text-[14px] font-semibold truncate text-[#064E3B]" title={stmt.file_name}>
+                                  {stmt.file_name}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-3">
+                                <span className="text-[11px] font-medium text-[#064E3B]/60">
+                                  {formatCustomDate(stmt.date)}
+                                </span>
+                                <span
+                                  className="text-[9px] font-bold px-1.5 py-0.5 rounded-sm flex items-center gap-1 uppercase tracking-wider"
+                                  style={{
+                                    background: isProcessed ? 'rgba(16,185,129,0.15)' : isLocked ? 'rgba(239,68,68,0.15)' : isOCR ? 'rgba(217,119,6,0.15)' : 'rgba(6,78,59,0.1)',
+                                    color: isProcessed ? '#059669' : isLocked ? '#dc2626' : isOCR ? '#d97706' : '#064E3B',
+                                  }}
+                                >
+                                  {isLocked && <Lock className="w-2.5 h-2.5" />}
+                                  {isOCR && <FileSearch className="w-2.5 h-2.5" />}
+                                  {stmt.status.replace('_', ' ')}
+                                </span>
+                              </div>
                             </div>
-                          </TableCell>
-                          <TableCell className="w-1/4">
-                            <Badge
-                              variant={isProcessed ? 'default' : isLocked ? 'destructive' : isOCR ? 'secondary' : 'outline'}
-                              className="flex w-fit items-center gap-1.5"
-                            >
-                              {isLocked && <Lock className="w-3 h-3" aria-hidden="true" />}
-                              {isOCR && <FileSearch className="w-3 h-3 text-amber-700" aria-hidden="true" />}
-                              {stmt.status}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="text-right">
-                            {isProcessed && (
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => navigate(stmt.instrument_id ? `/transactions?instrument=${stmt.instrument_id}` : `/transactions?search=${encodeURIComponent(stmt.file_name)}`)}
-                              >
-                                View Entries
-                              </Button>
-                            )}
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })
+                            <div className="flex items-center gap-2">
+                              {isProcessed && (
+                                <button
+                                  type="button"
+                                  className="h-8 px-3 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors bg-[#064E3B]/5 hover:bg-[#064E3B]/10 text-[#064E3B] text-[12px] font-medium gap-1.5"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    toast({
+                                      title: 'Privacy Protected',
+                                      description: 'For your security, raw statement PDFs are never persisted on disk after parsing.',
+                                      variant: 'default'
+                                    });
+                                  }}
+                                  aria-label="View statement PDF"
+                                  title="View statement PDF"
+                                >
+                                  <FileText className="w-3.5 h-3.5" />
+                                  View PDF
+                                </button>
+                              )}
+                              {isProcessed && (
+                                <button
+                                  type="button"
+                                  className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors bg-[#064E3B]/10 hover:bg-[#064E3B]/20 text-[#064E3B]"
+                                  onClick={() => navigate(stmt.instrument_id ? `/transactions?instrument=${stmt.instrument_id}` : `/transactions?search=${encodeURIComponent(stmt.file_name)}`)}
+                                  aria-label="View parsed transactions"
+                                  title="View parsed transactions"
+                                >
+                                  <ChevronRight className="w-4 h-4" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   )}
-                </TableBody>
-              </Table>
-            </div>
-          </ScrollArea>
-        </CardContent>
-      </Card>
+                </div>
+            </section>
+          )}
+        </div>
+      </div>
 
       <PasswordPromptModal onUnlocked={refresh} />
 

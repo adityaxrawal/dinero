@@ -6,7 +6,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
-import { getErrorMessage } from '@/lib/getErrorMessage';
+import { getErrorMessage, getErrorToast } from '@/lib/errorMapping';
 import { API } from '@/lib/ipc';
 import { useGlobalState } from '@/lib/GlobalStateContext';
 
@@ -142,7 +142,7 @@ export default function StatementUploadDropzone({ onUploaded }: StatementUploadD
 
       await uploadPaths(paths);
     } catch (err) {
-      toast({ variant: 'destructive', title: 'Upload Failed', description: getErrorMessage(err) });
+      toast({ variant: 'destructive', ...getErrorToast(err) });
     }
   }, [uploadPaths, toast]);
 
