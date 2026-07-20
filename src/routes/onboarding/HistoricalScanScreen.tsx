@@ -73,7 +73,7 @@ export default function HistoricalScanScreen({ onDone }: HistoricalScanScreenPro
           aria-valuemax={100}
           aria-label="Historical scan progress"
         >
-          <div className="h-full bg-[#2563eb] transition-all duration-300" style={{ width: `${pct}%` }} />
+          <div className="h-full bg-[#064E3B] transition-all duration-300" style={{ width: `${pct}%` }} />
         </div>
         <p className="text-xs text-muted-foreground">
           {scanProgress?.processed ?? 0} of {scanProgress?.total ?? '…'} messages processed

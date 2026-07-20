@@ -174,7 +174,7 @@ export default function Onboarding() {
               className="h-full rounded-full transition-all duration-500 ease-out"
               style={{
                 width: `${(step / TOTAL_STEPS) * 100}%`,
-                background: '#2563eb',
+                background: '#064E3B',
               }}
             />
           </div>
@@ -224,16 +224,16 @@ export default function Onboarding() {
                     onClick={() => setStatementPref('auto')}
                     className={[
                       'relative flex flex-col items-center p-5 rounded-xl border-[1.5px] text-sm transition-all duration-200 ease-out outline-none',
-                      'focus-visible:ring-2 focus-visible:ring-[#2563eb]/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+                      'focus-visible:ring-2 focus-visible:ring-[#064E3B]/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background',
                       'hover:-translate-y-0.5',
                       statementPref === 'auto'
                         ? [
-                            'border-[#2563eb]/70 font-semibold',
-                            'bg-[#2563eb]/8',
+                            'border-[#064E3B]/70 font-semibold',
+                            'bg-[#064E3B]/8',
                             'shadow-[0_0_0_1px_rgba(37,99,235,0.2)]',
-                            'text-[#1d4ed8]',
+                            'text-[#053d2f]',
                           ].join(' ')
-                        : 'border-border bg-background text-foreground hover:border-[#2563eb]/35 hover:bg-[#2563eb]/[0.04]',
+                        : 'border-border bg-background text-foreground hover:border-[#064E3B]/35 hover:bg-[#064E3B]/[0.04]',
                     ].join(' ')}
                   >
                     {/* Checkmark badge — visible only when selected */}
@@ -241,7 +241,7 @@ export default function Onboarding() {
                       aria-hidden="true"
                       className={[
                         'absolute top-2 right-2 w-5 h-5 rounded-full flex items-center justify-center',
-                        'bg-[#2563eb]',
+                        'bg-[#064E3B]',
                         'transition-all duration-200 ease-out',
                         statementPref === 'auto' ? 'opacity-100 scale-100' : 'opacity-0 scale-0',
                       ].join(' ')}
@@ -249,11 +249,11 @@ export default function Onboarding() {
                       <Check className="w-3 h-3 text-white" strokeWidth={3} />
                     </span>
                     <Mail
-                      className={['w-6 h-6 mb-2 transition-colors duration-200', statementPref === 'auto' ? 'text-[#2563eb]' : 'text-muted-foreground'].join(' ')}
+                      className={['w-6 h-6 mb-2 transition-colors duration-200', statementPref === 'auto' ? 'text-[#064E3B]' : 'text-muted-foreground'].join(' ')}
                       aria-hidden="true"
                     />
                     <span className="font-medium">Auto (Gmail)</span>
-                    <span className={['text-xs mt-0.5 transition-colors', statementPref === 'auto' ? 'text-[#1d4ed8]' : 'text-muted-foreground'].join(' ')}>
+                    <span className={['text-xs mt-0.5 transition-colors', statementPref === 'auto' ? 'text-[#053d2f]' : 'text-muted-foreground'].join(' ')}>
                       Fetched from email
                     </span>
                   </button>
@@ -266,16 +266,16 @@ export default function Onboarding() {
                     onClick={() => setStatementPref('manual')}
                     className={[
                       'relative flex flex-col items-center p-5 rounded-xl border-[1.5px] text-sm transition-all duration-200 ease-out outline-none',
-                      'focus-visible:ring-2 focus-visible:ring-[#2563eb]/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+                      'focus-visible:ring-2 focus-visible:ring-[#064E3B]/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background',
                       'hover:-translate-y-0.5',
                       statementPref === 'manual'
                         ? [
-                            'border-[#2563eb]/70 font-semibold',
-                            'bg-[#2563eb]/8',
+                            'border-[#064E3B]/70 font-semibold',
+                            'bg-[#064E3B]/8',
                             'shadow-[0_0_0_1px_rgba(37,99,235,0.2)]',
-                            'text-[#1d4ed8]',
+                            'text-[#053d2f]',
                           ].join(' ')
-                        : 'border-border bg-background text-foreground hover:border-[#2563eb]/35 hover:bg-[#2563eb]/[0.04]',
+                        : 'border-border bg-background text-foreground hover:border-[#064E3B]/35 hover:bg-[#064E3B]/[0.04]',
                     ].join(' ')}
                   >
                     {/* Checkmark badge — visible only when selected */}
@@ -283,7 +283,7 @@ export default function Onboarding() {
                       aria-hidden="true"
                       className={[
                         'absolute top-2 right-2 w-5 h-5 rounded-full flex items-center justify-center',
-                        'bg-[#2563eb]',
+                        'bg-[#064E3B]',
                         'transition-all duration-200 ease-out',
                         statementPref === 'manual' ? 'opacity-100 scale-100' : 'opacity-0 scale-0',
                       ].join(' ')}
@@ -291,11 +291,11 @@ export default function Onboarding() {
                       <Check className="w-3 h-3 text-white" strokeWidth={3} />
                     </span>
                     <ShieldCheck
-                      className={['w-6 h-6 mb-2 transition-colors duration-200', statementPref === 'manual' ? 'text-[#2563eb]' : 'text-muted-foreground'].join(' ')}
+                      className={['w-6 h-6 mb-2 transition-colors duration-200', statementPref === 'manual' ? 'text-[#064E3B]' : 'text-muted-foreground'].join(' ')}
                       aria-hidden="true"
                     />
                     <span className="font-medium">Manual</span>
-                    <span className={['text-xs mt-0.5 transition-colors', statementPref === 'manual' ? 'text-[#1d4ed8]' : 'text-muted-foreground'].join(' ')}>
+                    <span className={['text-xs mt-0.5 transition-colors', statementPref === 'manual' ? 'text-[#053d2f]' : 'text-muted-foreground'].join(' ')}>
                       Upload PDFs yourself
                     </span>
                   </button>

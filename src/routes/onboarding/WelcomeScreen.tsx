@@ -48,8 +48,8 @@ export default function WelcomeScreen({ onContinue }: WelcomeScreenProps) {
           <ul className="space-y-4">
             {VALUE_PROPS.map(({ icon: Icon, title, description }) => (
               <li key={title} className="flex items-start gap-3">
-                <div className="mt-0.5 w-8 h-8 shrink-0 rounded-lg bg-[#2563eb]/10 flex items-center justify-center">
-                  <Icon className="w-4 h-4 text-[#2563eb]" aria-hidden="true" />
+                <div className="mt-0.5 w-8 h-8 shrink-0 rounded-lg bg-[#064E3B]/10 flex items-center justify-center">
+                  <Icon className="w-4 h-4 text-[#064E3B]" aria-hidden="true" />
                 </div>
                 <div>
                   <p className="text-sm font-medium">{title}</p>
