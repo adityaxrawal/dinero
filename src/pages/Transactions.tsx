@@ -1,36 +1,36 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Download, Plus, Loader2 } from 'lucide-react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import {
+  Download, Plus, Loader2, Search, X, SlidersHorizontal
+} from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { API } from '@/lib/ipc';
-import { getErrorMessage } from '@/lib/getErrorMessage';
+import { getErrorToast } from '@/lib/errorMapping';
 import type { TransactionListFilters } from '@/lib/ipc';
-import { Card, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
+import { cn, formatRelativeDate } from '@/lib/utils';
 import { useTransactionsInfiniteList } from '@/hooks/queries/useTransactionsInfiniteList';
 import { useTransactionSearch } from '@/hooks/queries/useTransactionSearch';
 import { useInstrumentsList } from '@/hooks/queries/useInstrumentsList';
 import { useCategoriesList } from '@/hooks/queries/useCategoriesList';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
-import TransactionFilterBar from '@/components/transactions/TransactionFilterBar';
-import TransactionSearchBox from '@/components/transactions/TransactionSearchBox';
-import TransactionRow from '@/components/transactions/TransactionRow';
+import TransactionInspector from '@/components/transactions/TransactionInspector';
+
+const ALL = '__all__';
+
 
 export default function Transactions() {
   const { toast } = useToast();
-  const navigate = useNavigate();
+  // const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
 
-  // TASK-FE-008's CategoryBreakdownChart links here with ?category=<id>;
-  // TASK-FE-011's InstrumentDetail links here with ?instrument=<id>.
+  // Initialise filters from URL params (deep-link support from dashboard categories / instrument detail)
   const [filters, setFilters] = useState<TransactionListFilters>(() => {
     const category = searchParams.get('category');
     const instrument = searchParams.get('instrument');
@@ -41,6 +41,9 @@ export default function Transactions() {
   });
   const [searchQuery, setSearchQuery] = useState('');
   const isSearching = searchQuery.trim().length > 0;
+
+  // Selected transaction for inspector panel
+  const [selectedTxId, setSelectedTxId] = useState<string | null>(null);
 
   const { data: instruments = [] } = useInstrumentsList();
   const { data: categories = [] } = useCategoriesList();
@@ -60,11 +63,8 @@ export default function Transactions() {
   const total = isSearching ? transactions.length : infinite.data?.pages[0]?.total ?? 0;
 
   const instrumentById = useMemo(() => new Map(instruments.map((i) => [i.id, i])), [instruments]);
-  const categoryById = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
 
-  // TASK-FE-009: infinite-scroll via a bottom sentinel + IntersectionObserver,
-  // with a visible "Load more" button as a reliable fallback (scroll-physics
-  // in headless/e2e environments can be flaky).
+  // Infinite scroll sentinel
   const { hasNextPage, isFetchingNextPage, fetchNextPage } = infinite;
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -73,9 +73,7 @@ export default function Transactions() {
     if (!el) return;
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0]?.isIntersecting && !isFetchingNextPage) {
-          fetchNextPage();
-        }
+        if (entries[0]?.isIntersecting && !isFetchingNextPage) fetchNextPage();
       },
       { rootMargin: '200px' },
     );
@@ -83,7 +81,7 @@ export default function Transactions() {
     return () => observer.disconnect();
   }, [isSearching, hasNextPage, isFetchingNextPage, fetchNextPage]);
 
-  // Create Transaction modal
+  // ── Create Transaction modal ──────────────────────────────
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [newTxnAmount, setNewTxnAmount] = useState('');
   const [newTxnDirection, setNewTxnDirection] = useState<'debit' | 'credit'>('debit');
@@ -114,7 +112,7 @@ export default function Transactions() {
       queryClient.invalidateQueries({ queryKey: queryKeys.transactions.all() });
       queryClient.invalidateQueries({ queryKey: queryKeys.dashboard.all() });
     } catch (e) {
-      toast({ variant: 'destructive', title: 'Create Failed', description: getErrorMessage(e) });
+      toast({ variant: 'destructive', ...getErrorToast(e) });
     } finally {
       setIsCreating(false);
     }
@@ -123,7 +121,9 @@ export default function Transactions() {
   const handleExportCsv = useCallback(() => {
     const header = ['Date', 'Merchant', 'Category', 'Amount', 'Status'];
     const rows = transactions.map((t) => [t.date, t.merchant, t.category, t.amount.toFixed(2), t.status]);
-    const csv = [header, ...rows].map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const csv = [header, ...rows]
+      .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(','))
+      .join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -133,85 +133,251 @@ export default function Transactions() {
     URL.revokeObjectURL(url);
   }, [transactions]);
 
+  const activeFilterCount = Object.values(filters).filter(Boolean).length;
+
+  const setFilter = <K extends keyof TransactionListFilters>(key: K, value: TransactionListFilters[K] | undefined) => {
+    setFilters((prev) => {
+      const next = { ...prev };
+      if (value === undefined || value === ALL) {
+        delete next[key];
+      } else {
+        next[key] = value;
+      }
+      return next;
+    });
+  };
+
   return (
-    <div className="flex flex-col gap-6 h-[calc(100vh-80px)] animate-in fade-in duration-500">
-      <header className="flex flex-wrap justify-between items-end gap-4">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Transactions</h1>
-          <p className="text-muted-foreground mt-1">Canonical records of your spending.</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <TransactionSearchBox onQueryChange={setSearchQuery} />
-          <Button variant="default" onClick={handleExportCsv}>
-            <Download className="h-4 w-4 mr-2" /> Export
-          </Button>
-          <Button variant="default" onClick={() => setIsCreateModalOpen(true)}>
-            <Plus className="h-4 w-4 mr-2" /> New Transaction
-          </Button>
-        </div>
-      </header>
+    <div className="flex h-full w-full overflow-hidden">
+      {/* ── Column 2: Master List (Feed) ─────────────────────────────────── */}
+      <div 
+        className="flex-shrink-0 flex flex-col h-full border-r border-[#064E3B]/20 bg-[#F8E7C9]"
+        style={{ width: '320px' }}
+      >
+        {/* Header bar */}
+        <div
+          className="flex flex-col gap-3 px-4 py-3 flex-shrink-0 border-b border-[#064E3B]/10"
+        >
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <h1 className="text-[14px] font-semibold text-[#064E3B] tracking-tight">
+                All Transactions
+              </h1>
+              <span
+                className="text-[10px] font-medium px-1.5 py-0.5 rounded-md"
+                style={{ background: 'rgba(6,78,59,0.07)', color: '#064E3B' }}
+              >
+                {total.toLocaleString()}
+              </span>
+            </div>
 
-      {!isSearching && <TransactionFilterBar filters={filters} onChange={setFilters} />}
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                className="flex items-center justify-center w-7 h-7 rounded-md transition-colors hover:bg-[#064E3B]/10 text-[#064E3B]"
+                onClick={handleExportCsv}
+                aria-label="Export CSV"
+              >
+                <Download className="w-3.5 h-3.5" aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className="flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-[#064E3B] hover:bg-[#064E3B]/90 text-[#F8E7C9]"
+                onClick={() => setIsCreateModalOpen(true)}
+                aria-label="New transaction"
+              >
+                <Plus className="w-4 h-4" aria-hidden="true" />
+              </button>
+            </div>
+          </div>
 
-      <Card className="flex-1 overflow-hidden flex flex-col border-border/60">
-        <ScrollArea className="flex-1">
-          <Table>
-            <TableHeader className="sticky top-0 bg-card z-10">
-              <TableRow>
-                <TableHead className="w-[28px]" />
-                <TableHead>Date</TableHead>
-                <TableHead>Merchant</TableHead>
-                <TableHead>Category</TableHead>
-                <TableHead>Instrument</TableHead>
-                <TableHead className="text-right">Amount</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="w-[140px]">Quick Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {loading ? (
-                <TableRow>
-                  <TableCell colSpan={8} className="text-center h-24 text-muted-foreground">Loading transactions…</TableCell>
-                </TableRow>
-              ) : transactions.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={8} className="text-center h-24 text-muted-foreground">
-                    No transactions found.
-                  </TableCell>
-                </TableRow>
-              ) : (
-                transactions.map((tx) => (
-                  <TransactionRow
+          {/* Search */}
+          <div className="relative w-full">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 pointer-events-none opacity-50" style={{ color: '#064E3B' }} aria-hidden="true" />
+            <input
+              type="text"
+              placeholder="Search..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => e.key === 'Escape' && setSearchQuery('')}
+              className="w-full pl-8 pr-8 h-7 rounded-md text-[13px] outline-none placeholder:text-[#064E3B]/40 focus:ring-1 ring-[#064E3B]/30"
+              style={{
+                backgroundColor: 'rgba(6,78,59,0.04)',
+                border: '1px solid rgba(6,78,59,0.08)',
+                color: '#064E3B',
+              }}
+              aria-label="Search transactions"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                className="absolute right-2 top-1/2 -translate-y-1/2 opacity-50 hover:opacity-100"
+                onClick={() => setSearchQuery('')}
+                aria-label="Clear search"
+              >
+                <X className="w-3.5 h-3.5 text-[#064E3B]" />
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Filter chips row */}
+        {!isSearching && (
+          <div
+            className="flex items-center gap-2 px-3 py-2 flex-shrink-0 border-b border-[#064E3B]/10"
+          >
+            <SlidersHorizontal className="w-3 h-3 flex-shrink-0 opacity-40 mx-1" style={{ color: '#064E3B' }} aria-hidden="true" />
+
+            <Select
+              value={filters.instrument_id ?? ALL}
+              onValueChange={(val) => setFilter('instrument_id', val === ALL ? undefined : val)}
+            >
+              <SelectTrigger 
+                className={cn(
+                  "h-6 text-[11px] font-medium border-0 rounded-full px-2.5 min-w-[90px] max-w-[120px]",
+                  filters.instrument_id 
+                    ? "bg-[#064E3B] text-[#F8E7C9]" 
+                    : "bg-[#064E3B]/5 text-[#064E3B] hover:bg-[#064E3B]/10"
+                )}
+              >
+                <SelectValue placeholder="Accounts" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL}>All Accounts</SelectItem>
+                {instruments.map((inst) => (
+                  <SelectItem key={inst.id} value={inst.id}>
+                    {inst.issuer_name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Select
+              value={filters.category_id ?? ALL}
+              onValueChange={(val) => setFilter('category_id', val === ALL ? undefined : val)}
+            >
+              <SelectTrigger 
+                className={cn(
+                  "h-6 text-[11px] font-medium border-0 rounded-full px-2.5 min-w-[90px] max-w-[120px]",
+                  filters.category_id 
+                    ? "bg-[#064E3B] text-[#F8E7C9]" 
+                    : "bg-[#064E3B]/5 text-[#064E3B] hover:bg-[#064E3B]/10"
+                )}
+              >
+                <SelectValue placeholder="Categories" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL}>All Categories</SelectItem>
+                {categories.map((c) => (
+                  <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            {activeFilterCount > 0 && (
+              <button
+                type="button"
+                className="filter-chip text-[11px] py-0.5 px-2 rounded-full border text-[#ef4444] border-[#ef4444]/20 hover:bg-[#ef4444]/10"
+                onClick={() => setFilters({})}
+                aria-label="Clear all filters"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* List items */}
+        <div className="flex-1 overflow-y-auto">
+          {loading ? (
+            <div className="flex flex-col items-center justify-center h-40 gap-2">
+              <Loader2 className="w-4 h-4 animate-spin text-[#064E3B]/50" />
+              <span className="text-xs text-[#064E3B]/50">Loading...</span>
+            </div>
+          ) : transactions.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-40">
+              <p className="text-xs text-[#064E3B]/50">
+                {isSearching ? `No results for "${searchQuery}"` : 'No transactions found.'}
+              </p>
+            </div>
+          ) : (
+            <div className="flex flex-col py-1">
+              {transactions.map((tx) => {
+                const instrument = tx.instrument_id ? instrumentById.get(tx.instrument_id) : undefined;
+                const dateStr = formatRelativeDate(tx.date);
+                
+                const isSelected = selectedTxId === tx.id;
+
+                return (
+                  <button
                     key={tx.id}
-                    tx={tx}
-                    instrument={tx.instrument_id ? instrumentById.get(tx.instrument_id) : undefined}
-                    category={categoryById.get(tx.category)}
-                    categories={categories}
-                    isSelected={false}
-                    onClick={() => navigate(`/transactions/${tx.id}`)}
-                  />
-                ))
+                    className={cn(
+                      "flex flex-col w-full text-left px-4 py-2.5 mx-2 rounded-md transition-colors max-w-[calc(100%-16px)] cursor-pointer select-none",
+                      isSelected
+                        ? "bg-[#064E3B] text-[#F8E7C9]"
+                        : "hover:bg-[#064E3B]/5 text-[#064E3B]"
+                    )}
+                    onClick={() => setSelectedTxId(tx.id)}
+                  >
+                    <div className="flex items-start justify-between w-full mb-1">
+                      <span className={cn("font-semibold text-[13px] truncate pr-2", isSelected ? "text-white" : "text-[#064E3B]")}>
+                        {tx.merchant}
+                      </span>
+                      <span className={cn("text-[13px] font-semibold whitespace-nowrap", isSelected ? "text-white" : (tx.amount < 0 ? "text-[#064E3B]" : "text-[#10b981]"))}>
+                        {tx.amount < 0 ? '−' : '+'}₹{Math.abs(tx.amount).toLocaleString(undefined, { minimumFractionDigits: 0 })}
+                      </span>
+                    </div>
+                    
+                    <div className="flex items-center justify-between w-full text-[11px] opacity-70 font-medium">
+                      <span className="truncate pr-2">
+                        {tx.category} • {instrument ? instrument.issuer_name : 'Unknown'}
+                      </span>
+                      <span className="whitespace-nowrap flex-shrink-0">
+                        {dateStr}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+              
+              {!isSearching && hasNextPage && (
+                <div ref={sentinelRef} className="flex justify-center py-4">
+                  <button
+                    type="button"
+                    className="text-xs font-medium px-4 py-1.5 rounded-full border border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5"
+                    onClick={() => fetchNextPage()}
+                    disabled={isFetchingNextPage}
+                  >
+                    {isFetchingNextPage
+                      ? <><Loader2 className="w-3.5 h-3.5 animate-spin inline mr-1.5" />Loading…</>
+                      : 'Load more'}
+                  </button>
+                </div>
               )}
-            </TableBody>
-          </Table>
-          {!isSearching && infinite.hasNextPage && (
-            <div ref={sentinelRef} className="flex justify-center py-4">
-              <Button variant="outline" size="sm" onClick={() => infinite.fetchNextPage()} disabled={infinite.isFetchingNextPage}>
-                {infinite.isFetchingNextPage ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
-                Load more
-              </Button>
             </div>
           )}
-        </ScrollArea>
-        <CardFooter className="flex items-center justify-between p-4 border-t border-border/60">
-          <span className="text-sm text-muted-foreground">
-            {isSearching
-              ? `${transactions.length} search result${transactions.length === 1 ? '' : 's'}`
-              : `${transactions.length} of ${total} loaded`}
-          </span>
-        </CardFooter>
-      </Card>
+        </div>
+      </div>
 
+      {/* ── Column 3: Inspector Panel ──────────────────────────────────── */}
+      <div className="flex-1 h-full bg-[#F8E7C9] relative overflow-hidden flex flex-col">
+        {selectedTxId ? (
+          <TransactionInspector
+            transactionId={selectedTxId}
+            onClose={() => setSelectedTxId(null)}
+            categories={categories}
+          />
+        ) : (
+          <div className="flex-1 flex flex-col items-center justify-center h-full opacity-30">
+            <div className="w-12 h-12 border-2 border-[#064E3B] rounded-xl mb-4 border-dashed flex items-center justify-center">
+              <span className="text-[#064E3B] font-bold text-xl">D</span>
+            </div>
+            <p className="text-[#064E3B] font-medium text-sm">Select a transaction to view details</p>
+          </div>
+        )}
+      </div>
+
+      {/* ── Create Transaction Modal ─────────────────────────── */}
       <Dialog open={isCreateModalOpen} onOpenChange={setIsCreateModalOpen}>
         <DialogContent className="sm:max-w-[425px]">
           <DialogHeader>

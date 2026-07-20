@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Loader2, Save, Trash2, Plus, X, CheckCircle2 } from 'lucide-react';
+import { TagDatalist } from '@/components/transactions/TagDatalist';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -11,7 +12,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
 import { formatCustomDate } from '@/lib/formatCustomDate';
-import { getErrorMessage } from '@/lib/getErrorMessage';
+import { getErrorToast } from '@/lib/errorMapping';
 import { API } from '@/lib/ipc';
 import { useToast } from '@/hooks/use-toast';
 import { useTransactionDetail } from '@/hooks/queries/useTransactionDetail';
@@ -22,6 +23,7 @@ import { useUpdateTransactionFields } from '@/hooks/mutations/useUpdateTransacti
 import { useAddTransactionTag } from '@/hooks/mutations/useAddTransactionTag';
 import { useRemoveTransactionTag } from '@/hooks/mutations/useRemoveTransactionTag';
 import { useSoftDeleteTransaction } from '@/hooks/mutations/useSoftDeleteTransaction';
+import { confirmDeleteTransaction } from '@/lib/confirmDialog';
 import SourceEvidencePanel from '@/components/transactions/SourceEvidencePanel';
 import EmiInstallmentTimeline from '@/components/transactions/EmiInstallmentTimeline';
 
@@ -108,7 +110,7 @@ export default function TransactionDetail() {
           setShowSavedConfirmation(true);
           setTimeout(() => setShowSavedConfirmation(false), 3000);
         },
-        onError: (err) => toast({ variant: 'destructive', title: 'Update failed', description: getErrorMessage(err) }),
+        onError: (err) => toast({ variant: 'destructive', ...getErrorToast(err) }),
       },
     );
   };
@@ -118,7 +120,7 @@ export default function TransactionDetail() {
     if (!tagName || tags.includes(tagName)) return;
     addTag.mutate(
       { transactionId: id, tagName },
-      { onError: (err) => toast({ variant: 'destructive', title: 'Add tag failed', description: getErrorMessage(err) }) },
+      { onError: (err) => toast({ variant: 'destructive', ...getErrorToast(err) }) },
     );
     setNewTag('');
   };
@@ -126,18 +128,12 @@ export default function TransactionDetail() {
   const handleRemoveTag = (tagName: string) => {
     removeTag.mutate(
       { transactionId: id, tagName },
-      { onError: (err) => toast({ variant: 'destructive', title: 'Remove tag failed', description: getErrorMessage(err) }) },
+      { onError: (err) => toast({ variant: 'destructive', ...getErrorToast(err) }) },
     );
   };
 
   const handleDelete = async () => {
-    let confirmed: boolean;
-    try {
-      const { ask } = await import('@tauri-apps/plugin-dialog');
-      confirmed = await ask('Delete this transaction? This cannot be undone.', { title: 'Delete Transaction', kind: 'warning' });
-    } catch {
-      confirmed = confirm('Delete this transaction? This cannot be undone.');
-    }
+    const confirmed = await confirmDeleteTransaction();
     if (!confirmed) return;
     softDelete.mutate(id, {
       onSuccess: () => {
@@ -145,7 +141,7 @@ export default function TransactionDetail() {
         navigate('/transactions');
       },
       onError: (err) =>
-        toast({ variant: 'destructive', title: 'Delete Failed', description: getErrorMessage(err, 'Only manually-entered transactions can be deleted.') }),
+        toast({ variant: 'destructive', ...getErrorToast(err, 'Only manually-entered transactions can be deleted.') }),
     });
   };
 
@@ -248,11 +244,7 @@ export default function TransactionDetail() {
                 onChange={(e) => setNewTag(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleAddTag()}
               />
-              <datalist id="tag-suggestions">
-                {availableTags.filter((t) => !tags.includes(t.name)).map((t) => (
-                  <option key={t.id} value={t.name} />
-                ))}
-              </datalist>
+              <TagDatalist id="tag-suggestions" tags={tags} availableTags={availableTags} />
               <Button variant="outline" size="icon" onClick={handleAddTag} aria-label="Add tag">
                 <Plus className="w-4 h-4" aria-hidden="true" />
               </Button>
@@ -283,7 +275,7 @@ export default function TransactionDetail() {
         </CardContent>
       </Card>
 
-      <SourceEvidencePanel observations={detail.observations} />
+      <SourceEvidencePanel transactionId={id!} observations={detail.observations} />
 
       {tx.emi_group_id && <EmiInstallmentTimeline emiGroupId={tx.emi_group_id} />}
 
