@@ -16,7 +16,9 @@ export function useIpcListen<T>(
   handler: (payload: T) => void
 ): void {
   const handlerRef = useRef(handler)
-  handlerRef.current = handler
+  useEffect(() => {
+    handlerRef.current = handler
+  }, [handler])
 
   useEffect(() => {
     let unlisten: UnlistenFn | undefined

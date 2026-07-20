@@ -20,10 +20,9 @@ export function rollbackTransactionQueries(
   snapshot.forEach(([key, data]) => queryClient.setQueryData(key, data));
 }
 
-export function patchTransactionInCaches(
+function _updateTransactionCaches(
   queryClient: QueryClient,
-  transactionId: string,
-  patch: (tx: TransactionRecord) => TransactionRecord,
+  updatePage: (page: TransactionsPage) => TransactionsPage,
 ) {
   queryClient.setQueriesData<InfiniteData<TransactionsPage>>(
     { queryKey: queryKeys.transactions.all() },
@@ -31,28 +30,27 @@ export function patchTransactionInCaches(
       if (!old) return old;
       return {
         ...old,
-        pages: old.pages.map((page) => ({
-          ...page,
-          records: page.records.map((r) => (r.id === transactionId ? patch(r) : r)),
-        })),
+        pages: old.pages.map(updatePage),
       };
     },
   );
 }
 
+export function patchTransactionInCaches(
+  queryClient: QueryClient,
+  transactionId: string,
+  patch: (tx: TransactionRecord) => TransactionRecord,
+) {
+  _updateTransactionCaches(queryClient, (page) => ({
+    ...page,
+    records: page.records.map((r) => (r.id === transactionId ? patch(r) : r)),
+  }));
+}
+
 export function removeTransactionFromCaches(queryClient: QueryClient, transactionId: string) {
-  queryClient.setQueriesData<InfiniteData<TransactionsPage>>(
-    { queryKey: queryKeys.transactions.all() },
-    (old) => {
-      if (!old) return old;
-      return {
-        ...old,
-        pages: old.pages.map((page) => ({
-          ...page,
-          records: page.records.filter((r) => r.id !== transactionId),
-          total: Math.max(0, page.total - 1),
-        })),
-      };
-    },
-  );
+  _updateTransactionCaches(queryClient, (page) => ({
+    ...page,
+    records: page.records.filter((r) => r.id !== transactionId),
+    total: Math.max(0, page.total - 1),
+  }));
 }

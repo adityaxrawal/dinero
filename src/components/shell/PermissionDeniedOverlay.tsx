@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
+import { useIpcListen } from '@/hooks/useIpcListen';
 import { AlertTriangle, BellOff, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
@@ -34,32 +35,15 @@ export default function PermissionDeniedOverlay() {
   const [notificationDenied, setNotificationDenied] = useState<string | null>(null);
   const [notificationDismissed, setNotificationDismissed] = useState(false);
 
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-
-    const setup = async () => {
-      let listen;
-      try {
-        const m = await import('@tauri-apps/api/event');
-        listen = m.listen;
-      } catch {
-        return;
-      }
-      const handle = await listen<SystemWarningPayload>('system_warning', (event) => {
-        const { warning_type, message } = event.payload;
-        if (warning_type === KEYCHAIN_DENIED) {
-          setKeychainDenied(message);
-        } else if (warning_type === NOTIFICATION_DENIED) {
-          setNotificationDenied(message);
-          setNotificationDismissed(false);
-        }
-      });
-      unlisten = handle;
-    };
-
-    setup().catch((e) => console.error('Failed to listen for system_warning', e));
-    return () => unlisten?.();
-  }, []);
+  useIpcListen<SystemWarningPayload>('system_warning', (payload) => {
+    const { warning_type, message } = payload;
+    if (warning_type === KEYCHAIN_DENIED) {
+      setKeychainDenied(message);
+    } else if (warning_type === NOTIFICATION_DENIED) {
+      setNotificationDenied(message);
+      setNotificationDismissed(false);
+    }
+  });
 
   const openSystemSettings = async (pane: string) => {
     try {

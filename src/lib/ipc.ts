@@ -188,6 +188,12 @@ export interface UnprocessedStatementEntry {
   filename: string;
   failure_type: string | null;
   failure_reason: string | null;
+  sender?: string;
+  to?: string;
+  subject?: string;
+  date?: string;
+  snippet?: string;
+  html?: string;
 }
 
 export interface UnprocessedStatementGroups {
@@ -287,6 +293,12 @@ export interface UnassignedTransactionRecord {
   reason: string;
   status: string;
   created_at: string | null;
+  merchant_raw: string | null;
+  amount_minor: number | null;
+  currency: string | null;
+  source_message_id: string | null;
+  body_snippet: string | null;
+  raw_payload_json: string | null;
 }
 
 export interface InstrumentRecord {
@@ -544,6 +556,8 @@ export const API = {
     // clusters (matching ambiguity) and need their own UI section.
     listUnassigned: () =>
       invokeCommand<UnassignedTransactionRecord[]>('reconciliation_get_unassigned_transactions'),
+    dismissUnassigned: (id: string) =>
+      invokeCommand<void>('reconciliation_dismiss_unassigned_transaction', { id }),
     // G20/H10/J8 fix: action vocabulary realigned to Doc 19 §10.3's
     // documented "Allowed actions" ('confirm_match'/'reject_candidate'
     // replace the previous 'merge'/'reject' — 'keep_separate' and
@@ -673,6 +687,14 @@ export const API = {
     getAvailableModels: () => invokeCommand<LlmModelInfo[]>('llm_get_available_models'),
     downloadModel: (modelId: string) =>
       invokeCommand<void>('llm_download_model', { modelId }),
+    deleteModel: (modelId: string) =>
+      invokeCommand<void>('llm_delete_model', { modelId }),
+    getDownloadedModels: () =>
+      invokeCommand<string[]>('llm_get_downloaded_models'),
+    getActiveModel: () =>
+      invokeCommand<string>('llm_get_active_model'),
+    setActiveModel: (modelId: string) =>
+      invokeCommand<void>('llm_set_active_model', { modelId }),
   },
   debug: {
     fetchParseErrors: () => invokeCommand<any[]>('debug_fetch_parse_errors'),

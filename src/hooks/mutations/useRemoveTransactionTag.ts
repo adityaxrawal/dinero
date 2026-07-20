@@ -1,6 +1,11 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { API } from '@/lib/ipc';
 import { queryKeys } from '@/lib/queryKeys';
+import {
+  snapshotTransactionQueries,
+  rollbackTransactionQueries,
+  patchTransactionInCaches,
+} from './optimisticTransactionPatch';
 
 /**
  * TASK-FE-010: resolves the tag name to its real id via `tags_list`, then
@@ -18,8 +23,23 @@ export function useRemoveTransactionTag() {
       if (!tag) return;
       await API.transactions.removeTag(transactionId, tag.id);
     },
+    onMutate: async ({ transactionId, tagName }) => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.transactions.all() });
+      const snapshot = snapshotTransactionQueries(queryClient);
+      
+      patchTransactionInCaches(queryClient, transactionId, (tx) => ({
+        ...tx,
+        tags: (tx.tags ?? []).filter((t) => t.toLowerCase() !== tagName.toLowerCase()),
+      }));
+      
+      return { snapshot };
+    },
+    onError: (_err, _vars, context) => {
+      if (context) rollbackTransactionQueries(queryClient, context.snapshot);
+    },
     onSuccess: (_data, { transactionId }) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.transactions.tags(transactionId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.transactions.all() });
     },
   });
 }

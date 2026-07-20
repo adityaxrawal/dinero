@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { ScanProgressPayload } from '@/lib/ipc';
 
-export interface SystemWarning {
+interface SystemWarning {
   warning_type: string;
   message: string;
   [key: string]: unknown;

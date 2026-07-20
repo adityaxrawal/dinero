@@ -1,8 +1,7 @@
 import { create } from 'zustand';
 
-export type TransactionDirection = 'debit' | 'credit';
 
-export interface DateRangeFilter {
+interface DateRangeFilter {
   start: string | null;
   end: string | null;
 }

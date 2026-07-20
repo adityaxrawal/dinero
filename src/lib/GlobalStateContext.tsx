@@ -40,7 +40,6 @@ interface GlobalStateContextType {
   setPendingStatementId: React.Dispatch<React.SetStateAction<string | null>>;
   pendingInstrumentId: string;
   setPendingInstrumentId: React.Dispatch<React.SetStateAction<string>>;
-  passwordTimeoutCountdown: number;
   openPasswordModal: (statementId: string, instrumentId?: string) => void;
   closePasswordModal: () => void;
 
@@ -55,13 +54,12 @@ interface GlobalStateContextType {
 
 const GlobalStateContext = createContext<GlobalStateContextType | undefined>(undefined);
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const useGlobalState = () => {
   const context = useContext(GlobalStateContext);
   if (!context) throw new Error("useGlobalState must be used within a GlobalStateProvider");
   return context;
 };
-
-const PASSWORD_TIMEOUT_SECONDS = 150;
 
 export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { toast } = useToast();
@@ -165,9 +163,9 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
       };
       
       await API.ingestion.startHistoricalScan(primaryConnectedAccount.account_id, scanStartDate, scanEndDate);
-    } catch (err: any) {
+    } catch (err: unknown) {
       setScanStatus('error');
-      setScanError(err?.message ?? String(err));
+      setScanError(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -178,8 +176,6 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [passwordModalOpen, setPasswordModalOpen] = useState(false);
   const [pendingStatementId, setPendingStatementId] = useState<string | null>(null);
   const [pendingInstrumentId, setPendingInstrumentId] = useState<string>('UNKNOWN');
-  const [passwordTimeoutCountdown, setPasswordTimeoutCountdown] = useState(PASSWORD_TIMEOUT_SECONDS);
-  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ----- Statement Instrument Gate confirmation modal (C2) -----
   const [instrumentModalOpen, setInstrumentModalOpen] = useState(false);
@@ -216,48 +212,18 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
     }
   }, []);
 
-  const clearCountdown = useCallback(() => {
-    if (countdownRef.current) {
-      clearInterval(countdownRef.current);
-      countdownRef.current = null;
-    }
-  }, []);
-
   const closePasswordModal = useCallback(() => {
-    clearCountdown();
     setPasswordModalOpen(false);
     setPendingStatementId(null);
-  }, [clearCountdown]);
-
-  const startCountdown = useCallback(() => {
-    clearCountdown();
-    setPasswordTimeoutCountdown(PASSWORD_TIMEOUT_SECONDS);
-    countdownRef.current = setInterval(() => {
-      setPasswordTimeoutCountdown((prev) => {
-        if (prev <= 1) {
-          clearCountdown();
-          setPasswordModalOpen(false);
-          setPendingStatementId(null);
-          toast({
-            variant: 'destructive',
-            title: 'Password Timeout',
-            description: 'The 2.5-minute window to enter the password has expired.',
-          });
-          return PASSWORD_TIMEOUT_SECONDS;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-  }, [clearCountdown, toast]);
+  }, []);
 
   const openPasswordModal = useCallback(
     (statementId: string, instrumentId = 'UNKNOWN') => {
       setPendingStatementId(statementId);
       setPendingInstrumentId(instrumentId);
       setPasswordModalOpen(true);
-      startCountdown();
     },
-    [startCountdown],
+    [],
   );
 
   useEffect(() => {
@@ -265,7 +231,6 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
     let unlistenParsed: UnlistenFn;
     let unlistenPassword: UnlistenFn;
-    let unlistenTimeout: UnlistenFn;
     let unlistenFailed: UnlistenFn;
     let unlistenDuplicate: UnlistenFn;
     let unlistenInstrumentConfirmation: UnlistenFn;
@@ -280,17 +245,9 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
       unlistenPassword = await listen<{ statementId: string; instrumentId?: string }>(
         'statement_password_required',
         (event) => {
-          const payload: any = event.payload;
-          openPasswordModal(payload.statementId || payload.statement_id, payload.instrumentId || payload.instrument_id);
+          const payload = event.payload as { statementId?: string; statement_id?: string; instrumentId?: string; instrument_id?: string };
+          openPasswordModal(payload.statementId || payload.statement_id || '', payload.instrumentId || payload.instrument_id);
         },
-      );
-
-      unlistenTimeout = await listen<{ statementId: string }>(
-        'statement_password_timeout',
-        (_event) => {
-          setPasswordModalOpen(false);
-          loadStatementHistory();
-        }
       );
 
       unlistenFailed = await listen('statement_parse_failed', () => {
@@ -336,14 +293,12 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
     return () => {
       if (unlistenParsed) unlistenParsed();
       if (unlistenPassword) unlistenPassword();
-      if (unlistenTimeout) unlistenTimeout();
       if (unlistenFailed) unlistenFailed();
       if (unlistenDuplicate) unlistenDuplicate();
       if (unlistenInstrumentConfirmation) unlistenInstrumentConfirmation();
       if (unlistenBatchProgress) unlistenBatchProgress();
-      clearCountdown();
     };
-  }, [loadStatementHistory, toast, openPasswordModal, openInstrumentModal, clearCountdown]);
+  }, [loadStatementHistory, toast, openPasswordModal, openInstrumentModal]);
 
 
   const value: GlobalStateContextType = {
@@ -363,7 +318,6 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
     passwordModalOpen, setPasswordModalOpen,
     pendingStatementId, setPendingStatementId,
     pendingInstrumentId, setPendingInstrumentId,
-    passwordTimeoutCountdown,
     openPasswordModal,
     closePasswordModal,
 

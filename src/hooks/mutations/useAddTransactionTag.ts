@@ -1,6 +1,11 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { API } from '@/lib/ipc';
 import { queryKeys } from '@/lib/queryKeys';
+import {
+  snapshotTransactionQueries,
+  rollbackTransactionQueries,
+  patchTransactionInCaches,
+} from './optimisticTransactionPatch';
 
 /**
  * TASK-FE-009: inline tag-add quick action.
@@ -24,9 +29,31 @@ export function useAddTransactionTag() {
       await API.transactions.addTag(transactionId, tagId);
       return tagId;
     },
+    onMutate: async ({ transactionId, tagName }) => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.transactions.all() });
+      const snapshot = snapshotTransactionQueries(queryClient);
+      
+      const trimmed = tagName.trim();
+      patchTransactionInCaches(queryClient, transactionId, (tx) => {
+        const currentTags = tx.tags ?? [];
+        if (currentTags.some(t => t.toLowerCase() === trimmed.toLowerCase())) {
+          return tx;
+        }
+        return {
+          ...tx,
+          tags: [...currentTags, trimmed],
+        };
+      });
+      
+      return { snapshot };
+    },
+    onError: (_err, _vars, context) => {
+      if (context) rollbackTransactionQueries(queryClient, context.snapshot);
+    },
     onSuccess: (_data, { transactionId }) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.transactions.tags(transactionId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.tags.list() });
+      queryClient.invalidateQueries({ queryKey: queryKeys.transactions.all() });
     },
   });
 }

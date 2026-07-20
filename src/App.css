@@ -1,162 +1,144 @@
 /* ============================================================
-   Dinero — Global Design System
+   Dinero — Global Design System v2
    Brand: Emerald Ink (#064E3B) + Champagne (#F8E7C9)
-   Phase 1: Light mode only (dark tokens defined, NOT activated)
-   Doc 14 §4 / Brand Update (supersedes blue #2563eb baseline)
+   Redesigned from first principles — rail nav, inspector panels
+   Doc 14 §4 / Brand Update
    ============================================================ */
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300;0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700;1,14..32,400&display=swap');
 
 /* ── Tailwind base layers ───────────────────────────────────── */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* ── CSS Custom Properties (shadcn/ui + Dinero brand tokens) ── */
+/* ── CSS Custom Properties ─────────────────────────────────── */
 @layer base {
   :root {
     /* ── shadcn/ui semantic slots ─────────────────────────────
-       Mapped to Emerald Ink + Champagne palette.
-       HSL values derived from:
-         Champagne  #F8E7C9 → hsl(36, 78%, 88%)
-         Emerald Ink #064E3B → hsl(160, 84%, 16%)
+       Champagne  #F8E7C9 → hsl(36, 78%, 88%)
+       Emerald Ink #064E3B → hsl(160, 84%, 16%)
     ──────────────────────────────────────────────────────── */
 
-    /* Canvas / page background → Champagne #F8E7C9 */
     --background:         36 70% 88%;
     --foreground:         160 84% 10%;
-
-    /* Card surfaces → warm cream, clearly distinct from pure white
-       #F2DDB8 ≈ hsl(38 72% 84%) — sits between champagne and white
-       making cards feel "lifted" without going stark white            */
     --card:               38 55% 91%;
     --card-foreground:    160 84% 10%;
-
-    /* Popover / dropdown → same warm cream as card */
     --popover:            38 55% 91%;
     --popover-foreground: 160 84% 10%;
-
-    /* Primary action → Emerald Ink */
     --primary:            160 84% 16%;
     --primary-foreground: 36 78% 93%;
-
-    /* Secondary surfaces → slightly darker champagne for input fills */
     --secondary:          36 40% 85%;
     --secondary-foreground: 160 84% 12%;
-
-    /* Muted / subtle — champagne-tinted grey */
     --muted:              36 28% 84%;
     --muted-foreground:   160 18% 38%;
-
-    /* Accent hover state — warm amber-cream */
     --accent:             36 38% 83%;
     --accent-foreground:  160 84% 12%;
-
-    /* Destructive / danger → spec §4.3 */
     --destructive:        0 84% 60%;
     --destructive-foreground: 0 0% 100%;
-
-    /* Border / input / ring — champagne-tinted warm border */
     --border:             36 28% 76%;
     --input:              36 28% 76%;
     --ring:               160 84% 16%;
-
-    /* Border radius */
     --radius:             0.5rem;
 
-    /* ── Dinero Brand Semantic Tokens ──────────────────────── */
-
-    /* Primary brand colors (used directly via Tailwind arbitrary values) */
+    /* ── Dinero Brand Tokens ──────────────────────────────── */
     --emerald-ink:        #064E3B;
     --emerald-ink-hover:  #053d2f;
     --emerald-ink-light:  #0a6e53;
+    --emerald-ink-subtle: rgba(6, 78, 59, 0.07);
+    --emerald-ink-subtle-hover: rgba(6, 78, 59, 0.12);
     --champagne:          #F8E7C9;
     --champagne-dark:     #f0d4a8;
     --champagne-deeper:   #e8c888;
 
-    /* Background surfaces
-       Page canvas  → #F8E7C9 (Champagne)
-       Card surface → #EFD9AC (warm cream — clearly tinted, not white)
-       Hover state  → #E8CE99                                          */
-    --bg-primary:         #F8E7C9;
-    --bg-secondary:       #ecddb0;
-    --bg-card:            #EFD9AC;
-    --bg-card-hover:      #E8CE99;
+    /* Surface hierarchy */
+    --bg-canvas:          #F8E7C9;    /* page background */
+    --bg-surface:         #ecddb0;    /* subtle lift */
+    --bg-card:            hsl(38, 55%, 91%);  /* cards */
+    --bg-card-hover:      hsl(38, 50%, 87%);  /* card hover */
+    --bg-rail:            #064E3B;    /* icon rail */
+    --bg-panel:           hsl(38, 52%, 90%);  /* context panels */
     --bg-sidebar:         #064E3B;
 
-    /* Text on champagne canvas */
+    /* Text hierarchy */
     --text-primary:       #0d2b22;
     --text-secondary:     #3d5a50;
     --text-muted:         #6b8a7f;
-
-    /* Text on emerald ink (sidebar) */
+    --text-on-rail:       #F8E7C9;
+    --text-on-rail-muted: rgba(248, 231, 201, 0.60);
     --text-on-dark:       #F8E7C9;
     --text-on-dark-muted: rgba(248, 231, 201, 0.65);
 
     /* Borders */
     --border-color:       #d9c8a8;
-    --border-hover:       #c4ae88;
+    --border-strong:      #c4ae88;
+    --border-subtle:      rgba(6, 78, 59, 0.08);
 
-    /* Accent primary → Emerald Ink */
-    --accent-primary:     #064E3B;
-    --accent-primary-rgb: 6, 78, 59;
-    --accent-hover:       #053d2f;
-    --accent-subtle:      rgba(6, 78, 59, 0.07);
-    --accent-subtle-hover: rgba(6, 78, 59, 0.12);
-
-    /* Semantic status colors (Doc 14 §4.3 — unchanged from spec) */
+    /* Semantic status */
     --success:            #10b981;
+    --success-bg:         rgba(16, 185, 129, 0.10);
     --warning:            #f59e0b;
+    --warning-bg:         rgba(245, 158, 11, 0.10);
     --danger:             #ef4444;
+    --danger-bg:          rgba(239, 68, 68, 0.10);
 
-    /* Dark mode tokens — DEFINED but NOT activated until Phase 3 (Doc 14 §4.2) */
+    /* Layout */
+    --rail-width:         48px;
+    --panel-width:        220px;
+    --inspector-width:    420px;
+    --header-height:      56px;
+    --table-row-height:   44px;
+    --attention-card-w:   200px;
+
+    /* Radii */
+    --radius-xs:          4px;
+    --radius-sm:          6px;
+    --radius-md:          8px;
+    --radius-lg:          12px;
+    --radius-xl:          16px;
+    --radius-2xl:         20px;
+    --radius-full:        9999px;
+
+    /* Motion */
+    --ease-out-expo:      cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-spring:        cubic-bezier(0.34, 1.56, 0.64, 1);
+    --ease-smooth:        cubic-bezier(0.25, 0.46, 0.45, 0.94);
+
+    --duration-fast:      120ms;
+    --duration-normal:    200ms;
+    --duration-slow:      300ms;
+    --duration-enter:     250ms;
+
+    --transition-fast:    all var(--duration-fast) var(--ease-out-expo);
+    --transition-smooth:  all var(--duration-normal) var(--ease-out-expo);
+    --transition-spring:  all var(--duration-normal) var(--ease-spring);
+    --transition-panel:   all var(--duration-slow) var(--ease-out-expo);
+
+    /* Shadows */
+    --shadow-sm:          0 1px 3px rgba(6, 78, 59, 0.07), 0 1px 2px rgba(6, 78, 59, 0.05);
+    --shadow-md:          0 4px 12px rgba(6, 78, 59, 0.08), 0 2px 4px rgba(6, 78, 59, 0.06);
+    --shadow-lg:          0 8px 32px rgba(6, 78, 59, 0.12), 0 4px 8px rgba(6, 78, 59, 0.08);
+    --shadow-panel:       -2px 0 24px rgba(6, 78, 59, 0.10), -1px 0 4px rgba(6, 78, 59, 0.06);
+    --shadow-rail:        2px 0 12px rgba(6, 78, 59, 0.20);
+
+    /* Focus ring */
+    --focus-ring:         0 0 0 2px rgba(6, 78, 59, 0.40), 0 0 0 4px rgba(6, 78, 59, 0.10);
+
+    /* Typography (tabular numbers for amounts) */
+    --font-mono-feat:     "tnum", "lnum";
+
+    /* Dark mode tokens — DEFINED, not yet activated */
     --primary-dark:       #3b82f6;
     --background-dark:    #111827;
     --surface-dark:       #1f2937;
-    --text-primary-dark:  #f9fafb;
-    --text-secondary-dark: #9ca3af;
-    --border-dark:        #374151;
-
-    /* Sidebar / layout */
-    --sidebar-width:      260px;
-    --header-height:      70px;
-
-    /* Border radii (Doc 14 §6 compatible) */
-    --radius-lg:          12px;
-    --radius-md:          8px;
-    --radius-sm:          6px;
-
-    /* Motion (DS-OQ-05 resolved: 150–250ms, purposeful) */
-    --transition-fast:    all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
-    --transition-smooth:  all 0.22s cubic-bezier(0.16, 1, 0.3, 1);
-    --transition-spring:  all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
-
-    /* Typography scale (Doc 14 §5) */
-    --text-xs:            0.75rem;
-    --text-sm:            0.875rem;
-    --text-base:          1rem;
-    --text-lg:            1.125rem;
-    --text-xl:            1.25rem;
-    --text-2xl:           1.5rem;
-    --text-3xl:           1.875rem;
-
-    /* Spacing scale (Doc 14 §6) */
-    --space-1:            0.25rem;
-    --space-2:            0.5rem;
-    --space-3:            0.75rem;
-    --space-4:            1rem;
-    --space-6:            1.5rem;
-    --space-8:            2rem;
-    --space-12:           3rem;
-
-    /* Focus ring — Emerald Ink */
-    --focus-ring: 0 0 0 2px rgba(6, 78, 59, 0.45), 0 0 0 4px rgba(6, 78, 59, 0.12);
   }
 
   /* ── Global resets ───────────────────────────────────────── */
-  * {
+  *, *::before, *::after {
     @apply border-border;
     box-sizing: border-box;
+    margin: 0;
+    padding: 0;
   }
 
   html {
@@ -164,61 +146,83 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     font-feature-settings: "cv11", "ss01";
+    font-optical-sizing: auto;
   }
 
   body {
     @apply bg-background text-foreground;
     font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     line-height: 1.5;
-    /* Champagne canvas — matches --background HSL(36 70% 88%) */
-    background-color: hsl(36, 70%, 88%);
-    color: #0d2b22;
+    background-color: var(--bg-canvas);
+    color: var(--text-primary);
+    overflow: hidden; /* shell manages scrolling */
   }
 
-  /* ── Focus visible (accessibility — Doc 14 §10) ───────────── */
+  /* ── Focus visible ─────────────────────────────────────── */
   :focus-visible {
     outline: 2px solid #064E3B;
     outline-offset: 2px;
+    border-radius: 4px;
   }
 
-  /* ── Selection color ─────────────────────────────────────── */
+  /* ── Selection ─────────────────────────────────────────── */
   ::selection {
     background-color: rgba(6, 78, 59, 0.18);
     color: #0d2b22;
   }
 
-  /* ── Scrollbar styling — macOS native feel ──────────────── */
+  /* ── Scrollbars — macOS native feel ──────────────────── */
   ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+    width: 5px;
+    height: 5px;
   }
-
   ::-webkit-scrollbar-track {
     background: transparent;
   }
-
   ::-webkit-scrollbar-thumb {
-    background-color: rgba(6, 78, 59, 0.18);
+    background-color: rgba(6, 78, 59, 0.16);
     border-radius: 3px;
   }
-
   ::-webkit-scrollbar-thumb:hover {
-    background-color: rgba(6, 78, 59, 0.32);
+    background-color: rgba(6, 78, 59, 0.28);
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
   }
 }
 
-/* ── Utility layer: Dinero-specific component patterns ──────── */
+/* ── Utility layer ──────────────────────────────────────────── */
 @layer utilities {
-  /* Skeleton loading shimmer */
+
+  /* ── Layout primitives ─────────────────────────────────── */
+  .fill-height   { height: 100%; }
+  .fill-viewport { height: 100vh; }
+
+  /* ── Amounts — tabular numerals ────────────────────────── */
+  .amount {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: var(--font-mono-feat);
+    letter-spacing: -0.01em;
+  }
+  .amount-debit  { color: #ef4444; }
+  .amount-credit { color: #10b981; }
+
+  /* ── Source pipeline badges ─────────────────────────────── */
+  .source-badge-gmail     { color: #064E3B; }
+  .source-badge-statement { color: #3d5a50; }
+  .source-badge-manual    { color: #6b8a7f; }
+
+  /* ── Skeleton shimmer ──────────────────────────────────── */
   .skeleton {
     background: linear-gradient(
       90deg,
-      rgba(6, 78, 59, 0.06) 25%,
-      rgba(6, 78, 59, 0.10) 50%,
-      rgba(6, 78, 59, 0.06) 75%
+      rgba(6, 78, 59, 0.05) 25%,
+      rgba(6, 78, 59, 0.09) 50%,
+      rgba(6, 78, 59, 0.05) 75%
     );
     background-size: 200% 100%;
     animation: skeleton-shimmer 1.4s ease-in-out infinite;
+    border-radius: var(--radius-sm);
   }
 
   @keyframes skeleton-shimmer {
@@ -226,88 +230,447 @@
     100% { background-position: -200% 0; }
   }
 
-  /* Source-pipeline badge (Doc 14 §8.2 — doc-required invariant) */
-  .source-badge-gmail     { color: #064E3B; }
-  .source-badge-statement { color: #3d5a50; }
-  .source-badge-manual    { color: #6b8a7f; }
+  /* ── Rail nav ─────────────────────────────────────────── */
+  .rail {
+    width: var(--rail-width);
+    flex-shrink: 0;
+    background-color: var(--bg-rail);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    z-index: 40;
+    box-shadow: var(--shadow-rail);
+  }
 
-  /* Debit / credit sign prefix (Doc 14 §8.1 — doc-required invariant) */
-  .amount-debit  { color: #ef4444; }
-  .amount-credit { color: #10b981; }
+  .rail-btn {
+    position: relative;
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-md);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-on-rail-muted);
+    transition: var(--transition-fast);
+    cursor: pointer;
+    border: none;
+    background: transparent;
+    outline: none;
+  }
 
-  /* Sidebar nav active accent */
-  .nav-active-bar {
+  .rail-btn:hover {
+    color: var(--text-on-rail);
+    background-color: rgba(248, 231, 201, 0.10);
+  }
+
+  .rail-btn.active {
+    color: #064E3B;
     background-color: #F8E7C9;
   }
 
-  /* ── glass-panel / card surface ────────────────────────────
-     Used by Settings page sections (ConnectedAccountsSettings,
-     Mail Scan, Recovery Phrase, etc.) — must match the shadcn
-     Card component bg so all containers look identical.
-     background-color matches --card: hsl(38 55% 91%)          */
-  .glass-panel {
-    background-color: hsl(38, 55%, 91%);
-    border: 1px solid hsl(36, 28%, 76%);
-    border-radius: 12px;
-    box-shadow: 0 1px 3px rgba(6, 78, 59, 0.07), 0 1px 2px rgba(6, 78, 59, 0.05);
+  .rail-btn:focus-visible {
+    outline: 2px solid rgba(248, 231, 201, 0.50);
+    outline-offset: 2px;
   }
 
-  /* Card champagne surface utility (same as glass-panel) */
+  /* ── Context panel ─────────────────────────────────────── */
+  .context-panel {
+    width: var(--panel-width);
+    flex-shrink: 0;
+    background-color: var(--bg-panel);
+    border-right: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    transition: width var(--duration-slow) var(--ease-out-expo);
+  }
+
+  .context-panel.collapsed {
+    width: 0;
+    border-right-width: 0;
+  }
+
+  /* ── Inspector panel (right side) ─────────────────────── */
+  .inspector-panel {
+    width: var(--inspector-width);
+    flex-shrink: 0;
+    background-color: var(--bg-card);
+    border-left: 1px solid var(--border-color);
+    box-shadow: var(--shadow-panel);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    transform: translateX(0);
+    transition: transform var(--duration-enter) var(--ease-out-expo),
+                width var(--duration-enter) var(--ease-out-expo);
+  }
+
+  .inspector-panel.closed {
+    transform: translateX(100%);
+    width: 0;
+    border-left-width: 0;
+  }
+
+  /* ── Glass/card surfaces ─────────────────────────────── */
+  .glass-panel,
   .card-champagne {
-    background-color: hsl(38, 55%, 91%);
-    border: 1px solid hsl(36, 28%, 76%);
-    border-radius: 12px;
-    box-shadow: 0 1px 3px rgba(6, 78, 59, 0.07), 0 1px 2px rgba(6, 78, 59, 0.05);
+    background-color: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
   }
 
   .card-champagne-hover:hover {
-    background-color: hsl(38, 50%, 87%);
-    border-color: hsl(36, 28%, 70%);
+    background-color: var(--bg-card-hover);
+    border-color: var(--border-strong);
   }
 
-  /* Emerald ink surface (sidebar, headers) */
   .surface-emerald {
     background-color: #064E3B;
     color: #F8E7C9;
   }
 
-  /* ── Typography utilities (Settings page heading classes) ── */
+  /* ── KPI tile ──────────────────────────────────────────── */
+  .kpi-tile {
+    background-color: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    box-shadow: var(--shadow-sm);
+    transition: var(--transition-fast);
+  }
+
+  .kpi-tile:hover {
+    box-shadow: var(--shadow-md);
+    border-color: var(--border-strong);
+  }
+
+  .kpi-value {
+    font-size: 1.75rem;
+    font-weight: 700;
+    letter-spacing: -0.04em;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-primary);
+  }
+
+  .kpi-label {
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+  }
+
+  .kpi-delta {
+    font-size: 12px;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    margin-top: 2px;
+  }
+
+  /* ── Attention card ────────────────────────────────────── */
+  .attention-card {
+    width: var(--attention-card-w);
+    flex-shrink: 0;
+    background-color: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    box-shadow: var(--shadow-sm);
+    cursor: pointer;
+    transition: var(--transition-fast);
+  }
+
+  .attention-card:hover {
+    box-shadow: var(--shadow-md);
+    border-color: var(--border-strong);
+    transform: translateY(-1px);
+  }
+
+  .attention-rail {
+    display: flex;
+    gap: 10px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    scrollbar-width: none;
+  }
+
+  .attention-rail::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* ── Data table ─────────────────────────────────────────── */
+  .data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  .data-table th {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background-color: var(--bg-canvas);
+    padding: 10px 12px;
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border-color);
+    white-space: nowrap;
+    user-select: none;
+  }
+
+  .data-table th:first-child { padding-left: 16px; }
+  .data-table th:last-child  { padding-right: 16px; }
+
+  .data-table td {
+    padding: 0 12px;
+    height: var(--table-row-height);
+    vertical-align: middle;
+    border-bottom: 1px solid rgba(217, 200, 168, 0.40);
+    color: var(--text-primary);
+  }
+
+  .data-table td:first-child { padding-left: 16px; }
+  .data-table td:last-child  { padding-right: 16px; }
+
+  .data-table tbody tr {
+    cursor: pointer;
+    transition: background-color var(--duration-fast) var(--ease-out-expo);
+  }
+
+  .data-table tbody tr:hover {
+    background-color: rgba(6, 78, 59, 0.04);
+  }
+
+  .data-table tbody tr.selected {
+    background-color: rgba(6, 78, 59, 0.07);
+  }
+
+  .data-table tbody tr:hover .row-actions {
+    opacity: 1;
+  }
+
+  .row-actions {
+    opacity: 0;
+    transition: opacity var(--duration-fast) var(--ease-out-expo);
+  }
+
+  /* ── Filter chips ─────────────────────────────────────── */
+  .filter-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 28px;
+    padding: 0 10px;
+    border-radius: var(--radius-full);
+    font-size: 12px;
+    font-weight: 500;
+    border: 1px solid var(--border-color);
+    background-color: var(--bg-card);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: var(--transition-fast);
+    white-space: nowrap;
+    user-select: none;
+    outline: none;
+  }
+
+  .filter-chip:hover {
+    border-color: var(--border-strong);
+    background-color: var(--bg-card-hover);
+    color: var(--text-primary);
+  }
+
+  .filter-chip.active {
+    background-color: #064E3B;
+    border-color: #064E3B;
+    color: #F8E7C9;
+  }
+
+  .filter-chip:focus-visible {
+    outline: 2px solid #064E3B;
+    outline-offset: 2px;
+  }
+
+  .filter-chip-clear {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background-color: rgba(248, 231, 201, 0.25);
+    color: rgba(248, 231, 201, 0.80);
+    flex-shrink: 0;
+  }
+
+  /* ── Status pill (bottom of rail) ─────────────────────── */
+  .status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 26px;
+    padding: 0 10px;
+    border-radius: var(--radius-full);
+    font-size: 11px;
+    font-weight: 500;
+    background-color: rgba(248, 231, 201, 0.10);
+    border: 1px solid rgba(248, 231, 201, 0.12);
+    color: rgba(248, 231, 201, 0.75);
+    transition: var(--transition-fast);
+  }
+
+  /* ── Settings layout ───────────────────────────────────── */
+  .settings-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: var(--radius-md);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: var(--transition-fast);
+    border: none;
+    background: transparent;
+    width: 100%;
+    text-align: left;
+    outline: none;
+  }
+
+  .settings-nav-item:hover {
+    background-color: var(--emerald-ink-subtle);
+    color: var(--text-primary);
+  }
+
+  .settings-nav-item.active {
+    background-color: rgba(6, 78, 59, 0.09);
+    color: #064E3B;
+    font-weight: 600;
+  }
+
+  .settings-nav-item:focus-visible {
+    outline: 2px solid #064E3B;
+    outline-offset: 2px;
+  }
+
+  /* ── Master-detail list item ────────────────────────────── */
+  .detail-list-item {
+    padding: 10px 12px;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    transition: var(--transition-fast);
+    border: 1px solid transparent;
+    margin: 1px 0;
+  }
+
+  .detail-list-item:hover {
+    background-color: var(--emerald-ink-subtle);
+  }
+
+  .detail-list-item.active {
+    background-color: rgba(6, 78, 59, 0.09);
+    border-color: rgba(6, 78, 59, 0.15);
+  }
+
+  /* ── Page section headers ───────────────────────────────── */
+  .page-title {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    color: var(--text-primary);
+    line-height: 1.2;
+  }
+
+  .section-heading {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    padding: 0 12px;
+    margin-bottom: 4px;
+    margin-top: 16px;
+  }
+
+  /* ── Tooltip ─────────────────────────────────────────────── */
+  .rail-tooltip {
+    position: absolute;
+    left: calc(var(--rail-width) + 8px);
+    top: 50%;
+    transform: translateY(-50%);
+    background-color: #0d2b22;
+    color: #F8E7C9;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 4px 10px;
+    border-radius: var(--radius-sm);
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    z-index: 100;
+    transition: opacity var(--duration-fast) var(--ease-out-expo);
+    box-shadow: var(--shadow-md);
+  }
+
+  .rail-btn:hover .rail-tooltip {
+    opacity: 1;
+  }
+
+  /* ── Typography helpers ──────────────────────────────────── */
   .heading-lg {
     font-size: 1.875rem;
     font-weight: 700;
     line-height: 1.2;
-    letter-spacing: -0.02em;
-    color: hsl(160, 84%, 10%);
+    letter-spacing: -0.03em;
+    color: var(--text-primary);
   }
 
   .heading-md {
     font-size: 1.125rem;
     font-weight: 600;
     line-height: 1.3;
-    color: hsl(160, 84%, 10%);
+    letter-spacing: -0.01em;
+    color: var(--text-primary);
   }
 
   .heading-sm {
     font-size: 0.875rem;
     font-weight: 600;
     line-height: 1.4;
-    color: hsl(160, 84%, 10%);
+    color: var(--text-primary);
   }
 
-  /* ── Button utilities (Settings page btn classes) ──────── */
+  /* ── Button utilities ─────────────────────────────────── */
   .btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 0.5rem;
-    border-radius: 0.5rem;
-    font-size: 0.875rem;
+    border-radius: var(--radius-md);
+    font-size: 13px;
     font-weight: 500;
-    padding: 0.5rem 1rem;
-    transition: all 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+    padding: 6px 14px;
+    transition: var(--transition-fast);
     cursor: pointer;
     outline: none;
     border: 1px solid transparent;
+    line-height: 1;
+    white-space: nowrap;
   }
 
   .btn:focus-visible {
@@ -316,36 +679,69 @@
   }
 
   .btn:disabled {
-    opacity: 0.4;
+    opacity: 0.45;
     pointer-events: none;
   }
 
-  /* Primary — Emerald Ink fill, Champagne text */
   .btn-primary {
     background-color: #064E3B;
     color: #F8E7C9;
-    border-color: transparent;
-    box-shadow: 0 1px 2px rgba(6, 78, 59, 0.15);
+    box-shadow: var(--shadow-sm);
   }
 
-  .btn-primary:hover {
-    background-color: #053d2f;
-  }
+  .btn-primary:hover  { background-color: #053d2f; }
+  .btn-primary:active { background-color: #042e24; }
 
-  .btn-primary:active {
-    background-color: #042e24;
-  }
-
-  /* Secondary — warm cream fill, Emerald Ink text */
   .btn-secondary {
-    background-color: hsl(38, 55%, 91%);
+    background-color: var(--bg-card);
     color: #064E3B;
-    border-color: hsl(36, 28%, 76%);
+    border-color: var(--border-color);
   }
 
   .btn-secondary:hover {
-    background-color: hsl(38, 50%, 87%);
-    border-color: hsl(36, 28%, 70%);
+    background-color: var(--bg-card-hover);
+    border-color: var(--border-strong);
+  }
+
+  .btn-ghost {
+    background: transparent;
+    color: var(--text-secondary);
+    border-color: transparent;
+  }
+
+  .btn-ghost:hover {
+    background-color: var(--emerald-ink-subtle);
+    color: var(--text-primary);
+  }
+
+  /* ── Sidebar (legacy compat) ─────────────────────────── */
+  .nav-active-bar { background-color: #F8E7C9; }
+
+  /* ── Animations ──────────────────────────────────────── */
+  @keyframes fade-in {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  @keyframes slide-in-right {
+    from { opacity: 0; transform: translateX(16px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+
+  @keyframes slide-in-left {
+    from { opacity: 0; transform: translateX(-16px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+
+  .animate-fade-in {
+    animation: fade-in var(--duration-normal) var(--ease-out-expo) both;
+  }
+
+  .animate-slide-in-right {
+    animation: slide-in-right var(--duration-enter) var(--ease-out-expo) both;
+  }
+
+  .animate-slide-in-left {
+    animation: slide-in-left var(--duration-enter) var(--ease-out-expo) both;
   }
 }
-

@@ -14,19 +14,9 @@ interface TaskProgress {
 }
 
 /**
- * TASK-DESK-003 (Doc 30 §12): a persistent, non-blocking indicator
- * aggregating every active long-running background task (historical scans,
- * and anything else that registers with the Rust-side
- * `BackgroundTaskRegistry`) -- a one-line summary when idle or a single
- * task is running, expandable to per-task detail once more than one runs
- * concurrently. Renders nothing when no task is active, and never blocks
- * interaction with the rest of the app (it's an inline sidebar element,
- * never a modal).
- *
- * Listens for the single Document 19 §15-catalogued `background_task_progress`
- * event -- a task is considered finished when its `status` stops being
- * `"running"`, not by inferring completion from `current === total` (which
- * would be wrong for a task that fails or is cancelled partway through).
+ * TASK-DESK-003 (Doc 30 §12): persistent, non-blocking background task indicator.
+ * Redesigned as a floating pill in the bottom-right corner of the main content area.
+ * Renders nothing when no tasks are active.
  */
 export default function BackgroundTaskIndicator() {
   const [tasks, setTasks] = useState<Record<string, TaskProgress>>({});
@@ -65,42 +55,82 @@ export default function BackgroundTaskIndicator() {
   if (active.length === 0) return null;
 
   const summary =
-    active.length === 1 ? active[0].label : `${active.length} background tasks running`;
+    active.length === 1 ? active[0].label : `${active.length} tasks running`;
 
   return (
     <div
-      className="mb-4 rounded-md bg-secondary border border-border overflow-hidden"
+      className="overflow-hidden rounded-xl shadow-lg"
+      style={{
+        background: 'hsl(38, 55%, 91%)',
+        border: '1px solid #d9c8a8',
+        maxWidth: '280px',
+        minWidth: '200px',
+      }}
       role="status"
       aria-live="polite"
       data-testid="bg-task-indicator"
     >
       <button
         type="button"
-        className="w-full p-3 flex items-center gap-3 text-left disabled:cursor-default"
+        className="w-full px-3 py-2.5 flex items-center gap-2.5 text-left disabled:cursor-default"
         onClick={() => setExpanded((e) => !e)}
         aria-expanded={expanded}
         aria-label={summary}
         disabled={active.length <= 1}
       >
-        <Loader2 className="w-4 h-4 animate-spin text-muted-foreground shrink-0" aria-hidden="true" />
-        <div className="flex-1 min-w-0 text-xs text-muted-foreground truncate">{summary}</div>
-        {active.length > 1 &&
-          (expanded ? (
-            <ChevronUp className="w-4 h-4 shrink-0" aria-hidden="true" />
-          ) : (
-            <ChevronDown className="w-4 h-4 shrink-0" aria-hidden="true" />
-          ))}
+        <Loader2
+          className="w-3.5 h-3.5 animate-spin shrink-0"
+          style={{ color: '#064E3B' }}
+          aria-hidden="true"
+        />
+        <div className="flex-1 min-w-0 text-xs font-medium truncate" style={{ color: '#3d5a50' }}>
+          {summary}
+        </div>
+        {active.length > 1 && (
+          expanded
+            ? <ChevronUp className="w-3.5 h-3.5 shrink-0" style={{ color: '#6b8a7f' }} aria-hidden="true" />
+            : <ChevronDown className="w-3.5 h-3.5 shrink-0" style={{ color: '#6b8a7f' }} aria-hidden="true" />
+        )}
       </button>
+
+      {/* Progress bar for single task */}
+      {active.length === 1 && active[0].total > 0 && (
+        <div className="px-3 pb-2.5">
+          <div className="w-full h-1 rounded-full overflow-hidden" style={{ background: 'rgba(6,78,59,0.10)' }}>
+            <div
+              className="h-full rounded-full transition-all duration-300"
+              style={{ width: `${active[0].progress_pct}%`, background: '#064E3B' }}
+            />
+          </div>
+          <div className="mt-1 text-[10px]" style={{ color: '#6b8a7f' }}>
+            {active[0].current}/{active[0].total}
+            {active[0].eta_seconds != null && ` · ~${active[0].eta_seconds}s`}
+          </div>
+        </div>
+      )}
+
+      {/* Expanded multi-task list */}
       {expanded && active.length > 1 && (
-        <div className="border-t border-border divide-y divide-border">
+        <div style={{ borderTop: '1px solid #d9c8a8' }}>
           {active.map((task) => (
-            <div key={task.task_id} className="px-3 py-2 text-xs text-muted-foreground">
-              <div className="truncate">{task.label}</div>
+            <div key={task.task_id} className="px-3 py-2" style={{ borderBottom: '1px solid rgba(217,200,168,0.40)' }}>
+              <div className="text-xs truncate" style={{ color: '#3d5a50' }}>{task.label}</div>
               {task.total > 0 && (
-                <div className="mt-1 text-[10px]">
-                  {task.current}/{task.total} ({task.progress_pct.toFixed(0)}%)
-                  {task.eta_seconds != null && ` · ~${task.eta_seconds}s remaining`}
-                </div>
+                <>
+                  <div
+                    className="mt-1 w-full h-1 rounded-full overflow-hidden"
+                    style={{ background: 'rgba(6,78,59,0.10)' }}
+                  >
+                    <div
+                      className="h-full rounded-full"
+                      style={{ width: `${task.progress_pct}%`, background: '#064E3B' }}
+                    />
+                  </div>
+                  <div className="mt-0.5 text-[10px]" style={{ color: '#6b8a7f' }}>
+                    {task.current}/{task.total} ({task.progress_pct.toFixed(0)}%)
+                    {task.eta_seconds != null && ` · ~${task.eta_seconds}s`}
+                  </div>
+                </>
               )}
             </div>
           ))}
