@@ -144,26 +144,27 @@ export default function AppLayout() {
   }, [navigate, hydrateLicenseStore]);
 
   const navItems = [
-    { path: '/', label: 'Dashboard', icon: <LayoutDashboard size={20} />, badge: 0 },
-    { path: '/transactions', label: 'Transactions', icon: <ArrowLeftRight size={20} />, badge: 0 },
-    { path: '/instruments', label: 'Instruments', icon: <CreditCard size={20} />, badge: 0 },
-    { path: '/statements', label: 'Statements', icon: <FileText size={20} />, badge: 0 },
+    { path: '/', label: 'Dashboard', icon: <LayoutDashboard size={18} />, badge: 0 },
+    { path: '/transactions', label: 'Transactions', icon: <ArrowLeftRight size={18} />, badge: 0 },
+    { path: '/instruments', label: 'Instruments', icon: <CreditCard size={18} />, badge: 0 },
+    { path: '/statements', label: 'Statements', icon: <FileText size={18} />, badge: 0 },
     {
       path: '/reconciliation',
       label: 'Reconciliation',
-      icon: <GitMerge size={20} />,
+      icon: <GitMerge size={18} />,
       badge: unresolvedClusters,
     },
     // G16 fix: moved into a Settings subsection rather than a top-level nav
     // item — the route ('/spending-limits') still exists and is linked from
     // Settings, it's just no longer competing for sidebar space.
-    { path: '/settings', label: 'Settings', icon: <Settings size={20} />, badge: 0 },
+    { path: '/settings', label: 'Settings', icon: <Settings size={18} />, badge: 0 },
     // F14 fix: Debug Console must not be reachable in production builds.
     ...(import.meta.env.DEV
-      ? [{ path: '/debug', label: 'Debug', icon: <Activity size={20} />, badge: 0 }]
+      ? [{ path: '/debug', label: 'Debug', icon: <Activity size={18} />, badge: 0 }]
       : []),
   ];
 
+  /* ── Corrupted DB Recovery Screen (Doc 13 Flow 4.17) ──────── */
   if (backendStatus === 'corrupted') {
     return (
       <div
@@ -171,70 +172,133 @@ export default function AppLayout() {
         aria-modal="true"
         aria-labelledby="db-corrupted-title"
         aria-describedby="db-corrupted-desc"
-        className="flex flex-col items-center justify-center h-screen bg-background text-foreground p-8"
+        className="flex flex-col items-center justify-center h-screen p-8"
+        style={{ backgroundColor: '#F8E7C9' }}
       >
-        <div className="max-w-md w-full bg-card border border-border rounded-lg p-6 flex flex-col items-center text-center space-y-4">
-           <div className="h-12 w-12 rounded-full bg-destructive/20 flex items-center justify-center">
-             <AlertTriangle className="text-red-700 w-6 h-6" aria-hidden="true" />
-           </div>
-           <h2 id="db-corrupted-title" className="text-xl font-semibold">Database Corrupted</h2>
-           <p id="db-corrupted-desc" className="text-sm text-muted-foreground">
-             <span>The SQLite integrity check failed.</span> Restore from a backup to recover your data, or start fresh.
-           </p>
-           <div className="flex flex-col gap-2 w-full">
-             <Button
-               variant="default"
-               onClick={handleRestoreBackup}
-               disabled={isRestoring || isStartingFresh}
-               aria-label="Restore database from backup"
-             >
-               {isRestoring ? (
-                 <><Loader2 className="w-4 h-4 mr-2 animate-spin" aria-hidden="true" /> Restoring...</>
-               ) : (
-                 'Restore from Backup'
-               )}
-             </Button>
-             <Button
-               variant="outline"
-               onClick={handleStartFresh}
-               disabled={isRestoring || isStartingFresh}
-               aria-label="Delete all local data and start fresh"
-             >
-               {isStartingFresh ? (
-                 <><Loader2 className="w-4 h-4 mr-2 animate-spin" aria-hidden="true" /> Starting Fresh...</>
-               ) : (
-                 'Start Fresh (Delete All Data)'
-               )}
-             </Button>
-           </div>
+        <div
+          className="max-w-md w-full rounded-2xl p-8 flex flex-col items-center text-center gap-5"
+          style={{
+            backgroundColor: '#fdf6ed',
+            border: '1px solid #d9c8a8',
+            boxShadow: '0 4px 24px rgba(6,78,59,0.10)',
+          }}
+        >
+          <div
+            className="h-14 w-14 rounded-2xl flex items-center justify-center"
+            style={{ backgroundColor: 'rgba(239,68,68,0.10)' }}
+          >
+            <AlertTriangle className="w-7 h-7" style={{ color: '#dc2626' }} aria-hidden="true" />
+          </div>
+          <div>
+            <h2
+              id="db-corrupted-title"
+              className="text-xl font-semibold mb-2"
+              style={{ color: '#0d2b22' }}
+            >
+              Database Corrupted
+            </h2>
+            <p id="db-corrupted-desc" className="text-sm" style={{ color: '#3d5a50' }}>
+              The SQLite integrity check failed. Restore from a backup to recover your data, or start fresh.
+            </p>
+          </div>
+          <div className="flex flex-col gap-3 w-full">
+            <Button
+              onClick={handleRestoreBackup}
+              disabled={isRestoring || isStartingFresh}
+              aria-label="Restore database from backup"
+              className="w-full font-semibold"
+              style={{
+                backgroundColor: '#064E3B',
+                color: '#F8E7C9',
+              }}
+            >
+              {isRestoring ? (
+                <><Loader2 className="w-4 h-4 mr-2 animate-spin" aria-hidden="true" /> Restoring…</>
+              ) : (
+                'Restore from Backup'
+              )}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={handleStartFresh}
+              disabled={isRestoring || isStartingFresh}
+              aria-label="Delete all local data and start fresh"
+              className="w-full"
+              style={{ borderColor: '#d9c8a8', color: '#3d5a50' }}
+            >
+              {isStartingFresh ? (
+                <><Loader2 className="w-4 h-4 mr-2 animate-spin" aria-hidden="true" /> Starting Fresh…</>
+              ) : (
+                'Start Fresh (Delete All Data)'
+              )}
+            </Button>
+          </div>
         </div>
       </div>
     );
   }
 
+  /* ── Main App Shell ──────────────────────────────────────── */
   return (
-    <div className="flex h-screen w-screen bg-background text-foreground overflow-hidden">
-      {/* Skip to main content link — keyboard accessibility */}
+    <div
+      className="flex h-screen w-screen overflow-hidden"
+      style={{ backgroundColor: '#F8E7C9' }}
+    >
+      {/* Skip to main content — keyboard accessibility (Doc 14 §10) */}
       <a
         href="#main-content"
-        className="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-50 focus:px-4 focus:py-2 focus:bg-background focus:border focus:border-border focus:rounded-md focus:text-sm focus:font-medium focus:shadow-lg"
+        className="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-50 focus:px-4 focus:py-2 focus:rounded-lg focus:text-sm focus:font-medium focus:shadow-lg"
+        style={{
+          backgroundColor: '#F8E7C9',
+          border: '1px solid #064E3B',
+          color: '#064E3B',
+        }}
       >
         Skip to main content
       </a>
 
-      {/* Sidebar */}
+      {/* ── Sidebar — Emerald Ink ─────────────────────────── */}
       <aside
-        className="w-64 bg-card border-r border-border flex flex-col p-6 z-10"
+        className="flex flex-col z-10 flex-shrink-0"
+        style={{
+          width: '240px',
+          backgroundColor: '#064E3B',
+          borderRight: '1px solid rgba(248,231,201,0.12)',
+        }}
         aria-label="Main navigation"
       >
-        <div className="mb-10 px-3 flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-[#2563eb] flex items-center justify-center">
-            <Activity className="text-white" size={18} aria-hidden="true" />
+        {/* Logo + Wordmark */}
+        <div
+          className="flex items-center gap-3 px-6"
+          style={{ height: '68px', borderBottom: '1px solid rgba(248,231,201,0.10)' }}
+        >
+          <div
+            className="flex items-center justify-center rounded-xl flex-shrink-0"
+            style={{
+              width: '34px',
+              height: '34px',
+              backgroundColor: 'rgba(248,231,201,0.12)',
+            }}
+          >
+            {/* Primary Logo SVG — champagne on emerald */}
+            <svg width="20" height="20" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <rect x="72" y="82" rx="22" ry="22" width="368" height="110" fill="#F8E7C9"/>
+              <rect x="72" y="214" rx="22" ry="22" width="368" height="216" fill="#F8E7C9"/>
+              <rect x="110" y="112" width="146" height="22" rx="6" fill="#064E3B"/>
+              <rect x="274" y="112" width="88" height="22" rx="6" fill="rgba(6,78,59,0.5)"/>
+              <path d="M132 355 L192 295 L252 340 L336 256" fill="none" stroke="#064E3B" strokeWidth="16" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
           </div>
-          <h1 className="text-xl font-semibold tracking-tight">Dinero</h1>
+          <span
+            className="text-lg font-semibold tracking-tight select-none"
+            style={{ color: '#F8E7C9', letterSpacing: '-0.01em' }}
+          >
+            Dinero
+          </span>
         </div>
 
-        <nav className="flex-1 flex flex-col gap-1" aria-label="Primary navigation">
+        {/* Navigation */}
+        <nav className="flex-1 px-3 py-4 flex flex-col gap-0.5" aria-label="Primary navigation">
           {navItems.map((item) => (
             <NavLink
               key={item.path}
@@ -243,35 +307,42 @@ export default function AppLayout() {
               aria-label={item.badge > 0 ? `${item.label} — ${item.badge} pending` : item.label}
               className={({ isActive }) =>
                 cn(
-                  // Base
-                  'relative flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 ease-out outline-none',
-                  'focus-visible:ring-2 focus-visible:ring-[#2563eb]/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+                  'relative flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 ease-out outline-none group',
                   isActive
-                    ? [
-                        'bg-[#2563eb]/8 text-[#2563eb] font-semibold',
-                        'border border-[#2563eb]/20',
-                      ].join(' ')
-                    : 'text-muted-foreground border border-transparent hover:bg-accent hover:text-foreground hover:translate-x-0.5'
+                    ? 'text-[#064E3B]'
+                    : 'text-[rgba(248,231,201,0.72)] hover:text-[#F8E7C9]'
                 )
               }
+              style={({ isActive }) =>
+                isActive
+                  ? {
+                      backgroundColor: '#F8E7C9',
+                      color: '#064E3B',
+                    }
+                  : {
+                      backgroundColor: 'transparent',
+                    }
+              }
+              onMouseEnter={(e) => {
+                const el = e.currentTarget;
+                if (!el.getAttribute('aria-current')) {
+                  el.style.backgroundColor = 'rgba(248,231,201,0.10)';
+                }
+              }}
+              onMouseLeave={(e) => {
+                const el = e.currentTarget;
+                if (!el.getAttribute('aria-current')) {
+                  el.style.backgroundColor = 'transparent';
+                }
+              }}
             >
               {({ isActive }) => (
                 <>
-                  {/* Left accent bar */}
-                  <span
-                    aria-hidden="true"
-                    className={cn(
-                      'absolute left-0 top-[20%] h-[60%] w-[3px] rounded-r-full bg-[#2563eb] transition-all duration-200',
-                      isActive ? 'opacity-100 scale-y-100' : 'opacity-0 scale-y-50'
-                    )}
-                  />
                   {/* Icon */}
                   <span
-                    className={cn(
-                      'shrink-0 transition-colors duration-200',
-                      isActive ? 'text-[#2563eb]' : 'text-muted-foreground/60 group-hover:text-muted-foreground'
-                    )}
+                    className="shrink-0 transition-colors duration-200"
                     aria-hidden="true"
+                    style={{ color: isActive ? '#064E3B' : 'inherit' }}
                   >
                     {item.icon}
                   </span>
@@ -279,7 +350,11 @@ export default function AppLayout() {
                   <div className="flex-1" />
                   {item.badge > 0 && (
                     <span
-                      className="w-5 h-5 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center shadow-[0_0_8px_rgba(245,158,11,0.4)]"
+                      className="min-w-[20px] h-5 px-1.5 rounded-full text-[10px] font-bold flex items-center justify-center"
+                      style={{
+                        backgroundColor: isActive ? '#064E3B' : '#f59e0b',
+                        color: isActive ? '#F8E7C9' : '#fff',
+                      }}
                       aria-label={`${item.badge} unresolved`}
                     >
                       {item.badge > 9 ? '9+' : item.badge}
@@ -291,7 +366,7 @@ export default function AppLayout() {
           ))}
         </nav>
 
-        {/* Global Background Task Indicator (TASK-DESK-003) */}
+        {/* Background Task Indicator (TASK-DESK-003) */}
         <BackgroundTaskIndicator />
 
         {/* OS-level permission denial states (TASK-DESK-004) */}
@@ -300,34 +375,44 @@ export default function AppLayout() {
         {/* Transient spend-threshold alert notice */}
         {alertMessage && (
           <div
-            className="mb-4 p-3 rounded-md bg-secondary border border-border flex items-center gap-3"
+            className="mx-3 mb-3 p-3 rounded-lg flex items-center gap-3"
+            style={{
+              backgroundColor: 'rgba(245,158,11,0.15)',
+              border: '1px solid rgba(245,158,11,0.30)',
+            }}
             role="status"
             aria-live="polite"
             data-testid="alert-notice"
           >
-            <div className="text-xs text-muted-foreground truncate">{alertMessage}</div>
+            <div className="text-xs truncate" style={{ color: '#fde68a' }}>{alertMessage}</div>
           </div>
         )}
 
-        {/* Status Indicator */}
+        {/* Core Engine Status */}
         <div
-          className="mt-auto p-4 rounded-md bg-background border border-border flex items-center gap-3"
+          className="mx-3 mb-4 p-3 rounded-xl flex items-center gap-3"
+          style={{
+            backgroundColor: 'rgba(248,231,201,0.07)',
+            border: '1px solid rgba(248,231,201,0.10)',
+          }}
           role="status"
           aria-label={`Core engine status: ${backendStatus === 'healthy' ? 'Connected' : 'Offline'}`}
           data-testid="core-engine-status"
         >
           {backendStatus === 'healthy' ? (
-            <div className="w-4 h-4 rounded-full bg-green-500 shadow-sm" aria-hidden="true" />
+            <div
+              className="w-2 h-2 rounded-full flex-shrink-0"
+              style={{ backgroundColor: '#10b981' }}
+              aria-hidden="true"
+            />
           ) : (
-            <WifiOff size={16} className="text-red-700" aria-hidden="true" />
+            <WifiOff size={14} style={{ color: '#ef4444' }} aria-hidden="true" />
           )}
           <div>
-            <div className="text-sm font-medium">Core Engine</div>
+            <div className="text-xs font-medium" style={{ color: '#F8E7C9' }}>Core Engine</div>
             <div
-              className={cn(
-                'text-xs',
-                backendStatus === 'healthy' ? 'text-emerald-700' : 'text-red-700'
-              )}
+              className="text-[10px]"
+              style={{ color: backendStatus === 'healthy' ? '#6ee7b7' : '#fca5a5' }}
             >
               {backendStatus === 'healthy' ? 'Connected' : 'Offline'}
             </div>
@@ -335,12 +420,22 @@ export default function AppLayout() {
         </div>
       </aside>
 
-      {/* Main Content Area */}
-      <main className="flex-1 overflow-y-auto relative p-10" id="main-content">
-        {/* Decorative background glow */}
-        <div className="absolute -top-[10%] -right-[5%] w-[400px] h-[400px] bg-blue-600/15 blur-[150px] -z-10 pointer-events-none rounded-full" aria-hidden="true" />
+      {/* ── Main Content Area ─────────────────────────────── */}
+      <main
+        className="flex-1 overflow-y-auto relative"
+        id="main-content"
+        style={{ backgroundColor: '#F8E7C9' }}
+      >
+        {/* Subtle warm canvas texture gradient */}
+        <div
+          className="absolute inset-0 pointer-events-none"
+          style={{
+            background: 'radial-gradient(ellipse at 70% 0%, rgba(6,78,59,0.04) 0%, transparent 60%)',
+          }}
+          aria-hidden="true"
+        />
 
-        <div className="relative z-10 max-w-6xl mx-auto">
+        <div className="relative p-8 max-w-6xl mx-auto">
           {/* TASK-FE-016: a persistent banner, not a scrim over the routed
               content -- every route's real content must stay visible while
               locked (Doc 30: "still allowing navigation to read-only

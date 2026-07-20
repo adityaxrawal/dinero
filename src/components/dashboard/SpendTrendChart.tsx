@@ -38,7 +38,7 @@ export default function SpendTrendChart() {
               variant="outline"
               size="sm"
               aria-pressed={granularity === g.value}
-              className={cn('h-7 px-2 text-xs', granularity === g.value && 'bg-[#2563eb]/10 border-[#2563eb]/40 text-[#1d4ed8]')}
+              className={cn('h-7 px-2 text-xs', granularity === g.value && 'bg-[#064E3B]/10 border-[#064E3B]/40 text-[#053d2f]')}
               onClick={() => setGranularity(g.value)}
             >
               {g.label}
