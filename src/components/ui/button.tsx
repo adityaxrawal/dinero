@@ -8,13 +8,14 @@ const buttonVariants = cva(
   // Base — smooth transitions, stronger focus ring, accessible active state
   "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium " +
   "transition-all duration-200 ease-out " +
-  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2563eb] focus-visible:ring-offset-2 focus-visible:ring-offset-background " +
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#064E3B] focus-visible:ring-offset-2 focus-visible:ring-offset-background " +
   "disabled:pointer-events-none disabled:opacity-40 " +
   "active:scale-[0.98] " +
   "[&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
   {
     variants: {
       variant: {
+        // Primary action — Emerald Ink (Doc 14 §4.1)
         default:
           "bg-primary text-primary-foreground shadow-sm " +
           "hover:bg-primary/85 hover:shadow-md " +
@@ -36,12 +37,13 @@ const buttonVariants = cva(
           "hover:bg-accent hover:text-foreground " +
           "active:bg-accent/70",
         link:
-          "text-[#2563eb] underline-offset-4 hover:underline hover:text-[#1d4ed8]",
-        // Accent/brand primary — Doc 14 §4.1's solid --primary, no gradient/glow
+          // Emerald Ink link variant (replaces blue #2563eb)
+          "text-[#064E3B] underline-offset-4 hover:underline hover:text-[#053d2f]",
+        // Accent/brand primary — solid Emerald Ink fill (Doc 14 §4.1)
         accent:
-          "bg-[#2563eb] text-white font-semibold border border-transparent " +
-          "shadow-sm hover:bg-[#1d4ed8] hover:shadow-md " +
-          "active:bg-[#1d4ed8]",
+          "bg-[#064E3B] text-[#F8E7C9] font-semibold border border-transparent " +
+          "shadow-sm hover:bg-[#053d2f] hover:shadow-md " +
+          "active:bg-[#042e24]",
       },
       size: {
         default: "h-9 px-4 py-2",

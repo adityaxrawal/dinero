@@ -17,10 +17,10 @@ const Input = React.forwardRef<HTMLInputElement, React.ComponentProps<"input">>(
           // Transitions
           "transition-all duration-150 ease-out",
           // Hover
-          "hover:border-[#2563eb]/30 hover:bg-accent",
-          // Focus — blue ring + tinted background
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#2563eb]/60 focus-visible:ring-offset-0",
-          "focus-visible:border-[#2563eb]/60 focus-visible:bg-[#2563eb]/[0.04]",
+          "hover:border-[#064E3B]/30 hover:bg-accent",
+          // Focus — Emerald Ink ring + tinted background
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#064E3B]/60 focus-visible:ring-offset-0",
+          "focus-visible:border-[#064E3B]/60 focus-visible:bg-[#064E3B]/[0.04]",
           // File input
           "file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground",
           // Disabled

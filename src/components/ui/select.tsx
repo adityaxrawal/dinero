@@ -26,12 +26,12 @@ const SelectTrigger = React.forwardRef<
       // Transitions
       "transition-all duration-150 ease-out",
       // Hover
-      "hover:border-[#2563eb]/30 hover:bg-accent",
+      "hover:border-[#064E3B]/30 hover:bg-accent",
       // Open (active) state — same as focus so it's clearly active
-      "data-[state=open]:border-[#2563eb]/60 data-[state=open]:bg-[#2563eb]/[0.04]",
-      "data-[state=open]:ring-2 data-[state=open]:ring-[#2563eb]/30",
+      "data-[state=open]:border-[#064E3B]/60 data-[state=open]:bg-[#064E3B]/[0.04]",
+      "data-[state=open]:ring-2 data-[state=open]:ring-[#064E3B]/30",
       // Focus
-      "focus:outline-none focus:ring-2 focus:ring-[#2563eb]/60 focus:ring-offset-0 focus:border-[#2563eb]/60",
+      "focus:outline-none focus:ring-2 focus:ring-[#064E3B]/60 focus:ring-offset-0 focus:border-[#064E3B]/60",
       // Disabled
       "disabled:cursor-not-allowed disabled:opacity-40",
       "[&>span]:line-clamp-1",
@@ -149,11 +149,11 @@ const SelectItem = React.forwardRef<
       // Transitions
       "transition-all duration-100 ease-out",
       // Hover — clear background + text color change
-      "focus:bg-[#2563eb]/10 focus:text-foreground",
+      "focus:bg-[#064E3B]/10 focus:text-foreground",
       "hover:bg-accent hover:text-foreground",
-      // Selected — vivid accent background + foreground text + bold
-      "data-[state=checked]:bg-[#2563eb]/10 data-[state=checked]:text-[#1d4ed8] data-[state=checked]:font-medium",
-      "data-[state=checked]:border-l-2 data-[state=checked]:border-l-[#2563eb] data-[state=checked]:pl-[10px]",
+      // Selected — Emerald Ink accent background + foreground text + bold
+      "data-[state=checked]:bg-[#064E3B]/10 data-[state=checked]:text-[#053d2f] data-[state=checked]:font-medium",
+      "data-[state=checked]:border-l-2 data-[state=checked]:border-l-[#064E3B] data-[state=checked]:pl-[10px]",
       // Disabled
       "data-[disabled]:pointer-events-none data-[disabled]:opacity-30",
       className
@@ -163,7 +163,7 @@ const SelectItem = React.forwardRef<
     {/* Checkmark indicator — right side */}
     <span className="absolute right-2.5 flex h-4 w-4 items-center justify-center">
       <SelectPrimitive.ItemIndicator>
-        <Check className="h-3.5 w-3.5 text-[#2563eb]" strokeWidth={3} />
+        <Check className="h-3.5 w-3.5 text-[#064E3B]" strokeWidth={3} />
       </SelectPrimitive.ItemIndicator>
     </span>
     <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
