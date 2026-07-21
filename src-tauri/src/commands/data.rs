@@ -72,6 +72,11 @@ pub struct TransactionRecord {
     pub date: String,
     pub merchant: String,
     pub amount: f64,
+    /// "debit"/"credit" -- `amount` is always a positive magnitude (see
+    /// `CanonicalTransaction`'s invariant), so the frontend must branch on
+    /// this field, not on the sign of `amount`, to render red/negative vs
+    /// green/positive.
+    pub direction: Option<String>,
     pub category: String,
     pub status: String,
     /// G11 fix: {email_only, statement_only, merged} (or a raw source_pipeline
@@ -100,6 +105,13 @@ pub struct StatementRecord {
     /// instrument -- never selected before this task despite the `statements`
     /// table having had the column since the initial schema.
     pub instrument_id: Option<String>,
+    pub issuer_name: Option<String>,
+    pub masked_identifier: Option<String>,
+    /// "credit_card" | "bank_account" | other `instruments.type` values.
+    pub instrument_type: Option<String>,
+    /// True if a stored, still-within-retention-window encrypted PDF exists
+    /// for this statement (see `statements::pdf_storage`).
+    pub pdf_available: bool,
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -128,6 +140,9 @@ pub struct ClusterMember {
     pub source_pipeline: Option<String>,
     pub merchant: String,
     pub amount: f64,
+    /// "debit"/"credit" -- see `TransactionRecord::direction`'s doc comment;
+    /// `amount` here is likewise always a positive magnitude.
+    pub direction: Option<String>,
     pub date: String,
 }
 
@@ -293,7 +308,7 @@ pub fn do_fetch_transactions(
 ) -> Result<Vec<TransactionRecord>, String> {
     let (filter_clause, filter_args) = build_filter_clause(filters);
     let sql = format!(
-        "SELECT id, authorization_time, merchant_display_name, amount, category_id, status, source_mix, instrument_id
+        "SELECT id, authorization_time, merchant_display_name, amount, category_id, status, source_mix, instrument_id, direction
          FROM transactions
          WHERE is_deleted = 0{filter_clause}
          ORDER BY authorization_time DESC LIMIT ? OFFSET ?"
@@ -319,12 +334,14 @@ pub fn do_fetch_transactions(
             let stat: Option<String> = row.get(5)?;
             let source_mix: Option<String> = row.get(6)?;
             let instrument_id: Option<String> = row.get(7)?;
+            let direction: Option<String> = row.get(8)?;
 
             Ok(TransactionRecord {
                 id: row.get(0)?,
                 date: auth_time.unwrap_or_else(|| "Unknown".to_string()),
                 merchant: merchant.unwrap_or_else(|| "Unknown".to_string()),
                 amount: amount_val.unwrap_or(0.0),
+                direction,
                 category: cat.unwrap_or_else(|| "UNCATEGORIZED".to_string()),
                 status: stat.unwrap_or_else(|| "PENDING".to_string()),
                 source_mix,
@@ -394,6 +411,7 @@ pub fn do_transactions_search(
                 .merchant_display_name
                 .unwrap_or_else(|| "Unknown".to_string()),
             amount: tx.amount.unwrap_or(0.0),
+            direction: tx.direction,
             category: tx
                 .category_id
                 .unwrap_or_else(|| "UNCATEGORIZED".to_string()),
@@ -429,7 +447,14 @@ pub fn do_fetch_statement_history(
 ) -> Result<Vec<StatementRecord>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, created_at, source_message_id, parse_status, instrument_id FROM statements ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
+            "SELECT s.id, s.created_at, s.source_message_id, s.parse_status, s.instrument_id,
+                    i.issuer_name, i.masked_identifier, i.type,
+                    CASE WHEN u.pdf_retained_until IS NOT NULL AND u.pdf_retained_until > datetime('now')
+                         THEN 1 ELSE 0 END AS pdf_available
+             FROM statements s
+             LEFT JOIN instruments i ON i.id = s.instrument_id
+             LEFT JOIN unprocessed_statements u ON u.resolved_statement_id = s.id
+             ORDER BY s.created_at DESC LIMIT ?1 OFFSET ?2",
         )
         .map_err(|e| e.to_string())?;
 
@@ -444,6 +469,10 @@ pub fn do_fetch_statement_history(
                 file_name: file_name.unwrap_or_else(|| "Unknown".to_string()),
                 status: status.unwrap_or_else(|| "UNKNOWN".to_string()),
                 instrument_id: row.get(4)?,
+                issuer_name: row.get(5)?,
+                masked_identifier: row.get(6)?,
+                instrument_type: row.get(7)?,
+                pdf_available: row.get(8)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -478,6 +507,7 @@ fn fetch_cluster_members(
                 COALESCE(o.source_pipeline, CASE WHEN m.canonical_transaction_id IS NOT NULL THEN 'statement_pdf' ELSE NULL END),
                 COALESCE(t.merchant_display_name, o.merchant_raw, 'Unknown'),
                 COALESCE(t.amount, o.amount, 0),
+                COALESCE(t.direction, o.direction),
                 COALESCE(t.authorization_time, o.event_time, 'Unknown')
          FROM reconciliation_cluster_members m
          LEFT JOIN transactions t ON m.canonical_transaction_id = t.id
@@ -495,7 +525,8 @@ fn fetch_cluster_members(
                 source_pipeline: row.get(4)?,
                 merchant: row.get(5)?,
                 amount: row.get(6)?,
-                date: row.get(7)?,
+                direction: row.get(7)?,
+                date: row.get(8)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -997,6 +1028,11 @@ pub async fn settings_delete_account(
     // writes to `app-logs.log`, a separate file that survives the wipe and
     // is what actually persists this event.
     tracing::info!("account_deletion_completed: local wipe finished, restarting to onboarding");
+
+    // Close the SQLite pool so all file handles to the db are released.
+    pool.close();
+    // Shut down the sidecar process so its listening socket isn't orphaned across the restart.
+    crate::llama_sidecar::shutdown().await;
 
     // Step 7: the app resets to first-run onboarding state. Restarting the
     // process is what makes this safe and correct — on relaunch, init_db()
@@ -2870,6 +2906,7 @@ mod tests {
                 full_identifier TEXT,
                 billing_cycle_day INTEGER,
                 statement_due_date TEXT,
+                bank_ifsc TEXT,
                 is_deleted INTEGER DEFAULT 0
             )",
             [],
@@ -2898,6 +2935,10 @@ mod tests {
             [],
         ).unwrap();
         conn.execute(
+            "CREATE TABLE unprocessed_statements (id TEXT PRIMARY KEY, resolved_statement_id TEXT, pdf_retained_until DATETIME)",
+            [],
+        ).unwrap();
+        conn.execute(
             "CREATE TABLE reconciliation_clusters (id TEXT PRIMARY KEY, cluster_status TEXT, reason TEXT)",
             [],
         ).unwrap();
@@ -2907,7 +2948,7 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "CREATE TABLE transaction_observations (id TEXT PRIMARY KEY, amount_minor INTEGER, source_pipeline TEXT, merchant_raw TEXT, amount REAL, event_time TEXT)",
+            "CREATE TABLE transaction_observations (id TEXT PRIMARY KEY, amount_minor INTEGER, source_pipeline TEXT, merchant_raw TEXT, amount REAL, direction TEXT, event_time TEXT)",
             [],
         )
         .unwrap();
@@ -3333,6 +3374,56 @@ mod tests {
             page1[0].id, page2[0].id,
             "different pages must return different rows"
         );
+    }
+
+    /// Verifies `do_fetch_statement_history` joins in the linked
+    /// instrument's issuer/masked/type (for a readable display name) and
+    /// computes `pdf_available` from `unprocessed_statements.pdf_retained_until`.
+    #[test]
+    fn test_statement_history_joins_instrument_and_pdf_availability() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        conn.execute("PRAGMA foreign_keys = OFF;", []).unwrap();
+        conn.execute(
+            "INSERT INTO instruments (id, type, issuer_name, masked_identifier) \
+             VALUES ('inst_hist', 'credit_card', 'HDFC', '3825')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO statements (id, instrument_id, statement_type, billing_period_start, billing_period_end, source_message_id, parse_status) \
+             VALUES ('stmt_hist_available', 'inst_hist', 'credit_card_statement', '2026-06-01', '2026-06-30', 'msg_1', 'parsed')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO unprocessed_statements (id, statement_source_json, failure_type, failure_reason, status, resolved_statement_id, pdf_retained_until) \
+             VALUES ('unproc_1', '{}', 'password', 'test', 'resolved', 'stmt_hist_available', datetime('now', '+30 days'))",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO statements (id, instrument_id, statement_type, billing_period_start, billing_period_end, source_message_id, parse_status) \
+             VALUES ('stmt_hist_expired', 'inst_hist', 'credit_card_statement', '2026-05-01', '2026-05-31', 'msg_2', 'parsed')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO unprocessed_statements (id, statement_source_json, failure_type, failure_reason, status, resolved_statement_id, pdf_retained_until) \
+             VALUES ('unproc_2', '{}', 'password', 'test', 'resolved', 'stmt_hist_expired', datetime('now', '-1 days'))",
+            [],
+        )
+        .unwrap();
+
+        let records = do_fetch_statement_history(&conn, 10, 0).unwrap();
+
+        let available = records.iter().find(|r| r.id == "stmt_hist_available").unwrap();
+        assert_eq!(available.issuer_name.as_deref(), Some("HDFC"));
+        assert_eq!(available.masked_identifier.as_deref(), Some("3825"));
+        assert_eq!(available.instrument_type.as_deref(), Some("credit_card"));
+        assert!(available.pdf_available);
+
+        let expired = records.iter().find(|r| r.id == "stmt_hist_expired").unwrap();
+        assert!(!expired.pdf_available);
     }
 
     /// Doc 30 TASK-API-006 / Document 19 §11.2 acceptance coverage:
