@@ -1735,6 +1735,116 @@ pub async fn statements_discard(
     Ok(serde_json::json!({ "status": "discarded", "statement_id": statement_id }))
 }
 
+/// Frontend contract: `edited_rows` and `edited_metadata` mirror
+/// `DraftMetadataUpdate`/`StatementRow` field-for-field (see `ipc.ts`'s
+/// `DraftMetadataInput`/`DraftRow`).
+#[tauri::command]
+pub async fn statements_commit_draft(
+    draft_id: String,
+    edited_metadata: DraftMetadataUpdate,
+    edited_rows: Vec<crate::statements::row_extractor::StatementRow>,
+    app: tauri::AppHandle,
+    pool: tauri::State<'_, deadpool_sqlite::Pool>,
+) -> Result<serde_json::Value, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("draft_id", &draft_id)?;
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+
+    let stmt_id = commit_staged_draft(&draft_id, edited_metadata, edited_rows, pool.inner(), &app)
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
+
+    Ok(serde_json::json!({ "status": "committed", "statement_id": stmt_id }))
+}
+
+#[tauri::command]
+pub async fn statements_discard_draft(
+    draft_id: String,
+    app: tauri::AppHandle,
+    pool: tauri::State<'_, deadpool_sqlite::Pool>,
+) -> Result<serde_json::Value, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("draft_id", &draft_id)?;
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+
+    let app_data_dir = app.path().app_data_dir().map_err(|_| {
+        crate::error::AppError::Unknown("Failed to determine app data directory".to_string())
+    })?;
+    discard_staged_draft(&draft_id, &app_data_dir, pool.inner())
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
+
+    Ok(serde_json::json!({ "status": "discarded" }))
+}
+
+/// Read-only — matches `statements_get_pdf`'s pattern exactly (base64,
+/// never `Vec<u8>` in the response type per `test_no_command_returns_pdf_bytes`).
+#[tauri::command]
+pub async fn statements_get_draft_pdf(
+    draft_id: String,
+    app: tauri::AppHandle,
+    pool: tauri::State<'_, deadpool_sqlite::Pool>,
+) -> Result<String, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("draft_id", &draft_id)?;
+
+    let conn = pool.get().await.map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let id = draft_id.clone();
+    let exists = conn
+        .interact(move |c| crate::db::statement_drafts::select_by_id(c, &id))
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+        .is_some();
+    if !exists {
+        return Err(crate::error::AppError::Unknown("Draft not found".to_string()));
+    }
+
+    let app_data_dir = app.path().app_data_dir().map_err(|_| {
+        crate::error::AppError::Unknown("Failed to determine app data directory".to_string())
+    })?;
+    let bytes = crate::statements::pdf_storage::read_pdf(&app_data_dir, &draft_id)
+        .map_err(|_| crate::error::AppError::Unknown("This statement's PDF file could not be read".to_string()))?
+        .ok_or_else(|| crate::error::AppError::Unknown("This statement's PDF file could not be found".to_string()))?;
+
+    use base64::Engine;
+    Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
+}
+
+/// Read-only fetch of a draft's current (possibly edited-in-a-previous-session)
+/// staged fields — seeds the review modal's form.
+#[tauri::command]
+pub async fn statements_get_draft(
+    draft_id: String,
+    pool: tauri::State<'_, deadpool_sqlite::Pool>,
+) -> Result<serde_json::Value, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("draft_id", &draft_id)?;
+    let conn = pool.get().await.map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let id = draft_id.clone();
+    let draft = conn
+        .interact(move |c| crate::db::statement_drafts::select_by_id(c, &id))
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+        .ok_or_else(|| crate::error::AppError::Unknown("Draft not found".to_string()))?;
+
+    let rows: Vec<crate::statements::row_extractor::StatementRow> =
+        serde_json::from_str(&draft.rows_json).unwrap_or_default();
+
+    Ok(serde_json::json!({
+        "id": draft.id,
+        "origin": draft.origin,
+        "issuer_name": draft.issuer_name,
+        "masked_identifier": draft.masked_identifier,
+        "instrument_type": draft.instrument_type,
+        "billing_period_start": draft.billing_period_start,
+        "billing_period_end": draft.billing_period_end,
+        "due_date": draft.due_date,
+        "statement_date": draft.statement_date,
+        "current_balance": draft.current_balance,
+        "minimum_due": draft.minimum_due,
+        "rows": rows,
+        "status": draft.status,
+    }))
+}
+
 // G20/H10/J8 fix: renamed from `resolve_cluster` to match Doc 19 §10.3's
 // documented `reconciliation_clusters_resolve` naming.
 #[tauri::command]
@@ -2743,6 +2853,10 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         statements_retry_unprocessed,
         statements_list_unprocessed,
         statements_discard,
+        statements_commit_draft,
+        statements_discard_draft,
+        statements_get_draft_pdf,
+        statements_get_draft,
         statements_confirm_instrument,
         ipc_trigger_patch_sync,
         log_frontend_event,
