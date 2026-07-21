@@ -1627,8 +1627,34 @@ pub async fn statements_list_unprocessed(
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let draft_rows = conn
+        .interact(|c| crate::db::statement_drafts::select_pending_review(c))
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
 
-    Ok(group_unprocessed_by_status(rows))
+    let mut grouped = group_unprocessed_by_status(rows);
+    grouped["awaiting_review"] = group_drafts_for_review(draft_rows);
+    Ok(grouped)
+}
+
+/// Formats `statement_drafts` rows for the "Awaiting Review" queue bucket.
+/// Separated from `statements_list_unprocessed` for the same directly-testable-
+/// without-Tauri-State reason `group_unprocessed_by_status` already is.
+fn group_drafts_for_review(rows: Vec<crate::db::statement_drafts::StatementDraftRow>) -> serde_json::Value {
+    let entries: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|row| {
+            serde_json::json!({
+                "draft_id": row.id,
+                "issuer_name": row.issuer_name,
+                "masked_identifier": row.masked_identifier,
+                "origin": row.origin,
+                "created_at": row.created_at.map(|dt| dt.to_string()),
+            })
+        })
+        .collect();
+    serde_json::Value::Array(entries)
 }
 
 /// Doc 30 TASK-STMT-010: groups `unprocessed_statements` rows into the 3
@@ -3859,5 +3885,25 @@ mod tests {
             .unwrap();
         assert!(gone.is_none());
         assert!(crate::statements::pdf_storage::read_pdf(&app_data_dir, "draft_discard").unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_list_unprocessed_includes_awaiting_review_drafts() {
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+
+        seed_test_draft(&pool, "draft_lu", "inst_lu", "6666").await;
+
+        let conn = pool.get().await.unwrap();
+        let rows = conn
+            .interact(|c| crate::db::statement_drafts::select_pending_review(c))
+            .await
+            .unwrap()
+            .unwrap();
+        let grouped = group_drafts_for_review(rows);
+        assert_eq!(grouped.as_array().unwrap().len(), 1);
+        assert_eq!(grouped[0]["issuer_name"], "HDFC");
+        assert_eq!(grouped[0]["masked_identifier"], "6666");
     }
 }
