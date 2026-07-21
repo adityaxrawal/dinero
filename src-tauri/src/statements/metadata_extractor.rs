@@ -14,6 +14,11 @@ pub struct StatementMetadata {
     pub masked_identifier: Option<String>, // last 4 digits or masked account
     pub network: Option<String>,           // VISA / MASTERCARD / RUPAY
     pub rewards_summary_json: Option<String>,
+    /// The date printed on the statement itself ("billing date" in the
+    /// review-modal UI). No current extraction regex populates this — it's
+    /// routinely blank from `extract_metadata` and filled in by the user
+    /// during draft review (`commit_staged_draft`).
+    pub statement_date: Option<String>,
 }
 
 /// Extracts statement-level metadata from parsed pages (Doc 10 §9).
@@ -299,6 +304,7 @@ pub async fn write_statement_row(
         .clone()
         .unwrap_or_else(|| "1970-01-01".to_string());
     let due = meta.due_date.clone();
+    let stmt_date = meta.statement_date.clone();
     let cur_bal = meta.current_balance;
     let min_due = meta.minimum_due;
     let rewards = meta.rewards_summary_json.clone();
@@ -309,12 +315,12 @@ pub async fn write_statement_row(
         let updated = c.execute(
             "UPDATE statements SET \
              instrument_id = ?2, statement_type = ?3, billing_period_start = ?4, \
-             billing_period_end = ?5, due_date = ?6, current_balance = ?7, minimum_due = ?8, \
-             rewards_summary_json = ?9, source_message_id = COALESCE(?10, source_message_id), \
+             billing_period_end = ?5, due_date = ?6, statement_date = ?7, current_balance = ?8, minimum_due = ?9, \
+             rewards_summary_json = ?10, source_message_id = COALESCE(?11, source_message_id), \
              parse_status = 'parsed', updated_at = CURRENT_TIMESTAMP \
              WHERE id = ?1",
             rusqlite::params![
-                sid, inst_id, stmt_type, bps, bpe, due, cur_bal, min_due, rewards, src_msg,
+                sid, inst_id, stmt_type, bps, bpe, due, stmt_date, cur_bal, min_due, rewards, src_msg,
             ],
         )?;
 
@@ -322,11 +328,11 @@ pub async fn write_statement_row(
             c.execute(
                 "INSERT INTO statements \
                  (id, instrument_id, statement_type, billing_period_start, billing_period_end, \
-                  due_date, current_balance, minimum_due, rewards_summary_json, \
+                  due_date, statement_date, current_balance, minimum_due, rewards_summary_json, \
                   source_message_id, parse_status, is_duplicate, created_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'parsed', 0, CURRENT_TIMESTAMP)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'parsed', 0, CURRENT_TIMESTAMP)",
                 rusqlite::params![
-                    sid, inst_id, stmt_type, bps, bpe, due, cur_bal, min_due, rewards, src_msg,
+                    sid, inst_id, stmt_type, bps, bpe, due, stmt_date, cur_bal, min_due, rewards, src_msg,
                 ],
             )?;
         }
@@ -614,6 +620,7 @@ mod tests {
             masked_identifier: Some("1111".to_string()),
             network: Some("VISA".to_string()),
             rewards_summary_json: None,
+            statement_date: None,
         };
 
         let stmt_id = write_statement_row("stmt_wr", "inst_wr", "credit_card", &meta, None, &pool)

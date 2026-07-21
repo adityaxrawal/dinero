@@ -39,6 +39,16 @@ pub const BATCH_PROGRESS: &str = "statement_batch_progress";
 /// Emitted when a reconciliation cluster is formed or updated
 pub const RECONCILIATION_CLUSTER: &str = "reconciliation_cluster";
 
+/// Emitted when `stage_parse_pipeline` finishes staging a `statement_drafts`
+/// row (extraction done, nothing committed yet) — payload `{ draft_id, origin }`.
+pub const STAGED: &str = "statement_staged";
+
+/// Periodic progress during staging — payload
+/// `{ draft_id, instrument_id, stage, percent }`. `stage` is one of
+/// "parsing", "metadata", "instrument_check", "duplicate_check",
+/// "extracting_rows", "staged", "failed".
+pub const PROCESSING_PROGRESS: &str = "statement_processing_progress";
+
 /// Helper to log a Tauri event emission for structured logging.
 ///
 /// In production this is called alongside `app_handle.emit(event, payload)` from

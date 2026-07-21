@@ -205,6 +205,7 @@ mod tests {
             masked_identifier: None,
             network: None,
             rewards_summary_json: None,
+            statement_date: None,
         }
     }
 

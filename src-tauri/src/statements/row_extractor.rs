@@ -3,7 +3,7 @@ use anyhow::Result;
 use regex::Regex;
 
 /// A single extracted statement row (Doc 10 §11.4).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct StatementRow {
     pub transaction_date: String, // YYYY-MM-DD UTC
     pub merchant_raw: String,     // Exact text from description column — unmodified
@@ -820,6 +820,23 @@ mod tests {
             text: text.to_string(),
             ocr_used: false,
         }
+    }
+
+    #[test]
+    fn test_statement_row_json_round_trip() {
+        let row = StatementRow {
+            transaction_date: "2026-06-10".to_string(),
+            merchant_raw: "AMAZON PAY".to_string(),
+            amount_minor: 150000,
+            currency: "INR".to_string(),
+            direction: "debit".to_string(),
+            reference_id: Some("REF123".to_string()),
+            row_index: 0,
+            llm_extracted: false,
+        };
+        let json = serde_json::to_string(&row).unwrap();
+        let back: StatementRow = serde_json::from_str(&json).unwrap();
+        assert_eq!(row, back);
     }
 
     // ── test_hdfc_statement_row_parse ─────────────────────────────────────────
