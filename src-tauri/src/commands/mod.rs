@@ -443,6 +443,7 @@ async fn upload_one_statement(
         stmt_id: stmt_id.clone(),
         batch_progress,
         password: resolved_password,
+        origin: "manual_upload".to_string(),
     };
     if queues.statement_tx.send(job).await.is_err() {
         return Err(crate::error::AppError::Unknown(
@@ -463,13 +464,18 @@ async fn upload_one_statement(
     })
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub enum PipelineOutcome {
-    Parsed(String),
+    Staged(String),
     BlockedAwaitingInstrument(String),
 }
 
-/// Runs steps 6–14 of the PDF statement processing pipeline.
+/// Runs steps 6–11 of the PDF statement processing pipeline: parse PDF,
+/// extract metadata, resolve/gate the instrument, check for a duplicate
+/// billing cycle, extract transaction rows, and stage everything into a
+/// `statement_drafts` row. Nothing is written to `statements`/
+/// `statement_entries`/`transactions` here — that happens later, when the
+/// user reviews and submits via `commit_staged_draft`.
 ///
 /// Separated from `statements_upload` so that the raw `bytes` can be explicitly dropped
 /// at the command boundary (§5.8 Post-Parse Memory Cleanup).
@@ -481,15 +487,17 @@ pub enum PipelineOutcome {
 /// resuming a statement previously blocked by the Instrument Gate (C2 fix) — it
 /// bypasses the gate below and uses the user-confirmed issuer/masked/type directly.
 ///
-/// `stmt_id`, when `Some`, names a `statements` row already written by
-/// `insert_queued()` at intake (Doc 18 §4.7's crash-recovery invariant) —
-/// Step 10 upserts it instead of minting a new ID. `None` for the
-/// resumed-after-block paths (`statements_confirm_instrument`/
-/// `statements_submit_password`), which correctly mint a fresh ID at Step 10
-/// as before — `unprocessed_statements` already owns crash-recovery for the
-/// blocked window via its own separate ID (Doc 18 §4.16's `resolved_statement_id`
-/// is a deliberate one-way link, not a shared ID).
-pub async fn run_parse_pipeline<R: tauri::Runtime>(
+/// `origin` — `'manual_upload' | 'email_scan' | 'password_unlock'` — is stored
+/// on the resulting `statement_drafts` row for the review-queue UI.
+///
+/// `stmt_id`, when `Some`, names either a `statements` row already written by
+/// `insert_queued()` at intake (Doc 18 §4.7's crash-recovery invariant), or —
+/// for a resumed-after-block path — the `unprocessed_statements.id` the PDF
+/// is already stored under via `pdf_storage`. Either way, this same id
+/// becomes the staged draft's id (see Step 11 below), so no PDF copy is ever
+/// needed between "blocked" and "staged for review". `None` mints a fresh
+/// draft id.
+pub async fn stage_parse_pipeline<R: tauri::Runtime>(
     bytes: &[u8],
     _filename: &str,
     file_hash: &str,
@@ -497,14 +505,14 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     confirmed_instrument: Option<ConfirmedInstrument>,
     password: Option<&str>,
+    origin: &str,
     stmt_id: Option<String>,
 ) -> anyhow::Result<PipelineOutcome> {
     use crate::statements::{
-        bill_classifier,
         duplicate_check::{check_billing_cycle_duplicate, DuplicateCheckResult},
-        metadata_extractor::{extract_metadata, resolve_or_create_instrument, write_statement_row},
+        metadata_extractor::{extract_metadata, resolve_or_create_instrument},
         parser::parse_in_memory_with_password,
-        row_extractor::{extract_rows, map_rows_to_statement_entries, BankParser},
+        row_extractor::{extract_rows, BankParser},
     };
 
     // ── Step 6: Parse PDF in-memory ──────────────────────────────────────────
@@ -523,6 +531,7 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
             "No pages extracted from PDF — parse_failed"
         ));
     }
+    emit_processing_progress(app, stmt_id.as_deref(), "pending", "parsing", 10);
 
     // ── Step 7: Extract metadata ──────────────────────────────────────────────
     let meta = extract_metadata(&parse_result.pages)?;
@@ -534,6 +543,7 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
         meta.billing_period_end,
         meta.due_date
     );
+    emit_processing_progress(app, stmt_id.as_deref(), "pending", "metadata", 30);
 
     // ── Step 8: Statement Instrument Gate (Doc 12 §7.2a, FR-033a) ────────────
     // MANDATORY: both issuer_name and masked_identifier must resolve before row extraction.
@@ -622,6 +632,18 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
     .await?;
     tracing::info!("Instrument resolved: id='{}'", instrument_id);
 
+    // Save a working password against the resolved instrument so future
+    // statements for the same card/account don't re-prompt — orthogonal to
+    // whether the user later edits/commits the extracted data, so this
+    // happens here (once, at the single choke point every entry point
+    // already funnels through) rather than being threaded through to
+    // commit time.
+    if let Some(pwd) = password {
+        crate::statements::password::save_password(&instrument_id, pwd, pool)
+            .await
+            .ok();
+    }
+
     // ── Step 9: Post-metadata billing cycle duplicate check ───────────────────
     if let (Some(ref start), Some(ref end)) = (&meta.billing_period_start, &meta.billing_period_end)
     {
@@ -646,24 +668,9 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
         }
     }
 
-    // ── Step 10: Write statements row ─────────────────────────────────────────
-    // source_message_id for manual uploads uses the file_hash as a proxy identifier.
-    // `stmt_id`, if the caller pre-created a queued row at intake (Doc 18 §4.7),
-    // is upserted in place; otherwise (a resumed-after-block path) a fresh ID
-    // is minted here, matching the pre-existing behavior for that case.
-    let final_stmt_id = stmt_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let stmt_id = write_statement_row(
-        &final_stmt_id,
-        &instrument_id,
-        &instrument_type,
-        &meta,
-        Some(file_hash),
-        pool,
-    )
-    .await?;
-    tracing::info!("Statement row written: id='{}'", stmt_id);
+    emit_processing_progress(app, stmt_id.as_deref(), &instrument_id, "duplicate_check", 50);
 
-    // ── Step 11: Extract statement rows ───────────────────────────────────────
+    // ── Step 10: Extract statement rows ───────────────────────────────────────
     let bank_parser = BankParser::detect(&issuer);
     let rows = extract_rows(&parse_result.pages, bank_parser)?;
     tracing::info!(
@@ -671,79 +678,81 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
         rows.len(),
         bank_parser
     );
+    emit_processing_progress(app, stmt_id.as_deref(), &instrument_id, "extracting_rows", 65);
 
-    // ── Step 12: Map rows to statement_entries ────────────────────────────────
-    let entry_ids = map_rows_to_statement_entries(&stmt_id, &rows, pool).await;
-    tracing::info!(
-        "Mapped {} rows → {} statement_entries",
-        rows.len(),
-        entry_ids.len()
-    );
+    // ── Step 11: Write the staged draft (nothing committed yet) ──────────────
+    // Doc 18 §4.7's crash-recovery invariant pre-mints `stmt_id` for a fresh
+    // upload (`insert_queued()`); a resumed-after-block path reuses the
+    // `unprocessed_statements.id` its PDF is already stored under. Either
+    // way the draft's id IS that same id — no PDF copy is ever needed
+    // between "blocked" and "staged for review".
+    let draft_id = stmt_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    // A queued `statements` row from `insert_queued()` at intake is now
+    // orphaned — the real row isn't written until commit. Same cleanup the
+    // gate-block/duplicate-reject paths above already rely on.
+    delete_orphaned_queued_row(Some(&draft_id), pool).await;
 
-    // ── Step 13: Map statement_entries → transaction_observations → reconcile ─
-    if !rows.is_empty() && !entry_ids.is_empty() {
-        let observations = crate::statements::observation_builder::build_all_observations(
-            &stmt_id,
-            &instrument_id,
-            &rows,
-            &entry_ids,
-        );
-
-        tracing::info!(
-            "Built {} observations from statement rows",
-            observations.len()
-        );
-
-        // Reconcile each observation against canonical transactions
-        let conn = pool
-            .get()
-            .await
-            .map_err(|e| anyhow::anyhow!("DB pool error: {}", e))?;
-        let obs_cloned = observations.clone();
-        let app_handle_clone = app.clone();
-        conn.interact(move |conn| {
-            for obs in &obs_cloned {
-                match crate::reconciliation::engine::reconcile_transactionally(conn, obs) {
-                    Ok(decision) => {
-                        tracing::debug!(
-                            "Reconciliation decision for obs '{}': {:?}",
-                            obs.id,
-                            decision
-                        );
-                        if let crate::reconciliation::audit::DecisionType::AmbiguousPending(cluster_id) = decision {
-                            let _ = crate::ipc::events::emit_event(
-                                &app_handle_clone,
-                                crate::ipc::events::AppEvent::ReconciliationCluster,
-                                serde_json::json!({ "cluster_id": cluster_id, "observation_id": obs.id }),
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Reconciliation failed for obs '{}': {}", obs.id, e);
-                        // Isolated failure — continue with remaining observations
-                    }
-                }
-            }
-        })
+    let rows_json = serde_json::to_string(&rows)
+        .map_err(|e| anyhow::anyhow!("Failed to serialize statement rows: {}", e))?;
+    let draft = crate::db::statement_drafts::StatementDraftRow {
+        id: draft_id.clone(),
+        origin: origin.to_string(),
+        file_hash: file_hash.to_string(),
+        instrument_id: Some(instrument_id.clone()),
+        issuer_name: Some(issuer.clone()),
+        masked_identifier: Some(masked.clone()),
+        instrument_type: Some(instrument_type.clone()),
+        billing_period_start: meta.billing_period_start.clone(),
+        billing_period_end: meta.billing_period_end.clone(),
+        due_date: meta.due_date.clone(),
+        statement_date: meta.statement_date.clone(),
+        current_balance: meta.current_balance,
+        minimum_due: meta.minimum_due,
+        rows_json,
+        status: "pending_review".to_string(),
+        created_at: None,
+        updated_at: None,
+    };
+    let conn = pool
+        .get()
         .await
-        .map_err(|e| anyhow::anyhow!("Interact error: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("DB pool error: {}", e))?;
+    conn.interact(move |c| crate::db::statement_drafts::insert(c, &draft))
+        .await
+        .map_err(|e| anyhow::anyhow!("Interact error: {}", e))?
+        .map_err(|e| anyhow::anyhow!("Failed to write statement draft: {}", e))?;
 
-        let obs_ids: Vec<String> = observations.into_iter().map(|o| o.id).collect();
-        tokio::spawn(
-            crate::reconciliation::alert_worker::evaluate_alerts_for_observations(
-                pool.clone(),
-                app.clone(),
-                obs_ids,
-            ),
-        );
-    }
+    tracing::info!("Statement draft staged: id='{}' origin='{}'", draft_id, origin);
+    emit_processing_progress(app, Some(&draft_id), &instrument_id, "staged", 100);
 
-    // ── Step 14: Classify upcoming bill ──────────────────────────────────────
-    bill_classifier::classify_and_update(&instrument_id, &stmt_id, &meta, pool, Some(app)).await?;
+    let staged_payload = serde_json::json!({ "draft_id": draft_id, "origin": origin });
+    events::emit(events::STAGED, staged_payload.clone());
+    app.emit(events::STAGED, staged_payload).ok();
 
-    // ── Step 15 note: Caller drops raw bytes after this function returns ──────
+    // ── Caller drops raw bytes after this function returns ───────────────────
+    Ok(PipelineOutcome::Staged(draft_id))
+}
 
-    Ok(PipelineOutcome::Parsed(stmt_id))
+/// Emits `statement_processing_progress` (best-effort — a progress event
+/// failing to emit must never fail the pipeline). `draft_id` is `None` for
+/// early stages (before a draft id is known) — the frontend correlates by
+/// whichever id it's already watching for that upload/unlock, and simply
+/// ignores progress events it can't match yet.
+fn emit_processing_progress<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    draft_id: Option<&str>,
+    instrument_id: &str,
+    stage: &str,
+    percent: u8,
+) {
+    let payload = serde_json::json!({
+        "draft_id": draft_id,
+        "instrument_id": instrument_id,
+        "stage": stage,
+        "percent": percent,
+    });
+    events::emit(events::PROCESSING_PROGRESS, payload.clone());
+    let _ = app.emit(events::PROCESSING_PROGRESS, payload);
 }
 
 /// Doc 30 TASK-STMT-002: "Every skip is logged to audit_log
@@ -978,7 +987,7 @@ pub async fn statements_confirm_instrument(
         confirmed.issuer_name
     );
 
-    let result = run_parse_pipeline(
+    let result = stage_parse_pipeline(
         &bytes,
         &filename,
         &file_hash,
@@ -986,59 +995,20 @@ pub async fn statements_confirm_instrument(
         &app,
         Some(confirmed),
         decrypted_password.as_deref(),
-        None,
+        "password_unlock",
+        Some(statement_id.clone()),
     )
     .await;
 
     match result {
-        Ok(PipelineOutcome::Parsed(new_stmt_id)) => {
-            let conn = pool
-                .get()
-                .await
-                .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-            let orig_id = statement_id.clone();
-            let resolved_id = new_stmt_id.clone();
-            conn.interact(move |c| {
-                crate::db::unprocessed_statements::update_status(
-                    c,
-                    &orig_id,
-                    "resolved",
-                    Some(&resolved_id),
-                )
-            })
-            .await
-            .map_err(|e| crate::error::AppError::Db(e.to_string()))?
-            .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
-
-            if let Some(pwd) = &decrypted_password {
-                let pool_clone = pool.inner().clone();
-                let resolved_id_for_instr = new_stmt_id.clone();
-                let pwd_clone = pwd.clone();
-                let conn_instr = pool.get().await.map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-                if let Ok(Ok(instr_id)) = conn_instr.interact(move |c| {
-                    c.query_row(
-                        "SELECT instrument_id FROM statements WHERE id = ?",
-                        [&resolved_id_for_instr],
-                        |row| row.get::<_, String>(0)
-                    )
-                }).await {
-                    crate::statements::password::save_password(&instr_id, &pwd_clone, &pool_clone).await.ok();
-                }
-            }
-
-            events::emit(
-                events::PARSED,
-                serde_json::json!({ "statement_id": new_stmt_id, "filename": filename }),
-            );
-            app.emit(
-                events::PARSED,
-                serde_json::json!({ "statement_id": new_stmt_id, "filename": filename }),
-            )
-            .ok();
-
+        Ok(PipelineOutcome::Staged(draft_id)) => {
+            // Password/instrument save-for-next-time and unprocessed_statements
+            // "resolved" bookkeeping now happen at commit time
+            // (`commit_staged_draft`), not here — nothing is finalized until
+            // the user reviews and submits.
             Ok(serde_json::json!({
-                "status": "parsed",
-                "statement_id": new_stmt_id
+                "status": "staged",
+                "draft_id": draft_id
             }))
         }
         Ok(PipelineOutcome::BlockedAwaitingInstrument(unprocessed_id)) => {
@@ -1201,7 +1171,7 @@ pub async fn statements_submit_password(
                 .to_string();
             let file_hash = parsed["file_hash"].as_str().unwrap_or_default().to_string();
 
-            let pipeline_result = run_parse_pipeline(
+            let pipeline_result = stage_parse_pipeline(
                 &pdf_bytes,
                 &filename,
                 &file_hash,
@@ -1209,59 +1179,26 @@ pub async fn statements_submit_password(
                 &app,
                 None,
                 Some(&password),
-                None,
+                "password_unlock",
+                Some(statement_id.clone()),
             )
             .await;
 
             match pipeline_result {
-                Ok(PipelineOutcome::Parsed(new_stmt_id)) => {
-                    let conn = pool
-                        .get()
-                        .await
-                        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-                    let orig_id = statement_id.clone();
-                    let resolved_id = new_stmt_id.clone();
-                    conn.interact(move |c| {
-                        crate::db::unprocessed_statements::update_status(
-                            c,
-                            &orig_id,
-                            "resolved",
-                            Some(&resolved_id),
-                        )
-                    })
-                    .await
-                    .map_err(|e| crate::error::AppError::Db(e.to_string()))?
-                    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
-
-                    // Save the password to the resolved instrument
-                    let pool_clone = pool.inner().clone();
-                    let resolved_id_for_instr = new_stmt_id.clone();
-                    let pwd_clone = password.clone();
-                    let conn_instr = pool.get().await.map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-                    if let Ok(Ok(instr_id)) = conn_instr.interact(move |c| {
-                        c.query_row(
-                            "SELECT instrument_id FROM statements WHERE id = ?",
-                            [&resolved_id_for_instr],
-                            |row| row.get::<_, String>(0)
-                        )
-                    }).await {
-                        crate::statements::password::save_password(&instr_id, &pwd_clone, &pool_clone).await.ok();
-                    }
-
-                    app.emit(
-                        events::PARSED,
-                        serde_json::json!({ "statement_id": new_stmt_id, "filename": filename }),
-                    )
-                    .ok();
+                Ok(PipelineOutcome::Staged(draft_id)) => {
+                    // Password-save-for-next-time and unprocessed_statements
+                    // "resolved" bookkeeping now happen inside
+                    // stage_parse_pipeline/commit_staged_draft respectively —
+                    // nothing is finalized until the user reviews and submits.
                     Ok(serde_json::json!({
                         "status": "unlocked",
-                        "statement_id": new_stmt_id
+                        "draft_id": draft_id
                     }))
                 }
                 Ok(PipelineOutcome::BlockedAwaitingInstrument(unprocessed_id)) => {
                     // Password unlocked it, but it got blocked by the Instrument Gate.
                     // The old awaiting_password row should be deleted (or marked resolved?),
-                    // since run_parse_pipeline already created a NEW awaiting_instrument_confirmation row.
+                    // since stage_parse_pipeline already created a NEW awaiting_instrument_confirmation row.
                     let conn = pool
                         .get()
                         .await
@@ -1451,7 +1388,7 @@ pub async fn statements_retry_unprocessed(
                 .and_then(|v| v["file_hash"].as_str().map(|s| s.to_string()))
                 .unwrap_or_default();
 
-            let pipeline_result = run_parse_pipeline(
+            let pipeline_result = stage_parse_pipeline(
                 &pdf_bytes,
                 &filename,
                 &file_hash,
@@ -1459,36 +1396,14 @@ pub async fn statements_retry_unprocessed(
                 &app,
                 None,
                 Some(&password),
-                None,
+                "password_unlock",
+                Some(statement_id.clone()),
             )
             .await;
 
             match pipeline_result {
-                Ok(PipelineOutcome::Parsed(new_stmt_id)) => {
-                    let conn = pool
-                        .get()
-                        .await
-                        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-                    let orig_id = statement_id.clone();
-                    let resolved_id = new_stmt_id.clone();
-                    conn.interact(move |c| {
-                        crate::db::unprocessed_statements::update_status(
-                            c,
-                            &orig_id,
-                            "resolved",
-                            Some(&resolved_id),
-                        )
-                    })
-                    .await
-                    .map_err(|e| crate::error::AppError::Db(e.to_string()))?
-                    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
-
-                    app.emit(
-                        events::PARSED,
-                        serde_json::json!({ "statement_id": new_stmt_id, "filename": filename }),
-                    )
-                    .ok();
-                    Ok(serde_json::json!({ "status": "unlocked", "statement_id": new_stmt_id }))
+                Ok(PipelineOutcome::Staged(draft_id)) => {
+                    Ok(serde_json::json!({ "status": "unlocked", "draft_id": draft_id }))
                 }
                 Ok(PipelineOutcome::BlockedAwaitingInstrument(unprocessed_id)) => {
                     // Password unlocked it, but blocked by the Instrument Gate.

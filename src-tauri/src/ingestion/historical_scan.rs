@@ -558,7 +558,7 @@ async fn run_scan_batches<R: tauri::Runtime>(
         match join_res {
             Ok((msg_id, result)) => {
                 match result {
-                    Ok(Some(ProcessResult::TransactionAlert(extracted, boxed_obs))) => {
+                    Ok(Some(ProcessResult::TransactionAlert(extracted, boxed_obs, html))) => {
                         // Doc 15 §2 principle 7 / Doc 12 §6.2a: route to the Transaction
                         // Queue rather than processing inline — no code path may write an
                         // observation directly, only via the queue's shared worker logic.
@@ -576,6 +576,7 @@ async fn run_scan_batches<R: tauri::Runtime>(
                             source_record_id: msg_id.clone(),
                             connected_account_id: account_id.clone(),
                             raw_body: extracted.text_body.clone(),
+                            raw_html: html,
                         };
                         let tx = app
                             .state::<crate::ingestion::queues::QueueHandles>()
@@ -596,8 +597,10 @@ async fn run_scan_batches<R: tauri::Runtime>(
                         if extracted.pdf_attachments.is_empty() {
                             tracing::warn!(
                                 "StatementEmail for msg_id='{}' has has_pdf_attachment=true \
-                                     but no downloadable attachment_ids — skipping parse",
-                                msg_id
+                                     but no downloadable attachment_ids — skipping parse. \
+                                     skipped_parts=[{}]",
+                                msg_id,
+                                extracted.skipped_pdf_parts.join("; ")
                             );
                         } else {
                             for att in &extracted.pdf_attachments {
@@ -628,9 +631,6 @@ async fn run_scan_batches<R: tauri::Runtime>(
                                         // enqueued with no password and died in pdfium with
                                         // PasswordError. Same choke point manual upload uses
                                         // (see `resolve_statement_password`'s doc comment).
-                                        let pending_bytes = app.state::<
-                                            crate::statements::pending_bytes::PendingStatementBytes,
-                                        >();
                                         let password = match crate::statements::password::resolve_statement_password(
                                             &stmt_id,
                                             &pdf_bytes,
@@ -638,7 +638,6 @@ async fn run_scan_batches<R: tauri::Runtime>(
                                             &msg_id,
                                             &pool,
                                             &app,
-                                            pending_bytes.inner(),
                                             email_meta.clone(),
                                         )
                                         .await
@@ -682,6 +681,7 @@ async fn run_scan_batches<R: tauri::Runtime>(
                                             // manual-upload-batch concept only.
                                             batch_progress: None,
                                             password,
+                                            origin: "email_scan".to_string(),
                                         };
                                         let st_tx = app
                                             .state::<crate::ingestion::queues::QueueHandles>()

@@ -6,7 +6,7 @@
 //! path and exactly one Statement-parsing path, regardless of entry point.
 
 use crate::extraction::ladder::ExtractionResult;
-use crate::statements::pending_bytes::PendingStatementBytes;
+
 use deadpool_sqlite::Pool;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -27,6 +27,14 @@ pub struct TransactionJob {
     /// `transaction_observations.raw_payload_json` for auditability/
     /// reprocessing. `None` when the message had no text body at all.
     pub raw_body: Option<String>,
+    /// Sanitized-for-display original HTML body (see
+    /// `message_processor::ProcessResult::TransactionAlert`'s doc comment)
+    /// -- folded into `raw_payload_json` alongside `raw_body` so the
+    /// Evidence tab can show the email as it actually rendered in Gmail,
+    /// not just its plain-text body. `None` when the message had no
+    /// `text/html` part, or for jobs with no source email at all (mandate
+    /// events synthesize a ₹0 transaction with no email to render).
+    pub raw_html: Option<String>,
 }
 
 /// Raw PDF bytes from either Statement Queue entry point (email-detected or
@@ -57,6 +65,10 @@ pub struct StatementJob {
     /// `password::resolve_statement_password` before constructing this job;
     /// see that function's doc comment for the bug this field fixes.
     pub password: Option<String>,
+    /// 'manual_upload' | 'email_scan' — threaded into `statement_drafts.origin`
+    /// so the review-queue UI and GlobalStateContext's "was I watching this?"
+    /// logic can tell the two apart.
+    pub origin: String,
 }
 
 /// Doc 30 TASK-STMT-009: "emit periodic scan.progress { parsed, total,
@@ -252,7 +264,6 @@ pub async fn pipeline_status(
 pub fn spawn_queues<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     pool: Pool,
-    pending_bytes: PendingStatementBytes,
 ) -> QueueHandles {
     let (transaction_tx, transaction_rx) =
         mpsc::channel::<TransactionJob>(TRANSACTION_QUEUE_CAPACITY);
@@ -260,7 +271,7 @@ pub fn spawn_queues<R: tauri::Runtime>(
     let (mandate_tx, mandate_rx) = mpsc::channel::<MandateJob>(MANDATE_QUEUE_CAPACITY);
 
     spawn_transaction_workers(transaction_rx, pool.clone(), app.clone());
-    spawn_statement_dispatcher(statement_rx, pool.clone(), app, pending_bytes);
+    spawn_statement_dispatcher(statement_rx, pool.clone(), app);
     spawn_mandate_workers(mandate_rx, pool, transaction_tx.clone());
 
     QueueHandles {
@@ -398,6 +409,7 @@ async fn process_mandate_job(
         source_record_id: job.source_record_id,
         connected_account_id: job.connected_account_id,
         raw_body: job.raw_body,
+        raw_html: None,
     };
     if transaction_tx.send(tx_job).await.is_err() {
         tracing::error!("Transaction Queue closed — dropping mandate-generated ₹0 transaction job");
@@ -437,7 +449,6 @@ fn spawn_statement_dispatcher<R: tauri::Runtime>(
     mut rx: mpsc::Receiver<StatementJob>,
     pool: Pool,
     app: tauri::AppHandle<R>,
-    pending_bytes: PendingStatementBytes,
 ) {
     let semaphore = Arc::new(Semaphore::new(STATEMENT_QUEUE_MAX_CONCURRENT));
     tauri::async_runtime::spawn(async move {
@@ -446,19 +457,18 @@ fn spawn_statement_dispatcher<R: tauri::Runtime>(
             let permit = Arc::clone(&semaphore).acquire_owned().await.unwrap();
             let pool = pool.clone();
             let app = app.clone();
-            let pending_bytes = pending_bytes.clone();
             tauri::async_runtime::spawn(async move {
                 let _permit = permit;
                 let start = std::time::Instant::now();
-                let result = crate::commands::run_parse_pipeline(
+                let result = crate::commands::stage_parse_pipeline(
                     &job.bytes,
                     &job.filename,
                     &job.file_hash,
                     &pool,
                     &app,
-                    &pending_bytes,
                     None,
                     job.password.as_deref(),
+                    &job.origin,
                     Some(job.stmt_id),
                 )
                 .await;
@@ -489,15 +499,8 @@ fn spawn_statement_dispatcher<R: tauri::Runtime>(
                 // Statement-Instrument-Gate-resume commands already emit.
                 use crate::statements::events;
                 match &result {
-                    Ok(crate::commands::PipelineOutcome::Parsed(stmt_id)) => {
-                        events::emit(
-                            events::PARSED,
-                            serde_json::json!({ "statement_id": stmt_id, "filename": job.filename }),
-                        );
-                        let _ = app.emit(
-                            events::PARSED,
-                            serde_json::json!({ "statement_id": stmt_id, "filename": job.filename }),
-                        );
+                    Ok(crate::commands::PipelineOutcome::Staged(_draft_id)) => {
+                        // stage_parse_pipeline already emitted STAGED itself — nothing to do here.
                     }
                     Ok(crate::commands::PipelineOutcome::BlockedAwaitingInstrument(_unprocessed_id)) => {
                         // The gate already emitted INSTRUMENT_CONFIRMATION_REQUIRED, we don't need to do anything here.
@@ -541,6 +544,7 @@ async fn process_transaction_job<R: tauri::Runtime>(
         &job.source_pipeline,
         &job.source_record_id,
         job.raw_body.as_deref(),
+        job.raw_html.as_deref(),
     );
 
     let connected_account_id = job.connected_account_id;
@@ -647,6 +651,7 @@ async fn process_transaction_job<R: tauri::Runtime>(
                                 // reconciliation engine's input for the
                                 // email-vs-email precedence comparison.
                                 confidence_score: row.confidence_score,
+                                event_time_confidence: row.event_time_confidence.clone(),
                             };
 
                             match crate::reconciliation::engine::reconcile_transactionally(
