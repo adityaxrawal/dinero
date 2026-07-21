@@ -196,10 +196,65 @@ export interface UnprocessedStatementEntry {
   html?: string;
 }
 
+export interface AwaitingReviewEntry {
+  draft_id: string;
+  issuer_name: string | null;
+  masked_identifier: string | null;
+  origin: string;
+  created_at: string | null;
+}
+
 export interface UnprocessedStatementGroups {
   awaiting_password: UnprocessedStatementEntry[];
   pending_retry: UnprocessedStatementEntry[];
   failed: UnprocessedStatementEntry[];
+  awaiting_review: AwaitingReviewEntry[];
+}
+
+export interface DraftRow {
+  transaction_date: string;
+  merchant_raw: string;
+  amount_minor: number;
+  currency: string;
+  direction: 'debit' | 'credit';
+  reference_id: string | null;
+  row_index: number;
+  llm_extracted: boolean;
+}
+
+export interface StatementDraft {
+  id: string;
+  origin: 'password_unlock' | 'manual_upload' | 'email_scan';
+  issuer_name: string | null;
+  masked_identifier: string | null;
+  instrument_type: string | null;
+  billing_period_start: string | null;
+  billing_period_end: string | null;
+  due_date: string | null;
+  statement_date: string | null;
+  current_balance: number | null;
+  minimum_due: number | null;
+  rows: DraftRow[];
+  status: string;
+}
+
+export interface DraftMetadataInput {
+  issuerName: string;
+  maskedIdentifier: string;
+  instrumentType: string;
+  billingPeriodStart: string | null;
+  billingPeriodEnd: string | null;
+  dueDate: string | null;
+  statementDate: string | null;
+  currentBalance: number | null;
+  minimumDue: number | null;
+}
+
+export interface ProcessingProgressPayload {
+  draft_id: string | null;
+  instrument_id: string;
+  stage: 'parsing' | 'metadata' | 'instrument_check' | 'duplicate_check' | 'extracting_rows' | 'staged' | 'failed';
+  percent: number;
 }
 
 export interface CategoryRecord {
@@ -227,6 +282,8 @@ export interface TransactionRecord {
   date: string;
   merchant: string;
   amount: number;
+  /** "debit" | "credit" — amount is always a positive magnitude. */
+  direction: string | null;
   category: string;
   status: string;
   tags?: string[];
@@ -260,6 +317,10 @@ export interface StatementRecord {
   file_name: string;
   status: string;
   instrument_id: string | null;
+  issuer_name: string | null;
+  masked_identifier: string | null;
+  instrument_type: string | null;
+  pdf_available: boolean;
 }
 
 // TASK-FE-013: mirrors the real Rust `ClusterMember` shape (Document 18
@@ -277,6 +338,8 @@ export interface ClusterMember {
   source_pipeline: string | null;
   merchant: string;
   amount: number;
+  /** "debit" | "credit" — amount is always a positive magnitude. */
+  direction: string | null;
   date: string;
 }
 
@@ -500,7 +563,7 @@ export const API = {
       instrumentId: string,
       password: string,
     ) =>
-      invokeCommand<{ status: string; statement_id: string; attempts_remaining?: number }>(
+      invokeCommand<{ status: string; statement_id?: string; draft_id?: string; attempts_remaining?: number }>(
         'statements_submit_password',
         { statementId, instrumentId, password },
       ),
@@ -539,6 +602,32 @@ export const API = {
         .then((res) => res.records),
     getEntries: (statementId: string) =>
       invokeCommand<any[]>('statements_get_entries', { statementId }),
+    getPdf: (statementId: string) =>
+      invokeCommand<string>('statements_get_pdf', { statementId }),
+    deletePdf: (statementId: string) =>
+      invokeCommand<void>('statements_delete_pdf', { statementId }),
+    getDraft: (draftId: string) =>
+      invokeCommand<StatementDraft>('statements_get_draft', { draftId }),
+    getDraftPdf: (draftId: string) =>
+      invokeCommand<string>('statements_get_draft_pdf', { draftId }),
+    commitDraft: (draftId: string, metadata: DraftMetadataInput, rows: DraftRow[]) =>
+      invokeCommand<{ status: string; statement_id: string }>('statements_commit_draft', {
+        draftId,
+        editedMetadata: {
+          issuer_name: metadata.issuerName,
+          masked_identifier: metadata.maskedIdentifier,
+          instrument_type: metadata.instrumentType,
+          billing_period_start: metadata.billingPeriodStart,
+          billing_period_end: metadata.billingPeriodEnd,
+          due_date: metadata.dueDate,
+          statement_date: metadata.statementDate,
+          current_balance: metadata.currentBalance,
+          minimum_due: metadata.minimumDue,
+        },
+        editedRows: rows,
+      }),
+    discardDraft: (draftId: string) =>
+      invokeCommand<{ status: string }>('statements_discard_draft', { draftId }),
   },
   reconciliation: {
     // G20/H10/J8 fix: both renamed to match Doc 19 §10.1/§10.3's documented
