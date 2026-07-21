@@ -755,6 +755,170 @@ fn emit_processing_progress<R: tauri::Runtime>(
     let _ = app.emit(events::PROCESSING_PROGRESS, payload);
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
+pub struct DraftMetadataUpdate {
+    pub issuer_name: String,
+    pub masked_identifier: String,
+    pub instrument_type: String,
+    pub billing_period_start: Option<String>,
+    pub billing_period_end: Option<String>,
+    pub due_date: Option<String>,
+    pub statement_date: Option<String>,
+    pub current_balance: Option<i64>,
+    pub minimum_due: Option<i64>,
+}
+
+/// Commits a staged draft: writes the real `statements`/`statement_entries`
+/// rows, builds observations, reconciles, classifies the bill — exactly
+/// what `stage_parse_pipeline`'s old steps 10–14 did, now sourced from the
+/// user's edited values instead of the original extraction.
+pub async fn commit_staged_draft<R: tauri::Runtime>(
+    draft_id: &str,
+    edited_metadata: DraftMetadataUpdate,
+    edited_rows: Vec<crate::statements::row_extractor::StatementRow>,
+    pool: &deadpool_sqlite::Pool,
+    app: &tauri::AppHandle<R>,
+) -> anyhow::Result<String> {
+    use crate::statements::{
+        bill_classifier,
+        metadata_extractor::{resolve_or_create_instrument, write_statement_row, StatementMetadata},
+        observation_builder::build_all_observations,
+        row_extractor::map_rows_to_statement_entries,
+    };
+
+    let conn = pool.get().await.map_err(|e| anyhow::anyhow!("DB pool error: {}", e))?;
+    let draft_id_owned = draft_id.to_string();
+    let draft = conn
+        .interact(move |c| crate::db::statement_drafts::select_by_id(c, &draft_id_owned))
+        .await
+        .map_err(|e| anyhow::anyhow!("Interact error: {}", e))?
+        .map_err(|e| anyhow::anyhow!("DB error: {}", e))?
+        .ok_or_else(|| anyhow::anyhow!("draft not found: {}", draft_id))?;
+
+    if draft.status != "pending_review" {
+        return Err(anyhow::anyhow!(
+            "draft '{}' is not pending_review (status='{}') — already committed or discarded",
+            draft_id,
+            draft.status
+        ));
+    }
+
+    let instrument_id = resolve_or_create_instrument(
+        &edited_metadata.instrument_type,
+        &edited_metadata.issuer_name,
+        &edited_metadata.masked_identifier,
+        None,
+        pool,
+    )
+    .await?;
+
+    let meta = StatementMetadata {
+        billing_period_start: edited_metadata.billing_period_start,
+        billing_period_end: edited_metadata.billing_period_end,
+        due_date: edited_metadata.due_date,
+        minimum_due: edited_metadata.minimum_due,
+        current_balance: edited_metadata.current_balance,
+        issuer_name: Some(edited_metadata.issuer_name.clone()),
+        masked_identifier: Some(edited_metadata.masked_identifier.clone()),
+        network: None,
+        rewards_summary_json: None,
+        statement_date: edited_metadata.statement_date,
+    };
+
+    let fresh_stmt_id = uuid::Uuid::new_v4().to_string();
+    let stmt_id = write_statement_row(
+        &fresh_stmt_id,
+        &instrument_id,
+        &edited_metadata.instrument_type,
+        &meta,
+        Some(&draft.file_hash),
+        pool,
+    )
+    .await?;
+
+    let entry_ids = map_rows_to_statement_entries(&stmt_id, &edited_rows, pool).await;
+
+    if !edited_rows.is_empty() && !entry_ids.is_empty() {
+        let observations = build_all_observations(&stmt_id, &instrument_id, &edited_rows, &entry_ids);
+        let conn = pool.get().await.map_err(|e| anyhow::anyhow!("DB pool error: {}", e))?;
+        let obs_cloned = observations.clone();
+        conn.interact(move |c| {
+            for obs in &obs_cloned {
+                if let Err(e) = crate::reconciliation::engine::reconcile_transactionally(c, obs) {
+                    tracing::warn!("Reconciliation failed for obs '{}': {}", obs.id, e);
+                }
+            }
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Interact error: {}", e))?;
+
+        let obs_ids: Vec<String> = observations.into_iter().map(|o| o.id).collect();
+        tokio::spawn(crate::reconciliation::alert_worker::evaluate_alerts_for_observations(
+            pool.clone(),
+            app.clone(),
+            obs_ids,
+        ));
+    }
+
+    bill_classifier::classify_and_update(&instrument_id, &stmt_id, &meta, pool, Some(app)).await?;
+
+    // Link/finalize the PDF's post-commit retention window (reuses the
+    // exact 30-day `unprocessed_statements` mechanism the pre-existing
+    // "View PDF" history feature already depends on — INSERT OR IGNORE so
+    // this works uniformly whether `draft_id` already names a real
+    // unprocessed_statements row (a resumed password/instrument path) or
+    // not (a clean first-pass extraction, which never had one before).
+    let draft_id_for_retention = draft_id.to_string();
+    let stmt_id_for_retention = stmt_id.clone();
+    let conn = pool.get().await.map_err(|e| anyhow::anyhow!("DB pool error: {}", e))?;
+    conn.interact(move |c| {
+        c.execute(
+            "INSERT OR IGNORE INTO unprocessed_statements \
+             (id, statement_source_json, failure_type, failure_reason, status) \
+             VALUES (?1, '{}', 'staged_review', '', 'pending_review')",
+            rusqlite::params![draft_id_for_retention],
+        )?;
+        crate::db::unprocessed_statements::update_status(
+            c,
+            &draft_id_for_retention,
+            "resolved",
+            Some(&stmt_id_for_retention),
+        )
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("Interact error: {}", e))?
+    .map_err(|e| anyhow::anyhow!("DB error linking PDF retention: {}", e))?;
+
+    let draft_id_owned = draft_id.to_string();
+    conn.interact(move |c| crate::db::statement_drafts::update_status(c, &draft_id_owned, "committed"))
+        .await
+        .map_err(|e| anyhow::anyhow!("Interact error: {}", e))?
+        .map_err(|e| anyhow::anyhow!("DB error: {}", e))?;
+
+    events::emit(events::PARSED, serde_json::json!({ "statement_id": stmt_id }));
+    app.emit(events::PARSED, serde_json::json!({ "statement_id": stmt_id })).ok();
+
+    Ok(stmt_id)
+}
+
+/// Discards a staged draft — deletes the row and its stored PDF. No
+/// `statements` row is ever created. Idempotent: discarding an
+/// already-discarded/missing draft is not an error.
+pub async fn discard_staged_draft(
+    draft_id: &str,
+    app_data_dir: &std::path::Path,
+    pool: &deadpool_sqlite::Pool,
+) -> anyhow::Result<()> {
+    let _ = crate::statements::pdf_storage::delete_pdf(app_data_dir, draft_id);
+    let conn = pool.get().await.map_err(|e| anyhow::anyhow!("DB pool error: {}", e))?;
+    let id = draft_id.to_string();
+    conn.interact(move |c| crate::db::statement_drafts::delete(c, &id))
+        .await
+        .map_err(|e| anyhow::anyhow!("Interact error: {}", e))?
+        .map_err(|e| anyhow::anyhow!("DB error: {}", e))?;
+    Ok(())
+}
+
 /// Doc 30 TASK-STMT-002: "Every skip is logged to audit_log
 /// (statement_duplicate_skipped) with the detected period for user
 /// transparency." Best-effort — a logging failure must never fail the
@@ -3387,5 +3551,199 @@ mod tests {
         )
         .await;
         assert!(second_attempt.is_err());
+    }
+
+    async fn seed_test_draft(pool: &deadpool_sqlite::Pool, id: &str, inst_id: &str, masked: &str) {
+        let conn = pool.get().await.unwrap();
+        let id = id.to_string();
+        let inst_id_owned = inst_id.to_string();
+        let masked_owned = masked.to_string();
+        conn.interact(move |c| {
+            c.execute(
+                "INSERT INTO instruments (id, type, issuer_name, masked_identifier) VALUES (?1, 'credit_card', 'HDFC', ?2)",
+                rusqlite::params![inst_id_owned, masked_owned],
+            )
+            .unwrap();
+            let row = crate::db::statement_drafts::StatementDraftRow {
+                id: id.clone(),
+                origin: "manual_upload".to_string(),
+                file_hash: format!("hash_{}", id),
+                instrument_id: Some(inst_id_owned.clone()),
+                issuer_name: Some("HDFC".to_string()),
+                masked_identifier: Some(masked_owned.clone()),
+                instrument_type: Some("credit_card".to_string()),
+                billing_period_start: Some("2026-06-01".to_string()),
+                billing_period_end: Some("2026-06-30".to_string()),
+                due_date: Some("2026-07-10".to_string()),
+                statement_date: None,
+                current_balance: Some(100_000),
+                minimum_due: Some(5_000),
+                rows_json: serde_json::to_string(&vec![crate::statements::row_extractor::StatementRow {
+                    transaction_date: "2026-06-05".to_string(),
+                    merchant_raw: "ORIGINAL MERCHANT".to_string(),
+                    amount_minor: 10000,
+                    currency: "INR".to_string(),
+                    direction: "debit".to_string(),
+                    reference_id: None,
+                    row_index: 0,
+                    llm_extracted: false,
+                }])
+                .unwrap(),
+                status: "pending_review".to_string(),
+                created_at: None,
+                updated_at: None,
+            };
+            crate::db::statement_drafts::insert(c, &row).unwrap();
+        })
+        .await
+        .unwrap();
+    }
+
+    fn edited_metadata_fixture() -> DraftMetadataUpdate {
+        DraftMetadataUpdate {
+            issuer_name: "HDFC".to_string(),
+            masked_identifier: "3333".to_string(),
+            instrument_type: "credit_card".to_string(),
+            billing_period_start: Some("2026-06-01".to_string()),
+            billing_period_end: Some("2026-06-30".to_string()),
+            due_date: Some("2026-07-20".to_string()),
+            statement_date: Some("2026-06-30".to_string()),
+            current_balance: Some(100_000),
+            minimum_due: Some(5_000),
+        }
+    }
+
+    fn edited_rows_fixture() -> Vec<crate::statements::row_extractor::StatementRow> {
+        vec![crate::statements::row_extractor::StatementRow {
+            transaction_date: "2026-06-05".to_string(),
+            merchant_raw: "CORRECTED MERCHANT".to_string(),
+            amount_minor: 10000,
+            currency: "INR".to_string(),
+            direction: "debit".to_string(),
+            reference_id: None,
+            row_index: 0,
+            llm_extracted: false,
+        }]
+    }
+
+    #[tokio::test]
+    async fn test_commit_staged_draft_persists_edited_values_not_original() {
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+
+        seed_test_draft(&pool, "draft_commit", "inst_commit", "3333").await;
+
+        let stmt_id = commit_staged_draft(
+            "draft_commit",
+            edited_metadata_fixture(),
+            edited_rows_fixture(),
+            &pool,
+            app.handle(),
+        )
+        .await
+        .unwrap();
+
+        let conn2 = pool.get().await.unwrap();
+        let (due_date, statement_date): (Option<String>, Option<String>) = {
+            let sid = stmt_id.clone();
+            conn2
+                .interact(move |c| {
+                    c.query_row(
+                        "SELECT due_date, statement_date FROM statements WHERE id = ?",
+                        [&sid],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                })
+                .await
+                .unwrap()
+                .unwrap()
+        };
+        assert_eq!(due_date.as_deref(), Some("2026-07-20"));
+        assert_eq!(statement_date.as_deref(), Some("2026-06-30"));
+
+        let merchant: String = conn2
+            .interact(move |c| {
+                c.query_row(
+                    "SELECT merchant_raw FROM statement_entries WHERE statement_id = ?",
+                    [&stmt_id],
+                    |r| r.get(0),
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(merchant, "CORRECTED MERCHANT");
+
+        let draft_status: String = conn2
+            .interact(|c| {
+                c.query_row(
+                    "SELECT status FROM statement_drafts WHERE id = 'draft_commit'",
+                    [],
+                    |r| r.get(0),
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(draft_status, "committed");
+    }
+
+    #[tokio::test]
+    async fn test_commit_staged_draft_twice_errors_second_time() {
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+
+        seed_test_draft(&pool, "draft_commit2", "inst_commit2", "4444").await;
+
+        let _ = commit_staged_draft(
+            "draft_commit2",
+            edited_metadata_fixture(),
+            edited_rows_fixture(),
+            &pool,
+            app.handle(),
+        )
+        .await
+        .unwrap();
+
+        let second = commit_staged_draft(
+            "draft_commit2",
+            edited_metadata_fixture(),
+            edited_rows_fixture(),
+            &pool,
+            app.handle(),
+        )
+        .await;
+        assert!(second.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_discard_staged_draft_removes_row_and_pdf() {
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let app_data_dir = temp_dir.join("app_data");
+        std::fs::create_dir_all(&app_data_dir).unwrap();
+        let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+
+        seed_test_draft(&pool, "draft_discard", "inst_discard", "5555").await;
+        crate::statements::pdf_storage::store_pdf(&app_data_dir, "draft_discard", b"%PDF-fake").unwrap();
+
+        discard_staged_draft("draft_discard", &app_data_dir, &pool).await.unwrap();
+
+        let conn = pool.get().await.unwrap();
+        let gone = conn
+            .interact(|c| crate::db::statement_drafts::select_by_id(c, "draft_discard"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(gone.is_none());
+        assert!(crate::statements::pdf_storage::read_pdf(&app_data_dir, "draft_discard").unwrap().is_none());
     }
 }
