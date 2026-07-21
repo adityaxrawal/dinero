@@ -1894,6 +1894,130 @@ pub async fn statements_get_entries(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))
 }
 
+/// Resolves `statement_id` (a `statements.id`) back to the `unprocessed_statements.id`
+/// its encrypted PDF is stored under (`pdf_storage` keys by the original upload id,
+/// not the final resolved statement id -- see `db/unprocessed_statements.rs::update_status`),
+/// then reads it. Shared by `statements_get_pdf` and its test.
+async fn get_pdf_bytes_for_statement(
+    app_data_dir: &std::path::Path,
+    statement_id: &str,
+    pool: &deadpool_sqlite::Pool,
+) -> Result<Vec<u8>, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let stmt_id = statement_id.to_string();
+    let unprocessed_id: String = conn
+        .interact(move |c| {
+            c.query_row(
+                "SELECT id FROM unprocessed_statements \
+                 WHERE resolved_statement_id = ?1 \
+                 AND pdf_retained_until IS NOT NULL AND pdf_retained_until > datetime('now')",
+                [&stmt_id],
+                |row| row.get::<_, String>(0),
+            )
+        })
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+        .map_err(|_| {
+            crate::error::AppError::NotFound(
+                "This statement's PDF is no longer available".to_string(),
+            )
+        })?;
+
+    crate::statements::pdf_storage::read_pdf(app_data_dir, &unprocessed_id)
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .ok_or_else(|| {
+            crate::error::AppError::NotFound(
+                "This statement's PDF is no longer available".to_string(),
+            )
+        })
+}
+
+/// Shared by `statements_delete_pdf` and its test. Idempotent: deleting an
+/// already-gone or never-retained PDF is not an error.
+async fn delete_pdf_for_statement(
+    app_data_dir: &std::path::Path,
+    statement_id: &str,
+    pool: &deadpool_sqlite::Pool,
+) -> Result<(), crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let stmt_id = statement_id.to_string();
+    let unprocessed_id: Option<String> = conn
+        .interact(move |c| {
+            c.query_row(
+                "SELECT id FROM unprocessed_statements WHERE resolved_statement_id = ?1",
+                [&stmt_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+        })
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+        .map_err(|e: rusqlite::Error| crate::error::AppError::Db(e.to_string()))?;
+
+    let Some(unprocessed_id) = unprocessed_id else {
+        return Ok(()); // No retained PDF ever existed for this statement -- nothing to do.
+    };
+
+    crate::statements::pdf_storage::delete_pdf(app_data_dir, &unprocessed_id)
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
+
+    let id_clone = unprocessed_id.clone();
+    conn.interact(move |c| {
+        c.execute(
+            "UPDATE unprocessed_statements SET pdf_retained_until = NULL WHERE id = ?",
+            [&id_clone],
+        )
+    })
+    .await
+    .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+    .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+
+    Ok(())
+}
+
+/// Exposes the encrypted, still-in-retention-window PDF for a processed
+/// statement so the user can view it from Processing History. Returns
+/// base64 (matches the existing `password_blob` IPC convention at
+/// `commands/mod.rs:824-826`) -- never a bare `Vec<u8>` field on any
+/// response struct, per `test_no_command_returns_pdf_bytes`.
+#[tauri::command]
+pub async fn statements_get_pdf(
+    statement_id: String,
+    app: tauri::AppHandle,
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<String, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("statement_id", &statement_id)?;
+    let app_data_dir = app.path().app_data_dir().map_err(|_| {
+        crate::error::AppError::Unknown("Failed to determine app data directory".to_string())
+    })?;
+    let bytes = get_pdf_bytes_for_statement(&app_data_dir, &statement_id, pool.inner()).await?;
+    use base64::Engine;
+    Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
+}
+
+/// Lets the user delete a retained PDF early, from Processing History,
+/// before its retention window expires. Removes only the encrypted file --
+/// the statement record, its transactions, and the instrument are untouched.
+#[tauri::command]
+pub async fn statements_delete_pdf(
+    statement_id: String,
+    app: tauri::AppHandle,
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<(), crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("statement_id", &statement_id)?;
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    let app_data_dir = app.path().app_data_dir().map_err(|_| {
+        crate::error::AppError::Unknown("Failed to determine app data directory".to_string())
+    })?;
+    delete_pdf_for_statement(&app_data_dir, &statement_id, pool.inner()).await
+}
+
 // G20/H10/J8 fix: renamed from `fetch_unresolved_clusters` to match Doc 19
 // §10.1's documented `reconciliation_clusters_list` naming.
 #[tauri::command]
@@ -3424,6 +3548,28 @@ mod tests {
 
         let expired = records.iter().find(|r| r.id == "stmt_hist_expired").unwrap();
         assert!(!expired.pdf_available);
+    }
+
+    #[tokio::test]
+    async fn test_get_pdf_returns_not_found_for_unretained_statement() {
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+
+        let result = get_pdf_bytes_for_statement(&temp_dir, "nonexistent_stmt", &pool).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_delete_pdf_is_idempotent() {
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+
+        // Deleting a PDF for a statement with no retained file at all must not error.
+        delete_pdf_for_statement(&temp_dir, "nonexistent_stmt", &pool)
+            .await
+            .unwrap();
     }
 
     /// Doc 30 TASK-API-006 / Document 19 §11.2 acceptance coverage:

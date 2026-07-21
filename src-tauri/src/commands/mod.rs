@@ -258,7 +258,6 @@ pub async fn statements_upload(
     app: tauri::AppHandle,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
     queues: tauri::State<'_, crate::ingestion::queues::QueueHandles>,
-    pending_bytes: tauri::State<'_, crate::statements::pending_bytes::PendingStatementBytes>,
 ) -> Result<serde_json::Value, crate::error::AppError> {
     // Doc 30 TASK-API-004 acceptance test `test_upload_command_rejects_missing_file`:
     // real gap fixed here -- an empty `files` array previously fell through
@@ -266,6 +265,13 @@ pub async fn statements_upload(
     // error.
     validate_upload_files_non_empty(&files)?;
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+
+    // Lazy cleanup of expired PDFs when new statements are uploaded
+    if let Ok(app_data_dir) = app.path().app_data_dir() {
+        if let Err(e) = crate::statements::pdf_storage::cleanup_expired_pdfs(&app_data_dir, pool.inner()).await {
+            tracing::warn!("Lazy cleanup of expired PDFs failed: {}", e);
+        }
+    }
 
     // H2 fix (Doc 19 §9.1, FR-031): a real multi-file batch contract — one
     // IPC round-trip processes every selected file, rather than only ever
@@ -293,7 +299,6 @@ pub async fn statements_upload(
             &app,
             pool.inner(),
             &queues,
-            pending_bytes.inner(),
             batch_progress.clone(),
         )
         .await;
@@ -315,7 +320,6 @@ async fn upload_one_statement(
     app: &tauri::AppHandle,
     pool_ref: &deadpool_sqlite::Pool,
     queues: &crate::ingestion::queues::QueueHandles,
-    pending_bytes: &crate::statements::pending_bytes::PendingStatementBytes,
     batch_progress: Option<std::sync::Arc<crate::ingestion::queues::BatchProgressTracker>>,
 ) -> Result<UploadResult, crate::error::AppError> {
     tracing::info!(
@@ -396,7 +400,7 @@ async fn upload_one_statement(
     // a password at all).
     let stmt_id = uuid::Uuid::new_v4().to_string();
     let resolved_password = match crate::statements::password::resolve_statement_password(
-        &stmt_id, &bytes, &filename, &file_hash, pool_ref, &app, &pending_bytes, None,
+        &stmt_id, &bytes, &filename, &file_hash, pool_ref, app, None,
     )
     .await
     .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
@@ -491,7 +495,6 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
     file_hash: &str,
     pool: &deadpool_sqlite::Pool,
     app: &tauri::AppHandle<R>,
-    pending_bytes: &crate::statements::pending_bytes::PendingStatementBytes,
     confirmed_instrument: Option<ConfirmedInstrument>,
     password: Option<&str>,
     stmt_id: Option<String>,
@@ -549,14 +552,14 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
             _ => {
                 delete_orphaned_queued_row(stmt_id.as_deref(), pool).await;
                 let unprocessed_id = uuid::Uuid::new_v4().to_string();
-                create_awaiting_instrument_row(&unprocessed_id, file_hash, _filename, pool)
+                create_awaiting_instrument_row(&unprocessed_id, file_hash, _filename, password, pool)
                     .await
                     .map_err(|e| {
                         anyhow::anyhow!("DB error creating awaiting_instrument row: {}", e)
                     })?;
-                pending_bytes
-                    .insert(unprocessed_id.clone(), bytes.to_vec(), password.map(|s| s.to_string()))
-                    .await;
+                if let Ok(app_data_dir) = app.path().app_data_dir() {
+                    let _ = crate::statements::pdf_storage::store_pdf(&app_data_dir, &unprocessed_id, bytes);
+                }
                 let payload = serde_json::json!({
                     "statement_id": unprocessed_id,
                     "filename": _filename,
@@ -579,14 +582,14 @@ pub async fn run_parse_pipeline<R: tauri::Runtime>(
             _ => {
                 delete_orphaned_queued_row(stmt_id.as_deref(), pool).await;
                 let unprocessed_id = uuid::Uuid::new_v4().to_string();
-                create_awaiting_instrument_row(&unprocessed_id, file_hash, _filename, pool)
+                create_awaiting_instrument_row(&unprocessed_id, file_hash, _filename, password, pool)
                     .await
                     .map_err(|e| {
                         anyhow::anyhow!("DB error creating awaiting_instrument row: {}", e)
                     })?;
-                pending_bytes
-                    .insert(unprocessed_id.clone(), bytes.to_vec(), password.map(|s| s.to_string()))
-                    .await;
+                if let Ok(app_data_dir) = app.path().app_data_dir() {
+                    let _ = crate::statements::pdf_storage::store_pdf(&app_data_dir, &unprocessed_id, bytes);
+                }
                 let payload = serde_json::json!({
                     "statement_id": unprocessed_id,
                     "filename": _filename,
@@ -807,14 +810,23 @@ async fn create_awaiting_instrument_row(
     statement_id: &str,
     file_hash: &str,
     filename: &str,
+    password: Option<&str>,
     pool: &deadpool_sqlite::Pool,
 ) -> anyhow::Result<()> {
     let stmt_id = statement_id.to_string();
-    let source_json = serde_json::json!({
+    let mut json_obj = serde_json::json!({
         "file_hash": file_hash,
         "filename": filename,
-    })
-    .to_string();
+    });
+
+    if let Some(pwd) = password {
+        let blob = crate::statements::password::encrypt_password(pwd)?;
+        use base64::Engine;
+        let base64_blob = base64::engine::general_purpose::STANDARD.encode(&blob);
+        json_obj.as_object_mut().unwrap().insert("password_blob".to_string(), serde_json::json!(base64_blob));
+    }
+
+    let source_json = json_obj.to_string();
 
     let stmt_id_for_log = stmt_id.clone();
     let conn = pool.get().await?;
@@ -873,7 +885,6 @@ pub async fn statements_confirm_instrument(
     instrument_type: Option<String>,
     app: tauri::AppHandle,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
-    pending_bytes: tauri::State<'_, crate::statements::pending_bytes::PendingStatementBytes>,
 ) -> Result<serde_json::Value, crate::error::AppError> {
     crate::ipc::validation::validate_uuid("statement_id", &statement_id)?;
     crate::ipc::validation::validate_non_empty("issuer_name", &issuer_name)?;
@@ -883,12 +894,19 @@ pub async fn statements_confirm_instrument(
 
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
-    let (bytes, saved_password) = pending_bytes.take(&statement_id).await.ok_or_else(|| {
+    let app_data_dir = app.path().app_data_dir().map_err(|_| {
+        crate::error::AppError::Unknown("Failed to determine app data directory".to_string())
+    })?;
+    let bytes = crate::statements::pdf_storage::read_pdf(&app_data_dir, &statement_id).map_err(|_| {
         crate::error::AppError::Unknown(
-            "This statement's session has expired or was already resolved — please re-upload the file".to_string(),
+            "This statement's PDF file could not be read".to_string(),
+        )
+    })?.ok_or_else(|| {
+        crate::error::AppError::Unknown(
+            "This statement's PDF file could not be found — please re-upload the file".to_string(),
         )
     })?;
-
+    // Awaiting instrument may have a password persisted in its source_json if it was prompted before blocking.
     let conn = pool
         .get()
         .await
@@ -918,6 +936,36 @@ pub async fn statements_confirm_instrument(
         .to_string();
     let file_hash = parsed["file_hash"].as_str().unwrap_or_default().to_string();
 
+    // Real-world bug this surfaced: a statement blocked by BOTH the password
+    // gate and the Instrument Gate would validate the password correctly,
+    // persist it here, then silently lose it on resume whenever any step in
+    // this chain failed -- `run_parse_pipeline` would proceed with
+    // `password=None` against still-encrypted bytes, always failing with
+    // pdfium `PasswordError` and never explaining why. NEVER log `pwd`
+    // itself (matches `statements_submit_password`'s "NEVER log the
+    // password" convention) -- only whether/where the chain broke.
+    let mut decrypted_password = None;
+    if let Some(b64) = parsed["password_blob"].as_str() {
+        use base64::Engine;
+        match base64::engine::general_purpose::STANDARD.decode(b64) {
+            Ok(blob) => match crate::statements::password::decrypt_password(&blob) {
+                Ok(pwd) => decrypted_password = Some(pwd),
+                Err(e) => tracing::error!(
+                    "statements_confirm_instrument: failed to decrypt persisted password_blob \
+                     for statement_id='{}' — resuming without a password: {}",
+                    statement_id,
+                    e
+                ),
+            },
+            Err(e) => tracing::error!(
+                "statements_confirm_instrument: password_blob for statement_id='{}' is not \
+                 valid base64 — resuming without a password: {}",
+                statement_id,
+                e
+            ),
+        }
+    }
+
     let confirmed = ConfirmedInstrument {
         issuer_name,
         masked_identifier,
@@ -936,9 +984,8 @@ pub async fn statements_confirm_instrument(
         &file_hash,
         pool.inner(),
         &app,
-        pending_bytes.inner(),
         Some(confirmed),
-        saved_password.as_deref(),
+        decrypted_password.as_deref(),
         None,
     )
     .await;
@@ -962,6 +1009,22 @@ pub async fn statements_confirm_instrument(
             .await
             .map_err(|e| crate::error::AppError::Db(e.to_string()))?
             .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
+
+            if let Some(pwd) = &decrypted_password {
+                let pool_clone = pool.inner().clone();
+                let resolved_id_for_instr = new_stmt_id.clone();
+                let pwd_clone = pwd.clone();
+                let conn_instr = pool.get().await.map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+                if let Ok(Ok(instr_id)) = conn_instr.interact(move |c| {
+                    c.query_row(
+                        "SELECT instrument_id FROM statements WHERE id = ?",
+                        [&resolved_id_for_instr],
+                        |row| row.get::<_, String>(0)
+                    )
+                }).await {
+                    crate::statements::password::save_password(&instr_id, &pwd_clone, &pool_clone).await.ok();
+                }
+            }
 
             events::emit(
                 events::PARSED,
@@ -1061,7 +1124,6 @@ pub async fn statements_submit_password(
     password: String,
     app: tauri::AppHandle,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
-    pending_bytes: tauri::State<'_, crate::statements::pending_bytes::PendingStatementBytes>,
 ) -> Result<serde_json::Value, crate::error::AppError> {
     crate::ipc::validation::validate_uuid("statement_id", &statement_id)?;
     crate::ipc::validation::validate_non_empty("password", &password)?;
@@ -1076,9 +1138,16 @@ pub async fn statements_submit_password(
     // H3 fix: the real bytes, held in memory (never on disk) since the
     // original statements_upload call — `peek` so a wrong attempt doesn't
     // discard them before the next retry.
-    let (pdf_bytes, _) = pending_bytes.peek(&statement_id).await.ok_or_else(|| {
+    let app_data_dir = app.path().app_data_dir().map_err(|_| {
+        crate::error::AppError::Unknown("Failed to determine app data directory".to_string())
+    })?;
+    let pdf_bytes = crate::statements::pdf_storage::read_pdf(&app_data_dir, &statement_id).map_err(|_| {
         crate::error::AppError::Unknown(
-            "This statement's session has expired — please re-upload the file".to_string(),
+            "This statement's PDF file could not be read".to_string(),
+        )
+    })?.ok_or_else(|| {
+        crate::error::AppError::Unknown(
+            "This statement's PDF file could not be found — please re-upload the file".to_string(),
         )
     })?;
 
@@ -1103,7 +1172,7 @@ pub async fn statements_submit_password(
             // H3 fix: actually resume the shared parse pipeline with the
             // now-decrypted bytes — previously this branch only emitted an
             // event and never called run_parse_pipeline at all.
-            pending_bytes.take(&statement_id).await;
+            // PDF will be deleted by lazy cleanup logic when pdf_retained_until expires.
             let conn = pool
                 .get()
                 .await
@@ -1138,7 +1207,6 @@ pub async fn statements_submit_password(
                 &file_hash,
                 pool.inner(),
                 &app,
-                pending_bytes.inner(),
                 None,
                 Some(&password),
                 None,
@@ -1316,7 +1384,6 @@ pub async fn statements_retry_unprocessed(
     statement_id: String,
     app: tauri::AppHandle,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
-    pending_bytes: tauri::State<'_, crate::statements::pending_bytes::PendingStatementBytes>,
 ) -> Result<serde_json::Value, crate::error::AppError> {
     crate::ipc::validation::validate_uuid("statement_id", &statement_id)?;
 
@@ -1346,29 +1413,27 @@ pub async fn statements_retry_unprocessed(
         .and_then(|v| v["filename"].as_str().map(|s| s.to_string()))
         .unwrap_or_default();
 
-    // Doc 15 Core Principle 4/10: raw PDFs are never persisted — if the
-    // bytes are no longer cached (the 30-minute pending_bytes TTL elapsed,
-    // or the app restarted), there is genuinely nothing left to retry with.
-    //
     // ROOT CAUSE FIX: for `awaiting_password` rows that survive an app restart,
-    // `pending_bytes` is empty (in-memory, reset on restart). Previously this
-    // path threw an INTERNAL_ERROR which the frontend showed as "session expired"
-    // inside the password modal — confusing because the user hadn't done anything
-    // wrong. Now we return a structured `bytes_expired` status so the UI can
+    // we now use `pdf_storage` to read the PDF bytes from disk. If the file is missing,
+    // it returns a structured `bytes_expired` status so the UI can
     // display a clear "please re-upload this file" message instead.
-    let Some((pdf_bytes, _)) = pending_bytes.peek(&statement_id).await else {
-        tracing::warn!(
-            "statements_retry_unprocessed: bytes not in cache for statement_id='{}' \
-             (app likely restarted) — returning bytes_expired",
-            statement_id
-        );
-        return Ok(serde_json::json!({
-            "status": "bytes_expired",
-            "statement_id": statement_id,
-            "filename": filename,
-            "message": "This statement's PDF is no longer in memory (the app may have restarted). \
-                        Please re-upload the file to continue."
-        }));
+    let app_data_dir = app.path().app_data_dir().unwrap();
+    let pdf_bytes = match crate::statements::pdf_storage::read_pdf(&app_data_dir, &statement_id) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) | Err(_) => {
+            tracing::warn!(
+                "statements_retry_unprocessed: bytes not found on disk for statement_id='{}' \
+                 (file deleted or missing) — returning bytes_expired",
+                statement_id
+            );
+            return Ok(serde_json::json!({
+                "status": "bytes_expired",
+                "statement_id": statement_id,
+                "filename": filename,
+                "message": "This statement's PDF file could not be found. \
+                            Please re-upload the file to continue."
+            }));
+        }
     };
 
     let stored_result = try_all_stored_passwords(&pdf_bytes, pool.inner())
@@ -1381,7 +1446,6 @@ pub async fn statements_retry_unprocessed(
                 "Retry found a matching stored password for statement_id='{}' — resuming pipeline",
                 statement_id
             );
-            pending_bytes.take(&statement_id).await;
             let file_hash = serde_json::from_str::<serde_json::Value>(&row.statement_source_json)
                 .ok()
                 .and_then(|v| v["file_hash"].as_str().map(|s| s.to_string()))
@@ -1393,7 +1457,6 @@ pub async fn statements_retry_unprocessed(
                 &file_hash,
                 pool.inner(),
                 &app,
-                pending_bytes.inner(),
                 None,
                 Some(&password),
                 None,
@@ -1774,6 +1837,7 @@ pub async fn transactions_create(
         fingerprint: None,
         // Manual entries are ground truth, not extracted -- maximal confidence.
         confidence_score: Some(1.0),
+        event_time_confidence: None,
     };
 
     let decision = conn
@@ -2630,6 +2694,8 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         data::fetch_transaction_source_log,
         data::statements_list,
         data::statements_get_entries,
+        data::statements_get_pdf,
+        data::statements_delete_pdf,
         data::reconciliation_clusters_list,
         data::reconciliation_clusters_get,
         data::reconciliation_get_unassigned_transactions,
@@ -2904,6 +2970,7 @@ mod tests {
             "tags_list",
             "dashboard_summary",
             "statements_list",
+            "statements_get_pdf",
             "reconciliation_clusters_list",
             "reconciliation_clusters_get",
             "reconciliation_get_unassigned_transactions",
