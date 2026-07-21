@@ -26,6 +26,7 @@ export default function PasswordPromptModal({ onUnlocked }: { onUnlocked: () => 
     pendingStatementId,
     pendingInstrumentId,
     closePasswordModal,
+    watchDraftOrigin,
   } = useGlobalState();
 
   const [password, setPassword] = useState('');
@@ -75,6 +76,12 @@ export default function PasswordPromptModal({ onUnlocked }: { onUnlocked: () => 
     setPasswordError(null);
     try {
       console.log('[PasswordPromptModal] Making API call to API.statements.submitPassword...');
+      // The draft that eventually stages for this unlock reuses
+      // pendingStatementId as its id (stage_parse_pipeline reuses whatever
+      // id it's handed) — registering it here is what lets
+      // GlobalStateContext's statement_staged listener recognize it and
+      // auto-open the review modal.
+      watchDraftOrigin(pendingStatementId);
       // I9 fix (pre-existing): the backend resolves (never throws) for both
       // wrong-password and max-attempts-exceeded outcomes — `status`, not
       // promise rejection, is what distinguishes them.
@@ -82,10 +89,20 @@ export default function PasswordPromptModal({ onUnlocked }: { onUnlocked: () => 
       console.log('[PasswordPromptModal] API call completed. Result:', result);
 
       if (result.status === 'unlocked') {
-        console.log('[PasswordPromptModal] Status is "unlocked". Calling close(), showing toast, and triggering onUnlocked().');
+        console.log('[PasswordPromptModal] Status is "unlocked". Closing — GlobalStateContext opens the review modal once staging finishes.');
         close();
-        toast({ title: 'Password Accepted', description: 'Retrying statement extraction…' });
+        // No toast here anymore — the review modal's own progress bar
+        // covers the wait, and GlobalStateContext's statement_staged
+        // listener opens it automatically.
         onUnlocked();
+      } else if (result.status === 'awaiting_instrument_confirmation') {
+        // Password was correct, but the statement's bank/card/type couldn't be
+        // auto-identified. The Instrument Confirmation modal is already opening
+        // via its own `statement_instrument_confirmation_required` event listener
+        // (GlobalStateContext) — close this modal silently, no error, no toast,
+        // so it doesn't sit on top showing a false "Incorrect password".
+        console.log('[PasswordPromptModal] Status is "awaiting_instrument_confirmation". Closing silently, handing off to Instrument modal.');
+        close();
       } else {
         console.log('[PasswordPromptModal] Status is NOT "unlocked" (e.g., incorrect password). Setting error state.');
         setPasswordError('Incorrect password');
@@ -103,7 +120,7 @@ export default function PasswordPromptModal({ onUnlocked }: { onUnlocked: () => 
       setIsSubmitting(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingStatementId, pendingInstrumentId, password, toast, onUnlocked]);
+  }, [pendingStatementId, pendingInstrumentId, password, toast, onUnlocked, watchDraftOrigin]);
 
   return (
     <Dialog
