@@ -43,12 +43,21 @@ pub fn update_status(
     new_status: &str,
     resolved_statement_id: Option<&str>,
 ) -> Result<()> {
-    conn.execute(
-        "UPDATE unprocessed_statements
-         SET status = ?1, resolved_statement_id = ?2
-         WHERE id = ?3",
-        params![new_status, resolved_statement_id, id],
-    )?;
+    if new_status == "resolved" || new_status == "failed" {
+        conn.execute(
+            "UPDATE unprocessed_statements
+             SET status = ?1, resolved_statement_id = ?2, pdf_retained_until = datetime('now', '+30 days')
+             WHERE id = ?3",
+            params![new_status, resolved_statement_id, id],
+        )?;
+    } else {
+        conn.execute(
+            "UPDATE unprocessed_statements
+             SET status = ?1, resolved_statement_id = ?2
+             WHERE id = ?3",
+            params![new_status, resolved_statement_id, id],
+        )?;
+    }
     Ok(())
 }
 
