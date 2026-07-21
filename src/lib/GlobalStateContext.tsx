@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
-import { API, ConnectedAccountInfo, ScanProgressPayload, StatementRecord } from './ipc';
+import { API, ConnectedAccountInfo, ProcessingProgressPayload, ScanProgressPayload, StatementRecord } from './ipc';
 import { useToast } from '@/hooks/use-toast';
 
 interface GlobalStateContextType {
@@ -50,6 +50,15 @@ interface GlobalStateContextType {
   pendingInstrumentIssuerHint: string;
   pendingInstrumentReason: string;
   closeInstrumentModal: () => void;
+
+  // Statement Review Modal (staged extraction review, replaces the old
+  // "toast + silent auto-commit" flow)
+  reviewModalOpen: boolean;
+  activeDraftId: string | null;
+  processingProgress: ProcessingProgressPayload | null;
+  openReviewModal: (draftId: string) => void;
+  closeReviewModal: () => void;
+  watchDraftOrigin: (originId: string) => void;
 }
 
 const GlobalStateContext = createContext<GlobalStateContextType | undefined>(undefined);
@@ -200,6 +209,28 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setPendingInstrumentStatementId(null);
   }, []);
 
+  // ----- Statement Review Modal -----
+  const [reviewModalOpen, setReviewModalOpen] = useState(false);
+  const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
+  const [processingProgress, setProcessingProgress] = useState<ProcessingProgressPayload | null>(null);
+  const watchedOriginIds = useRef<Set<string>>(new Set());
+
+  const watchDraftOrigin = useCallback((originId: string) => {
+    watchedOriginIds.current.add(originId);
+  }, []);
+
+  const openReviewModal = useCallback((draftId: string) => {
+    setActiveDraftId(draftId);
+    setProcessingProgress(null);
+    setReviewModalOpen(true);
+  }, []);
+
+  const closeReviewModal = useCallback(() => {
+    setReviewModalOpen(false);
+    setActiveDraftId(null);
+    setProcessingProgress(null);
+  }, []);
+
   const loadStatementHistory = useCallback(async () => {
     setStatementLoading(true);
     try {
@@ -235,6 +266,8 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
     let unlistenDuplicate: UnlistenFn;
     let unlistenInstrumentConfirmation: UnlistenFn;
     let unlistenBatchProgress: UnlistenFn;
+    let unlistenProgress: UnlistenFn;
+    let unlistenStaged: UnlistenFn;
 
     const setupListeners = async () => {
       unlistenParsed = await listen('statement_parsed', () => {
@@ -286,6 +319,23 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
           payload.reason ?? 'The statement issuer or account number could not be read automatically.',
         );
       });
+
+      unlistenProgress = await listen<ProcessingProgressPayload>('statement_processing_progress', (event) => {
+        if (event.payload.draft_id && watchedOriginIds.current.has(event.payload.draft_id)) {
+          setProcessingProgress(event.payload);
+        }
+      });
+
+      unlistenStaged = await listen<{ draft_id: string; origin: string }>('statement_staged', (event) => {
+        const { draft_id } = event.payload;
+        if (watchedOriginIds.current.has(draft_id)) {
+          watchedOriginIds.current.delete(draft_id);
+          openReviewModal(draft_id);
+        } else {
+          // Background-staged (email/historical scan) — not auto-opened.
+          toast({ title: 'Statement ready for review', description: 'Check the Awaiting Review queue on the Statements page.' });
+        }
+      });
     };
 
     setupListeners();
@@ -297,8 +347,10 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
       if (unlistenDuplicate) unlistenDuplicate();
       if (unlistenInstrumentConfirmation) unlistenInstrumentConfirmation();
       if (unlistenBatchProgress) unlistenBatchProgress();
+      if (unlistenProgress) unlistenProgress();
+      if (unlistenStaged) unlistenStaged();
     };
-  }, [loadStatementHistory, toast, openPasswordModal, openInstrumentModal]);
+  }, [loadStatementHistory, toast, openPasswordModal, openInstrumentModal, openReviewModal]);
 
 
   const value: GlobalStateContextType = {
@@ -327,6 +379,13 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
     pendingInstrumentIssuerHint,
     pendingInstrumentReason,
     closeInstrumentModal,
+
+    reviewModalOpen,
+    activeDraftId,
+    processingProgress,
+    openReviewModal,
+    closeReviewModal,
+    watchDraftOrigin,
   };
 
   return (
