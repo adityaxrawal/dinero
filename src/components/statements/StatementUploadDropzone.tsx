@@ -43,7 +43,7 @@ function isPdf(name: string, type?: string): boolean {
  */
 export default function StatementUploadDropzone({ onUploaded }: StatementUploadDropzoneProps) {
   const { toast } = useToast();
-  const { batchProgress, setBatchProgress } = useGlobalState();
+  const { batchProgress, setBatchProgress, watchDraftOrigin } = useGlobalState();
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
 
@@ -59,6 +59,14 @@ export default function StatementUploadDropzone({ onUploaded }: StatementUploadD
       try {
         const results = await API.statements.upload(paths);
         for (const result of results) {
+          // A 'queued' upload eventually stages under this same statement_id
+          // (stage_parse_pipeline reuses insert_queued()'s pre-minted id as
+          // the draft id) — watching it here is what lets the resulting
+          // statement_staged event auto-open the review modal, since this
+          // upload was directly user-initiated.
+          if (result.status === 'queued' && result.statement_id) {
+            watchDraftOrigin(result.statement_id);
+          }
           if (result.status.startsWith('error')) {
             const errMsg = result.status.replace(/^error:\s*/, '');
             if (errMsg.includes('File access denied') || errMsg.includes('Permission denied')) {
@@ -107,7 +115,7 @@ export default function StatementUploadDropzone({ onUploaded }: StatementUploadD
       }
       onUploaded();
     },
-    [onUploaded, toast, setBatchProgress],
+    [onUploaded, toast, setBatchProgress, watchDraftOrigin],
   );
 
   const handleFileUpload = useCallback(async () => {

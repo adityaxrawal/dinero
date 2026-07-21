@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { FileText, Lock, AlertTriangle, FileSearch, CreditCard, ChevronRight, Upload } from 'lucide-react';
+import { FileText, Lock, AlertTriangle, FileSearch, CreditCard, ChevronRight, Upload, Trash2 } from 'lucide-react';
 import { API } from '@/lib/ipc';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -18,6 +18,8 @@ import { SidebarNavItem } from '@/components/ui/sidebar-nav-item';
 import StatementUploadDropzone from '@/components/statements/StatementUploadDropzone';
 import UnprocessedItemsQueue from '@/components/statements/UnprocessedItemsQueue';
 import PasswordPromptModal from '@/components/statements/PasswordPromptModal';
+import StatementReviewModal from '@/components/statements/StatementReviewModal';
+import StatementPdfViewerModal from '@/components/statements/StatementPdfViewerModal';
 import { formatCustomDate } from '@/lib/formatCustomDate';
 
 export default function Statements() {
@@ -49,6 +51,25 @@ export default function Statements() {
   const [instrumentType, setInstrumentType] = useState('credit_card');
   const [instrumentError, setInstrumentError] = useState<string | null>(null);
   const [isSubmittingInstrument, setIsSubmittingInstrument] = useState(false);
+  const [viewingPdfStatementId, setViewingPdfStatementId] = useState<string | null>(null);
+
+  function displayStatementName(stmt: (typeof history)[number]): string {
+    if (stmt.issuer_name && stmt.masked_identifier) {
+      const typeLabel = stmt.instrument_type === 'bank_account' ? 'Bank Account' : 'Credit Card';
+      return `${stmt.issuer_name} ${typeLabel} •••${stmt.masked_identifier}`;
+    }
+    return stmt.file_name;
+  }
+
+  const handleDeletePdf = async (stmt: (typeof history)[number]) => {
+    try {
+      await API.statements.deletePdf(stmt.id);
+      toast({ title: 'PDF deleted', description: 'The stored PDF has been removed.' });
+      refresh();
+    } catch (e) {
+      toast({ title: 'Could not delete PDF', description: getErrorMessage(e, 'Please try again.'), variant: 'destructive' });
+    }
+  };
 
   useEffect(() => {
     if (instrumentModalOpen) {
@@ -179,8 +200,8 @@ export default function Statements() {
                             <div className="min-w-0 pr-4 flex-1">
                               <div className="flex items-center gap-2 mb-1">
                                 <FileText className="w-4 h-4 flex-shrink-0 text-[#064E3B]/70" />
-                                <span className="text-[14px] font-semibold truncate text-[#064E3B]" title={stmt.file_name}>
-                                  {stmt.file_name}
+                                <span className="text-[14px] font-semibold truncate text-[#064E3B]" title={displayStatementName(stmt)}>
+                                  {displayStatementName(stmt)}
                                 </span>
                               </div>
                               <div className="flex items-center gap-3">
@@ -201,23 +222,33 @@ export default function Statements() {
                               </div>
                             </div>
                             <div className="flex items-center gap-2">
-                              {isProcessed && (
+                              {isProcessed && stmt.pdf_available && (
                                 <button
                                   type="button"
                                   className="h-8 px-3 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors bg-[#064E3B]/5 hover:bg-[#064E3B]/10 text-[#064E3B] text-[12px] font-medium gap-1.5"
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    toast({
-                                      title: 'Privacy Protected',
-                                      description: 'For your security, raw statement PDFs are never persisted on disk after parsing.',
-                                      variant: 'default'
-                                    });
+                                    setViewingPdfStatementId(stmt.id);
                                   }}
                                   aria-label="View statement PDF"
                                   title="View statement PDF"
                                 >
                                   <FileText className="w-3.5 h-3.5" />
                                   View PDF
+                                </button>
+                              )}
+                              {isProcessed && stmt.pdf_available && (
+                                <button
+                                  type="button"
+                                  className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors bg-red-50 hover:bg-red-100 text-red-700"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDeletePdf(stmt);
+                                  }}
+                                  aria-label="Delete stored PDF"
+                                  title="Delete stored PDF"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
                                 </button>
                               )}
                               {isProcessed && (
@@ -244,6 +275,14 @@ export default function Statements() {
       </div>
 
       <PasswordPromptModal onUnlocked={refresh} />
+
+      <StatementReviewModal />
+
+      <StatementPdfViewerModal
+        statementId={viewingPdfStatementId}
+        open={viewingPdfStatementId !== null}
+        onOpenChange={(open) => { if (!open) setViewingPdfStatementId(null); }}
+      />
 
       {/* Statement Instrument Gate Confirmation Modal */}
       <Dialog open={instrumentModalOpen} onOpenChange={(open) => { if (!open) closeInstrumentModal(); }}>
