@@ -46,6 +46,7 @@ mod sender_reputation_tests;
 pub mod sessions;
 #[cfg(test)]
 mod sessions_tests;
+pub mod statement_drafts;
 pub mod statement_entries;
 pub mod statements;
 pub mod tags;
@@ -355,7 +356,7 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
             "INSERT OR IGNORE INTO local_profile (
                 id, primary_email, display_name, timezone, spending_limit_monthly,
                 limit_thresholds, recovery_phrase_enabled
-             ) VALUES (1, NULL, 'Default User', 'Asia/Kolkata', 5000.0, '[80,90,100]', 0)",
+             ) VALUES (1, NULL, 'Default User', 'Asia/Kolkata', 30000.0, '[80,90,100]', 0)",
             [],
         );
 
