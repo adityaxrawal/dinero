@@ -778,6 +778,8 @@ export const API = {
       invokeCommand<void>('llm_download_model', { modelId }),
     deleteModel: (modelId: string) =>
       invokeCommand<string>('llm_delete_model', { modelId }),
+    cancelDownload: (modelId: string) =>
+      invokeCommand<void>('llm_cancel_download', { modelId }),
     getDownloadedModels: () =>
       invokeCommand<string[]>('llm_get_downloaded_models'),
     getActiveModel: () =>

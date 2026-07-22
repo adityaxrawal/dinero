@@ -18,6 +18,7 @@ export default function LocalLlmSettings() {
   const [activeModel, setActiveModel] = useState<string>('');
   const [downloads, setDownloads] = useState<Record<string, LlmDownloadProgress>>({});
   const [isDeleting, setIsDeleting] = useState<string | null>(null);
+  const [cancellingModelId, setCancellingModelId] = useState<string | null>(null);
 
   useEffect(() => {
     Promise.all([
@@ -69,6 +70,17 @@ export default function LocalLlmSettings() {
         delete next[modelId];
         return next;
       });
+    }
+  };
+
+  const handleCancelDownload = async (modelId: string) => {
+    setCancellingModelId(modelId);
+    try {
+      await API.llm.cancelDownload(modelId);
+    } catch (err) {
+      console.error('Failed to cancel download:', err);
+    } finally {
+      setCancellingModelId(null);
     }
   };
 
@@ -235,13 +247,24 @@ export default function LocalLlmSettings() {
                 )}
                 
                 {isDownloading && (
-                  <Button 
-                    variant="outline"
-                    disabled
-                    className="flex-1 sm:flex-none h-9 font-semibold border-[#064E3B]/20 text-[#064E3B]/50" 
-                  >
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Downloading
-                  </Button>
+                  <>
+                    <Button
+                      variant="outline"
+                      disabled
+                      className="flex-1 sm:flex-none h-9 font-semibold border-[#064E3B]/20 text-[#064E3B]/50"
+                    >
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Downloading
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="h-9 px-3 border-red-200 text-red-600 hover:text-red-700 hover:bg-red-50 hover:border-red-300"
+                      onClick={() => handleCancelDownload(m.id)}
+                      disabled={cancellingModelId === m.id}
+                      title="Cancel download"
+                    >
+                      Cancel
+                    </Button>
+                  </>
                 )}
 
                 {isDownloaded && !isActive && (

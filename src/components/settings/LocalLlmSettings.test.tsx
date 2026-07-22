@@ -11,6 +11,7 @@ vi.mock('@/lib/ipc', () => ({
       getActiveModel: vi.fn(),
       downloadModel: vi.fn(),
       deleteModel: vi.fn(),
+      cancelDownload: vi.fn(),
       setActiveModel: vi.fn(),
     },
     dev: {
@@ -133,5 +134,40 @@ describe('LocalLlmSettings', () => {
     });
     expect(screen.getByText(/left/)).toBeInTheDocument();
     expect(screen.getByText('10%')).toBeInTheDocument();
+  });
+
+  it('cancels an in-progress download via the Cancel button', async () => {
+    (API.llm.getAvailableModels as any).mockResolvedValue(MODELS);
+    (API.llm.getDownloadedModels as any)
+      .mockResolvedValueOnce([]) // initial load
+      .mockResolvedValueOnce([]); // after the cancelled download's cleanup fetch
+    (API.llm.getActiveModel as any).mockResolvedValue('');
+
+    let resolveDownload: (() => void) | undefined;
+    (API.llm.downloadModel as any).mockReturnValue(
+      new Promise<void>((resolve) => {
+        resolveDownload = resolve;
+      }),
+    );
+    (API.llm.cancelDownload as any).mockImplementation(async () => {
+      resolveDownload?.();
+    });
+
+    render(<LocalLlmSettings />);
+
+    await waitFor(() => expect(screen.getByText('Gemma 4 E4B')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByRole('button', { name: /download/i })[0]);
+
+    await waitFor(() => {
+      expect(screen.getByTitle('Cancel download')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTitle('Cancel download'));
+
+    await waitFor(() => {
+      expect(API.llm.cancelDownload).toHaveBeenCalledWith('gemma4_e4b');
+    });
+    await waitFor(() => {
+      expect(screen.queryByTitle('Cancel download')).toBeNull();
+    });
   });
 });
