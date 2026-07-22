@@ -147,9 +147,14 @@ impl MessageProcessor {
             }
             SenderVerificationResult::VerifiedNoise => {
                 crate::ingestion::gmail_telemetry::gmail_telemetry().record_gate_rejection("gate1");
+                let dev_msg = if cfg!(debug_assertions) {
+                    client.fetch_message(message_id, crate::ingestion::gmail_client::FetchFormat::Full).await.unwrap_or_else(|_| metadata_msg.clone())
+                } else {
+                    metadata_msg.clone()
+                };
                 crate::dev_review::record(
                     "non_transaction",
-                    serde_json::to_value(&metadata_msg).unwrap_or_default(),
+                    serde_json::to_value(&dev_msg).unwrap_or_default(),
                     Some(gate1_variant),
                     None,
                     None,
@@ -172,9 +177,14 @@ impl MessageProcessor {
                 // Log to audit log and return None
                 crate::ingestion::gmail_telemetry::gmail_telemetry().record_gate_rejection("gate1");
                 Self::log_rejection(pool, message_id, &reason).await?;
+                let dev_msg = if cfg!(debug_assertions) {
+                    client.fetch_message(message_id, crate::ingestion::gmail_client::FetchFormat::Full).await.unwrap_or_else(|_| metadata_msg.clone())
+                } else {
+                    metadata_msg.clone()
+                };
                 crate::dev_review::record(
-                    "non_transaction",
-                    serde_json::to_value(&metadata_msg).unwrap_or_default(),
+                    "ignored",
+                    serde_json::to_value(&dev_msg).unwrap_or_default(),
                     Some(gate1_variant),
                     None,
                     None,
