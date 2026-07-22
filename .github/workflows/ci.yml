@@ -1,0 +1,38 @@
+name: Acceptance Criteria & Risk Register Gate
+
+# Doc 30 TASK-QA-010: distinct from rust.yml's `test` job (which already runs
+# the full `cargo test --all-features` suite on every push/PR) -- this job
+# exists to make Document 31 §17's risk-register coverage a *named*,
+# individually-visible CI check tied to specific documented risks, not just
+# folded anonymously into "did the whole suite pass." Deliberately scoped to
+# targeted test filters (scripts/verify_acceptance_criteria.py), not the
+# full suite, so this stays fast enough to gate a merge -- the slow,
+# comprehensive nightly run (including the ~168s Gmail-quota test) is
+# benchmark.yml's job.
+#
+# This workflow file only makes the check *available* to branch protection
+# rules -- making it a *required* status check is a separate GitHub repo
+# settings action (Settings -> Branches -> branch protection rules), not
+# something a workflow file can set on its own, and was deliberately left
+# for the repo owner to decide rather than assumed here.
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  risk-register-gate:
+    name: Verify Acceptance Criteria & Risk Register
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - name: Run risk-register acceptance-criteria gate
+        run: python3 scripts/verify_acceptance_criteria.py

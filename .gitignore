@@ -56,7 +56,15 @@ dinero-docs
 playwright.config.ts
 vitest.config.ts
 test_shutdown.sh
-/scripts/
+/scripts/*
+# TASK-QA-010: this one script is a genuine CI dependency (.github/workflows/ci.yml
+# runs it), unlike the rest of /scripts/ (local-only dev tooling -- DMG signing,
+# notarization, backup/restore -- that needs local credentials CI never has). It
+# must actually exist in a fresh checkout for the workflow to run at all. Git can't
+# re-include a file whose parent directory is excluded via a trailing-slash pattern
+# (`/scripts/`), hence `/scripts/*` here instead -- the standard "ignore all but
+# these" idiom.
+!/scripts/verify_acceptance_criteria.py
 audit.md
 fix-log.md
 implementation-log.md

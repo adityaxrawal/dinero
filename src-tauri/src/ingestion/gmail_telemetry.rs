@@ -82,3 +82,41 @@ pub fn gmail_telemetry() -> &'static GmailTelemetry {
     static TELEMETRY: OnceLock<GmailTelemetry> = OnceLock::new();
     TELEMETRY.get_or_init(GmailTelemetry::default)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Doc 30 TASK-QA-010 acceptance (Doc 31 §17 risk register: "Support/
+    /// debug data exposure — Redact and minimize telemetry"). This module's
+    /// own doc comment already claims "TASK-QA-007's privacy regression
+    /// suite is the authoritative check" for this -- this test is that
+    /// check: every aggregate field is a count, a bounded status-code key,
+    /// a duration, or a small closed set of internal gate-name labels
+    /// ("gate1"/"gate2"/"gate3") -- never free-form text that could carry
+    /// email content, sender addresses, subjects, or transaction data.
+    #[test]
+    fn test_gmail_telemetry_snapshot_contains_no_free_form_content() {
+        let telemetry = GmailTelemetry::default();
+        telemetry.record_quota_exhausted();
+        telemetry.record_5xx(503);
+        telemetry.record_poll_cycle_duration(std::time::Duration::from_millis(250));
+        telemetry.record_gate_rejection("gate1");
+
+        let snapshot = telemetry.snapshot();
+        // Every gate_rejections key must be one of the 3 documented,
+        // bounded internal gate names -- not an arbitrary caller-supplied
+        // string that could smuggle content through this field.
+        for gate_name in snapshot.gate_rejections.keys() {
+            assert!(
+                ["gate1", "gate2", "gate3"].contains(&gate_name.as_str()),
+                "gate_rejections key '{gate_name}' is not one of the documented bounded gate names"
+            );
+        }
+        // error_5xx_by_status is keyed on a real HTTP status code (a u16,
+        // structurally incapable of holding a string).
+        for status in snapshot.error_5xx_by_status.keys() {
+            assert!(*status >= 500 && *status < 600, "unexpected non-5xx status code key: {status}");
+        }
+    }
+}

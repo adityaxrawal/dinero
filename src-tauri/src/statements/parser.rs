@@ -384,6 +384,42 @@ fn run_tesseract_on_bytes(image_bytes: &[u8]) -> Result<Option<String>> {
 mod tests {
     use super::*;
 
+    /// Doc 30 TASK-QA-003/QA-010 acceptance:
+    /// `test_raw_pdf_not_persisted_after_parse` (Doc 31 §17 risk register:
+    /// "PDF leakage to disk"). `parse_in_memory` takes `pdf_bytes: &[u8]`
+    /// with no file-path parameter anywhere in its signature -- structurally
+    /// incapable of writing the raw PDF to disk. Source-scans this module
+    /// and `password.rs` (the other file handling raw PDF bytes during
+    /// extraction) for any disk-write call, proving the guarantee holds for
+    /// the real, current code, not just the type signature.
+    ///
+    /// Deliberately scoped to the *parsing/extraction* path only --
+    /// `statements/pdf_storage.rs`'s PDF Retention feature (Document 18
+    /// §4.16) intentionally persists an *encrypted* copy post-commit as a
+    /// separate, already-reviewed product feature, not the raw bytes this
+    /// risk control is about.
+    #[test]
+    fn test_raw_pdf_not_persisted_after_parse() {
+        for file in ["statements/parser.rs", "statements/password.rs"] {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src")
+                .join(file);
+            let content = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("failed to read {file}: {e}"));
+            // Only the real (non-test) code above `#[cfg(test)]` -- this
+            // test module itself necessarily mentions the forbidden
+            // patterns as string literals, which would otherwise trip its
+            // own scan of parser.rs.
+            let real_code = content.split("#[cfg(test)]").next().unwrap_or(&content);
+            for forbidden in ["fs::write(", "File::create(", "std::fs::File::create"] {
+                assert!(
+                    !real_code.contains(forbidden),
+                    "{file} must never write raw PDF bytes to disk during parsing (found '{forbidden}')"
+                );
+            }
+        }
+    }
+
     // ── test_ocr_fallback_triggered_for_scanned_page ──────────────────────────
     //
     // Verifies that when a page has fewer than OCR_TEXT_THRESHOLD non-whitespace
