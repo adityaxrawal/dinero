@@ -9,10 +9,123 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager};
-use tiny_http::{Response, Server};
+use tiny_http::{Header, Response, Server};
 use url::Url;
 
 use crate::db::connected_accounts;
+
+/// Renders the loopback callback response shown in the user's browser tab
+/// after the Google OAuth redirect lands, styled to match the app's
+/// champagne/emerald-ink brand (see `src/App.css` `:root` tokens) rather than
+/// tiny_http's default bare-text response.
+fn oauth_result_page(success: bool, message: &str) -> String {
+    let escaped: String = message
+        .chars()
+        .map(|c| match c {
+            '&' => "&amp;".to_string(),
+            '<' => "&lt;".to_string(),
+            '>' => "&gt;".to_string(),
+            '"' => "&quot;".to_string(),
+            '\'' => "&#39;".to_string(),
+            other => other.to_string(),
+        })
+        .collect();
+
+    let (badge_color, badge_glyph, title, subtitle) = if success {
+        (
+            "#064E3B",
+            r##"<path d="M6 12.5 10 16.5 18 7.5" stroke="#F8E7C9" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>"##,
+            "Authentication successful",
+            "You may close this tab and return to Dinero.",
+        )
+    } else {
+        (
+            "#ef4444",
+            r##"<path d="M8 8 16 16M16 8 8 16" stroke="#fff" stroke-width="2.2" stroke-linecap="round" fill="none"/>"##,
+            "Authentication failed",
+            escaped.as_str(),
+        )
+    };
+
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Dinero — {title}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root {{ color-scheme: light; }}
+  * {{ box-sizing: border-box; }}
+  html, body {{
+    margin: 0; height: 100%;
+    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }}
+  body {{
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100vh;
+    background: radial-gradient(circle at 50% 0%, #fdf6ed 0%, #f6e6c5 55%, #f0d4a8 100%);
+    color: hsl(160, 84%, 10%);
+  }}
+  .card {{
+    width: min(420px, 88vw);
+    background: #fdf6ed;
+    border: 1px solid hsla(36, 28%, 60%, 0.4);
+    border-radius: 16px;
+    padding: 2.5rem 2.25rem;
+    text-align: center;
+    box-shadow: 0 20px 45px -20px rgba(6, 78, 59, 0.35);
+    animation: rise 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+  }}
+  @keyframes rise {{
+    from {{ opacity: 0; transform: translateY(10px) scale(0.98); }}
+    to   {{ opacity: 1; transform: translateY(0) scale(1); }}
+  }}
+  .badge {{
+    width: 64px; height: 64px; margin: 0 auto 1.25rem;
+    border-radius: 999px;
+    background: {badge_color};
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 8px 20px -6px {badge_color}66;
+  }}
+  h1 {{
+    margin: 0 0 0.5rem;
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: hsl(160, 84%, 12%);
+  }}
+  p {{
+    margin: 0;
+    font-size: 0.9rem;
+    line-height: 1.5rem;
+    color: hsla(160, 18%, 30%, 0.85);
+    word-break: break-word;
+  }}
+  .brand {{
+    margin-top: 1.75rem;
+    font-size: 0.7rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: hsla(160, 18%, 38%, 0.6);
+  }}
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">
+      <svg width="24" height="24" viewBox="0 0 24 24">{badge_glyph}</svg>
+    </div>
+    <h1>{title}</h1>
+    <p>{subtitle}</p>
+    <div class="brand">Dinero &middot; Personal Finance Tracker</div>
+  </div>
+</body>
+</html>"#
+    )
+}
 
 const GOOGLE_CLIENT_ID: &str = match option_env!("GOOGLE_CLIENT_ID") {
     Some(val) => val,
@@ -22,11 +135,14 @@ const GOOGLE_CLIENT_SECRET: Option<&str> = option_env!("GOOGLE_CLIENT_SECRET");
 // Doc 21 §2.1/22 §6.2, Doc 24 §3 (H6 fix): matches the `com.dinero.app`
 // service name already used by db::crypto and statements::password —
 // this was still the pre-rebrand "finance-tracker" name.
+#[cfg(not(debug_assertions))]
 const KEYCHAIN_SERVICE: &str = "com.dinero.app";
 /// Pre-rebrand service name — `get_token` migrates any entry still stored
 /// under it to `KEYCHAIN_SERVICE` on first read, rather than orphaning a
 /// user's existing Gmail connection when this constant changed.
+#[cfg(not(debug_assertions))]
 const LEGACY_KEYCHAIN_SERVICE: &str = "finance-tracker";
+#[cfg(not(debug_assertions))]
 const KEYCHAIN_ACCOUNT_PREFIX: &str = "gmail-tokens";
 
 /// `oauth2::reqwest::async_http_client` builds its own internal reqwest
@@ -49,6 +165,7 @@ const MAX_CONNECTED_GMAIL_ACCOUNTS: i64 = 10;
 /// Keychain entry, keyed by `account_id` — a single shared entry would have
 /// each new account's token silently overwrite the previous account's,
 /// making genuine multi-account support (Doc 03 §8.2) impossible in practice.
+#[cfg(not(debug_assertions))]
 fn keychain_account_name(account_id: &str) -> String {
     format!("{}-{}", KEYCHAIN_ACCOUNT_PREFIX, account_id)
 }
@@ -253,17 +370,22 @@ fn wait_for_oauth_callback(
             Ok(Some(request)) => {
                 let url = request.url().to_string();
                 if url.starts_with("/?") {
+                    let html_header =
+                        Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..])
+                            .expect("static header is valid");
                     return match validate_oauth_callback(&url, expected_state) {
                         Ok(c) => {
-                            let response = Response::from_string(
-                                "Authentication successful! You may close this tab.",
-                            );
+                            let response = Response::from_string(oauth_result_page(true, ""))
+                                .with_header(html_header);
                             let _ = request.respond(response);
                             Ok(c)
                         }
                         Err(e) => {
-                            let response = Response::from_string(e.to_string());
-                            let _ = request.respond(response.with_status_code(400));
+                            let response =
+                                Response::from_string(oauth_result_page(false, &e.to_string()))
+                                    .with_header(html_header)
+                                    .with_status_code(400);
+                            let _ = request.respond(response);
                             Err(e)
                         }
                     };
