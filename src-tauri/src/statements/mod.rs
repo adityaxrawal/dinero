@@ -5,7 +5,7 @@ pub mod metadata_extractor;
 pub mod observation_builder;
 pub mod parser;
 pub mod password;
-pub mod pending_bytes;
+pub mod pdf_storage;
 pub mod row_extractor;
 pub mod sidecar;
 pub mod validator;
