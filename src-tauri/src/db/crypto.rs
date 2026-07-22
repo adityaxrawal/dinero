@@ -5,6 +5,7 @@ use argon2::{
     Argon2,
 };
 use keyring::Entry;
+use std::sync::OnceLock;
 use uuid::Uuid;
 
 const KEYCHAIN_SERVICE: &str = "com.dinero.app";
@@ -20,17 +21,39 @@ const KEYCHAIN_USER: &str = "dinero-base-key";
 /// not a UUIDv4 (~122 bits). This only changes what a *newly created* Keychain
 /// entry looks like — an entry already written by a previous run is returned
 /// as-is, so no already-encrypted database is ever re-keyed by this change.
+/// Cached after first resolution within this process. Without this, every
+/// caller (there are several -- DB key derivation, PDF password encrypt,
+/// PDF password decrypt, ...) re-reads `dev_key_path` from disk on every
+/// call with zero synchronization; two calls racing before the file exists
+/// yet can each generate a *different* random key, both return `Ok`, and
+/// whichever `std::fs::write` (whose result is deliberately ignored) lands
+/// last silently wins on disk -- a value encrypted under the loser's
+/// in-memory key can never be decrypted again by any later caller, which is
+/// exactly the failure mode that made a validated statement PDF password
+/// undecryptable moments later during the Instrument Gate resume path (see
+/// `commands::statements_confirm_instrument`). Caching means every call in
+/// this process, from the very first, shares one resolved key.
+#[cfg(debug_assertions)]
+static DEV_BASE_KEY: OnceLock<String> = OnceLock::new();
+
 #[cfg(debug_assertions)]
 pub fn get_or_create_base_key() -> Result<String> {
-    let dev_key_path = std::env::temp_dir().join("dinero_dev_base_key.txt");
-    if let Ok(key) = std::fs::read_to_string(&dev_key_path) {
-        return Ok(key);
+    if let Some(key) = DEV_BASE_KEY.get() {
+        return Ok(key.clone());
     }
-    let mut bytes = [0u8; 32];
-    OsRng.fill_bytes(&mut bytes);
-    let new_key = hex::encode(bytes);
-    let _ = std::fs::write(dev_key_path, &new_key);
-    Ok(new_key)
+    let dev_key_path = std::env::temp_dir().join("dinero_dev_base_key.txt");
+    let key = if let Ok(key) = std::fs::read_to_string(&dev_key_path) {
+        key
+    } else {
+        let mut bytes = [0u8; 32];
+        OsRng.fill_bytes(&mut bytes);
+        let new_key = hex::encode(bytes);
+        let _ = std::fs::write(&dev_key_path, &new_key);
+        new_key
+    };
+    // `get_or_init`-style race: if another call already won, defer to it so
+    // every caller in this process converges on the exact same string.
+    Ok(DEV_BASE_KEY.get_or_init(|| key).clone())
 }
 
 #[cfg(not(debug_assertions))]
@@ -59,6 +82,7 @@ pub fn get_or_create_base_key() -> Result<String> {
 /// from other Keychain errors (e.g. a genuinely corrupt entry), via a marker
 /// `db::is_keychain_access_denied` recognizes — so `init_db`/`lib.rs` can show
 /// a dedicated recovery screen instead of a generic fatal-error dialog.
+#[cfg(not(debug_assertions))]
 fn classify_keychain_error(e: keyring::Error, action: &str) -> anyhow::Error {
     match e {
         keyring::Error::NoStorageAccess(inner) => {
