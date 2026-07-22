@@ -854,6 +854,13 @@ export const API = {
     // commands) -- installs whichever update the most recent check found.
     confirmInstall: () => invokeCommand<void>('updater_confirm_install'),
   },
+  systemWarnings: {
+    // Doc 30 TASK-RT-007: late-mount recovery -- a `ConnectionStatusBanner`
+    // that mounts after a warning was already emitted (e.g. app launched
+    // with Gmail already rate-limited) queries this instead of only ever
+    // reacting to the live `system_warning` event it missed.
+    getActive: () => invokeCommand<SystemWarningPayload[]>('get_active_system_warnings'),
+  },
   menuBarExtra: {
     // Doc 30 TASK-DESK-008: "toggleable in Settings."
     getEnabled: () => invokeCommand<boolean>('settings_get_menu_bar_extra_enabled'),
@@ -878,6 +885,18 @@ export const API = {
       }),
   },
 };
+
+// Doc 30 TASK-RT-007: mirrors src-tauri's `ipc::system_warnings::SystemWarningPayload`.
+// Note: TASK-DESK-004's `keychain_denied`/`notification_denied` warnings are
+// emitted separately with their own `hard_fail`/`soft_fail` severity vocabulary
+// (`permissions/macos_permissions.rs`) and are owned exclusively by
+// `PermissionDeniedOverlay.tsx` -- they never carry one of the severities below.
+export interface SystemWarningPayload {
+  warning_type: string;
+  message: string;
+  severity: 'critical' | 'degraded' | 'info';
+  action_hint: string | null;
+}
 
 export interface LicenseStatusResponse {
   state: string;

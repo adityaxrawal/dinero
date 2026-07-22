@@ -17,6 +17,16 @@ const GRACE_PERIOD: ChronoDuration = ChronoDuration::days(7);
 /// one second, triggered an immediate lock.
 const CLOCK_CORRECTION_GRACE: ChronoDuration = ChronoDuration::hours(1);
 
+/// Distinguishes "no license state row yet" from "clock skew just locked the
+/// license" — both used to collapse to the same `None`, which made it
+/// impossible to tell the two apart at the call site in order to also emit
+/// a `system_warning` for the clock-skew case specifically.
+enum PollOutcome {
+    NoState,
+    ClockSkewLocked,
+    Active(crate::licensing::state::LicenseStateRow),
+}
+
 pub async fn start_background_validation<R: tauri::Runtime>(
     pool: Pool,
     base_url: String,
@@ -34,28 +44,48 @@ pub async fn start_background_validation<R: tauri::Runtime>(
         if let Ok(conn) = pool.get().await {
             let res = conn.interact(move |c| {
                 let state_opt = get_license_state(c)?;
-                
+
                 if let Some(state) = state_opt {
                     let now = Utc::now();
-                    
+
                     // I7 fix: only a rollback beyond the correction grace counts as
                     // tampering — a small backward NTP/DST correction should not lock.
                     if now < state.last_known_valid_time - CLOCK_CORRECTION_GRACE {
                         tracing::warn!("ClockSkewDetected: System time moved backward beyond the correction grace. Locking license.");
                         transition_to_locked(c, true)?;
-                        return Ok::<_, anyhow::Error>(None);
+                        return Ok::<_, anyhow::Error>(PollOutcome::ClockSkewLocked);
                     }
-                    
+
                     record_known_valid_time(c, now)?;
-                    
-                    Ok(Some(state))
+
+                    Ok(PollOutcome::Active(state))
                 } else {
-                    Ok(None)
+                    Ok(PollOutcome::NoState)
                 }
             }).await;
 
+            if matches!(res, Ok(Ok(PollOutcome::ClockSkewLocked))) {
+                // Doc 19 §15.1: alongside the existing `license_clock_skew` event
+                // (kept as-is so any existing consumers don't break), also surface
+                // this through the centralized system_warning channel so the
+                // banner UI (TASK-RT-007) picks it up like every other
+                // degraded-state condition.
+                crate::ipc::system_warnings::emit_system_warning(
+                    &app_handle,
+                    crate::ipc::system_warnings::SystemWarningPayload {
+                        warning_type: "clock_skew".to_string(),
+                        message: "Your Mac's system clock appears to have moved backward. \
+                        Your license has been locked as a precaution — please check your \
+                        date & time settings."
+                            .to_string(),
+                        severity: crate::ipc::system_warnings::WarningSeverity::Critical,
+                        action_hint: Some("check_system_clock".to_string()),
+                    },
+                );
+            }
+
             match res {
-                Ok(Ok(Some(state))) => {
+                Ok(Ok(PollOutcome::Active(state))) => {
                     // Doc 40 §7 (C11): LOCKED must keep validating too — this is what
                     // lets a healed payment auto-unlock the app without user action.
                     // Only AnonymousEval (no license ever entered, nothing to validate
@@ -131,7 +161,7 @@ pub async fn start_background_validation<R: tauri::Runtime>(
                         }
                     }
                 }
-                Ok(Ok(None)) => {}
+                Ok(Ok(PollOutcome::NoState)) | Ok(Ok(PollOutcome::ClockSkewLocked)) => {}
                 Ok(Err(e)) => tracing::error!("Error reading license state: {}", e),
                 Err(e) => tracing::error!("Pool interact error: {}", e),
             }

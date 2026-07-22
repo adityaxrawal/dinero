@@ -2,6 +2,7 @@ pub mod args;
 pub mod events;
 pub mod middleware;
 pub mod responses;
+pub mod system_warnings;
 pub mod validation;
 
 use crate::error::AppError;

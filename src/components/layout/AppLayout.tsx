@@ -21,6 +21,7 @@ import GracePeriodBanner from '@/components/licensing/GracePeriodBanner';
 import StatementOnlyModeBanner from '@/components/shell/StatementOnlyModeBanner';
 import BackgroundTaskIndicator from '@/components/shell/BackgroundTaskIndicator';
 import PermissionDeniedOverlay from '@/components/shell/PermissionDeniedOverlay';
+import ConnectionStatusBanner from '@/components/notifications/ConnectionStatusBanner';
 
 const CORRUPTION_EVENT = 'db_corrupted';
 
@@ -317,6 +318,7 @@ export default function AppLayout() {
           <LicenseLockOverlay />
           <GracePeriodBanner />
           <StatementOnlyModeBanner />
+          <ConnectionStatusBanner />
         </div>
 
         {/* Bottom area (System & Status) */}

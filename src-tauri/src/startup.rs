@@ -7,7 +7,7 @@
 //! never block or fail startup — the local LLM fallback is strictly
 //! optional (Document 15 §9).
 
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 /// RAM below this threshold triggers a `system_warning` — Layer 5 extraction
 /// is not offered at all below this line (Document 16 §12.3 tier 1 floor).
@@ -54,17 +54,18 @@ pub fn check_ram_and_set_llm_eligibility(app: &AppHandle) {
             total_ram_gb,
             LOW_RAM_WARNING_THRESHOLD_GB
         );
-        let _ = app.emit(
-            crate::ipc::events::AppEvent::SystemWarning.as_str(),
-            serde_json::json!({
-                "warning_type": "low_ram",
-                "message": format!(
+        crate::ipc::system_warnings::emit_system_warning(
+            app,
+            crate::ipc::system_warnings::SystemWarningPayload {
+                warning_type: "low_ram".to_string(),
+                message: format!(
                     "Your Mac has {:.1} GB of RAM, below the {} GB recommended minimum. \
                     Some features may run more slowly.",
                     total_ram_gb, LOW_RAM_WARNING_THRESHOLD_GB
                 ),
-                "available_gb": total_ram_gb,
-            }),
+                severity: crate::ipc::system_warnings::WarningSeverity::Info,
+                action_hint: None,
+            },
         );
     }
 }

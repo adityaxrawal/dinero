@@ -343,6 +343,19 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                 .record_5xx(status.as_u16());
                         }
                         if retry_count >= max_retries {
+                            if status == StatusCode::TOO_MANY_REQUESTS {
+                                crate::ipc::system_warnings::emit_system_warning(
+                                    app,
+                                    crate::ipc::system_warnings::SystemWarningPayload {
+                                        warning_type: "gmail_quota_exhausted".to_string(),
+                                        message: "Gmail is temporarily rate-limiting this account. \
+                                        New email sync is paused and will resume automatically."
+                                            .to_string(),
+                                        severity: crate::ipc::system_warnings::WarningSeverity::Degraded,
+                                        action_hint: None,
+                                    },
+                                );
+                            }
                             return Err(anyhow::anyhow!(
                                 "Max retries reached for polling account {}",
                                 account.id

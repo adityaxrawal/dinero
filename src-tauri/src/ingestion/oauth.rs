@@ -8,7 +8,7 @@ use oauth2::{
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 use tiny_http::{Header, Response, Server};
 use url::Url;
 
@@ -897,7 +897,15 @@ async fn mark_account_degraded_async<R: tauri::Runtime>(
             })
             .await;
     }
-    let _ = app.emit("system_warning", "gmail_token_degraded");
+    crate::ipc::system_warnings::emit_system_warning(
+        app,
+        crate::ipc::system_warnings::SystemWarningPayload {
+            warning_type: "gmail_token_degraded".to_string(),
+            message: "Gmail sync is paused -- your access token could not be refreshed.".to_string(),
+            severity: crate::ipc::system_warnings::WarningSeverity::Degraded,
+            action_hint: Some("reconnect_gmail_account".to_string()),
+        },
+    );
 }
 
 pub async fn get_valid_access_token<R: tauri::Runtime>(
