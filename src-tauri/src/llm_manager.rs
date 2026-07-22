@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tauri::{AppHandle, Emitter};
+use tokio_util::sync::CancellationToken;
 use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
 
@@ -136,6 +137,7 @@ pub async fn download_model(
     app_dir: &Path,
     model_info: &LlmModelInfo,
     progress_app: Option<&AppHandle>,
+    cancel_token: Option<CancellationToken>,
 ) -> Result<()> {
     // Defensive: catches any future catalog entry that ships without a real
     // artifact yet, same check that caught all 5 entries before this fix.
@@ -159,6 +161,7 @@ pub async fn download_model(
         &model_path,
         &model_info.expected_sha256,
         progress_app.map(|app| (app, model_info.id.as_str())),
+        cancel_token,
     )
     .await?;
 
@@ -184,6 +187,7 @@ pub(crate) async fn download_file_with_hash(
     dest_path: &Path,
     expected_hash: &str,
     progress: Option<(&AppHandle, &str)>,
+    cancel_token: Option<CancellationToken>,
 ) -> Result<()> {
     const PROGRESS_EMIT_INTERVAL_BYTES: u64 = 1_000_000;
     const EMA_ALPHA: f64 = 0.3;
@@ -198,8 +202,14 @@ pub(crate) async fn download_file_with_hash(
     let mut last_emitted: u64 = 0;
     let mut last_emit_instant = Instant::now();
     let mut ema_rate: f64 = 0.0;
+    let mut cancelled = false;
 
     while let Some(item) = res.chunk().await? {
+        if cancel_token.as_ref().is_some_and(|t| t.is_cancelled()) {
+            cancelled = true;
+            break;
+        }
+
         file.write_all(&item).await?;
         hasher.update(&item);
         downloaded += item.len() as u64;
@@ -231,6 +241,14 @@ pub(crate) async fn download_file_with_hash(
             }
         }
     }
+
+    if cancelled {
+        drop(file);
+        fs::remove_file(dest_path).await.ok();
+        fs::remove_file(verified_marker_path(dest_path)).await.ok();
+        return Ok(());
+    }
+
     file.flush().await?;
 
     if let Some((app, model_id)) = progress {
@@ -271,6 +289,33 @@ fn verified_marker_path(dest_path: &Path) -> PathBuf {
     let mut marker = dest_path.as_os_str().to_owned();
     marker.push(".verified");
     PathBuf::from(marker)
+}
+
+/// Per-model-id cancellation tokens for in-progress downloads. A download
+/// registers its token at start and unregisters it when it settles
+/// (success, error, or cancel alike) — a stale entry would otherwise cancel
+/// a *later* unrelated download of the same model id.
+#[derive(Default)]
+pub struct DownloadRegistry(std::sync::Mutex<std::collections::HashMap<String, CancellationToken>>);
+
+impl DownloadRegistry {
+    pub fn register(&self, model_id: &str) -> CancellationToken {
+        let token = CancellationToken::new();
+        self.0.lock().unwrap().insert(model_id.to_string(), token.clone());
+        token
+    }
+
+    /// No-op if `model_id` isn't currently downloading (already finished,
+    /// or never started) — nothing for the caller to distinguish.
+    pub fn cancel(&self, model_id: &str) {
+        if let Some(token) = self.0.lock().unwrap().get(model_id) {
+            token.cancel();
+        }
+    }
+
+    pub fn unregister(&self, model_id: &str) {
+        self.0.lock().unwrap().remove(model_id);
+    }
 }
 
 /// A model file that's just present on disk isn't necessarily usable --

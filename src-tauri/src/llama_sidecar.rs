@@ -62,6 +62,25 @@ fn release_asset() -> (&'static str, &'static str) {
     )
 }
 
+/// Doc 16 §12.3's hardware-eligibility gate is RAM-based, not VRAM-based --
+/// on Apple Silicon that's not a reason to force CPU-only inference, since
+/// Metal's GPU layers share the same unified system RAM the gate already
+/// budgets against (there's no separate VRAM pool to exceed). Forcing
+/// `-ngl 0` on aarch64 meant every catalog tier (4B-35B params) had to
+/// decode 256 tokens CPU-only inside a 10s hard budget, which real-world
+/// logs show it essentially never met (0/50 successes; ~45/49 failures are
+/// wall-clock timeouts, see `extraction/llm.rs::INFERENCE_TIMEOUT`). Intel
+/// Macs have no such unified-memory GPU to offload to, so they keep the
+/// original CPU-only behavior.
+#[cfg(target_arch = "aarch64")]
+fn gpu_layers_arg() -> &'static str {
+    "all"
+}
+#[cfg(not(target_arch = "aarch64"))]
+fn gpu_layers_arg() -> &'static str {
+    "0"
+}
+
 fn base_dir(app_dir: &Path) -> PathBuf {
     app_dir.join("llama_cpp")
 }
@@ -77,6 +96,21 @@ fn server_binary_path(app_dir: &Path) -> PathBuf {
 fn http_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(reqwest::Client::new)
+}
+
+/// `llama-server` defaults to a single processing slot -- historical scan
+/// can have up to `MAX_CONCURRENT_FETCHES` (50) emails in flight at once,
+/// and every one that reaches Layer 6 used to open its own concurrent
+/// `/completion` connection against that one slot. Real logs show this
+/// producing not just per-request timeouts but outright connection-level
+/// failures ("`/completion` request failed", "returned an error status").
+/// Serializing here means only one request is ever actually in flight;
+/// everyone else queues application-side. The wait is still bounded by each
+/// caller's own `LlmEngine::INFERENCE_TIMEOUT`, since acquisition happens
+/// inside that same timeout's scope.
+fn completion_semaphore() -> &'static tokio::sync::Semaphore {
+    static SEM: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
+    SEM.get_or_init(|| tokio::sync::Semaphore::new(1))
 }
 
 enum ServerState {
@@ -125,7 +159,7 @@ async fn ensure_binary(app_dir: &Path) -> Result<PathBuf> {
         "https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_CPP_RELEASE_TAG}/{asset_name}"
     );
     let tarball_path = base.join(asset_name);
-    crate::llm_manager::download_file_with_hash(&url, &tarball_path, expected_sha256, None)
+    crate::llm_manager::download_file_with_hash(&url, &tarball_path, expected_sha256, None, None)
         .await
         .context("failed to download llama.cpp release")?;
 
@@ -189,7 +223,7 @@ async fn health_check(port: u16) -> bool {
 /// task — never awaited directly by a request in flight, so a cold model
 /// load never blocks any single email's Layer 6 budget.
 async fn start_server_task(app_dir: PathBuf, model_id: String) {
-    let outcome: Result<Child> = async {
+    let outcome: Result<Option<Child>> = async {
         let binary = ensure_binary(&app_dir).await?;
         let model_path = crate::llm_manager::get_model_path(&app_dir, &model_id)
             .ok_or_else(|| anyhow!("model file not present on disk for {model_id}"))?;
@@ -203,13 +237,18 @@ async fn start_server_task(app_dir: PathBuf, model_id: String) {
             .arg("127.0.0.1")
             .arg("-c")
             .arg(CONTEXT_SIZE)
-            // CPU-only -- matches the RAM-only (no VRAM) hardware-eligibility
-            // gate this catalog's tiers are already defined against
-            // (Doc 16 §12.3), and the original Candle path's own express
-            // "safest fallback" framing (extraction/llm.rs's prior
-            // run_inference: "Setup CPU Device (safest fallback)").
             .arg("-ngl")
-            .arg("0")
+            .arg(gpu_layers_arg())
+            // `--host 127.0.0.1` already blocks remote network access, but
+            // llama-server's own CORS default (`--cors-origins`, unset here
+            // otherwise) is `*` -- any webpage open in the user's browser on
+            // this machine could otherwise call this port directly and have
+            // the response readable via CORS, a known localhost-app attack
+            // pattern. The only real caller is this process's own `reqwest`
+            // client (`complete()` below), which never sends an `Origin`
+            // header, so restricting this costs nothing functionally.
+            .arg("--cors-origins")
+            .arg("localhost")
             .kill_on_drop(true)
             .spawn()
             .context("failed to spawn llama-server")?;
@@ -217,10 +256,24 @@ async fn start_server_task(app_dir: PathBuf, model_id: String) {
         let deadline = Instant::now() + SERVER_STARTUP_TIMEOUT;
         loop {
             if let Ok(Some(exit_status)) = child.try_wait() {
+                // A common dev-mode cause: an earlier run of this same app
+                // (killed by a hot-reload restart or force-quit) never got to
+                // call `shutdown()`, so its `llama-server` child is still
+                // alive and holding the port -- our own spawn above then
+                // fails to bind and exits immediately. Rather than declaring
+                // a hard `Failed` and sitting out `FAILURE_COOLDOWN` with
+                // Layer 6 unavailable the whole time, check whether whatever
+                // already holds the port is actually healthy before giving
+                // up; if so, adopt it (we don't own its process, so no
+                // `Child` to store — `shutdown()` simply has nothing of ours
+                // to kill).
+                if health_check(LLAMA_SERVER_PORT).await {
+                    break Ok(None);
+                }
                 anyhow::bail!("llama-server exited during startup: {exit_status}");
             }
             if health_check(LLAMA_SERVER_PORT).await {
-                break;
+                break Ok(Some(child));
             }
             if Instant::now() > deadline {
                 let _ = child.kill().await;
@@ -230,14 +283,13 @@ async fn start_server_task(app_dir: PathBuf, model_id: String) {
             }
             tokio::time::sleep(HEALTH_POLL_INTERVAL).await;
         }
-        Ok(child)
     }
     .await;
 
     let mut st = state().lock().await;
     match outcome {
         Ok(child) => {
-            st.child = Some(child);
+            st.child = child;
             st.model_id = Some(model_id);
             st.state = ServerState::Ready {
                 port: LLAMA_SERVER_PORT,
@@ -251,6 +303,14 @@ async fn start_server_task(app_dir: PathBuf, model_id: String) {
             };
         }
     }
+}
+
+pub async fn shutdown() {
+    let mut st = state().lock().await;
+    if let Some(mut child) = st.child.take() {
+        let _ = child.kill().await;
+    }
+    st.state = ServerState::NotStarted;
 }
 
 /// Returns the port a healthy, correctly-modeled server is already
@@ -302,6 +362,10 @@ struct CompletionResponse {
 /// cold start.
 pub async fn complete(app_dir: &Path, model_id: &str, prompt: &str) -> Result<String> {
     let port = ensure_server_ready(app_dir, model_id).await?;
+    let _permit = completion_semaphore()
+        .acquire()
+        .await
+        .expect("completion semaphore is never closed");
 
     let resp = http_client()
         .post(format!("http://127.0.0.1:{port}/completion"))
