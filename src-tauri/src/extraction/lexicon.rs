@@ -16,8 +16,10 @@ pub const CREDIT_VERBS: &[&str] = &[
     "credited",
     "received",
     "refund",
+    "refunded",
     "deposited",
     "reversal",
+    "reversed",
     "added",
     "returned",
     "cashback",
@@ -33,14 +35,55 @@ pub const DEBIT_VERBS: &[&str] = &[
     "sent",
     "deducted",
     "purchase",
+    "purchased",
+    "charged",
+    "billed",
 ];
 
 /// Multi-word direction phrases. Regex-only (Layer 3): Layer 4's
 /// token-by-token walk has no multi-word match at all, so these can't be
 /// ported there -- a structural difference between the two layers, not a
 /// drift risk the way the single-word lists were.
-pub const CREDIT_PHRASES: &[&str] = &["transfer from"];
-pub const DEBIT_PHRASES: &[&str] = &["transfer to"];
+pub const CREDIT_PHRASES: &[&str] = &["transfer from", "money received", "credited with"];
+pub const DEBIT_PHRASES: &[&str] = &["transfer to", "debited with", "will be debited"];
+
+/// Boilerplate/instruction words that show up in bank-alert disclaimer
+/// footers ("please **block your** card immediately **by** calling...",
+/// "write **to us** at...", "**contact** customer **care**") -- every one of
+/// these also happens to be, or sit immediately next to, an ambiguous
+/// merchant-label keyword (`MERCHANT_LABEL_AMBIGUOUS`), so a footer sentence
+/// can satisfy the same "at/to/from/for/by + 2-40 chars" shape a real
+/// merchant label does. A genuine merchant name is never composed *entirely*
+/// of these filler words, so `is_invalid_merchant` rejects a candidate only
+/// when every one of its tokens is on this list, rather than blocklisting
+/// specific phrases (which breaks the moment a bank rewords its footer).
+pub const MERCHANT_STOPWORDS: &[&str] = &[
+    "your", "you", "us", "the", "this", "that", "please", "immediately", "block", "call",
+    "calling", "contact", "sms", "click", "here", "report", "dispute", "care", "customer",
+    "helpdesk", "not", "and", "or", "for", "with", "by", "to", "from", "at", "on", "was", "is",
+    "card", "account", "transaction", "number", "if", "do", "did", "have", "has", "been", "a",
+    "an", "of", "in", "immediate", "assistance", "help", "service", "team", "app", "visit",
+    "visiting", "toll", "free", "hotline", "no", "our", "we", "kindly", "reply",
+];
+
+/// `true` when `candidate` is nothing but [`MERCHANT_STOPWORDS`] -- e.g. "to
+/// **block your** card" matching the ambiguous "to" label and capturing
+/// "block your" before the `card` terminator. Real merchant names always
+/// carry at least one token that isn't generic instruction filler.
+pub fn is_stopword_only_merchant(candidate: &str) -> bool {
+    let mut saw_token = false;
+    for tok in candidate.split_whitespace() {
+        saw_token = true;
+        let cleaned = tok.trim_matches(|c: char| !c.is_alphanumeric());
+        if cleaned.is_empty() {
+            continue;
+        }
+        if !MERCHANT_STOPWORDS.contains(&cleaned.to_lowercase().as_str()) {
+            return false;
+        }
+    }
+    saw_token
+}
 
 /// Unambiguous merchant-label keywords/phrases, tried before
 /// [`MERCHANT_LABEL_AMBIGUOUS`] in both layers (Doc 30 TASK-TXN-004 /

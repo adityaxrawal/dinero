@@ -59,6 +59,22 @@ pub struct ExtractionResult {
     /// are populated -- that combination is exactly what should route a
     /// transaction to `pending_fx` rather than being guessed at here.
     pub exchange_rate: Option<f64>,
+
+    /// `true` when `event_time` was parsed from a bare numeric date
+    /// (`%d/%m/%Y`, `%d-%m-%Y`, or `%m-%d-%Y`) whose day-of-month and month
+    /// are both <=12, i.e. a DD/MM-vs-MM/DD swap is a genuinely different
+    /// but equally well-formed date. Month-name formats (`%d-%b-%Y` etc.)
+    /// and every non-`parse_date_generic` source (bank templates, Layer 5
+    /// statement rows) never set this, which is what scopes
+    /// `apply_date_cross_check` to only the cases that are actually
+    /// ambiguous -- see that function's doc comment for why this can't be
+    /// reconstructed after the fact from the resolved date's fields alone.
+    pub event_time_ambiguous: bool,
+    /// Set by `apply_date_cross_check` when Gmail's `internalDate` was used
+    /// to arbitrate an `event_time_ambiguous` date: `"swapped_by_anchor"`
+    /// (event_time corrected) or `"anchor_mismatch_needs_review"` (left
+    /// alone, confidence downgraded instead). `None` otherwise.
+    pub date_cross_check_flag: Option<String>,
 }
 
 impl ExtractionResult {
@@ -184,10 +200,18 @@ impl ExtractionLayer for LearnedPatternLayer {
                                             // Neither succeeding leaves this field `None`
                                             // (not a fabricated date), which correctly
                                             // fails `ExtractionResult::is_valid()`.
-                                            result.event_time = matched_str
-                                                .parse::<i64>()
-                                                .ok()
-                                                .or_else(|| parse_date_generic(matched_str));
+                                            match matched_str.parse::<i64>().ok() {
+                                                Some(ts) => result.event_time = Some(ts),
+                                                None => {
+                                                    if let Some(parsed) =
+                                                        parse_date_generic(matched_str)
+                                                    {
+                                                        result.event_time = Some(parsed.timestamp);
+                                                        result.event_time_ambiguous =
+                                                            parsed.ambiguous;
+                                                    }
+                                                }
+                                            }
                                         }
                                         _ => {}
                                     }
@@ -261,25 +285,45 @@ fn is_invalid_merchant(candidate: &str, bank_name: &str) -> bool {
     if re.is_match(candidate.trim()) {
         return true;
     }
-    
+
+    // gmail false-negative remediation: a boilerplate disclaimer footer
+    // ("please block your card immediately by calling...", "write to us
+    // at...") satisfies the same ambiguous "at/to/from/for/by + 2-40 chars"
+    // shape a real merchant label does, so it can win the leftmost-match
+    // scan when the true merchant capture fails first (e.g. an underscore
+    // in the descriptor breaking the value char class -- see
+    // `MERCHANT_TERMINATOR`'s doc comment). A real merchant name is never
+    // built entirely out of instruction filler words, so reject those here
+    // regardless of which keyword or layer produced the candidate.
+    if crate::extraction::lexicon::is_stopword_only_merchant(candidate.trim()) {
+        return true;
+    }
+
+    // A candidate with no letters at all (pure digits/punctuation, e.g. a
+    // reference number or phone extension the terminator failed to exclude)
+    // is never a real merchant name.
+    if !candidate.chars().any(|c| c.is_alphabetic()) {
+        return true;
+    }
+
     let candidate_lower = candidate.trim().to_lowercase();
     let bank_lower = bank_name.to_lowercase();
-    
+
     if candidate_lower == bank_lower {
         return true;
     }
-    
+
     if !bank_lower.is_empty() && candidate_lower.starts_with(&bank_lower) {
         let remaining = candidate_lower.strip_prefix(&bank_lower).unwrap().trim();
         if remaining.is_empty() || remaining == "bank" || remaining == "alerts" {
             return true;
         }
     }
-    
+
     if candidate_lower == "bank" {
         return true;
     }
-    
+
     false
 }
 
@@ -497,6 +541,15 @@ const BANK_TEMPLATE_FILES: &[&str] = &[
     include_str!("../../assets/bank_templates/kotak_v1.json"),
     include_str!("../../assets/bank_templates/yes_bank_v1.json"),
 ];
+
+/// Whether `bank_name` has a compiled Layer 2 template at all -- distinct
+/// from "had a template but the regex didn't match this body." Only 6 of
+/// the verified-senders registry's ~139 banks currently have one
+/// (`BANK_TEMPLATE_FILES` above), so Layer 2 missing for the other ~96% is
+/// an expected coverage gap, not a failure worth info-level log noise.
+pub fn bank_has_template(bank_name: &str) -> bool {
+    bank_templates().contains_key(bank_name)
+}
 
 fn bank_templates() -> &'static std::collections::HashMap<String, Vec<CompiledBankPattern>> {
     static TEMPLATES: OnceLock<std::collections::HashMap<String, Vec<CompiledBankPattern>>> =
@@ -769,7 +822,19 @@ impl ExtractionLayer for GenericRegexLayer {
             // "at MERCHANT was successful/declined" phrasing, the same
             // class of generic sentence-continuation word as the existing
             // on/via/using/with keywords.
-            const MERCHANT_TERMINATOR: &str = r":?\s+([A-Za-z0-9\s*]{2,40}?)(?:\s+on\b|\s+via\b|\s+using\b|\s+with\b|\s+ref\b|\s+card\b|\s+date\b|\s+a/c\b|\s+branch\b|\s+upi\b|\s+is\b|\s+was\b|[,.\n\-]|$)";
+            // gmail false-negative remediation, strengthen-regex pass: the
+            // value char class excluded `_`, `&`, `'`, `/`, `@` -- common in
+            // real settlement descriptors ("UPI_SRI SAI FRUITS", "M/S ABC &
+            // CO", "PVR'S"). Once the class rejects a char mid-descriptor
+            // the lazy `{2,40}?` capture can never satisfy a terminator (the
+            // disallowed char isn't a terminator either), so the whole match
+            // fails at that position and `captures_iter` silently skips to
+            // the next -- often unrelated -- keyword occurrence further down
+            // the body (see `is_invalid_merchant`'s stopword-filter doc
+            // comment for what that let through). `.`/`-` are already
+            // terminator chars, so including them here is a no-op (the lazy
+            // quantifier always stops before them regardless).
+            const MERCHANT_TERMINATOR: &str = r":?\s+([A-Za-z0-9\s*_&'./@-]{2,40}?)(?:\s+on\b|\s+via\b|\s+using\b|\s+with\b|\s+ref\b|\s+card\b|\s+date\b|\s+a/c\b|\s+branch\b|\s+upi\b|\s+is\b|\s+was\b|[,.\n\-]|$)";
             // Shared lexicon (extraction/lexicon.rs) -- see its doc comment
             // for why Layer 3 and Layer 4's keyword lists used to drift.
             let merchant_re_strict = GENERIC_MERCHANT_RE_STRICT.get_or_init(|| {
@@ -823,7 +888,10 @@ impl ExtractionLayer for GenericRegexLayer {
                 Regex::new(r"(?i)(\d{2}[-/]\d{2}[-/]\d{2,4}|\d{2}-[a-zA-Z]{3}-\d{2,4}|\d{2}\s+[a-zA-Z]{3},?\s+\d{2,4}|[a-zA-Z]{3}\s+\d{2},\s*\d{4})").unwrap()
             });
             if let Some(caps) = date_re.captures(body) {
-                result.event_time = parse_date_generic(caps.get(1)?.as_str());
+                if let Some(parsed) = parse_date_generic(caps.get(1)?.as_str()) {
+                    result.event_time = Some(parsed.timestamp);
+                    result.event_time_ambiguous = parsed.ambiguous;
+                }
             }
 
             // 4. Reference ID
@@ -883,15 +951,29 @@ fn normalize_currency(c: &str) -> String {
     }
 }
 
+/// Result of [`parse_date_generic`] -- pairs the parsed timestamp with
+/// whether the source format was numerically ambiguous (see `ambiguous`
+/// field doc on `ExtractionResult::event_time_ambiguous`).
+#[derive(Debug, PartialEq)]
+struct DateParseResult {
+    timestamp: i64,
+    ambiguous: bool,
+}
+
+/// The 3 bare-numeric formats where a DD/MM-vs-MM/DD swap is a genuinely
+/// different, equally well-formed date whenever both components are <=12.
+/// Every other format below (month-name) is inherently unambiguous.
+const NUMERIC_AMBIGUOUS_FORMATS: &[&str] = &["%d/%m/%Y", "%d-%m-%Y", "%m-%d-%Y"];
+
 /// Returns `None` on an unparseable date string -- see `parse_date`'s doc
 /// comment for why this must never fabricate a fallback timestamp.
-fn parse_date_generic(s: &str) -> Option<i64> {
+fn parse_date_generic(s: &str) -> Option<DateParseResult> {
     let formats = [
         "%d-%b-%Y",
         "%d-%b-%y",
         "%d/%m/%Y",
-        "%m-%d-%Y",
         "%d-%m-%Y",
+        "%m-%d-%Y",
         "%d %b %Y",
         "%d %b %y",
         "%d %b, %Y",
@@ -902,7 +984,14 @@ fn parse_date_generic(s: &str) -> Option<i64> {
     for fmt in formats {
         if let Ok(naive_date) = chrono::NaiveDate::parse_from_str(s, fmt) {
             if let Some(naive_datetime) = naive_date.and_hms_opt(0, 0, 0) {
-                return Some(naive_datetime.and_utc().timestamp());
+                use chrono::Datelike;
+                let ambiguous = NUMERIC_AMBIGUOUS_FORMATS.contains(&fmt)
+                    && naive_date.day() <= 12
+                    && naive_date.day() != naive_date.month();
+                return Some(DateParseResult {
+                    timestamp: naive_datetime.and_utc().timestamp(),
+                    ambiguous,
+                });
             }
         }
     }
@@ -961,7 +1050,7 @@ impl ExtractionLayer for NlpLayer {
     fn extract<'a>(
         &'a self,
         _pool: &'a Pool,
-        _bank_name: &'a str,
+        bank_name: &'a str,
         body: &'a str,
     ) -> BoxFuture<'a, Option<ExtractionResult>> {
         Box::pin(async move {
@@ -996,9 +1085,14 @@ impl ExtractionLayer for NlpLayer {
                     idx,
                     crate::extraction::lexicon::MERCHANT_LABEL_STRICT,
                 ) {
-                    strict_merchant_candidate =
-                        collect_merchant_window(&tokens, &lower_tokens, idx + consumed);
-                    break;
+                    if let Some(candidate) =
+                        collect_merchant_window(&tokens, &lower_tokens, idx + consumed)
+                    {
+                        if !is_invalid_merchant(&candidate, bank_name) {
+                            strict_merchant_candidate = Some(candidate);
+                            break;
+                        }
+                    }
                 }
             }
 
@@ -1031,14 +1125,22 @@ impl ExtractionLayer for NlpLayer {
                     }
                 }
 
-                // Merchant
-                if (token == "at"
-                    || token == "to"
-                    || token == "from"
-                    || token == "for"
-                    || token == "by"
-                    || token == "merchant"
-                    || token == "beneficiary")
+                // Merchant. `result.merchant_raw.is_none()` guards this
+                // whole block (not just the final assignment) so the first
+                // valid match found while walking left-to-right wins --
+                // previously every subsequent "at/to/from/for/by" hit
+                // unconditionally overwrote whatever was already found,
+                // which meant a footer disclaimer's keyword occurrence
+                // (always further down the body than the real transaction
+                // detail) always clobbered a correct earlier match.
+                if result.merchant_raw.is_none()
+                    && (token == "at"
+                        || token == "to"
+                        || token == "from"
+                        || token == "for"
+                        || token == "by"
+                        || token == "merchant"
+                        || token == "beneficiary")
                     && i + 1 < tokens.len()
                 {
                     let mut merchant_parts = Vec::new();
@@ -1070,16 +1172,21 @@ impl ExtractionLayer for NlpLayer {
                         j += 1;
                     }
                     if !merchant_parts.is_empty() {
-                        result.merchant_raw = Some(merchant_parts.join(" "));
+                        let candidate = merchant_parts.join(" ");
+                        if !is_invalid_merchant(&candidate, bank_name) {
+                            result.merchant_raw = Some(candidate);
+                        }
                     }
                 }
 
                 // UPI VPA
-                if token.contains("upi/") {
+                if result.merchant_raw.is_none() && token.contains("upi/") {
                     let parts: Vec<&str> = orig_token.split('/').collect();
                     if parts.len() >= 3 {
-                        result.merchant_raw =
-                            Some(parts[2].trim_end_matches(&['.', ','][..]).to_string());
+                        let candidate = parts[2].trim_end_matches(&['.', ','][..]).to_string();
+                        if !is_invalid_merchant(&candidate, bank_name) {
+                            result.merchant_raw = Some(candidate);
+                        }
                     }
                 }
 
@@ -1114,8 +1221,9 @@ impl ExtractionLayer for NlpLayer {
                 // Date
                 if token == "on" && i + 1 < tokens.len() {
                     let dt_str = tokens[i + 1].trim_end_matches(&['.', ','][..]);
-                    if let Some(parsed_date) = parse_date_generic(dt_str) {
-                        result.event_time = Some(parsed_date);
+                    if let Some(parsed) = parse_date_generic(dt_str) {
+                        result.event_time = Some(parsed.timestamp);
+                        result.event_time_ambiguous = parsed.ambiguous;
                     }
                 }
 
@@ -1136,7 +1244,8 @@ impl ExtractionLayer for NlpLayer {
                 for t in &tokens {
                     let cleaned = t.trim_end_matches(&['.', ','][..]);
                     if let Some(parsed) = parse_date_generic(cleaned) {
-                        result.event_time = Some(parsed);
+                        result.event_time = Some(parsed.timestamp);
+                        result.event_time_ambiguous = parsed.ambiguous;
                         break;
                     }
                 }
@@ -1499,6 +1608,107 @@ fn apply_amount_cross_check(obs: &mut ExtractionResult, body: &str) {
     }
 }
 
+/// Number of days a swapped candidate must be closer than the original to
+/// count as a decisive signal, not just a nudge -- guards against a swap
+/// that happens to land marginally closer by chance.
+const DATE_CROSS_CHECK_DECISIVE_RATIO: i64 = 3;
+/// Widest gap from Gmail's `internalDate` a candidate can plausibly be and
+/// still represent a same-alert transaction date (covers next-morning
+/// consolidated/batch alerts, not just instant ones).
+const DATE_CROSS_CHECK_PLAUSIBLE_DELAY_DAYS: i64 = 7;
+
+/// Doc 30 TASK-TXN-004 scoped Gmail's `internalDate` to a *fallback* --
+/// filling `event_time` only when the body yields no date at all -- and
+/// explicitly rejected using it to override a body-parsed date (that was a
+/// real bug, fixed in that task). This function does not violate that: it
+/// never touches `event_time` unless `event_time_ambiguous` is set, which
+/// only happens for a bare numeric date where day and month are both <=12
+/// -- i.e. `event_time` is already known to be one of exactly two
+/// equally-valid readings of the same digits, not a single confident
+/// parse. `internal_date` is used only to arbitrate between those two
+/// readings, never to override an unambiguous one.
+///
+/// Deliberately post-hoc on the *ambiguity flag*, not on the resolved
+/// date's day/month values -- a month-name date like "5-Aug-2026" also has
+/// day<=12, but `event_time_ambiguous` is `false` for it (set at the
+/// `parse_date_generic` call sites, see that function's doc comment), so
+/// it's structurally impossible for this to touch a date that was never
+/// ambiguous in the first place.
+///
+/// Three outcomes:
+/// - Swap is decisively closer to `internal_date` and within a plausible
+///   delay window -- correct `event_time`, log it, tag
+///   `"swapped_by_anchor"`.
+/// - Neither the original nor the swap is within the plausible window --
+///   something's off (backfill scan, unusually delayed alert, or the
+///   regex grabbed an unrelated date). Don't guess: leave `event_time`
+///   untouched, downgrade confidence, tag `"anchor_mismatch_needs_review"`
+///   so `pending_review` catches it.
+/// - Anything else (no anchor, weak/no signal either way) -- leave
+///   `event_time` untouched, no flag. This is the common case: most
+///   ambiguous dates simply keep the DD-MM locale default.
+fn apply_date_cross_check(obs: &mut ExtractionResult, internal_date: Option<i64>) {
+    if !obs.event_time_ambiguous {
+        return;
+    }
+    let (Some(ts), Some(anchor_ts)) = (obs.event_time, internal_date) else {
+        return;
+    };
+    use chrono::Datelike;
+    let Some(original) = chrono::DateTime::from_timestamp(ts, 0).map(|dt| dt.naive_utc().date())
+    else {
+        return;
+    };
+    let Some(anchor) = chrono::DateTime::from_timestamp(anchor_ts, 0).map(|dt| dt.naive_utc().date())
+    else {
+        return;
+    };
+    let (day, month, year) = (original.day(), original.month(), original.year());
+    if day == month {
+        return; // swap is a no-op
+    }
+    let Some(swapped) = chrono::NaiveDate::from_ymd_opt(year, day, month) else {
+        return;
+    };
+
+    // Calendar-day distance, not raw epoch seconds: `event_time` is always
+    // UTC midnight (see `parse_date_generic`) but `internal_date` carries a
+    // real time-of-day, so a raw-second diff would add up to a day of pure
+    // time-of-day noise right at the plausible-window boundary.
+    let orig_days = (anchor - original).num_days().abs();
+    let swapped_days = (anchor - swapped).num_days().abs();
+
+    if swapped_days <= DATE_CROSS_CHECK_PLAUSIBLE_DELAY_DAYS
+        && swapped_days * DATE_CROSS_CHECK_DECISIVE_RATIO < orig_days.max(1)
+    {
+        let Some(swapped_ts) = swapped
+            .and_hms_opt(0, 0, 0)
+            .map(|dt| dt.and_utc().timestamp())
+        else {
+            return;
+        };
+        tracing::warn!(
+            layer = obs.extraction_method,
+            original = %original,
+            swapped = %swapped,
+            orig_days,
+            swapped_days,
+            "Date cross-check: internalDate anchor decisively favors swapped DD/MM interpretation"
+        );
+        obs.event_time = Some(swapped_ts);
+        obs.date_cross_check_flag = Some("swapped_by_anchor".to_string());
+    } else if orig_days > DATE_CROSS_CHECK_PLAUSIBLE_DELAY_DAYS
+        && swapped_days > DATE_CROSS_CHECK_PLAUSIBLE_DELAY_DAYS
+    {
+        obs.date_cross_check_flag = Some("anchor_mismatch_needs_review".to_string());
+        let downgraded = match obs.confidence_score {
+            Some(existing) => existing.min(CROSS_CHECK_DISAGREEMENT_CONFIDENCE),
+            None => CROSS_CHECK_DISAGREEMENT_CONFIDENCE,
+        };
+        obs.confidence_score = Some(downgraded);
+    }
+}
+
 pub async fn run_extraction_ladder(
     pool: &Pool,
     bank_name: &str,
@@ -1548,6 +1758,7 @@ pub async fn run_extraction_ladder(
                 obs.original_currency = fx.original_currency;
                 obs.exchange_rate = fx.exchange_rate;
                 apply_amount_cross_check(&mut obs, body);
+                apply_date_cross_check(&mut obs, internal_date);
                 tracing::info!(
                     layer = layer_name,
                     status = "success",
@@ -1556,11 +1767,37 @@ pub async fn run_extraction_ladder(
                 return Ok(Some(obs));
             }
         }
-        tracing::info!(
-            layer = layer_name,
-            status = "failure",
-            "Extraction layer failed"
-        );
+        if layer_name == "learned_patterns" {
+            // Layer 1 is a feedback-loop cache seeded only by Layer 2/6
+            // successes (`synthesize_pending_rule`) — on a fresh bank +
+            // template-hash shape it has zero rules until the ladder has
+            // already succeeded once via a later layer. That's expected
+            // routine behaviour, not a failure worth info-level noise.
+            tracing::debug!(
+                layer = layer_name,
+                status = "no_rules",
+                "Extraction layer skipped (no learned rules yet)"
+            );
+        } else if layer_name == "bank_templates" && !bank_has_template(bank_name) {
+            // Same "expected, not a failure" reasoning as learned_patterns
+            // just above: most banks simply have no Layer 2 template yet
+            // (see `bank_has_template`'s doc comment). A bank that *does*
+            // have a template but still didn't match falls through to the
+            // `else` branch below and stays at info -- that case is a real
+            // signal (template drift / a regex bug) worth keeping visible.
+            tracing::debug!(
+                layer = layer_name,
+                status = "no_template",
+                bank_name = bank_name,
+                "Extraction layer skipped (no template for this bank)"
+            );
+        } else {
+            tracing::info!(
+                layer = layer_name,
+                status = "failure",
+                "Extraction layer failed"
+            );
+        }
     }
 
     // ── Layer 5: statement-row cross-reference (Doc 30 TASK-TXN-005) ─────────
@@ -2279,7 +2516,7 @@ mod tests {
         let pool = dummy_pool();
         let layer = BankTemplateLayer;
         let body = "Rs 1500.00 spent on your YES Bank Credit Card XX1234 at Amazon on 25-May-23.";
-        let result = layer.extract(&pool, "YES Bank", body).await.unwrap();
+        let result = layer.extract(&pool, "Yes Bank", body).await.unwrap();
         assert_eq!(result.amount_minor, Some(150000));
         assert_eq!(result.merchant_raw, Some("Amazon".to_string()));
     }
@@ -2334,6 +2571,157 @@ mod tests {
         assert_eq!(parse_date("not a date"), None);
         assert_eq!(parse_date_generic("not a date"), None);
         assert_eq!(parse_date("35-May-23"), None);
+    }
+
+    fn ymd_ts(year: i32, month: u32, day: u32) -> i64 {
+        chrono::NaiveDate::from_ymd_opt(year, month, day)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp()
+    }
+
+    /// `parse_date_generic`'s `ambiguous` flag must only be `true` for the
+    /// bare-numeric formats when both components are <=12 -- day>12 numeric
+    /// dates and month-name dates are both structurally unambiguous, even
+    /// though the latter can also have day<=12.
+    #[test]
+    fn test_parse_date_generic_ambiguous_flag() {
+        // day=25 > 12 -- only %d/%m/%Y can possibly match, unambiguous.
+        let unambiguous_numeric = parse_date_generic("25/05/2023").unwrap();
+        assert!(!unambiguous_numeric.ambiguous);
+
+        // Month-name format -- inherently unambiguous even though day=5<=12.
+        let month_name = parse_date_generic("05-Aug-2026").unwrap();
+        assert!(!month_name.ambiguous);
+
+        // Both day=2 and month=7 are <=12 -- genuinely two valid readings.
+        let ambiguous = parse_date_generic("02-07-2026").unwrap();
+        assert!(ambiguous.ambiguous);
+        assert_eq!(ambiguous.timestamp, ymd_ts(2026, 7, 2));
+
+        // day==month -- swap would be a no-op, not meaningfully ambiguous.
+        let noop_swap = parse_date_generic("05-05-2026").unwrap();
+        assert!(!noop_swap.ambiguous);
+    }
+
+    /// Regression lock for the provenance-blindness bug: `event_time_ambiguous:
+    /// false` (the default for every non-numeric-ambiguous parse -- bank
+    /// templates, Layer 5 statement rows, month-name dates) must make
+    /// `apply_date_cross_check` a guaranteed no-op, even when the resolved
+    /// date's day/month values would otherwise look swappable and the anchor
+    /// decisively favors the swap. Without this the cross-check would
+    /// silently corrupt already-correct dates (~40% of all calendar days
+    /// have day<=12).
+    #[test]
+    fn test_apply_date_cross_check_noop_when_not_flagged_ambiguous() {
+        let original_ts = ymd_ts(2026, 8, 5); // "5 August" -- e.g. from a month-name bank template
+        let mut obs = ExtractionResult {
+            event_time: Some(original_ts),
+            event_time_ambiguous: false,
+            ..Default::default()
+        };
+        // Anchor sits exactly on the swapped reading ("5 May") -- if the
+        // function looked at day/month values instead of the flag, this
+        // would trigger a swap.
+        let anchor = Some(ymd_ts(2026, 5, 5));
+
+        apply_date_cross_check(&mut obs, anchor);
+
+        assert_eq!(obs.event_time, Some(original_ts));
+        assert_eq!(obs.date_cross_check_flag, None);
+    }
+
+    /// Decisive case: swap lands within the plausible-delay window and is
+    /// clearly closer to the anchor than the original -- auto-correct.
+    #[test]
+    fn test_apply_date_cross_check_decisive_swap() {
+        // Body-parsed as "2 July 2026" (DD-MM default), but the email
+        // arrived 7 Feb 2026 -- the swapped reading ("7 Feb") lands exactly
+        // on the anchor, the original is ~5 months off.
+        let original_ts = ymd_ts(2026, 7, 2);
+        let mut obs = ExtractionResult {
+            event_time: Some(original_ts),
+            event_time_ambiguous: true,
+            ..Default::default()
+        };
+        let anchor = Some(ymd_ts(2026, 2, 7));
+
+        apply_date_cross_check(&mut obs, anchor);
+
+        assert_eq!(obs.event_time, Some(ymd_ts(2026, 2, 7)));
+        assert_eq!(
+            obs.date_cross_check_flag,
+            Some("swapped_by_anchor".to_string())
+        );
+    }
+
+    /// Weak signal: original is only a couple of days from the anchor
+    /// (well within plausible range) and the swap isn't decisively closer
+    /// -- keep the DD-MM locale default untouched, no flag. This is the
+    /// common case for a correctly-parsed ambiguous date.
+    #[test]
+    fn test_apply_date_cross_check_weak_signal_untouched() {
+        let original_ts = ymd_ts(2026, 7, 2); // "2 July"
+        let mut obs = ExtractionResult {
+            event_time: Some(original_ts),
+            event_time_ambiguous: true,
+            ..Default::default()
+        };
+        // Anchor 1 day after the original -- entirely plausible as-is, and
+        // nowhere near the swapped reading ("7 Feb").
+        let anchor = Some(ymd_ts(2026, 7, 3));
+
+        apply_date_cross_check(&mut obs, anchor);
+
+        assert_eq!(obs.event_time, Some(original_ts));
+        assert_eq!(obs.date_cross_check_flag, None);
+    }
+
+    /// Neither candidate is plausible relative to the anchor (e.g. a
+    /// historical backfill scan, or the regex grabbed an unrelated date) --
+    /// don't guess which one is right. Leave `event_time` untouched, flag
+    /// for review, and downgrade confidence so `pending_review`-style gates
+    /// can catch it.
+    #[test]
+    fn test_apply_date_cross_check_both_implausible_flags_for_review() {
+        let original_ts = ymd_ts(2026, 7, 2); // "2 July"
+        let mut obs = ExtractionResult {
+            event_time: Some(original_ts),
+            event_time_ambiguous: true,
+            confidence_score: Some(0.6),
+            ..Default::default()
+        };
+        // Anchor 3 months later -- both "2 July" and "7 Feb" are far outside
+        // the plausible-delay window.
+        let anchor = Some(ymd_ts(2026, 10, 2));
+
+        apply_date_cross_check(&mut obs, anchor);
+
+        assert_eq!(obs.event_time, Some(original_ts));
+        assert_eq!(
+            obs.date_cross_check_flag,
+            Some("anchor_mismatch_needs_review".to_string())
+        );
+        assert!(obs.confidence_score.unwrap() <= CROSS_CHECK_DISAGREEMENT_CONFIDENCE);
+    }
+
+    /// No anchor at all (e.g. Gmail's `internalDate` was unavailable) --
+    /// nothing to arbitrate with, must be a no-op.
+    #[test]
+    fn test_apply_date_cross_check_no_anchor_is_noop() {
+        let original_ts = ymd_ts(2026, 7, 2);
+        let mut obs = ExtractionResult {
+            event_time: Some(original_ts),
+            event_time_ambiguous: true,
+            ..Default::default()
+        };
+
+        apply_date_cross_check(&mut obs, None);
+
+        assert_eq!(obs.event_time, Some(original_ts));
+        assert_eq!(obs.date_cross_check_flag, None);
     }
 
     /// Doc 30 TASK-TXN-004 acceptance test: generic currency-prefixed amount
@@ -2528,6 +2916,49 @@ mod tests {
         assert_eq!(result.amount_minor, Some(1700000));
     }
 
+    /// Regression test for the real YES Bank body that produced a wrong
+    /// "block your" merchant (and, via `TransactionRecord`/`CanonicalTransaction`
+    /// never carrying `direction` to the list UI, a debit spend rendering
+    /// green/positive). Two independent bugs, both fixed here:
+    /// 1. The settlement descriptor uses an underscore ("UPI_SRI SAI FRUITS
+    ///    AND") which the old `[A-Za-z0-9\s*]` capture class rejected,
+    ///    failing the "at ..." match entirely and letting `captures_iter`
+    ///    fall through to the footer's "To **block your** card" phrase,
+    ///    which satisfies the same ambiguous "to" + terminator shape.
+    /// 2. "has been spent" must resolve `direction` to "debit", not fall
+    ///    through to the no-explicit-verb branch.
+    #[tokio::test]
+    async fn test_generic_regex_underscore_merchant_and_disclaimer_footer() {
+        let pool = dummy_pool();
+        let layer = GenericRegexLayer;
+        let body = "Dear Customer, Greetings from YES BANK. INR 91.00 has been spent on your YES BANK Credit Card ending with 2982 at UPI_SRI SAI FRUITS AND on 10-07-2026 at 08:55:35 pm. Avl Bal INR 82434.42. In case, this transaction was not initiated by you, please block your card immediately by calling our 24x7 customer care or visiting the nearest branch.";
+        let result = layer.extract(&pool, "Yes Bank", body).await.unwrap();
+        assert_eq!(result.merchant_raw, Some("UPI_SRI SAI FRUITS AND".to_string()));
+        assert_eq!(result.direction, Some("debit".to_string()));
+        assert_eq!(result.amount_minor, Some(9100));
+    }
+
+    /// A merchant descriptor made entirely of instruction/disclaimer filler
+    /// words ("to block your card") must never be accepted even when it's
+    /// the *only* ambiguous-keyword match in the body (no real merchant
+    /// label present at all) -- `is_invalid_merchant`'s stopword filter must
+    /// reject it outright rather than merely being outcompeted by an
+    /// earlier real match.
+    #[tokio::test]
+    async fn test_generic_merchant_rejects_stopword_only_disclaimer_capture() {
+        let pool = dummy_pool();
+        let layer = GenericRegexLayer;
+        let body = "INR 250.00 debited. To block your card, SMS BLOCK to 9876543210 or call our helpline.";
+        let result = layer.extract(&pool, "Yes Bank", body).await;
+        // No valid merchant anywhere in the body -- must not fabricate
+        // "block your" as the merchant, even though `is_valid()` then fails
+        // this layer entirely (a later layer or pending-review is the
+        // correct outcome, not a wrong merchant).
+        if let Some(r) = result {
+            assert_ne!(r.merchant_raw, Some("block your".to_string()));
+        }
+    }
+
     /// gmail false-negative remediation, Cluster H: a declined
     /// international-card-transaction template states the amount in a
     /// spelled-out ISO currency code ("USD 1.00") rather than ₹/Rs/INR/$ --
@@ -2646,6 +3077,24 @@ mod tests {
         assert_eq!(result.merchant_raw, Some("Zomato".to_string()));
         assert_eq!(result.direction, Some("debit".to_string()));
         assert_eq!(result.amount_minor, Some(50000));
+    }
+
+    /// Regression test (strengthen-regex pass): the ambiguous-keyword
+    /// merchant block used to have no `result.merchant_raw.is_none()` guard,
+    /// so it unconditionally overwrote any already-found merchant on every
+    /// subsequent "at/to/from/for/by" hit -- a disclaimer footer's keyword
+    /// occurrence (always later in the body than the real transaction line)
+    /// always won, clobbering the correct earlier match. Also verifies
+    /// `is_invalid_merchant`'s stopword filter now applies inside NlpLayer
+    /// (previously only Layer 3 called it).
+    #[tokio::test]
+    async fn test_nlp_first_valid_merchant_not_overwritten_by_later_disclaimer() {
+        let pool = dummy_pool();
+        let layer = NlpLayer;
+        let body = "Rs 500.00 debited from HDFC Bank A/c ending 1234 at Amazon on 25-May-23 Bal Rs 1000.00. To block your card immediately, call our helpline.";
+        let result = layer.extract(&pool, "HDFC Bank", body).await.unwrap();
+
+        assert_eq!(result.merchant_raw, Some("Amazon".to_string()));
     }
 
     // -----------------------------------------------------------------------
