@@ -495,6 +495,9 @@ pub fn run() {
             // TASK-DESK-003: single aggregated registry of long-running
             // background tasks, backing the global background-task indicator.
             app.manage(crate::background_tasks::indicator::BackgroundTaskRegistry::default());
+            // Per-model-id cancellation tokens for in-progress local LLM
+            // downloads (Settings' model picker Cancel button).
+            app.manage(crate::llm_manager::DownloadRegistry::default());
             {
                 let pool_for_session = pool_clone.clone();
                 let session_state_handle = app.handle().clone();
@@ -533,8 +536,6 @@ pub fn run() {
 
             // In-memory-only holding area for PDF bytes blocked on Statement
             // Instrument Gate confirmation (C2 fix) — never written to disk.
-            let pending_statement_bytes = crate::statements::pending_bytes::PendingStatementBytes::default();
-            app.manage(pending_statement_bytes.clone());
 
             // Spawn the two isolated ingestion queues (Doc 15 §2 principle 7, §5;
             // Doc 12 §6.2a/§7.2) before any producer (polling/historical scan/manual
@@ -542,9 +543,16 @@ pub fn run() {
             let queue_handles = crate::ingestion::queues::spawn_queues(
                 app.handle().clone(),
                 pool_clone.clone(),
-                pending_statement_bytes,
             );
             app.manage(queue_handles);
+
+            let pool_for_cleanup = pool_clone.clone();
+            let app_data_dir = app_dir.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = crate::statements::pdf_storage::cleanup_expired_pdfs(&app_data_dir, &pool_for_cleanup).await {
+                    tracing::error!("Failed to cleanup expired PDFs: {}", e);
+                }
+            });
 
             let pool_for_polling = pool_clone.clone();
             let app_handle_for_polling = app.handle().clone();

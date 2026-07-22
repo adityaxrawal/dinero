@@ -10,6 +10,7 @@ pub async fn llm_get_available_models() -> Result<Vec<LlmModelInfo>, crate::erro
 #[tauri::command]
 pub async fn llm_download_model(
     app: tauri::AppHandle,
+    registry: State<'_, llm_manager::DownloadRegistry>,
     model_id: String,
 ) -> Result<(), crate::error::AppError> {
     let app_dir = app
@@ -23,9 +24,23 @@ pub async fn llm_download_model(
         .find(|m| m.id == model_id)
         .ok_or_else(|| crate::error::AppError::Validation("Model not found".to_string()))?;
 
-    llm_manager::download_model(&app_dir, &model_info, Some(&app))
+    let cancel_token = registry.register(&model_id);
+    let result = llm_manager::download_model(&app_dir, &model_info, Some(&app), Some(cancel_token))
         .await
-        .map_err(|e| crate::error::AppError::Network(e.to_string()))
+        .map_err(|e| crate::error::AppError::Network(e.to_string()));
+    registry.unregister(&model_id);
+    result
+}
+
+/// No-op if `model_id` isn't currently downloading — nothing for the
+/// frontend to distinguish from "already finished."
+#[tauri::command]
+pub async fn llm_cancel_download(
+    registry: State<'_, llm_manager::DownloadRegistry>,
+    model_id: String,
+) -> Result<(), crate::error::AppError> {
+    registry.cancel(&model_id);
+    Ok(())
 }
 
 fn downloaded_model_ids(app_dir: &std::path::Path) -> Vec<String> {

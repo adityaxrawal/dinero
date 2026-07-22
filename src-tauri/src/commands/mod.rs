@@ -2947,6 +2947,7 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         llm::llm_get_available_models,
         llm::llm_download_model,
         llm::llm_delete_model,
+        llm::llm_cancel_download,
         llm::llm_get_downloaded_models,
         llm::llm_get_active_model,
         llm::llm_set_active_model,
