@@ -3,6 +3,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
@@ -17,6 +18,9 @@ pub struct LlmDownloadProgress {
     pub model_id: String,
     pub bytes_downloaded: u64,
     pub total_bytes: Option<u64>,
+    /// EMA-smoothed (alpha=0.3) download rate in bytes/sec. `0.0` until the
+    /// first throttled emit interval has elapsed.
+    pub bytes_per_sec: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,6 +186,7 @@ pub(crate) async fn download_file_with_hash(
     progress: Option<(&AppHandle, &str)>,
 ) -> Result<()> {
     const PROGRESS_EMIT_INTERVAL_BYTES: u64 = 1_000_000;
+    const EMA_ALPHA: f64 = 0.3;
 
     let client = Client::new();
     let mut res = client.get(url).send().await?.error_for_status()?;
@@ -191,6 +196,8 @@ pub(crate) async fn download_file_with_hash(
     let mut hasher = Sha256::new();
     let mut downloaded: u64 = 0;
     let mut last_emitted: u64 = 0;
+    let mut last_emit_instant = Instant::now();
+    let mut ema_rate: f64 = 0.0;
 
     while let Some(item) = res.chunk().await? {
         file.write_all(&item).await?;
@@ -199,13 +206,26 @@ pub(crate) async fn download_file_with_hash(
 
         if let Some((app, model_id)) = progress {
             if downloaded - last_emitted >= PROGRESS_EMIT_INTERVAL_BYTES {
+                let now = Instant::now();
+                let elapsed = now.duration_since(last_emit_instant).as_secs_f64();
+                if elapsed > 0.0 {
+                    let instantaneous = (downloaded - last_emitted) as f64 / elapsed;
+                    ema_rate = if ema_rate == 0.0 {
+                        instantaneous
+                    } else {
+                        EMA_ALPHA * instantaneous + (1.0 - EMA_ALPHA) * ema_rate
+                    };
+                }
                 last_emitted = downloaded;
+                last_emit_instant = now;
+
                 let _ = app.emit(
                     "llm_download_progress",
                     LlmDownloadProgress {
                         model_id: model_id.to_string(),
                         bytes_downloaded: downloaded,
                         total_bytes,
+                        bytes_per_sec: ema_rate,
                     },
                 );
             }
@@ -220,6 +240,7 @@ pub(crate) async fn download_file_with_hash(
                 model_id: model_id.to_string(),
                 bytes_downloaded: downloaded,
                 total_bytes,
+                bytes_per_sec: ema_rate,
             },
         );
     }
