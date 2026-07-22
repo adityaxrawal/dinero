@@ -216,6 +216,13 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [processingProgress, setProcessingProgress] = useState<ProcessingProgressPayload | null>(null);
   const watchedOriginIds = useRef<Set<string>>(new Set());
 
+  // TASK-RT-008 (Doc 30): while a `statement_batch_progress`-tracked batch
+  // (10+ files) is in flight, individual statement_parsed/statement_parse_failed
+  // toasts are suppressed and tallied here instead, aggregating into one
+  // summary toast on batch completion ("8/10 imported, 2 failed") rather
+  // than one toast per file.
+  const batchOutcomesRef = useRef<{ succeeded: number; failed: number; failureReasons: string[] } | null>(null);
+
   const watchDraftOrigin = useCallback((originId: string) => {
     watchedOriginIds.current.add(originId);
   }, []);
@@ -271,11 +278,34 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
     let unlistenStaged: UnlistenFn;
 
     const setupListeners = async () => {
-      unlistenParsed = await listen('statement_parsed', () => {
+      // Doc 30 TASK-RT-008: the real payload is
+      // `{statement_id, instrument_id, issuer_name, rows_extracted}` --
+      // previously only `statement_id` was emitted at all, so this always
+      // showed a generic, contentless toast. `test_single_upload_shows_summary_toast`.
+      unlistenParsed = await listen<{
+        statement_id: string;
+        instrument_id?: string;
+        issuer_name?: string | null;
+        rows_extracted?: number;
+      }>('statement_parsed', (event) => {
         loadStatementHistory();
-        toast({ title: 'Statement Parsed', description: 'Data successfully extracted.' });
+        if (batchOutcomesRef.current) {
+          batchOutcomesRef.current.succeeded += 1;
+          return;
+        }
+        const { issuer_name, rows_extracted } = event.payload;
+        const subject = issuer_name || 'Statement';
+        const count = rows_extracted ?? 0;
+        toast({
+          title: 'Statement Parsed',
+          description: `${subject} statement parsed — ${count} transaction${count === 1 ? '' : 's'} found.`,
+        });
       });
 
+      // `test_password_required_uses_modal_not_toast`: this is the only
+      // handler for this event -- it opens the password modal and never
+      // calls `toast()`, matching Doc 30's "the password-retry modal is the
+      // primary UI for that specific interaction."
       unlistenPassword = await listen<{ statementId: string; instrumentId?: string }>(
         'statement_password_required',
         (event) => {
@@ -284,9 +314,23 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
         },
       );
 
-      unlistenFailed = await listen('statement_parse_failed', () => {
+      // Real payload is `{reason, filename}` -- previously discarded in
+      // favor of a hardcoded generic message.
+      unlistenFailed = await listen<{ reason?: string; filename?: string }>('statement_parse_failed', (event) => {
         loadStatementHistory();
-        toast({ title: 'Parse Failed', description: 'Failed to extract data from statement.', variant: 'destructive' });
+        const { reason, filename } = event.payload;
+        if (batchOutcomesRef.current) {
+          batchOutcomesRef.current.failed += 1;
+          if (reason) batchOutcomesRef.current.failureReasons.push(reason);
+          return;
+        }
+        toast({
+          title: 'Parse Failed',
+          description: filename ? `Failed to parse ${filename}${reason ? `: ${reason}` : ''}.` : 'Failed to extract data from statement.',
+          variant: 'destructive',
+          actionTo: '/statements',
+          actionLabel: 'View retry panel',
+        });
       });
 
       unlistenDuplicate = await listen('statement_duplicate_rejected', () => {
@@ -298,6 +342,34 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
         'statement_batch_progress',
         (event) => {
           const { parsed, total, eta_seconds } = event.payload;
+
+          // First tick of a fresh batch -- start tallying individual
+          // statement_parsed/statement_parse_failed events instead of
+          // toasting each one.
+          if (!batchOutcomesRef.current) {
+            batchOutcomesRef.current = { succeeded: 0, failed: 0, failureReasons: [] };
+          }
+
+          if (parsed >= total) {
+            // Doc 30 TASK-RT-008 `test_batch_upload_aggregates_into_single_summary`:
+            // one aggregate toast on batch completion
+            // ("8/10 imported, 2 failed due to password") instead of one
+            // toast per file.
+            const outcome = batchOutcomesRef.current;
+            batchOutcomesRef.current = null;
+            if (outcome && (outcome.succeeded > 0 || outcome.failed > 0)) {
+              const mostCommonReason = outcome.failureReasons[0];
+              toast({
+                title: 'Batch Import Complete',
+                description:
+                  outcome.failed > 0
+                    ? `${outcome.succeeded}/${total} imported, ${outcome.failed} failed${mostCommonReason ? ` (${mostCommonReason})` : ''}.`
+                    : `${outcome.succeeded}/${total} imported.`,
+                variant: outcome.failed > 0 ? 'destructive' : 'default',
+              });
+            }
+          }
+
           // Cleared once the last statement in the batch finishes -- the
           // intake round trip (statements_upload) returns long before this,
           // so this is the only signal for "still working through the

@@ -910,8 +910,28 @@ pub async fn commit_staged_draft<R: tauri::Runtime>(
         .map_err(|e| anyhow::anyhow!("Interact error: {}", e))?
         .map_err(|e| anyhow::anyhow!("DB error: {}", e))?;
 
-    events::emit(events::PARSED, serde_json::json!({ "statement_id": stmt_id }));
-    app.emit(events::PARSED, serde_json::json!({ "statement_id": stmt_id })).ok();
+    // Doc 30 TASK-RT-008: enriched with the fields the frontend needs to
+    // render a real summary toast ("HDFC Card statement parsed — 47
+    // transactions found") -- this event previously carried only
+    // `statement_id`, so every consumer had to fall back to a generic,
+    // contentless message.
+    let rows_extracted = entry_ids.len() as i64;
+    let issuer_name_for_event = instrument_id.clone();
+    let issuer_name = conn
+        .interact(move |c| crate::db::instruments::get_instrument(c, &issuer_name_for_event))
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .flatten()
+        .map(|i| i.issuer_name);
+    let parsed_payload = serde_json::json!({
+        "statement_id": stmt_id,
+        "instrument_id": instrument_id,
+        "issuer_name": issuer_name,
+        "rows_extracted": rows_extracted,
+    });
+    events::emit(events::PARSED, parsed_payload.clone());
+    app.emit(events::PARSED, parsed_payload).ok();
 
     Ok(stmt_id)
 }
