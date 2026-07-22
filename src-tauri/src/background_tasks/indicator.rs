@@ -140,7 +140,11 @@ impl BackgroundTaskRegistry {
         );
     }
 
-    /// All currently-registered (i.e. still running) tasks.
+    /// All currently-registered (i.e. still running) tasks. Doc 30
+    /// TASK-RT-004: backs `get_active_background_tasks`, so a late-mounting
+    /// (or freshly-navigated-to) indicator can recover in-progress tasks it
+    /// never received the live `background_task_progress` event for, same
+    /// principle as `ipc::system_warnings`'s registry (TASK-RT-007).
     pub fn active_tasks(&self) -> Vec<TaskProgress> {
         self.tasks
             .lock()
@@ -155,9 +159,20 @@ impl BackgroundTaskRegistry {
     }
 }
 
+/// Doc 30 TASK-RT-004: late-mount/route-navigation recovery for the
+/// background task indicator -- mirrors `get_active_system_warnings`
+/// (TASK-RT-007)'s same rationale.
+#[tauri::command]
+pub fn get_active_background_tasks(
+    registry: tauri::State<'_, BackgroundTaskRegistry>,
+) -> Vec<TaskProgress> {
+    registry.active_tasks()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tauri::Manager;
 
     fn mock_app() -> AppHandle<tauri::test::MockRuntime> {
         tauri::test::mock_builder()
@@ -282,6 +297,21 @@ mod tests {
             start.elapsed() < std::time::Duration::from_secs(2),
             "50 concurrent register/deregister cycles must complete promptly, not stall"
         );
+    }
+
+    /// Doc 30 TASK-RT-004: a late-mounting indicator component (or one
+    /// re-mounted after a route navigation) must be able to recover
+    /// already-running tasks it never received the live event for.
+    #[test]
+    fn test_get_active_background_tasks_recovers_already_running_task() {
+        let app = mock_app();
+        app.manage(BackgroundTaskRegistry::default());
+        let registry = app.state::<BackgroundTaskRegistry>();
+        registry.register_or_update(&app, "scan_1", "historical_scan", "Scanning acct_1", 10, 100, "Scanning...");
+
+        let recovered = get_active_background_tasks(registry);
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].task_id, "scan_1");
     }
 
     #[test]

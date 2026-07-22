@@ -861,6 +861,14 @@ export const API = {
     // reacting to the live `system_warning` event it missed.
     getActive: () => invokeCommand<SystemWarningPayload[]>('get_active_system_warnings'),
   },
+  backgroundTasks: {
+    // Doc 30 TASK-RT-004: same late-mount recovery rationale as
+    // systemWarnings.getActive -- an indicator that mounts (or remounts,
+    // e.g. across a route navigation) after a task already started
+    // recovers its in-progress state instead of showing nothing until the
+    // next progress tick.
+    getActive: () => invokeCommand<BackgroundTaskProgressPayload[]>('get_active_background_tasks'),
+  },
   menuBarExtra: {
     // Doc 30 TASK-DESK-008: "toggleable in Settings."
     getEnabled: () => invokeCommand<boolean>('settings_get_menu_bar_extra_enabled'),
@@ -896,6 +904,19 @@ export interface SystemWarningPayload {
   message: string;
   severity: 'critical' | 'degraded' | 'info';
   action_hint: string | null;
+}
+
+// Doc 30 TASK-RT-004: mirrors src-tauri's `background_tasks::indicator::TaskProgress`.
+export interface BackgroundTaskProgressPayload {
+  task_id: string;
+  task_type: string;
+  label: string;
+  current: number;
+  total: number;
+  eta_seconds: number | null;
+  status: 'running' | 'completed' | 'failed';
+  progress_pct: number;
+  status_message: string;
 }
 
 export interface LicenseStatusResponse {

@@ -3,12 +3,18 @@
  * payload shapes of the app's centrally-emitted Tauri events, mirroring
  * `src-tauri/src/ipc/events.rs`'s `AppEvent` field-for-field.
  *
- * `ScanProgressPayload` and `SystemWarningPayload` already lived in
- * `@/lib/ipc` before this file existed (widely imported there already) --
+ * `ScanProgressPayload`, `SystemWarningPayload`, and
+ * `BackgroundTaskProgressPayload` already lived in `@/lib/ipc` before this
+ * file existed (widely imported there already, `BackgroundTaskProgressPayload`
+ * added for TASK-RT-004's `get_active_background_tasks` wrapper) --
  * re-exported here rather than duplicated, so this module is genuinely the
  * one place all event payload types can be imported from going forward.
  */
-export type { ScanProgressPayload, SystemWarningPayload } from '@/lib/ipc';
+export type {
+  ScanProgressPayload,
+  SystemWarningPayload,
+  BackgroundTaskProgressPayload,
+} from '@/lib/ipc';
 
 // Mirrors ingestion/queues.rs's real `transaction_created` emission:
 // `serde_json::json!({ "observation_id": obs_id })` -- deliberately minimal
@@ -24,15 +30,3 @@ export interface ReconciliationClusterPayload {
   observation_id: string;
 }
 
-// Mirrors `background_tasks::indicator::TaskProgress` (Rust) field-for-field.
-export interface BackgroundTaskProgressPayload {
-  task_id: string;
-  task_type: string;
-  label: string;
-  current: number;
-  total: number;
-  eta_seconds: number | null;
-  status: 'running' | 'completed' | 'failed';
-  progress_pct: number;
-  status_message: string;
-}

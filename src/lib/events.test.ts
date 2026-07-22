@@ -41,24 +41,21 @@ describe('test_typescript_payload_types_match_rust_structs', () => {
     expect(tsFields).toEqual(rustFields);
   });
 
-  it('BackgroundTaskProgressPayload (events.ts) matches the real Rust TaskProgress field-for-field', () => {
-    const tsFields = tsInterfaceFields(eventsTs, 'BackgroundTaskProgressPayload').sort();
+  it('BackgroundTaskProgressPayload (ipc.ts) matches the real Rust TaskProgress field-for-field', () => {
+    const tsFields = tsInterfaceFields(ipcTs, 'BackgroundTaskProgressPayload').sort();
     const rustFields = rustStructFields(indicatorRustSrc, 'TaskProgress').sort();
     expect(tsFields).toEqual(rustFields);
   });
 
-  it('events.ts defines every documented event payload interface', () => {
-    for (const name of [
-      'TransactionCreatedPayload',
-      'ReconciliationClusterPayload',
-      'BackgroundTaskProgressPayload',
-    ]) {
+  it('events.ts defines every documented event payload interface not already owned by ipc.ts', () => {
+    for (const name of ['TransactionCreatedPayload', 'ReconciliationClusterPayload']) {
       expect(eventsTs).toContain(`interface ${name}`);
     }
   });
 
-  it('re-exports ScanProgressPayload and SystemWarningPayload from ipc.ts rather than duplicating them', () => {
+  it('re-exports ScanProgressPayload/SystemWarningPayload/BackgroundTaskProgressPayload from ipc.ts rather than duplicating them', () => {
     expect(eventsTs).toMatch(/export type \{[^}]*ScanProgressPayload[^}]*\} from '@\/lib\/ipc'/);
     expect(eventsTs).toMatch(/export type \{[^}]*SystemWarningPayload[^}]*\} from '@\/lib\/ipc'/);
+    expect(eventsTs).toMatch(/export type \{[^}]*BackgroundTaskProgressPayload[^}]*\} from '@\/lib\/ipc'/);
   });
 });
