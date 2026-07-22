@@ -14,7 +14,9 @@ import { queryKeys } from '@/lib/queryKeys';
  * `src-tauri/src/ipc/events.rs`'s `AppEvent::as_str()` (established
  * precedent from TASK-FE-002's `useSyncStore`/`useLicenseStore`).
  */
-const EVENT_INVALIDATIONS: ReadonlyArray<{ event: string; keys: readonly QueryKey[] }> = [
+// Exported (Doc 30 TASK-QA-008) so the UI state/event regression suite can
+// assert directly against the real mapping rather than duplicating it.
+export const EVENT_INVALIDATIONS: ReadonlyArray<{ event: string; keys: readonly QueryKey[] }> = [
   { event: 'transaction_created', keys: [queryKeys.transactions.all(), queryKeys.dashboard.all()] },
   { event: 'transaction_updated', keys: [queryKeys.transactions.all(), queryKeys.dashboard.all()] },
   { event: 'transaction_deleted', keys: [queryKeys.transactions.all(), queryKeys.dashboard.all()] },
