@@ -28,18 +28,71 @@ pub async fn llm_download_model(
         .map_err(|e| crate::error::AppError::Network(e.to_string()))
 }
 
+fn downloaded_model_ids(app_dir: &std::path::Path) -> Vec<String> {
+    llm_manager::get_available_models()
+        .into_iter()
+        .filter(|m| llm_manager::get_model_path(app_dir, &m.id).is_some())
+        .map(|m| m.id)
+        .collect()
+}
+
+/// Persists `resolved` (the output of `resolve_active_model`) if it differs
+/// from `stored`, so a stale DB row self-heals as soon as it's noticed.
+async fn persist_if_changed(
+    pool: &deadpool_sqlite::Pool,
+    stored: Option<String>,
+    resolved: Option<String>,
+) -> Result<(), crate::error::AppError> {
+    if stored == resolved {
+        return Ok(());
+    }
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    match resolved {
+        Some(id) => conn
+            .interact(move |c| crate::db::local_profile::set_llm_model(c, &id))
+            .await
+            .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+            .map_err(|e| crate::error::AppError::Db(e.to_string())),
+        None => conn
+            .interact(|c| crate::db::local_profile::clear_llm_model(c))
+            .await
+            .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+            .map_err(|e| crate::error::AppError::Db(e.to_string())),
+    }
+}
+
 #[tauri::command]
 pub async fn llm_delete_model(
     app: tauri::AppHandle,
+    pool: State<'_, deadpool_sqlite::Pool>,
     model_id: String,
-) -> Result<(), crate::error::AppError> {
+) -> Result<String, crate::error::AppError> {
     let app_dir = app
         .path()
         .app_data_dir()
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
 
     llm_manager::delete_model(&app_dir, &model_id)
-        .map_err(|e| crate::error::AppError::Io(e.to_string()))
+        .map_err(|e| crate::error::AppError::Io(e.to_string()))?;
+
+    let downloaded = downloaded_model_ids(&app_dir);
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let stored = conn
+        .interact(|c| crate::db::local_profile::get_llm_model(c))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+
+    let resolved = llm_manager::resolve_active_model(&downloaded, stored.as_deref());
+    persist_if_changed(&pool, stored, resolved.clone()).await?;
+
+    Ok(resolved.unwrap_or_default())
 }
 
 /// Which catalog models already have their `.gguf` file on disk — the
@@ -55,31 +108,39 @@ pub async fn llm_get_downloaded_models(
         .app_data_dir()
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
 
-    Ok(llm_manager::get_available_models()
-        .into_iter()
-        .filter(|m| llm_manager::get_model_path(&app_dir, &m.id).is_some())
-        .map(|m| m.id)
-        .collect())
+    Ok(downloaded_model_ids(&app_dir))
 }
 
 /// The model the extraction pipeline's Layer 6 (`Layer6LlmLayer`) will
-/// actually try to load — reads `local_profile.llm_model`, the same column
-/// onboarding already writes via `onboarding_save_preferences` but that
-/// nothing, anywhere, ever read back until now.
+/// actually try to load — reads `local_profile.llm_model`, self-healing it
+/// against what's actually downloaded on disk (a stale row pointing at a
+/// deleted model, or an unset row, both resolve to whatever's really
+/// available via `resolve_active_model`).
 #[tauri::command]
 pub async fn llm_get_active_model(
+    app: tauri::AppHandle,
     pool: State<'_, deadpool_sqlite::Pool>,
 ) -> Result<String, crate::error::AppError> {
+    let app_dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+
     let conn = pool
         .get()
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-    let model_id = conn
+    let stored = conn
         .interact(|c| crate::db::local_profile::get_llm_model(c))
         .await
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-    Ok(model_id.unwrap_or_else(|| llm_manager::DEFAULT_ACTIVE_MODEL_ID.to_string()))
+
+    let downloaded = downloaded_model_ids(&app_dir);
+    let resolved = llm_manager::resolve_active_model(&downloaded, stored.as_deref());
+    persist_if_changed(&pool, stored, resolved.clone()).await?;
+
+    Ok(resolved.unwrap_or_default())
 }
 
 #[tauri::command]
