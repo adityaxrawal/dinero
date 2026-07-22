@@ -1,5 +1,21 @@
 import { useState, useEffect } from 'react';
-import { X, Loader2, Save, Trash2, Plus, ExternalLink, CheckCircle2 } from 'lucide-react';
+import {
+  X,
+  Loader2,
+  Save,
+  Trash2,
+  Plus,
+  ExternalLink,
+  CheckCircle2,
+  ArrowDownLeft,
+  ArrowUpRight,
+  Repeat,
+  Landmark,
+  MapPin,
+  Hash,
+  ShieldCheck,
+  Link2,
+} from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { getErrorToast } from '@/lib/errorMapping';
@@ -8,16 +24,19 @@ import { useToast } from '@/hooks/use-toast';
 import { useTransactionDetail } from '@/hooks/queries/useTransactionDetail';
 import { useTransactionTags } from '@/hooks/queries/useTransactionTags';
 import { useTagsList } from '@/hooks/queries/useTagsList';
+import { useInstrumentsList } from '@/hooks/queries/useInstrumentsList';
 import { useUpdateTransactionFields } from '@/hooks/mutations/useUpdateTransactionFields';
 import { useAddTransactionTag } from '@/hooks/mutations/useAddTransactionTag';
 import { useRemoveTransactionTag } from '@/hooks/mutations/useRemoveTransactionTag';
 import { useSoftDeleteTransaction } from '@/hooks/mutations/useSoftDeleteTransaction';
 import { confirmDeleteTransaction } from '@/lib/confirmDialog';
+import { instrumentIcon, instrumentTypeLabel } from '@/components/instruments/instrumentTypes';
 import SourceEvidencePanel from './SourceEvidencePanel';
 import EmiInstallmentTimeline from './EmiInstallmentTimeline';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { TagDatalist } from '@/components/transactions/TagDatalist';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import type { CategoryRecord } from '@/lib/ipc';
 
@@ -27,6 +46,46 @@ interface TransactionInspectorProps {
   transactionId: string | null;
   onClose: () => void;
   categories: CategoryRecord[];
+}
+
+const INK = '#064E3B';
+const CREAM = '#F8E7C9';
+
+/** A single label/value row inside one of the panel's info cards. */
+function InfoRow({
+  icon,
+  label,
+  children,
+}: {
+  icon?: React.ReactNode;
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 p-3 border-b border-[#064E3B]/5 last:border-0">
+      <span className="flex items-center gap-1.5 text-[13px] font-medium text-[#064E3B]/80 shrink-0">
+        {icon}
+        {label}
+      </span>
+      <span className="text-[13px] text-[#064E3B] font-medium truncate max-w-[200px] text-right">
+        {children}
+      </span>
+    </div>
+  );
+}
+
+function SectionCard({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="bg-[#F8E7C9]/50 rounded-xl overflow-hidden border border-[#064E3B]/10">
+      {children}
+    </div>
+  );
+}
+
+function formatMoney(amountMinor: number | null, currency: string | null) {
+  if (amountMinor === null) return '—';
+  const symbol = currency === 'USD' ? '$' : currency === 'EUR' ? '€' : currency === 'GBP' ? '£' : currency ? `${currency} ` : '₹';
+  return `${symbol}${(amountMinor / 100).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
 }
 
 /**
@@ -47,6 +106,7 @@ export default function TransactionInspector({
   const { data: detail, isLoading } = useTransactionDetail(transactionId ?? undefined);
   const { data: tags = [] } = useTransactionTags(transactionId ?? undefined);
   const { data: availableTags = [] } = useTagsList();
+  const { data: instruments = [] } = useInstrumentsList();
 
   const updateFields = useUpdateTransactionFields();
   const addTag = useAddTransactionTag();
@@ -78,6 +138,10 @@ export default function TransactionInspector({
   const tx = detail?.transaction;
   const amount = tx ? (tx.amount ?? (tx.amount_minor ?? 0) / 100) : 0;
   const hasEmi = !!tx?.emi_group_id;
+  const isDebit = tx?.direction === 'debit';
+  const instrument = tx?.instrument_id ? instruments.find((i) => i.id === tx.instrument_id) : undefined;
+  const category = categories.find((c) => c.id === tx?.category_id);
+  const isForeignCurrency = !!tx?.original_amount_minor && tx.original_currency && tx.original_currency !== tx.currency;
 
   const handleSave = () => {
     if (!transactionId) return;
@@ -147,7 +211,7 @@ export default function TransactionInspector({
               <div className="flex items-center gap-3 mb-3">
                 <div
                   className="w-10 h-10 rounded-xl flex items-center justify-center text-[15px] font-bold flex-shrink-0"
-                  style={{ background: '#064E3B', color: '#F8E7C9' }}
+                  style={{ background: INK, color: CREAM }}
                   aria-hidden="true"
                 >
                   {tx.merchant_display_name?.charAt(0).toUpperCase() ?? '?'}
@@ -156,20 +220,59 @@ export default function TransactionInspector({
                   <p className="text-[15px] font-semibold truncate text-[#064E3B]">
                     {tx.merchant_display_name}
                   </p>
-                  {tx.best_event_time && (
-                    <p className="text-[12px] text-[#064E3B]/60">
-                      {formatCustomDate(tx.best_event_time)}
-                    </p>
-                  )}
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {tx.best_event_time && (
+                      <p className="text-[12px] text-[#064E3B]/60">
+                        {formatCustomDate(tx.best_event_time)}
+                      </p>
+                    )}
+                    {category && (
+                      <span className="flex items-center gap-1 text-[11px] text-[#064E3B]/60">
+                        <span
+                          className="w-1.5 h-1.5 rounded-full"
+                          style={{ background: category.color ?? '#064E3B' }}
+                          aria-hidden="true"
+                        />
+                        {category.name}
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
               {/* Amount */}
-              <p
-                className="text-3xl font-bold tracking-tight"
-                style={{ color: amount < 0 ? '#064E3B' : '#059669' }}
-              >
-                {amount < 0 ? '−' : '+'}₹{Math.abs(amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-              </p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <p
+                  className="text-3xl font-bold tracking-tight"
+                  style={{ color: isDebit ? '#dc2626' : '#059669' }}
+                >
+                  {isDebit ? '−' : '+'}₹{Math.abs(amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                </p>
+                <span
+                  className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold"
+                  style={{
+                    background: isDebit ? 'rgba(220,38,38,0.12)' : 'rgba(5,150,105,0.12)',
+                    color: isDebit ? '#dc2626' : '#059669',
+                  }}
+                >
+                  {isDebit ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownLeft className="w-3 h-3" />}
+                  {isDebit ? 'Debit' : 'Credit'}
+                </span>
+                {tx.transaction_subtype && (
+                  <span
+                    className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold"
+                    style={{ background: 'rgba(6,78,59,0.09)', color: INK }}
+                  >
+                    <Repeat className="w-3 h-3" />
+                    {tx.transaction_subtype}
+                  </span>
+                )}
+              </div>
+              {isForeignCurrency && (
+                <p className="text-[12px] text-[#064E3B]/60 mt-1">
+                  {formatMoney(tx.original_amount_minor, tx.original_currency)}
+                  {tx.exchange_rate ? ` · rate ${tx.exchange_rate.toFixed(4)}` : ''}
+                </p>
+              )}
             </div>
           )}
 
@@ -235,10 +338,9 @@ export default function TransactionInspector({
               {/* ── Details tab ──────────────────────────────── */}
               {activeTab === 'details' && (
                 <div id="panel-details" role="tabpanel" className="space-y-4">
-                  {/* Read-only fields */}
-                  <div className="bg-[#F8E7C9]/50 rounded-xl overflow-hidden border border-[#064E3B]/10">
-                    <div className="flex items-center justify-between p-3 border-b border-[#064E3B]/5">
-                      <span className="text-[13px] font-medium text-[#064E3B]">Status</span>
+                  {/* Transaction info */}
+                  <SectionCard>
+                    <InfoRow label="Status">
                       <span
                         className="px-2 py-0.5 text-[11px] font-medium rounded-full"
                         style={{
@@ -248,36 +350,77 @@ export default function TransactionInspector({
                       >
                         {tx.status ?? 'UNKNOWN'}
                       </span>
-                    </div>
-                    {tx.instrument_id && (
-                      <div className="flex items-center justify-between p-3 border-b border-[#064E3B]/5">
-                        <span className="text-[13px] font-medium text-[#064E3B]">Account ID</span>
-                        <span className="text-[13px] font-mono text-[#064E3B]/70 truncate max-w-[200px] text-right">{tx.instrument_id}</span>
-                      </div>
+                    </InfoRow>
+                    {instrument && (
+                      <InfoRow icon={instrumentIcon(instrument.instrument_type, 13)} label="Instrument">
+                        <span className="flex flex-col items-end">
+                          <span>{instrument.issuer_name}</span>
+                          <span className="text-[11px] text-[#064E3B]/50 font-normal">
+                            {instrumentTypeLabel(instrument.instrument_type)}
+                            {instrument.masked_identifier ? ` · ${instrument.masked_identifier}` : ''}
+                          </span>
+                        </span>
+                      </InfoRow>
                     )}
                     {tx.reference_id && (
-                      <div className="flex items-center justify-between p-3 border-b border-[#064E3B]/5">
-                        <span className="text-[13px] font-medium text-[#064E3B]">Reference ID</span>
-                        <span className="text-[13px] font-mono text-[#064E3B]/70 truncate max-w-[200px] text-right">{tx.reference_id}</span>
-                      </div>
+                      <InfoRow icon={<Hash className="w-3 h-3" />} label="Reference ID">
+                        <span className="font-mono">{tx.reference_id}</span>
+                      </InfoRow>
                     )}
                     {tx.best_posting_date && (
-                      <div className="flex items-center justify-between p-3 border-b border-[#064E3B]/5">
-                        <span className="text-[13px] font-medium text-[#064E3B]">Posting Date</span>
-                        <span className="text-[13px] text-[#064E3B]/70 truncate max-w-[200px] text-right">{tx.best_posting_date}</span>
-                      </div>
+                      <InfoRow label="Posting Date">{tx.best_posting_date}</InfoRow>
                     )}
                     {tx.location && (
-                      <div className="flex items-center justify-between p-3 border-b border-[#064E3B]/5">
-                        <span className="text-[13px] font-medium text-[#064E3B]">Location</span>
-                        <span className="text-[13px] text-[#064E3B]/70 truncate max-w-[200px] text-right">{tx.location}</span>
-                      </div>
+                      <InfoRow icon={<MapPin className="w-3 h-3" />} label="Location">
+                        {tx.location}
+                      </InfoRow>
                     )}
-                    <div className="flex items-center justify-between p-3">
-                      <span className="text-[13px] font-medium text-[#064E3B]">Transaction ID</span>
-                      <span className="text-[13px] font-mono text-[#064E3B]/70 truncate max-w-[150px] text-right">{tx.id}</span>
-                    </div>
-                  </div>
+                    <InfoRow icon={<Hash className="w-3 h-3" />} label="Transaction ID">
+                      <span className="font-mono">{tx.id}</span>
+                    </InfoRow>
+                  </SectionCard>
+
+                  {/* Amount & balance */}
+                  {(tx.balance_after_transaction !== null || isForeignCurrency) && (
+                    <SectionCard>
+                      <InfoRow label="Currency">{tx.currency ?? 'INR'}</InfoRow>
+                      {isForeignCurrency && (
+                        <>
+                          <InfoRow label="Original Amount">
+                            {formatMoney(tx.original_amount_minor, tx.original_currency)}
+                          </InfoRow>
+                          {tx.exchange_rate !== null && (
+                            <InfoRow label="Exchange Rate">{tx.exchange_rate?.toFixed(4)}</InfoRow>
+                          )}
+                        </>
+                      )}
+                      {tx.balance_after_transaction !== null && (
+                        <InfoRow icon={<Landmark className="w-3 h-3" />} label="Balance After">
+                          ₹{tx.balance_after_transaction?.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                        </InfoRow>
+                      )}
+                    </SectionCard>
+                  )}
+
+                  {/* Provenance / confidence */}
+                  <SectionCard>
+                    {tx.source_mix && (
+                      <InfoRow icon={<Link2 className="w-3 h-3" />} label="Source">
+                        {tx.source_mix}
+                      </InfoRow>
+                    )}
+                    {tx.match_confidence && (
+                      <InfoRow icon={<ShieldCheck className="w-3 h-3" />} label="Match Confidence">
+                        {tx.match_confidence}
+                      </InfoRow>
+                    )}
+                    {tx.event_time_confidence && (
+                      <InfoRow label="Time Confidence">{tx.event_time_confidence}</InfoRow>
+                    )}
+                    {tx.alert_fired !== null && (
+                      <InfoRow label="Alert Sent">{tx.alert_fired ? 'Yes' : 'No'}</InfoRow>
+                    )}
+                  </SectionCard>
 
                   {/* Editable fields */}
                   <div className="bg-[#F8E7C9]/50 rounded-xl overflow-hidden border border-[#064E3B]/10">
@@ -304,7 +447,16 @@ export default function TransactionInspector({
                         </SelectTrigger>
                         <SelectContent>
                           {categories.map((c) => (
-                            <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+                            <SelectItem key={c.id} value={c.id}>
+                              <span className="flex items-center gap-2">
+                                <span
+                                  className="w-2 h-2 rounded-full shrink-0"
+                                  style={{ background: c.color ?? '#064E3B' }}
+                                  aria-hidden="true"
+                                />
+                                {c.name}
+                              </span>
+                            </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
@@ -314,12 +466,13 @@ export default function TransactionInspector({
                       <Label htmlFor="insp-notes" className="text-[11px] font-semibold uppercase tracking-wider text-[#064E3B]/60">
                         Notes
                       </Label>
-                      <Input
+                      <Textarea
                         id="insp-notes"
                         value={notes}
                         onChange={(e) => setNotes(e.target.value)}
                         placeholder="Add a note…"
-                        className="h-7 text-[13px] border-none shadow-none p-0 bg-transparent focus-visible:ring-0 text-[#064E3B]"
+                        rows={2}
+                        className="text-[13px] border-none shadow-none p-0 bg-transparent focus-visible:ring-0 text-[#064E3B] resize-none min-h-0"
                       />
                     </div>
 
@@ -404,6 +557,13 @@ export default function TransactionInspector({
                         : <><Trash2 className="w-3.5 h-3.5" aria-hidden="true" />Delete Transaction</>}
                     </button>
                   </div>
+
+                  {(tx.created_at || tx.updated_at) && (
+                    <p className="text-[10px] text-[#064E3B]/40 text-center pt-1">
+                      {tx.created_at && `Recorded ${formatCustomDate(tx.created_at)}`}
+                      {tx.updated_at && tx.updated_at !== tx.created_at && ` · Updated ${formatCustomDate(tx.updated_at)}`}
+                    </p>
+                  )}
                 </div>
               )}
 
