@@ -216,6 +216,7 @@ pub fn resolve_cluster(
                     emi_original_amount_minor: obs_row.emi_original_amount_minor,
                     fingerprint: None,
                     confidence_score: None,
+                    event_time_confidence: obs_row.event_time_confidence,
                 };
                 crate::reconciliation::canonical::create_canonical_transaction(
                     conn,

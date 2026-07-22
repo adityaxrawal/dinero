@@ -68,6 +68,7 @@ mod tests {
             emi_original_amount_minor: None,
             fingerprint: Some("fp_1".to_string()),
             confidence_score: None,
+            event_time_confidence: None,
         }
     }
 

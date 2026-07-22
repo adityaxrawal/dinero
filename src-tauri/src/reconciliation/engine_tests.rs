@@ -64,6 +64,7 @@ fn test_exact_match_success() {
         emi_original_amount_minor: None,
         fingerprint: Some("fp_shared".to_string()),
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     // Empty candidate set: proves the fingerprint pre-filter resolves this
@@ -95,6 +96,7 @@ fn test_prefilter_miss_falls_through_to_scoring() {
         // No prior observation carries this fingerprint.
         fingerprint: Some("fp_no_match_anywhere".to_string()),
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     let cand = CanonicalCandidate {
@@ -137,6 +139,7 @@ fn test_clear_winner_single_viable_candidate_auto_matches() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     let cand = CanonicalCandidate {
@@ -180,6 +183,7 @@ fn test_clear_winner_margin_exceeds_15_percent_auto_matches() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     // Strong candidate: exact reference ID + exact merchant + close time.
@@ -233,6 +237,7 @@ fn test_ambiguity_margin_within_15_percent_routes_ambiguous() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     // Two near-identical candidates -- same merchant, same amount, close
@@ -286,6 +291,7 @@ fn test_below_viability_floor_routes_new_canonical() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     // Same instrument/amount/direction (required just to be a windowed
@@ -337,6 +343,7 @@ fn test_new_canonical_created_when_no_match() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     let decision = reconcile(&conn, &obs, vec![]).unwrap();
@@ -363,6 +370,7 @@ fn test_ambiguous_cluster_created_for_same_amount_same_day() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     let cand1 = CanonicalCandidate {
@@ -423,6 +431,7 @@ fn test_new_canonical_created_from_single_observation() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     let decision = reconcile(&conn, &obs, vec![]).unwrap();
@@ -480,6 +489,7 @@ fn test_ambiguous_decision_creates_no_canonical_row() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     let cand1 = CanonicalCandidate {
@@ -569,6 +579,7 @@ fn test_statement_overwrites_email_sourced_fields() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     let cand2 = CanonicalCandidate {
@@ -663,6 +674,7 @@ fn test_email_only_fills_null_fields_when_statement_present() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     let cand = CanonicalCandidate {
@@ -744,6 +756,7 @@ fn test_email_vs_email_uses_confidence_score() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: Some(0.55),
+        event_time_confidence: None,
     };
     let cand = CanonicalCandidate {
         id: "tx_3".to_string(),
@@ -791,6 +804,7 @@ fn test_email_vs_email_uses_confidence_score() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: Some(0.95),
+        event_time_confidence: None,
     };
     reconcile(&conn, &obs_much_higher, vec![cand]).unwrap();
 
@@ -867,6 +881,7 @@ fn test_email_vs_email_compares_against_last_winner_not_oldest() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: Some(0.9),
+        event_time_confidence: None,
     };
     reconcile(&conn, &obs2, vec![cand.clone()]).unwrap();
 
@@ -905,6 +920,7 @@ fn test_email_vs_email_compares_against_last_winner_not_oldest() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: Some(0.92),
+        event_time_confidence: None,
     };
     reconcile(&conn, &obs3, vec![cand]).unwrap();
 
@@ -959,6 +975,7 @@ fn test_precedence_overwrite_logged_to_audit() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
     let cand = CanonicalCandidate {
         id: "tx_4".to_string(),
@@ -1120,6 +1137,7 @@ fn test_original_ambiguous_decision_row_never_modified() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
     let cand1 = CanonicalCandidate {
         id: "cand_1".to_string(),
@@ -1462,6 +1480,7 @@ fn test_manual_entry_triggers_realtime_reconciliation() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     // Fetch candidates
@@ -1497,6 +1516,7 @@ fn test_refund_linked_to_original_debit() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs_debit).unwrap();
@@ -1526,6 +1546,7 @@ fn test_refund_linked_to_original_debit() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs_credit).unwrap();
@@ -1575,6 +1596,7 @@ fn test_reversal_detected_within_hours() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs_debit).unwrap();
@@ -1604,6 +1626,7 @@ fn test_reversal_detected_within_hours() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs_credit).unwrap();
@@ -1660,6 +1683,7 @@ fn test_merchant_alias_resolves_normalized_name() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
@@ -1700,6 +1724,7 @@ fn test_category_assigned_from_merchant_entity() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
@@ -1737,6 +1762,7 @@ fn test_missing_category_does_not_block_canonical_write() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
@@ -1779,6 +1805,7 @@ fn test_alert_not_fired_when_under_threshold() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
@@ -1822,6 +1849,7 @@ fn test_global_spend_limit_alert() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
@@ -1874,6 +1902,7 @@ fn test_category_spend_limit_alert() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
@@ -1933,6 +1962,7 @@ fn test_merchant_spike_alert() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
@@ -2006,6 +2036,7 @@ fn test_anomaly_detection_logic() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
@@ -2096,6 +2127,7 @@ fn test_global_spend_limit_80_percent() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
@@ -2146,6 +2178,7 @@ fn test_category_budget_100_percent() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
@@ -2190,6 +2223,7 @@ fn test_manual_transaction_creation() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
@@ -2307,6 +2341,7 @@ fn test_manual_transactions_handled_by_deduplication() {
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     };
 
     let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();

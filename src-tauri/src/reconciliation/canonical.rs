@@ -48,7 +48,16 @@ pub fn create_canonical_transaction(conn: &Connection, obs: &IncomingObservation
         currency: Some(obs.currency.clone()),
         authorization_time: event_time_dt,
         best_event_time: event_time_dt,
-        event_time_confidence: Some("high".to_string()),
+        // Default "high" for the common case (unambiguous parse); an
+        // observation flagged by `apply_date_cross_check`
+        // (extraction::ladder) -- "swapped_by_anchor" or
+        // "anchor_mismatch_needs_review" -- carries that instead, so the
+        // UI (TransactionInspector/TransactionDetail "Time Confidence")
+        // reflects the real uncertainty instead of always claiming "high".
+        event_time_confidence: obs
+            .event_time_confidence
+            .clone()
+            .or_else(|| Some("high".to_string())),
         best_posting_date: event_time_dt.map(|dt| dt.date()),
         posting_date_confidence: None,
         merchant_display_name: obs.merchant_raw.clone(),

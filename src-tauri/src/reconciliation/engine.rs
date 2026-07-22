@@ -51,6 +51,14 @@ pub struct IncomingObservation {
     /// fields." `None` when unavailable (e.g. manual entries).
     #[serde(default)]
     pub confidence_score: Option<f64>,
+    /// The observation's `transaction_observations.event_time_confidence`
+    /// (set by `extraction::ladder::apply_date_cross_check` when the body
+    /// date was numerically ambiguous, `None` otherwise). Consumed by
+    /// `canonical::create_canonical_transaction` instead of unconditionally
+    /// stamping the canonical row `"high"` -- see that function for why an
+    /// ambiguous-date observation must not silently look fully trusted.
+    #[serde(default)]
+    pub event_time_confidence: Option<String>,
 }
 
 /// Represents an existing canonical transaction for candidate matching.

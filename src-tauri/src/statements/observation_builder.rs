@@ -77,6 +77,7 @@ pub fn build_observation(
         // TASK-DEDUP-008) regardless of confidence -- this field only
         // matters for the email-vs-email comparison, irrelevant here.
         confidence_score: None,
+        event_time_confidence: None,
     })
 }
 

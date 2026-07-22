@@ -57,6 +57,7 @@ fn base_obs(id: &str, amount_minor: i64, direction: &str, event_time: &str) -> I
         emi_original_amount_minor: None,
         fingerprint: None,
         confidence_score: None,
+        event_time_confidence: None,
     }
 }
 

@@ -8,6 +8,7 @@ pub fn normalize_observation(
     source_pipeline: &str,
     source_message_id: &str,
     raw_body: Option<&str>,
+    raw_html: Option<&str>,
 ) -> TransactionObservationsRow {
     // 1. Amount Minor Normalization
     let amount_minor = raw.amount_minor;
@@ -67,7 +68,12 @@ pub fn normalize_observation(
         amount_minor,
         currency: Some(currency),
         event_time,
-        event_time_confidence: None,
+        // `apply_date_cross_check` (extraction::ladder) only ever sets this
+        // on a genuinely ambiguous DD/MM-vs-MM/DD date -- `None` for every
+        // other case (unambiguous parse, or ambiguous with no decisive
+        // anchor signal either way), matching Doc 30 TASK-TXN-004's
+        // fallback-only framing for Gmail's internalDate.
+        event_time_confidence: raw.date_cross_check_flag.clone(),
         posting_date: None,
         merchant_raw,
         merchant_normalized: None,
@@ -88,8 +94,12 @@ pub fn normalize_observation(
         // silently dropped here.
         confidence_score: raw.confidence_score,
         // Doc 30 TASK-TXN-009: "raw_payload_json (the full sanitized body...
-        // for auditability/reprocessing)".
-        raw_payload_json: raw_body.map(|b| serde_json::json!({ "body": b }).to_string()),
+        // for auditability/reprocessing)". `html` (strengthen-regex/
+        // redesign pass) carries the sanitized original HTML alongside the
+        // plain-text body -- `None` when the source had no `text/html` part
+        // (or no source email at all, e.g. a mandate-synthesized ₹0 row) --
+        // so the Evidence tab can render the email's real Gmail layout/CSS.
+        raw_payload_json: raw_body.map(|b| serde_json::json!({ "body": b, "html": raw_html }).to_string()),
         // No document anywhere defines a versioning scheme for bank-template
         // parsers (flagged, not guessed, at TASK-TXN-001 and TASK-TXN-003
         // already) -- still true here, left unpopulated.
@@ -130,7 +140,7 @@ mod tests {
             ..Default::default()
         };
 
-        let obs = normalize_observation(raw, "test_pipeline", "msg_123", None);
+        let obs = normalize_observation(raw, "test_pipeline", "msg_123", None, None);
         assert_eq!(obs.fingerprint, None);
     }
 
@@ -140,11 +150,11 @@ mod tests {
             direction: Some("Cr.".to_string()),
             ..Default::default()
         };
-        let obs1 = normalize_observation(raw.clone(), "test_pipeline", "msg_123", None);
+        let obs1 = normalize_observation(raw.clone(), "test_pipeline", "msg_123", None, None);
         assert_eq!(obs1.direction.unwrap(), "credit");
 
         raw.direction = Some("debited".to_string());
-        let obs2 = normalize_observation(raw, "test_pipeline", "msg_123", None);
+        let obs2 = normalize_observation(raw, "test_pipeline", "msg_123", None, None);
         assert_eq!(obs2.direction.unwrap(), "debit");
     }
 
@@ -154,11 +164,11 @@ mod tests {
             currency: Some("usd".to_string()),
             ..Default::default()
         };
-        let obs1 = normalize_observation(raw.clone(), "test_pipeline", "msg_123", None);
+        let obs1 = normalize_observation(raw.clone(), "test_pipeline", "msg_123", None, None);
         assert_eq!(obs1.currency.unwrap(), "USD");
 
         raw.currency = None;
-        let obs2 = normalize_observation(raw, "test_pipeline", "msg_123", None);
+        let obs2 = normalize_observation(raw, "test_pipeline", "msg_123", None, None);
         assert_eq!(obs2.currency.unwrap(), "INR");
     }
 
@@ -169,7 +179,7 @@ mod tests {
             event_time: Some(1704103200),
             ..Default::default()
         };
-        let obs = normalize_observation(raw, "test_pipeline", "msg_123", None);
+        let obs = normalize_observation(raw, "test_pipeline", "msg_123", None, None);
         // IST time should be UTC + 5:30 -> 2024-01-01 15:30:00
         assert_eq!(
             obs.event_time
