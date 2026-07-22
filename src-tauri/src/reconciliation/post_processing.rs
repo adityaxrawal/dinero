@@ -78,18 +78,28 @@ pub fn run_post_processing(
             }
         }
 
-        // Heuristics fallback if no category resolved from merchants DB
+        // Heuristics fallback if no category resolved from merchants DB.
+        // Doc 30 TASK-RT-002 fix: these previously wrote the bare English
+        // words "transportation"/"shopping"/"food" -- not any real
+        // `categories.id` (the seeded system categories are `cat_transport`/
+        // `cat_shopping`/`cat_food`, migration 20260101000002). Nothing
+        // enforces a foreign key on `transactions.category_id` so this went
+        // unnoticed, but it silently orphaned every heuristically-tagged
+        // transaction from its category's real budget row -- a user setting
+        // a Transportation budget in Settings could never have it actually
+        // fire, since the alert engine looks up the budget by `cat_transport`
+        // while these transactions were tagged `transportation`.
         if category_id.is_none() {
             let m_lower = merchant.to_lowercase();
             if m_lower.contains("uber") || m_lower.contains("lyft") || m_lower.contains("transit") {
-                category_id = Some("transportation".to_string());
+                category_id = Some("cat_transport".to_string());
             } else if m_lower.contains("amazon") || m_lower.contains("flipkart") {
-                category_id = Some("shopping".to_string());
+                category_id = Some("cat_shopping".to_string());
             } else if m_lower.contains("swiggy")
                 || m_lower.contains("zomato")
                 || m_lower.contains("restaurant")
             {
-                category_id = Some("food".to_string());
+                category_id = Some("cat_food".to_string());
             }
         }
     }

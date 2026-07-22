@@ -1,23 +1,163 @@
+use crate::db::alerts::{insert_alert, Alert};
 use crate::db::transactions::{
     get_category_spend_current_month, get_global_spend_current_month,
     get_trailing_30_day_merchant_average,
 };
 use crate::ipc::events::{emit_event, AppEvent};
 use anyhow::Result;
+use chrono::Datelike;
 use deadpool_sqlite::Pool;
+use rusqlite::OptionalExtension;
 use tauri::AppHandle;
-
-/// Configurable monthly budget limits (minor units, i.e. paise/cents).
-/// These defaults represent ₹5,000 global and ₹500 per-category.
-/// 100% threshold values; 80% and 90% are computed proportionally.
-const GLOBAL_MONTHLY_BUDGET_MINOR: f64 = 5_000.0;
-const CATEGORY_MONTHLY_BUDGET_MINOR: f64 = 500.0;
 
 #[derive(serde::Serialize, Clone)]
 pub struct AlertPayload {
     pub transaction_id: String,
     pub alert_type: String,
     pub message: String,
+}
+
+/// Doc 30 TASK-RT-002: real user-configured global monthly limit
+/// (`local_profile.spending_limit_monthly`, already stored in rupees --
+/// same unit `get_global_spend_current_month` returns, no conversion
+/// needed). `None`/`<= 0` means "no limit configured," matching
+/// `BudgetsSettings.tsx`'s own semantics -- no alert should ever fire
+/// against a limit the user never set.
+fn global_monthly_limit(conn: &rusqlite::Connection) -> Option<f64> {
+    conn.query_row(
+        "SELECT spending_limit_monthly FROM local_profile WHERE id = 1",
+        [],
+        |row| row.get::<_, Option<f64>>(0),
+    )
+    .ok()
+    .flatten()
+    .filter(|&v| v > 0.0)
+}
+
+/// Doc 30 TASK-RT-002: real user-configured per-category monthly limit
+/// (`categories.monthly_budget_minor`, minor units/paise -- converted to
+/// rupees here since `get_category_spend_current_month` returns rupees).
+/// `None`/`<= 0` means "no limit configured" (`BudgetsSettings.tsx`'s
+/// "Leave at 0 for no limit").
+fn category_monthly_limit(conn: &rusqlite::Connection, category_id: &str) -> Option<f64> {
+    conn.query_row(
+        "SELECT monthly_budget_minor FROM categories WHERE id = ?1",
+        rusqlite::params![category_id],
+        |row| row.get::<_, Option<i64>>(0),
+    )
+    .ok()
+    .flatten()
+    .map(|minor| minor as f64 / 100.0)
+    .filter(|&v| v > 0.0)
+}
+
+/// Doc 30 TASK-RT-002: which of the 80/90/100 bands the user actually wants
+/// notified about (`local_profile.limit_thresholds`, a JSON percentage
+/// array -- same shape `commands::data`'s `thresholds_to_array` writes).
+/// Defaults to all three, sorted ascending, if unset -- matching
+/// `fetch_spending_limits`'s own default.
+fn enabled_threshold_levels(conn: &rusqlite::Connection) -> Vec<i64> {
+    let json: Option<String> = conn
+        .query_row(
+            "SELECT limit_thresholds FROM local_profile WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .ok()
+        .flatten();
+
+    let mut levels: Vec<i64> = json
+        .and_then(|j| serde_json::from_str::<Vec<f64>>(&j).ok())
+        .map(|arr| arr.into_iter().map(|v| v as i64).collect())
+        .unwrap_or_else(|| vec![80, 90, 100]);
+
+    levels.sort_unstable();
+    levels.dedup();
+    levels
+}
+
+/// Doc 30 TASK-RT-002 acceptance `test_threshold_fires_once_per_month`: a
+/// dedup key of `(month, threshold_level[, category])` checked against the
+/// `alerts` table (reused, not a new migration -- same convention as the
+/// licensing backend's audit-log-based idempotency checks) before firing,
+/// so a *second* transaction crossing the same already-fired band in the
+/// same month doesn't re-alert.
+fn threshold_already_fired_this_month(
+    conn: &rusqlite::Connection,
+    alert_key: &str,
+    month_start: &str,
+) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM alerts WHERE type = ?1 AND created_at >= ?2 LIMIT 1",
+            rusqlite::params![alert_key, month_start],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
+fn record_threshold_fired(conn: &rusqlite::Connection, alert_key: &str, message: &str) -> Result<()> {
+    insert_alert(
+        conn,
+        &Alert {
+            alert_id: uuid::Uuid::new_v4().to_string(),
+            alert_type: alert_key.to_string(),
+            message: message.to_string(),
+            related_cluster_id: None,
+            status: "fired".to_string(),
+            created_at: None,
+            updated_at: None,
+        },
+    )
+}
+
+/// Doc 30 TASK-RT-002: shared threshold-band logic for both the global and
+/// per-category checks. Walks `thresholds` (must be pre-sorted ascending)
+/// and fires **every** currently-crossed-but-not-yet-fired-this-month band,
+/// not only the highest one reached -- acceptance
+/// `test_backfill_scan_fires_all_crossed_thresholds_in_sequence`: if one
+/// batch (e.g. a historical scan backfill) jumps `spend` straight past
+/// 80% and 90% in a single check, both fire, in ascending order, instead of
+/// only 90%.
+#[allow(clippy::too_many_arguments)]
+fn check_threshold_bands(
+    conn: &rusqlite::Connection,
+    tx_id: &str,
+    scope_key: &str,
+    label: &str,
+    spend: f64,
+    limit: Option<f64>,
+    thresholds: &[i64],
+    month_start: &str,
+) -> Result<Vec<AlertPayload>> {
+    let Some(limit) = limit else {
+        return Ok(Vec::new());
+    };
+    let pct = (spend / limit) * 100.0;
+
+    let mut fired = Vec::new();
+    for &level in thresholds {
+        if pct + 1e-9 < level as f64 {
+            continue;
+        }
+        let alert_key = format!("{scope_key}_{level}");
+        if threshold_already_fired_this_month(conn, &alert_key, month_start)? {
+            continue;
+        }
+        let message = if level >= 100 {
+            format!("{label} fully exhausted (100%+)")
+        } else {
+            format!("{label} at {level}% of limit")
+        };
+        record_threshold_fired(conn, &alert_key, &message)?;
+        fired.push(AlertPayload {
+            transaction_id: tx_id.to_string(),
+            alert_type: alert_key,
+            message,
+        });
+    }
+    Ok(fired)
 }
 
 pub async fn evaluate_alerts_for_observations<R: tauri::Runtime>(
@@ -126,67 +266,50 @@ pub fn evaluate_alerts_internal<R: tauri::Runtime>(
         };
 
         let mut fired_alerts = Vec::new();
+        let month_start = format!(
+            "{}-{:02}-01 00:00:00",
+            event_time.date().year(),
+            event_time.date().month()
+        );
+        let thresholds = enabled_threshold_levels(conn);
 
-        // 1. Per-category budget threshold bands: 80%, 90%, 100%
+        // 1. Per-category budget threshold bands (Doc 30 TASK-RT-002: real
+        // user-configured `categories.monthly_budget_minor`, not a hardcoded
+        // constant; fires every crossed-but-unfired band this month, in
+        // ascending order; excludes ambiguous-cluster transactions and
+        // counts EMI installments at their real per-installment amount --
+        // both already guaranteed by `get_category_spend_current_month`'s
+        // own query, not re-implemented here).
         if let Some(cat) = &category_id {
             let category_spend =
                 get_category_spend_current_month(conn, cat, &event_time).unwrap_or(0.0);
-            let pct = category_spend / CATEGORY_MONTHLY_BUDGET_MINOR;
-            let alert_type = if pct >= 1.0 {
-                Some((
-                    "category_budget_100",
-                    format!("Category '{}' monthly budget fully exhausted (100%+)", cat),
-                ))
-            } else if pct >= 0.90 {
-                Some((
-                    "category_budget_90",
-                    format!("Category '{}' budget at 90%", cat),
-                ))
-            } else if pct >= 0.80 {
-                Some((
-                    "category_budget_80",
-                    format!("Category '{}' budget at 80%", cat),
-                ))
-            } else {
-                None
-            };
-            if let Some((atype, amsg)) = alert_type {
-                fired_alerts.push(AlertPayload {
-                    transaction_id: tx_id.clone(),
-                    alert_type: atype.to_string(),
-                    message: amsg,
-                });
-            }
+            let limit = category_monthly_limit(conn, cat);
+            fired_alerts.extend(check_threshold_bands(
+                conn,
+                &tx_id,
+                &format!("category_budget_{cat}"),
+                &format!("Category '{cat}' monthly budget"),
+                category_spend,
+                limit,
+                &thresholds,
+                &month_start,
+            )?);
         }
 
-        // 2. Global monthly spending threshold bands: 80%, 90%, 100%
+        // 2. Global monthly spending threshold bands (same real-limit /
+        // dedup / ascending-order treatment as the per-category check).
         let global_spend = get_global_spend_current_month(conn, &event_time).unwrap_or(0.0);
-        let global_pct = global_spend / GLOBAL_MONTHLY_BUDGET_MINOR;
-        let global_alert = if global_pct >= 1.0 {
-            Some((
-                "global_budget_100",
-                "Global monthly spending limit fully exhausted (100%+)".to_string(),
-            ))
-        } else if global_pct >= 0.90 {
-            Some((
-                "global_budget_90",
-                "Global monthly spending at 90% of limit".to_string(),
-            ))
-        } else if global_pct >= 0.80 {
-            Some((
-                "global_budget_80",
-                "Global monthly spending at 80% of limit".to_string(),
-            ))
-        } else {
-            None
-        };
-        if let Some((atype, amsg)) = global_alert {
-            fired_alerts.push(AlertPayload {
-                transaction_id: tx_id.clone(),
-                alert_type: atype.to_string(),
-                message: amsg,
-            });
-        }
+        let global_limit = global_monthly_limit(conn);
+        fired_alerts.extend(check_threshold_bands(
+            conn,
+            &tx_id,
+            "global_budget",
+            "Global monthly spending",
+            global_spend,
+            global_limit,
+            &thresholds,
+            &month_start,
+        )?);
 
         // 3. Merchant Spike Anomaly (unusual spend: current > 3x trailing 30-day average)
         if let Some(merchant) = &merchant_raw {
@@ -232,8 +355,6 @@ pub fn evaluate_alerts_internal<R: tauri::Runtime>(
     Ok(())
 }
 
-use crate::db::alerts::{insert_alert, Alert};
-use rusqlite::OptionalExtension;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;

@@ -2299,11 +2299,13 @@ fn array_to_thresholds(arr: &[f64]) -> SpendingLimitThresholds {
 /// M25: `fetch_spending_limits`/`update_spending_limits` were called by the
 /// frontend (`SpendingLimits.tsx`) but had no backend implementation at all —
 /// opening the Spending Limits page threw an immediate, reachable runtime
-/// crash. Backed by `local_profile.spending_limit_monthly` (global limit) and
-/// `local_profile.limit_thresholds` (JSONB thresholds); per-category budgets
-/// have no backing schema anywhere in this codebase (`categories` has no
-/// `budget` column) — returned/accepted as an empty list rather than
-/// inventing new schema outside this finding's scope.
+/// crash. Backed by `local_profile.spending_limit_monthly` (global limit),
+/// `local_profile.limit_thresholds` (JSONB thresholds), and (Doc 30
+/// TASK-RT-002) `categories.monthly_budget_minor` for per-category budgets —
+/// that column already existed (added for a different task) but was never
+/// actually wired to these two commands, so `BudgetsSettings.tsx`'s
+/// "Per-Category Budgets" section always rendered "No categories configured"
+/// and any budget a user entered there was silently discarded on save.
 #[tauri::command]
 pub async fn fetch_spending_limits(
     pool: State<'_, deadpool_sqlite::Pool>,
@@ -2330,10 +2332,19 @@ pub async fn fetch_spending_limits(
                 warn_at_100: true,
             });
 
+        let category_rows = crate::db::categories::select_all(c).map_err(|e| e.to_string())?;
+        let categories = category_rows
+            .into_iter()
+            .map(|cat| CategoryBudget {
+                name: cat.name,
+                budget: cat.monthly_budget_minor.map(|m| m as f64 / 100.0).unwrap_or(0.0),
+            })
+            .collect();
+
         Ok(SpendingLimits {
             global_limit,
             thresholds,
-            categories: Vec::new(),
+            categories,
         })
     })
     .await
@@ -2360,6 +2371,24 @@ pub async fn update_spending_limits(
             rusqlite::params![limits.global_limit, thresholds_json],
         )
         .map_err(|e| e.to_string())?;
+
+        // `CategoryBudget.name` is the display name (`categories.name`), not
+        // the id -- matches what `fetch_spending_limits` returns and what
+        // `BudgetsSettings.tsx` renders as the field label, so resolve back
+        // to the real id by name rather than changing that external shape.
+        for cat in &limits.categories {
+            let minor = if cat.budget > 0.0 {
+                Some((cat.budget * 100.0).round() as i64)
+            } else {
+                None
+            };
+            c.execute(
+                "UPDATE categories SET monthly_budget_minor = ?1 WHERE name = ?2 AND is_deleted = 0",
+                rusqlite::params![minor, cat.name],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+
         Ok::<_, String>(())
     })
     .await
@@ -3005,6 +3034,66 @@ mod tests {
 
         // Wrong password must fail to decrypt.
         assert!(crate::db::backup::decrypt_backup(&encrypted, "wrong password").is_err());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    /// Doc 30 TASK-RT-002: `fetch_spending_limits`/`update_spending_limits`
+    /// round-trip real per-category budgets -- previously
+    /// `update_spending_limits` silently discarded `limits.categories`
+    /// entirely and `fetch_spending_limits` always returned an empty list,
+    /// despite `BudgetsSettings.tsx` already rendering a full per-category
+    /// budget UI against this exact command pair.
+    #[tokio::test]
+    async fn test_spending_limits_round_trip_persists_categories() {
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(pool.clone());
+
+        let limits = SpendingLimits {
+            global_limit: 60000.0,
+            thresholds: SpendingLimitThresholds {
+                warn_at_80: true,
+                warn_at_90: false,
+                warn_at_100: true,
+            },
+            categories: vec![CategoryBudget {
+                name: "Transportation".to_string(),
+                budget: 2500.0,
+            }],
+        };
+        update_spending_limits(app.state::<deadpool_sqlite::Pool>(), limits)
+            .await
+            .unwrap();
+
+        let fetched = fetch_spending_limits(app.state::<deadpool_sqlite::Pool>())
+            .await
+            .unwrap();
+        assert_eq!(fetched.global_limit, 60000.0);
+        assert!(fetched.thresholds.warn_at_80);
+        assert!(!fetched.thresholds.warn_at_90);
+        assert!(fetched.thresholds.warn_at_100);
+
+        let transport = fetched
+            .categories
+            .iter()
+            .find(|c| c.name == "Transportation")
+            .expect("Transportation must be present among all seeded system categories");
+        assert_eq!(transport.budget, 2500.0);
+
+        // A category never given a budget must report 0 (frontend's "no
+        // limit" sentinel), not silently inherit some other category's value.
+        let food = fetched
+            .categories
+            .iter()
+            .find(|c| c.name == "Food & Dining")
+            .expect("Food & Dining must be present among all seeded system categories");
+        assert_eq!(food.budget, 0.0);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

@@ -1832,6 +1832,16 @@ fn test_alert_not_fired_when_under_threshold() {
 #[test]
 fn test_global_spend_limit_alert() {
     let conn = setup_test_db();
+    // Doc 30 TASK-RT-002: the alert engine now reads the user's real
+    // configured limit (`local_profile.spending_limit_monthly`) instead of a
+    // hardcoded default -- with no limit configured, no alert should ever
+    // fire, so this test seeds one explicitly (₹5,000, the old default's
+    // equivalent) rather than relying on a fallback.
+    conn.execute(
+        "INSERT INTO local_profile (id, spending_limit_monthly) VALUES (1, 5000)",
+        [],
+    )
+    .unwrap();
     conn.execute("INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint) VALUES ('obs_global_alert', 'manual', 'manual_global', 'fp_global')", []).unwrap();
 
     let obs = crate::reconciliation::engine::IncomingObservation {
@@ -1884,6 +1894,15 @@ fn test_global_spend_limit_alert() {
 #[test]
 fn test_category_spend_limit_alert() {
     let conn = setup_test_db();
+    // Doc 30 TASK-RT-002: real user-configured `categories.monthly_budget_minor`
+    // (₹500.00, the old hardcoded default's equivalent) -- "UBER INDIA
+    // SYSTEMS" resolves to the real seeded `cat_transport` category id via
+    // `post_processing.rs`'s merchant heuristic.
+    conn.execute(
+        "UPDATE categories SET monthly_budget_minor = 50000 WHERE id = 'cat_transport'",
+        [],
+    )
+    .unwrap();
     conn.execute("INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint) VALUES ('obs_cat_alert', 'manual', 'manual_cat', 'fp_cat_alert')", []).unwrap();
 
     // UBER INDIA SYSTEMS triggers transportation category
@@ -2104,10 +2123,16 @@ fn test_upcoming_subscription_logic() {
 
 /// §6.10 — Global monthly spending at 80%: verify that spending above 80% of the
 /// configured global budget causes an alert to fire.
-/// GLOBAL_MONTHLY_BUDGET_MINOR = 5_000.0 (major INR) → 80% = 4_000 INR = 400_000 minor.
+/// Real configured `local_profile.spending_limit_monthly` = 5,000 INR (Doc 30
+/// TASK-RT-002 -- no longer a hardcoded constant) → 80% = 4_000 INR = 400_000 minor.
 #[test]
 fn test_global_spend_limit_80_percent() {
     let conn = setup_test_db();
+    conn.execute(
+        "INSERT INTO local_profile (id, spending_limit_monthly) VALUES (1, 5000)",
+        [],
+    )
+    .unwrap();
 
     conn.execute("INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint) VALUES ('obs_80pct', 'gmail_transaction', 'msg_80pct', 'fp_80pct')", []).unwrap();
 
@@ -2154,15 +2179,21 @@ fn test_global_spend_limit_80_percent() {
 
 /// §6.10 — Per-category budget at 100%: verify that category spend at 100% of
 /// the configured per-category budget fires an alert.
-/// CATEGORY_MONTHLY_BUDGET_MINOR = 500.0 (major INR) → 100% = 500 INR = 50_000 minor.
+/// Real configured `categories.monthly_budget_minor` (`cat_transport`) = 500 INR
+/// (Doc 30 TASK-RT-002 -- no longer a hardcoded constant) → 100% = 50_000 minor.
 #[test]
 fn test_category_budget_100_percent() {
     let conn = setup_test_db();
+    conn.execute(
+        "UPDATE categories SET monthly_budget_minor = 50000 WHERE id = 'cat_transport'",
+        [],
+    )
+    .unwrap();
 
     conn.execute("INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint) VALUES ('obs_cat_100', 'gmail_transaction', 'msg_cat_100', 'fp_cat_100')", []).unwrap();
 
     // 50_200 minor = 502 INR — crosses 100% of 500 category budget
-    // "UBER INDIA SYSTEMS" triggers the transportation keyword in post_processing heuristics
+    // "UBER INDIA SYSTEMS" triggers the cat_transport keyword in post_processing heuristics
     let obs = crate::reconciliation::engine::IncomingObservation {
         id: "obs_cat_100".to_string(),
         instrument_id: "inst_1".to_string(),
@@ -2198,6 +2229,312 @@ fn test_category_budget_100_percent() {
         )
         .unwrap();
     assert!(fired, "category budget 100% threshold must fire an alert when category spend crosses 100% of limit");
+}
+
+/// Doc 30 TASK-RT-002 acceptance: `test_threshold_fires_once_per_month`. A
+/// second transaction crossing the *same already-fired* band in the same
+/// month must not re-fire it -- the pre-fix code re-evaluated purely off
+/// current cumulative percentage with no persisted "already alerted" state,
+/// so every subsequent transaction while spend stayed in the same band
+/// re-emitted the identical alert.
+#[test]
+fn test_threshold_fires_once_per_month() {
+    let conn = setup_test_db();
+    conn.execute(
+        "INSERT INTO local_profile (id, spending_limit_monthly) VALUES (1, 5000)",
+        [],
+    )
+    .unwrap();
+
+    for (i, obs_id, amount_minor) in [(0, "obs_dedup_a", 400_100_i64), (1, "obs_dedup_b", 10_000_i64)]
+    {
+        conn.execute(
+            &format!(
+                "INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint) VALUES ('{obs_id}', 'gmail_transaction', 'msg_dedup_{i}', 'fp_dedup_{i}')"
+            ),
+            [],
+        )
+        .unwrap();
+        let obs = crate::reconciliation::engine::IncomingObservation {
+            id: obs_id.to_string(),
+            instrument_id: "inst_1".to_string(),
+            amount_minor,
+            currency: "INR".to_string(),
+            direction: "debit".to_string(),
+            event_time: format!("2026-06-{:02} 12:00:00", 10 + i),
+            reference_id: None,
+            merchant_raw: Some("Electronics Store".to_string()),
+            source_pipeline: "gmail_transaction".to_string(),
+            source_record_id: format!("msg_dedup_{i}"),
+            emi_total_installments: None,
+            emi_original_amount_minor: None,
+            fingerprint: None,
+            confidence_score: None,
+            event_time_confidence: None,
+        };
+        let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
+        crate::reconciliation::engine::reconcile(&conn, &obs, candidates).unwrap();
+        crate::reconciliation::alert_worker::evaluate_alerts_internal(
+            &conn,
+            None::<tauri::AppHandle>,
+            vec![obs_id.to_string()],
+        )
+        .unwrap();
+    }
+
+    // Both transactions push cumulative spend past 80% (400_100 alone is
+    // already 80.02%; the second pushes it to 82.02%, still under 90%) --
+    // the second transaction must NOT re-fire global_budget_80.
+    let fired_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM alerts WHERE type = 'global_budget_80'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        fired_count, 1,
+        "the same (month, threshold_level) must only ever fire once, not once per transaction"
+    );
+}
+
+/// Doc 30 TASK-RT-002 acceptance:
+/// `test_backfill_scan_fires_all_crossed_thresholds_in_sequence`. A single
+/// transaction (standing in for a historical-scan backfill batch) that
+/// jumps cumulative spend straight past both the 80% and 90% bands in one
+/// check must fire *both*, in ascending order -- not only the highest band
+/// reached, which is what the pre-fix `if/else if` chain did.
+#[test]
+fn test_backfill_scan_fires_all_crossed_thresholds_in_sequence() {
+    let conn = setup_test_db();
+    conn.execute(
+        "INSERT INTO local_profile (id, spending_limit_monthly) VALUES (1, 5000)",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint) VALUES ('obs_backfill_jump', 'gmail_transaction', 'msg_backfill_jump', 'fp_backfill_jump')", []).unwrap();
+
+    // 475_000 minor = 4750 INR = 95% of the 5000 INR limit in one jump --
+    // never having fired 80% or 90% before this check.
+    let obs = crate::reconciliation::engine::IncomingObservation {
+        id: "obs_backfill_jump".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 475_000,
+        currency: "INR".to_string(),
+        direction: "debit".to_string(),
+        event_time: "2026-06-10 12:00:00".to_string(),
+        reference_id: None,
+        merchant_raw: Some("Big Backfilled Purchase".to_string()),
+        source_pipeline: "gmail_transaction".to_string(),
+        source_record_id: "msg_backfill_jump".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
+        fingerprint: None,
+        confidence_score: None,
+        event_time_confidence: None,
+    };
+    let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
+    crate::reconciliation::engine::reconcile(&conn, &obs, candidates).unwrap();
+    crate::reconciliation::alert_worker::evaluate_alerts_internal(
+        &conn,
+        None::<tauri::AppHandle>,
+        vec!["obs_backfill_jump".to_string()],
+    )
+    .unwrap();
+
+    let fired_80: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM alerts WHERE type = 'global_budget_80'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let fired_90: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM alerts WHERE type = 'global_budget_90'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let fired_100: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM alerts WHERE type = 'global_budget_100'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(fired_80, 1, "80% band must fire even though 90% was also crossed in the same batch");
+    assert_eq!(fired_90, 1, "90% band must also fire, not only the highest reached");
+    assert_eq!(fired_100, 0, "100% was never actually reached (95%), must not fire");
+
+    let created_order: Vec<String> = {
+        // `created_at`'s CURRENT_TIMESTAMP has only second resolution, so
+        // both alerts (fired microseconds apart within the same
+        // `check_threshold_bands` call) can tie -- SQLite's implicit
+        // `rowid` reliably reflects actual insertion order instead.
+        let mut stmt = conn
+            .prepare("SELECT type FROM alerts WHERE type LIKE 'global_budget_%' ORDER BY rowid ASC")
+            .unwrap();
+        stmt.query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<String>>>()
+            .unwrap()
+    };
+    assert_eq!(
+        created_order,
+        vec!["global_budget_80".to_string(), "global_budget_90".to_string()],
+        "must fire in ascending order: 80% before 90%"
+    );
+}
+
+/// Doc 30 TASK-RT-002 acceptance: `test_category_level_and_overall_limit_both_supported`.
+/// A single transaction that crosses both its category's budget AND the
+/// global budget in the same check fires both alert families independently.
+#[test]
+fn test_category_level_and_overall_limit_both_supported() {
+    let conn = setup_test_db();
+    conn.execute(
+        "INSERT INTO local_profile (id, spending_limit_monthly) VALUES (1, 5000)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE categories SET monthly_budget_minor = 50000 WHERE id = 'cat_transport'",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint) VALUES ('obs_both_limits', 'gmail_transaction', 'msg_both_limits', 'fp_both_limits')", []).unwrap();
+
+    // 50_200 minor = 502 INR: 100.4% of the 500 INR category budget, and
+    // 10.04% of the 5000 INR global budget (below its 80% floor) -- proves
+    // the category check fires independently of the global check's state.
+    let obs = crate::reconciliation::engine::IncomingObservation {
+        id: "obs_both_limits".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 50_200,
+        currency: "INR".to_string(),
+        direction: "debit".to_string(),
+        event_time: "2026-06-10 12:00:00".to_string(),
+        reference_id: None,
+        merchant_raw: Some("UBER INDIA SYSTEMS".to_string()),
+        source_pipeline: "gmail_transaction".to_string(),
+        source_record_id: "msg_both_limits".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
+        fingerprint: None,
+        confidence_score: None,
+        event_time_confidence: None,
+    };
+    let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
+    crate::reconciliation::engine::reconcile(&conn, &obs, candidates).unwrap();
+    crate::reconciliation::alert_worker::evaluate_alerts_internal(
+        &conn,
+        None::<tauri::AppHandle>,
+        vec!["obs_both_limits".to_string()],
+    )
+    .unwrap();
+
+    let category_fired: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM alerts WHERE type = 'category_budget_cat_transport_100'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let global_fired: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM alerts WHERE type LIKE 'global_budget_%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(category_fired, 1, "category budget must fire independently");
+    assert_eq!(global_fired, 0, "global budget is nowhere near its own threshold and must not fire");
+}
+
+/// Doc 30 TASK-RT-002 acceptance: `test_emi_counted_at_installment_amount`.
+/// Each EMI installment is its own real transaction row, created from its
+/// own separate bank debit notification -- `amount_minor` on that row is
+/// already the per-installment charge, never the original full purchase
+/// total (which isn't stored anywhere on the canonical transaction at all,
+/// only as a hash input on the originating observation). Spend-summing
+/// therefore inherently counts EMIs at their installment amount with no
+/// special-casing needed; this test guards that invariant.
+#[test]
+fn test_emi_counted_at_installment_amount() {
+    let conn = setup_test_db();
+    // Three installments of an EMI plan, 2000 minor (₹20) each -- not the
+    // original ₹6000+ purchase amount, which is never summed anywhere.
+    for i in 0..3_u32 {
+        conn.execute(
+            &format!(
+                "INSERT INTO transactions (id, instrument_id, direction, amount_minor, emi_group_id, best_event_time, is_deleted) \
+                 VALUES ('emi_tx_{i}', 'inst_1', 'debit', 2000, 'emi_group_1', '2026-06-{:02} 12:00:00', 0)",
+                10 + i
+            ),
+            [],
+        )
+        .unwrap();
+    }
+
+    let sum = crate::db::transactions::get_global_spend_current_month(
+        &conn,
+        &chrono::NaiveDateTime::parse_from_str("2026-06-15 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        sum, 60.0,
+        "3 installments of ₹20 each must sum to ₹60, not a repeated original purchase total"
+    );
+}
+
+/// Doc 30 TASK-RT-002 acceptance:
+/// `test_ambiguous_cluster_transactions_excluded_from_spend_total`. A
+/// transaction still sitting in an open (unresolved) ambiguous
+/// reconciliation cluster must not count toward spend totals -- it isn't a
+/// confirmed transaction yet, and `get_global_spend_current_month`'s own
+/// `NOT IN (... cluster_status = 'open' ...)` subquery already guarantees
+/// this; this test guards that invariant against regression.
+#[test]
+fn test_ambiguous_cluster_transactions_excluded_from_spend_total() {
+    let conn = setup_test_db();
+    conn.execute(
+        "INSERT INTO transactions (id, instrument_id, direction, amount_minor, best_event_time, is_deleted) \
+         VALUES ('ambiguous_tx', 'inst_1', 'debit', 500000, '2026-06-10 12:00:00', 0)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO reconciliation_clusters (id, cluster_status) VALUES ('cl_ambiguous', 'open')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO reconciliation_cluster_members (id, cluster_id, canonical_transaction_id, member_role) \
+         VALUES ('clm_ambiguous', 'cl_ambiguous', 'ambiguous_tx', 'incoming')",
+        [],
+    )
+    .unwrap();
+
+    // A separate, unambiguous confirmed transaction that must still count.
+    conn.execute(
+        "INSERT INTO transactions (id, instrument_id, direction, amount_minor, best_event_time, is_deleted) \
+         VALUES ('confirmed_tx', 'inst_1', 'debit', 10000, '2026-06-11 12:00:00', 0)",
+        [],
+    )
+    .unwrap();
+
+    let sum = crate::db::transactions::get_global_spend_current_month(
+        &conn,
+        &chrono::NaiveDateTime::parse_from_str("2026-06-15 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        sum, 100.0,
+        "the ₹5000 ambiguous-pending transaction must be excluded; only the confirmed ₹100 counts"
+    );
 }
 
 /// §6.6 — Manual transaction creation: verify that a manually-entered transaction
