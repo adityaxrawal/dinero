@@ -765,6 +765,11 @@ export const API = {
     // Doc 41 §5: attaches the same bundle when include_logs is true.
     submitFeedback: (text: string, includeLogs: boolean) =>
       invokeCommand<string>('submit_user_feedback', { text, includeLogs }),
+    // TASK-OPS-004: forwards a renderer-side error into the same tracing
+    // pipeline Rust panics use, so it's captured in app-logs.log and
+    // included in a diagnostic bundle export like any other error.
+    logRendererError: (message: string, stack: string | undefined, source: string) =>
+      invokeCommand<void>('log_renderer_error', { message, stack, source }),
   },
   auth: {
     // TASK-DB-022: the backend resolves the single local profile internally

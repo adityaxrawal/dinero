@@ -2,6 +2,7 @@ import { Component, ReactNode } from 'react';
 import { AlertTriangle, RefreshCw, FileText } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { API } from '@/lib/ipc';
+import { reportRendererError } from '@/lib/rendererErrorReporting';
 
 interface Props {
   children: ReactNode;
@@ -38,6 +39,7 @@ export class ErrorBoundary extends Component<Props, State> {
 
   public componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
     console.error('Uncaught error:', error, errorInfo);
+    reportRendererError(error.message, error.stack, 'react_error_boundary');
   }
 
   private handleReload = () => {

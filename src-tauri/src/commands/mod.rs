@@ -193,6 +193,27 @@ pub async fn export_logs(
         file_path: path.display().to_string(),
     })
 }
+
+/// Doc 30 TASK-OPS-004: forwards a renderer-side (JS/React) error into the
+/// same `tracing`-backed logging pipeline Rust panics already use, so it
+/// lands in `app-logs.log` at ERROR level and is picked up by
+/// `diagnostics::collect_error_lines` into the diagnostic bundle exactly
+/// like a Rust-side error — previously renderer errors only ever reached
+/// `console.error`, invisible to any exported bundle. `source` distinguishes
+/// a caught React render error (`react_error_boundary`) from an uncaught
+/// exception (`window_onerror`) or unhandled promise rejection
+/// (`unhandled_rejection`). The existing `redact()` pass over ERROR-level
+/// log lines at export time already covers whatever a `message`/`stack`
+/// happens to contain -- no separate redaction needed here.
+#[tauri::command]
+pub fn log_renderer_error(message: String, stack: Option<String>, source: String) {
+    tracing::error!(
+        "RENDERER ERROR [{}]: {}{}",
+        source,
+        message,
+        stack.map(|s| format!("\nStack: {}", s)).unwrap_or_default(),
+    );
+}
 //
 // Steps (Doc 10 §3.2):
 //   1. Read file bytes from path; handle macOS TCC EPERM
@@ -2988,6 +3009,7 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         auth_get_recovery_phrase,
         auth_restore_from_recovery_phrase,
         export_logs,
+        log_renderer_error,
         crate::ingestion::historical_scan::scans_historical,
         crate::ingestion::historical_scan::scans_status,
         crate::ingestion::historical_scan::scans_cancel,

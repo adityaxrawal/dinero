@@ -438,4 +438,92 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
+
+    /// Doc 30 TASK-OPS-004 acceptance: `test_diagnostic_bundle_contains_version_metadata`.
+    #[test]
+    fn test_diagnostic_bundle_contains_version_metadata() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        let temp_dir = std::env::temp_dir().join(format!(
+            "dinero_bundle_version_test_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let zip_path = generate_diagnostic_bundle(&temp_dir, &conn, None).unwrap();
+        let file = std::fs::File::open(&zip_path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut manifest = String::new();
+        std::io::Read::read_to_string(&mut archive.by_name("manifest.txt").unwrap(), &mut manifest)
+            .unwrap();
+
+        assert!(manifest.contains(&format!("App Version: {}", env!("CARGO_PKG_VERSION"))));
+        assert!(manifest.contains(&format!("OS: {}", std::env::consts::OS)));
+        assert!(manifest.contains("Schema Version:"));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    /// Doc 30 TASK-OPS-004 acceptance: `test_support_export_writes_local_archive`.
+    /// The one export path (`export_logs` IPC command / "Submit Feedback"
+    /// with `include_logs`) writes a real local `.zip` -- entirely on-device,
+    /// never uploaded anywhere by this function itself.
+    #[test]
+    fn test_support_export_writes_local_archive() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        let temp_dir = std::env::temp_dir().join(format!(
+            "dinero_bundle_export_test_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let zip_path =
+            generate_diagnostic_bundle(&temp_dir, &conn, Some("a note from the user")).unwrap();
+
+        assert!(zip_path.exists(), "the bundle must be written to a real local file");
+        assert!(zip_path.starts_with(&temp_dir), "the bundle must be written under the app data dir, never a network location");
+
+        let file = std::fs::File::open(&zip_path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut feedback = String::new();
+        std::io::Read::read_to_string(&mut archive.by_name("feedback.txt").unwrap(), &mut feedback)
+            .unwrap();
+        assert_eq!(feedback, "a note from the user");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    /// Doc 30 TASK-OPS-004 acceptance: `test_crash_bundle_excludes_sensitive_fields`.
+    /// A crash report containing a raw email/card/amount (the kind of thing a
+    /// panic's `Display` output could in principle carry) must never reach
+    /// the bundle un-redacted.
+    #[test]
+    fn test_crash_bundle_excludes_sensitive_fields() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        let temp_dir = std::env::temp_dir().join(format!(
+            "dinero_crash_bundle_test_{}",
+            uuid::Uuid::new_v4()
+        ));
+        let crash_dir = temp_dir.join("audit_log").join("crash_reports");
+        std::fs::create_dir_all(&crash_dir).unwrap();
+
+        let sensitive_report = "Dinero App Crash Report\nPanic: reached user@example.com with card 4111 1111 1111 1111 for ₹4,999.00\n";
+        std::fs::write(crash_dir.join("crash_test.log"), sensitive_report).unwrap();
+
+        let zip_path = generate_diagnostic_bundle(&temp_dir, &conn, None).unwrap();
+        let file = std::fs::File::open(&zip_path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut crash_reports = String::new();
+        std::io::Read::read_to_string(
+            &mut archive.by_name("crash_reports.txt").unwrap(),
+            &mut crash_reports,
+        )
+        .unwrap();
+
+        assert!(!crash_reports.contains("user@example.com"));
+        assert!(!crash_reports.contains("4111 1111 1111 1111"));
+        assert!(!crash_reports.contains("₹4,999.00"));
+        assert!(crash_reports.contains("[REDACTED_EMAIL]"));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 }
