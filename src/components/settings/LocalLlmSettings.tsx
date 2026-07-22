@@ -9,6 +9,7 @@ interface LlmDownloadProgress {
   model_id: string;
   bytes_downloaded: number;
   total_bytes: number | null;
+  bytes_per_sec: number;
 }
 
 export default function LocalLlmSettings() {
@@ -50,7 +51,7 @@ export default function LocalLlmSettings() {
     try {
       setDownloads(prev => ({
         ...prev,
-        [modelId]: { model_id: modelId, bytes_downloaded: 0, total_bytes: null }
+        [modelId]: { model_id: modelId, bytes_downloaded: 0, total_bytes: null, bytes_per_sec: 0 }
       }));
       await API.llm.downloadModel(modelId);
       
@@ -75,13 +76,10 @@ export default function LocalLlmSettings() {
     if (!confirm('Are you sure you want to delete this model?')) return;
     try {
       setIsDeleting(modelId);
-      await API.llm.deleteModel(modelId);
+      const newActiveModel = await API.llm.deleteModel(modelId);
       const updated = await API.llm.getDownloadedModels();
       setDownloadedModels(new Set(updated));
-      
-      if (modelId === activeModel) {
-        // Fallback or leave it to the user to choose another
-      }
+      setActiveModel(newActiveModel);
     } catch (err) {
       alert(`Failed to delete model: ${err}`);
     } finally {
@@ -116,6 +114,21 @@ export default function LocalLlmSettings() {
 
   const formatBytes = (bytes: number) => {
     return (bytes / 1073741824).toFixed(2) + ' GB';
+  };
+
+  const formatSpeed = (bytesPerSec: number) => {
+    if (bytesPerSec <= 0) return null;
+    if (bytesPerSec < 1_048_576) return `${(bytesPerSec / 1024).toFixed(0)} KB/s`;
+    return `${(bytesPerSec / 1_048_576).toFixed(1)} MB/s`;
+  };
+
+  const formatDuration = (seconds: number) => {
+    if (seconds < 60) return `${Math.ceil(seconds)}s`;
+    const totalMinutes = Math.ceil(seconds / 60);
+    if (totalMinutes < 60) return `${totalMinutes}m`;
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    return `${hours}h ${minutes}m`;
   };
 
   return (
@@ -171,28 +184,43 @@ export default function LocalLlmSettings() {
                   <span className="flex items-center gap-1.5">Tier {m.tier}</span>
                 </div>
 
-                {isDownloading && (
-                  <div className="mt-3 w-full max-w-sm">
-                    <div className="flex justify-between text-[11px] font-semibold text-[#064E3B]/60 mb-1.5">
-                      <span>Downloading...</span>
-                      {dlProgress.total_bytes ? (
-                        <span>{formatBytes(dlProgress.bytes_downloaded)} / {formatBytes(dlProgress.total_bytes)}</span>
-                      ) : (
-                        <span>{formatBytes(dlProgress.bytes_downloaded)}</span>
-                      )}
+                {isDownloading && (() => {
+                  const pct = dlProgress.total_bytes
+                    ? (dlProgress.bytes_downloaded / dlProgress.total_bytes) * 100
+                    : null;
+                  const speed = formatSpeed(dlProgress.bytes_per_sec);
+                  const remaining = dlProgress.total_bytes
+                    ? dlProgress.total_bytes - dlProgress.bytes_downloaded
+                    : null;
+                  const eta = remaining !== null && dlProgress.bytes_per_sec > 0
+                    ? formatDuration(remaining / dlProgress.bytes_per_sec)
+                    : null;
+                  const detailParts = [
+                    dlProgress.total_bytes
+                      ? `${formatBytes(dlProgress.bytes_downloaded)} / ${formatBytes(dlProgress.total_bytes)}`
+                      : formatBytes(dlProgress.bytes_downloaded),
+                    ...(speed ? [speed] : []),
+                    ...(eta ? [`~${eta} left`] : []),
+                  ];
+
+                  return (
+                    <div className="mt-3 w-full max-w-sm">
+                      <div className="flex justify-between text-[11px] font-semibold text-[#064E3B]/60 mb-1.5">
+                        <span>Downloading...</span>
+                        {pct !== null && <span>{Math.round(pct)}%</span>}
+                      </div>
+                      <div className="w-full h-1.5 rounded-full overflow-hidden bg-[#064E3B]/10">
+                        <div
+                          className="h-full bg-[#064E3B] transition-all duration-300"
+                          style={{ width: pct !== null ? `${pct}%` : '100%' }}
+                        />
+                      </div>
+                      <div className="mt-1.5 text-[11px] text-[#064E3B]/60">
+                        {detailParts.join(' · ')}
+                      </div>
                     </div>
-                    <div className="w-full h-1.5 rounded-full overflow-hidden bg-[#064E3B]/10">
-                      <div
-                        className="h-full bg-[#064E3B] transition-all duration-300"
-                        style={{ 
-                          width: dlProgress.total_bytes 
-                            ? `${(dlProgress.bytes_downloaded / dlProgress.total_bytes) * 100}%` 
-                            : '100%' 
-                        }}
-                      />
-                    </div>
-                  </div>
-                )}
+                  );
+                })()}
               </div>
 
               <div className="flex items-center gap-3 w-full sm:w-auto shrink-0 mt-2 sm:mt-0">
