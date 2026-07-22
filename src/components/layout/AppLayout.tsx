@@ -22,6 +22,7 @@ import StatementOnlyModeBanner from '@/components/shell/StatementOnlyModeBanner'
 import BackgroundTaskIndicator from '@/components/shell/BackgroundTaskIndicator';
 import PermissionDeniedOverlay from '@/components/shell/PermissionDeniedOverlay';
 import ConnectionStatusBanner from '@/components/notifications/ConnectionStatusBanner';
+import AlertBanner from '@/components/notifications/AlertBanner';
 
 const CORRUPTION_EVENT = 'db_corrupted';
 
@@ -169,10 +170,13 @@ export default function AppLayout() {
       });
       unlisteners.push(unlistenCorrupt);
 
-      const unlistenAlert = await listen('alert_threshold_crossed', (event: { payload: { category: string; threshold: number } }) => {
-        console.log(`Alert: ${event.payload.category} exceeded ${event.payload.threshold}% of budget`);
-      });
-      unlisteners.push(unlistenAlert);
+      // Doc 30 TASK-RT-003: `alert_threshold_crossed` handling (toast +
+      // persistent banner) moved to `useAlertStore.ts`'s own module-load
+      // subscription, alongside the other event-store patterns
+      // (`useSyncStore.ts`) -- this previously listened here with a
+      // fabricated `{category, threshold}` payload shape that never
+      // matched the real `{transaction_id, alert_type, message}` the
+      // backend emits, and only `console.log`'d it.
     };
 
     setup().catch(console.error);
@@ -319,6 +323,7 @@ export default function AppLayout() {
           <GracePeriodBanner />
           <StatementOnlyModeBanner />
           <ConnectionStatusBanner />
+          <AlertBanner />
         </div>
 
         {/* Bottom area (System & Status) */}

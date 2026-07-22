@@ -5,8 +5,16 @@ import type {
   ToastProps,
 } from "@/components/ui/toast"
 
-const TOAST_LIMIT = 1
-const TOAST_REMOVE_DELAY = 1000000
+// Doc 30 TASK-RT-003 acceptance (`test_toast_queue_caps_at_max_visible`,
+// `test_toast_auto_dismisses_after_timeout`): these were left at shadcn's
+// stock scaffold values (limit 1, ~16.6-minute removal delay) -- the spec
+// calls for a max of 3 simultaneously visible and a 5-8s auto-dismiss.
+// `TOAST_REMOVE_DELAY` is a distinct, smaller concern: how long *after*
+// `dismiss()` fires (either by timeout or user action) before the toast is
+// actually removed from state, giving the exit animation time to play.
+const TOAST_LIMIT = 3
+const TOAST_AUTO_DISMISS_DELAY = 6000
+const TOAST_REMOVE_DELAY = 300
 
 type ToasterToast = ToastProps & {
   id: string
@@ -49,6 +57,7 @@ interface State {
 }
 
 const toastTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
+const autoDismissTimeouts = new Map<string, ReturnType<typeof setTimeout>>()
 
 const addToRemoveQueue = (toastId: string) => {
   if (toastTimeouts.has(toastId)) {
@@ -64,6 +73,22 @@ const addToRemoveQueue = (toastId: string) => {
   }, TOAST_REMOVE_DELAY)
 
   toastTimeouts.set(toastId, timeout)
+}
+
+// Doc 30 TASK-RT-003: schedules the actual auto-dismiss -- previously
+// nothing ever called `addToRemoveQueue` except a manual `dismiss()`, so a
+// toast that nobody clicked stayed on screen indefinitely (bounded only by
+// the old 1000000ms `TOAST_REMOVE_DELAY`, which was itself misused as if it
+// were this timer).
+const scheduleAutoDismiss = (toastId: string) => {
+  if (autoDismissTimeouts.has(toastId)) {
+    return
+  }
+  const timeout = setTimeout(() => {
+    autoDismissTimeouts.delete(toastId)
+    dispatch({ type: "DISMISS_TOAST", toastId })
+  }, TOAST_AUTO_DISMISS_DELAY)
+  autoDismissTimeouts.set(toastId, timeout)
 }
 
 const reducer = (state: State, action: Action): State => {
@@ -155,6 +180,7 @@ function toast({ ...props }: Toast) {
       },
     },
   })
+  scheduleAutoDismiss(id)
 
   return {
     id: id,
