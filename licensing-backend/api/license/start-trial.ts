@@ -1,11 +1,24 @@
 // Doc 30 TASK-LIC-007: POST /api/license/start-trial
 // Issued automatically during onboarding (TASK-FE-007), no credit card required.
+//
+// Corrected during TASK-BILL-002 (real conflict found and resolved, see
+// Doc 30 changelog): no license_key -- device_id is the binding key, matching
+// the corrected activate/validate/deactivate model. Real finding surfaced
+// while resolving this: the already-shipped desktop trial gate
+// (src-tauri/src/licensing/gate.rs::trial_days_remaining) computes the
+// 14-day window purely from local_profile.created_at, entirely offline,
+// with no call to this endpoint at all -- meaning TASK-BILL-009's "one
+// trial per hardware UUID" is currently unenforceable (deleting and
+// reinstalling the app resets the local timestamp with nothing server-side
+// to catch it). This endpoint is still the right place to close that gap --
+// wiring it in as a best-effort, fire-and-forget registration call at first
+// launch (offline trial countdown stays local; only the abuse-tracking
+// registration needs a network round-trip) is flagged as follow-up desktop
+// work, not done in this pass.
 import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
 import { LicensingApiError } from '../../lib/errors';
-import { generateLicenseKey } from '../../lib/license_generation';
-import { hashLicenseKey } from '../../lib/license_key';
 import { signLicenseJwt } from '../../lib/jwt';
 import { logAuditEvent, countRecentEvents, type AuditWriter } from '../../lib/audit';
 
@@ -16,7 +29,6 @@ export interface StartTrialInput {
 
 export interface StartTrialResult {
   status: 'trial_started';
-  license_key: string;
   jwt: string;
   trial_ends_at: string;
 }
@@ -67,11 +79,9 @@ export async function startTrial(db: StartTrialDb, input: StartTrialInput, priva
     },
   });
 
-  const licenseKey = generateLicenseKey();
   await db.licenseToken.create({
     data: {
       accountId: account.id,
-      licenseKeyHash: hashLicenseKey(licenseKey),
       deviceFingerprint: input.device_id,
       deviceBoundAt: now,
       jwtIssuedAt: now,
@@ -93,7 +103,7 @@ export async function startTrial(db: StartTrialDb, input: StartTrialInput, priva
     privateKeyPem
   );
 
-  return { status: 'trial_started', license_key: licenseKey, jwt: jwtToken, trial_ends_at: trialEndsAt.toISOString() };
+  return { status: 'trial_started', jwt: jwtToken, trial_ends_at: trialEndsAt.toISOString() };
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {

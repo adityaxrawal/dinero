@@ -1,9 +1,9 @@
-import { createHash } from 'node:crypto';
-
-/// license_tokens.license_key_hash never stores the raw key (Doc 17 §4.2).
-export function hashLicenseKey(licenseKey: string): string {
-  return createHash('sha256').update(licenseKey).digest('hex');
-}
+// Corrected during TASK-BILL-002 (real conflict found and resolved, see
+// Doc 30 changelog): this system has no user-facing "license_key" concept
+// at all -- activation is a direct Razorpay payment confirmation, and
+// device_id is the sole lookup key everywhere. `hashLicenseKey` was removed
+// along with the license-key model it belonged to; only the masking helper
+// (still needed for DEVICE_ALREADY_BOUND rejections) remains.
 
 /// Doc 30 TASK-LIC-002: "surfacing only the bound device's masked identifier,
 /// never the other device's full UUID" on a DEVICE_ALREADY_BOUND rejection.

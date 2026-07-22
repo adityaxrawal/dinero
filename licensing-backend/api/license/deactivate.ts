@@ -1,14 +1,17 @@
 // Doc 30 TASK-LIC-004: POST /api/license/deactivate
+//
+// Corrected during TASK-BILL-002 (real conflict found and resolved, see
+// Doc 30 changelog): matches the already-shipped desktop client exactly --
+// reuses the same `{ device_id }` shape as validate (`ValidateRequest` is
+// literally reused for both calls in `licensing/client.rs`), no license_key.
 import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
 import { LicensingApiError } from '../../lib/errors';
-import { hashLicenseKey } from '../../lib/license_key';
 import { logAuditEvent, type AuditWriter } from '../../lib/audit';
 import { consoleEmailSender, type EmailSender } from '../../lib/email';
 
 export interface DeactivateInput {
-  license_key: string;
   device_id: string;
 }
 
@@ -17,27 +20,17 @@ export interface DeactivateResult {
 }
 
 export type DeactivateDb = {
-  licenseToken: Pick<PrismaClient['licenseToken'], 'findUnique' | 'update'>;
+  licenseToken: {
+    findUnique(args: { where: { deviceFingerprint: string }; include: { account: true } }): Promise<{ id: string; accountId: string; account: { email: string } } | null>;
+    update: PrismaClient['licenseToken']['update'];
+  };
   licensingAuditLog: AuditWriter;
 };
 
-export async function deactivateLicense(
-  db: DeactivateDb,
-  input: DeactivateInput,
-  accountEmail: string,
-  emailSender: EmailSender = consoleEmailSender
-): Promise<DeactivateResult> {
-  const licenseKeyHash = hashLicenseKey(input.license_key);
-  const token = await db.licenseToken.findUnique({ where: { licenseKeyHash } });
+export async function deactivateLicense(db: DeactivateDb, input: DeactivateInput, emailSender: EmailSender = consoleEmailSender): Promise<DeactivateResult> {
+  const token = await db.licenseToken.findUnique({ where: { deviceFingerprint: input.device_id }, include: { account: true } });
   if (!token) {
-    throw new LicensingApiError('LICENSE_INVALID', 'Unknown license key');
-  }
-
-  // Doc 30 TASK-LIC-004: "requires the request to originate from the
-  // currently-bound device" -- a stranger who merely knows the license key
-  // cannot free someone else's device binding.
-  if (token.deviceFingerprint !== input.device_id) {
-    throw new LicensingApiError('DEVICE_MISMATCH', 'Deactivation must originate from the currently-bound device');
+    throw new LicensingApiError('LICENSE_INVALID', 'No license bound to this device');
   }
 
   const now = new Date();
@@ -60,7 +53,7 @@ export async function deactivateLicense(
   // Doc 30 TASK-LIC-004: "sends a confirmation email to the registered
   // address as a security signal against unauthorized deactivation."
   await emailSender.send({
-    to: accountEmail,
+    to: token.account.email,
     subject: 'Your Dinero license was deactivated',
     body: `This device has been unbound from your Dinero license. If you didn't do this, contact support immediately.`,
   });
@@ -73,16 +66,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.status(405).json({ code: 'VALIDATION_ERROR', message: 'POST only' });
     return;
   }
-  const { license_key, device_id } = req.body ?? {};
-  if (!license_key || !device_id) {
-    res.status(400).json({ code: 'VALIDATION_ERROR', message: 'license_key and device_id are required' });
+  const { device_id } = req.body ?? {};
+  if (!device_id) {
+    res.status(400).json({ code: 'VALIDATION_ERROR', message: 'device_id is required' });
     return;
   }
   try {
-    const licenseKeyHash = hashLicenseKey(license_key);
-    const token = await prisma.licenseToken.findUnique({ where: { licenseKeyHash }, include: { account: true } });
-    const email = token?.account?.email ?? '';
-    const result = await deactivateLicense(prisma, { license_key, device_id }, email);
+    const result = await deactivateLicense(prisma, { device_id });
     res.status(200).json(result);
   } catch (e) {
     if (e instanceof LicensingApiError) {

@@ -90,16 +90,24 @@ model Subscription {
   @@map("subscriptions")
 }
 
+/// Corrected during TASK-BILL-002 (real conflict found and resolved, see
+/// Doc 30 changelog): there is no user-facing "license_key" concept in this
+/// system at all -- activation is a direct Razorpay payment confirmation
+/// (Doc 19 §14.2), and `device_id` alone is the lookup key for validate/
+/// deactivate/refresh (one device is bound to at most one account's
+/// license at a time), matching the already-shipped, tested desktop client
+/// (`src-tauri/src/licensing/client.rs`) exactly. This table now tracks
+/// device-binding + JWT-issuance state per account, not a redeemable key.
 model LicenseToken {
-  id     String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  id        String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   accountId String @map("account_id") @db.Uuid
 
-  /// Never the raw license key — Doc 19 §14.2's activation flow issues the
-  /// key to the user once; only its hash is retained server-side.
-  licenseKeyHash String @unique @map("license_key_hash")
   /// Hardware-UUID-derived fingerprint (Doc 22, Doc 19 §14.2's device_id) —
-  /// nullable until first activation binds a device.
-  deviceFingerprint String?   @map("device_fingerprint")
+  /// nullable until first activation binds a device. Unique when non-null:
+  /// Postgres permits multiple NULLs under a UNIQUE constraint, so many
+  /// not-yet-bound rows can coexist, but a real device can only ever be
+  /// bound to exactly one account's token row at a time.
+  deviceFingerprint String?   @unique @map("device_fingerprint")
   deviceBoundAt     DateTime? @map("device_bound_at") @db.Timestamptz
   jwtIssuedAt       DateTime? @map("jwt_issued_at") @db.Timestamptz
   /// 24-72h expiry per Doc 19 §14.2 / Doc 30 TASK-LIC-002 — short-lived,

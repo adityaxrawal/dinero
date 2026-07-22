@@ -1,16 +1,20 @@
 // Doc 30 TASK-LIC-003, Doc 19 (license_validate): POST /api/license/validate
 // Called on cold-start/resume per the hybrid JWT model (Doc 15/22): a network
 // call here, offline signature verification for everything else.
+//
+// Corrected during TASK-BILL-002 (real conflict found and resolved, see
+// Doc 30 changelog): matches the already-shipped desktop client exactly --
+// `ValidateRequest { device_id }` only, no license_key, no email. device_id
+// alone is the lookup key (one device is bound to at most one account's
+// license at a time).
 import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
 import { LicensingApiError } from '../../lib/errors';
-import { hashLicenseKey } from '../../lib/license_key';
 import { signLicenseJwt } from '../../lib/jwt';
 import { logAuditEvent, type AuditWriter } from '../../lib/audit';
 
 export interface ValidateInput {
-  license_key: string;
   device_id: string;
 }
 
@@ -46,25 +50,17 @@ function computeState(subscriptionStatus: string): ServerLicenseState {
 }
 
 export type ValidateDb = {
-  licenseToken: Pick<PrismaClient['licenseToken'], 'findUnique'>;
+  licenseToken: {
+    findUnique(args: { where: { deviceFingerprint: string }; include: { account: true } }): Promise<{ accountId: string; account: { email: string } } | null>;
+  };
   subscription: Pick<PrismaClient['subscription'], 'findFirst'>;
   licensingAuditLog: AuditWriter;
 };
 
-export async function validateLicense(db: ValidateDb, input: ValidateInput, privateKeyPem: string, accountEmail: string): Promise<ValidateResult> {
-  const licenseKeyHash = hashLicenseKey(input.license_key);
-  const token = await db.licenseToken.findUnique({ where: { licenseKeyHash } });
+export async function validateLicense(db: ValidateDb, input: ValidateInput, privateKeyPem: string): Promise<ValidateResult> {
+  const token = await db.licenseToken.findUnique({ where: { deviceFingerprint: input.device_id }, include: { account: true } });
   if (!token) {
-    throw new LicensingApiError('LICENSE_INVALID', 'Unknown license key');
-  }
-
-  // Doc 30 TASK-LIC-003: "a mismatch should be rare, indicating tampering,
-  // since the desktop app should only ever validate for a device it
-  // activated itself" -- DEVICE_MISMATCH, not DEVICE_ALREADY_BOUND (that's
-  // activate's rejection of a *new* device; this is "this isn't even the
-  // device this token was issued to").
-  if (token.deviceFingerprint !== input.device_id) {
-    throw new LicensingApiError('DEVICE_MISMATCH', 'Device fingerprint does not match the bound device');
+    throw new LicensingApiError('LICENSE_INVALID', 'No license bound to this device');
   }
 
   const subscription = await db.subscription.findFirst({
@@ -80,7 +76,7 @@ export async function validateLicense(db: ValidateDb, input: ValidateInput, priv
   const expiresAt = new Date(now.getTime() + 48 * 60 * 60 * 1000);
 
   const jwtToken = signLicenseJwt(
-    { sub: accountEmail, device_id: input.device_id, plan: subscription.planId, billing_interval: subscription.billingInterval },
+    { sub: token.account.email, device_id: input.device_id, plan: subscription.planId, billing_interval: subscription.billingInterval },
     privateKeyPem
   );
 
@@ -107,9 +103,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.status(405).json({ code: 'VALIDATION_ERROR', message: 'POST only' });
     return;
   }
-  const { license_key, device_id } = req.body ?? {};
-  if (!license_key || !device_id) {
-    res.status(400).json({ code: 'VALIDATION_ERROR', message: 'license_key and device_id are required' });
+  const { device_id } = req.body ?? {};
+  if (!device_id) {
+    res.status(400).json({ code: 'VALIDATION_ERROR', message: 'device_id is required' });
     return;
   }
   const privateKeyPem = process.env.JWT_PRIVATE_KEY_PEM;
@@ -118,10 +114,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
   try {
-    const licenseKeyHash = hashLicenseKey(license_key);
-    const token = await prisma.licenseToken.findUnique({ where: { licenseKeyHash }, include: { account: true } });
-    const email = token?.account?.email ?? '';
-    const result = await validateLicense(prisma, { license_key, device_id }, privateKeyPem, email);
+    const result = await validateLicense(prisma, { device_id }, privateKeyPem);
     res.status(200).json(result);
   } catch (e) {
     if (e instanceof LicensingApiError) {
