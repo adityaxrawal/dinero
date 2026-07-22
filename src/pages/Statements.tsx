@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { FileText, Lock, AlertTriangle, FileSearch, CreditCard, ChevronRight, Upload, Trash2 } from 'lucide-react';
+import { FileText, AlertTriangle, FileSearch, CreditCard, ChevronRight, Upload, Trash2 } from 'lucide-react';
 import { API } from '@/lib/ipc';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -37,6 +37,7 @@ export default function Statements() {
     pendingInstrumentIssuerHint,
     pendingInstrumentReason,
     closeInstrumentModal,
+    openReviewModal,
   } = useGlobalState();
 
   const { data: history = [], isLoading: loading } = useStatementsList();
@@ -85,14 +86,17 @@ export default function Statements() {
     setIsSubmittingInstrument(true);
     setInstrumentError(null);
     try {
-      await API.statements.confirmInstrument(
+      // Resumes the same synchronous stage_parse_pipeline as the password
+      // path — reuses pendingInstrumentStatementId as the draft id, so the
+      // review modal can open directly with it, no event race.
+      const result = await API.statements.confirmInstrument(
         pendingInstrumentStatementId,
         instrumentIssuer.trim(),
         instrumentMasked.trim(),
         instrumentType,
       );
       closeInstrumentModal();
-      toast({ title: 'Instrument Confirmed', description: 'Retrying statement extraction…' });
+      openReviewModal(result.draft_id || pendingInstrumentStatementId);
       refresh();
     } catch (e) {
       setInstrumentError(getErrorMessage(e, 'Could not process the statement with these details.'));
@@ -191,10 +195,15 @@ export default function Statements() {
                   ) : (
                     <div className="divide-y divide-[#064E3B]/5">
                       {history.map((stmt) => {
-                        const isProcessed = stmt.status === 'PROCESSED';
-                        const isLocked = stmt.status === 'PASSWORD_REQUIRED';
-                        const isOCR = stmt.status === 'OCR_FALLBACK';
-                        
+                        // `statements.parse_status` (src-tauri/migrations/
+                        // 20260101000025_statements_source_type_and_checks.sql)
+                        // is CHECK-constrained to 'queued' | 'processing' | 'parsed' | 'failed'.
+                        // Password-required/OCR-fallback statements live in
+                        // `unprocessed_statements` (surfaced separately in the
+                        // Action Needed queue) and never reach this table.
+                        const isProcessed = stmt.status === 'parsed';
+                        const isFailed = stmt.status === 'failed';
+
                         return (
                           <div key={stmt.id} className="p-4 flex items-center justify-between transition-colors hover:bg-[#064E3B]/5">
                             <div className="min-w-0 pr-4 flex-1">
@@ -211,12 +220,11 @@ export default function Statements() {
                                 <span
                                   className="text-[9px] font-bold px-1.5 py-0.5 rounded-sm flex items-center gap-1 uppercase tracking-wider"
                                   style={{
-                                    background: isProcessed ? 'rgba(16,185,129,0.15)' : isLocked ? 'rgba(239,68,68,0.15)' : isOCR ? 'rgba(217,119,6,0.15)' : 'rgba(6,78,59,0.1)',
-                                    color: isProcessed ? '#059669' : isLocked ? '#dc2626' : isOCR ? '#d97706' : '#064E3B',
+                                    background: isProcessed ? 'rgba(16,185,129,0.15)' : isFailed ? 'rgba(239,68,68,0.15)' : 'rgba(6,78,59,0.1)',
+                                    color: isProcessed ? '#059669' : isFailed ? '#dc2626' : '#064E3B',
                                   }}
                                 >
-                                  {isLocked && <Lock className="w-2.5 h-2.5" />}
-                                  {isOCR && <FileSearch className="w-2.5 h-2.5" />}
+                                  {isFailed && <AlertTriangle className="w-2.5 h-2.5" />}
                                   {stmt.status.replace('_', ' ')}
                                 </span>
                               </div>

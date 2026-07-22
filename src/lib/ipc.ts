@@ -573,7 +573,7 @@ export const API = {
       maskedIdentifier: string,
       instrumentType: string,
     ) =>
-      invokeCommand<{ status: string; statement_id: string }>('statements_confirm_instrument', {
+      invokeCommand<{ status: string; statement_id?: string; draft_id?: string }>('statements_confirm_instrument', {
         statementId,
         issuerName,
         maskedIdentifier,

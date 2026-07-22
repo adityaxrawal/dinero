@@ -9,7 +9,7 @@
 //! disk (Doc 15 Core Principle 4/10).
 //!
 //! ## Protocol (stdin, written by the parent process)
-//! 1. One newline-terminated JSON line: `{"operation": "unlock_check" | "extract_text", "password": "..."}`
+//! 1. One newline-terminated JSON line: `{"operation": "unlock_check" | "extract_text" | "decrypt", "password": "..."}`
 //! 2. A 4-byte big-endian `u32` length prefix for the PDF payload.
 //! 3. The raw PDF bytes (exactly that many bytes).
 //!
@@ -17,6 +17,10 @@
 //! One newline-terminated JSON line:
 //! - `unlock_check`: `{"success": true, "unlocked": bool}` or `{"success": false, "error": "..."}`
 //! - `extract_text`: `{"success": true, "pages": [{"page_number": 1, "text": "..."}]}` or `{"success": false, "error": "..."}`
+//! - `decrypt`: `{"success": true, "pdf_base64": "..."}` or `{"success": false, "error": "..."}` —
+//!   opens the PDF with the given password and re-saves it via pdfium's `FPDF_SaveAsCopy`,
+//!   which does not re-apply the original password protection, producing a plain,
+//!   unencrypted copy for display purposes only (never written to disk).
 
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
@@ -45,6 +49,13 @@ struct PageOut {
 struct ExtractTextResponse {
     success: bool,
     pages: Option<Vec<PageOut>>,
+    error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct DecryptResponse {
+    success: bool,
+    pdf_base64: Option<String>,
     error: Option<String>,
 }
 
@@ -84,6 +95,10 @@ fn run() -> anyhow::Result<()> {
         }
         "extract_text" => {
             let resp = extract_text(&pdf_bytes, request.password.as_deref());
+            write_line(&resp)
+        }
+        "decrypt" => {
+            let resp = decrypt(&pdf_bytes, request.password.as_deref());
             write_line(&resp)
         }
         other => write_line(&serde_json::json!({
@@ -170,6 +185,50 @@ fn extract_text(pdf_bytes: &[u8], password: Option<&str>) -> ExtractTextResponse
         success: true,
         pages: Some(pages),
         error: None,
+    }
+}
+
+fn decrypt(pdf_bytes: &[u8], password: Option<&str>) -> DecryptResponse {
+    use pdfium_render::prelude::*;
+
+    let bindings = match Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./"))
+        .or_else(|_| Pdfium::bind_to_system_library())
+    {
+        Ok(b) => b,
+        Err(e) => {
+            return DecryptResponse {
+                success: false,
+                pdf_base64: None,
+                error: Some(format!("pdfium bind error: {:?}", e)),
+            }
+        }
+    };
+    let pdfium = Pdfium::new(bindings);
+    let doc = match pdfium.load_pdf_from_byte_slice(pdf_bytes, password) {
+        Ok(d) => d,
+        Err(e) => {
+            return DecryptResponse {
+                success: false,
+                pdf_base64: None,
+                error: Some(format!("pdfium load error: {:?}", e)),
+            }
+        }
+    };
+
+    match doc.save_to_bytes() {
+        Ok(bytes) => {
+            use base64::Engine;
+            DecryptResponse {
+                success: true,
+                pdf_base64: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),
+                error: None,
+            }
+        }
+        Err(e) => DecryptResponse {
+            success: false,
+            pdf_base64: None,
+            error: Some(format!("pdfium save error: {:?}", e)),
+        },
     }
 }
 

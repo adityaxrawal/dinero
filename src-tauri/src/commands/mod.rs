@@ -515,6 +515,21 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
         row_extractor::{extract_rows, BankParser},
     };
 
+    // Root-cause fix: `draft_id` (below, Step 11) is the id every later
+    // consumer of the retained PDF keys off of — `commit_staged_draft`'s
+    // `unprocessed_statements` linking, `statements_get_draft_pdf`,
+    // `statements_get_pdf` after commit. It must be computed and the PDF
+    // stored under it *before* any early return, not only in the two
+    // Instrument-Gate-blocked branches below — otherwise the ordinary
+    // clean/never-blocked upload (no password, no missing metadata, by far
+    // the common case) reaches `commit_staged_draft`, which unconditionally
+    // marks the PDF "available" (`pdf_retained_until`), while no file was
+    // ever written for it: the "View PDF" button renders but 404s.
+    let draft_id = stmt_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    if let Ok(app_data_dir) = app.path().app_data_dir() {
+        let _ = crate::statements::pdf_storage::store_pdf(&app_data_dir, &draft_id, bytes);
+    }
+
     // ── Step 6: Parse PDF in-memory ──────────────────────────────────────────
     // H3 fix: `password`, when Some, is the password the user just confirmed
     // via statements_submit_password — pdfium must be told it on every open.
@@ -684,9 +699,9 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
     // Doc 18 §4.7's crash-recovery invariant pre-mints `stmt_id` for a fresh
     // upload (`insert_queued()`); a resumed-after-block path reuses the
     // `unprocessed_statements.id` its PDF is already stored under. Either
-    // way the draft's id IS that same id — no PDF copy is ever needed
-    // between "blocked" and "staged for review".
-    let draft_id = stmt_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    // way the draft's id IS that same id (`draft_id`, computed above the
+    // Step 6 parse) — no PDF copy is ever needed between "blocked" and
+    // "staged for review".
     // A queued `statements` row from `insert_queued()` at intake is now
     // orphaned — the real row isn't written until commit. Same cleanup the
     // gate-block/duplicate-reject paths above already rely on.
@@ -1830,8 +1845,16 @@ pub async fn statements_get_draft_pdf(
         .map_err(|_| crate::error::AppError::Unknown("This statement's PDF file could not be read".to_string()))?
         .ok_or_else(|| crate::error::AppError::Unknown("This statement's PDF file could not be found".to_string()))?;
 
+    // If the source PDF was password-protected, the user already gave that
+    // password once during unlock (stage_parse_pipeline saves it against
+    // the resolved instrument) — decrypt for display so the browser's
+    // native PDF viewer doesn't prompt for it again during review.
+    let viewable = crate::statements::password::ensure_viewable_pdf_bytes(bytes, pool.inner())
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
+
     use base64::Engine;
-    Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
+    Ok(base64::engine::general_purpose::STANDARD.encode(&viewable))
 }
 
 /// Read-only fetch of a draft's current (possibly edited-in-a-previous-session)

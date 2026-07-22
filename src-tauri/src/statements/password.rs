@@ -90,7 +90,7 @@ pub fn encrypt_password(plaintext: &str) -> Result<Vec<u8>> {
 ///
 /// Expected format: `<12-byte nonce><ciphertext>`.
 /// INVARIANT: The decrypted plaintext is used in-memory only and is never logged or returned to UI.
-fn decrypt_password(blob: &[u8]) -> Result<String> {
+pub fn decrypt_password(blob: &[u8]) -> Result<String> {
     if blob.len() <= NONCE_LEN {
         return Err(anyhow!("Ciphertext blob too short"));
     }
@@ -304,6 +304,32 @@ pub async fn try_all_stored_passwords(
     Ok(PasswordResolutionResult::PromptRequired)
 }
 
+/// Returns bytes safe to hand to a PDF viewer for display. If `pdf_bytes` is
+/// unencrypted, returns it unchanged. If it's password-protected, finds a
+/// stored password that unlocks it (the password used to originally unlock
+/// this statement is always saved against its resolved instrument — see
+/// `stage_parse_pipeline`) and returns a decrypted copy via the isolated
+/// sidecar, so the browser's native PDF viewer never has to prompt the user
+/// for a password they already gave once. Never writes anything to disk —
+/// the decrypted bytes exist only for this call's in-memory round trip.
+pub async fn ensure_viewable_pdf_bytes(
+    pdf_bytes: Vec<u8>,
+    pool: &deadpool_sqlite::Pool,
+) -> Result<Vec<u8>> {
+    if is_pdf_unencrypted(&pdf_bytes).await {
+        return Ok(pdf_bytes);
+    }
+
+    match try_all_stored_passwords(&pdf_bytes, pool).await? {
+        PasswordResolutionResult::UnlockedWithStored(password) => {
+            crate::statements::sidecar::decrypt_pdf_in_sidecar(&pdf_bytes, &password).await
+        }
+        _ => Err(anyhow!(
+            "PDF is password-protected and no stored password unlocks it"
+        )),
+    }
+}
+
 /// Saves a newly learned password for an instrument.
 /// Password is AES-256-GCM encrypted before writing to `pdf_passwords` (Doc 10 §7.4, §19.3).
 /// Plaintext is never persisted. Never returned to UI.
@@ -370,9 +396,9 @@ pub async fn resolve_statement_password<R: tauri::Runtime>(
     file_hash: &str,
     pool: &deadpool_sqlite::Pool,
     app: &tauri::AppHandle<R>,
-    pending_bytes: &crate::statements::pending_bytes::PendingStatementBytes,
     email_meta: Option<crate::ingestion::message_processor::EmailMetadata>,
 ) -> Result<StatementPasswordResolution> {
+    use tauri::Manager;
     use tauri::Emitter;
 
     if is_pdf_unencrypted(bytes).await {
@@ -387,22 +413,21 @@ pub async fn resolve_statement_password<R: tauri::Runtime>(
         }
         _ => {
             create_awaiting_password_row(stmt_id, file_hash, filename, pool, email_meta.as_ref()).await?;
-            pending_bytes.insert(stmt_id.to_string(), bytes.to_vec(), None).await;
-
-            let mut payload_map = serde_json::Map::new();
-            payload_map.insert("statement_id".to_string(), serde_json::json!(stmt_id));
-            payload_map.insert("filename".to_string(), serde_json::json!(filename));
-            
-            if let Some(meta) = email_meta {
-                payload_map.insert("sender".to_string(), serde_json::json!(meta.sender));
-                payload_map.insert("to".to_string(), serde_json::json!(meta.recipient));
-                payload_map.insert("subject".to_string(), serde_json::json!(meta.subject));
-                payload_map.insert("date".to_string(), serde_json::json!(meta.date));
-                payload_map.insert("snippet".to_string(), serde_json::json!(meta.snippet));
-                payload_map.insert("html".to_string(), serde_json::json!(meta.html));
+            if let Ok(app_data_dir) = app.path().app_data_dir() {
+                let _ = crate::statements::pdf_storage::store_pdf(&app_data_dir, stmt_id, bytes);
             }
 
-            let payload = serde_json::Value::Object(payload_map);
+            // The full email context (sender/subject/snippet/html, `email_meta`
+            // above) is already persisted into this row's `source_json` by
+            // `create_awaiting_password_row` just above. Frontend only ever
+            // reads `statement_id` off this event (`GlobalStateContext.tsx`'s
+            // listener), then re-fetches the rest via `listUnprocessed()` for
+            // display (`PasswordPromptModal.tsx`) -- so `filename`/`sender`/
+            // `to`/`subject`/`date`/`snippet`/`html` here were sent over IPC
+            // on every password-protected statement (which can fire dozens of
+            // times in a burst during a historical scan) and discarded
+            // unread on arrival every single time, `html` alone often 30KB+.
+            let payload = serde_json::json!({ "statement_id": stmt_id });
             crate::statements::events::emit(
                 crate::statements::events::PASSWORD_REQUIRED,
                 payload.clone(),
@@ -539,8 +564,7 @@ mod tests {
             .unwrap()
             .handle()
             .clone();
-        let pending_bytes = crate::statements::pending_bytes::PendingStatementBytes::default();
-
+        
         let resolution = resolve_statement_password(
             "stmt_resolve_test",
             unparseable_bytes,
@@ -548,7 +572,6 @@ mod tests {
             "file_hash_resolve_test",
             &pool,
             &app,
-            &pending_bytes,
             None,
         )
         .await
@@ -573,10 +596,10 @@ mod tests {
             .unwrap();
         assert_eq!(status, "awaiting_password");
 
-        assert_eq!(
-            pending_bytes.take("stmt_resolve_test").await.map(|(b, _)| b),
-            Some(unparseable_bytes.to_vec())
-        );
+        use tauri::Manager;
+        let app_data_dir = app.path().app_data_dir().unwrap();
+        let persisted_bytes = crate::statements::pdf_storage::read_pdf(&app_data_dir, "stmt_resolve_test").unwrap().unwrap();
+        assert_eq!(persisted_bytes, unparseable_bytes.to_vec());
     }
 
     // ── test_password_encrypted_before_storage ───────────────────────────────

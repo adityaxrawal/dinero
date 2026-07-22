@@ -1997,8 +1997,14 @@ pub async fn statements_get_pdf(
         crate::error::AppError::Unknown("Failed to determine app data directory".to_string())
     })?;
     let bytes = get_pdf_bytes_for_statement(&app_data_dir, &statement_id, pool.inner()).await?;
+    // If the source PDF was password-protected, the user already gave that
+    // password once (during unlock) — decrypt for display so the browser's
+    // native PDF viewer doesn't prompt for it again.
+    let viewable = crate::statements::password::ensure_viewable_pdf_bytes(bytes, pool.inner())
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
     use base64::Engine;
-    Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
+    Ok(base64::engine::general_purpose::STANDARD.encode(&viewable))
 }
 
 /// Lets the user delete a retained PDF early, from Processing History,
@@ -3570,6 +3576,66 @@ mod tests {
         delete_pdf_for_statement(&temp_dir, "nonexistent_stmt", &pool)
             .await
             .unwrap();
+    }
+
+    /// Root-cause regression for the "View PDF" button being unusable on a
+    /// statement that was never password-protected and never blocked by the
+    /// Instrument Gate — the ordinary/common upload path. Previously,
+    /// `stage_parse_pipeline` only called `pdf_storage::store_pdf` inside
+    /// its two Instrument-Gate-blocked branches; the clean/never-blocked
+    /// success path never persisted the PDF anywhere, even though
+    /// `commit_staged_draft` (called later, once the user confirms the
+    /// review) unconditionally sets `pdf_retained_until`, marking the PDF
+    /// "available". Net effect: `statements_list` reports
+    /// `pdf_available: true` and the UI renders a working-looking "View
+    /// PDF" button, but `statements_get_pdf` 404s because no file was ever
+    /// written to disk.
+    ///
+    /// The fix stores the PDF under `draft_id` up front, before the Step 6
+    /// parse even runs — so this test uses deliberately invalid PDF bytes
+    /// (parsing is expected to fail, independent of pdfium's availability
+    /// in this environment) and asserts only that the bytes were persisted
+    /// under the id `stage_parse_pipeline` was called with, which is the
+    /// same id `commit_staged_draft` later keys the retention window off
+    /// of.
+    #[tokio::test]
+    async fn test_stage_parse_pipeline_persists_pdf_before_parsing() {
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+
+        let stmt_id = "stmt_clean_upload".to_string();
+        let bytes = b"not a real pdf -- parsing must fail, independent of this test".to_vec();
+
+        let result = crate::commands::stage_parse_pipeline(
+            &bytes,
+            "statement.pdf",
+            "hash_clean",
+            &pool,
+            app.handle(),
+            None,
+            None,
+            "manual_upload",
+            Some(stmt_id.clone()),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "sanity check: these bytes are not a real PDF and must fail to parse"
+        );
+
+        let app_data_dir = app.handle().path().app_data_dir().unwrap();
+        let stored = crate::statements::pdf_storage::read_pdf(&app_data_dir, &stmt_id).unwrap();
+        assert_eq!(
+            stored,
+            Some(bytes),
+            "the PDF must be persisted under stmt_id before the parse attempt, so the \
+             later retention/view logic (commit_staged_draft, statements_get_pdf) can find \
+             it regardless of how parsing turns out"
+        );
     }
 
     /// Doc 30 TASK-API-006 / Document 19 §11.2 acceptance coverage:

@@ -27,6 +27,7 @@ export default function PasswordPromptModal({ onUnlocked }: { onUnlocked: () => 
     pendingInstrumentId,
     closePasswordModal,
     watchDraftOrigin,
+    openReviewModal,
   } = useGlobalState();
 
   const [password, setPassword] = useState('');
@@ -89,11 +90,16 @@ export default function PasswordPromptModal({ onUnlocked }: { onUnlocked: () => 
       console.log('[PasswordPromptModal] API call completed. Result:', result);
 
       if (result.status === 'unlocked') {
-        console.log('[PasswordPromptModal] Status is "unlocked". Closing — GlobalStateContext opens the review modal once staging finishes.');
+        console.log('[PasswordPromptModal] Status is "unlocked". Opening review modal directly with the returned draft_id.');
+        // `statements_submit_password` runs staging synchronously and
+        // always reuses `pendingStatementId` as the draft id for this path
+        // (stage_parse_pipeline's id-reuse design) — `result.draft_id` is
+        // that same value, returned directly and deterministically, so
+        // open the review modal with it now rather than waiting on the
+        // statement_staged event (which may have already fired during this
+        // same await, or could race against this component unmounting).
         close();
-        // No toast here anymore — the review modal's own progress bar
-        // covers the wait, and GlobalStateContext's statement_staged
-        // listener opens it automatically.
+        openReviewModal(result.draft_id || pendingStatementId);
         onUnlocked();
       } else if (result.status === 'awaiting_instrument_confirmation') {
         // Password was correct, but the statement's bank/card/type couldn't be
@@ -120,7 +126,7 @@ export default function PasswordPromptModal({ onUnlocked }: { onUnlocked: () => 
       setIsSubmitting(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingStatementId, pendingInstrumentId, password, toast, onUnlocked, watchDraftOrigin]);
+  }, [pendingStatementId, pendingInstrumentId, password, toast, onUnlocked, watchDraftOrigin, openReviewModal]);
 
   return (
     <Dialog

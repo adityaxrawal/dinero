@@ -47,6 +47,13 @@ struct ExtractTextResponse {
     error: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct DecryptResponse {
+    success: bool,
+    pdf_base64: Option<String>,
+    error: Option<String>,
+}
+
 fn sidecar_binary_path() -> PathBuf {
     // Sibling of the running executable — matches how `cargo build`/`cargo
     // test` places `pdf_sidecar` next to the main binary in `target/debug`,
@@ -121,6 +128,43 @@ pub async fn extract_text_in_sidecar(
     } else {
         Err(anyhow!(
             "sidecar extract_text error: {}",
+            resp.error.unwrap_or_else(|| "unknown".to_string())
+        ))
+    }
+}
+
+/// Opens `pdf_bytes` with `password` and returns a decrypted copy of the PDF
+/// (pdfium's `FPDF_SaveAsCopy` does not re-apply the original password
+/// protection) — for display purposes only. The decrypted bytes exist only
+/// in memory for the lifetime of this call and whatever the caller does with
+/// them; nothing here touches disk.
+pub async fn decrypt_pdf_in_sidecar(pdf_bytes: &[u8], password: &str) -> Result<Vec<u8>> {
+    let meta = serde_json::to_vec(&SidecarRequest {
+        operation: "decrypt",
+        password: Some(password),
+    })?;
+    let output = run_with_timeout(
+        sidecar_binary_path(),
+        &[],
+        &meta,
+        pdf_bytes,
+        Duration::from_secs(SIDECAR_TIMEOUT_SECS),
+    )
+    .await?;
+
+    let resp: DecryptResponse = serde_json::from_slice(&output)
+        .map_err(|e| anyhow!("malformed sidecar response: {} (raw: {:?})", e, output))?;
+    if resp.success {
+        use base64::Engine;
+        let b64 = resp
+            .pdf_base64
+            .ok_or_else(|| anyhow!("sidecar decrypt: success but no pdf_base64"))?;
+        base64::engine::general_purpose::STANDARD
+            .decode(&b64)
+            .map_err(|e| anyhow!("sidecar decrypt: malformed base64: {}", e))
+    } else {
+        Err(anyhow!(
+            "sidecar decrypt error: {}",
             resp.error.unwrap_or_else(|| "unknown".to_string())
         ))
     }
