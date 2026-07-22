@@ -2,7 +2,7 @@ use chrono::Utc;
 use deadpool_sqlite::Pool;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Manager, State};
 use tokio::task::JoinSet;
 use uuid::Uuid;
 
@@ -312,8 +312,9 @@ pub async fn scans_historical<R: tauri::Runtime>(
                     .await;
             }
 
-            let _ = app.emit(
-                "scan_failed",
+            let _ = crate::ipc::events::emit_event(
+                &app,
+                crate::ipc::events::AppEvent::ScanFailed,
                 ScanProgressPayload {
                     account_id,
                     processed: 0,
@@ -397,8 +398,9 @@ async fn run_scan<R: tauri::Runtime>(
         let app_for_search_progress = app.clone();
         let ids = client
             .search_messages(&query, move |found_so_far| {
-                let _ = app_for_search_progress.emit(
-                    "scan_progress",
+                let _ = crate::ipc::events::emit_event(
+                    &app_for_search_progress,
+                    crate::ipc::events::AppEvent::ScanProgress,
                     ScanProgressPayload {
                         account_id: account_id_for_search_progress.clone(),
                         processed: 0,
@@ -483,8 +485,9 @@ async fn run_scan_batches<R: tauri::Runtime>(
     let mut batch_start_time = std::time::Instant::now();
 
     // Emit initial progress so the UI knows how many emails were fetched immediately
-    let _ = app.emit(
-        "scan_progress",
+    let _ = crate::ipc::events::emit_event(
+        &app,
+        crate::ipc::events::AppEvent::ScanProgress,
         ScanProgressPayload {
             account_id: account_id.clone(),
             processed: processed_count,
@@ -799,8 +802,9 @@ async fn run_scan_batches<R: tauri::Runtime>(
             );
             batch_start_time = std::time::Instant::now();
 
-            let _ = app.emit(
-                "scan_progress",
+            let _ = crate::ipc::events::emit_event(
+                &app,
+                crate::ipc::events::AppEvent::ScanProgress,
                 ScanProgressPayload {
                     account_id: account_id.clone(),
                     processed: processed_count,
@@ -884,11 +888,12 @@ async fn run_scan_batches<R: tauri::Runtime>(
         errors: state.errors,
         error_message: None,
     };
-    let _ = app.emit(
+    let _ = crate::ipc::events::emit_event(
+        &app,
         if was_cancelled {
-            "scan_cancelled"
+            crate::ipc::events::AppEvent::ScanCancelled
         } else {
-            "scan_completed"
+            crate::ipc::events::AppEvent::ScanCompleted
         },
         final_payload,
     );

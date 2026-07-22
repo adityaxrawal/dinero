@@ -7,7 +7,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
-use tauri::Emitter;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -53,7 +52,7 @@ pub fn emit_system_warning<R: tauri::Runtime>(app: &tauri::AppHandle<R>, warning
         let mut guard = ACTIVE_WARNINGS.lock().unwrap();
         guard.get_or_insert_with(HashMap::new).insert(warning.warning_type.clone(), warning.clone());
     }
-    let _ = app.emit("system_warning", &warning);
+    let _ = crate::ipc::events::emit_event(app, crate::ipc::events::AppEvent::SystemWarning, warning);
 }
 
 /// Doc 30 TASK-RT-007: "Warnings auto-clear once their condition resolves."
@@ -64,7 +63,11 @@ pub fn clear_system_warning<R: tauri::Runtime>(app: &tauri::AppHandle<R>, warnin
             map.remove(warning_type);
         }
     }
-    let _ = app.emit("system_warning_cleared", warning_type);
+    let _ = crate::ipc::events::emit_event(
+        app,
+        crate::ipc::events::AppEvent::SystemWarningCleared,
+        warning_type,
+    );
 }
 
 pub fn active_system_warnings() -> Vec<SystemWarningPayload> {

@@ -19,7 +19,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Instant;
-use tauri::{AppHandle, Emitter, Runtime};
+use tauri::{AppHandle, Runtime};
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -108,7 +108,11 @@ impl BackgroundTaskRegistry {
             .unwrap()
             .insert(task_id.to_string(), (progress.clone(), start));
 
-        let _ = app.emit("background_task_progress", progress);
+        let _ = crate::ipc::events::emit_event(
+            app,
+            crate::ipc::events::AppEvent::BackgroundTaskProgress,
+            progress,
+        );
     }
 
     /// Deregisters a task on completion (success or failure) and emits one
@@ -129,7 +133,11 @@ impl BackgroundTaskRegistry {
         progress.status = status;
         progress.status_message = status_message.to_string();
         progress.eta_seconds = None;
-        let _ = app.emit("background_task_progress", progress);
+        let _ = crate::ipc::events::emit_event(
+            app,
+            crate::ipc::events::AppEvent::BackgroundTaskProgress,
+            progress,
+        );
     }
 
     /// All currently-registered (i.e. still running) tasks.

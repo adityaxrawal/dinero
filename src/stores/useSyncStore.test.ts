@@ -8,6 +8,7 @@ const progress: ScanProgressPayload = {
   total: 100,
   transactions_found: 3,
   statements_found: 1,
+  mandate_events_found: 0,
   non_financial: 6,
   errors: 0,
 };

@@ -131,6 +131,7 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
       total: 0,
       transactions_found: 0,
       statements_found: 0,
+      mandate_events_found: 0,
       non_financial: 0,
       errors: 0
     });

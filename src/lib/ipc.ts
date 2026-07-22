@@ -954,13 +954,17 @@ export interface ConsentEventRecord {
   withdrawn_at: string | null;
 }
 
+// Doc 19 §15.1 (v1.14): mirrors src-tauri's real `ScanProgressPayload`
+// (`ingestion/historical_scan.rs`) field-for-field -- this shape backs
+// scan_progress/scan_completed/scan_cancelled/scan_failed, all four events.
 export interface ScanProgressPayload {
   account_id: string;
   processed: number;
   total: number;
   transactions_found: number;
   statements_found: number;
+  mandate_events_found: number;
   non_financial: number;
   errors: number;
-  error_message?: string;
+  error_message?: string | null;
 }
