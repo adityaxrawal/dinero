@@ -96,7 +96,7 @@ model LicenseToken {
 
   /// Never the raw license key — Doc 19 §14.2's activation flow issues the
   /// key to the user once; only its hash is retained server-side.
-  licenseKeyHash String @map("license_key_hash")
+  licenseKeyHash String @unique @map("license_key_hash")
   /// Hardware-UUID-derived fingerprint (Doc 22, Doc 19 §14.2's device_id) —
   /// nullable until first activation binds a device.
   deviceFingerprint String?   @map("device_fingerprint")
