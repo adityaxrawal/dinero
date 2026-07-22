@@ -308,6 +308,27 @@ pub fn get_model_path(app_dir: &Path, model_id: &str) -> Option<PathBuf> {
 /// to special-case "nothing chosen yet."
 pub const DEFAULT_ACTIVE_MODEL_ID: &str = "gemma4_12b";
 
+/// Resolves which model id should be considered "active" given what's
+/// actually downloaded. Never returns an id that isn't in `downloaded`.
+/// Order: keep the stored choice if it's still downloaded -> else the
+/// catalog default if it's downloaded -> else the lowest-tier downloaded
+/// model -> else `None` if nothing is downloaded at all.
+pub fn resolve_active_model(downloaded: &[String], stored: Option<&str>) -> Option<String> {
+    if let Some(id) = stored {
+        if downloaded.iter().any(|d| d == id) {
+            return Some(id.to_string());
+        }
+    }
+    if downloaded.iter().any(|d| d == DEFAULT_ACTIVE_MODEL_ID) {
+        return Some(DEFAULT_ACTIVE_MODEL_ID.to_string());
+    }
+    get_available_models()
+        .into_iter()
+        .filter(|m| downloaded.contains(&m.id))
+        .min_by_key(|m| m.tier)
+        .map(|m| m.id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -402,6 +423,52 @@ mod tests {
         assert_eq!(
             get_model_path(&app_dir, "gemma4_12b"),
             Some(model_path)
+        );
+    }
+
+    #[test]
+    fn resolve_active_model_keeps_stored_when_still_downloaded() {
+        let downloaded = vec!["gemma4_e4b".to_string(), "gemma4_12b".to_string()];
+        assert_eq!(
+            resolve_active_model(&downloaded, Some("gemma4_e4b")),
+            Some("gemma4_e4b".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_active_model_falls_back_to_default_when_stored_is_gone() {
+        let downloaded = vec!["gemma4_12b".to_string(), "qwen3_6_27b".to_string()];
+        // stored id was deleted; default ("gemma4_12b") is still downloaded
+        assert_eq!(
+            resolve_active_model(&downloaded, Some("gemma4_e4b")),
+            Some("gemma4_12b".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_active_model_falls_back_to_lowest_tier_when_default_not_downloaded() {
+        let downloaded = vec!["qwen3_6_27b".to_string(), "gemma4_31b".to_string()];
+        // stored id gone, default ("gemma4_12b") not downloaded either ->
+        // lowest tier among what's downloaded (qwen3_6_27b is tier 3, gemma4_31b is tier 5)
+        assert_eq!(
+            resolve_active_model(&downloaded, Some("gemma4_e4b")),
+            Some("qwen3_6_27b".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_active_model_returns_none_when_nothing_downloaded() {
+        let downloaded: Vec<String> = vec![];
+        assert_eq!(resolve_active_model(&downloaded, Some("gemma4_12b")), None);
+        assert_eq!(resolve_active_model(&downloaded, None), None);
+    }
+
+    #[test]
+    fn resolve_active_model_picks_default_when_nothing_stored_yet() {
+        let downloaded = vec!["gemma4_e4b".to_string(), "gemma4_12b".to_string()];
+        assert_eq!(
+            resolve_active_model(&downloaded, None),
+            Some("gemma4_12b".to_string())
         );
     }
 }
