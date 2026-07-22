@@ -78,8 +78,8 @@ export default function ClusterMemberComparison({
               </div>
               <div>
                 <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Amount</p>
-                <p className={cn('font-medium', member.amount < 0 ? 'text-red-700' : 'text-emerald-700')}>
-                  {member.amount < 0 ? '-' : '+'} ₹{Math.abs(member.amount).toFixed(2)}
+                <p className={cn('font-medium', member.direction === 'debit' ? 'text-red-700' : 'text-emerald-700')}>
+                  {member.direction === 'debit' ? '-' : '+'} ₹{Math.abs(member.amount).toFixed(2)}
                 </p>
               </div>
               <div>

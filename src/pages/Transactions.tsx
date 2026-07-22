@@ -323,8 +323,8 @@ export default function Transactions() {
                       <span className={cn("font-semibold text-[13px] truncate pr-2", isSelected ? "text-white" : "text-[#064E3B]")}>
                         {tx.merchant}
                       </span>
-                      <span className={cn("text-[13px] font-semibold whitespace-nowrap", isSelected ? "text-white" : (tx.amount < 0 ? "text-[#064E3B]" : "text-[#10b981]"))}>
-                        {tx.amount < 0 ? '−' : '+'}₹{Math.abs(tx.amount).toLocaleString(undefined, { minimumFractionDigits: 0 })}
+                      <span className={cn("text-[13px] font-semibold whitespace-nowrap", isSelected ? "text-white" : (tx.direction === 'debit' ? "text-red-700" : "text-[#10b981]"))}>
+                        {tx.direction === 'debit' ? '−' : '+'}₹{Math.abs(tx.amount).toLocaleString(undefined, { minimumFractionDigits: 0 })}
                       </span>
                     </div>
                     

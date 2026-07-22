@@ -212,8 +212,8 @@ export default function InstrumentDetail() {
               {recentTransactions.map((tx) => (
                 <li key={tx.id} className="flex items-center justify-between text-sm">
                   <span>{tx.merchant}</span>
-                  <span className={cn('font-medium', tx.amount < 0 ? 'text-red-700' : 'text-emerald-700')}>
-                    {tx.amount < 0 ? '- ' : '+ '}₹{Math.abs(tx.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  <span className={cn('font-medium', tx.direction === 'debit' ? 'text-red-700' : 'text-emerald-700')}>
+                    {tx.direction === 'debit' ? '- ' : '+ '}₹{Math.abs(tx.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                   </span>
                 </li>
               ))}
