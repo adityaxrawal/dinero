@@ -11,13 +11,15 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@prisma/client": "^5.20.0"
+    "@prisma/client": "^5.20.0",
+    "jsonwebtoken": "^9.0.2"
   },
   "devDependencies": {
     "prisma": "^5.20.0",
     "@prisma/internals": "^5.20.0",
     "typescript": "^5.5.0",
     "vitest": "^2.0.0",
-    "@types/node": "^20.14.0"
+    "@types/node": "^20.14.0",
+    "@types/jsonwebtoken": "^9.0.6"
   }
 }
