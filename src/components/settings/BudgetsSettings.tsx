@@ -25,7 +25,7 @@ export default function BudgetsSettings() {
     setLoading(true);
     try {
       const data = await API.spendingLimits.get();
-      setGlobalLimit(data.global_limit ? (data.global_limit / 100).toString() : '');
+      setGlobalLimit(data.global_limit ? data.global_limit.toString() : '');
       setThresholds({
         warn_at_80: data.thresholds.warn_at_80,
         warn_at_90: data.thresholds.warn_at_90,
