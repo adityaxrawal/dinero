@@ -12,6 +12,12 @@ dist
 dist-ssr
 *.local
 
+# TASK-OPS-001: generated at release-build time by
+# scripts/verify_release_prerequisites.sh / generate_release_notes.sh --
+# never hand-authored, never committed.
+/release-metadata.json
+/release-notes.md
+
 # Secrets — Doc 33 §3 / Doc 24: never committed, live OAuth client credentials
 .env
 .env.*
@@ -57,14 +63,25 @@ playwright.config.ts
 vitest.config.ts
 test_shutdown.sh
 /scripts/*
-# TASK-QA-010: this one script is a genuine CI dependency (.github/workflows/ci.yml
-# runs it), unlike the rest of /scripts/ (local-only dev tooling -- DMG signing,
-# notarization, backup/restore -- that needs local credentials CI never has). It
-# must actually exist in a fresh checkout for the workflow to run at all. Git can't
-# re-include a file whose parent directory is excluded via a trailing-slash pattern
-# (`/scripts/`), hence `/scripts/*` here instead -- the standard "ignore all but
-# these" idiom.
+# TASK-QA-010/OPS-001/OPS-008 finding: these three scripts are genuine CI
+# dependencies -- release.yml runs security_hardening_check.sh and
+# notarize.sh on every tagged release push, ci.yml runs
+# verify_acceptance_criteria.py on every push/PR -- unlike the rest of
+# /scripts/ (local-only dev tooling: DMG signing prep, backup/restore,
+# rollback, that needs local credentials/interactive input CI never has).
+# All three were previously gitignored along with everything else in this
+# directory, meaning release.yml would have failed with "file not found" on
+# the very first real tagged release (neither script has ever actually been
+# in the repository despite being referenced by a workflow the whole time).
+# Git can't re-include a file whose parent directory is excluded via a
+# trailing-slash pattern (`/scripts/`), hence `/scripts/*` here instead --
+# the standard "ignore all but these" idiom.
 !/scripts/verify_acceptance_criteria.py
+!/scripts/security_hardening_check.sh
+!/scripts/notarize.sh
+!/scripts/verify_release_prerequisites.sh
+!/scripts/generate_release_notes.sh
+!/scripts/.placeholder_license_public.pem.sha256
 audit.md
 fix-log.md
 implementation-log.md

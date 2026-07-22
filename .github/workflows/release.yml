@@ -44,6 +44,18 @@ jobs:
       - name: Run security hardening check
         run: ./scripts/security_hardening_check.sh
 
+      # TASK-OPS-001: fails closed before any signing/build work starts if
+      # the embedded license public-key artifact is missing, malformed, or
+      # still the known dev-only placeholder -- also writes
+      # release-metadata.json (build number, git commit, embedded
+      # license-key version) so support can trace exactly which binary was
+      # distributed without needing any user financial or local-DB data.
+      - name: Verify release prerequisites and generate release metadata
+        run: ./scripts/verify_release_prerequisites.sh
+
+      - name: Generate release notes
+        run: ./scripts/generate_release_notes.sh "${{ github.ref_name }}" > release-notes.md
+
       - name: Build, Sign, and Notarize
         uses: tauri-apps/tauri-action@v0
         env:
@@ -57,9 +69,15 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Dinero ${{ github.ref_name }}"
-          releaseBody: "See CHANGELOG for details."
+          releaseBodyFile: release-notes.md
           releaseDraft: true
           args: --target universal-apple-darwin
 
       - name: Verify release notarization
         run: ./scripts/notarize.sh --verify-only
+
+      - name: Upload release metadata artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-metadata
+          path: release-metadata.json
