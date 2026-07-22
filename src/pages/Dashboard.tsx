@@ -6,6 +6,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import RecentTransactions from '@/components/dashboard/RecentTransactions';
+import StaleClusterReminder from '@/components/dashboard/StaleClusterReminder';
 import { useDashboardSummary } from '@/hooks/queries/useDashboardSummary';
 import { useTransactionsList } from '@/hooks/queries/useTransactionsList';
 import { useSpendTrend } from '@/hooks/queries/useSpendTrend';
@@ -501,6 +502,8 @@ export default function Dashboard() {
           )}
         </div>
       </section>
+
+      <StaleClusterReminder clusters={clusters} />
 
       {/* ── Recent Transactions ──────────────────────────────── */}
       <RecentTransactions transactions={transactions} />

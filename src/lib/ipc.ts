@@ -348,6 +348,8 @@ export interface ClusterRecord {
   reason: string;
   members_count: number;
   members: ClusterMember[];
+  // Doc 30 TASK-RT-006: backs the "unresolved > 7 days" stale-cluster reminder.
+  created_at: string | null;
 }
 
 export interface UnassignedTransactionRecord {

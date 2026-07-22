@@ -23,6 +23,8 @@ import BackgroundTaskIndicator from '@/components/shell/BackgroundTaskIndicator'
 import PermissionDeniedOverlay from '@/components/shell/PermissionDeniedOverlay';
 import ConnectionStatusBanner from '@/components/notifications/ConnectionStatusBanner';
 import AlertBanner from '@/components/notifications/AlertBanner';
+import { useReconciliationClusters } from '@/hooks/queries/useReconciliationClusters';
+import { useReconciliationNudgeStore } from '@/stores/useReconciliationNudgeStore';
 
 const CORRUPTION_EVENT = 'db_corrupted';
 
@@ -31,6 +33,10 @@ interface NavItem {
   label: string;
   icon: React.ReactNode;
   badge?: number;
+  /** TASK-RT-006: a brief attention pulse on the badge itself -- suppressed
+   * during an active bulk scan and fired once, in aggregate, on
+   * `scan_completed` instead (`useReconciliationNudgeStore`). */
+  pulse?: boolean;
 }
 
 /** Minimal SVG logo mark used in the rail */
@@ -80,9 +86,12 @@ function SidebarItem({
         {item.badge != null && item.badge > 0 && (
           <span
             className={cn(
-              "flex items-center justify-center text-[10px] font-bold rounded-full ml-auto px-2 min-w-[20px] h-5",
-              isActive ? "bg-[#064E3B]/10 text-[#064E3B]" : "bg-[#f59e0b] text-white"
+              "flex items-center justify-center text-[10px] font-bold rounded-full ml-auto px-2 min-w-[20px] h-5 transition-transform duration-300",
+              isActive ? "bg-[#064E3B]/10 text-[#064E3B]" : "bg-[#f59e0b] text-white",
+              item.pulse && "scale-125"
             )}
+            data-testid={item.pulse !== undefined ? 'reconciliation-badge' : undefined}
+            data-pulsing={item.pulse}
             aria-hidden="true"
           >
             {item.badge > 9 ? '9+' : item.badge}
@@ -99,7 +108,20 @@ export default function AppLayout() {
   const [backendStatus, setBackendStatus] = useState<'healthy' | 'offline' | 'corrupted'>('healthy');
   const hydrateLicenseStore = useLicenseStore((s) => s.hydrate);
 
-  const [unresolvedClusters, setUnresolvedClusters] = useState(0);
+  // TASK-RT-006: React Query already auto-invalidates this on every
+  // `reconciliation_cluster` event (`useIpcQueryInvalidation.ts`), so the
+  // count itself live-increments with no polling and no manual re-fetch --
+  // previously fetched once on mount and never updated again.
+  const { data: reconciliationClusters = [] } = useReconciliationClusters();
+  const unresolvedClusters = reconciliationClusters.length;
+  const badgePulse = useReconciliationNudgeStore((s) => s.justPulsed);
+  const clearBadgePulse = useReconciliationNudgeStore((s) => s.clearPulse);
+  useEffect(() => {
+    if (!badgePulse) return;
+    const timer = setTimeout(clearBadgePulse, 600);
+    return () => clearTimeout(timer);
+  }, [badgePulse, clearBadgePulse]);
+
   const [isRestoring, setIsRestoring] = useState(false);
   const [isStartingFresh, setIsStartingFresh] = useState(false);
 
@@ -149,10 +171,6 @@ export default function AppLayout() {
 
     hydrateLicenseStore();
 
-    API.reconciliation.listUnresolved()
-      .then((clusters) => setUnresolvedClusters(clusters.length))
-      .catch(() => setUnresolvedClusters(0));
-
     const unlisteners: (() => void)[] = [];
 
     const setup = async () => {
@@ -188,7 +206,7 @@ export default function AppLayout() {
       title: 'Workspace',
       items: [
         { path: '/', label: 'Command Center', icon: <LayoutDashboard size={15} />, badge: 0 },
-        { path: '/reconciliation', label: 'Review Inbox', icon: <GitMerge size={15} />, badge: unresolvedClusters },
+        { path: '/reconciliation', label: 'Review Inbox', icon: <GitMerge size={15} />, badge: unresolvedClusters, pulse: badgePulse },
         { path: '/statements', label: 'Statements', icon: <FileText size={15} />, badge: 0 },
       ]
     },

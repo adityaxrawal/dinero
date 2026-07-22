@@ -152,6 +152,10 @@ pub struct ClusterRecord {
     pub reason: String,
     pub members_count: i64,
     pub members: Vec<ClusterMember>,
+    /// Doc 30 TASK-RT-006: backs the "unresolved > 7 days" stale-cluster
+    /// reminder -- previously absent from this response entirely, so the
+    /// frontend had no way to compute a cluster's age.
+    pub created_at: Option<String>,
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -541,7 +545,7 @@ fn fetch_cluster_members(
 pub fn do_fetch_unresolved_clusters(conn: &Connection) -> Result<Vec<ClusterRecord>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, reason FROM reconciliation_clusters WHERE cluster_status IN ('open', 'deferred')",
+            "SELECT id, reason, created_at FROM reconciliation_clusters WHERE cluster_status IN ('open', 'deferred')",
         )
         .map_err(|e| e.to_string())?;
 
@@ -549,13 +553,14 @@ pub fn do_fetch_unresolved_clusters(conn: &Connection) -> Result<Vec<ClusterReco
         .query_map([], |row| {
             let id: String = row.get(0)?;
             let reason: Option<String> = row.get(1)?;
-            Ok((id, reason.unwrap_or_else(|| "Unknown".to_string())))
+            let created_at: Option<String> = row.get(2)?;
+            Ok((id, reason.unwrap_or_else(|| "Unknown".to_string()), created_at))
         })
         .map_err(|e| e.to_string())?;
 
     let mut res = Vec::new();
     for r in iter {
-        let (id, reason) = r.map_err(|e| e.to_string())?;
+        let (id, reason, created_at) = r.map_err(|e| e.to_string())?;
         let members = fetch_cluster_members(conn, &id)?;
 
         res.push(ClusterRecord {
@@ -563,6 +568,7 @@ pub fn do_fetch_unresolved_clusters(conn: &Connection) -> Result<Vec<ClusterReco
             reason,
             members_count: members.len() as i64,
             members,
+            created_at,
         });
     }
     Ok(res)
@@ -575,16 +581,16 @@ pub fn do_fetch_cluster_detail(
     conn: &Connection,
     cluster_id: &str,
 ) -> Result<Option<ClusterRecord>, String> {
-    let found: Option<(String, Option<String>)> = conn
+    let found: Option<(String, Option<String>, Option<String>)> = conn
         .query_row(
-            "SELECT id, reason FROM reconciliation_clusters WHERE id = ?1",
+            "SELECT id, reason, created_at FROM reconciliation_clusters WHERE id = ?1",
             params![cluster_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()
         .map_err(|e| e.to_string())?;
 
-    let Some((id, reason)) = found else {
+    let Some((id, reason, created_at)) = found else {
         return Ok(None);
     };
     let members = fetch_cluster_members(conn, &id)?;
@@ -593,6 +599,7 @@ pub fn do_fetch_cluster_detail(
         reason: reason.unwrap_or_else(|| "Unknown".to_string()),
         members_count: members.len() as i64,
         members,
+        created_at,
     }))
 }
 
@@ -3158,7 +3165,7 @@ mod tests {
             [],
         ).unwrap();
         conn.execute(
-            "CREATE TABLE reconciliation_clusters (id TEXT PRIMARY KEY, cluster_status TEXT, reason TEXT)",
+            "CREATE TABLE reconciliation_clusters (id TEXT PRIMARY KEY, cluster_status TEXT, reason TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
             [],
         ).unwrap();
         conn.execute(
@@ -3230,6 +3237,23 @@ mod tests {
         assert!(!ids.contains(&"c_resolved"));
         assert!(!ids.contains(&"c_rejected"));
         assert_eq!(clusters.len(), 2);
+    }
+
+    /// Doc 30 TASK-RT-006: `ClusterRecord.created_at` backs the frontend's
+    /// stale-cluster (>7 days unresolved) reminder card -- previously absent
+    /// from this response entirely.
+    #[test]
+    fn test_cluster_record_includes_created_at() {
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO reconciliation_clusters (id, cluster_status, reason, created_at) VALUES ('c_aged', 'open', 'mid_range_score', '2026-01-01 00:00:00')",
+            [],
+        )
+        .unwrap();
+
+        let clusters = do_fetch_unresolved_clusters(&conn).unwrap();
+        let aged = clusters.iter().find(|c| c.id == "c_aged").unwrap();
+        assert_eq!(aged.created_at.as_deref(), Some("2026-01-01 00:00:00"));
     }
 
     /// Doc 30 TASK-API-003 acceptance test.
