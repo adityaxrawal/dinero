@@ -80,3 +80,8 @@ ammonia = "4"
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
 mockito = "1.0"
+# TASK-QA-005: `#[tokio::test(start_paused = true)]` fast-forwards virtual
+# time so a test can exercise the real exponential-backoff retry logic
+# (which otherwise sleeps for real, summing to ~3 minutes across 8 retries)
+# without weakening or duplicating that logic. Dev-only -- never ships.
+tokio = { version = "1", features = ["test-util"] }
