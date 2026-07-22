@@ -79,6 +79,29 @@ export function realRazorpayRefunds(keyId: string, keySecret: string): RazorpayR
   };
 }
 
+export interface RazorpaySubscriptionState {
+  status: string; // Razorpay's own vocabulary: 'active' | 'halted' | 'cancelled' | ...
+}
+
+export interface RazorpaySubscriptions {
+  /// Doc 30 TASK-BILL-008: the authoritative source of truth for drift
+  /// detection -- "cross-referencing every active/past_due local
+  /// subscription against Razorpay's authoritative API state."
+  fetch(razorpaySubscriptionId: string): Promise<RazorpaySubscriptionState>;
+}
+
+export function realRazorpaySubscriptions(keyId: string, keySecret: string): RazorpaySubscriptions {
+  return {
+    async fetch(razorpaySubscriptionId) {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const Razorpay = require('razorpay');
+      const client = new Razorpay({ key_id: keyId, key_secret: keySecret });
+      const sub = await client.subscriptions.fetch(razorpaySubscriptionId);
+      return { status: sub.status };
+    },
+  };
+}
+
 /// Razorpay's documented signature scheme: HMAC-SHA256(order_id + "|" +
 /// payment_id, key_secret), hex-encoded. Constant-time compare against
 /// timing attacks.
