@@ -11,3 +11,17 @@ export function maskDeviceFingerprint(fingerprint: string): string {
   if (fingerprint.length <= 8) return '****';
   return `${fingerprint.slice(0, 4)}...${fingerprint.slice(-4)}`;
 }
+
+/// Doc 30 TASK-OPS-006 / Doc 43 §3 action 7: a support lookup result must
+/// never surface a full email in its response body, even to the one
+/// authenticated admin -- only enough to confirm the operator found the
+/// right account. `u***r@example.com` keeps the first/last character of the
+/// local part; anything shorter than that just masks the whole local part.
+export function maskEmail(email: string): string {
+  const at = email.indexOf('@');
+  if (at <= 0) return '***';
+  const local = email.slice(0, at);
+  const domain = email.slice(at);
+  if (local.length <= 2) return `${'*'.repeat(local.length)}${domain}`;
+  return `${local[0]}${'*'.repeat(local.length - 2)}${local[local.length - 1]}${domain}`;
+}
