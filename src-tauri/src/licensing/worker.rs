@@ -11,6 +11,22 @@ use tokio::time;
 /// payment/validation failure — a business invariant (Doc 03), never configurable.
 const GRACE_PERIOD: ChronoDuration = ChronoDuration::days(7);
 
+/// Doc 30 TASK-QA-006: whether the 7-day offline grace period has elapsed
+/// since the last successful server validation -- extracted as a pure
+/// function so the grace-expiry-to-LOCKED transition is independently
+/// testable without needing the full 6-hour-interval background validation
+/// loop (`start_background_validation`) to actually tick 7 days forward.
+/// No `last_server_validated_at` at all (a state row somehow reaching GRACE
+/// without ever having validated) is treated as expired -- there is no
+/// evidence the grace window's clock has ever started, so it cannot be
+/// trusted to still be running.
+fn is_grace_period_expired(last_validated: Option<chrono::DateTime<Utc>>, now: chrono::DateTime<Utc>) -> bool {
+    match last_validated {
+        Some(last_validated) => now.signed_duration_since(last_validated) > GRACE_PERIOD,
+        None => true,
+    }
+}
+
 /// Doc 22 §10.5 (I7 fix): legitimate NTP/DST corrections can move the clock
 /// backward by a few minutes — only a rollback larger than this grace window
 /// counts as suspicious tampering. Previously *any* backward movement, even
@@ -142,18 +158,11 @@ pub async fn start_background_validation<R: tauri::Runtime>(
                                     if state.subscription_status_cached == LicenseStatus::Active {
                                         tracing::warn!("Transitioning license to GRACE period.");
                                         crate::licensing::state_machine::transition(c, LicenseStatus::Grace)?;
-                                    } else if state.subscription_status_cached == LicenseStatus::Grace {
-                                        // Doc 12 §7.4/§7.5, Doc 33 §4: 7-day offline grace period is a
-                                        // fixed business invariant (Doc 03 pricing/packaging), not a tunable.
-                                        if let Some(last_validated) = state.last_server_validated_at {
-                                            if now.signed_duration_since(last_validated) > GRACE_PERIOD {
-                                                tracing::warn!("Grace period expired. Locking license.");
-                                                transition_to_locked(c, false)?;
-                                            }
-                                        } else {
-                                            tracing::warn!("Grace period expired (no last validation). Locking license.");
-                                            transition_to_locked(c, false)?;
-                                        }
+                                    } else if state.subscription_status_cached == LicenseStatus::Grace
+                                        && is_grace_period_expired(state.last_server_validated_at, now)
+                                    {
+                                        tracing::warn!("Grace period expired. Locking license.");
+                                        transition_to_locked(c, false)?;
                                     }
                                     Ok::<_, anyhow::Error>(())
                                 }).await;
@@ -173,5 +182,36 @@ pub async fn start_background_validation<R: tauri::Runtime>(
             // of every branch above.
             crate::licensing::commands::emit_license_state_changed(&app_handle, &pool).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Doc 30 TASK-QA-006 acceptance: `test_grace_state_expires_to_read_only`
+    /// (this half: the pure timing decision itself; the write-gate
+    /// enforcement half is covered by `licensing::gate`'s own tests against
+    /// the resulting `LOCKED` state).
+    #[test]
+    fn test_is_grace_period_expired() {
+        let now = Utc::now();
+
+        assert!(
+            !is_grace_period_expired(Some(now - ChronoDuration::days(6)), now),
+            "6 days into the 7-day grace window must not be expired yet"
+        );
+        assert!(
+            !is_grace_period_expired(Some(now - ChronoDuration::days(7)), now),
+            "exactly 7 days must not yet be expired (the check is strictly greater-than)"
+        );
+        assert!(
+            is_grace_period_expired(Some(now - ChronoDuration::days(8)), now),
+            "8 days past the last successful validation must be expired"
+        );
+        assert!(
+            is_grace_period_expired(None, now),
+            "a GRACE state with no recorded last validation at all must be treated as expired"
+        );
     }
 }
