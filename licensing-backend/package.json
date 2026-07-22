@@ -1,0 +1,23 @@
+{
+  "name": "dinero-licensing-backend",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Dinero Licensing Backend — the sole multi-tenant component (Doc 15/17). Vercel Serverless + Neon Postgres. Identity/billing only, never financial data (Doc 30 TASK-LIC-001).",
+  "scripts": {
+    "prisma:generate": "prisma generate",
+    "prisma:migrate:dev": "prisma migrate dev",
+    "prisma:migrate:deploy": "prisma migrate deploy",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.20.0"
+  },
+  "devDependencies": {
+    "prisma": "^5.20.0",
+    "@prisma/internals": "^5.20.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0",
+    "@types/node": "^20.14.0"
+  }
+}
