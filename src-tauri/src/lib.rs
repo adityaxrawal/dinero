@@ -643,6 +643,32 @@ pub fn run() {
                                             "Backup successful: {}",
                                             backup_file.display()
                                         );
+                                        // Doc 30 TASK-OPS-002: "a scheduled verification step
+                                        // loads a recent backup in a temporary sandbox to
+                                        // confirm it opens cleanly, preventing silent backup
+                                        // rot" -- opens the just-written backup fresh (a
+                                        // separate connection, not the one that wrote it) and
+                                        // runs a real integrity_check immediately, so rot is
+                                        // caught the same day it happens, not months later
+                                        // when a restore is actually needed.
+                                        if let Err(e) = crate::db::backup::verify_backup_integrity(&backup_file) {
+                                            tracing::error!(
+                                                "Daily backup verification failed for {}: {}",
+                                                backup_file.display(),
+                                                e
+                                            );
+                                            crate::ipc::system_warnings::emit_system_warning(
+                                                &app_handle_for_backup,
+                                                crate::ipc::system_warnings::SystemWarningPayload {
+                                                    warning_type: "backup_verification_failed".to_string(),
+                                                    message: "Today's automatic backup could not be verified. \
+                                                    Your data is still safe, but this backup may not be usable \
+                                                    for restore.".to_string(),
+                                                    severity: crate::ipc::system_warnings::WarningSeverity::Degraded,
+                                                    action_hint: None,
+                                                },
+                                            );
+                                        }
                                         // TASK-DB-020: log completion + notify Settings so it
                                         // can show the last-backup timestamp.
                                         let _ = app_handle_for_backup.emit(

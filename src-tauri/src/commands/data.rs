@@ -2721,6 +2721,19 @@ pub async fn db_restore_backup(app: tauri::AppHandle) -> Result<String, crate::e
             crate::error::AppError::Validation("No backup file found to restore from".to_string())
         })?;
 
+    // Doc 30 TASK-OPS-002 (`test_restore_validates_integrity_before_apply`):
+    // verify the candidate backup opens cleanly and passes
+    // `PRAGMA integrity_check` *before* touching the live database at all —
+    // a failure here means `db_path` is never touched, satisfying
+    // `test_restore_failure_leaves_original_db_intact` trivially for this
+    // path (the original is untouched because nothing ever wrote to it).
+    crate::db::backup::verify_backup_integrity(&most_recent).map_err(|e| {
+        crate::error::AppError::Validation(format!(
+            "Backup {:?} failed integrity verification, refusing to restore: {}",
+            most_recent, e
+        ))
+    })?;
+
     // Clear any stale WAL/SHM sidecars for the (possibly corrupted) live file
     // before replacing it — leftover WAL data would otherwise reference the
     // old, corrupted state, not the restored snapshot.
@@ -2729,7 +2742,11 @@ pub async fn db_restore_backup(app: tauri::AppHandle) -> Result<String, crate::e
         let _ = std::fs::remove_file(&sidecar);
     }
 
-    std::fs::copy(&most_recent, &db_path).map_err(|e| {
+    // Doc 30 TASK-OPS-002 (`test_restore_failure_leaves_original_db_intact`):
+    // atomic temp-file-then-rename rather than a direct copy over the live
+    // path — a failure partway through (disk full, killed process) leaves
+    // `db_path` exactly as it was, never partially overwritten.
+    crate::db::backup::atomic_replace(&most_recent, &db_path).map_err(|e| {
         crate::error::AppError::Io(format!("Failed to restore backup {:?}: {}", most_recent, e))
     })?;
 
