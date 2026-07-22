@@ -2,10 +2,10 @@ import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   TrendingUp, TrendingDown, ArrowUpRight, ArrowDownRight, AlertCircle,
-  GitMerge, ChevronRight, Activity, Loader2, Calendar,
-  AlertTriangle, Plus,
+  GitMerge, ChevronRight, Loader2, Calendar,
+  AlertTriangle,
 } from 'lucide-react';
-import { cn, formatRelativeDate } from '@/lib/utils';
+import RecentTransactions from '@/components/dashboard/RecentTransactions';
 import { useDashboardSummary } from '@/hooks/queries/useDashboardSummary';
 import { useTransactionsList } from '@/hooks/queries/useTransactionsList';
 import { useSpendTrend } from '@/hooks/queries/useSpendTrend';
@@ -503,116 +503,7 @@ export default function Dashboard() {
       </section>
 
       {/* ── Recent Transactions ──────────────────────────────── */}
-      <section aria-label="Recent transactions">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="heading-sm">Recent Ledger</h2>
-          <button
-            type="button"
-            className="text-xs font-medium hover:underline"
-            style={{ color: '#064E3B' }}
-            onClick={() => navigate('/transactions')}
-          >
-            View all →
-          </button>
-        </div>
-
-        <div className="card-champagne overflow-hidden">
-          {transactions.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-12 text-center" role="status">
-              <div
-                className="w-10 h-10 rounded-xl flex items-center justify-center mb-3"
-                style={{ background: 'rgba(6,78,59,0.07)' }}
-              >
-                <Activity className="w-5 h-5" style={{ color: '#6b8a7f' }} aria-hidden="true" />
-              </div>
-              <p className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>No transactions yet</p>
-              <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
-                Sync your bank or upload a statement to get started.
-              </p>
-              <button
-                type="button"
-                className="mt-4 btn btn-primary text-xs"
-                onClick={() => navigate('/statements')}
-              >
-                <Plus className="w-3.5 h-3.5 mr-1" aria-hidden="true" />
-                Upload Statement
-              </button>
-            </div>
-          ) : (
-            <table className="data-table" aria-label="Recent transactions">
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>Merchant</th>
-                  <th>Category</th>
-                  <th className="text-right">Amount</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {transactions.map((tx) => {
-                  const dateLabel = formatRelativeDate(tx.date);
-
-                  return (
-                    <tr
-                      key={tx.id}
-                      tabIndex={0}
-                      role="button"
-                      aria-label={`${tx.merchant}, ₹${Math.abs(tx.amount).toLocaleString()}`}
-                      onClick={() => navigate(`/transactions/${tx.id}`)}
-                      onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && navigate(`/transactions/${tx.id}`)}
-                    >
-                      <td>
-                        <span className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>{dateLabel}</span>
-                      </td>
-                      <td>
-                        <div className="flex items-center gap-2.5">
-                          <div
-                            className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0"
-                            style={{ background: 'rgba(6,78,59,0.10)', color: '#064E3B' }}
-                            aria-hidden="true"
-                          >
-                            {tx.merchant.charAt(0).toUpperCase()}
-                          </div>
-                          <span className="text-sm font-medium truncate" style={{ color: 'var(--text-primary)' }}>
-                            {tx.merchant}
-                          </span>
-                        </div>
-                      </td>
-                      <td>
-                        <span
-                          className="text-xs px-2 py-0.5 rounded-full"
-                          style={{ background: 'rgba(6,78,59,0.07)', color: '#3d5a50' }}
-                        >
-                          {tx.category}
-                        </span>
-                      </td>
-                      <td className="text-right">
-                        <span
-                          className={cn('text-sm font-semibold amount', tx.amount < 0 ? 'amount-debit' : 'amount-credit')}
-                        >
-                          {tx.amount < 0 ? '−' : '+'}₹{Math.abs(tx.amount).toLocaleString(undefined, { minimumFractionDigits: 0 })}
-                        </span>
-                      </td>
-                      <td>
-                        <span
-                          className="text-[11px] font-medium px-2 py-0.5 rounded-full"
-                          style={{
-                            background: tx.status.toLowerCase() === 'posted' ? 'rgba(16,185,129,0.10)' : 'rgba(107,138,127,0.10)',
-                            color: tx.status.toLowerCase() === 'posted' ? '#10b981' : '#6b8a7f',
-                          }}
-                        >
-                          {tx.status}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-        </div>
-      </section>
+      <RecentTransactions transactions={transactions} />
     </div>
   );
 }

@@ -11,6 +11,7 @@ import { router } from './routes';
 import { GlobalStateProvider } from './lib/GlobalStateContext';
 import { queryClient } from './lib/queryClient';
 import { useIpcQueryInvalidation } from './hooks/useIpcQueryInvalidation';
+import { useResumeFromSleepRefetch } from './hooks/useResumeFromSleepRefetch';
 import './App.css';
 
 interface UpdateAvailablePayload {
@@ -25,6 +26,7 @@ interface UpdateAvailablePayload {
 // the same component that creates the provider wrapping it.
 function IpcEventBridge() {
   useIpcQueryInvalidation();
+  useResumeFromSleepRefetch();
 
   useEffect(() => {
     // TASK-DESK-002: clicking a native notification foregrounds the app and
