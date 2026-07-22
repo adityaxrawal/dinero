@@ -9,6 +9,7 @@ pub mod diagnostics;
 pub mod error;
 pub mod extraction;
 pub mod feedback;
+pub mod health;
 pub mod ingestion;
 pub mod integrity;
 pub mod ipc;
@@ -830,6 +831,35 @@ pub fn run() {
                     app_handle_for_licensing,
                 )
                 .await;
+            });
+
+            // TASK-OPS-003: a cheap (single `SELECT 1`) liveness re-check
+            // every 60s. Startup itself already fails closed with a blocking
+            // dialog (see the `db::init_db` match above) — this catches the
+            // case where the pool goes unresponsive *after* a successful
+            // start (disk unmounted, pool exhausted), which is the only way
+            // "backend startup failure" is an ongoing, alertable condition
+            // rather than a one-time launch-time check.
+            let pool_for_health = pool_clone.clone();
+            let app_handle_for_health = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    let report = crate::health::compute_health_report(&pool_for_health).await;
+                    if !report.backend_ready {
+                        let monitor = app_handle_for_health
+                            .state::<crate::security::incident_response::IncidentMonitor>();
+                        if crate::security::incident_response::record_trigger(
+                            &monitor,
+                            crate::security::incident_response::TriggerKind::BackendStartupFailure,
+                        ) {
+                            crate::security::incident_response::emit_health_alert(
+                                crate::security::incident_response::TriggerKind::BackendStartupFailure,
+                                &app_handle_for_health,
+                            );
+                        }
+                    }
+                }
             });
 
             // TASK-DESK-005: checks once on launch, then every ~6 hours

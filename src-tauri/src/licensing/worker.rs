@@ -5,6 +5,7 @@ use crate::licensing::state::{
 use chrono::{Duration as ChronoDuration, Utc};
 use deadpool_sqlite::Pool;
 use std::time::Duration;
+use tauri::Manager;
 use tokio::time;
 
 /// Doc 12 §7.4/§7.5, Doc 33 §4: fixed 7-day offline grace period after
@@ -145,11 +146,40 @@ pub async fn start_background_validation<R: tauri::Runtime>(
                                         let _ = conn
                                             .interact(move |c| transition_to_locked(c, false))
                                             .await;
+
+                                        // Doc 30 TASK-OPS-003: a signature-verification
+                                        // failure is a single-occurrence critical
+                                        // condition, not something to wait 3 strikes on.
+                                        let monitor = app_handle.state::<crate::security::incident_response::IncidentMonitor>();
+                                        if crate::security::incident_response::record_trigger(
+                                            &monitor,
+                                            crate::security::incident_response::TriggerKind::SignatureVerificationFailure,
+                                        ) {
+                                            crate::security::incident_response::emit_health_alert(
+                                                crate::security::incident_response::TriggerKind::SignatureVerificationFailure,
+                                                &app_handle,
+                                            );
+                                        }
                                     }
                                 }
                             }
                             Err(e) => {
                                 tracing::error!("License validation failed: {:?}", e);
+
+                                // Doc 30 TASK-OPS-003: alert (not session-revoke) once
+                                // validate has failed 3 times in a row — a single
+                                // failure is routine on a flaky connection, and the
+                                // 7-day grace period already protects access.
+                                let monitor = app_handle.state::<crate::security::incident_response::IncidentMonitor>();
+                                if crate::security::incident_response::record_trigger(
+                                    &monitor,
+                                    crate::security::incident_response::TriggerKind::RepeatedLicenseValidateFailure,
+                                ) {
+                                    crate::security::incident_response::emit_health_alert(
+                                        crate::security::incident_response::TriggerKind::RepeatedLicenseValidateFailure,
+                                        &app_handle,
+                                    );
+                                }
 
                                 let now = Utc::now();
 

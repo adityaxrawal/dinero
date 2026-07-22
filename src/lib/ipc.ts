@@ -395,6 +395,17 @@ interface BackendStatus {
   status: 'healthy' | 'corrupted' | 'locked';
 }
 
+// TASK-OPS-003: coarse operational status only — never the underlying
+// financial content, email address, JWT, or tokens (see
+// src-tauri/src/health.rs's NEVER_INCLUDED list).
+export interface HealthReport {
+  backend_ready: boolean;
+  db_integrity_ok: boolean;
+  checkpoint_age_seconds: number | null;
+  gmail_polling_status: 'not_connected' | 'active' | 'degraded' | 'quota_exhausted' | 'unknown';
+  license_status: string;
+}
+
 // TASK-FE-015: account_status added -- the real backend column existed
 // (Document 18's connected_accounts.account_status) but was never selected
 // or exposed, so a 'degraded' account (Gmail token refresh failed) had no
@@ -731,6 +742,7 @@ export const API = {
   },
   status: {
     check: () => invokeCommand<BackendStatus>('check_backend_status'),
+    getHealthReport: () => invokeCommand<HealthReport>('get_health_report'),
   },
   db: {
     restoreBackup: () => invokeCommand<string>('db_restore_backup'),

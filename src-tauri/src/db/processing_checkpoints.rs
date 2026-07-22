@@ -129,3 +129,16 @@ pub fn get_checkpoint(
 
     Ok(checkpoint)
 }
+
+/// Doc 30 TASK-OPS-003: the freshest `updated_at` across every job's
+/// checkpoint row, used to report checkpoint-freshness in the local health
+/// report. `None` means no checkpoint has ever been written (a brand-new
+/// install), which is not itself unhealthy.
+pub fn most_recent_checkpoint_updated_at(conn: &Connection) -> Result<Option<NaiveDateTime>> {
+    let ts: Option<NaiveDateTime> = conn.query_row(
+        "SELECT MAX(updated_at) FROM processing_checkpoints",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(ts)
+}

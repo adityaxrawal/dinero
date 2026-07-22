@@ -2978,6 +2978,7 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         data::instruments_archive,
         data::get_debug_metrics,
         data::check_backend_status,
+        crate::health::get_health_report,
         data::auth_get_consent_history,
         data::record_consent_event,
         check_system_ram,

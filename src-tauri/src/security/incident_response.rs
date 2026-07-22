@@ -37,6 +37,22 @@ pub enum TriggerKind {
     RepeatedOAuthFailure,
     RepeatedDbDecryptionFailure,
     IntegrityCheckFailure,
+    /// Doc 30 TASK-OPS-003: repeated Licensing Backend `/license/validate`
+    /// failures (network/server error, not a signature problem — that's
+    /// `SignatureVerificationFailure` below). Alert-only via
+    /// `emit_health_alert`, never `respond_to_incident` — the 7-day grace
+    /// period already protects access, so forcing a session logout over a
+    /// flaky connection to the Licensing Backend would be actively harmful.
+    RepeatedLicenseValidateFailure,
+    /// A license JWT that failed RSA-256 signature verification against the
+    /// embedded public key — covers both a tampered response and a
+    /// production key-rotation mismatch ("signature-rotation issues" in
+    /// Document 30's TASK-OPS-003 task text). Alert-only, same reasoning as
+    /// above.
+    SignatureVerificationFailure,
+    /// The local backend (SQLite pool) failed to answer a liveness check
+    /// after startup succeeded. Alert-only.
+    BackendStartupFailure,
 }
 
 impl TriggerKind {
@@ -45,6 +61,9 @@ impl TriggerKind {
             Self::RepeatedOAuthFailure => "repeated_oauth_failure",
             Self::RepeatedDbDecryptionFailure => "repeated_db_decryption_failure",
             Self::IntegrityCheckFailure => "integrity_check_failure",
+            Self::RepeatedLicenseValidateFailure => "repeated_license_validate_failure",
+            Self::SignatureVerificationFailure => "signature_verification_failure",
+            Self::BackendStartupFailure => "backend_startup_failure",
         }
     }
 
@@ -55,7 +74,11 @@ impl TriggerKind {
     /// any document; adjust if a specific count is ever specified.
     fn threshold(&self) -> u32 {
         match self {
-            Self::IntegrityCheckFailure => 1, // a single corrupt DB is already an incident
+            // A single corrupt DB, bad signature, or dead backend is already
+            // an incident worth surfacing — no reason to wait for a repeat.
+            Self::IntegrityCheckFailure
+            | Self::SignatureVerificationFailure
+            | Self::BackendStartupFailure => 1,
             _ => 3,
         }
     }
@@ -134,6 +157,50 @@ pub async fn respond_to_incident<R: tauri::Runtime>(
     Ok(())
 }
 
+/// Doc 30 TASK-OPS-003: the alert-only counterpart to `respond_to_incident`
+/// for `RepeatedLicenseValidateFailure` / `SignatureVerificationFailure` /
+/// `BackendStartupFailure` — these are operational health conditions, not
+/// suspected security compromises, so the response is a `system_warning`
+/// the user/support can see, never a forced session logout. Call after
+/// `record_trigger` returns `true`. A no-op for the three security-incident
+/// trigger kinds, which must go through `respond_to_incident` instead.
+pub fn emit_health_alert<R: tauri::Runtime>(kind: TriggerKind, app: &AppHandle<R>) {
+    let (severity, message) = match kind {
+        TriggerKind::RepeatedLicenseValidateFailure => (
+            crate::ipc::system_warnings::WarningSeverity::Degraded,
+            "License validation with the Licensing Backend has failed repeatedly. \
+            Your access remains protected by the offline grace period while the \
+            app keeps retrying."
+                .to_string(),
+        ),
+        TriggerKind::SignatureVerificationFailure => (
+            crate::ipc::system_warnings::WarningSeverity::Critical,
+            "A license response failed signature verification and was rejected. \
+            Please refresh your license from Settings, or contact support if this persists."
+                .to_string(),
+        ),
+        TriggerKind::BackendStartupFailure => (
+            crate::ipc::system_warnings::WarningSeverity::Critical,
+            "Dinero's local database stopped responding. Please restart the app; \
+            contact support if this persists."
+                .to_string(),
+        ),
+        TriggerKind::RepeatedOAuthFailure
+        | TriggerKind::RepeatedDbDecryptionFailure
+        | TriggerKind::IntegrityCheckFailure => return,
+    };
+
+    crate::ipc::system_warnings::emit_system_warning(
+        app,
+        crate::ipc::system_warnings::SystemWarningPayload {
+            warning_type: kind.as_str().to_string(),
+            message,
+            severity,
+            action_hint: None,
+        },
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -171,5 +238,36 @@ mod tests {
         // neither has fired yet, and one more OAuth failure alone must not
         // be enough to cross DB decryption's independent counter.
         assert!(!record_trigger(&monitor, TriggerKind::RepeatedOAuthFailure));
+    }
+
+    /// Doc 30 TASK-OPS-003 acceptance: `test_alert_thresholds_trigger_on_critical_failures`.
+    /// Backend startup failure and signature-verification failure are, like
+    /// `IntegrityCheckFailure`, single-occurrence critical conditions —
+    /// there's no reason to wait for a repeat before alerting.
+    #[test]
+    fn test_alert_thresholds_trigger_on_critical_failures() {
+        let monitor = IncidentMonitor::default();
+        assert!(record_trigger(&monitor, TriggerKind::BackendStartupFailure));
+        assert!(record_trigger(
+            &monitor,
+            TriggerKind::SignatureVerificationFailure
+        ));
+
+        // RepeatedLicenseValidateFailure follows the "repeated" (3-strike)
+        // convention shared with OAuth/DB-decryption failures, since a single
+        // failed validate call is routine on a flaky connection.
+        let license_monitor = IncidentMonitor::default();
+        assert!(!record_trigger(
+            &license_monitor,
+            TriggerKind::RepeatedLicenseValidateFailure
+        ));
+        assert!(!record_trigger(
+            &license_monitor,
+            TriggerKind::RepeatedLicenseValidateFailure
+        ));
+        assert!(record_trigger(
+            &license_monitor,
+            TriggerKind::RepeatedLicenseValidateFailure
+        ));
     }
 }

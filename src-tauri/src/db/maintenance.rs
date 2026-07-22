@@ -16,10 +16,25 @@ use anyhow::Result;
 use chrono::Utc;
 use rusqlite::Connection;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter};
 
 /// `db_size_warning` fires once `finance.db` exceeds this size.
 pub const SIZE_WARNING_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+/// Doc 30 TASK-OPS-003: the last result of `check_integrity_and_report`'s
+/// daily `PRAGMA integrity_check`, cached process-wide so `health::` can
+/// report DB integrity status cheaply on every call instead of re-running a
+/// full integrity check (expensive on a multi-GB file) on every health poll.
+/// Defaults to `true` — until the first daily check has run, there is no
+/// evidence of corruption to report.
+static LAST_INTEGRITY_OK: AtomicBool = AtomicBool::new(true);
+
+/// The most recently observed `PRAGMA integrity_check` result, without
+/// running a new one. See `LAST_INTEGRITY_OK`.
+pub fn last_known_integrity_ok() -> bool {
+    LAST_INTEGRITY_OK.load(Ordering::Relaxed)
+}
 
 /// Step 1: `PRAGMA integrity_check`. Returns `Ok(true)` iff SQLite reports
 /// `"ok"` — any other string (a list of corruption findings) means `Ok(false)`.
@@ -34,6 +49,7 @@ pub fn run_integrity_check(conn: &Connection) -> Result<bool> {
 /// background job; the caller decides how the app reacts to `Ok(false)`.
 pub fn check_integrity_and_report(conn: &Connection, app_handle: &AppHandle) -> Result<bool> {
     let ok = run_integrity_check(conn)?;
+    LAST_INTEGRITY_OK.store(ok, Ordering::Relaxed);
     if !ok {
         let _ = app_handle.emit(
             crate::ipc::events::AppEvent::DbCorrupted.as_str(),
