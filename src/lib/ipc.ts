@@ -841,6 +841,12 @@ export const API = {
     deactivate: () => invokeCommand<LicenseDeactivateResponse>('license_deactivate'),
     // Doc 19 §14.4 — same action the C11-fixed background loop calls every 6h.
     refresh: () => invokeCommand<LicenseRefreshResponse>('license_refresh'),
+    // Doc 30 TASK-BILL-002/010: opens Razorpay hosted checkout in the system
+    // browser and blocks until payment completes (or times out/is dismissed)
+    // -- never renders card-entry fields in this app. Returns the payment
+    // confirmation for `activate` to verify server-side.
+    startCheckout: (email: string, planId: string) =>
+      invokeCommand<{ razorpay_payment_id: string; razorpay_signature: string }>('billing_start_checkout', { email, planId }),
   },
   updater: {
     // Doc 30 TASK-DESK-005: not in Document 19's catalog (this task

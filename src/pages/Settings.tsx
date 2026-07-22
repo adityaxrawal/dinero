@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Mail, Palette, Cpu, CheckCircle, ScanLine, Loader2, CalendarRange, AlertCircle, FileText, Ban, AlertTriangle, KeyRound, CreditCard, RefreshCw, Wand2, Gauge, Shield, Users, Settings as SettingsIcon } from 'lucide-react';
 import { API, LlmModelInfo, LicenseStatusResponse, PatternRuleHealth } from '../lib/ipc';
+import { getLicenseCta } from '../lib/licenseCta';
 import { useGlobalState } from '../lib/GlobalStateContext';
 import { cn } from '@/lib/utils';
 import { SidebarNavItem } from '@/components/ui/sidebar-nav-item';
@@ -128,6 +129,35 @@ export default function Settings() {
     }
     catch (err: unknown) { setLicenseActionError(err instanceof Error ? err.message : String(err)); }
     finally { setIsActivating(false); }
+  };
+
+  // Doc 30 TASK-BILL-002/010: "Subscribe now"/"Reactivate subscription" CTAs
+  // -- opens Razorpay hosted checkout in the system browser (never renders
+  // card-entry fields in this app, keeping it entirely out of PCI-DSS
+  // scope) and, once the browser redirect confirms payment, activates
+  // automatically. Superseded by the manual paste-in form below only as a
+  // fallback if checkout can't be opened (e.g. no default browser configured).
+  const [isCheckingOut, setIsCheckingOut] = useState(false);
+  const handleSubscribeNow = async (planId: 'desktop_pro_monthly' | 'desktop_pro_annual') => {
+    const email = activateEmail.trim();
+    if (!email) { setShowActivateForm(true); return; }
+    setIsCheckingOut(true); setLicenseActionError(null);
+    try {
+      const { razorpay_payment_id, razorpay_signature } = await API.licensing.startCheckout(email, planId);
+      await API.licensing.activate(email, razorpay_payment_id, razorpay_signature, planId === 'desktop_pro_annual' ? 'annual' : 'monthly');
+      await loadLicenseStatus();
+    } catch (err: unknown) {
+      setLicenseActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsCheckingOut(false);
+    }
+  };
+
+  /// Doc 30 TASK-BILL-010: "Manage billing" for ACTIVE -- delegates to
+  /// Razorpay's hosted customer portal, never rendered inside this app.
+  const handleManageBilling = async () => {
+    const { openUrl } = await import('@tauri-apps/plugin-opener');
+    await openUrl('https://dashboard.razorpay.com/customer-portal');
   };
 
   // ── Pattern Rules ────────────────────────────────────────────────────
@@ -443,16 +473,46 @@ export default function Settings() {
                     <Button variant="outline" className="h-9 font-semibold border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5" onClick={handleRefreshLicense} disabled={isRefreshingLicense}>
                       {isRefreshingLicense ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />} Refresh License
                     </Button>
-                    
-                    {licenseStatus.is_active ? (
+
+                    {/* Doc 30 TASK-BILL-010: state-appropriate primary CTA,
+                        logic in src/lib/licenseCta.ts (kept out of this
+                        large page component so it stays unit-testable). */}
+                    {(() => {
+                      const cta = getLicenseCta(licenseStatus.state, licenseStatus.days_remaining);
+                      if (cta.action === 'manage_billing') {
+                        return (
+                          <Button variant="outline" className="h-9 font-semibold border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5" onClick={handleManageBilling}>
+                            {cta.label}
+                          </Button>
+                        );
+                      }
+                      if (cta.action === 'update_payment_method') {
+                        return (
+                          <Button className="h-9 font-semibold bg-amber-600 text-white hover:bg-amber-700" onClick={handleManageBilling}>
+                            {cta.label}
+                          </Button>
+                        );
+                      }
+                      return (
+                        <Button className="h-9 font-semibold bg-[#064E3B] text-[#F8E7C9] hover:bg-[#064E3B]/90" onClick={() => handleSubscribeNow('desktop_pro_monthly')} disabled={isCheckingOut}>
+                          {isCheckingOut ? 'Opening checkout…' : cta.label}
+                        </Button>
+                      );
+                    })()}
+
+                    {licenseStatus.is_active && (
                       <Button variant="outline" className="h-9 font-semibold border-red-200 text-red-600 hover:text-red-700 hover:bg-red-50 hover:border-red-300" onClick={handleDeactivateLicense} disabled={isDeactivating}>
                         {isDeactivating ? 'Deactivating…' : 'Deactivate License'}
                       </Button>
-                    ) : (
-                      <Button className="h-9 font-semibold bg-[#064E3B] text-[#F8E7C9] hover:bg-[#064E3B]/90" onClick={() => setShowActivateForm(v => !v)}>
-                        {showActivateForm ? 'Cancel' : 'Activate License'}
-                      </Button>
                     )}
+
+                    <Button
+                      variant="outline"
+                      className="h-9 font-semibold border-[#064E3B]/20 text-[#064E3B]/70 hover:bg-[#064E3B]/5"
+                      onClick={() => setShowActivateForm(v => !v)}
+                    >
+                      {showActivateForm ? 'Cancel manual entry' : 'Enter payment confirmation manually'}
+                    </Button>
                   </div>
 
                   {showActivateForm && !licenseStatus.is_active && (
