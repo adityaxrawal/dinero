@@ -2988,6 +2988,7 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         crate::licensing::commands::license_get_status,
         crate::licensing::commands::license_activate,
         crate::licensing::commands::license_deactivate,
+        crate::licensing::commands::billing_start_checkout,
         crate::licensing::commands::license_refresh
     ]
 }

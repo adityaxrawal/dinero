@@ -18,7 +18,7 @@ use crate::db::connected_accounts;
 /// after the Google OAuth redirect lands, styled to match the app's
 /// champagne/emerald-ink brand (see `src/App.css` `:root` tokens) rather than
 /// tiny_http's default bare-text response.
-fn oauth_result_page(success: bool, message: &str) -> String {
+pub(crate) fn oauth_result_page(success: bool, message: &str) -> String {
     let escaped: String = message
         .chars()
         .map(|c| match c {

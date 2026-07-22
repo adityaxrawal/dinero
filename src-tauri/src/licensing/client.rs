@@ -38,6 +38,24 @@ pub struct ValidateRequest {
     pub device_id: String,
 }
 
+/// Doc 30 TASK-BILL-002: `POST /api/billing/create-order { email, plan_id }`
+/// (keyed on email, not account_id -- the desktop has no server-side
+/// account_id for a first-time purchaser; the backend find-or-creates the
+/// account the same way `license_activate` does).
+#[derive(Serialize)]
+pub struct CreateOrderRequest {
+    pub email: String,
+    pub plan_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateOrderResponse {
+    pub order_id: String,
+    pub amount: i64,
+    pub currency: String,
+    pub key_id: String,
+}
+
 pub struct LicensingClient {
     network: NetworkClient,
     base_url: String,
@@ -91,6 +109,23 @@ impl LicensingClient {
         let res = self.network.execute("licensing_backend", builder).await?;
         res.error_for_status_ref()?;
         Ok(())
+    }
+
+    /// Doc 30 TASK-BILL-002: creates a Razorpay order server-side before the
+    /// desktop app opens hosted checkout — never talks to Razorpay directly,
+    /// keeping the Razorpay API key off the desktop entirely.
+    pub async fn create_order(&self, req: CreateOrderRequest) -> Result<CreateOrderResponse> {
+        let url = format!("{}/api/billing/create-order", self.base_url);
+        let builder = self.network.client().post(&url).json(&req);
+        let res = self.network.execute("licensing_backend", builder).await?;
+        if !res.status().is_success() {
+            if let Ok(body) = res.json::<LicensingErrorResponse>().await {
+                anyhow::bail!(body.code);
+            }
+            anyhow::bail!("Order creation request failed");
+        }
+        let data = res.json::<CreateOrderResponse>().await?;
+        Ok(data)
     }
 }
 

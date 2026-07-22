@@ -343,3 +343,56 @@ pub async fn license_refresh(
         state: status_str.to_uppercase(),
     })
 }
+
+#[derive(Serialize)]
+pub struct CheckoutCompletedResponse {
+    pub razorpay_payment_id: String,
+    pub razorpay_signature: String,
+}
+
+/// Doc 30 TASK-BILL-002: creates a Razorpay order, opens hosted checkout in
+/// the system browser (never embedding raw card-entry fields in the Tauri
+/// WebView), and blocks until the loopback listener sees either a completed
+/// payment or a dismissal/timeout. Returns the payment id/signature for the
+/// frontend to pass straight into the existing `license_activate` command
+/// (Doc 19 §14.2) -- this command never itself activates anything.
+#[tauri::command]
+pub async fn billing_start_checkout(
+    email: String,
+    plan_id: String,
+    pool: State<'_, deadpool_sqlite::Pool>,
+    session_state: State<'_, crate::auth::session::SessionState>,
+) -> Result<CheckoutCompletedResponse, AppError> {
+    crate::ipc::middleware::require_active_session(&session_state)?;
+
+    let client = LicensingClient::new(LICENSING_BASE_URL.to_string(), pool.inner().clone());
+    let order = client
+        .create_order(crate::licensing::client::CreateOrderRequest { email, plan_id })
+        .await
+        .map_err(|e| AppError::Network(e.to_string()))?;
+
+    let server = tiny_http::Server::http("127.0.0.1:0")
+        .map_err(|e| AppError::Unknown(format!("Failed to bind checkout loopback listener: {e}")))?;
+    let redirect_port = server
+        .server_addr()
+        .to_ip()
+        .ok_or_else(|| AppError::Unknown("Loopback server has no IP address".to_string()))?
+        .port();
+
+    let checkout_url = format!("http://127.0.0.1:{redirect_port}/?checkout");
+    if let Err(e) = tauri_plugin_opener::open_url(&checkout_url, None::<&str>) {
+        tracing::error!("Failed to open browser for checkout: {}", e);
+    }
+
+    let result = tokio::task::spawn_blocking(move || {
+        crate::billing::checkout::serve_checkout_and_wait(&server, &order, crate::billing::checkout::CHECKOUT_CALLBACK_TIMEOUT)
+    })
+    .await
+    .map_err(|e| AppError::Unknown(e.to_string()))?
+    .map_err(|e| AppError::Auth(e.to_string()))?;
+
+    Ok(CheckoutCompletedResponse {
+        razorpay_payment_id: result.razorpay_payment_id,
+        razorpay_signature: result.razorpay_signature,
+    })
+}

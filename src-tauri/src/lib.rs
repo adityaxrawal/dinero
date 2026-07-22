@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod background_tasks;
+pub mod billing;
 pub mod commands;
 pub mod crash_reporter;
 pub mod db;
