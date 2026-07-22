@@ -5,7 +5,8 @@ import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
 import { LicensingApiError } from '../../lib/errors';
-import { signLicenseJwt, verifyLicenseJwt } from '../../lib/jwt';
+import { signLicenseJwt, verifyLicenseJwt, JwtVerificationError } from '../../lib/jwt';
+import { logAuditEvent, type AuditWriter } from '../../lib/audit';
 
 export interface RefreshInput {
   jwt: string;
@@ -27,6 +28,7 @@ const MAX_STALENESS_MS = 48 * 60 * 60 * 1000;
 export type RefreshDb = {
   licenseToken: Pick<PrismaClient['licenseToken'], 'findFirst'>;
   subscription: Pick<PrismaClient['subscription'], 'findFirst'>;
+  licensingAuditLog?: AuditWriter;
 };
 
 export async function refreshLicenseToken(
@@ -38,7 +40,22 @@ export async function refreshLicenseToken(
   // Signature must still be valid; expiration is deliberately NOT enforced
   // here -- a token approaching or just past its exp is exactly the normal
   // case this endpoint exists for. Staleness is checked explicitly below.
-  const claims = verifyLicenseJwt(input.jwt, publicKeyPem, { ignoreExpiration: true });
+  let claims;
+  try {
+    claims = verifyLicenseJwt(input.jwt, publicKeyPem, { ignoreExpiration: true });
+  } catch (e) {
+    // Doc 30 TASK-LIC-009: a failed signature verification is one of the
+    // three backend-observable fraud signals -- logged here (the only place
+    // an incoming JWT's signature is checked) so fraud_detection.ts's scan
+    // has a real producer, not just a theoretical event type.
+    if (e instanceof JwtVerificationError && db.licensingAuditLog) {
+      await logAuditEvent(db.licensingAuditLog, {
+        eventType: 'jwt_verification_failed',
+        deviceFingerprint: input.device_id,
+      });
+    }
+    throw e;
+  }
 
   if (claims.device_id !== input.device_id) {
     throw new LicensingApiError('DEVICE_MISMATCH', 'JWT device_id does not match the requesting device');
