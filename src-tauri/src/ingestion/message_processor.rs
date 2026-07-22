@@ -59,6 +59,23 @@ fn get_sender_validator() -> &'static SenderValidator {
     VALIDATOR.get_or_init(SenderValidator::new)
 }
 
+/// Doc 30 TASK-GMAIL-002's metadata-first guarantee ("a rejected sender
+/// never triggers a full-body fetch") must hold by default even in debug
+/// builds -- a bare `cfg!(debug_assertions)` check would silently spend a
+/// full Gmail API call on every single rejected message (spam, newsletters,
+/// ...) in every local dev session, never just when someone actually wants
+/// to inspect a rejection's full content in the dev-review UI. Opt-in via
+/// `DINERO_DEV_REVIEW_FULL_FETCH=1`, cached once per process.
+fn dev_review_full_fetch_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        cfg!(debug_assertions)
+            && std::env::var("DINERO_DEV_REVIEW_FULL_FETCH")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false)
+    })
+}
+
 impl MessageProcessor {
     /// Processes a message by first fetching its metadata to check against a sender/subject gate.
     /// If it passes the gate, it fetches the full message and extracts its contents.
@@ -147,7 +164,7 @@ impl MessageProcessor {
             }
             SenderVerificationResult::VerifiedNoise => {
                 crate::ingestion::gmail_telemetry::gmail_telemetry().record_gate_rejection("gate1");
-                let dev_msg = if cfg!(debug_assertions) {
+                let dev_msg = if dev_review_full_fetch_enabled() {
                     client.fetch_message(message_id, crate::ingestion::gmail_client::FetchFormat::Full).await.unwrap_or_else(|_| metadata_msg.clone())
                 } else {
                     metadata_msg.clone()
@@ -177,7 +194,7 @@ impl MessageProcessor {
                 // Log to audit log and return None
                 crate::ingestion::gmail_telemetry::gmail_telemetry().record_gate_rejection("gate1");
                 Self::log_rejection(pool, message_id, &reason).await?;
-                let dev_msg = if cfg!(debug_assertions) {
+                let dev_msg = if dev_review_full_fetch_enabled() {
                     client.fetch_message(message_id, crate::ingestion::gmail_client::FetchFormat::Full).await.unwrap_or_else(|_| metadata_msg.clone())
                 } else {
                     metadata_msg.clone()
