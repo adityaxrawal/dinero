@@ -40,6 +40,10 @@ export default function DeleteAccountSection() {
       await API.dev.resetDatabase();
       window.location.reload();
     } catch (e) {
+      if (e === 'DEV_RESTART_REQUIRED') {
+        alert("Development Mode: Database has been deleted successfully! However, Tauri's dev mode cannot restart automatically without breaking the Vite dev server. Please close this app and manually restart `npm run tauri dev` in your terminal.");
+        return;
+      }
       console.error('Failed to reset database:', e);
       alert('Failed to reset database');
       setIsResetting(false);
