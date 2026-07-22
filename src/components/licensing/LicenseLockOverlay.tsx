@@ -41,6 +41,11 @@ import { useLicenseRefresh } from '@/hooks/useLicenseRefresh';
  * is exposed by `LicenseStatusResponse` -- only `state: "LOCKED"` -- so the
  * copy here is deliberately generic rather than fabricating a reason the
  * backend never reports.
+ *
+ * Rendered in the sidebar's "Messages" section (`AppLayout.tsx`) — see
+ * `StatementOnlyModeBanner`'s doc comment for why it moved off routed
+ * content entirely (a `position: absolute` overlap bug, not a design choice
+ * to revert).
  */
 export default function LicenseLockOverlay() {
   const isLocked = useLicenseStore((s) => s.isLocked);
@@ -54,22 +59,38 @@ export default function LicenseLockOverlay() {
       role="alert"
       aria-labelledby="license-locked-title"
       aria-describedby="license-locked-desc"
-      className="flex items-center gap-3 px-4 py-3 mb-4 rounded-lg border border-red-700/30 bg-red-700/10 text-sm"
+      className="flex flex-col gap-2 mx-4 mb-2 px-3 py-2.5 rounded-lg border border-red-400/30 bg-red-400/10"
     >
-      <AlertTriangle className="w-4 h-4 text-red-700 shrink-0" aria-hidden="true" />
-      <div className="flex-1">
-        <span id="license-locked-title" className="font-semibold text-red-700">License Locked</span>{' '}
-        <span id="license-locked-desc" className="text-red-800">
-          Your license could not be validated. Editing and syncing are paused until you reactivate
-          or your license revalidates — you can still browse your existing data.
-        </span>
+      <div className="flex items-start gap-2">
+        <AlertTriangle className="w-3.5 h-3.5 text-red-300 shrink-0 mt-0.5" aria-hidden="true" />
+        <div className="flex-1 text-[11.5px] leading-snug">
+          <span id="license-locked-title" className="font-semibold text-red-200">License Locked.</span>{' '}
+          <span id="license-locked-desc" className="text-red-200/80">
+            Editing and syncing are paused until you reactivate — you can still browse existing data.
+          </span>
+        </div>
       </div>
-      <Button variant="outline" size="sm" onClick={handleRetry} disabled={isRetrying} aria-label="Retry license validation now">
-        {isRetrying ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" /> : 'Retry Validation'}
-      </Button>
-      <Button variant="default" size="sm" onClick={() => navigate('/settings')} aria-label="Go to Settings to reactivate">
-        Reactivate
-      </Button>
+      <div className="flex gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleRetry}
+          disabled={isRetrying}
+          aria-label="Retry license validation now"
+          className="h-7 text-[11.5px] flex-1 border-red-400/30 text-red-200 bg-transparent hover:bg-red-400/10 hover:text-red-100"
+        >
+          {isRetrying ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : 'Retry'}
+        </Button>
+        <Button
+          variant="default"
+          size="sm"
+          onClick={() => navigate('/settings')}
+          aria-label="Go to Settings to reactivate"
+          className="h-7 text-[11.5px] flex-1 bg-[#F8E7C9] text-[#064E3B] hover:bg-[#F8E7C9]/90"
+        >
+          Reactivate
+        </Button>
+      </div>
     </div>
   );
 }

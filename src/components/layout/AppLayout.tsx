@@ -310,6 +310,15 @@ export default function AppLayout() {
 
         </nav>
 
+        {/* System messages (Gmail-disconnected, license grace/locked) —
+            in-flow here, not an absolutely-positioned overlay on top of
+            routed content (see StatementOnlyModeBanner's doc comment). */}
+        <div className="flex flex-col flex-shrink-0" aria-label="System messages">
+          <LicenseLockOverlay />
+          <GracePeriodBanner />
+          <StatementOnlyModeBanner />
+        </div>
+
         {/* Bottom area (System & Status) */}
         <div className="mt-auto pb-4 pt-4 flex flex-col gap-1 border-t border-[#F8E7C9]/10">
           {systemItems.map((item) => {
@@ -336,13 +345,6 @@ export default function AppLayout() {
         id="main-content"
         className="flex-1 flex overflow-hidden relative"
       >
-        {/* System-level banners */}
-        <div className="absolute top-0 left-0 right-0 z-50 flex flex-col">
-          <LicenseLockOverlay />
-          <GracePeriodBanner />
-          <StatementOnlyModeBanner />
-        </div>
-
         {/* Outlet acts as Column 2 and Column 3 (or full canvas) */}
         <ErrorBoundary>
           <Outlet />

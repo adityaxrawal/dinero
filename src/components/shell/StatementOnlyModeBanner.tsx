@@ -41,6 +41,12 @@ import { useGlobalState } from '@/lib/GlobalStateContext';
  * than being permanently suppressed by one click. Suppressed on the
  * Statements route itself — telling a user already on the upload page to
  * go upload statements is just noise.
+ *
+ * Rendered in the sidebar's "Messages" section (`AppLayout.tsx`), not as a
+ * bar over routed content — a `position: absolute` wrapper there previously
+ * let this and its sibling system banners float on top of whatever page
+ * content happened to render at the same coordinates (e.g. the Dashboard's
+ * "Good morning" heading), instead of reserving space and pushing it down.
  */
 export default function StatementOnlyModeBanner() {
   const { connectedAccounts } = useGlobalState();
@@ -59,22 +65,30 @@ export default function StatementOnlyModeBanner() {
   return (
     <div
       role="status"
-      className="flex items-center gap-3 px-4 py-3 mb-4 rounded-lg border border-border bg-secondary/40 text-sm"
+      className="flex flex-col gap-2 mx-4 mb-2 px-3 py-2.5 rounded-lg border border-[#F8E7C9]/15 bg-[#F8E7C9]/5"
     >
-      <FileUp className="w-4 h-4 text-muted-foreground shrink-0" aria-hidden="true" />
-      <p className="flex-1 text-muted-foreground">
-        Gmail sync isn't connected right now. Upload statements directly to keep your transactions up to date.
-      </p>
-      <Button variant="outline" size="sm" onClick={() => navigate('/statements')} aria-label="Go to statement upload">
+      <div className="flex items-start gap-2">
+        <FileUp className="w-3.5 h-3.5 text-[#F8E7C9]/70 shrink-0 mt-0.5" aria-hidden="true" />
+        <p className="flex-1 text-[11.5px] leading-snug text-[#F8E7C9]/70">
+          Gmail sync isn't connected. Upload statements directly to keep transactions up to date.
+        </p>
+        <button
+          onClick={() => setDismissed(true)}
+          aria-label="Dismiss statement-only mode notice"
+          className="text-[#F8E7C9]/40 hover:text-[#F8E7C9]/80 shrink-0"
+        >
+          <X className="w-3.5 h-3.5" aria-hidden="true" />
+        </button>
+      </div>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => navigate('/statements')}
+        aria-label="Go to statement upload"
+        className="h-7 text-[11.5px] w-full border-[#F8E7C9]/25 text-[#F8E7C9] bg-transparent hover:bg-[#F8E7C9]/10 hover:text-[#F8E7C9]"
+      >
         Upload Statements
       </Button>
-      <button
-        onClick={() => setDismissed(true)}
-        aria-label="Dismiss statement-only mode notice"
-        className="text-muted-foreground hover:text-foreground"
-      >
-        <X className="w-4 h-4" aria-hidden="true" />
-      </button>
     </div>
   );
 }

@@ -15,6 +15,11 @@ import { useLicenseRefresh } from '@/hooks/useLicenseRefresh';
  * immediately if the license leaves and re-enters GRACE (state !== 'GRACE'
  * resets the dismissed flag), rather than being permanently suppressed by
  * a single click the way a one-time toast would be.
+ *
+ * Rendered in the sidebar's "Messages" section (`AppLayout.tsx`) — see
+ * `StatementOnlyModeBanner`'s doc comment for why it moved off routed
+ * content entirely (a `position: absolute` overlap bug, not a design choice
+ * to revert).
  */
 export default function GracePeriodBanner() {
   const state = useLicenseStore((s) => s.state);
@@ -33,26 +38,35 @@ export default function GracePeriodBanner() {
   return (
     <div
       role="status"
-      className="flex items-center gap-3 px-4 py-3 mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 text-sm"
+      className="flex flex-col gap-2 mx-4 mb-2 px-3 py-2.5 rounded-lg border border-amber-400/30 bg-amber-400/10"
     >
-      <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" aria-hidden="true" />
-      <p className="flex-1 text-amber-800">
-        Your subscription is in its grace period
-        {daysRemainingInTrial != null
-          ? ` — ${daysRemainingInTrial} day${daysRemainingInTrial === 1 ? '' : 's'} remaining`
-          : ''}
-        . Resolve your payment to avoid losing access.
-      </p>
-      <Button variant="outline" size="sm" onClick={handleRetry} disabled={isRetrying} aria-label="Retry validation now">
-        {isRetrying ? <Loader2 className="w-4 h-4 animate-spin" aria-hidden="true" /> : 'Retry validation now'}
-      </Button>
-      <button
-        onClick={() => setDismissed(true)}
-        aria-label="Dismiss grace period notice"
-        className="text-amber-700 hover:text-amber-900"
+      <div className="flex items-start gap-2">
+        <AlertTriangle className="w-3.5 h-3.5 text-amber-300 shrink-0 mt-0.5" aria-hidden="true" />
+        <p className="flex-1 text-[11.5px] leading-snug text-amber-200">
+          Subscription in grace period
+          {daysRemainingInTrial != null
+            ? ` — ${daysRemainingInTrial} day${daysRemainingInTrial === 1 ? '' : 's'} left`
+            : ''}
+          . Resolve payment to avoid losing access.
+        </p>
+        <button
+          onClick={() => setDismissed(true)}
+          aria-label="Dismiss grace period notice"
+          className="text-amber-300/50 hover:text-amber-200 shrink-0"
+        >
+          <X className="w-3.5 h-3.5" aria-hidden="true" />
+        </button>
+      </div>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={handleRetry}
+        disabled={isRetrying}
+        aria-label="Retry validation now"
+        className="h-7 text-[11.5px] w-full border-amber-400/30 text-amber-200 bg-transparent hover:bg-amber-400/10 hover:text-amber-100"
       >
-        <X className="w-4 h-4" aria-hidden="true" />
-      </button>
+        {isRetrying ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : 'Retry validation now'}
+      </Button>
     </div>
   );
 }
