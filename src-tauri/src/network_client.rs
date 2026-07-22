@@ -41,12 +41,25 @@ impl NetworkClient {
         &self.client
     }
 
-    /// Doc 30 TASK-API-006: `channel` is one of the 5 disclosed network
-    /// channels (`gmail_api`/`licensing_backend`/`google_oauth`/
-    /// `github_releases`/`huggingface`) -- written directly into
+    /// Doc 30 TASK-API-006: `channel` is written directly into
     /// `network_activity_log.channel` rather than inferred later from the
     /// destination hostname (`commands/network.rs`'s read-time fallback,
     /// which silently produces "unknown" for any host it doesn't recognize).
+    ///
+    /// Doc 30 TASK-QA-007 finding: only 3 channels actually route through
+    /// this client today (`gmail_api`/`licensing_backend`/`google_oauth`) --
+    /// `llm_manager.rs`'s GGUF model download and `llama_sidecar.rs`'s
+    /// llama.cpp release download both build their own bare `reqwest::Client`
+    /// (huggingface.co / github.com), invisible to the Network Activity
+    /// audit trail, and the auto-updater goes through `tauri-plugin-updater`
+    /// entirely outside this module. A previous version of this comment
+    /// claimed "5 disclosed channels" including `github_releases`/
+    /// `huggingface` as if already wired -- they were not. Routing those
+    /// through `NetworkClient` would need threading a `deadpool_sqlite::Pool`
+    /// down through `download_file_with_hash`'s two call sites (one of which,
+    /// `llama_sidecar::ensure_binary`, sits in the LLM sidecar startup path)
+    /// -- flagged as real follow-up work, not fixed here to avoid risking
+    /// that startup path in the same pass as an unrelated audit task.
     pub async fn execute(
         &self,
         channel: &str,
