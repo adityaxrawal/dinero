@@ -61,6 +61,24 @@ export function realRazorpayPayments(keySecret: string): RazorpayPayments {
   };
 }
 
+export interface RazorpayRefunds {
+  /// Doc 30 TASK-BILL-006: refunds the most recent successful charge for an
+  /// admin-operated support request.
+  create(paymentId: string): Promise<{ id: string; status: string }>;
+}
+
+export function realRazorpayRefunds(keyId: string, keySecret: string): RazorpayRefunds {
+  return {
+    async create(paymentId) {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const Razorpay = require('razorpay');
+      const client = new Razorpay({ key_id: keyId, key_secret: keySecret });
+      const refund = await client.payments.refund(paymentId, {});
+      return { id: refund.id, status: refund.status };
+    },
+  };
+}
+
 /// Razorpay's documented signature scheme: HMAC-SHA256(order_id + "|" +
 /// payment_id, key_secret), hex-encoded. Constant-time compare against
 /// timing attacks.
