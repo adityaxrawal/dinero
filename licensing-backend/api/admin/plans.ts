@@ -1,3 +1,4 @@
+import { withRequestLogging } from '../../lib/request_logging';
 // Doc 30 TASK-BILL-001: internal admin-authenticated endpoint toggling
 // is_active / adjusting price. Every change logged to licensing_audit_log.
 import type { Prisma, PrismaClient } from '@prisma/client';
@@ -41,7 +42,7 @@ export async function updatePlan(db: PlansDb, input: UpdatePlanInput) {
   return after;
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     if (req.method === 'GET') {
       const plans = await listPlans(prisma, req.query.active_only === 'true');
@@ -68,3 +69,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Unexpected error' });
   }
 }
+
+export default withRequestLogging('admin/plans', handler);

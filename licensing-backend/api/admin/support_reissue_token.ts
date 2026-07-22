@@ -1,3 +1,4 @@
+import { withRequestLogging } from '../../lib/request_logging';
 // Doc 30 TASK-OPS-006: "reissuing a token after a hardware change." Unlike
 // the self-service /api/license/refresh-token, this does not require a
 // currently-valid JWT from the requesting device at all -- it exists
@@ -103,7 +104,7 @@ export async function reissueToken(
   return { status: 'reissued', jwt: newJwt, expires_at: expiresAt.toISOString() };
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     assertAdminAuthorized(req.headers.authorization);
     if (req.method !== 'POST') {
@@ -130,3 +131,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Unexpected error' });
   }
 }
+
+export default withRequestLogging('admin/support_reissue_token', handler);

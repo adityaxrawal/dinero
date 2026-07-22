@@ -1,3 +1,4 @@
+import { withRequestLogging } from '../../lib/request_logging';
 // Doc 30 TASK-LIC-004: POST /api/license/deactivate
 //
 // Corrected during TASK-BILL-002 (real conflict found and resolved, see
@@ -61,7 +62,7 @@ export async function deactivateLicense(db: DeactivateDb, input: DeactivateInput
   return { status: 'deactivated' };
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     res.status(405).json({ code: 'VALIDATION_ERROR', message: 'POST only' });
     return;
@@ -82,3 +83,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Unexpected error' });
   }
 }
+
+export default withRequestLogging('license/deactivate', handler);

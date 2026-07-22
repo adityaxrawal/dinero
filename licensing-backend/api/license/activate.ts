@@ -1,3 +1,4 @@
+import { withRequestLogging } from '../../lib/request_logging';
 // Doc 30 TASK-LIC-002, Doc 19 §14.2: POST /api/license/activate
 //
 // Corrected during TASK-BILL-002 (real conflict found and resolved, see
@@ -148,7 +149,7 @@ export async function activateLicense(
   return { status: 'activated', jwt: jwtToken, plan: planInfo.planId, billing_interval: planInfo.billingInterval, expires_at: expiresAt.toISOString() };
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     res.status(405).json({ code: 'VALIDATION_ERROR', message: 'POST only' });
     return;
@@ -181,3 +182,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Unexpected error' });
   }
 }
+
+export default withRequestLogging('license/activate', handler);

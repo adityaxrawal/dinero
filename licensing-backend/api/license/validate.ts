@@ -1,3 +1,4 @@
+import { withRequestLogging } from '../../lib/request_logging';
 // Doc 30 TASK-LIC-003, Doc 19 (license_validate): POST /api/license/validate
 // Called on cold-start/resume per the hybrid JWT model (Doc 15/22): a network
 // call here, offline signature verification for everything else.
@@ -98,7 +99,7 @@ export async function validateLicense(db: ValidateDb, input: ValidateInput, priv
   };
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     res.status(405).json({ code: 'VALIDATION_ERROR', message: 'POST only' });
     return;
@@ -124,3 +125,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Unexpected error' });
   }
 }
+
+export default withRequestLogging('license/validate', handler);

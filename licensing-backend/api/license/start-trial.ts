@@ -1,3 +1,4 @@
+import { withRequestLogging } from '../../lib/request_logging';
 // Doc 30 TASK-LIC-007: POST /api/license/start-trial
 // Issued automatically during onboarding (TASK-FE-007), no credit card required.
 //
@@ -126,7 +127,7 @@ export async function startTrial(db: StartTrialDb, input: StartTrialInput, priva
   return { status: 'trial_started', jwt: jwtToken, trial_ends_at: trialEndsAt.toISOString() };
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     res.status(405).json({ code: 'VALIDATION_ERROR', message: 'POST only' });
     return;
@@ -152,3 +153,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Unexpected error' });
   }
 }
+
+export default withRequestLogging('license/start-trial', handler);

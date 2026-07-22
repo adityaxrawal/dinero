@@ -17,6 +17,7 @@ pub mod licensing;
 pub mod lifecycle;
 pub mod llama_sidecar;
 pub mod llm_manager;
+pub mod logging;
 pub mod menu;
 pub mod network_client;
 pub mod notifications;
@@ -30,61 +31,6 @@ pub mod updater;
 use std::path::PathBuf;
 use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
-
-/// Doc 28 §4.2 (J4 fix): default retention for rotated `app-logs.log.*`
-/// files, overridable via `DINERO_LOG_RETENTION_DAYS` (the doc calls the
-/// window "configurable").
-const DEFAULT_LOG_RETENTION_DAYS: u64 = 15;
-
-/// Deletes rotated log files older than the retention window. Best-effort —
-/// a failure here should never block startup.
-fn prune_old_logs(log_dir: &std::path::Path) {
-    let retention_days = std::env::var("DINERO_LOG_RETENTION_DAYS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(DEFAULT_LOG_RETENTION_DAYS);
-    let max_age = std::time::Duration::from_secs(retention_days * 24 * 60 * 60);
-
-    let entries = match std::fs::read_dir(log_dir) {
-        Ok(e) => e,
-        Err(e) => {
-            tracing::warn!("Failed to read log directory for pruning: {}", e);
-            return;
-        }
-    };
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let is_rotated_log = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|n| n.starts_with("app-logs.log"))
-            .unwrap_or(false);
-        if !is_rotated_log {
-            continue;
-        }
-
-        let age = entry
-            .metadata()
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .and_then(|modified| modified.elapsed().ok());
-
-        if let Some(age) = age {
-            if age > max_age {
-                if let Err(e) = std::fs::remove_file(&path) {
-                    tracing::warn!("Failed to prune old log file {:?}: {}", path, e);
-                } else {
-                    tracing::info!(
-                        "Pruned log file older than {} days: {:?}",
-                        retention_days,
-                        path
-                    );
-                }
-            }
-        }
-    }
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -100,9 +46,15 @@ pub fn run() {
     // daily and prunes files older than the configurable retention window
     // (15 days by default, matching the documented default).
     let file_appender = tracing_appender::rolling::daily(&log_dir, "app-logs.log");
-    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    // TASK-OPS-007: redact at write time, not only lazily when a diagnostic
+    // bundle is later exported -- `app-logs.log` itself must never hold
+    // unredacted PII on disk in the interim. The console/stdout layer below
+    // is deliberately left unredacted for local-dev ergonomics; only the
+    // persisted file is wrapped.
+    let redacting_appender = crate::logging::RedactingWriter::new(file_appender);
+    let (non_blocking, _guard) = tracing_appender::non_blocking(redacting_appender);
     Box::leak(Box::new(_guard));
-    prune_old_logs(&log_dir);
+    crate::logging::prune_old_logs(&log_dir);
 
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;

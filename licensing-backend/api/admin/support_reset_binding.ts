@@ -1,3 +1,4 @@
+import { withRequestLogging } from '../../lib/request_logging';
 // Doc 30 TASK-OPS-006, Doc 43 §3 action 5: "Force-unbind a device from a
 // license (lost/replaced Mac)... admin override of normal license_deactivate."
 // Reuses the exact clearing effect `deactivateLicense` (api/license/
@@ -63,7 +64,7 @@ export async function resetDeviceBinding(db: ResetBindingDb, input: ResetBinding
   return { status: 'binding_reset' };
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     assertAdminAuthorized(req.headers.authorization);
     if (req.method !== 'POST') {
@@ -85,3 +86,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Unexpected error' });
   }
 }
+
+export default withRequestLogging('admin/support_reset_binding', handler);

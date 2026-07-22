@@ -1,3 +1,4 @@
+import { withRequestLogging } from '../../lib/request_logging';
 // Doc 30 TASK-BILL-006: internal admin-operated endpoint. No self-service
 // refund UI in v1.0 (the 14-day trial already de-risks purchase, Doc 03).
 import type { PrismaClient } from '@prisma/client';
@@ -66,7 +67,7 @@ export async function refundAccount(
   return { status: 'refunded' };
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     res.status(405).json({ code: 'VALIDATION_ERROR', message: 'POST only' });
     return;
@@ -102,3 +103,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Unexpected error' });
   }
 }
+
+export default withRequestLogging('billing/refund', handler);

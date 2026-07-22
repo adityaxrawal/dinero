@@ -1,3 +1,4 @@
+import { withRequestLogging } from '../../../lib/request_logging';
 // Doc 30 TASK-BILL-003: POST /api/license/webhooks/razorpay
 // Resolves Document 21 TPI-OQ-04 / Document 19 §14.5's route inventory entry
 // -- this is the one real Razorpay webhook route in the system (TASK-LIC-006
@@ -111,7 +112,7 @@ export async function processWebhookEvent(db: WebhookDb, event: RazorpayWebhookE
   return { status: 'processed' };
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     res.status(405).json({ code: 'VALIDATION_ERROR', message: 'POST only' });
     return;
@@ -134,3 +135,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Unexpected error' });
   }
 }
+
+export default withRequestLogging('license/webhooks/razorpay', handler);

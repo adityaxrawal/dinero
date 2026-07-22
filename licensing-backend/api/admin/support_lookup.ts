@@ -1,3 +1,4 @@
+import { withRequestLogging } from '../../lib/request_logging';
 // Doc 30 TASK-OPS-006, Doc 43 §3 action 7: "Look up an account by redacted
 // email or license key, view activation/validation/refresh history."
 // Internal-only endpoint, admin-key-authenticated, read-only. Reuses the
@@ -86,7 +87,7 @@ export async function lookupSupportAccount(
   };
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     assertAdminAuthorized(req.headers.authorization);
     if (req.method !== 'GET') {
@@ -109,3 +110,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Unexpected error' });
   }
 }
+
+export default withRequestLogging('admin/support_lookup', handler);

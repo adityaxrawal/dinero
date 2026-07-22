@@ -13,26 +13,11 @@ use std::path::{Path, PathBuf};
 /// full application log, which can contain arbitrary interpolated values
 /// from anywhere in the codebase); this pass additionally masks the two
 /// highest-risk patterns that could slip into even those narrower sources.
-fn redact(text: &str) -> String {
-    let email_re = Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}").unwrap();
-    // TASK-AUTH-015's exact acceptance criteria name three patterns: email,
-    // 16-digit-card, and rupee-amount. A card number (with or without
-    // separators) and a ₹-prefixed amount must both be caught explicitly —
-    // the previous `\d{6,}` catch-all missed the common case of a small
-    // transaction amount (e.g. "₹499.00" has only 3 digits before the
-    // decimal point).
-    let card_re = Regex::new(r"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b").unwrap();
-    let rupee_amount_re = Regex::new(r"₹\s?[\d,]+(\.\d{1,2})?").unwrap();
-    let digits_re = Regex::new(r"\d{6,}").unwrap();
-    let bearer_re = Regex::new(r"(?i)(bearer|token|password|secret)\s*[:=]\s*\S+").unwrap();
-
-    let text = email_re.replace_all(text, "[REDACTED_EMAIL]");
-    let text = card_re.replace_all(&text, "[REDACTED_CARD]");
-    let text = rupee_amount_re.replace_all(&text, "[REDACTED_AMOUNT]");
-    let text = digits_re.replace_all(&text, "[REDACTED_NUMBER]");
-    let text = bearer_re.replace_all(&text, "$1: [REDACTED]");
-    text.into_owned()
-}
+///
+/// TASK-OPS-007: moved to `crate::logging` so the same regexes back both
+/// this lazy bundle-export pass and `RedactingWriter`'s write-time pass over
+/// `app-logs.log` itself, rather than drifting into two copies.
+use crate::logging::redact;
 
 /// TASK-AUTH-015's acceptance criteria: "An automated test scans the
 /// generated bundle for zero PII matches (email/16-digit-card/₹-amount
@@ -344,26 +329,10 @@ pub fn generate_diagnostic_bundle(
 mod tests {
     use super::*;
 
-    #[test]
-    fn redact_catches_email_card_and_rupee_amount() {
-        let input =
-            "Contact user@example.com about card 4111 1111 1111 1111 for the ₹49,999.50 charge";
-        let redacted = redact(input);
-        assert!(!redacted.contains("user@example.com"));
-        assert!(!redacted.contains("4111 1111 1111 1111"));
-        assert!(!redacted.contains("₹49,999.50"));
-        assert!(redacted.contains("[REDACTED_EMAIL]"));
-        assert!(redacted.contains("[REDACTED_CARD]"));
-        assert!(redacted.contains("[REDACTED_AMOUNT]"));
-    }
-
-    #[test]
-    fn redact_catches_small_amounts_the_old_six_digit_only_regex_missed() {
-        // The original digits_re (`\d{6,}`) would have let this straight
-        // through — most real transaction amounts are well under 6 digits.
-        let redacted = redact("Groceries: ₹499.00");
-        assert!(!redacted.contains("499"));
-    }
+    // `redact()`'s own regex-behavior tests now live in `crate::logging`
+    // (moved there under TASK-OPS-007, since that's where the function
+    // itself now lives) -- this module's tests below cover what's specific
+    // to *this* module: the PII-scan gate and the full bundle-generation flow.
 
     #[test]
     fn scan_for_pii_rejects_email_card_and_amount() {

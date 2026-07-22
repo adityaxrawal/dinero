@@ -1,3 +1,4 @@
+import { withRequestLogging } from '../../lib/request_logging';
 // Doc 30 TASK-LIC-008: POST /api/license/refresh-token
 // Obtains a freshly-signed JWT without full re-activation, used as a
 // currently-valid JWT approaches expiry to minimize user-visible friction.
@@ -89,7 +90,7 @@ export async function refreshLicenseToken(
   return { status: 'refreshed', jwt: newJwt, expires_at: expiresAt.toISOString() };
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     res.status(405).json({ code: 'VALIDATION_ERROR', message: 'POST only' });
     return;
@@ -116,3 +117,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Unexpected error' });
   }
 }
+
+export default withRequestLogging('license/refresh-token', handler);

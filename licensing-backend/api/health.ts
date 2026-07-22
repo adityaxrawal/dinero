@@ -1,3 +1,4 @@
+import { withRequestLogging } from '../lib/request_logging';
 // Doc 30 TASK-OPS-003: GET /api/health
 //
 // A synthetic-check-friendly endpoint for uptime monitors — deliberately the
@@ -27,7 +28,9 @@ export async function checkHealth(db: HealthDb): Promise<HealthResult> {
   }
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+async function handler(req: VercelRequest, res: VercelResponse) {
   const result = await checkHealth(prisma);
   res.status(result.status === 'ok' ? 200 : 503).json(result);
 }
+
+export default withRequestLogging('health', handler);
