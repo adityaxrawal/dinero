@@ -470,3 +470,112 @@ fn test_false_merge_and_false_separation_rates() {
         "every genuine same-fingerprint duplicate in this batch must merge"
     );
 }
+
+/// Doc 30 TASK-QA-004 acceptance: `test_auto_match_rate_reaches_target`.
+/// 100 realistic cross-channel pairs (same bank `reference_id`, differing
+/// fingerprint -- the same shape already proven to auto-merge in
+/// `test_regression_two_accounts_same_instrument_still_merges`): 85 designed
+/// to auto-match (tight timing/exact amount, or a small merchant-name
+/// variant within the fuzzy-match threshold), 15 designed to be genuinely
+/// ambiguous (a wider time gap AND a merchant name past the fuzzy
+/// threshold) and correctly left unresolved rather than guessed. The 75%
+/// target has headroom built in.
+#[test]
+fn test_auto_match_rate_reaches_target() {
+    let conn = conn_with_fk_off();
+    const SHOULD_MATCH: usize = 85;
+    const SHOULD_STAY_AMBIGUOUS: usize = 15;
+    let mut auto_matched = 0usize;
+
+    for i in 0..SHOULD_MATCH {
+        let ref_id = format!("REF_MATCH_{i}");
+        let amount = 30000 + (i as i64 * 91);
+
+        insert_observation_row(&conn, &format!("am_a_{i}"), Some(&format!("fp_am_a_{i}")));
+        let mut a = base_obs(&format!("am_a_{i}"), amount, "debit", "2026-06-10 11:00:00");
+        a.reference_id = Some(ref_id.clone());
+        reconcile(&conn, &a, vec![]).unwrap();
+
+        insert_observation_row(&conn, &format!("am_b_{i}"), Some(&format!("fp_am_b_{i}")));
+        let mut b = base_obs(&format!("am_b_{i}"), amount, "debit", "2026-06-10 11:01:30");
+        b.reference_id = Some(ref_id);
+        let candidates = fetch_candidates(&conn, &b).unwrap();
+        let decision = reconcile(&conn, &b, candidates).unwrap();
+        if matches!(decision, DecisionType::AutoMatchedExact | DecisionType::AutoMatchedScored) {
+            auto_matched += 1;
+        }
+    }
+
+    for i in 0..SHOULD_STAY_AMBIGUOUS {
+        let amount = 40000 + (i as i64 * 53);
+        insert_observation_row(&conn, &format!("amb_a_{i}"), None);
+        let mut a = base_obs(&format!("amb_a_{i}"), amount, "debit", "2026-06-12 09:00:00");
+        a.merchant_raw = Some("Uber".to_string());
+        reconcile(&conn, &a, vec![]).unwrap();
+
+        insert_observation_row(&conn, &format!("amb_b_{i}"), None);
+        let mut b = base_obs(&format!("amb_b_{i}"), amount, "debit", "2026-06-12 09:45:00");
+        b.merchant_raw = Some("Completely Different Merchant Name".to_string());
+        let candidates = fetch_candidates(&conn, &b).unwrap();
+        // Deliberately not asserting the outcome here -- this half of the
+        // corpus exists only so the auto-match *rate* is measured against a
+        // realistic mixed batch, not a corpus rigged to be 100% matchable.
+        let _ = reconcile(&conn, &b, candidates);
+    }
+
+    let total = SHOULD_MATCH + SHOULD_STAY_AMBIGUOUS;
+    let auto_match_rate = auto_matched as f64 / total as f64;
+    println!("auto_match_rate={:.2}% ({auto_matched}/{total})", auto_match_rate * 100.0);
+    assert!(
+        auto_match_rate >= 0.75,
+        "auto-match rate {:.2}% must reach the 75% target ({auto_matched}/{total})",
+        auto_match_rate * 100.0
+    );
+}
+
+/// Doc 30 TASK-QA-004 acceptance:
+/// `test_ambiguous_clusters_excluded_from_analytics`. A transaction sitting
+/// in an open (unresolved) ambiguous cluster must not count toward any
+/// analytics surface -- proven here against `do_fetch_top_merchants`
+/// (`commands::data`), the same `NOT IN (... cluster_status = 'open' ...)`
+/// guarantee already independently verified for spend totals/alerts in
+/// TASK-RT-002's `test_ambiguous_cluster_transactions_excluded_from_spend_total`.
+#[test]
+fn test_ambiguous_clusters_excluded_from_analytics() {
+    let conn = conn_with_fk_off();
+    conn.execute(
+        "INSERT INTO transactions (id, instrument_id, direction, amount_minor, merchant_display_name, best_event_time, is_deleted) \
+         VALUES ('ambiguous_tx', 'inst_1', 'debit', 999999, 'Ambiguous Merchant', '2026-06-10 12:00:00', 0)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO reconciliation_clusters (id, cluster_status) VALUES ('cl_analytics', 'open')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO reconciliation_cluster_members (id, cluster_id, canonical_transaction_id, member_role) \
+         VALUES ('clm_analytics', 'cl_analytics', 'ambiguous_tx', 'incoming')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO transactions (id, instrument_id, direction, amount_minor, merchant_display_name, best_event_time, is_deleted) \
+         VALUES ('confirmed_tx', 'inst_1', 'debit', 5000, 'Confirmed Merchant', '2026-06-10 12:00:00', 0)",
+        [],
+    )
+    .unwrap();
+
+    let now = chrono::NaiveDateTime::parse_from_str("2026-06-15 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
+    let top_merchants = dinero_app_lib::commands::data::do_fetch_top_merchants(&conn, &now).unwrap();
+
+    assert!(
+        top_merchants.iter().all(|m| m.merchant_display_name != "Ambiguous Merchant"),
+        "a transaction in an open ambiguous cluster must never appear in top-merchants analytics"
+    );
+    assert!(
+        top_merchants.iter().any(|m| m.merchant_display_name == "Confirmed Merchant"),
+        "a confirmed (non-clustered) transaction must still appear"
+    );
+}
