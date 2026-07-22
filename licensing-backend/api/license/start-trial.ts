@@ -15,54 +15,74 @@
 // launch (offline trial countdown stays local; only the abuse-tracking
 // registration needs a network round-trip) is flagged as follow-up desktop
 // work, not done in this pass.
+//
+// Device-guard logic extracted to lib/trial_guard.ts (TASK-BILL-009): a
+// device already bound to an existing non-trial subscription is recognized
+// as returning, not blocked as abuse -- re-issues a JWT for the existing
+// subscription instead of starting a second trial.
 import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
 import { LicensingApiError } from '../../lib/errors';
 import { signLicenseJwt } from '../../lib/jwt';
-import { logAuditEvent, countRecentEvents, type AuditWriter } from '../../lib/audit';
+import { logAuditEvent, type AuditWriter } from '../../lib/audit';
+import { decideTrialEligibility, logTrialGuardDecision, deviceHasPriorTrialStartedEvent } from '../../lib/trial_guard';
 
 export interface StartTrialInput {
   email: string;
   device_id: string;
 }
 
-export interface StartTrialResult {
-  status: 'trial_started';
-  jwt: string;
-  trial_ends_at: string;
-}
+export type StartTrialResult =
+  | { status: 'trial_started'; jwt: string; trial_ends_at: string }
+  | { status: 'existing_subscription_recognized'; jwt: string; plan: string; billing_interval: string };
 
 const TRIAL_DAYS = 14;
 const TRIAL_PLAN_ID = 'desktop_pro_monthly';
 
 export type StartTrialDb = {
   account: Pick<PrismaClient['account'], 'findUnique' | 'create' | 'update'>;
-  subscription: Pick<PrismaClient['subscription'], 'create'>;
-  licenseToken: Pick<PrismaClient['licenseToken'], 'create'>;
+  subscription: Pick<PrismaClient['subscription'], 'create' | 'findFirst'>;
+  licenseToken: Pick<PrismaClient['licenseToken'], 'create' | 'findUnique'>;
   licensingAuditLog: AuditWriter;
 };
 
 export async function startTrial(db: StartTrialDb, input: StartTrialInput, privateKeyPem: string): Promise<StartTrialResult> {
-  // Doc 30 TASK-LIC-007: "checking for a prior trial against the same
-  // hardware UUID to prevent reinstall-based trial abuse" -- device-fingerprint
-  // check lives here; TASK-BILL-009 later adds the combined email+device
-  // guard with the "OS reinstall, not abuse" carve-out on top of this.
-  const priorDeviceTrials = await countRecentEvents(
-    db.licensingAuditLog,
-    'trial_started',
-    Number.MAX_SAFE_INTEGER,
-    (payload) => (payload as { device_id?: string } | null)?.device_id === input.device_id
-  );
-  if (priorDeviceTrials > 0) {
-    throw new LicensingApiError('VALIDATION_ERROR', 'A trial has already been started on this device');
+  // Doc 30 TASK-BILL-009: is this device already bound to an account with a
+  // real (non-trial) subscription? That's continuity, not abuse.
+  const existingBinding = await db.licenseToken.findUnique({ where: { deviceFingerprint: input.device_id } });
+  let deviceBoundSubscriptionStatus: string | null = null;
+  if (existingBinding) {
+    const boundSub = await db.subscription.findFirst({ where: { accountId: existingBinding.accountId }, orderBy: { createdAt: 'desc' } });
+    deviceBoundSubscriptionStatus = boundSub?.status ?? null;
   }
 
   let account = await db.account.findUnique({ where: { email: input.email } });
+
+  const decision = decideTrialEligibility({
+    accountTrialUsed: account?.trialUsed ?? false,
+    deviceBoundSubscriptionStatus,
+    deviceHasPriorTrialStartedEvent: await deviceHasPriorTrialStartedEvent(db.licensingAuditLog, input.device_id),
+  });
+  await logTrialGuardDecision(db.licensingAuditLog, input.device_id, decision);
+
+  if (decision.outcome === 'recognized_returning_device') {
+    const boundSub = await db.subscription.findFirst({ where: { accountId: existingBinding!.accountId }, orderBy: { createdAt: 'desc' } });
+    const jwtToken = signLicenseJwt(
+      { sub: input.email, device_id: input.device_id, plan: boundSub!.planId, billing_interval: boundSub!.billingInterval },
+      privateKeyPem
+    );
+    return { status: 'existing_subscription_recognized', jwt: jwtToken, plan: boundSub!.planId, billing_interval: boundSub!.billingInterval };
+  }
+  if (decision.outcome === 'blocked_device_reused') {
+    throw new LicensingApiError('VALIDATION_ERROR', 'A trial has already been started on this device');
+  }
+  if (decision.outcome === 'blocked_email_reused') {
+    throw new LicensingApiError('VALIDATION_ERROR', 'This account has already used its trial');
+  }
+
   if (!account) {
     account = await db.account.create({ data: { email: input.email } });
-  } else if (account.trialUsed) {
-    throw new LicensingApiError('VALIDATION_ERROR', 'This account has already used its trial');
   }
 
   const now = new Date();
