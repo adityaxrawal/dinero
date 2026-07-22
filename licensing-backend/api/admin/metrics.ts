@@ -1,0 +1,26 @@
+// Doc 30 TASK-BILL-007: internal admin-authenticated reporting endpoint.
+// Aggregate figures only -- never per-account breakdowns.
+import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { prisma } from '../../lib/db';
+import { assertAdminAuthorized } from '../../lib/admin_auth';
+import { LicensingApiError } from '../../lib/errors';
+import { paidMau, trialToPaidConversionRate, monthlyChurnRate, mrr } from '../../lib/billing_metrics';
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  try {
+    assertAdminAuthorized(req.headers.authorization);
+    const [mau, conversionRate90d, churnRate, monthlyRecurringRevenue] = await Promise.all([
+      paidMau(prisma),
+      trialToPaidConversionRate(prisma, 90),
+      monthlyChurnRate(prisma),
+      mrr(prisma),
+    ]);
+    res.status(200).json({ paid_mau: mau, conversion_rate_90d: conversionRate90d, monthly_churn_rate: churnRate, mrr: monthlyRecurringRevenue });
+  } catch (e) {
+    if (e instanceof LicensingApiError) {
+      res.status(400).json({ code: e.code, message: e.message });
+      return;
+    }
+    res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Unexpected error' });
+  }
+}
