@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { ShieldCheck, Loader2, Mail } from 'lucide-react';
+import { useState, useEffect, useMemo } from 'react';
+import { ShieldCheck, Loader2, Mail, MonitorSmartphone } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import type { TransactionObservation } from '@/lib/ipc';
@@ -10,6 +10,44 @@ import { evidenceDescription } from './evidenceDescription';
 interface SourceEvidencePanelProps {
   transactionId: string;
   observations: TransactionObservation[];
+}
+
+/** `raw_payload_json`'s shape, written by `normalize_observation` (Rust). */
+interface RawPayload {
+  body?: string;
+  html?: string | null;
+}
+
+function parseRawPayload(raw: string | null): RawPayload | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as RawPayload;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The email's own HTML/CSS, exactly as it rendered in Gmail (backend
+ * already ran it through `sanitize_html_for_display` -- ammonia strips
+ * `<script>`/`on*`/`javascript:`, drops `<img>`/`<a>`, and defangs CSS
+ * `url()` before it ever reaches here). Rendered inside a sandboxed,
+ * scriptless iframe via `srcDoc` so the email's own styles apply only
+ * inside that isolated document — never bleeding into, or being bled into
+ * by, the app's own CSS.
+ */
+function OriginalEmailFrame({ html }: { html: string }) {
+  return (
+    <div className="rounded-md border border-[#064E3B]/10 overflow-hidden bg-white">
+      <iframe
+        title="Original email as received in Gmail"
+        srcDoc={html}
+        sandbox=""
+        className="w-full"
+        style={{ height: 420, border: 'none' }}
+      />
+    </div>
+  );
 }
 
 export default function SourceEvidencePanel({ transactionId, observations }: SourceEvidencePanelProps) {
@@ -42,6 +80,18 @@ export default function SourceEvidencePanel({ transactionId, observations }: Sou
     fetchLog();
     return () => { mounted = false; };
   }, [transactionId, observations]);
+
+  // First observation carrying a sanitized original-HTML body -- there is
+  // normally at most one gmail-sourced observation per transaction, but if
+  // several exist (e.g. a merged email+statement match) the first with real
+  // HTML wins rather than picking arbitrarily.
+  const originalHtml = useMemo(() => {
+    for (const obs of observations) {
+      const payload = parseRawPayload(obs.raw_payload_json);
+      if (payload?.html) return payload.html;
+    }
+    return null;
+  }, [observations]);
 
   if (observations.length === 0) {
     return (
@@ -97,6 +147,25 @@ export default function SourceEvidencePanel({ transactionId, observations }: Sou
           })}
         </CardContent>
       </Card>
+
+      {/* Original email exactly as it rendered in Gmail -- its own HTML/CSS,
+          not a reformatted summary. */}
+      {originalHtml && (
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="text-[13px] flex items-center gap-2 text-[#064E3B]">
+              <MonitorSmartphone className="w-4 h-4" />
+              Original Email (as received in Gmail)
+            </CardTitle>
+            <CardDescription>
+              The bank's actual email layout and styling, rendered from the sanitized HTML Gmail sent.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <OriginalEmailFrame html={originalHtml} />
+          </CardContent>
+        </Card>
+      )}
 
       {/* Source Log / Email UI */}
       {(isLoadingLog || sourceLog) && (

@@ -36,6 +36,13 @@ pub enum ProcessResult {
     TransactionAlert(
         ExtractedMessage,
         Box<crate::extraction::ladder::ExtractionResult>,
+        /// Sanitized-for-display original HTML body (same value as
+        /// `EmailMetadata::html`) -- carried alongside the extraction result
+        /// so the Evidence tab can render the transaction email's real
+        /// layout/CSS as it appeared in Gmail, not just the plain-text body
+        /// `raw_payload_json` already stores. `None` when the message had
+        /// no `text/html` part.
+        Option<String>,
     ),
     StatementEmail(ExtractedMessage, Option<EmailMetadata>),
     MandateEvent(
@@ -446,6 +453,7 @@ impl MessageProcessor {
                             return Ok(Some(ProcessResult::TransactionAlert(
                                 extracted,
                                 Box::new(obs),
+                                email_meta.html.clone(),
                             )));
                         } else {
                             crate::ingestion::gmail_telemetry::gmail_telemetry()
