@@ -44,10 +44,17 @@ export class JwtVerificationError extends Error {}
 /// Verifies signature + standard claims (exp/iat). Does NOT check
 /// device_id match or subscription status -- callers (activate/validate/
 /// refresh) do that against their own request context.
-export function verifyLicenseJwt(token: string, publicKeyPem: string): VerifiedLicenseJwt {
+export function verifyLicenseJwt(
+  token: string,
+  publicKeyPem: string,
+  opts: { ignoreExpiration?: boolean } = {}
+): VerifiedLicenseJwt {
   let decoded: unknown;
   try {
-    decoded = jwt.verify(token, publicKeyPem, { algorithms: ['RS256'] });
+    decoded = jwt.verify(token, publicKeyPem, {
+      algorithms: ['RS256'],
+      ignoreExpiration: opts.ignoreExpiration ?? false,
+    });
   } catch (e) {
     throw new JwtVerificationError(e instanceof Error ? e.message : 'invalid token');
   }
