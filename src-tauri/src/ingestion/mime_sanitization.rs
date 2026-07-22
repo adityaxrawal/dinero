@@ -42,6 +42,13 @@ pub struct ExtractedMessage {
     /// `data` — a genuinely malformed/unexpected payload, not the inline-data
     /// case this struct used to conflate with that.
     pub pdf_attachments: Vec<PdfAttachmentMeta>,
+    /// Structural (never content) diagnostics for each PDF-shaped part that
+    /// `pdf_attachments` couldn't collect bytes for — part_id, mime_type,
+    /// and which of {body, attachmentId, data} were present. Empty in the
+    /// overwhelmingly common case; exists so a "has_pdf_attachment=true but
+    /// no downloadable attachment_ids" skip is diagnosable from the log
+    /// alone instead of unreproducible without the original email.
+    pub skipped_pdf_parts: Vec<String>,
 }
 
 pub fn extract_body_and_attachments(part: &MessagePart) -> ExtractedMessage {
@@ -50,6 +57,7 @@ pub fn extract_body_and_attachments(part: &MessagePart) -> ExtractedMessage {
         html_body: None,
         has_pdf_attachment: false,
         pdf_attachments: Vec::new(),
+        skipped_pdf_parts: Vec::new(),
     };
     extract_recursive(part, &mut extracted);
 
@@ -88,21 +96,49 @@ fn extract_recursive(part: &MessagePart, extracted: &mut ExtractedMessage) {
         }
     } else if part.mime_type == "application/pdf" {
         extracted.has_pdf_attachment = true;
-        // Collect attachment metadata so the caller can obtain the bytes later.
-        if let Some(body) = &part.body {
-            let filename = part
-                .filename
-                .clone()
-                .unwrap_or_else(|| "statement.pdf".to_string());
-            push_pdf_attachment(extracted, body, filename, part.mime_type.clone());
-        }
+        // Collect attachment metadata so the caller can obtain the bytes
+        // later. A completely absent `body` (not just an empty one) used to
+        // silently skip this call, giving `has_pdf_attachment=true` with
+        // nothing pushed via a second, undocumented path -- collapse it into
+        // the single documented "no attachmentId, no data" case in
+        // `push_pdf_attachment` instead, so there's exactly one place that
+        // decides "this PDF part is unusable" and one log for it.
+        let filename = part
+            .filename
+            .clone()
+            .unwrap_or_else(|| "statement.pdf".to_string());
+        let empty_body = MessagePartBody {
+            size: None,
+            data: None,
+            attachment_id: None,
+        };
+        let body = part.body.as_ref().unwrap_or(&empty_body);
+        push_pdf_attachment(
+            extracted,
+            body,
+            filename,
+            part.mime_type.clone(),
+            part.part_id.as_deref(),
+            part.body.is_some(),
+        );
     } else if let Some(filename) = &part.filename {
         if filename.to_lowercase().ends_with(".pdf") {
             extracted.has_pdf_attachment = true;
             // Attempt to collect attachment metadata for non-explicit-mimetype PDFs.
-            if let Some(body) = &part.body {
-                push_pdf_attachment(extracted, body, filename.clone(), part.mime_type.clone());
-            }
+            let empty_body = MessagePartBody {
+                size: None,
+                data: None,
+                attachment_id: None,
+            };
+            let body = part.body.as_ref().unwrap_or(&empty_body);
+            push_pdf_attachment(
+                extracted,
+                body,
+                filename.clone(),
+                part.mime_type.clone(),
+                part.part_id.as_deref(),
+                part.body.is_some(),
+            );
         }
     }
 
@@ -123,12 +159,20 @@ fn push_pdf_attachment(
     body: &MessagePartBody,
     filename: String,
     mime_type: String,
+    part_id: Option<&str>,
+    body_present: bool,
 ) {
     let inline_bytes = body
         .data
         .as_ref()
         .and_then(|data| URL_SAFE.decode(data).ok());
     if body.attachment_id.is_none() && inline_bytes.is_none() {
+        extracted.skipped_pdf_parts.push(format!(
+            "part_id={} mime={} body_present={} attachment_id_present=false data_present=false",
+            part_id.unwrap_or("?"),
+            mime_type,
+            body_present,
+        ));
         return;
     }
     extracted.pdf_attachments.push(PdfAttachmentMeta {
