@@ -140,6 +140,13 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--list", action="store_true", help="print the risk-to-test mapping and exit without running anything")
     parser.add_argument("--json", action="store_true", help="print machine-readable JSON results instead of a human summary")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="also write the JSON results to this path (Doc 30 TASK-OPS-009: the Release "
+        "Readiness debug view reads this file, if present, for its go/no-go status)",
+    )
     args = parser.parse_args()
 
     if args.list:
@@ -167,8 +174,12 @@ def main() -> int:
         })
         any_failed = any_failed or not entry_passed
 
+    output_payload = {"results": results, "all_passed": not any_failed}
+    if args.output:
+        args.output.write_text(json.dumps(output_payload, indent=2))
+
     if args.json:
-        print(json.dumps({"results": results, "all_passed": not any_failed}, indent=2))
+        print(json.dumps(output_payload, indent=2))
     else:
         for r in results:
             status = "PASS" if r["passed"] else "FAIL"

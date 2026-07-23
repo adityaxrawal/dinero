@@ -391,6 +391,22 @@ export interface DebugMetrics {
   reconciliation_decision_distribution: Record<string, number>;
 }
 
+// Doc 30 TASK-OPS-009: matches src-tauri's release_readiness::LocalMetrics
+// exactly -- aggregate counts/rates only, never per-transaction detail.
+export interface ReleaseReadinessLocalMetrics {
+  unresolved_clusters: number;
+  llm_fallback_rate: number;
+  db_size_bytes: number;
+  statement_parse_failure_rate: number;
+}
+
+export interface ReleaseReadinessSnapshot {
+  id: string;
+  captured_at: string;
+  metrics: ReleaseReadinessLocalMetrics;
+  go_no_go: boolean;
+}
+
 interface BackendStatus {
   status: 'healthy' | 'corrupted' | 'locked';
 }
@@ -816,6 +832,10 @@ export const API = {
     getPipelineState: () => invokeCommand<any>('debug_get_pipeline_state'),
     setGmailPollPaused: (paused: boolean) => invokeCommand<void>('debug_set_gmail_poll_paused', { paused }),
     setScanQueuePaused: (paused: boolean) => invokeCommand<void>('debug_set_scan_queue_paused', { paused }),
+    captureReleaseReadinessSnapshot: () =>
+      invokeCommand<ReleaseReadinessSnapshot>('release_readiness_capture_snapshot'),
+    listReleaseReadinessSnapshots: () =>
+      invokeCommand<ReleaseReadinessSnapshot[]>('release_readiness_list_snapshots'),
   },
   network: {
     getActivityList: () =>
