@@ -9,6 +9,7 @@ use tauri::{Emitter, Manager};
 pub mod data;
 pub mod debug;
 pub mod llm;
+pub mod release_readiness;
 
 #[cfg(test)]
 mod data_tests;
@@ -707,7 +708,7 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
     emit_processing_progress(app, stmt_id.as_deref(), &instrument_id, "duplicate_check", 50);
 
     // ── Step 10: Extract statement rows ───────────────────────────────────────
-    let bank_parser = BankParser::detect(&issuer);
+    let bank_parser = BankParser::detect(&issuer, &instrument_type);
     let rows = extract_rows(&parse_result.pages, bank_parser)?;
     tracing::info!(
         "Extracted {} statement rows via parser={:?}",
@@ -815,6 +816,7 @@ pub async fn commit_staged_draft<R: tauri::Runtime>(
     pool: &deadpool_sqlite::Pool,
     app: &tauri::AppHandle<R>,
 ) -> anyhow::Result<String> {
+    use crate::db::transaction_observations::{insert_observation_idempotent, TransactionObservationsRow};
     use crate::statements::{
         bill_classifier,
         metadata_extractor::{resolve_or_create_instrument, write_statement_row, StatementMetadata},
@@ -878,8 +880,67 @@ pub async fn commit_staged_draft<R: tauri::Runtime>(
         let observations = build_all_observations(&stmt_id, &instrument_id, &edited_rows, &entry_ids);
         let conn = pool.get().await.map_err(|e| anyhow::anyhow!("DB pool error: {}", e))?;
         let obs_cloned = observations.clone();
+        let stmt_id_for_obs = stmt_id.clone();
         conn.interact(move |c| {
             for obs in &obs_cloned {
+                // Doc 30 TASK-QA-003 finding: `reconcile_transactionally` (via
+                // `create_canonical_transaction`'s `update_canonical_transaction_id`)
+                // requires the observation to already exist as a
+                // `transaction_observations` row -- the Transaction Queue path
+                // (`ingestion::queues::process_transaction_job`) always
+                // `insert_observation_idempotent`s first for exactly this
+                // reason. This statement-commit path never did, so every
+                // single statement-sourced reconciliation was silently
+                // failing ("Observation not found", swallowed by the
+                // `tracing::warn!` below) -- no statement commit has ever
+                // produced a canonical transaction through this path.
+                let fmt = "%Y-%m-%d %H:%M:%S";
+                let event_time = chrono::NaiveDateTime::parse_from_str(&obs.event_time, fmt)
+                    .or_else(|_| {
+                        chrono::NaiveDateTime::parse_from_str(&format!("{} 00:00:00", obs.event_time), fmt)
+                    })
+                    .ok();
+                let row = TransactionObservationsRow {
+                    id: obs.id.clone(),
+                    canonical_transaction_id: None,
+                    source_pipeline: Some(obs.source_pipeline.clone()),
+                    source_record_id: Some(obs.source_record_id.clone()),
+                    source_message_id: None,
+                    source_thread_id: None,
+                    statement_id: Some(stmt_id_for_obs.clone()),
+                    statement_entry_id: Some(obs.source_record_id.clone()),
+                    instrument_id: Some(obs.instrument_id.clone()),
+                    direction: Some(obs.direction.clone()),
+                    amount: None,
+                    amount_minor: Some(obs.amount_minor),
+                    currency: Some(obs.currency.clone()),
+                    event_time,
+                    event_time_confidence: obs.event_time_confidence.clone(),
+                    posting_date: None,
+                    merchant_raw: obs.merchant_raw.clone(),
+                    merchant_normalized: None,
+                    reference_id: obs.reference_id.clone(),
+                    original_amount_minor: None,
+                    original_currency: None,
+                    exchange_rate: None,
+                    balance_after_transaction: None,
+                    timezone_at_ingestion: None,
+                    fingerprint: obs.fingerprint.clone(),
+                    extraction_method: Some("statement_row_parser".to_string()),
+                    confidence_score: obs.confidence_score,
+                    raw_payload_json: None,
+                    parser_version: None,
+                    emi_total_installments: obs.emi_total_installments,
+                    emi_installment_number: None,
+                    emi_original_amount_minor: obs.emi_original_amount_minor,
+                    is_deleted: false,
+                    created_at: None,
+                    updated_at: None,
+                };
+                if let Err(e) = insert_observation_idempotent(c, &row) {
+                    tracing::warn!("Failed to insert observation row for '{}': {}", obs.id, e);
+                    continue;
+                }
                 if let Err(e) = crate::reconciliation::engine::reconcile_transactionally(c, obs) {
                     tracing::warn!("Reconciliation failed for obs '{}': {}", obs.id, e);
                 }
@@ -3026,6 +3087,8 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         debug::debug_get_pipeline_state,
         debug::debug_set_gmail_poll_paused,
         debug::debug_set_scan_queue_paused,
+        release_readiness::release_readiness_capture_snapshot,
+        release_readiness::release_readiness_list_snapshots,
         crate::feedback::submit_user_feedback,
         network::settings_get_network_activity,
         crate::licensing::commands::license_get_status,

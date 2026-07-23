@@ -55,15 +55,35 @@ struct DecryptResponse {
 }
 
 fn sidecar_binary_path() -> PathBuf {
-    // Sibling of the running executable — matches how `cargo build`/`cargo
-    // test` places `pdf_sidecar` next to the main binary in `target/debug`,
-    // and how a Tauri-bundled app places sidecar binaries alongside the main
-    // executable. Bundling/signing the sidecar into the release `.app` is
-    // TASK-DESK-009's (Configure Tauri Build Pipeline) explicit scope, not
-    // reached yet — this resolution already works unmodified once it is.
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|dir| dir.join("pdf_sidecar")))
+    // Sibling of the running executable — matches how the main `dinero-app`
+    // binary is laid out in `target/debug`, and how a Tauri-bundled app
+    // places sidecar binaries alongside the main executable. Bundling/
+    // signing the sidecar into the release `.app` is TASK-DESK-009's
+    // (Configure Tauri Build Pipeline) explicit scope, not reached yet —
+    // this resolution already works unmodified once it is.
+    let exe = std::env::current_exe().ok();
+    let sibling = exe
+        .as_ref()
+        .and_then(|p| p.parent())
+        .map(|dir| dir.join("pdf_sidecar"));
+    if let Some(ref path) = sibling {
+        if path.exists() {
+            return path.clone();
+        }
+    }
+    // Doc 30 TASK-QA-003: `cargo test` binaries run from `target/debug/deps/`,
+    // one level below where `cargo build`'s `[[bin]]` targets (including
+    // `pdf_sidecar`) actually land -- the sibling lookup above never finds it
+    // from a test binary, only from the real app binary. Checked only as a
+    // fallback (never preferred over the sibling) so production resolution
+    // is unchanged; this is what lets a test exercise the *real* sidecar
+    // against a real PDF instead of every statement test having to avoid it.
+    exe.as_ref()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.parent())
+        .map(|dir| dir.join("pdf_sidecar"))
+        .filter(|p| p.exists())
+        .or(sibling)
         .unwrap_or_else(|| PathBuf::from("pdf_sidecar"))
 }
 

@@ -35,12 +35,24 @@ pub enum BankParser {
 }
 
 impl BankParser {
-    /// Detect which bank parser to use from the issuer name.
-    pub fn detect(issuer_name: &str) -> Self {
+    /// Detect which bank parser to use from the issuer name and instrument
+    /// type. Doc 30 TASK-QA-003 finding: `issuer_name` here is always
+    /// `metadata_extractor::detect_issuer`'s bare canonical code ("HDFC",
+    /// "ICICI", ...) or an equally bare `ConfirmedInstrument::issuer_name` --
+    /// neither ever contains the literal substring "credit", so the
+    /// previous `s.contains("hdfc") && s.contains("credit")`-style checks
+    /// could never actually select `HdfcCreditCard`/`IciciCreditCard`
+    /// through normal auto-detection, silently routing every real HDFC/
+    /// ICICI *credit card* statement to the wrong (bank-account) parser.
+    /// `instrument_type` (already resolved separately by the Statement
+    /// Instrument Gate before this is ever called) is the correct signal
+    /// to disambiguate the two variants per bank.
+    pub fn detect(issuer_name: &str, instrument_type: &str) -> Self {
         let lower = issuer_name.to_lowercase();
+        let is_credit_card = instrument_type == "credit_card";
         match lower.as_str() {
-            s if s.contains("hdfc") && s.contains("credit") => BankParser::HdfcCreditCard,
-            s if s.contains("icici") && s.contains("credit") => BankParser::IciciCreditCard,
+            s if s.contains("hdfc") && is_credit_card => BankParser::HdfcCreditCard,
+            s if s.contains("icici") && is_credit_card => BankParser::IciciCreditCard,
             s if s.contains("axis") => BankParser::AxisCreditCard,
             s if s.contains("amex") => BankParser::AmexIndia,
             s if s.contains("hdfc") => BankParser::HdfcBankAccount,
