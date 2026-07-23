@@ -38,8 +38,10 @@ mod tests {
         // trusted -> inactive
         assert!(pattern_rules::update_status(&conn, "pr-1", "inactive").is_ok());
 
-        // Invalid transitions
+        // Invalid transitions -- distinct template_hash per row since each is
+        // an independent scenario, not a variant of the same learned rule.
         row.id = "pr-2".to_string();
+        row.template_hash = "hash456".to_string();
         row.status = "pending".to_string();
         pattern_rules::insert(&conn, &row).unwrap();
 
@@ -47,6 +49,7 @@ mod tests {
         assert!(pattern_rules::update_status(&conn, "pr-2", "trusted").is_err());
 
         row.id = "pr-3".to_string();
+        row.template_hash = "hash789".to_string();
         row.status = "active".to_string();
         pattern_rules::insert(&conn, &row).unwrap();
 

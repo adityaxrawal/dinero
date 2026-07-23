@@ -51,6 +51,10 @@ SET pattern_rule_id = (
 ALTER TABLE pattern_rule_variants DROP COLUMN bank_name;
 ALTER TABLE pattern_rule_variants DROP COLUMN field_name;
 
--- Step 6: a given template can only produce one variant per parent.
+-- Step 6: a given template can only produce one LIVE variant per parent --
+-- partial, not a blanket unique index: an inactive/flagged variant (decayed
+-- or rejected) must not block a fresh pending attempt for that same
+-- template, matching candidate_exists()'s own status filter.
 CREATE UNIQUE INDEX idx_pattern_rule_variants_lookup
-    ON pattern_rule_variants(pattern_rule_id, template_hash);
+    ON pattern_rule_variants(pattern_rule_id, template_hash)
+    WHERE status IN ('pending', 'active', 'trusted');

@@ -124,7 +124,6 @@ impl ExtractionLayer for LearnedPatternLayer {
         body: &'a str,
     ) -> BoxFuture<'a, Option<ExtractionResult>> {
         Box::pin(async move {
-            let template_hash = compute_template_hash(body);
             let b_name = bank_name.to_string();
 
             let conn_res = pool.get().await;
@@ -134,13 +133,7 @@ impl ExtractionLayer for LearnedPatternLayer {
             let conn = conn_res.unwrap();
 
             let rules_res = conn
-                .interact(move |c| {
-                    crate::db::pattern_rules::select_active_rules_by_bank_and_hash(
-                        c,
-                        &b_name,
-                        &template_hash,
-                    )
-                })
+                .interact(move |c| crate::db::pattern_rules::select_active_rules_by_bank(c, &b_name))
                 .await;
 
             let rules = match rules_res {
