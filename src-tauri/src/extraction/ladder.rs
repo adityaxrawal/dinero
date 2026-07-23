@@ -2282,6 +2282,38 @@ mod tests {
         assert_eq!(res.extraction_method, "learned_patterns");
     }
 
+    /// Core requirement, end to end: variants learned from one email
+    /// template must still match a DIFFERENT template for the same bank
+    /// once select_active_rules_by_bank stops filtering by template_hash.
+    #[tokio::test]
+    async fn test_learned_rule_matches_across_different_templates() {
+        // setup_db_with_rule seeds all five field variants against this
+        // exact body's template_hash.
+        let old_body = "Your amount is 1500 INR at Amazon debit time 123";
+        let pool = setup_db_with_rule("active".to_string()).await;
+
+        // A structurally different body (different template_hash) that the
+        // SAME five regexes still happen to match.
+        let new_body = "Reminder: your amount is 1500 INR at Amazon debit time 123 -- thank you.";
+        assert_ne!(
+            compute_template_hash(old_body),
+            compute_template_hash(new_body),
+            "the two bodies must hash differently to actually exercise cross-template matching"
+        );
+
+        let layer = LearnedPatternLayer;
+        let result = layer.extract(&pool, "Chase", new_body).await;
+
+        assert!(
+            result.is_some(),
+            "variants learned from one template must still be tried against a different template's email"
+        );
+        let res = result.unwrap();
+        assert_eq!(res.amount_minor, Some(150000));
+        assert_eq!(res.merchant_raw, Some("Amazon".to_string()));
+        assert_eq!(res.direction, Some("debit".to_string()));
+    }
+
     #[tokio::test]
     async fn test_inactive_rule_skipped() {
         let pool = setup_db_with_rule("inactive".to_string()).await;
@@ -2379,17 +2411,20 @@ mod tests {
         let rules = conn
             .interact(move |c| {
                 // No direct "select all for hash" helper exists; pending rows
-                // are deliberately excluded from
-                // select_active_rules_by_bank_and_hash by design, so query
-                // the table directly here instead.
-                c.prepare("SELECT field_name, status FROM pattern_rules WHERE bank_name = ?1 AND template_hash = ?2")
-                    .unwrap()
-                    .query_map(rusqlite::params!["HDFC Bank", template_hash], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                    })
-                    .unwrap()
-                    .collect::<Result<Vec<_>, _>>()
-                    .unwrap()
+                // are deliberately excluded from select_active_rules_by_bank
+                // by design, so query the tables directly here instead.
+                c.prepare(
+                    "SELECT p.field_name, v.status FROM pattern_rule_variants v \
+                     JOIN pattern_rules p ON p.id = v.pattern_rule_id \
+                     WHERE p.bank_name = ?1 AND v.template_hash = ?2",
+                )
+                .unwrap()
+                .query_map(rusqlite::params!["HDFC Bank", template_hash], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
             })
             .await
             .unwrap();
