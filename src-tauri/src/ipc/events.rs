@@ -183,13 +183,12 @@ mod tests {
     }
 
     /// Doc 30 TASK-RT-001 acceptance: `test_typescript_payload_types_match_rust_structs`.
-    /// The TypeScript-side check (`src/lib/events.test.ts`) cross-scans
-    /// `src/lib/events.ts`'s interfaces against these same Rust source files'
-    /// real field names -- this Rust-side test only proves the reverse
-    /// direction compiles: every `AppEvent` variant this module claims to
-    /// centralize has a real `.as_str()` arm (a stray variant with no match
-    /// arm would be a compile error, so this is a smoke test that the enum
-    /// hasn't drifted out of sync with its own `as_str` impl).
+    /// `src/lib/events.ts` (and its cross-check test) has since been removed
+    /// as unused -- nothing in the frontend imported from it. This test now
+    /// only proves the Rust side: every `AppEvent` variant this module
+    /// claims to centralize has a real `.as_str()` arm (a stray variant with
+    /// no match arm would be a compile error, so this is a smoke test that
+    /// the enum hasn't drifted out of sync with its own `as_str` impl).
     #[test]
     fn test_typescript_payload_types_match_rust_structs() {
         for event in [
@@ -205,19 +204,6 @@ mod tests {
             AppEvent::SystemWarningCleared,
         ] {
             assert!(!event.as_str().is_empty());
-        }
-
-        let events_ts = include_str!("../../../src/lib/events.ts");
-        for expected_interface in [
-            "TransactionCreatedPayload",
-            "ScanProgressPayload",
-            "ReconciliationClusterPayload",
-            "BackgroundTaskProgressPayload",
-        ] {
-            assert!(
-                events_ts.contains(expected_interface),
-                "src/lib/events.ts is missing {expected_interface}"
-            );
         }
     }
 
