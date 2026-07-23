@@ -160,22 +160,25 @@ struct ScanProgressPayload {
     error_message: Option<String>,
 }
 
+/// `pub`/pub fields for the same reason as `run_scan_batches` above --
+/// `tests/historical_scan_benchmark.rs` (Doc 30 TASK-QA-002) constructs this
+/// directly to drive a scan against a pre-built synthetic message-id list.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
-struct ScanCheckpointState {
-    start_date: String,
-    end_date: String,
-    all_message_ids: Vec<String>,
-    processed_count: usize,
+pub struct ScanCheckpointState {
+    pub start_date: String,
+    pub end_date: String,
+    pub all_message_ids: Vec<String>,
+    pub processed_count: usize,
     #[serde(default)]
-    transactions_found: usize,
+    pub transactions_found: usize,
     #[serde(default)]
-    statements_found: usize,
+    pub statements_found: usize,
     #[serde(default)]
-    mandate_events_found: usize,
+    pub mandate_events_found: usize,
     #[serde(default)]
-    non_financial: usize,
+    pub non_financial: usize,
     #[serde(default)]
-    errors: usize,
+    pub errors: usize,
 }
 
 #[tauri::command]
@@ -454,7 +457,12 @@ async fn run_scan<R: tauri::Runtime>(
     run_scan_batches(app, pool, account_id, state, client).await
 }
 
-async fn run_scan_batches<R: tauri::Runtime>(
+/// `pub` (rather than private, like `run_scan`) specifically so
+/// `tests/historical_scan_benchmark.rs` (Doc 30 TASK-QA-002) can drive the
+/// real batch/checkpoint/concurrency loop directly against a mocked
+/// `GmailClient`, without needing a full `scans_historical` OAuth+licensing
+/// call chain -- the exact seam this file's own internal tests already use.
+pub async fn run_scan_batches<R: tauri::Runtime>(
     app: AppHandle<R>,
     pool: Pool,
     account_id: String,
