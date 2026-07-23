@@ -104,17 +104,29 @@ pub fn log_user_correction(
     old_value: &str,
     new_value: &str,
 ) -> Result<()> {
-    // Find the observation ID and source pipeline for this transaction
-    let obs_info: rusqlite::Result<(String, Option<String>, Option<String>, Option<String>)> = conn.query_row(
-        "SELECT id, source_pipeline, source_record_id, raw_payload_json FROM transaction_observations WHERE canonical_transaction_id = ?1 LIMIT 1",
+    // Find the observation ID, source pipeline, and (via its instrument) the
+    // real bank name for this transaction.
+    let obs_info: rusqlite::Result<(
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> = conn.query_row(
+        "SELECT o.id, o.source_pipeline, o.source_record_id, o.raw_payload_json, i.issuer_name
+         FROM transaction_observations o
+         LEFT JOIN instruments i ON i.id = o.instrument_id
+         WHERE o.canonical_transaction_id = ?1 LIMIT 1",
         rusqlite::params![tx_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
     );
 
-    let (obs_id, source_pipeline, source_record_id, raw_payload_json) = match obs_info {
+    let (obs_id, source_pipeline, source_record_id, raw_payload_json, issuer_name) = match obs_info
+    {
         Ok(info) => info,
         Err(_) => return Ok(()), // No observation found
     };
+    let bank_name = issuer_name.unwrap_or_else(|| "Unknown".to_string());
 
     let feedback_id = Uuid::new_v4().to_string();
 
@@ -158,8 +170,10 @@ pub fn log_user_correction(
         );
 
         let existing_rule: rusqlite::Result<String> = conn.query_row(
-            "SELECT id FROM pattern_rules WHERE template_hash = ?1 AND field_name = ?2 LIMIT 1",
-            rusqlite::params![template_hash, field_name],
+            "SELECT v.id FROM pattern_rule_variants v
+             JOIN pattern_rules p ON p.id = v.pattern_rule_id
+             WHERE v.template_hash = ?1 AND p.field_name = ?2 AND p.bank_name = ?3",
+            rusqlite::params![template_hash, field_name, bank_name],
             |row| row.get(0),
         );
 
@@ -171,7 +185,7 @@ pub fn log_user_correction(
         } else {
             let rule = crate::db::pattern_rules::PatternRulesRow {
                 id: Uuid::new_v4().to_string(),
-                bank_name: "Unknown".to_string(),
+                bank_name: bank_name.clone(),
                 template_hash: template_hash.clone(),
                 field_name: field_name.to_string(),
                 rule_payload_json: serde_json::json!({"regex": format!("learned regex for {}", new_value)}),
@@ -187,4 +201,101 @@ pub fn log_user_correction(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::params;
+
+    fn setup_db() -> Connection {
+        crate::db::test_helpers::setup_test_db()
+    }
+
+    fn seed_observation(conn: &Connection, tx_id: &str, bank_name: &str, body: &str) {
+        let instrument_id = format!("inst_{tx_id}");
+        conn.execute(
+            "INSERT INTO instruments (id, type, issuer_name, masked_identifier) VALUES (?1, 'credit_card', ?2, '1234')",
+            params![instrument_id, bank_name],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transactions (id, instrument_id, amount_minor) VALUES (?1, ?2, 0)",
+            params![tx_id, instrument_id],
+        )
+        .unwrap();
+        let raw_payload = serde_json::json!({ "body": body }).to_string();
+        conn.execute(
+            "INSERT INTO transaction_observations
+                (id, canonical_transaction_id, source_pipeline, source_record_id, instrument_id, raw_payload_json)
+             VALUES (?1, ?2, 'gmail_transaction', ?3, ?4, ?5)",
+            params![
+                format!("obs_{tx_id}"),
+                tx_id,
+                format!("record_{tx_id}"),
+                instrument_id,
+                raw_payload
+            ],
+        )
+        .unwrap();
+    }
+
+    /// The core bug: two different banks' manual corrections for the same
+    /// field must never collide into one shared parent. Before this fix,
+    /// `bank_name` was hardcoded to `"Unknown"` for every synthesized rule.
+    #[test]
+    fn test_log_user_correction_resolves_real_bank_name() {
+        let conn = setup_db();
+        seed_observation(&conn, "tx_hdfc", "HDFC Bank", "Rs 500 debited at Amazon");
+        seed_observation(&conn, "tx_icici", "ICICI Bank", "INR 500 spent at Amazon");
+
+        log_user_correction(&conn, "tx_hdfc", "amount", "400", "500").unwrap();
+        log_user_correction(&conn, "tx_icici", "amount", "400", "500").unwrap();
+
+        let bank_names: Vec<String> = conn
+            .prepare("SELECT bank_name FROM pattern_rules WHERE field_name = 'amount' ORDER BY bank_name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<String>>>()
+            .unwrap();
+
+        assert_eq!(
+            bank_names,
+            vec!["HDFC Bank".to_string(), "ICICI Bank".to_string()],
+            "each bank's correction must synthesize its own parent, not collide into \"Unknown\""
+        );
+    }
+
+    /// When the observation has no resolvable instrument (e.g. a non-gmail
+    /// pipeline with no instrument_id), fall back to "Unknown" same as
+    /// before -- this is a fallback, not a regression.
+    #[test]
+    fn test_log_user_correction_falls_back_to_unknown_without_instrument() {
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO transactions (id, amount_minor) VALUES ('tx_no_inst', 0)",
+            [],
+        )
+        .unwrap();
+        let raw_payload = serde_json::json!({ "body": "some body" }).to_string();
+        conn.execute(
+            "INSERT INTO transaction_observations
+                (id, canonical_transaction_id, source_pipeline, source_record_id, raw_payload_json)
+             VALUES ('obs_no_inst', 'tx_no_inst', 'gmail_transaction', 'record_no_inst', ?1)",
+            params![raw_payload],
+        )
+        .unwrap();
+
+        log_user_correction(&conn, "tx_no_inst", "amount", "400", "500").unwrap();
+
+        let bank_name: String = conn
+            .query_row(
+                "SELECT bank_name FROM pattern_rules WHERE field_name = 'amount'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(bank_name, "Unknown");
+    }
 }
