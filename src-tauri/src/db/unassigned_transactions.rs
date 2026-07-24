@@ -84,6 +84,11 @@ pub struct UnassignedTransactionDetail {
     pub merchant_raw: Option<String>,
     pub amount_minor: Option<i64>,
     pub currency: Option<String>,
+    /// "debit" | "credit" -- often already known even when the instrument
+    /// lookup that made this item unassigned (`issuer_name_not_found`)
+    /// failed, so the "Save as Transaction" form can prefill it.
+    pub direction: Option<String>,
+    pub event_time: Option<NaiveDateTime>,
     pub source_message_id: Option<String>,
     pub body_snippet: Option<String>,
     pub raw_payload_json: Option<String>,
@@ -92,14 +97,15 @@ pub struct UnassignedTransactionDetail {
 pub fn select_open_with_context(conn: &Connection) -> Result<Vec<UnassignedTransactionDetail>> {
     let mut stmt = conn.prepare(
         "SELECT u.id, u.observation_id, u.reason, u.status, u.created_at, \
-                o.merchant_raw, o.amount_minor, o.currency, o.source_message_id, o.raw_payload_json \
+                o.merchant_raw, o.amount_minor, o.currency, o.direction, o.event_time, \
+                o.source_message_id, o.raw_payload_json \
          FROM unassigned_transactions u \
          JOIN transaction_observations o ON o.id = u.observation_id \
          WHERE u.status = 'open' \
          ORDER BY u.created_at DESC",
     )?;
     let rows = stmt.query_map([], |row| {
-        let raw_payload_json: Option<String> = row.get(9)?;
+        let raw_payload_json: Option<String> = row.get(11)?;
         let body_snippet = raw_payload_json.as_deref().and_then(extract_body_snippet);
         Ok(UnassignedTransactionDetail {
             id: row.get(0)?,
@@ -110,7 +116,9 @@ pub fn select_open_with_context(conn: &Connection) -> Result<Vec<UnassignedTrans
             merchant_raw: row.get(5)?,
             amount_minor: row.get(6)?,
             currency: row.get(7)?,
-            source_message_id: row.get(8)?,
+            direction: row.get(8)?,
+            event_time: row.get(9)?,
+            source_message_id: row.get(10)?,
             body_snippet,
             raw_payload_json,
         })

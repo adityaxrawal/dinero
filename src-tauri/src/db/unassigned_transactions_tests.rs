@@ -198,6 +198,35 @@ fn test_select_open_with_context_excludes_dismissed() {
     assert!(results.is_empty());
 }
 
+/// TASK-FE-013: `direction`/`event_time` are often already known even when
+/// the item is unassigned (especially `issuer_name_not_found`, where only
+/// the instrument lookup failed) -- the "Save as Transaction" form needs
+/// them to prefill instead of asking the user to re-enter data the system
+/// already extracted correctly.
+#[test]
+fn test_select_open_with_context_includes_direction_and_event_time() {
+    let conn = setup_db();
+    let mut obs = base_observation("obs_ctx_4");
+    obs.direction = Some("debit".to_string());
+    insert_observation(&conn, &obs).unwrap();
+    insert_unassigned(
+        &conn,
+        &UnassignedTransactionRow {
+            id: "ua_ctx_4".to_string(),
+            observation_id: "obs_ctx_4".to_string(),
+            reason: "issuer_name_not_found".to_string(),
+            status: "open".to_string(),
+            created_at: None,
+        },
+    )
+    .unwrap();
+
+    let results = select_open_with_context(&conn).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].direction, Some("debit".to_string()));
+    assert!(results[0].event_time.is_some());
+}
+
 /// No `raw_payload_json` at all (e.g. a future non-extraction-failure
 /// reason that never populated it) must not panic -- `body_snippet` is
 /// simply absent, every other field still resolves normally.
