@@ -1,0 +1,5 @@
+{
+  "$schema": "https://raw.githubusercontent.com/fallow-rs/fallow/main/schema.json",
+  "entry": ["licensing-backend/api/**/*.ts", "licensing-backend/scripts/*.ts"],
+  "ignoreDependencies": ["@axe-core/playwright"]
+}
