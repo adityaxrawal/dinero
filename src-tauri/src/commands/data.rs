@@ -2186,6 +2186,56 @@ pub async fn reconciliation_dismiss_unassigned_transaction(
     Ok("dismissed".to_string())
 }
 
+/// TASK-FE-013: combines transaction creation (the same logic
+/// `transactions_create` uses, via the shared `create_manual_transaction`
+/// helper) with marking the source `unassigned_transactions` row
+/// `resolved`, as one request. Doing this as two separate frontend calls
+/// (create, then mark resolved) would leave a partial-failure window where
+/// the transaction exists but the item never leaves the queue if the second
+/// call failed -- this avoids that. `"resolved"` is a documented
+/// `unassigned_transactions.status` value (Doc 18 §4.17) that, before this,
+/// had no writer at all -- only `"ignored"` (dismiss) did.
+#[tauri::command]
+pub async fn reconciliation_resolve_unassigned_transaction_manually(
+    id: String,
+    payload: crate::commands::ManualTransactionPayload,
+    pool: State<'_, deadpool_sqlite::Pool>,
+    app_handle: tauri::AppHandle,
+) -> Result<String, crate::error::AppError> {
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    resolve_unassigned_transaction_manually(id, payload, pool.inner(), &app_handle).await
+}
+
+/// Generic over `R: tauri::Runtime` so it can be exercised in tests against
+/// `tauri::test::mock_builder`'s `AppHandle<MockRuntime>` without fighting
+/// the concrete `Wry` runtime the real `#[tauri::command]` wrapper above
+/// uses -- same rationale as `create_manual_transaction`.
+pub(crate) async fn resolve_unassigned_transaction_manually<R: tauri::Runtime>(
+    id: String,
+    payload: crate::commands::ManualTransactionPayload,
+    pool: &deadpool_sqlite::Pool,
+    app_handle: &tauri::AppHandle<R>,
+) -> Result<String, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("id", &id)?;
+    crate::licensing::gate::assert_write_allowed(pool).await?;
+
+    let decision = crate::commands::create_manual_transaction(payload, pool, app_handle).await?;
+
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let id_clone = id.clone();
+    conn.interact(move |c| {
+        crate::db::unassigned_transactions::update_status(c, &id_clone, "resolved")
+    })
+    .await
+    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+    .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+
+    Ok(decision)
+}
+
 /// Document 19 §10.4 -- explicitly un-does a cluster resolution, reopening
 /// it (`cluster_status` back to `'open'`). Did not exist before this task.
 #[tauri::command]
@@ -3079,6 +3129,90 @@ pub async fn instruments_archive(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// TASK-FE-013: `reconciliation_resolve_unassigned_transaction_manually`
+    /// both creates the transaction (via the shared `create_manual_transaction`
+    /// helper) and flips the unassigned row to `status = 'resolved'` -- the
+    /// first-ever writer of that documented-but-unused status value.
+    #[tokio::test]
+    async fn test_resolve_unassigned_manually_creates_transaction_and_marks_resolved() {
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(pool.clone());
+
+        let instrument_id = uuid::Uuid::new_v4();
+        let unassigned_id = uuid::Uuid::new_v4().to_string();
+        let unassigned_id_clone = unassigned_id.clone();
+        let conn = pool.get().await.unwrap();
+        conn.interact(move |c| {
+            c.execute(
+                "INSERT INTO instruments (id, type, issuer_name, masked_identifier) \
+                 VALUES (?1, 'credit_card', 'HDFC', '4021')",
+                params![instrument_id.to_string()],
+            )?;
+            c.execute(
+                "INSERT INTO transaction_observations (id, source_pipeline, source_record_id) \
+                 VALUES ('obs_1', 'gmail_transaction', 'msg_1')",
+                [],
+            )?;
+            c.execute(
+                "INSERT INTO unassigned_transactions (id, observation_id, reason, status) \
+                 VALUES (?1, 'obs_1', 'extraction_failed', 'open')",
+                params![unassigned_id_clone],
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+        let payload = crate::commands::ManualTransactionPayload {
+            amount_minor: 5000,
+            currency: "INR".to_string(),
+            direction: "debit".to_string(),
+            event_time: "2026-06-10 12:00:00".to_string(),
+            merchant_name: "Google Cloud".to_string(),
+            instrument_id,
+            reference_id: None,
+        };
+
+        resolve_unassigned_transaction_manually(unassigned_id.clone(), payload, &pool, app.handle())
+            .await
+            .unwrap();
+
+        let conn = pool.get().await.unwrap();
+        let status: String = conn
+            .interact(move |c| {
+                c.query_row(
+                    "SELECT status FROM unassigned_transactions WHERE id = ?1",
+                    params![unassigned_id],
+                    |r| r.get(0),
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(status, "resolved");
+
+        let txn_count: i64 = conn
+            .interact(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM transactions WHERE merchant_display_name = 'Google Cloud'",
+                    [],
+                    |r| r.get(0),
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(txn_count, 1);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 
     /// Doc 30 TASK-API-008 (per Aditya's decision, 2026-07-16):
     /// `settings_export_data` with `password: Some(...)` produces a file
