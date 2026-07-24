@@ -371,6 +371,8 @@ export interface UnassignedTransactionRecord {
   merchant_raw: string | null;
   amount_minor: number | null;
   currency: string | null;
+  direction: string | null;
+  event_time: string | null;
   source_message_id: string | null;
   body_snippet: string | null;
   raw_payload_json: string | null;
@@ -707,6 +709,33 @@ export const API = {
       invokeCommand<UnassignedTransactionRecord[]>('reconciliation_get_unassigned_transactions'),
     dismissUnassigned: (id: string) =>
       invokeCommand<void>('reconciliation_dismiss_unassigned_transaction', { id }),
+    // TASK-FE-013: combines manual transaction creation with marking the
+    // unassigned row resolved, as one request -- see
+    // `reconciliation_resolve_unassigned_transaction_manually` on the backend.
+    resolveUnassignedManually: (
+      id: string,
+      payload: {
+        amountMinor: number;
+        currency: string;
+        direction: 'credit' | 'debit';
+        eventTime: string;
+        merchantName: string;
+        instrumentId: string;
+        referenceId?: string;
+      }
+    ) =>
+      invokeCommand<string>('reconciliation_resolve_unassigned_transaction_manually', {
+        id,
+        payload: {
+          amount_minor: payload.amountMinor,
+          currency: payload.currency,
+          direction: payload.direction,
+          event_time: payload.eventTime,
+          merchant_name: payload.merchantName,
+          instrument_id: payload.instrumentId,
+          reference_id: payload.referenceId ?? null,
+        },
+      }),
     // G20/H10/J8 fix: action vocabulary realigned to Doc 19 §10.3's
     // documented "Allowed actions" ('confirm_match'/'reject_candidate'
     // replace the previous 'merge'/'reject' — 'keep_separate' and
