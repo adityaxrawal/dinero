@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { useSyncStore } from '@/stores/useSyncStore';
+import { isTauriRuntime } from '@/lib/tauriRuntime';
 
 /**
  * TASK-RT-006 (Doc 30): "a real-time-incrementing badge count on the
@@ -43,10 +44,7 @@ export const useReconciliationNudgeStore = create<ReconciliationNudgeState>((set
 }));
 
 (async () => {
-  const isTauriRuntime =
-    typeof window !== 'undefined' &&
-    !!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
-  if (!isTauriRuntime) return;
+  if (!isTauriRuntime()) return;
   try {
     const { listen } = await import('@tauri-apps/api/event');
     await listen('reconciliation_cluster', () => {

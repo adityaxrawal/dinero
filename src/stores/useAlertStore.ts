@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { toast } from '@/hooks/use-toast';
 import { useSyncStore } from '@/stores/useSyncStore';
+import { isTauriRuntime } from '@/lib/tauriRuntime';
 
 /**
  * TASK-RT-003 (Doc 30): mirrors src-tauri's real `AlertPayload`
@@ -29,7 +30,7 @@ function severityRank(alertType: string): number {
 }
 
 export function highestPriorityAlert(
-  alerts: AlertThresholdPayload[],
+  alerts: AlertThresholdPayload[]
 ): AlertThresholdPayload | null {
   let best: AlertThresholdPayload | null = null;
   for (const a of alerts) {
@@ -74,8 +75,7 @@ export const useAlertStore = create<AlertStoreState>((set) => ({
       dismissed: new Set([...s.dismissed].filter((t) => t !== payload.alert_type)),
     }));
   },
-  dismissAlert: (alertType) =>
-    set((s) => ({ dismissed: new Set(s.dismissed).add(alertType) })),
+  dismissAlert: (alertType) => set((s) => ({ dismissed: new Set(s.dismissed).add(alertType) })),
 }));
 
 function toastForAlert(payload: AlertThresholdPayload) {
@@ -88,10 +88,7 @@ function toastForAlert(payload: AlertThresholdPayload) {
 }
 
 (async () => {
-  const isTauriRuntime =
-    typeof window !== 'undefined' &&
-    !!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
-  if (!isTauriRuntime) return;
+  if (!isTauriRuntime()) return;
   try {
     const { listen } = await import('@tauri-apps/api/event');
     await listen<AlertThresholdPayload>('alert_threshold_crossed', (event) => {

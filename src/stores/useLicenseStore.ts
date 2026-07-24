@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { API, LicenseStatusResponse } from '@/lib/ipc';
+import { isTauriRuntime } from '@/lib/tauriRuntime';
 
 /**
  * TASK-FE-002/016 (Doc 30): mirrors `license_state` reactively so the
@@ -62,10 +63,7 @@ export const useLicenseStore = create<LicenseStoreState>((set) => ({
 // Guarded: outside the Tauri runtime (plain browser/vitest), `@tauri-apps/api`
 // has nothing to attach to and must not throw during module init.
 (async () => {
-  const isTauriRuntime =
-    typeof window !== 'undefined' &&
-    !!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
-  if (!isTauriRuntime) return;
+  if (!isTauriRuntime()) return;
   try {
     const { listen } = await import('@tauri-apps/api/event');
     await listen<LicenseStatusResponse>('license_state_changed', (event) => {

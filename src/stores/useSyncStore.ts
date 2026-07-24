@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { ScanProgressPayload } from '@/lib/ipc';
+import { isTauriRuntime } from '@/lib/tauriRuntime';
 
 interface SystemWarning {
   warning_type: string;
@@ -34,7 +35,8 @@ export const useSyncStore = create<SyncStoreState>((set) => ({
   scanError: null,
   warnings: [],
 
-  onScanProgress: (payload) => set({ scanStatus: 'running', scanProgress: payload, scanError: null }),
+  onScanProgress: (payload) =>
+    set({ scanStatus: 'running', scanProgress: payload, scanError: null }),
   onScanCompleted: () => set({ scanStatus: 'done' }),
   onScanFailed: (message) => set({ scanStatus: 'error', scanError: message }),
   onSystemWarning: (warning) => set((s) => ({ warnings: [...s.warnings, warning] })),
@@ -43,10 +45,7 @@ export const useSyncStore = create<SyncStoreState>((set) => ({
 }));
 
 (async () => {
-  const isTauriRuntime =
-    typeof window !== 'undefined' &&
-    !!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
-  if (!isTauriRuntime) return;
+  if (!isTauriRuntime()) return;
   try {
     const { listen } = await import('@tauri-apps/api/event');
     await listen<ScanProgressPayload>('scan_progress', (event) => {

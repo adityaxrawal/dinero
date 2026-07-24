@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useQueryClient, type QueryKey } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/queryKeys';
+import { isTauriRuntime } from '@/lib/tauriRuntime';
 
 /**
  * TASK-FE-003 (Doc 30): subscribes to backend push events and invalidates
@@ -29,18 +30,21 @@ export const EVENT_INVALIDATIONS: ReadonlyArray<{ event: string; keys: readonly 
       queryKeys.instruments.all(),
     ],
   },
-  { event: 'reconciliation_cluster', keys: [queryKeys.reconciliation.all(), queryKeys.dashboard.all()] },
-  { event: 'statement_upcoming_bill_set', keys: [queryKeys.dashboard.all(), queryKeys.instruments.all()] },
+  {
+    event: 'reconciliation_cluster',
+    keys: [queryKeys.reconciliation.all(), queryKeys.dashboard.all()],
+  },
+  {
+    event: 'statement_upcoming_bill_set',
+    keys: [queryKeys.dashboard.all(), queryKeys.instruments.all()],
+  },
 ];
 
 export function useIpcQueryInvalidation(): void {
   const queryClient = useQueryClient();
 
   useEffect(() => {
-    const isTauriRuntime =
-      typeof window !== 'undefined' &&
-      !!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
-    if (!isTauriRuntime) return;
+    if (!isTauriRuntime()) return;
 
     let cancelled = false;
     const unlisteners: Array<() => void> = [];

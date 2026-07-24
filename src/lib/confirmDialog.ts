@@ -6,14 +6,15 @@
  * window.confirm). Centralised here so any future delete flow picks up
  * both the Tauri plugin and the fallback for free.
  */
-export async function confirmDeleteTransaction(): Promise<boolean> {
+export async function confirmDelete(message: string, title: string): Promise<boolean> {
   try {
     const { ask } = await import('@tauri-apps/plugin-dialog');
-    return await ask('Delete this transaction? This cannot be undone.', {
-      title: 'Delete Transaction',
-      kind: 'warning',
-    });
+    return await ask(message, { title, kind: 'warning' });
   } catch {
-    return confirm('Delete this transaction? This cannot be undone.');
+    return confirm(message);
   }
+}
+
+export async function confirmDeleteTransaction(): Promise<boolean> {
+  return confirmDelete('Delete this transaction? This cannot be undone.', 'Delete Transaction');
 }
