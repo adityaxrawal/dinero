@@ -492,6 +492,7 @@ mod tests {
             canonical_transaction_id: Some("tx_1".into()),
             member_role: "candidate_a".into(),
             added_at: None,
+            match_score: None,
         };
         reconciliation_cluster_members::insert(&conn, &r_member).unwrap();
 
@@ -1648,6 +1649,7 @@ mod tests {
             canonical_transaction_id: Some("tx_test_1".into()),
             member_role: "candidate_a".into(),
             added_at: None,
+            match_score: None,
         };
         crate::db::reconciliation_cluster_members::insert(&conn, &member).unwrap();
 
@@ -1727,6 +1729,7 @@ mod tests {
             canonical_transaction_id: Some("tx_ambiguous_5".into()),
             member_role: "candidate_a".into(),
             added_at: None,
+            match_score: None,
         };
         crate::db::reconciliation_cluster_members::insert(&conn, &member).unwrap();
 
@@ -1935,6 +1938,7 @@ mod tests {
             canonical_transaction_id: None,
             member_role: "incoming".into(),
             added_at: None,
+            match_score: None,
         };
         crate::db::reconciliation_cluster_members::insert(&conn, &member).unwrap();
 

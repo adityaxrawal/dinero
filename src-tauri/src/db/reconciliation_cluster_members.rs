@@ -11,13 +11,17 @@ pub struct ReconciliationClusterMembersRow {
     pub canonical_transaction_id: Option<String>,
     pub member_role: String,
     pub added_at: Option<NaiveDateTime>,
+    /// The candidate's own score against the incoming observation, as
+    /// computed by `reconciliation::scorer::score_candidates`. `None` for
+    /// the "incoming" member — it has no score against itself.
+    pub match_score: Option<f64>,
 }
 
 pub fn insert(conn: &Connection, member: &ReconciliationClusterMembersRow) -> Result<()> {
     conn.execute(
         "INSERT INTO reconciliation_cluster_members (
-            id, cluster_id, observation_id, canonical_transaction_id, member_role, added_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, COALESCE(?6, CURRENT_TIMESTAMP))",
+            id, cluster_id, observation_id, canonical_transaction_id, member_role, added_at, match_score
+         ) VALUES (?1, ?2, ?3, ?4, ?5, COALESCE(?6, CURRENT_TIMESTAMP), ?7)",
         params![
             member.id,
             member.cluster_id,
@@ -25,6 +29,7 @@ pub fn insert(conn: &Connection, member: &ReconciliationClusterMembersRow) -> Re
             member.canonical_transaction_id,
             member.member_role,
             member.added_at,
+            member.match_score,
         ],
     )?;
     Ok(())
@@ -61,5 +66,59 @@ fn row_to_member(row: &Row) -> rusqlite::Result<ReconciliationClusterMembersRow>
         canonical_transaction_id: row.get("canonical_transaction_id")?,
         member_role: row.get("member_role")?,
         added_at: row.get("added_at")?,
+        match_score: row.get("match_score")?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_match_score_round_trips() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        conn.execute("PRAGMA foreign_keys = OFF;", []).unwrap();
+        conn.execute(
+            "INSERT INTO reconciliation_clusters (id, cluster_status, reason) VALUES ('c1', 'open', 'mid_range_score')",
+            [],
+        )
+        .unwrap();
+        let member = ReconciliationClusterMembersRow {
+            id: "m1".to_string(),
+            cluster_id: "c1".to_string(),
+            observation_id: None,
+            canonical_transaction_id: Some("txn1".to_string()),
+            member_role: "candidate_a".to_string(),
+            added_at: None,
+            match_score: Some(0.71),
+        };
+        insert(&conn, &member).unwrap();
+
+        let members = select_by_cluster_id(&conn, "c1").unwrap();
+        assert_eq!(members[0].match_score, Some(0.71));
+    }
+
+    #[test]
+    fn test_incoming_member_has_no_match_score() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        conn.execute("PRAGMA foreign_keys = OFF;", []).unwrap();
+        conn.execute(
+            "INSERT INTO reconciliation_clusters (id, cluster_status, reason) VALUES ('c1', 'open', 'mid_range_score')",
+            [],
+        )
+        .unwrap();
+        let member = ReconciliationClusterMembersRow {
+            id: "m1".to_string(),
+            cluster_id: "c1".to_string(),
+            observation_id: Some("obs1".to_string()),
+            canonical_transaction_id: None,
+            member_role: "incoming".to_string(),
+            added_at: None,
+            match_score: None,
+        };
+        insert(&conn, &member).unwrap();
+
+        let members = select_by_cluster_id(&conn, "c1").unwrap();
+        assert_eq!(members[0].match_score, None);
+    }
 }
