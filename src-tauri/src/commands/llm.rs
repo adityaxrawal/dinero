@@ -179,3 +179,72 @@ pub async fn llm_set_active_model(
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
         .map_err(|e| crate::error::AppError::Db(e.to_string()))
 }
+
+#[derive(serde::Serialize)]
+pub struct HardwareRecommendation {
+    pub ram_gb: f64,
+    pub cpu_cores: usize,
+    pub recommended_slots: usize,
+    pub recommended_model_id: Option<String>,
+}
+
+/// Reads machine RAM/CPU via `sysinfo` and returns a recommended parallel-
+/// slot count (sized against the *currently active* model's real weight
+/// size, not the recommended tier's — a user already running a heavier
+/// model than recommended should still get a slot count that respects that
+/// model's actual RAM footprint) plus a recommended model tier for the
+/// Settings model picker's badge.
+#[tauri::command]
+pub async fn llm_get_hardware_info(
+    app: tauri::AppHandle,
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<HardwareRecommendation, crate::error::AppError> {
+    let app_dir = app
+        .path()
+        .app_data_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+    let downloaded = downloaded_model_ids(&app_dir);
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let stored = conn
+        .interact(|c| crate::db::local_profile::get_llm_model(c))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let active_model_id = llm_manager::resolve_active_model(&downloaded, stored.as_deref());
+
+    let hw = crate::startup::read_hardware_info();
+    let model_size_gb = active_model_id
+        .as_deref()
+        .and_then(|id| {
+            llm_manager::get_available_models()
+                .into_iter()
+                .find(|m| m.id == id)
+        })
+        .map(|m| m.approx_size_gb)
+        .unwrap_or(5.0);
+
+    Ok(HardwareRecommendation {
+        ram_gb: hw.total_ram_gb,
+        cpu_cores: hw.cpu_cores,
+        recommended_slots: crate::startup::compute_recommended_slots(
+            hw.total_ram_gb,
+            hw.cpu_cores,
+            model_size_gb,
+        ),
+        recommended_model_id: crate::startup::recommend_model_id(hw.total_ram_gb),
+    })
+}
+
+/// Clamped 1-10 both here and in the frontend's own input — defense in
+/// depth, not redundancy: this command is the one place a bad value could
+/// actually reach `llama-server`'s `--parallel` flag.
+#[tauri::command]
+pub fn llm_set_parallel_slots(slots: usize) -> Result<usize, crate::error::AppError> {
+    let clamped = slots.clamp(1, 10);
+    crate::llama_sidecar::set_parallel_slots(clamped);
+    Ok(clamped)
+}

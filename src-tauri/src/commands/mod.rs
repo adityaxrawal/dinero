@@ -3224,6 +3224,8 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         llm::llm_get_downloaded_models,
         llm::llm_get_active_model,
         llm::llm_set_active_model,
+        llm::llm_get_hardware_info,
+        llm::llm_set_parallel_slots,
         data::instruments_list,
         data::instruments_get,
         data::instruments_create,
