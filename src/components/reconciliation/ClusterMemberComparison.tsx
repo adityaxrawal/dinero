@@ -1,4 +1,5 @@
 import { Check } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import SourcePipelineIcon from '@/components/transactions/SourcePipelineIcon';
 import { formatCustomDate } from '@/lib/formatCustomDate';
@@ -67,6 +68,11 @@ export default function ClusterMemberComparison({
                 <span>{ROLE_LABEL[member.member_role] ?? member.member_role}</span>
                 <span className="flex items-center gap-1 text-muted-foreground font-normal">
                   <SourcePipelineIcon sourceMix={member.source_pipeline} />
+                  {isCandidate && member.match_score !== null && (
+                    <span className="text-xs font-medium text-muted-foreground">
+                      {Math.round(member.match_score * 100)}%
+                    </span>
+                  )}
                   {isSelected && (
                     <Check
                       className="w-3.5 h-3.5 text-emerald-600"
@@ -83,6 +89,18 @@ export default function ClusterMemberComparison({
                 </p>
                 <p className="font-medium">{member.merchant}</p>
               </div>
+              {(member.instrument_issuer_name || member.instrument_masked_identifier) && (
+                <div>
+                  <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">
+                    Instrument
+                  </p>
+                  <p className="font-medium">
+                    {member.instrument_issuer_name}
+                    {member.instrument_masked_identifier &&
+                      ` •• ${member.instrument_masked_identifier}`}
+                  </p>
+                </div>
+              )}
               <div>
                 <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">
                   Amount
@@ -102,10 +120,61 @@ export default function ClusterMemberComparison({
                   {member.date === 'Unknown' ? 'Unknown' : formatCustomDate(member.date)}
                 </p>
               </div>
+              {member.reference_id && (
+                <div>
+                  <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">
+                    Reference ID
+                  </p>
+                  <p className="text-sm font-mono">{member.reference_id}</p>
+                </div>
+              )}
             </CardContent>
+            {!isCandidate && member.source_raw_payload_json && (
+              <details className="px-4 pb-3">
+                <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground">
+                  View source message
+                </summary>
+                <SourceMessagePreview rawPayloadJson={member.source_raw_payload_json} />
+              </details>
+            )}
+            {isCandidate && member.canonical_transaction_id && (
+              <div className="px-4 pb-3">
+                <Link
+                  to={`/transactions/${member.canonical_transaction_id}`}
+                  className="text-xs text-primary hover:underline"
+                >
+                  View full transaction →
+                </Link>
+              </div>
+            )}
           </Card>
         );
       })}
     </div>
+  );
+}
+
+function SourceMessagePreview({ rawPayloadJson }: { rawPayloadJson: string }) {
+  let html = '';
+  let text = '';
+  try {
+    const parsed = JSON.parse(rawPayloadJson);
+    html = parsed.html || '';
+    text = parsed.body || parsed.snippet || '';
+  } catch {
+    // malformed payload -- leave both empty, nothing to show
+  }
+  if (html) {
+    return (
+      <iframe
+        srcDoc={html}
+        className="w-full h-[300px] rounded-md border border-border mt-2 bg-white"
+        sandbox="allow-same-origin"
+        title="Source message"
+      />
+    );
+  }
+  return (
+    <p className="text-xs text-muted-foreground mt-2 whitespace-pre-wrap font-mono">{text}</p>
   );
 }
