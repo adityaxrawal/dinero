@@ -2140,6 +2140,7 @@ pub struct ManualTransactionPayload {
     pub event_time: String,
     pub merchant_name: String,
     pub instrument_id: uuid::Uuid,
+    pub reference_id: Option<String>,
 }
 
 // G20/H10/J8 fix: renamed from `transaction_create` to match Doc 19 §8.4's
@@ -2151,6 +2152,20 @@ pub async fn transactions_create(
     app_handle: tauri::AppHandle,
 ) -> Result<String, crate::error::AppError> {
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    create_manual_transaction(payload, pool.inner(), &app_handle).await
+}
+
+/// Shared by `transactions_create` (the Transactions-page "New Transaction"
+/// modal) and `reconciliation_resolve_unassigned_transaction_manually` (the
+/// Reconciliation "Save as Transaction" action) -- both need the exact same
+/// manual-observation-plus-reconcile flow; only what happens *after* differs
+/// (nothing, vs. also marking an `unassigned_transactions` row resolved).
+pub(crate) async fn create_manual_transaction<R: tauri::Runtime>(
+    payload: ManualTransactionPayload,
+    pool: &deadpool_sqlite::Pool,
+    app_handle: &tauri::AppHandle<R>,
+) -> Result<String, crate::error::AppError> {
+    crate::licensing::gate::assert_write_allowed(pool).await?;
 
     let conn = pool
         .get()
@@ -2165,7 +2180,7 @@ pub async fn transactions_create(
         currency: payload.currency,
         direction: payload.direction,
         event_time: payload.event_time,
-        reference_id: None,
+        reference_id: payload.reference_id.clone(),
         merchant_raw: Some(payload.merchant_name),
         source_pipeline: "manual".to_string(),
         source_record_id: format!("manual_{}", obs_id),
@@ -2203,7 +2218,7 @@ pub async fn transactions_create(
                 posting_date: Some(dt.date()),
                 merchant_raw: obs.merchant_raw.clone(),
                 merchant_normalized: None,
-                reference_id: None,
+                reference_id: obs.reference_id.clone(),
                 original_amount_minor: None,
                 original_currency: None,
                 exchange_rate: None,
@@ -4196,5 +4211,65 @@ mod tests {
         assert_eq!(grouped.as_array().unwrap().len(), 1);
         assert_eq!(grouped[0]["issuer_name"], "HDFC");
         assert_eq!(grouped[0]["masked_identifier"], "6666");
+    }
+
+    /// TASK-FE-013: `reference_id` (already a real column on both
+    /// `transactions` and `transaction_observations`) was never part of the
+    /// manual-entry payload -- this confirms it round-trips through the
+    /// shared `create_manual_transaction` helper now that it does.
+    #[tokio::test]
+    async fn test_manual_transaction_persists_reference_id() {
+        use tauri::test::{mock_builder, mock_context};
+
+        let app_handle = mock_builder()
+            .build(mock_context(tauri::test::noop_assets()))
+            .unwrap()
+            .handle()
+            .clone();
+
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+
+        let instrument_id = uuid::Uuid::new_v4();
+        let conn = pool.get().await.unwrap();
+        conn.interact(move |c| {
+            c.execute(
+                "INSERT INTO instruments (id, type, issuer_name, masked_identifier) \
+                 VALUES (?1, 'credit_card', 'HDFC', '4021')",
+                rusqlite::params![instrument_id.to_string()],
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+        let payload = ManualTransactionPayload {
+            amount_minor: 10000,
+            currency: "INR".to_string(),
+            direction: "debit".to_string(),
+            event_time: "2026-06-10 12:00:00".to_string(),
+            merchant_name: "Amazon".to_string(),
+            instrument_id,
+            reference_id: Some("REF999".to_string()),
+        };
+
+        create_manual_transaction(payload, &pool, &app_handle)
+            .await
+            .unwrap();
+
+        let conn = pool.get().await.unwrap();
+        let stored: Option<String> = conn
+            .interact(|c| {
+                c.query_row(
+                    "SELECT reference_id FROM transaction_observations WHERE merchant_raw = 'Amazon'",
+                    [],
+                    |r| r.get(0),
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored, Some("REF999".to_string()));
     }
 }

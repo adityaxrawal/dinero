@@ -507,6 +507,7 @@ export const API = {
       eventTime: string;
       merchantName: string;
       instrumentId: string;
+      referenceId?: string;
     }) =>
       invokeCommand<string>('transactions_create', {
         payload: {
@@ -516,6 +517,7 @@ export const API = {
           event_time: input.eventTime,
           merchant_name: input.merchantName,
           instrument_id: input.instrumentId,
+          reference_id: input.referenceId ?? null,
         },
       }),
     delete: (transactionId: string) =>
