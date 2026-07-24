@@ -168,6 +168,40 @@ pub struct ClusterRecord {
     /// reminder -- previously absent from this response entirely, so the
     /// frontend had no way to compute a cluster's age.
     pub created_at: Option<String>,
+    /// Plain-language explanation computed from the members' real match
+    /// scores (see `compute_cluster_explanation`), replacing the raw
+    /// internal `reason` bucket string (`mid_range_score` /
+    /// `multiple_high_score_candidates`) that was previously rendered
+    /// near-verbatim to the user.
+    pub explanation: String,
+}
+
+/// TASK-FE-013: `reason` (`mid_range_score` / `multiple_high_score_candidates`)
+/// is an internal analytics bucket, not user-facing copy -- the frontend
+/// used to render it near-verbatim (e.g. a user seeing the literal string
+/// "mid_range_score" as the entire explanation for an ambiguous match).
+/// This computes a real explanation from the per-candidate scores now
+/// stored on cluster members (see Task 2), anchored to the actual
+/// `AMBIGUITY_MARGIN_THRESHOLD` the engine used to route the case here in
+/// the first place.
+fn compute_cluster_explanation(members: &[ClusterMember]) -> String {
+    let mut scores: Vec<f64> = members.iter().filter_map(|m| m.match_score).collect();
+    scores.sort_by(|a, b| b.partial_cmp(a).unwrap());
+
+    match scores.as_slice() {
+        [] => "No existing transaction candidates were found for this evidence.".to_string(),
+        [only] => format!(
+            "One possible match at {}% confidence — below the threshold for an automatic match.",
+            (only * 100.0).round() as i64
+        ),
+        [top, second, ..] => format!(
+            "Two possible matches, {}% and {}% — only {} points apart, closer than the {}-point margin needed to pick one automatically.",
+            (top * 100.0).round() as i64,
+            (second * 100.0).round() as i64,
+            ((top - second) * 100.0).round() as i64,
+            (crate::reconciliation::engine::AMBIGUITY_MARGIN_THRESHOLD * 100.0).round() as i64
+        ),
+    }
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -585,6 +619,7 @@ pub fn do_fetch_unresolved_clusters(conn: &Connection) -> Result<Vec<ClusterReco
     for r in iter {
         let (id, reason, created_at) = r.map_err(|e| e.to_string())?;
         let members = fetch_cluster_members(conn, &id)?;
+        let explanation = compute_cluster_explanation(&members);
 
         res.push(ClusterRecord {
             id,
@@ -592,6 +627,7 @@ pub fn do_fetch_unresolved_clusters(conn: &Connection) -> Result<Vec<ClusterReco
             members_count: members.len() as i64,
             members,
             created_at,
+            explanation,
         });
     }
     Ok(res)
@@ -617,12 +653,14 @@ pub fn do_fetch_cluster_detail(
         return Ok(None);
     };
     let members = fetch_cluster_members(conn, &id)?;
+    let explanation = compute_cluster_explanation(&members);
     Ok(Some(ClusterRecord {
         id,
         reason: reason.unwrap_or_else(|| "Unknown".to_string()),
         members_count: members.len() as i64,
         members,
         created_at,
+        explanation,
     }))
 }
 
@@ -3349,6 +3387,41 @@ mod tests {
         let clusters = do_fetch_unresolved_clusters(&conn).unwrap();
         let aged = clusters.iter().find(|c| c.id == "c_aged").unwrap();
         assert_eq!(aged.created_at.as_deref(), Some("2026-01-01 00:00:00"));
+    }
+
+    /// TASK-FE-013: `explanation` is computed from the members' real scores,
+    /// not rendered from the internal `reason` bucket string.
+    #[test]
+    fn test_cluster_explanation_uses_real_scores_not_reason_string() {
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO reconciliation_clusters (id, cluster_status, reason) VALUES ('c1', 'open', 'mid_range_score')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reconciliation_cluster_members (id, cluster_id, observation_id, member_role) \
+             VALUES ('m0', 'c1', NULL, 'incoming')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reconciliation_cluster_members (id, cluster_id, canonical_transaction_id, member_role, match_score) \
+             VALUES ('m1', 'c1', 'txn_a', 'candidate_a', 0.71)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reconciliation_cluster_members (id, cluster_id, canonical_transaction_id, member_role, match_score) \
+             VALUES ('m2', 'c1', 'txn_b', 'candidate_b', 0.66)",
+            [],
+        )
+        .unwrap();
+
+        let detail = do_fetch_cluster_detail(&conn, "c1").unwrap().unwrap();
+        assert!(!detail.explanation.contains("mid_range_score"));
+        assert!(detail.explanation.contains("71"));
+        assert!(detail.explanation.contains("66"));
     }
 
     /// Doc 30 TASK-API-003 acceptance test.
