@@ -144,6 +144,18 @@ pub struct ClusterMember {
     /// `amount` here is likewise always a positive magnitude.
     pub direction: Option<String>,
     pub date: String,
+    pub instrument_issuer_name: Option<String>,
+    pub instrument_masked_identifier: Option<String>,
+    pub reference_id: Option<String>,
+    /// The candidate's own score against the incoming observation. `None`
+    /// for the "incoming" member -- it has no score against itself.
+    pub match_score: Option<f64>,
+    /// Only ever populated for `member_role = "incoming"` -- the new
+    /// observation's raw source email/SMS. Existing candidates are
+    /// already-settled canonical transactions; the frontend links to their
+    /// existing Transactions detail page instead of re-deriving their
+    /// original source text here.
+    pub source_raw_payload_json: Option<String>,
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -512,10 +524,16 @@ fn fetch_cluster_members(
                 COALESCE(t.merchant_display_name, o.merchant_raw, 'Unknown'),
                 COALESCE(t.amount, o.amount, 0),
                 COALESCE(t.direction, o.direction),
-                COALESCE(t.authorization_time, o.event_time, 'Unknown')
+                COALESCE(t.authorization_time, o.event_time, 'Unknown'),
+                i.issuer_name,
+                i.masked_identifier,
+                COALESCE(t.reference_id, o.reference_id),
+                m.match_score,
+                CASE WHEN m.member_role = 'incoming' THEN o.raw_payload_json ELSE NULL END
          FROM reconciliation_cluster_members m
          LEFT JOIN transactions t ON m.canonical_transaction_id = t.id
          LEFT JOIN transaction_observations o ON m.observation_id = o.id
+         LEFT JOIN instruments i ON i.id = COALESCE(t.instrument_id, o.instrument_id)
          WHERE m.cluster_id = ?1"
     ).map_err(|e| e.to_string())?;
 
@@ -531,6 +549,11 @@ fn fetch_cluster_members(
                 amount: row.get(6)?,
                 direction: row.get(7)?,
                 date: row.get(8)?,
+                instrument_issuer_name: row.get(9)?,
+                instrument_masked_identifier: row.get(10)?,
+                reference_id: row.get(11)?,
+                match_score: row.get(12)?,
+                source_raw_payload_json: row.get(13)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -3165,6 +3188,7 @@ mod tests {
                 merchant_display_name TEXT,
                 amount REAL,
                 amount_minor INTEGER,
+                reference_id TEXT,
                 category_id TEXT,
                 status TEXT,
                 source_mix TEXT,
@@ -3186,12 +3210,12 @@ mod tests {
             [],
         ).unwrap();
         conn.execute(
-            "CREATE TABLE reconciliation_cluster_members (id TEXT PRIMARY KEY, cluster_id TEXT, canonical_transaction_id TEXT, observation_id TEXT, member_role TEXT)",
+            "CREATE TABLE reconciliation_cluster_members (id TEXT PRIMARY KEY, cluster_id TEXT, canonical_transaction_id TEXT, observation_id TEXT, member_role TEXT, match_score REAL)",
             [],
         )
         .unwrap();
         conn.execute(
-            "CREATE TABLE transaction_observations (id TEXT PRIMARY KEY, amount_minor INTEGER, source_pipeline TEXT, merchant_raw TEXT, amount REAL, direction TEXT, event_time TEXT)",
+            "CREATE TABLE transaction_observations (id TEXT PRIMARY KEY, amount_minor INTEGER, source_pipeline TEXT, merchant_raw TEXT, amount REAL, direction TEXT, event_time TEXT, instrument_id TEXT, reference_id TEXT, raw_payload_json TEXT)",
             [],
         )
         .unwrap();
@@ -3212,6 +3236,60 @@ mod tests {
         )
         .unwrap();
         conn
+    }
+
+    /// TASK-FE-013: the comparison cards previously carried only
+    /// merchant/amount/direction/date -- no indication of which bank/card
+    /// account a candidate belongs to, no reference number, and no score.
+    #[test]
+    fn test_fetch_cluster_members_includes_instrument_reference_score_and_source() {
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO instruments (id, issuer_name, masked_identifier) VALUES ('inst_1', 'HDFC', '4021')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transactions (id, instrument_id, merchant_display_name, amount, amount_minor, direction, reference_id, is_deleted) \
+             VALUES ('txn_1', 'inst_1', 'Amazon', 100.0, 10000, 'debit', 'REF123', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transaction_observations (id, instrument_id, merchant_raw, amount_minor, direction, event_time, raw_payload_json) \
+             VALUES ('obs_1', 'inst_1', 'AMAZON', 10000, 'debit', '2026-06-10 12:00:00', '{\"body\":\"You spent Rs 100 at Amazon\"}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reconciliation_clusters (id, cluster_status, reason) VALUES ('c1', 'open', 'mid_range_score')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reconciliation_cluster_members (id, cluster_id, observation_id, member_role) \
+             VALUES ('m_incoming', 'c1', 'obs_1', 'incoming')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reconciliation_cluster_members (id, cluster_id, canonical_transaction_id, member_role, match_score) \
+             VALUES ('m_cand', 'c1', 'txn_1', 'candidate_a', 0.71)",
+            [],
+        )
+        .unwrap();
+
+        let members = fetch_cluster_members(&conn, "c1").unwrap();
+        let candidate = members.iter().find(|m| m.member_role == "candidate_a").unwrap();
+        assert_eq!(candidate.instrument_issuer_name, Some("HDFC".to_string()));
+        assert_eq!(candidate.instrument_masked_identifier, Some("4021".to_string()));
+        assert_eq!(candidate.reference_id, Some("REF123".to_string()));
+        assert_eq!(candidate.match_score, Some(0.71));
+        assert_eq!(candidate.source_raw_payload_json, None);
+
+        let incoming = members.iter().find(|m| m.member_role == "incoming").unwrap();
+        assert_eq!(incoming.match_score, None);
+        assert!(incoming.source_raw_payload_json.is_some());
     }
 
     /// Doc 30 TASK-DEDUP-007 acceptance test: `reconciliation_clusters_list`
