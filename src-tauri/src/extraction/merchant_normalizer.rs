@@ -50,6 +50,38 @@ pub fn strip_noise_tokens(merchant_raw: &str) -> String {
         .to_string()
 }
 
+/// A never-before-seen raw string is only trusted enough to become a
+/// permanent `merchants` row if it looks like a brand name, not a fragment
+/// of sentence boilerplate lifted from the wrong part of an email body
+/// (e.g. SBI's "Dear Cardholder, This is to inform you that, Rs.245.43
+/// spent..." mis-anchoring on "inform you that" instead of the merchant
+/// after "at"). A genuine post-`strip_noise_tokens` merchant string is a
+/// proper-noun/brand token that essentially never collides with common
+/// English function words, so reject any candidate where half or more of
+/// its tokens are such stopwords.
+///
+/// ponytail: naive stopword-fraction heuristic, not real NLP/NER -- it
+/// catches boilerplate sentence fragments but not a garbage fragment that
+/// happens to consist entirely of non-stopword tokens (e.g. a mis-scoped
+/// "VPA RAWALAD" capture). Upgrade to a proper shape/NER classifier if more
+/// of those slip through.
+pub fn is_plausible_merchant_name(cleaned: &str) -> bool {
+    const STOPWORDS: &[&str] = &[
+        "A", "AN", "THE", "IS", "ARE", "TO", "OF", "FOR", "ON", "AT", "AND", "OR", "THAT",
+        "THIS", "YOU", "YOUR", "WE", "US", "PLEASE", "KINDLY", "DEAR", "INFORM", "NOTE",
+        "REPORT", "CONTACT", "AVAILABLE", "BALANCE", "ACCOUNT", "ENDING", "SPENT", "DEBITED",
+        "CREDITED", "TOWARD", "TOWARDS", "FROM", "HAS", "HAVE", "WILL", "WOULD", "MAY", "CAN",
+        "DO", "DOES", "DID", "NOT", "NO", "YES", "IF", "IT", "BE", "AS", "BY", "WITH", "I",
+    ];
+
+    let tokens: Vec<&str> = cleaned.split_whitespace().collect();
+    if tokens.is_empty() {
+        return false;
+    }
+    let stopword_count = tokens.iter().filter(|t| STOPWORDS.contains(t)).count();
+    stopword_count * 2 < tokens.len()
+}
+
 /// Runs the full pipeline: clean -> exact alias match -> fuzzy match ->
 /// create-new-merchant-if-none. Returns `(merchant_entity_id,
 /// normalized_name)`. Synchronous over an already-open `&Connection` since
@@ -99,10 +131,20 @@ pub fn normalize_merchant_sync(conn: &Connection, merchant_raw: &str) -> Result<
         return Ok((m.id, m.normalized_name));
     }
 
-    // 3. No match at all -- auto-discover a new merchant, plus an alias for
-    //    faster future exact matches (Doc 15 §2 principle 8's "discovered
-    //    once, reused thereafter" pattern, applied to merchants the same
-    //    way it applies to instruments).
+    // 3. No match at all -- before trusting a brand-new name forever, reject
+    //    boilerplate-shaped fragments so they can't be learned and reused
+    //    (the "seeded once, wrong forever" bug: a garbage string, once
+    //    auto-created here, would otherwise exact-match itself on every
+    //    future occurrence). Fall through as "no merchant identified"
+    //    rather than raising an error, since this is an expected outcome
+    //    for noisy extraction, not a failure.
+    if !is_plausible_merchant_name(&cleaned) {
+        return Ok((String::new(), String::new()));
+    }
+
+    // Auto-discover a new merchant, plus an alias for faster future exact
+    // matches (Doc 15 §2 principle 8's "discovered once, reused thereafter"
+    // pattern, applied to merchants the same way it applies to instruments).
     let new_id = Uuid::new_v4().to_string();
     let now = Some(Utc::now().naive_utc());
     let merchant_row = MerchantsRow {
@@ -286,6 +328,40 @@ mod tests {
             found.is_some(),
             "a fresh alias must resolve on the next lookup"
         );
+    }
+
+    /// Regression test for the "garbage merchant, learned once, reused
+    /// forever" bug: SBI Card's mis-anchored extraction lifting "inform you
+    /// that" out of "Dear Cardholder, This is to inform you that, Rs.245.43
+    /// spent..." must never become a permanent merchant.
+    #[tokio::test]
+    async fn test_boilerplate_fragment_is_rejected_not_learned() {
+        let pool = dummy_migrated_pool().await;
+        let before = merchant_count(&pool).await;
+
+        let (entity_id, normalized_name) = {
+            let conn = pool.get().await.unwrap();
+            conn.interact(|c| normalize_merchant_sync(c, "inform you that"))
+                .await
+                .unwrap()
+                .unwrap()
+        };
+        assert_eq!(entity_id, "");
+        assert_eq!(normalized_name, "");
+        assert_eq!(
+            merchant_count(&pool).await,
+            before,
+            "a boilerplate sentence fragment must never be learned as a merchant"
+        );
+    }
+
+    #[test]
+    fn test_is_plausible_merchant_name() {
+        assert!(!is_plausible_merchant_name("INFORM YOU THAT"));
+        assert!(!is_plausible_merchant_name("THAT"));
+        assert!(is_plausible_merchant_name("DREAMPLUGTECHNOLOGI"));
+        assert!(is_plausible_merchant_name("AMAZON PAY INDIA"));
+        assert!(is_plausible_merchant_name("BRAND NEW CAFE"));
     }
 
     #[tokio::test]

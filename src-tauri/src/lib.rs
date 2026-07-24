@@ -278,7 +278,7 @@ pub fn run() {
                 // rollback to it before giving up.
                 Err(db::DbInitError::MigrationFailed { source, backup_path }) => {
                     tracing::error!(
-                        "Migration failed (backup at {}): {}",
+                        "Migration failed (backup at {}): {:?}",
                         backup_path.display(),
                         source
                     );

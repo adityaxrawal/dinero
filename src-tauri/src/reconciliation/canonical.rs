@@ -37,6 +37,27 @@ pub fn create_canonical_transaction(conn: &Connection, obs: &IncomingObservation
         .or_else(|_| NaiveDateTime::parse_from_str(&format!("{} 00:00:00", obs.event_time), fmt))
         .ok();
 
+    // Doc 30 TASK-TXN-007: this call site previously stored `merchant_raw`
+    // verbatim as `merchant_display_name` and left `merchant_normalized_name`/
+    // `merchant_entity_id` permanently NULL -- meaning the plausibility-gated
+    // normalization pipeline (`merchant_normalizer::normalize_merchant_sync`)
+    // never ran on a brand-new transaction at all, so a mis-extracted
+    // boilerplate fragment (e.g. "inform you that") landed straight on the
+    // transaction with no check whatsoever. `merchant_display_name` still
+    // shows the raw string either way (Doc 11 §8 wants the human-readable
+    // original), but `normalized_name`/`entity_id` are now only populated
+    // when the string clears the same plausibility gate step 3 of
+    // `normalize_merchant_sync` applies to auto-created merchants.
+    let (merchant_entity_id, merchant_normalized_name) = match &obs.merchant_raw {
+        Some(raw) => match crate::extraction::merchant_normalizer::normalize_merchant_sync(conn, raw) {
+            Ok((entity_id, normalized)) if !normalized.is_empty() => {
+                (Some(entity_id), Some(normalized))
+            }
+            _ => (None, None),
+        },
+        None => (None, None),
+    };
+
     let new_tx = TransactionsRow {
         id: tx_id.clone(),
         unique_event_id: None,
@@ -61,8 +82,8 @@ pub fn create_canonical_transaction(conn: &Connection, obs: &IncomingObservation
         best_posting_date: event_time_dt.map(|dt| dt.date()),
         posting_date_confidence: None,
         merchant_display_name: obs.merchant_raw.clone(),
-        merchant_normalized_name: None,
-        merchant_entity_id: None,
+        merchant_normalized_name,
+        merchant_entity_id,
         reference_id: obs.reference_id.clone(),
         location: None,
         original_amount_minor: None,

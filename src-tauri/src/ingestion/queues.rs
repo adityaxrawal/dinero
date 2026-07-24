@@ -333,7 +333,8 @@ async fn process_mandate_job(
                     .and_then(|m| {
                         crate::extraction::merchant_normalizer::normalize_merchant_sync(c, m).ok()
                     })
-                    .map(|(entity_id, _)| entity_id);
+                    .map(|(entity_id, _)| entity_id)
+                    .filter(|id| !id.is_empty());
 
                 match event_type {
                     crate::ingestion::message_processor::MandateEventType::Registration => {

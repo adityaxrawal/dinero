@@ -320,6 +320,31 @@ fn is_invalid_merchant(candidate: &str, bank_name: &str) -> bool {
     false
 }
 
+static VPA_MERCHANT_FALLBACK_RE: OnceLock<Regex> = OnceLock::new();
+
+/// A personal UPI P2P transfer (e.g. HDFC's "Rs.750.00 is debited from your
+/// account ending 4691 towards VPA 8127696200@jupiteraxis (ADITYA RAWAL) on
+/// 07-06-26.") has no real "merchant" -- the counterparty is a VPA handle,
+/// not a business. `MERCHANT_TERMINATOR`'s value char class excludes `(`/`)`
+/// so the parenthesised display name can't be captured anyway, and even if
+/// it could, that name is often the *account holder's own* registered name
+/// (as this real example is), not the payee's -- printed by the bank for
+/// confirmation, not identification. The VPA handle itself is the only
+/// unambiguous signal here. Deliberately narrower than
+/// `extract_instrument_signals`'s general-purpose VPA detector (which
+/// matches any email-shaped string): requires the literal word "VPA"
+/// immediately before the handle, the standard phrasing every bank uses for
+/// this, so a footer support-email address never wins this fallback -- a
+/// false positive here becomes a wrong user-facing merchant name, not just
+/// supplementary instrument metadata.
+fn vpa_merchant_fallback(body: &str) -> Option<String> {
+    let re = VPA_MERCHANT_FALLBACK_RE
+        .get_or_init(|| Regex::new(r"(?i)\bVPA\s+([\w.\-+]+@[\w.\-]+)").unwrap());
+    re.captures(body)
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str().to_lowercase().trim_end_matches('.').to_string())
+}
+
 // Instrument signal detection statics
 static INSTR_CARD_LAST4_RE: OnceLock<Regex> = OnceLock::new();
 static INSTR_ACCOUNT_SUFFIX_RE: OnceLock<Regex> = OnceLock::new();
@@ -873,6 +898,14 @@ impl ExtractionLayer for GenericRegexLayer {
                         }
                     }
                 }
+            }
+            // Neither merchant-label tier fires for a personal UPI P2P
+            // transfer -- the parenthesised display name after the VPA
+            // handle isn't reachable by either (see `vpa_merchant_fallback`'s
+            // doc comment), so fall back to the VPA handle itself rather
+            // than leaving the transaction merchant-less.
+            if merchant_value.is_none() {
+                merchant_value = vpa_merchant_fallback(body);
             }
             result.merchant_raw = merchant_value;
 
@@ -1965,6 +1998,40 @@ mod tests {
             deadpool_sqlite::Runtime::Tokio1,
         );
         Pool::builder(mgr).build().unwrap()
+    }
+
+    /// Regression test for a live extraction bug: SBI Card's "Dear
+    /// Cardholder, This is to inform you that, Rs.245.43 spent on your SBI
+    /// Credit Card ending 7603 at DREAMPLUGTECHNOLOGI on 01/07/26." mis-
+    /// resolved to merchant "inform you that" (the ambiguous "to" label
+    /// matching the intro clause, leftmost in the body, before the real "at
+    /// DREAMPLUGTECHNOLOGI" label) because "inform"/"that" weren't on
+    /// `MERCHANT_STOPWORDS` yet -- this exact body is what surfaced the gap.
+    #[tokio::test]
+    async fn test_sbi_intro_clause_boilerplate_does_not_win_over_real_merchant() {
+        let pool = dummy_pool();
+        let layer = GenericRegexLayer;
+        let body = "Dear Cardholder,\nThis is to inform you that, Rs.245.43 spent on your SBI Credit Card ending 7603 at DREAMPLUGTECHNOLOGI on 01/07/26. Trxn. not done by you? Report at https://sbicard.com/Dispute. If you have not authorized this transaction please contact the SBI Card Helpline.";
+        let result = layer.extract(&pool, "SBI Card", body).await.unwrap();
+        assert_eq!(result.merchant_raw, Some("DREAMPLUGTECHNOLOGI".to_string()));
+    }
+
+    /// Regression test: a personal UPI P2P transfer (HDFC's "Rs.750.00 is
+    /// debited from your account ending 4691 towards VPA
+    /// 8127696200@jupiteraxis (ADITYA RAWAL) on 07-06-26.") has no business
+    /// merchant, and its parenthesised name is the account holder's own
+    /// name, not a payee -- must resolve to the VPA handle, not "VPA
+    /// rawalad" or nothing at all.
+    #[tokio::test]
+    async fn test_upi_p2p_transfer_falls_back_to_vpa_handle() {
+        let pool = dummy_pool();
+        let layer = GenericRegexLayer;
+        let body = "Dear Customer,\n\nGreetings from HDFC Bank!\n\nRs.750.00 is debited from your account ending 4691 towards VPA 8127696200@jupiteraxis (ADITYA RAWAL) on 07-06-26.\n\nUPI transaction reference no.: 327479321586.\n\nIf you did not authorize this transaction, please report it immediately at:\na. When in India (Toll free): 1800 258 6161\nb. When abroad:  9122 61606160\nc. Or SMS 'BLOCK UPI' to 7308080808.";
+        let result = layer.extract(&pool, "HDFC Bank", body).await.unwrap();
+        assert_eq!(
+            result.merchant_raw,
+            Some("8127696200@jupiteraxis".to_string())
+        );
     }
 
     /// TASK-DB-002: like `dummy_pool()`, but backed by a real temp file with

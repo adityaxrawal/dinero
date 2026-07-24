@@ -444,19 +444,7 @@ impl MessageProcessor {
                             obs.event_time = Self::internal_date_fallback(&full_msg.internal_date);
                         }
 
-                        // If it's a pure balance update (no amount/merchant), fill defaults
-                        if obs.merchant_raw.is_none() && obs.balance_after.is_some() {
-                            obs.merchant_raw = Some("Balance Update".to_string());
-                            if obs.amount_minor.is_none() {
-                                obs.amount_minor = Some(0);
-                            }
-                            if obs.direction.is_none() {
-                                obs.direction = Some("unknown".to_string());
-                            }
-                            if obs.currency.is_none() {
-                                obs.currency = Some("INR".to_string());
-                            }
-                        }
+                        Self::apply_balance_update_placeholder(&content_class, &mut obs);
 
                         if Self::evaluate_mandatory_field_gate(&obs) {
                             crate::dev_review::record(
@@ -571,6 +559,42 @@ impl MessageProcessor {
             .as_ref()
             .and_then(|s| s.parse::<i64>().ok())
             .map(|ts_millis| ts_millis / 1000)
+    }
+
+    /// A `BalanceUpdate` email is never a settled transaction, so whatever
+    /// merchant/amount extraction guessed for it is discarded unconditionally
+    /// -- not just filled in when absent. Without this, a balance-only email
+    /// ("The available balance ... is Rs. 6,773.00 ... For real-time balance
+    /// updates, call us at ...") can still mis-extract a garbage merchant
+    /// ("real") and treat the balance figure as a transaction amount, since
+    /// `evaluate_mandatory_field_gate` passes on `balance_after` alone
+    /// regardless of what else is set. A `TransactionAlert` email that
+    /// extraction genuinely returned with no merchant (but did resolve a
+    /// balance) keeps the narrower, additive fallback it always had.
+    pub(crate) fn apply_balance_update_placeholder(
+        content_class: &ContentClass,
+        obs: &mut crate::extraction::ladder::ExtractionResult,
+    ) {
+        if obs.balance_after.is_none() {
+            return;
+        }
+        if *content_class == ContentClass::BalanceUpdate {
+            obs.merchant_raw = Some("Balance Update".to_string());
+            obs.amount_minor = Some(0);
+            obs.direction = Some("unknown".to_string());
+            obs.currency = Some("INR".to_string());
+        } else if obs.merchant_raw.is_none() {
+            obs.merchant_raw = Some("Balance Update".to_string());
+            if obs.amount_minor.is_none() {
+                obs.amount_minor = Some(0);
+            }
+            if obs.direction.is_none() {
+                obs.direction = Some("unknown".to_string());
+            }
+            if obs.currency.is_none() {
+                obs.currency = Some("INR".to_string());
+            }
+        }
     }
 
     /// Evaluates if the extracted observation passes Gate 3 (Mandatory Fields):

@@ -174,6 +174,48 @@ fn test_gate3_fails_merchant_only() {
     );
 }
 
+use crate::ingestion::content_classifier::ContentClass;
+
+/// Regression test for the HDFC "available balance" bug: a `BalanceUpdate`
+/// email where extraction mis-fired a garbage merchant ("real", lifted from
+/// "real-time balance updates") and treated the balance figure as a
+/// transaction amount must have both discarded in favor of the safe
+/// "Balance Update" / 0 placeholder, even though `merchant_raw` was `Some`.
+#[test]
+fn test_balance_update_placeholder_discards_misfired_merchant_and_amount() {
+    let mut obs = ExtractionResult {
+        merchant_raw: Some("real".to_string()),
+        amount_minor: Some(677300),
+        balance_after: Some(677300),
+        extraction_method: "test".to_string(),
+        ..Default::default()
+    };
+    MessageProcessor::apply_balance_update_placeholder(&ContentClass::BalanceUpdate, &mut obs);
+    assert_eq!(obs.merchant_raw, Some("Balance Update".to_string()));
+    assert_eq!(obs.amount_minor, Some(0));
+}
+
+/// A `TransactionAlert` email that genuinely extracted no merchant but did
+/// resolve a balance keeps the narrower, additive fallback: it must not
+/// clobber a real extracted amount just because a balance was also present.
+#[test]
+fn test_transaction_alert_balance_fallback_only_fills_missing_fields() {
+    let mut obs = ExtractionResult {
+        merchant_raw: None,
+        amount_minor: Some(24543),
+        balance_after: Some(677300),
+        extraction_method: "test".to_string(),
+        ..Default::default()
+    };
+    MessageProcessor::apply_balance_update_placeholder(&ContentClass::TransactionAlert, &mut obs);
+    assert_eq!(obs.merchant_raw, Some("Balance Update".to_string()));
+    assert_eq!(
+        obs.amount_minor,
+        Some(24543),
+        "a real extracted amount must not be overwritten"
+    );
+}
+
 /// Doc 30 TASK-GMAIL-002: proves the metadata-first cost saving directly —
 /// when Gate 1 rejects based on the metadata-only fetch, no full-body
 /// (`format=full`) request is ever made. `full_mock.expect(0)` fails the

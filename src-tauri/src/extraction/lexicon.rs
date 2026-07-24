@@ -64,6 +64,17 @@ pub const MERCHANT_STOPWORDS: &[&str] = &[
     "card", "account", "transaction", "number", "if", "do", "did", "have", "has", "been", "a",
     "an", "of", "in", "immediate", "assistance", "help", "service", "team", "app", "visit",
     "visiting", "toll", "free", "hotline", "no", "our", "we", "kindly", "reply",
+    // gmail false-negative remediation: SBI Card's "Dear Cardholder, This is
+    // to inform you that, Rs.245.43 spent on your SBI Credit Card ending
+    // 7603 at DREAMPLUGTECHNOLOGI on 01/07/26." -- the ambiguous "to" label
+    // matches "is **to** inform you that," (leftmost in the body) before the
+    // real merchant's "at" label further right, and "inform"/"that" weren't
+    // on this list, so the intro clause alone slipped past
+    // `is_stopword_only_merchant` and won as the merchant. These are the
+    // same class of lead-in boilerplate as the disclaimer-footer words
+    // above, just at the start of the email instead of the end.
+    "inform", "informing", "advise", "advised", "wish", "notice", "note", "would", "like",
+    "hereby", "bring",
 ];
 
 /// `true` when `candidate` is nothing but [`MERCHANT_STOPWORDS`] -- e.g. "to

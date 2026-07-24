@@ -104,10 +104,20 @@ fn http_client() -> &'static reqwest::Client {
 /// `/completion` connection against that one slot. Real logs show this
 /// producing not just per-request timeouts but outright connection-level
 /// failures ("`/completion` request failed", "returned an error status").
-/// Serializing here means only one request is ever actually in flight;
-/// everyone else queues application-side. The wait is still bounded by each
-/// caller's own `LlmEngine::INFERENCE_TIMEOUT`, since acquisition happens
-/// inside that same timeout's scope.
+/// Serializing here means only one request is ever actually in flight.
+///
+/// `complete()` below uses `try_acquire`, not a blocking `acquire().await`:
+/// the caller's whole call (`LlmEngine::INFERENCE_TIMEOUT`, 10s) wraps
+/// *both* the queue wait and the actual inference, so blocking here made
+/// every queued caller burn its entire budget doing nothing but waiting
+/// and then fail anyway once the timeout fired -- with up to 50 emails
+/// racing one slot, this was a structural near-100% Layer 6 failure rate,
+/// not an occasional slow response (real logs: every single Layer 6
+/// invocation across a 15-minute scan ended in "inference exceeded 10s
+/// timeout"). Failing fast when the slot's already taken means whichever
+/// caller does hold it gets an uncontended shot at the real 10s budget,
+/// and everyone else falls through to the next ladder tier immediately
+/// instead of after a wasted 10s.
 fn completion_semaphore() -> &'static tokio::sync::Semaphore {
     static SEM: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
     SEM.get_or_init(|| tokio::sync::Semaphore::new(1))
@@ -267,7 +277,23 @@ async fn start_server_task(app_dir: PathBuf, model_id: String) {
                 // up; if so, adopt it (we don't own its process, so no
                 // `Child` to store — `shutdown()` simply has nothing of ours
                 // to kill).
+                //
+                // Caveat: `/health` only proves *a* server answers, not that
+                // it has `model_id` loaded rather than whatever the prior
+                // session last selected. Not verified here -- llama-server's
+                // model-introspection endpoint shape isn't stable enough
+                // across releases to key correctness off of, and a wrong
+                // model's output still has to clear
+                // `LlmEngine::validate_against_source`'s merchant/reference/
+                // amount check same as any other Layer 6 attempt, bounding
+                // the damage to an extra miss rather than a silent bad
+                // value. Logged so a real mismatch is at least diagnosable.
                 if health_check(LLAMA_SERVER_PORT).await {
+                    tracing::warn!(
+                        "adopted an already-running llama-server on port {LLAMA_SERVER_PORT} \
+                         instead of starting our own for model_id='{model_id}' -- its actual \
+                         loaded model is unverified"
+                    );
                     break Ok(None);
                 }
                 anyhow::bail!("llama-server exited during startup: {exit_status}");
@@ -357,15 +383,15 @@ struct CompletionResponse {
 
 /// Runs one completion against the warm sidecar server, starting it first
 /// if necessary. The caller (`LlmEngine::extract`) wraps this whole call in
-/// its own `INFERENCE_TIMEOUT`; only the actual HTTP request below counts
-/// against that budget — `ensure_server_ready` itself never blocks on a
-/// cold start.
+/// its own `INFERENCE_TIMEOUT`; `ensure_server_ready` never blocks on a
+/// cold start and the completion slot below is `try_acquire`d rather than
+/// waited on, so nothing here can eat into that budget except the actual
+/// HTTP request.
 pub async fn complete(app_dir: &Path, model_id: &str, prompt: &str) -> Result<String> {
     let port = ensure_server_ready(app_dir, model_id).await?;
     let _permit = completion_semaphore()
-        .acquire()
-        .await
-        .expect("completion semaphore is never closed");
+        .try_acquire()
+        .context("llama-server busy with another completion")?;
 
     let resp = http_client()
         .post(format!("http://127.0.0.1:{port}/completion"))
@@ -386,4 +412,21 @@ pub async fn complete(app_dir: &Path, model_id: &str, prompt: &str) -> Result<St
         .await
         .context("llama-server /completion response was not the expected JSON shape")?;
     Ok(parsed.content)
+}
+
+#[cfg(test)]
+mod tests {
+    /// Regression test for the fix above: a caller must never block on the
+    /// single completion slot. Blocking here is what made every queued
+    /// email in a concurrent batch burn its whole `INFERENCE_TIMEOUT`
+    /// waiting instead of failing over to the next ladder tier.
+    #[test]
+    fn second_completion_fails_fast_instead_of_queueing() {
+        let sem = tokio::sync::Semaphore::new(1);
+        let _held = sem.try_acquire().expect("first acquire must succeed");
+        assert!(
+            sem.try_acquire().is_err(),
+            "a contended slot must be rejected immediately, not waited on"
+        );
+    }
 }
