@@ -70,7 +70,13 @@ describe('test_database_contains_zero_financial_tables', () => {
   it('no Prisma model name resembles a financial-data table', async () => {
     const datamodel = readFileSync(join(REPO_ROOT, 'prisma', 'schema.prisma'), 'utf-8');
     const dmmf = await getDMMF({ datamodel });
-    const FINANCIAL_TABLE_PATTERNS = [/transaction/i, /statement/i, /merchant/i, /instrument/i, /bank/i];
+    const FINANCIAL_TABLE_PATTERNS = [
+      /transaction/i,
+      /statement/i,
+      /merchant/i,
+      /instrument/i,
+      /bank/i,
+    ];
     const violations = dmmf.datamodel.models
       .map((m) => m.name)
       .filter((name) => FINANCIAL_TABLE_PATTERNS.some((p) => p.test(name)));
@@ -100,7 +106,8 @@ describe('test_no_outbound_calls_to_gmail_api_or_google_oauth', () => {
       for (const line of src.split('\n')) {
         if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue; // skip comment lines
         for (const pattern of GOOGLE_PATTERNS) {
-          if (pattern.test(line)) violations.push(`${file}: matched ${pattern} in "${line.trim()}"`);
+          if (pattern.test(line))
+            violations.push(`${file}: matched ${pattern} in "${line.trim()}"`);
         }
       }
     }

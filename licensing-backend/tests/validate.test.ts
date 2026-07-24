@@ -5,11 +5,21 @@ import { validateLicense, type ValidateDb } from '../api/license/validate';
 import { TEST_PRIVATE_KEY_PEM, TEST_PUBLIC_KEY_PEM } from './testKeys';
 import { verifyLicenseJwt } from '../lib/jwt';
 
-function makeDb(token: { accountId: string; account: { email: string } } | null, subscription: Record<string, unknown> | null): ValidateDb {
+function makeDb(
+  token: { accountId: string; account: { email: string } } | null,
+  subscription: Record<string, unknown> | null
+): ValidateDb {
   return {
-    licenseToken: { findUnique: vi.fn().mockResolvedValue(token) } as unknown as ValidateDb['licenseToken'],
-    subscription: { findFirst: vi.fn().mockResolvedValue(subscription) } as unknown as ValidateDb['subscription'],
-    licensingAuditLog: { create: vi.fn().mockResolvedValue({}), findMany: vi.fn().mockResolvedValue([]) } as unknown as ValidateDb['licensingAuditLog'],
+    licenseToken: {
+      findUnique: vi.fn().mockResolvedValue(token),
+    } as unknown as ValidateDb['licenseToken'],
+    subscription: {
+      findFirst: vi.fn().mockResolvedValue(subscription),
+    } as unknown as ValidateDb['subscription'],
+    licensingAuditLog: {
+      create: vi.fn().mockResolvedValue({}),
+      findMany: vi.fn().mockResolvedValue([]),
+    } as unknown as ValidateDb['licensingAuditLog'],
   };
 }
 
@@ -31,7 +41,9 @@ describe('test_validate_returns_fresh_jwt_with_server_timestamp', () => {
 describe('test_device_mismatch_rejected', () => {
   it('rejects when no license_tokens row is bound to the requesting device', async () => {
     const db = makeDb(null, null);
-    await expect(validateLicense(db, { device_id: 'device-UNKNOWN' }, TEST_PRIVATE_KEY_PEM)).rejects.toMatchObject({ code: 'LICENSE_INVALID' });
+    await expect(
+      validateLicense(db, { device_id: 'device-UNKNOWN' }, TEST_PRIVATE_KEY_PEM)
+    ).rejects.toMatchObject({ code: 'LICENSE_INVALID' });
   });
 });
 

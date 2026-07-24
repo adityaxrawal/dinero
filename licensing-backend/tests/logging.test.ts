@@ -56,7 +56,9 @@ describe('test_logs_are_structured_and_redacted', () => {
       res.status(500);
       throw new Error('boom');
     });
-    await expect(withRequestLogging('admin/support_lookup', handler)({} as VercelRequest, fakeRes())).rejects.toThrow('boom');
+    await expect(
+      withRequestLogging('admin/support_lookup', handler)({} as VercelRequest, fakeRes())
+    ).rejects.toThrow('boom');
     expect(logSpy).toHaveBeenCalledTimes(1);
     const logged = JSON.parse(logSpy.mock.calls[0][0] as string);
     expect(logged.status).toBe(500);
@@ -78,7 +80,9 @@ describe('test_sensitive_fields_are_never_logged', () => {
     const handler = vi.fn(async (_req: VercelRequest, res: VercelResponse) => {
       res.status(200).json({ email: 'realuser@example.com', jwt: 'super.secret.jwt' });
     });
-    const req = { body: { email: 'realuser@example.com', device_id: 'hw-uuid-1' } } as unknown as VercelRequest;
+    const req = {
+      body: { email: 'realuser@example.com', device_id: 'hw-uuid-1' },
+    } as unknown as VercelRequest;
     await withRequestLogging('license/activate', handler)(req, fakeRes());
 
     const logged = logSpy.mock.calls[0][0] as string;

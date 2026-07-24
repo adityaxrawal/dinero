@@ -8,7 +8,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { randomUUID } from 'crypto';
 
-export interface RequestLogLine {
+interface RequestLogLine {
   request_id: string;
   endpoint: string;
   status: number;

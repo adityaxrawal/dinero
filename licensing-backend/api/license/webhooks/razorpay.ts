@@ -36,8 +36,14 @@ export type WebhookDb = {
 /// every invoice event only ever carries Razorpay's own id, never our
 /// internal one, so `payment_provider_records` (written at
 /// `subscription.created`) is the only link between the two.
-async function findSubscriptionByRazorpaySubscriptionId(db: WebhookDb, razorpaySubscriptionId: string) {
-  const record = await db.paymentProviderRecord.findFirst({ where: { razorpaySubscriptionId }, orderBy: { createdAt: 'desc' } });
+async function findSubscriptionByRazorpaySubscriptionId(
+  db: WebhookDb,
+  razorpaySubscriptionId: string
+) {
+  const record = await db.paymentProviderRecord.findFirst({
+    where: { razorpaySubscriptionId },
+    orderBy: { createdAt: 'desc' },
+  });
   if (!record?.subscriptionId) return null;
   return db.subscription.findFirst({ where: { id: record.subscriptionId } });
 }
@@ -46,12 +52,23 @@ async function findSubscriptionByRazorpaySubscriptionId(db: WebhookDb, razorpayS
 /// licensing_audit_log rather than a dedicated processed-events table --
 /// consistent with how rate-limiting/trial-abuse tracking already reuse it
 /// in this codebase.
-export async function isDuplicateEvent(db: Pick<WebhookDb, 'licensingAuditLog'>, eventId: string): Promise<boolean> {
-  const count = await countRecentEvents(db.licensingAuditLog, 'webhook_processed', Number.MAX_SAFE_INTEGER, (p) => (p as { event_id?: string } | null)?.event_id === eventId);
+async function isDuplicateEvent(
+  db: Pick<WebhookDb, 'licensingAuditLog'>,
+  eventId: string
+): Promise<boolean> {
+  const count = await countRecentEvents(
+    db.licensingAuditLog,
+    'webhook_processed',
+    Number.MAX_SAFE_INTEGER,
+    (p) => (p as { event_id?: string } | null)?.event_id === eventId
+  );
   return count > 0;
 }
 
-export async function processWebhookEvent(db: WebhookDb, event: RazorpayWebhookEvent): Promise<{ status: 'processed' | 'duplicate_ignored' }> {
+export async function processWebhookEvent(
+  db: WebhookDb,
+  event: RazorpayWebhookEvent
+): Promise<{ status: 'processed' | 'duplicate_ignored' }> {
   if (await isDuplicateEvent(db, event.id)) {
     return { status: 'duplicate_ignored' };
   }
@@ -61,7 +78,10 @@ export async function processWebhookEvent(db: WebhookDb, event: RazorpayWebhookE
       const accountId = event.payload.subscription?.entity?.notes?.account_id;
       const razorpaySubscriptionId = event.payload.subscription?.entity?.id;
       if (accountId) {
-        const existing = await db.subscription.findFirst({ where: { accountId }, orderBy: { createdAt: 'desc' } });
+        const existing = await db.subscription.findFirst({
+          where: { accountId },
+          orderBy: { createdAt: 'desc' },
+        });
         if (existing) {
           await db.subscription.update({ where: { id: existing.id }, data: { status: 'active' } });
         }
@@ -76,7 +96,10 @@ export async function processWebhookEvent(db: WebhookDb, event: RazorpayWebhookE
       const billingEndUnix = event.payload.invoice?.entity?.billing_end;
       if (razorpaySubscriptionId && billingEndUnix) {
         // Doc 30 TASK-BILL-003: "extend current_period_end, heal past_due -> active."
-        const subscription = await findSubscriptionByRazorpaySubscriptionId(db, razorpaySubscriptionId);
+        const subscription = await findSubscriptionByRazorpaySubscriptionId(
+          db,
+          razorpaySubscriptionId
+        );
         if (subscription) {
           await db.subscription.update({
             where: { id: subscription.id },
@@ -93,9 +116,15 @@ export async function processWebhookEvent(db: WebhookDb, event: RazorpayWebhookE
         // desktop app immediately; the local 7-day offline grace (TASK-AUTH-009)
         // handles user-facing degradation. This just reflects accurate
         // status for the next validate/refresh call.
-        const subscription = await findSubscriptionByRazorpaySubscriptionId(db, razorpaySubscriptionId);
+        const subscription = await findSubscriptionByRazorpaySubscriptionId(
+          db,
+          razorpaySubscriptionId
+        );
         if (subscription) {
-          await db.subscription.update({ where: { id: subscription.id }, data: { status: 'past_due' } });
+          await db.subscription.update({
+            where: { id: subscription.id },
+            data: { status: 'past_due' },
+          });
         }
       }
       break;
@@ -125,7 +154,10 @@ async function handler(req: VercelRequest, res: VercelResponse) {
   }
   const rawBody = JSON.stringify(req.body);
   if (!verifyWebhookSignature(rawBody, signature, webhookSecret)) {
-    res.status(400).json({ code: 'INVALID_WEBHOOK_SIGNATURE', message: 'Webhook signature verification failed' });
+    res.status(400).json({
+      code: 'INVALID_WEBHOOK_SIGNATURE',
+      message: 'Webhook signature verification failed',
+    });
     return;
   }
   try {

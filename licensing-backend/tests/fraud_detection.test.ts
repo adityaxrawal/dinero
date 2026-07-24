@@ -23,7 +23,9 @@ describe('test_multiple_device_activation_attempts_flagged', () => {
       { eventType: 'license_activated', deviceFingerprint: 'device-A', createdAt: minutesAgo(10) },
       { eventType: 'license_activated', deviceFingerprint: 'device-A', createdAt: minutesAgo(20) },
     ];
-    expect(detectFraudSignals(rows, now).some((s) => s.type === 'multiple_device_activations')).toBe(false);
+    expect(
+      detectFraudSignals(rows, now).some((s) => s.type === 'multiple_device_activations')
+    ).toBe(false);
   });
 });
 
@@ -31,9 +33,17 @@ describe('test_rapid_activate_deactivate_cycling_flagged', () => {
   it('flags 4+ activate/deactivate events within 1 hour', () => {
     const rows = [
       { eventType: 'license_activated', deviceFingerprint: 'device-A', createdAt: minutesAgo(5) },
-      { eventType: 'license_deactivated', deviceFingerprint: 'device-A', createdAt: minutesAgo(10) },
+      {
+        eventType: 'license_deactivated',
+        deviceFingerprint: 'device-A',
+        createdAt: minutesAgo(10),
+      },
       { eventType: 'license_activated', deviceFingerprint: 'device-B', createdAt: minutesAgo(15) },
-      { eventType: 'license_deactivated', deviceFingerprint: 'device-B', createdAt: minutesAgo(20) },
+      {
+        eventType: 'license_deactivated',
+        deviceFingerprint: 'device-B',
+        createdAt: minutesAgo(20),
+      },
     ];
     const signals = detectFraudSignals(rows, now);
     expect(signals.some((s) => s.type === 'rapid_activate_deactivate_cycling')).toBe(true);

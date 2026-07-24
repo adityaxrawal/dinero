@@ -32,12 +32,21 @@ export async function runBillingReconciliation(
   db: ReconciliationDb,
   razorpay: RazorpaySubscriptions
 ): Promise<ReconciliationSummary> {
-  const subscriptions = await db.subscription.findMany({ where: { status: { in: ['active', 'past_due'] } } });
+  const subscriptions = await db.subscription.findMany({
+    where: { status: { in: ['active', 'past_due'] } },
+  });
   let drifted = 0;
   let corrected = 0;
 
-  for (const sub of subscriptions as unknown as { id: string; accountId: string; status: string }[]) {
-    const record = await db.paymentProviderRecord.findFirst({ where: { subscriptionId: sub.id }, orderBy: { createdAt: 'desc' } });
+  for (const sub of subscriptions as unknown as {
+    id: string;
+    accountId: string;
+    status: string;
+  }[]) {
+    const record = await db.paymentProviderRecord.findFirst({
+      where: { subscriptionId: sub.id },
+      orderBy: { createdAt: 'desc' },
+    });
     if (!record?.razorpaySubscriptionId) continue;
 
     let remote;
@@ -57,7 +66,12 @@ export async function runBillingReconciliation(
     await logAuditEvent(db.licensingAuditLog, {
       accountId: sub.accountId,
       eventType: 'billing_reconciliation_correction',
-      payload: { subscription_id: sub.id, local_status_was: sub.status, corrected_to: expectedLocalStatus, razorpay_status: remote.status },
+      payload: {
+        subscription_id: sub.id,
+        local_status_was: sub.status,
+        corrected_to: expectedLocalStatus,
+        razorpay_status: remote.status,
+      },
     });
     corrected++;
   }

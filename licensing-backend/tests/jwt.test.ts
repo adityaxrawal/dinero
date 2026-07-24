@@ -1,9 +1,19 @@
 // Doc 30 TASK-LIC-005 acceptance criteria.
 import { describe, it, expect } from 'vitest';
-import { signLicenseJwt, verifyLicenseJwt, assertNoExcessClaims, JwtVerificationError } from '../lib/jwt';
+import {
+  signLicenseJwt,
+  verifyLicenseJwt,
+  assertNoExcessClaims,
+  JwtVerificationError,
+} from '../lib/jwt';
 import { TEST_PRIVATE_KEY_PEM, TEST_PUBLIC_KEY_PEM } from './testKeys';
 
-const claims = { sub: 'user@example.com', device_id: 'device-abc', plan: 'desktop_pro_monthly', billing_interval: 'monthly' };
+const claims = {
+  sub: 'user@example.com',
+  device_id: 'device-abc',
+  plan: 'desktop_pro_monthly',
+  billing_interval: 'monthly',
+};
 
 describe('test_jwt_signed_with_rs256', () => {
   it('produces a 3-part token with an RS256 header', () => {
@@ -41,7 +51,9 @@ describe('test_tampered_jwt_rejected', () => {
     // any well-formed but non-matching public key proves signature checking
     // is real, not a no-op that just decodes claims.
     const UNRELATED_PUBLIC_KEY = TEST_PUBLIC_KEY_PEM.replace(/A/g, 'B');
-    expect(() => verifyLicenseJwt(signLicenseJwt(claims, TEST_PRIVATE_KEY_PEM), UNRELATED_PUBLIC_KEY)).toThrow();
+    expect(() =>
+      verifyLicenseJwt(signLicenseJwt(claims, TEST_PRIVATE_KEY_PEM), UNRELATED_PUBLIC_KEY)
+    ).toThrow();
   });
 });
 

@@ -75,9 +75,10 @@ describe('test_other_fk_tables_cascade_on_account_delete', () => {
       expect(accountIdField?.isRequired, `${modelName}.accountId must be NOT NULL`).toBe(true);
 
       const relationField = model!.fields.find((f) => f.kind === 'object' && f.name === 'account');
-      expect(relationField?.relationOnDelete, `${modelName} -> account must be ON DELETE CASCADE`).toBe(
-        'Cascade'
-      );
+      expect(
+        relationField?.relationOnDelete,
+        `${modelName} -> account must be ON DELETE CASCADE`
+      ).toBe('Cascade');
     }
   });
 });

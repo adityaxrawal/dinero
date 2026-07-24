@@ -15,11 +15,24 @@ describe('test_support_tools_never_expose_financial_data', () => {
           id: 'acc_1',
           email: 'realuser@example.com',
           trialUsed: true,
-          subscriptions: [{ status: 'active', planId: 'pro', currentPeriodEnd: new Date('2026-08-01') }],
-          licenseTokens: [{ deviceFingerprint: 'hw-uuid-1', jwtIssuedAt: new Date(), jwtExpiresAt: new Date(), revokedAt: null }],
+          subscriptions: [
+            { status: 'active', planId: 'pro', currentPeriodEnd: new Date('2026-08-01') },
+          ],
+          licenseTokens: [
+            {
+              deviceFingerprint: 'hw-uuid-1',
+              jwtIssuedAt: new Date(),
+              jwtExpiresAt: new Date(),
+              revokedAt: null,
+            },
+          ],
         }),
       },
-      licensingAuditLog: { findMany: vi.fn().mockResolvedValue([{ eventType: 'license_activated', createdAt: new Date() }]) } as unknown as SupportLookupDb['licensingAuditLog'],
+      licensingAuditLog: {
+        findMany: vi
+          .fn()
+          .mockResolvedValue([{ eventType: 'license_activated', createdAt: new Date() }]),
+      } as unknown as SupportLookupDb['licensingAuditLog'],
     };
 
     const result = await lookupSupportAccount(db, { email: 'realuser@example.com' });
@@ -33,10 +46,20 @@ describe('test_support_tools_never_expose_financial_data', () => {
       account: { findUnique: vi.fn().mockResolvedValue(null) },
       licensingAuditLog: { findMany: vi.fn() } as unknown as SupportLookupDb['licensingAuditLog'],
     };
-    await expect(lookupSupportAccount(db, { email: 'nope@example.com' })).rejects.toThrow(LicensingApiError);
+    await expect(lookupSupportAccount(db, { email: 'nope@example.com' })).rejects.toThrow(
+      LicensingApiError
+    );
     // Structural: the result type itself has no amount/merchant/transaction keys.
     const forbidden = ['amount', 'merchant', 'transaction', 'card', 'iban', 'razorpay_payment_id'];
-    const sourceUnderTest = ['account_id', 'email_masked', 'trial_used', 'subscriptions', 'license_tokens', 'history', 'recommended_recovery'];
+    const sourceUnderTest = [
+      'account_id',
+      'email_masked',
+      'trial_used',
+      'subscriptions',
+      'license_tokens',
+      'history',
+      'recommended_recovery',
+    ];
     for (const key of sourceUnderTest) {
       expect(forbidden).not.toContain(key);
     }
@@ -51,22 +74,32 @@ describe('test_support_reset_binding_is_audited', () => {
         findFirst: vi.fn().mockResolvedValue({ id: 'tok_1' }),
         update: vi.fn().mockResolvedValue({}),
       } as unknown as ResetBindingDb['licenseToken'],
-      licensingAuditLog: { create: vi.fn().mockResolvedValue({}), findMany: vi.fn() } as unknown as ResetBindingDb['licensingAuditLog'],
+      licensingAuditLog: {
+        create: vi.fn().mockResolvedValue({}),
+        findMany: vi.fn(),
+      } as unknown as ResetBindingDb['licensingAuditLog'],
     };
   }
 
   it('clears the device binding and logs the reason to the audit trail', async () => {
     const db = makeDb();
-    const result = await resetDeviceBinding(db, { email: 'user@example.com', reason: 'Lost Mac, verified via support ticket #123' });
+    const result = await resetDeviceBinding(db, {
+      email: 'user@example.com',
+      reason: 'Lost Mac, verified via support ticket #123',
+    });
     expect(result.status).toBe('binding_reset');
     expect(db.licenseToken.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ deviceFingerprint: null, deviceBoundAt: null }) })
+      expect.objectContaining({
+        data: expect.objectContaining({ deviceFingerprint: null, deviceBoundAt: null }),
+      })
     );
     expect(db.licensingAuditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           eventType: 'admin_support_reset_binding',
-          payload: expect.objectContaining({ reason: 'Lost Mac, verified via support ticket #123' }),
+          payload: expect.objectContaining({
+            reason: 'Lost Mac, verified via support ticket #123',
+          }),
         }),
       })
     );
@@ -75,7 +108,9 @@ describe('test_support_reset_binding_is_audited', () => {
   it('rejects an unknown account without touching any token row', async () => {
     const db = makeDb();
     db.account.findUnique = vi.fn().mockResolvedValue(null);
-    await expect(resetDeviceBinding(db, { email: 'nope@example.com', reason: 'test' })).rejects.toThrow(LicensingApiError);
+    await expect(
+      resetDeviceBinding(db, { email: 'nope@example.com', reason: 'test' })
+    ).rejects.toThrow(LicensingApiError);
     expect(db.licenseToken.update).not.toHaveBeenCalled();
   });
 });
@@ -84,44 +119,72 @@ describe('test_support_reissue_token_requires_reason', () => {
   function makeDb(): ReissueTokenDb {
     return {
       account: { findUnique: vi.fn().mockResolvedValue({ id: 'acc_1' }) },
-      subscription: { findFirst: vi.fn().mockResolvedValue({ planId: 'pro', billingInterval: 'month', status: 'active' }) },
+      subscription: {
+        findFirst: vi
+          .fn()
+          .mockResolvedValue({ planId: 'pro', billingInterval: 'month', status: 'active' }),
+      },
       licenseToken: {
         findFirst: vi.fn().mockResolvedValue(null),
         update: vi.fn().mockResolvedValue({}),
         create: vi.fn().mockResolvedValue({}),
       } as unknown as ReissueTokenDb['licenseToken'],
-      licensingAuditLog: { create: vi.fn().mockResolvedValue({}), findMany: vi.fn() } as unknown as ReissueTokenDb['licensingAuditLog'],
+      licensingAuditLog: {
+        create: vi.fn().mockResolvedValue({}),
+        findMany: vi.fn(),
+      } as unknown as ReissueTokenDb['licensingAuditLog'],
     };
   }
 
   it('rejects an empty reason before touching any row', async () => {
     const db = makeDb();
-    await expect(reissueToken(db, { email: 'user@example.com', new_device_id: 'hw-2', reason: '' }, 'fake-pem')).rejects.toThrow(
-      'reason is required'
-    );
+    await expect(
+      reissueToken(db, { email: 'user@example.com', new_device_id: 'hw-2', reason: '' }, 'fake-pem')
+    ).rejects.toThrow('reason is required');
     expect(db.account.findUnique).not.toHaveBeenCalled();
   });
 
   it('rejects a whitespace-only reason', async () => {
     const db = makeDb();
-    await expect(reissueToken(db, { email: 'user@example.com', new_device_id: 'hw-2', reason: '   ' }, 'fake-pem')).rejects.toThrow(
-      'reason is required'
-    );
+    await expect(
+      reissueToken(
+        db,
+        { email: 'user@example.com', new_device_id: 'hw-2', reason: '   ' },
+        'fake-pem'
+      )
+    ).rejects.toThrow('reason is required');
   });
 
   it('succeeds and audits the reason when a real reason is given', async () => {
     const db = makeDb();
-    const result = await reissueToken(db, { email: 'user@example.com', new_device_id: 'hw-2', reason: 'Reinstalled macOS after disk failure' }, TEST_PRIVATE_KEY_PEM);
+    const result = await reissueToken(
+      db,
+      {
+        email: 'user@example.com',
+        new_device_id: 'hw-2',
+        reason: 'Reinstalled macOS after disk failure',
+      },
+      TEST_PRIVATE_KEY_PEM
+    );
     expect(result.status).toBe('reissued');
     expect(db.licensingAuditLog.create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ payload: expect.objectContaining({ reason: 'Reinstalled macOS after disk failure' }) }) })
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({ reason: 'Reinstalled macOS after disk failure' }),
+        }),
+      })
     );
   });
 });
 
 describe('test_support_flow_uses_least_invasive_recovery_first', () => {
   it('every recommended case lists steps in the documented invasiveness order', () => {
-    const cases = ['stuck_grace_or_locked', 'lost_or_replaced_device', 'reinstalled_os', 'corrupted_local_state'] as const;
+    const cases = [
+      'stuck_grace_or_locked',
+      'lost_or_replaced_device',
+      'reinstalled_os',
+      'corrupted_local_state',
+    ] as const;
     for (const c of cases) {
       const steps = recommendRecovery(c).map((s) => s.action);
       const indices = steps.map((a) => INVASIVENESS_ORDER.indexOf(a));

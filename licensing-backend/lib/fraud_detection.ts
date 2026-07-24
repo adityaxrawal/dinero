@@ -7,7 +7,10 @@ import type { AuditWriter } from './audit';
 import { logAuditEvent } from './audit';
 
 export interface FraudSignal {
-  type: 'multiple_device_activations' | 'rapid_activate_deactivate_cycling' | 'signature_tampering_attempts';
+  type:
+    | 'multiple_device_activations'
+    | 'rapid_activate_deactivate_cycling'
+    | 'signature_tampering_attempts';
   detail: string;
 }
 
@@ -27,9 +30,13 @@ export function detectFraudSignals(rows: AuditRow[], now: Date = new Date()): Fr
   const signals: FraudSignal[] = [];
 
   const recentActivations = rows.filter(
-    (r) => r.eventType === 'license_activated' && now.getTime() - r.createdAt.getTime() <= MULTI_DEVICE_WINDOW_MS
+    (r) =>
+      r.eventType === 'license_activated' &&
+      now.getTime() - r.createdAt.getTime() <= MULTI_DEVICE_WINDOW_MS
   );
-  const distinctDevices = new Set(recentActivations.map((r) => r.deviceFingerprint).filter(Boolean));
+  const distinctDevices = new Set(
+    recentActivations.map((r) => r.deviceFingerprint).filter(Boolean)
+  );
   if (distinctDevices.size >= MULTI_DEVICE_THRESHOLD) {
     signals.push({
       type: 'multiple_device_activations',
@@ -65,7 +72,11 @@ export function detectFraudSignals(rows: AuditRow[], now: Date = new Date()): Fr
 /// mutated by this function; a human reviews the flag via the internal
 /// admin dashboard and decides (Doc 30 TASK-LIC-009: "provides a documented
 /// manual support workflow for force-unbinding a device", not an automated one).
-export async function flagForReview(db: AuditWriter, accountId: string, signals: FraudSignal[]): Promise<void> {
+export async function flagForReview(
+  db: AuditWriter,
+  accountId: string,
+  signals: FraudSignal[]
+): Promise<void> {
   for (const signal of signals) {
     await logAuditEvent(db, {
       accountId,

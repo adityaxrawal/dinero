@@ -6,7 +6,11 @@ import { SEED_PLANS } from '../prisma/seed';
 function makeDb(plans: Record<string, unknown>[]): PlansDb {
   return {
     plan: {
-      findUnique: vi.fn().mockImplementation(({ where }) => Promise.resolve(plans.find((p) => p.id === where.id) ?? null)),
+      findUnique: vi
+        .fn()
+        .mockImplementation(({ where }) =>
+          Promise.resolve(plans.find((p) => p.id === where.id) ?? null)
+        ),
       update: vi.fn().mockImplementation(({ where, data }) => {
         // Mirrors real Prisma: update() returns a fresh row object, never
         // mutates whatever reference an earlier findUnique() call handed
@@ -16,9 +20,16 @@ function makeDb(plans: Record<string, unknown>[]): PlansDb {
         plans[index] = { ...plans[index], ...data };
         return Promise.resolve(plans[index]);
       }),
-      findMany: vi.fn().mockImplementation(({ where }) => Promise.resolve(where?.isActive ? plans.filter((p) => p.isActive) : plans)),
+      findMany: vi
+        .fn()
+        .mockImplementation(({ where }) =>
+          Promise.resolve(where?.isActive ? plans.filter((p) => p.isActive) : plans)
+        ),
     } as unknown as PlansDb['plan'],
-    licensingAuditLog: { create: vi.fn().mockResolvedValue({}), findMany: vi.fn().mockResolvedValue([]) } as unknown as PlansDb['licensingAuditLog'],
+    licensingAuditLog: {
+      create: vi.fn().mockResolvedValue({}),
+      findMany: vi.fn().mockResolvedValue([]),
+    } as unknown as PlansDb['licensingAuditLog'],
   };
 }
 
@@ -26,8 +37,18 @@ describe('test_plan_seeded_correctly', () => {
   it('seeds both desktop_pro_monthly (29900) and desktop_pro_annual (287040) with 14-day trials', () => {
     const monthly = SEED_PLANS.find((p) => p.id === 'desktop_pro_monthly');
     const annual = SEED_PLANS.find((p) => p.id === 'desktop_pro_annual');
-    expect(monthly).toMatchObject({ amountMinor: 29900, billingInterval: 'month', trialDays: 14, currency: 'INR' });
-    expect(annual).toMatchObject({ amountMinor: 287040, billingInterval: 'year', trialDays: 14, currency: 'INR' });
+    expect(monthly).toMatchObject({
+      amountMinor: 29900,
+      billingInterval: 'month',
+      trialDays: 14,
+      currency: 'INR',
+    });
+    expect(annual).toMatchObject({
+      amountMinor: 287040,
+      billingInterval: 'year',
+      trialDays: 14,
+      currency: 'INR',
+    });
   });
 });
 

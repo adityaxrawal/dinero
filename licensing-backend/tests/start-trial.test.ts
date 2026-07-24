@@ -16,7 +16,9 @@ function makeDb(opts: {
   return {
     account: {
       findUnique: vi.fn().mockResolvedValue(opts.existingAccount ?? null),
-      create: vi.fn().mockResolvedValue({ id: 'acc_new', email: 'new@example.com', trialUsed: false }),
+      create: vi
+        .fn()
+        .mockResolvedValue({ id: 'acc_new', email: 'new@example.com', trialUsed: false }),
       update: vi.fn().mockResolvedValue({}),
     } as unknown as StartTrialDb['account'],
     subscription: {
@@ -32,9 +34,13 @@ function makeDb(opts: {
         auditRows.push({ eventType: data.eventType, payload: data.payload, createdAt: new Date() });
         return Promise.resolve({});
       }),
-      findMany: vi.fn().mockImplementation(({ where }: { where: { eventType: string } }) =>
-        Promise.resolve(auditRows.filter((r) => (r as { eventType: string }).eventType === where.eventType))
-      ),
+      findMany: vi
+        .fn()
+        .mockImplementation(({ where }: { where: { eventType: string } }) =>
+          Promise.resolve(
+            auditRows.filter((r) => (r as { eventType: string }).eventType === where.eventType)
+          )
+        ),
     } as unknown as StartTrialDb['licensingAuditLog'],
   };
 }
@@ -43,16 +49,22 @@ describe('test_trial_one_per_hardware_uuid', () => {
   it('rejects a second trial start on the same device', async () => {
     const db = makeDb({
       existingAccount: null,
-      priorDeviceTrialAuditRows: [{ eventType: 'trial_started', payload: { device_id: 'device-A' }, createdAt: new Date() }],
+      priorDeviceTrialAuditRows: [
+        { eventType: 'trial_started', payload: { device_id: 'device-A' }, createdAt: new Date() },
+      ],
     });
-    await expect(startTrial(db, { email: 'new@example.com', device_id: 'device-A' }, TEST_PRIVATE_KEY_PEM)).rejects.toMatchObject({
+    await expect(
+      startTrial(db, { email: 'new@example.com', device_id: 'device-A' }, TEST_PRIVATE_KEY_PEM)
+    ).rejects.toMatchObject({
       code: 'VALIDATION_ERROR',
     });
   });
 
   it('allows the first trial on a fresh device', async () => {
     const db = makeDb({ existingAccount: null });
-    await expect(startTrial(db, { email: 'new@example.com', device_id: 'device-A' }, TEST_PRIVATE_KEY_PEM)).resolves.toMatchObject({
+    await expect(
+      startTrial(db, { email: 'new@example.com', device_id: 'device-A' }, TEST_PRIVATE_KEY_PEM)
+    ).resolves.toMatchObject({
       status: 'trial_started',
     });
   });
@@ -62,7 +74,11 @@ describe('test_trial_expires_after_14_days', () => {
   it('sets trial_ends_at exactly 14 days from now', async () => {
     const db = makeDb({ existingAccount: null });
     const before = Date.now();
-    const result = await startTrial(db, { email: 'new@example.com', device_id: 'device-A' }, TEST_PRIVATE_KEY_PEM);
+    const result = await startTrial(
+      db,
+      { email: 'new@example.com', device_id: 'device-A' },
+      TEST_PRIVATE_KEY_PEM
+    );
     if (result.status !== 'trial_started') throw new Error('expected trial_started');
     const expiryMs = new Date(result.trial_ends_at).getTime();
     const expectedMs = before + 14 * 24 * 60 * 60 * 1000;
@@ -85,9 +101,20 @@ describe('test_os_reinstall_recognized_not_blocked_as_abuse (integration)', () =
     const db = makeDb({
       existingAccount: { id: 'acc_1', email: 'user@example.com', trialUsed: true },
       existingBinding: { accountId: 'acc_1' },
-      boundSubscription: { planId: 'desktop_pro_annual', billingInterval: 'annual', status: 'active' },
+      boundSubscription: {
+        planId: 'desktop_pro_annual',
+        billingInterval: 'annual',
+        status: 'active',
+      },
     });
-    const result = await startTrial(db, { email: 'user@example.com', device_id: 'device-A' }, TEST_PRIVATE_KEY_PEM);
-    expect(result).toMatchObject({ status: 'existing_subscription_recognized', plan: 'desktop_pro_annual' });
+    const result = await startTrial(
+      db,
+      { email: 'user@example.com', device_id: 'device-A' },
+      TEST_PRIVATE_KEY_PEM
+    );
+    expect(result).toMatchObject({
+      status: 'existing_subscription_recognized',
+      plan: 'desktop_pro_annual',
+    });
   });
 });

@@ -13,11 +13,16 @@ export async function paidMau(db: Pick<MetricsDb, 'subscription'>): Promise<numb
   return db.subscription.count({ where: { status: 'active' } });
 }
 
-export async function trialToPaidConversionRate(db: Pick<MetricsDb, 'subscription'>, windowDays: number): Promise<number> {
+export async function trialToPaidConversionRate(
+  db: Pick<MetricsDb, 'subscription'>,
+  windowDays: number
+): Promise<number> {
   const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
   const trialsStarted = await db.subscription.count({ where: { createdAt: { gte: since } } });
   if (trialsStarted === 0) return 0;
-  const converted = await db.subscription.count({ where: { createdAt: { gte: since }, status: 'active' } });
+  const converted = await db.subscription.count({
+    where: { createdAt: { gte: since }, status: 'active' },
+  });
   return converted / trialsStarted;
 }
 
@@ -25,7 +30,9 @@ export async function monthlyChurnRate(db: Pick<MetricsDb, 'subscription'>): Pro
   const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
   const activeAtStart = await db.subscription.count({ where: { status: 'active' } });
   if (activeAtStart === 0) return 0;
-  const churnedThisMonth = await db.subscription.count({ where: { status: 'canceled', updatedAt: { gte: since } } });
+  const churnedThisMonth = await db.subscription.count({
+    where: { status: 'canceled', updatedAt: { gte: since } },
+  });
   return churnedThisMonth / activeAtStart;
 }
 

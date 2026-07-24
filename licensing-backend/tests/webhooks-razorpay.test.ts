@@ -1,6 +1,10 @@
 // Doc 30 TASK-BILL-003 acceptance criteria.
 import { describe, it, expect, vi } from 'vitest';
-import { processWebhookEvent, type WebhookDb, type RazorpayWebhookEvent } from '../api/license/webhooks/razorpay';
+import {
+  processWebhookEvent,
+  type WebhookDb,
+  type RazorpayWebhookEvent,
+} from '../api/license/webhooks/razorpay';
 import { verifyWebhookSignature } from '../lib/razorpay';
 import { createHmac } from 'node:crypto';
 
@@ -21,7 +25,10 @@ function makeDb(opts: {
     subscription: {
       findFirst: vi.fn().mockImplementation(({ where }) => {
         if (where.id) return Promise.resolve(subscriptions.find((s) => s.id === where.id) ?? null);
-        if (where.accountId) return Promise.resolve(subscriptions.find((s) => s.accountId === where.accountId) ?? null);
+        if (where.accountId)
+          return Promise.resolve(
+            subscriptions.find((s) => s.accountId === where.accountId) ?? null
+          );
         return Promise.resolve(subscriptions[0] ?? null);
       }),
       update: vi.fn().mockImplementation(({ where, data }) => {
@@ -36,16 +43,26 @@ function makeDb(opts: {
         paymentProviderRecords.push(data);
         return Promise.resolve(data);
       }),
-      findFirst: vi.fn().mockImplementation(({ where }) =>
-        Promise.resolve(paymentProviderRecords.find((r) => r.razorpaySubscriptionId === where.razorpaySubscriptionId) ?? null)
-      ),
+      findFirst: vi
+        .fn()
+        .mockImplementation(({ where }) =>
+          Promise.resolve(
+            paymentProviderRecords.find(
+              (r) => r.razorpaySubscriptionId === where.razorpaySubscriptionId
+            ) ?? null
+          )
+        ),
     } as unknown as WebhookDb['paymentProviderRecord'],
     licensingAuditLog: {
       create: vi.fn().mockImplementation(({ data }) => {
         auditRows.push({ eventType: data.eventType, payload: data.payload, createdAt: new Date() });
         return Promise.resolve({});
       }),
-      findMany: vi.fn().mockImplementation(({ where }) => Promise.resolve(auditRows.filter((r) => r.eventType === where.eventType))),
+      findMany: vi
+        .fn()
+        .mockImplementation(({ where }) =>
+          Promise.resolve(auditRows.filter((r) => r.eventType === where.eventType))
+        ),
     } as unknown as WebhookDb['licensingAuditLog'],
   };
 }
@@ -60,9 +77,13 @@ describe('test_subscription_created_creates_row', () => {
     };
     const result = await processWebhookEvent(db, event);
     expect(result.status).toBe('processed');
-    expect(db.subscription.update).toHaveBeenCalledWith(expect.objectContaining({ data: { status: 'active' } }));
+    expect(db.subscription.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { status: 'active' } })
+    );
     expect(db.paymentProviderRecord.create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ razorpaySubscriptionId: 'rzp_sub_1' }) })
+      expect.objectContaining({
+        data: expect.objectContaining({ razorpaySubscriptionId: 'rzp_sub_1' }),
+      })
     );
   });
 });
@@ -80,7 +101,10 @@ describe('test_invoice_paid_extends_period_and_heals_past_due', () => {
     };
     await processWebhookEvent(db, event);
     expect(db.subscription.update).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: 'sub_1' }, data: expect.objectContaining({ status: 'active' }) })
+      expect.objectContaining({
+        where: { id: 'sub_1' },
+        data: expect.objectContaining({ status: 'active' }),
+      })
     );
   });
 });

@@ -5,8 +5,24 @@ import { PrismaClient } from '@prisma/client';
 const prisma = new PrismaClient();
 
 export const SEED_PLANS = [
-  { id: 'desktop_pro_monthly', name: 'Dinero Pro (Monthly)', currency: 'INR', amountMinor: 29900, billingInterval: 'month', trialDays: 14, isActive: true },
-  { id: 'desktop_pro_annual', name: 'Dinero Pro (Annual)', currency: 'INR', amountMinor: 287040, billingInterval: 'year', trialDays: 14, isActive: true },
+  {
+    id: 'desktop_pro_monthly',
+    name: 'Dinero Pro (Monthly)',
+    currency: 'INR',
+    amountMinor: 29900,
+    billingInterval: 'month',
+    trialDays: 14,
+    isActive: true,
+  },
+  {
+    id: 'desktop_pro_annual',
+    name: 'Dinero Pro (Annual)',
+    currency: 'INR',
+    amountMinor: 287040,
+    billingInterval: 'year',
+    trialDays: 14,
+    isActive: true,
+  },
 ];
 
 async function main() {

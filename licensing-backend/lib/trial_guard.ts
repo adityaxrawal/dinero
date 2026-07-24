@@ -25,7 +25,10 @@ export function decideTrialEligibility(input: TrialGuardInput): TrialGuardDecisi
   // already-registered and granted a fresh JWT for their existing
   // (non-trial) subscription state -- this is continuity, not abuse."
   if (input.deviceBoundSubscriptionStatus && input.deviceBoundSubscriptionStatus !== 'trialing') {
-    return { outcome: 'recognized_returning_device', existingSubscriptionStatus: input.deviceBoundSubscriptionStatus };
+    return {
+      outcome: 'recognized_returning_device',
+      existingSubscriptionStatus: input.deviceBoundSubscriptionStatus,
+    };
   }
 
   if (input.deviceHasPriorTrialStartedEvent) {
@@ -39,11 +42,18 @@ export function decideTrialEligibility(input: TrialGuardInput): TrialGuardDecisi
 
 /// Doc 30 TASK-BILL-009: "Logs distinguish 'blocked repeat trial attempt'
 /// from 'recognized returning device with existing paid subscription.'"
-export async function logTrialGuardDecision(db: AuditWriter, deviceId: string, decision: TrialGuardDecision): Promise<void> {
+export async function logTrialGuardDecision(
+  db: AuditWriter,
+  deviceId: string,
+  decision: TrialGuardDecision
+): Promise<void> {
   const { logAuditEvent } = await import('./audit');
   if (decision.outcome === 'allow_new_trial') return; // start-trial.ts itself logs the real trial_started event
   await logAuditEvent(db, {
-    eventType: decision.outcome === 'recognized_returning_device' ? 'trial_guard_recognized_returning_device' : 'trial_guard_blocked',
+    eventType:
+      decision.outcome === 'recognized_returning_device'
+        ? 'trial_guard_recognized_returning_device'
+        : 'trial_guard_blocked',
     deviceFingerprint: deviceId,
     payload: { outcome: decision.outcome },
   });
@@ -51,7 +61,15 @@ export async function logTrialGuardDecision(db: AuditWriter, deviceId: string, d
 
 /// Helper for callers that only have raw audit-log access (matches
 /// start-trial.ts's existing device-history check style).
-export async function deviceHasPriorTrialStartedEvent(db: AuditWriter, deviceId: string): Promise<boolean> {
-  const count = await countRecentEvents(db, 'trial_started', Number.MAX_SAFE_INTEGER, (p) => (p as { device_id?: string } | null)?.device_id === deviceId);
+export async function deviceHasPriorTrialStartedEvent(
+  db: AuditWriter,
+  deviceId: string
+): Promise<boolean> {
+  const count = await countRecentEvents(
+    db,
+    'trial_started',
+    Number.MAX_SAFE_INTEGER,
+    (p) => (p as { device_id?: string } | null)?.device_id === deviceId
+  );
   return count > 0;
 }
