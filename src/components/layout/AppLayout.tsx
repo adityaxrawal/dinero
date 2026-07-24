@@ -12,6 +12,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { isTauriRuntime } from '@/lib/tauriRuntime';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { cn } from '@/lib/utils';
 import { API } from '@/lib/ipc';
@@ -42,29 +43,38 @@ interface NavItem {
 /** Minimal SVG logo mark used in the rail */
 function LogoMark() {
   return (
-    <svg width="20" height="20" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-      <rect x="72" y="82" rx="22" ry="22" width="368" height="110" fill="#F8E7C9"/>
-      <rect x="72" y="214" rx="22" ry="22" width="368" height="216" fill="#F8E7C9"/>
-      <rect x="110" y="112" width="146" height="22" rx="6" fill="#064E3B"/>
-      <rect x="274" y="112" width="88" height="22" rx="6" fill="rgba(6,78,59,0.5)"/>
-      <path d="M132 355 L192 295 L252 340 L336 256" fill="none" stroke="#064E3B" strokeWidth="16" strokeLinecap="round" strokeLinejoin="round"/>
+    <svg
+      width="20"
+      height="20"
+      viewBox="0 0 512 512"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+    >
+      <rect x="72" y="82" rx="22" ry="22" width="368" height="110" fill="#F8E7C9" />
+      <rect x="72" y="214" rx="22" ry="22" width="368" height="216" fill="#F8E7C9" />
+      <rect x="110" y="112" width="146" height="22" rx="6" fill="#064E3B" />
+      <rect x="274" y="112" width="88" height="22" rx="6" fill="rgba(6,78,59,0.5)" />
+      <path
+        d="M132 355 L192 295 L252 340 L336 256"
+        fill="none"
+        stroke="#064E3B"
+        strokeWidth="16"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }
 
-function SidebarItem({
-  item,
-  isActive,
-}: {
-  item: NavItem;
-  isActive: boolean;
-}) {
+function SidebarItem({ item, isActive }: { item: NavItem; isActive: boolean }) {
   return (
     <NavLink
       to={item.path}
       end={item.path === '/'}
       className="relative block w-full px-3"
-      aria-label={item.badge && item.badge > 0 ? `${item.label} — ${item.badge} pending` : item.label}
+      aria-label={
+        item.badge && item.badge > 0 ? `${item.label} — ${item.badge} pending` : item.label
+      }
     >
       <span
         className={cn(
@@ -75,20 +85,16 @@ function SidebarItem({
         )}
         aria-current={isActive ? 'page' : undefined}
       >
-        <span className="flex-shrink-0 flex items-center justify-center w-6">
-          {item.icon}
-        </span>
-        
-        <span className="ml-2 text-[13px] whitespace-nowrap overflow-hidden">
-          {item.label}
-        </span>
+        <span className="flex-shrink-0 flex items-center justify-center w-6">{item.icon}</span>
+
+        <span className="ml-2 text-[13px] whitespace-nowrap overflow-hidden">{item.label}</span>
 
         {item.badge != null && item.badge > 0 && (
           <span
             className={cn(
-              "flex items-center justify-center text-[10px] font-bold rounded-full ml-auto px-2 min-w-[20px] h-5 transition-transform duration-300",
-              isActive ? "bg-[#064E3B]/10 text-[#064E3B]" : "bg-[#f59e0b] text-white",
-              item.pulse && "scale-125"
+              'flex items-center justify-center text-[10px] font-bold rounded-full ml-auto px-2 min-w-[20px] h-5 transition-transform duration-300',
+              isActive ? 'bg-[#064E3B]/10 text-[#064E3B]' : 'bg-[#f59e0b] text-white',
+              item.pulse && 'scale-125'
             )}
             data-testid={item.pulse !== undefined ? 'reconciliation-badge' : undefined}
             data-pulsing={item.pulse}
@@ -105,7 +111,9 @@ function SidebarItem({
 export default function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
-  const [backendStatus, setBackendStatus] = useState<'healthy' | 'offline' | 'corrupted'>('healthy');
+  const [backendStatus, setBackendStatus] = useState<'healthy' | 'offline' | 'corrupted'>(
+    'healthy'
+  );
   const hydrateLicenseStore = useLicenseStore((s) => s.hydrate);
 
   // TASK-RT-006: React Query already auto-invalidates this on every
@@ -139,7 +147,8 @@ export default function AppLayout() {
 
   const handleStartFresh = useCallback(async () => {
     let confirmed: boolean;
-    const warning = 'Start fresh? This permanently deletes all local data (transactions, statements, settings) and returns you to onboarding. This cannot be undone.';
+    const warning =
+      'Start fresh? This permanently deletes all local data (transactions, statements, settings) and returns you to onboarding. This cannot be undone.';
     try {
       const { ask } = await import('@tauri-apps/plugin-dialog');
       confirmed = await ask(warning, { title: 'Start Fresh', kind: 'warning' });
@@ -159,15 +168,21 @@ export default function AppLayout() {
   }, []);
 
   useEffect(() => {
-    const isTauriRuntime = !!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
-    if (isTauriRuntime && !localStorage.getItem('dinero_onboarded')) {
+    if (isTauriRuntime() && !localStorage.getItem('dinero_onboarded')) {
       navigate('/onboarding', { replace: true });
       return;
     }
 
-    API.status.check()
-      .then((result) => setBackendStatus((prev) => prev === 'healthy' || prev === 'offline' ? (result.status as 'healthy') : prev))
-      .catch(() => setBackendStatus((prev) => prev === 'healthy' || prev === 'offline' ? 'offline' : prev));
+    API.status
+      .check()
+      .then((result) =>
+        setBackendStatus((prev) =>
+          prev === 'healthy' || prev === 'offline' ? (result.status as 'healthy') : prev
+        )
+      )
+      .catch(() =>
+        setBackendStatus((prev) => (prev === 'healthy' || prev === 'offline' ? 'offline' : prev))
+      );
 
     hydrateLicenseStore();
 
@@ -206,22 +221,35 @@ export default function AppLayout() {
       title: 'Workspace',
       items: [
         { path: '/', label: 'Command Center', icon: <LayoutDashboard size={15} />, badge: 0 },
-        { path: '/reconciliation', label: 'Review Inbox', icon: <GitMerge size={15} />, badge: unresolvedClusters, pulse: badgePulse },
+        {
+          path: '/reconciliation',
+          label: 'Review Inbox',
+          icon: <GitMerge size={15} />,
+          badge: unresolvedClusters,
+          pulse: badgePulse,
+        },
         { path: '/statements', label: 'Statements', icon: <FileText size={15} />, badge: 0 },
-      ]
+      ],
     },
     {
       title: 'Ledger',
       items: [
-        { path: '/transactions', label: 'All Transactions', icon: <ArrowLeftRight size={15} />, badge: 0 },
+        {
+          path: '/transactions',
+          label: 'All Transactions',
+          icon: <ArrowLeftRight size={15} />,
+          badge: 0,
+        },
         { path: '/instruments', label: 'Accounts', icon: <CreditCard size={15} />, badge: 0 },
-      ]
-    }
+      ],
+    },
   ];
 
   const systemItems: NavItem[] = [
     { path: '/settings', label: 'Settings', icon: <Settings size={15} />, badge: 0 },
-    ...(import.meta.env.DEV ? [{ path: '/debug', label: 'Debug', icon: <Activity size={15} />, badge: 0 }] : []),
+    ...(import.meta.env.DEV
+      ? [{ path: '/debug', label: 'Debug', icon: <Activity size={15} />, badge: 0 }]
+      : []),
   ];
 
   /* ── Corrupted DB Recovery ──────────────────────────────── */
@@ -250,11 +278,16 @@ export default function AppLayout() {
             <AlertTriangle className="w-7 h-7" style={{ color: '#dc2626' }} aria-hidden="true" />
           </div>
           <div>
-            <h2 id="db-corrupted-title" className="text-xl font-semibold mb-2" style={{ color: '#0d2b22' }}>
+            <h2
+              id="db-corrupted-title"
+              className="text-xl font-semibold mb-2"
+              style={{ color: '#0d2b22' }}
+            >
               Database Corrupted
             </h2>
             <p id="db-corrupted-desc" className="text-sm" style={{ color: '#3d5a50' }}>
-              The SQLite integrity check failed. Restore from a backup to recover your data, or start fresh.
+              The SQLite integrity check failed. Restore from a backup to recover your data, or
+              start fresh.
             </p>
           </div>
           <div className="flex flex-col gap-3 w-full">
@@ -266,8 +299,12 @@ export default function AppLayout() {
               style={{ backgroundColor: '#064E3B', color: '#F8E7C9' }}
             >
               {isRestoring ? (
-                <><Loader2 className="w-4 h-4 mr-2 animate-spin" aria-hidden="true" /> Restoring…</>
-              ) : 'Restore from Backup'}
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" aria-hidden="true" /> Restoring…
+                </>
+              ) : (
+                'Restore from Backup'
+              )}
             </Button>
             <Button
               variant="outline"
@@ -278,8 +315,13 @@ export default function AppLayout() {
               style={{ borderColor: '#d9c8a8', color: '#3d5a50' }}
             >
               {isStartingFresh ? (
-                <><Loader2 className="w-4 h-4 mr-2 animate-spin" aria-hidden="true" /> Starting Fresh…</>
-              ) : 'Start Fresh (Delete All Data)'}
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" aria-hidden="true" /> Starting
+                  Fresh…
+                </>
+              ) : (
+                'Start Fresh (Delete All Data)'
+              )}
             </Button>
           </div>
         </div>
@@ -313,24 +355,33 @@ export default function AppLayout() {
           >
             <LogoMark />
           </div>
-          <span className="ml-3 font-semibold text-[15px] tracking-tight" style={{ color: '#F8E7C9' }}>Dinero</span>
+          <span
+            className="ml-3 font-semibold text-[15px] tracking-tight"
+            style={{ color: '#F8E7C9' }}
+          >
+            Dinero
+          </span>
         </div>
 
         {/* Nav items */}
-        <nav className="flex-1 flex flex-col w-full py-4 gap-6 overflow-y-auto" aria-label="Primary navigation">
-          
+        <nav
+          className="flex-1 flex flex-col w-full py-4 gap-6 overflow-y-auto"
+          aria-label="Primary navigation"
+        >
           {navGroups.map((group) => (
             <div key={group.title} className="flex flex-col gap-1">
               <div className="px-6 text-[10px] font-semibold uppercase tracking-wider text-[#F8E7C9]/40 mb-1">
                 {group.title}
               </div>
               {group.items.map((item) => {
-                const isActive = item.path === '/' ? location.pathname === '/' : location.pathname.startsWith(item.path);
+                const isActive =
+                  item.path === '/'
+                    ? location.pathname === '/'
+                    : location.pathname.startsWith(item.path);
                 return <SidebarItem key={item.path} item={item} isActive={isActive} />;
               })}
             </div>
           ))}
-
         </nav>
 
         {/* System messages (Gmail-disconnected, license grace/locked) —
@@ -350,12 +401,15 @@ export default function AppLayout() {
             const isActive = location.pathname.startsWith(item.path);
             return <SidebarItem key={item.path} item={item} isActive={isActive} />;
           })}
-          
+
           {/* Status Indicator */}
           <div className="px-6 mt-4 flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <div 
-                className={cn("w-2 h-2 rounded-full", backendStatus === 'healthy' ? "bg-[#10b981]" : "bg-[#ef4444]")} 
+              <div
+                className={cn(
+                  'w-2 h-2 rounded-full',
+                  backendStatus === 'healthy' ? 'bg-[#10b981]' : 'bg-[#ef4444]'
+                )}
               />
               <span className="text-[11px] font-medium text-[#F8E7C9]/60">
                 {backendStatus === 'healthy' ? 'Engine Online' : 'Engine Offline'}
@@ -366,10 +420,7 @@ export default function AppLayout() {
       </aside>
 
       {/* ── Main Content Area ──────────────────────────────── */}
-      <main
-        id="main-content"
-        className="flex-1 flex overflow-hidden relative"
-      >
+      <main id="main-content" className="flex-1 flex overflow-hidden relative">
         {/* Outlet acts as Column 2 and Column 3 (or full canvas) */}
         <ErrorBoundary>
           <Outlet />

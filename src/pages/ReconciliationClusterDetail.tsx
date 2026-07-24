@@ -1,4 +1,3 @@
-
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Loader2, GitMerge, X, SplitSquareHorizontal, Clock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -22,7 +21,6 @@ import type { ClusterMember } from '@/lib/ipc';
  * pre-rewrite page never sent one at all.
  */
 export default function ReconciliationClusterDetail() {
-
   const navigate = useNavigate();
   const { clusterId } = useParams<{ clusterId: string }>();
 
@@ -56,13 +54,18 @@ export default function ReconciliationClusterDetail() {
     return (
       <div className="flex flex-col items-center justify-center h-[50vh] space-y-4">
         <p className="text-xl font-semibold">Cluster Not Found</p>
-        <p className="text-sm text-muted-foreground">This cluster could not be found. It may already be resolved.</p>
+        <p className="text-sm text-muted-foreground">
+          This cluster could not be found. It may already be resolved.
+        </p>
       </div>
     );
   }
 
   return (
-    <div className="space-y-6 max-w-4xl mx-auto">
+    // AppLayout's <main> is overflow-hidden -- every routed page owns its
+    // own scroll container, or content past the viewport is unreachable.
+    <div className="flex-1 h-full overflow-y-auto">
+    <div className="space-y-6 max-w-4xl mx-auto p-6 lg:p-10">
       <Button variant="ghost" size="sm" onClick={() => navigate('/reconciliation')}>
         <ArrowLeft className="w-4 h-4 mr-1" aria-hidden="true" /> Back
       </Button>
@@ -71,8 +74,13 @@ export default function ReconciliationClusterDetail() {
         <h1 className="text-2xl font-bold">Ambiguous Match Cluster</h1>
         <p className="text-muted-foreground mt-1">
           {cluster.reason.startsWith('Ambiguous match') ? (
-            <><span>Ambiguous match</span>{cluster.reason.substring(15)}</>
-          ) : cluster.reason}
+            <>
+              <span>Ambiguous match</span>
+              {cluster.reason.substring(15)}
+            </>
+          ) : (
+            cluster.reason
+          )}
         </p>
       </div>
 
@@ -89,7 +97,9 @@ export default function ReconciliationClusterDetail() {
           <ClusterMemberComparison
             members={cluster.members}
             selectedCandidateId={selectedCandidateId}
-            onSelectCandidate={(m: ClusterMember) => setSelectedCandidateId(m.canonical_transaction_id)}
+            onSelectCandidate={(m: ClusterMember) =>
+              setSelectedCandidateId(m.canonical_transaction_id)
+            }
           />
         </CardContent>
       </Card>
@@ -97,13 +107,24 @@ export default function ReconciliationClusterDetail() {
       <Card className="bg-muted/30">
         <CardContent className="p-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <p className="text-sm text-muted-foreground italic flex items-center gap-2">
-            <SplitSquareHorizontal className="w-4 h-4" aria-hidden="true" /> Review carefully — these actions alter your financial records.
+            <SplitSquareHorizontal className="w-4 h-4" aria-hidden="true" /> Review carefully —
+            these actions alter your financial records.
           </p>
           <div className="flex flex-wrap gap-2">
-            <Button variant="ghost" className="text-muted-foreground" onClick={handleReviewLater} disabled={isPending}>
+            <Button
+              variant="ghost"
+              className="text-muted-foreground"
+              onClick={handleReviewLater}
+              disabled={isPending}
+            >
               <Clock className="w-4 h-4 mr-2" aria-hidden="true" /> Review Later
             </Button>
-            <Button variant="outline" className="text-red-700 hover:text-red-700 hover:bg-destructive/10" onClick={handleRejectCandidates} disabled={isPending}>
+            <Button
+              variant="outline"
+              className="text-red-700 hover:text-red-700 hover:bg-destructive/10"
+              onClick={handleRejectCandidates}
+              disabled={isPending}
+            >
               <X className="w-4 h-4 mr-2" aria-hidden="true" /> Reject Matches
             </Button>
             <Button variant="outline" onClick={handleKeepSeparate} disabled={isPending}>
@@ -120,6 +141,7 @@ export default function ReconciliationClusterDetail() {
           </div>
         </CardContent>
       </Card>
+    </div>
     </div>
   );
 }

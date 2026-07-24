@@ -74,6 +74,15 @@ export default function Onboarding() {
     setStep((s) => Math.max(s - 1, 1));
   };
 
+  const persistOnboardingState = async () => {
+    localStorage.setItem('dinero_onboarded', 'true');
+    localStorage.setItem('dinero_monthly_limit', monthlyLimit);
+    localStorage.setItem('dinero_scan_range', scanRange);
+    localStorage.setItem('llm_model', llmConfig);
+    localStorage.setItem('dinero_statement_pref', statementPref);
+    await savePreferencesToBackend();
+  };
+
   const handleConnectGmail = async () => {
     setLoading(true);
     setOauthError(null);
@@ -92,12 +101,7 @@ export default function Onboarding() {
       // Call real OAuth IPC — must succeed before marking onboarded
       await API.auth.startGoogle();
       // Only persist onboarded state after successful token storage
-      localStorage.setItem('dinero_onboarded', 'true');
-      localStorage.setItem('dinero_monthly_limit', monthlyLimit);
-      localStorage.setItem('dinero_scan_range', scanRange);
-      localStorage.setItem('llm_model', llmConfig);
-      localStorage.setItem('dinero_statement_pref', statementPref);
-      await savePreferencesToBackend();
+      await persistOnboardingState();
       // TASK-FE-006: advance to the historical-scan step instead of
       // finishing onboarding immediately — a connected account is exactly
       // what that step needs to actually trigger a scan.
@@ -120,12 +124,7 @@ export default function Onboarding() {
       } catch (consentErr) {
         console.error('Failed to record onboarding disclosure consent:', consentErr);
       }
-      localStorage.setItem('dinero_onboarded', 'true');
-      localStorage.setItem('dinero_monthly_limit', monthlyLimit);
-      localStorage.setItem('dinero_scan_range', scanRange);
-      localStorage.setItem('llm_model', llmConfig);
-      localStorage.setItem('dinero_statement_pref', statementPref);
-      await savePreferencesToBackend();
+      await persistOnboardingState();
       // TASK-FE-007: the trial-confirmation screen is universal (not
       // Gmail-specific) — manual/statement-only users skip the historical
       // scan (no account to scan) but still see it.

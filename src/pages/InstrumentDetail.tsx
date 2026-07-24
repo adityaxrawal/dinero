@@ -11,11 +11,7 @@ import { useToast } from '@/hooks/use-toast';
 import { API } from '@/lib/ipc';
 import { getErrorToast } from '@/lib/errorMapping';
 import { queryKeys } from '@/lib/queryKeys';
-import { useInstrumentDetail } from '@/hooks/queries/useInstrumentDetail';
-import { useTransactionsInfiniteList } from '@/hooks/queries/useTransactionsInfiniteList';
-import { useStatementsList } from '@/hooks/queries/useStatementsList';
-import { usePdfPasswordsList } from '@/hooks/queries/usePdfPasswordsList';
-import { useForgetPdfPassword } from '@/hooks/mutations/useForgetPdfPassword';
+import { useInstrumentForm } from '@/components/instruments/useInstrumentForm';
 import { instrumentTypeLabel } from '@/components/instruments/instrumentTypes';
 import { formatCustomDate } from '@/lib/formatCustomDate';
 import { cn } from '@/lib/utils';
@@ -35,27 +31,24 @@ export default function InstrumentDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { toast } = useToast();
-  const queryClient = useQueryClient();
-
-  const { data: inst, isLoading } = useInstrumentDetail(id);
-  const { data: txPage } = useTransactionsInfiniteList(id ? { instrument_id: id } : {});
-  const { data: statements = [] } = useStatementsList();
-  const { data: pdfPasswords = [] } = usePdfPasswordsList();
-  const forgetPassword = useForgetPdfPassword();
-
-  const [fullIdentifier, setFullIdentifier] = useState('');
-  const [billingCycleDay, setBillingCycleDay] = useState('');
-  const [bankIfsc, setBankIfsc] = useState('');
-  const [isSaving, setIsSaving] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
-
-  useEffect(() => {
-    if (inst) {
-      setFullIdentifier(inst.full_identifier ?? '');
-      setBillingCycleDay(inst.billing_cycle_day?.toString() ?? '');
-      setBankIfsc(inst.bank_ifsc ?? '');
-    }
-  }, [inst]);
+  const {
+    inst,
+    isLoading,
+    forgetPassword,
+    fullIdentifier,
+    setFullIdentifier,
+    billingCycleDay,
+    setBillingCycleDay,
+    bankIfsc,
+    setBankIfsc,
+    isSaving,
+    isDeleting,
+    recentTransactions,
+    instrumentStatements,
+    instrumentPasswords,
+    handleSave,
+    handleDelete,
+  } = useInstrumentForm(id, undefined, () => navigate('/instruments'));
 
   if (!id) return null;
   if (isLoading || !inst) {
@@ -66,50 +59,6 @@ export default function InstrumentDetail() {
     );
   }
 
-  const recentTransactions = txPage?.pages[0]?.records.slice(0, 5) ?? [];
-  const instrumentStatements = statements.filter((s) => s.instrument_id === id);
-  const instrumentPasswords = pdfPasswords.filter((p) => p.instrument_id === id);
-
-  const handleSave = async () => {
-    setIsSaving(true);
-    try {
-      await API.instruments.update(
-        id,
-        fullIdentifier || undefined,
-        billingCycleDay ? parseInt(billingCycleDay, 10) : undefined,
-        bankIfsc || undefined,
-      );
-      toast({ title: 'Instrument updated' });
-      queryClient.invalidateQueries({ queryKey: queryKeys.instruments.detail(id) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.instruments.all() });
-    } catch (err) {
-      toast({ variant: 'destructive', ...getErrorToast(err) });
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  const handleDelete = async () => {
-    let confirmed: boolean;
-    try {
-      const { ask } = await import('@tauri-apps/plugin-dialog');
-      confirmed = await ask(`Delete ${inst.masked_identifier}? This cannot be undone.`, { title: 'Delete Instrument', kind: 'warning' });
-    } catch {
-      confirmed = confirm(`Delete ${inst.masked_identifier}? This cannot be undone.`);
-    }
-    if (!confirmed) return;
-    setIsDeleting(true);
-    try {
-      await API.instruments.delete(id);
-      toast({ title: 'Instrument deleted' });
-      navigate('/instruments');
-    } catch (err) {
-      toast({ variant: 'destructive', ...getErrorToast(err) });
-    } finally {
-      setIsDeleting(false);
-    }
-  };
-
   const handleForgetPassword = (passwordId: string) => {
     forgetPassword.mutate(passwordId, {
       onSuccess: () => toast({ title: 'Saved password forgotten' }),
@@ -118,7 +67,10 @@ export default function InstrumentDetail() {
   };
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-300 max-w-3xl mx-auto">
+    // AppLayout's <main> is overflow-hidden -- every routed page owns its
+    // own scroll container, or content past the viewport is unreachable.
+    <div className="flex-1 h-full overflow-y-auto">
+    <div className="space-y-6 animate-in fade-in duration-300 max-w-3xl mx-auto p-6 lg:p-10">
       <Button variant="ghost" size="sm" onClick={() => navigate('/instruments')} aria-label="Back to instruments">
         <ArrowLeft className="w-4 h-4 mr-1" aria-hidden="true" /> Back
       </Button>
@@ -246,6 +198,7 @@ export default function InstrumentDetail() {
           )}
         </CardContent>
       </Card>
+    </div>
     </div>
   );
 }
