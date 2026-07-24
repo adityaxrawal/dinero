@@ -46,7 +46,7 @@ pub fn create_ambiguity_cluster(
     direction: &str,
     event_time: &str,
     top_score: f64,
-    competing_candidate_ids: &[String],
+    competing_candidates: &[crate::reconciliation::scorer::ScoredCandidate],
 ) -> Result<String> {
     if let Some(existing_cluster_id) =
         find_overlapping_open_cluster(conn, instrument_id, amount_minor, direction, event_time)?
@@ -79,13 +79,13 @@ pub fn create_ambiguity_cluster(
     )?;
 
     let candidate_roles = ["candidate_a", "candidate_b", "candidate_other"];
-    for (i, candidate_id) in competing_candidate_ids.iter().enumerate() {
+    for (i, candidate) in competing_candidates.iter().enumerate() {
         let member_role = candidate_roles.get(i).copied().unwrap_or("candidate_other");
         let member_id = Uuid::new_v4().to_string();
         conn.execute(
-            "INSERT INTO reconciliation_cluster_members (id, cluster_id, canonical_transaction_id, member_role, added_at)
-             VALUES (?1, ?2, ?3, ?4, CURRENT_TIMESTAMP)",
-            params![member_id, cluster_id, candidate_id, member_role],
+            "INSERT INTO reconciliation_cluster_members (id, cluster_id, canonical_transaction_id, member_role, match_score, added_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, CURRENT_TIMESTAMP)",
+            params![member_id, cluster_id, candidate.candidate_id, member_role, candidate.score],
         )?;
     }
 
@@ -284,7 +284,10 @@ mod cluster_creation_tests {
             "debit",
             "2026-06-10 12:00:00",
             0.6,
-            &["cand_1".to_string()],
+            &[crate::reconciliation::scorer::ScoredCandidate {
+                candidate_id: "cand_1".to_string(),
+                score: 0.6,
+            }],
         )
         .unwrap();
 
@@ -309,6 +312,61 @@ mod cluster_creation_tests {
         assert_eq!(member_count, 2);
     }
 
+    /// TASK-FE-013: each candidate's own score (previously discarded before
+    /// reaching this function -- only the single best `top_score` was ever
+    /// passed in) is now persisted per member, so the frontend can show a
+    /// real per-candidate score instead of the internal `reason` bucket.
+    #[test]
+    fn test_candidate_scores_are_persisted_on_members() {
+        let conn = setup_test_db();
+
+        let cluster_id = create_ambiguity_cluster(
+            &conn,
+            "obs_new",
+            "inst_1",
+            1000,
+            "debit",
+            "2026-06-10 12:00:00",
+            0.6,
+            &[
+                crate::reconciliation::scorer::ScoredCandidate {
+                    candidate_id: "cand_1".to_string(),
+                    score: 0.6,
+                },
+                crate::reconciliation::scorer::ScoredCandidate {
+                    candidate_id: "cand_2".to_string(),
+                    score: 0.58,
+                },
+            ],
+        )
+        .unwrap();
+
+        let mut scores: Vec<Option<f64>> = conn
+            .prepare(
+                "SELECT match_score FROM reconciliation_cluster_members \
+                 WHERE cluster_id = ?1 AND canonical_transaction_id IS NOT NULL \
+                 ORDER BY canonical_transaction_id",
+            )
+            .unwrap()
+            .query_map(params![cluster_id], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        scores.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+        assert_eq!(scores, vec![Some(0.58), Some(0.6)]);
+
+        let incoming_score: Option<f64> = conn
+            .query_row(
+                "SELECT match_score FROM reconciliation_cluster_members \
+                 WHERE cluster_id = ?1 AND member_role = 'incoming'",
+                params![cluster_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(incoming_score, None);
+    }
+
     /// Doc 30 TASK-DEDUP-006 acceptance test: a second ambiguous observation
     /// covering the same instrument+amount+direction+overlapping window
     /// extends the existing open cluster instead of creating a duplicate.
@@ -330,7 +388,10 @@ mod cluster_creation_tests {
             "debit",
             "2026-06-10 12:00:00",
             0.6,
-            &["cand_1".to_string()],
+            &[crate::reconciliation::scorer::ScoredCandidate {
+                candidate_id: "cand_1".to_string(),
+                score: 0.6,
+            }],
         )
         .unwrap();
 
@@ -344,7 +405,10 @@ mod cluster_creation_tests {
             "debit",
             "2026-06-11 09:00:00",
             0.6,
-            &["cand_1".to_string()],
+            &[crate::reconciliation::scorer::ScoredCandidate {
+                candidate_id: "cand_1".to_string(),
+                score: 0.6,
+            }],
         )
         .unwrap();
 
@@ -404,7 +468,10 @@ mod cluster_creation_tests {
             "debit",
             "2026-06-10 12:00:00",
             0.9,
-            &["cand_1".to_string()],
+            &[crate::reconciliation::scorer::ScoredCandidate {
+                candidate_id: "cand_1".to_string(),
+                score: 0.9,
+            }],
         )
         .unwrap();
 
@@ -443,7 +510,10 @@ mod cluster_creation_tests {
             "debit",
             "2026-06-10 12:00:00",
             0.6,
-            &["cand_1".to_string()],
+            &[crate::reconciliation::scorer::ScoredCandidate {
+                candidate_id: "cand_1".to_string(),
+                score: 0.6,
+            }],
         )
         .unwrap();
 
@@ -455,7 +525,10 @@ mod cluster_creation_tests {
             "debit",
             "2026-06-10 12:00:00",
             0.6,
-            &["cand_2".to_string()],
+            &[crate::reconciliation::scorer::ScoredCandidate {
+                candidate_id: "cand_2".to_string(),
+                score: 0.6,
+            }],
         )
         .unwrap();
 

@@ -1067,7 +1067,10 @@ fn test_resolve_confirm_match_creates_manually_confirmed_decision() {
         "debit",
         "2026-06-10 12:00:00",
         0.6,
-        &["cand_1".to_string()],
+        &[crate::reconciliation::scorer::ScoredCandidate {
+            candidate_id: "cand_1".to_string(),
+            score: 0.6,
+        }],
     )
     .unwrap();
     // Get the cluster id
@@ -1261,7 +1264,10 @@ fn test_resolve_treat_as_separate_creates_multiple_canonicals() {
         "debit",
         "2026-06-10 12:00:00",
         0.6,
-        &["cand_1".to_string()],
+        &[crate::reconciliation::scorer::ScoredCandidate {
+            candidate_id: "cand_1".to_string(),
+            score: 0.6,
+        }],
     )
     .unwrap();
     let cluster_id: String = conn
@@ -1318,7 +1324,10 @@ fn test_cluster_resolution_reject() {
         "debit",
         "2026-06-10 12:00:00",
         0.6,
-        &["cand_1".to_string()],
+        &[crate::reconciliation::scorer::ScoredCandidate {
+            candidate_id: "cand_1".to_string(),
+            score: 0.6,
+        }],
     )
     .unwrap();
     let cluster_id: String = conn
@@ -1361,7 +1370,10 @@ fn test_cluster_resolution_mark_unresolved_does_not_close_cluster() {
         "debit",
         "2026-06-10 12:00:00",
         0.6,
-        &["cand_1".to_string()],
+        &[crate::reconciliation::scorer::ScoredCandidate {
+            candidate_id: "cand_1".to_string(),
+            score: 0.6,
+        }],
     )
     .unwrap();
     let cluster_id: String = conn
@@ -1417,7 +1429,10 @@ fn test_resolve_cluster_validates_action_enum() {
         "debit",
         "2026-06-10 12:00:00",
         0.6,
-        &["cand_1".to_string()],
+        &[crate::reconciliation::scorer::ScoredCandidate {
+            candidate_id: "cand_1".to_string(),
+            score: 0.6,
+        }],
     )
     .unwrap();
     let cluster_id: String = conn

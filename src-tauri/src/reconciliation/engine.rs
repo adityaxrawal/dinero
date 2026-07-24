@@ -320,7 +320,7 @@ pub fn reconcile(
     }
 
     // Within 15% margin → ambiguous
-    let ids: Vec<String> = viable.iter().map(|s| s.candidate_id.clone()).collect();
+    let scored_candidates: Vec<ScoredCandidate> = viable.iter().map(|s| (*s).clone()).collect();
     let cluster_id = create_ambiguity_cluster(
         conn,
         &obs.id,
@@ -329,7 +329,7 @@ pub fn reconcile(
         &obs.direction,
         &obs.event_time,
         top.score,
-        &ids,
+        &scored_candidates,
     )?;
     append_match_decision(
         conn,
