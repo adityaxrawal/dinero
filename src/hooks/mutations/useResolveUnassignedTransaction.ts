@@ -10,7 +10,7 @@ interface ResolveUnassignedInput {
   eventTime: string;
   merchantName: string;
   instrumentId: string;
-  referenceId?: string;
+  referenceId?: string | undefined;
 }
 
 export function useResolveUnassignedTransaction() {

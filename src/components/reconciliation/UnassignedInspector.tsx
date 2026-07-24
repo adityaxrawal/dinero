@@ -1,10 +1,12 @@
-import { X, AlertTriangle, FileText, Trash2 } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { X, AlertTriangle, FileText, Ban, Save } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 import type { UnassignedTransactionRecord } from '@/lib/ipc';
 import { Button } from '@/components/ui/button';
 import { API } from '@/lib/ipc';
 import { queryKeys } from '@/lib/queryKeys';
+import SaveAsTransactionForm from '@/components/reconciliation/SaveAsTransactionForm';
 
 interface UnassignedInspectorProps {
   record: UnassignedTransactionRecord | undefined;
@@ -19,6 +21,11 @@ export default function UnassignedInspector({
 }: UnassignedInspectorProps) {
   const queryClient = useQueryClient();
   const isOpen = !!record;
+  const [showSaveForm, setShowSaveForm] = useState(false);
+
+  useEffect(() => {
+    setShowSaveForm(false);
+  }, [record?.id]);
 
   const asideClasses = cn(
     !inline && 'inspector-panel',
@@ -202,9 +209,26 @@ export default function UnassignedInspector({
             className="text-[13px] h-9 border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5 font-medium"
             onClick={handleDismiss}
           >
-            <Trash2 className="w-3.5 h-3.5 mr-2" /> Dismiss Notification
+            <Ban className="w-3.5 h-3.5 mr-2" /> Not a Transaction
+          </Button>
+          <Button
+            className="text-[13px] h-9 font-medium bg-[#064E3B] text-[#F8E7C9] hover:bg-[#064E3B]/90"
+            onClick={() => setShowSaveForm(true)}
+          >
+            <Save className="w-3.5 h-3.5 mr-2" /> Save as Transaction
           </Button>
         </div>
+
+        {showSaveForm && (
+          <SaveAsTransactionForm
+            record={record}
+            onCancel={() => setShowSaveForm(false)}
+            onSaved={() => {
+              setShowSaveForm(false);
+              onClose();
+            }}
+          />
+        )}
       </div>
     </aside>
   );

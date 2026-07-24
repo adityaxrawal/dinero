@@ -721,7 +721,7 @@ export const API = {
         eventTime: string;
         merchantName: string;
         instrumentId: string;
-        referenceId?: string;
+        referenceId?: string | undefined;
       }
     ) =>
       invokeCommand<string>('reconciliation_resolve_unassigned_transaction_manually', {
