@@ -26,12 +26,12 @@ export type AppErrorCode =
   | 'UNAUTHORIZED'
   | 'LICENSE_LOCKED'
   | 'VALIDATION_ERROR'
-  | 'UNKNOWN_ERROR'
+  | 'UNKNOWN_ERROR';
 
 export interface AppError {
-  code: AppErrorCode
-  message: string
-  details?: Record<string, unknown>
+  code: AppErrorCode;
+  message: string;
+  details?: Record<string, unknown>;
 }
 
 /**
@@ -41,7 +41,7 @@ export interface AppError {
  * type mainly documents that shape for any command that explicitly opts
  * into the wrapped-envelope pattern instead.
  */
-export interface IpcResponse<T> {
-  data: T | null
-  error: string | null
+interface IpcResponse<T> {
+  data: T | null;
+  error: string | null;
 }

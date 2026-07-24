@@ -2549,40 +2549,25 @@ pub async fn settings_pdf_passwords_delete(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))
 }
 
-/// Doc 30 TASK-API-008: "`settings_pattern_rules_list`" -- did not exist at
-/// all before this task; the frontend borrowed the debug-only
-/// `debug_fetch_pattern_rule_health` (a relabeled, simplified view) as a
-/// stopgap instead. Returns the same `PatternRuleHealth` shape the
-/// Settings page (`Settings.tsx`) already correctly consumes -- only the
-/// command name changes, from a debug-console endpoint to a real
-/// Settings-owned one; `db/pattern_rules.rs::select_all` (this task's
-/// other new function, returning the raw `PatternRulesRow`) is used
-/// instead of duplicating `debug_fetch_pattern_rule_health`'s own SQL.
+/// Returns the raw `PatternRulesRow` for every rule (bank, template_hash,
+/// field, actual regex, real 5-state status) instead of the lossy
+/// `PatternRuleHealth` debug shape this used to remap into -- that mapping
+/// hardcoded `pattern_type: "regex"` and put `field_name` in place of the
+/// actual regex string, so the Settings UI could never show (or let a user
+/// edit) the pattern it was managing, and collapsed status to a boolean,
+/// hiding the pending-review state entirely.
 #[tauri::command]
 pub async fn settings_pattern_rules_list(
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
-) -> Result<Vec<crate::commands::debug::PatternRuleHealth>, crate::error::AppError> {
+) -> Result<Vec<crate::db::pattern_rules::PatternRulesRow>, crate::error::AppError> {
     let conn = pool
         .get()
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-    let rules = conn
-        .interact(|c| crate::db::pattern_rules::select_all(c))
+    conn.interact(|c| crate::db::pattern_rules::select_all(c))
         .await
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
-        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-    Ok(rules
-        .into_iter()
-        .map(|r| crate::commands::debug::PatternRuleHealth {
-            id: r.id,
-            merchant_id: r.bank_name,
-            pattern_type: "regex".to_string(),
-            pattern_value: r.field_name,
-            is_active: r.status == "active",
-            success_count: r.success_count,
-            failure_count: r.failure_count,
-        })
-        .collect())
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))
 }
 
 /// G14 fix: pattern-rule management was read-only everywhere (Debug console
@@ -2608,6 +2593,172 @@ pub async fn settings_pattern_rules_update(
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
     Ok(())
+}
+
+/// Hard-deletes a pattern rule (Settings "Delete" action). No soft-delete
+/// path exists for this table -- once removed, it's gone.
+#[tauri::command]
+pub async fn settings_pattern_rules_delete(
+    rule_id: String,
+    pool: tauri::State<'_, deadpool_sqlite::Pool>,
+) -> Result<(), crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("rule_id", &rule_id)?;
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(move |c| crate::db::pattern_rules::delete(c, &rule_id))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))
+}
+
+/// Compiles `regex` and runs it against `sample_body`, returning what it
+/// captured -- without touching the database. Used both as the live preview
+/// while a user edits/creates a rule, and (called again server-side inside
+/// `settings_pattern_rules_create`) as the actual pre-save validation, so
+/// the preview and the enforced rule can never disagree.
+fn test_pattern_regex(regex_str: &str, sample_body: &str) -> PatternRuleTestResult {
+    match regex::Regex::new(regex_str) {
+        Ok(re) => match re.captures(sample_body) {
+            Some(caps) => PatternRuleTestResult {
+                compiles: true,
+                error: None,
+                matched: true,
+                captured_value: caps.get(1).map(|m| m.as_str().to_string()),
+            },
+            None => PatternRuleTestResult {
+                compiles: true,
+                error: None,
+                matched: false,
+                captured_value: None,
+            },
+        },
+        Err(e) => PatternRuleTestResult {
+            compiles: false,
+            error: Some(e.to_string()),
+            matched: false,
+            captured_value: None,
+        },
+    }
+}
+
+#[derive(serde::Serialize)]
+pub struct PatternRuleTestResult {
+    pub compiles: bool,
+    pub error: Option<String>,
+    pub matched: bool,
+    pub captured_value: Option<String>,
+}
+
+#[tauri::command]
+pub async fn settings_pattern_rules_test(
+    regex: String,
+    sample_body: String,
+) -> Result<PatternRuleTestResult, crate::error::AppError> {
+    crate::ipc::validation::validate_non_empty("regex", &regex)?;
+    Ok(test_pattern_regex(&regex, &sample_body))
+}
+
+/// Edits a rule's regex (Settings "Edit pattern" flow). If the rule was
+/// live (`active`/`trusted`), this resets it to `pending` with counts
+/// zeroed -- an edited pattern re-earns trust rather than keeping the
+/// confidence its *previous* regex built up.
+#[tauri::command]
+pub async fn settings_pattern_rules_update_payload(
+    rule_id: String,
+    regex: String,
+    pool: tauri::State<'_, deadpool_sqlite::Pool>,
+) -> Result<crate::db::pattern_rules::PatternRulesRow, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("rule_id", &rule_id)?;
+    crate::ipc::validation::validate_non_empty("regex", &regex)?;
+    if let Err(e) = regex::Regex::new(&regex) {
+        return Err(crate::error::AppError::Validation(format!(
+            "Invalid regex: {e}"
+        )));
+    }
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let payload = serde_json::json!({ "regex": regex });
+    conn.interact(move |c| crate::db::pattern_rules::update_payload(c, &rule_id, &payload))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))
+}
+
+/// Hand-writes a brand-new pattern rule (Settings "Add pattern" flow),
+/// starting directly at `active` rather than `pending` like auto-learned
+/// candidates -- the human already verified it against `sample_body` below.
+/// `sample_body` is required for two reasons: it's what the regex is tested
+/// against before saving, and its structural hash becomes the rule's
+/// `template_hash` (the same fingerprint `compute_template_hash` derives
+/// from a real email body) -- without a real sample there'd be no way to
+/// key the rule against the emails it's meant to match.
+#[tauri::command]
+pub async fn settings_pattern_rules_create(
+    bank_name: String,
+    field_name: String,
+    regex: String,
+    sample_body: String,
+    pool: tauri::State<'_, deadpool_sqlite::Pool>,
+) -> Result<crate::db::pattern_rules::PatternRulesRow, crate::error::AppError> {
+    crate::ipc::validation::validate_non_empty("bank_name", &bank_name)?;
+    crate::ipc::validation::validate_non_empty("regex", &regex)?;
+    crate::ipc::validation::validate_non_empty("sample_body", &sample_body)?;
+
+    const ALLOWED_FIELDS: [&str; 5] = ["amount", "merchant", "currency", "direction", "event_time"];
+    if !ALLOWED_FIELDS.contains(&field_name.as_str()) {
+        return Err(crate::error::AppError::Validation(format!(
+            "field_name must be one of {:?}, got '{}'",
+            ALLOWED_FIELDS, field_name
+        )));
+    }
+
+    let test = test_pattern_regex(&regex, &sample_body);
+    if !test.compiles {
+        return Err(crate::error::AppError::Validation(format!(
+            "Invalid regex: {}",
+            test.error.unwrap_or_default()
+        )));
+    }
+    if test.captured_value.is_none() {
+        return Err(crate::error::AppError::Validation(
+            "Regex must match the sample email and capture group 1 (the value itself)"
+                .to_string(),
+        ));
+    }
+
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+
+    let template_hash = crate::extraction::ladder::compute_template_hash(&sample_body);
+    let now = chrono::Utc::now().naive_utc();
+    let rule = crate::db::pattern_rules::PatternRulesRow {
+        id: uuid::Uuid::new_v4().to_string(),
+        bank_name,
+        template_hash,
+        field_name,
+        rule_payload_json: serde_json::json!({ "regex": regex, "source": "manual" }),
+        status: "active".to_string(),
+        success_count: 0,
+        failure_count: 0,
+        confidence: 1.0,
+        created_at: Some(now),
+        updated_at: Some(now),
+    };
+
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(move |c| crate::db::pattern_rules::create_manual(c, &rule))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Conflict(e.to_string()))
 }
 
 /// G13 fix: the full reusable-tag catalog, for autocomplete when tagging a
@@ -2996,6 +3147,10 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         fetch_transaction_tags,
         settings_pattern_rules_list,
         settings_pattern_rules_update,
+        settings_pattern_rules_delete,
+        settings_pattern_rules_update_payload,
+        settings_pattern_rules_create,
+        settings_pattern_rules_test,
         settings_pdf_passwords_list,
         settings_pdf_passwords_delete,
         correct_match,
@@ -3277,6 +3432,9 @@ mod tests {
             "auth_google_start",
             "auth_google_disconnect",
             "settings_pattern_rules_update",
+            "settings_pattern_rules_delete",
+            "settings_pattern_rules_update_payload",
+            "settings_pattern_rules_create",
             "settings_pdf_passwords_delete",
             "settings_delete_account",
             "settings_profile_update",

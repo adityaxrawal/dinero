@@ -10,19 +10,11 @@ import type { AppError } from '@/types/ipc';
  * Exported (TASK-SETUP-013) so `useIpcInvoke` can reuse the same
  * normalization logic instead of duplicating it.
  */
-export async function invokeCommand<T>(
-  command: string,
-  args?: Record<string, unknown>,
-): Promise<T> {
+async function invokeCommand<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   try {
     return await invoke<T>(command, args);
   } catch (error) {
-    if (
-      typeof error === 'object' &&
-      error !== null &&
-      'code' in error &&
-      'message' in error
-    ) {
+    if (typeof error === 'object' && error !== null && 'code' in error && 'message' in error) {
       throw error as AppError;
     }
     throw {
@@ -33,7 +25,7 @@ export async function invokeCommand<T>(
   }
 }
 
-export interface DashboardSummary {
+interface DashboardSummary {
   month_to_date_spend: number;
   limit: number;
   utilization_pct: number;
@@ -44,7 +36,7 @@ export interface DashboardSummary {
 
 // TASK-FE-008: types for the TASK-API-006 commands that had no frontend
 // call site until now (src-tauri/src/commands/data.rs's exact struct shapes).
-export interface UpcomingBill {
+interface UpcomingBill {
   id: string;
   description: string;
   amount: number;
@@ -68,7 +60,7 @@ export interface SpendTrendPoint {
 
 export type SpendTrendGranularity = 'daily' | 'weekly' | 'monthly';
 
-export interface PendingReviewMetric {
+interface PendingReviewMetric {
   count: number;
   amount_minor: number;
 }
@@ -77,7 +69,7 @@ export interface PendingReviewMetric {
 // MatchDecisionsRow/TransactionDetail/EmiGroupSummary exactly (transactions_get
 // and transactions_get_emi_group's real response shapes — was typed `any`
 // before this task, with no frontend consumer to have caught a mismatch).
-export interface CanonicalTransaction {
+interface CanonicalTransaction {
   id: string;
   unique_event_id: string | null;
   instrument_id: string | null;
@@ -152,7 +144,7 @@ export interface TransactionObservation {
   updated_at: string | null;
 }
 
-export interface MatchDecision {
+interface MatchDecision {
   id: string;
   observation_id: string | null;
   matched_transaction_id: string | null;
@@ -164,19 +156,19 @@ export interface MatchDecision {
   created_at: string | null;
 }
 
-export interface TransactionDetailResponse {
+interface TransactionDetailResponse {
   transaction: CanonicalTransaction;
   observations: TransactionObservation[];
   match_decisions: MatchDecision[];
 }
 
-export interface EmiInstallmentDetail {
+interface EmiInstallmentDetail {
   transaction_id: string;
   amount_minor: number;
   event_time: string | null;
 }
 
-export interface EmiGroupSummary {
+interface EmiGroupSummary {
   installments_paid: number;
   total_paid_minor: number;
   total_installments: number | null;
@@ -196,7 +188,7 @@ export interface UnprocessedStatementEntry {
   html?: string;
 }
 
-export interface AwaitingReviewEntry {
+interface AwaitingReviewEntry {
   draft_id: string;
   issuer_name: string | null;
   masked_identifier: string | null;
@@ -204,7 +196,7 @@ export interface AwaitingReviewEntry {
   created_at: string | null;
 }
 
-export interface UnprocessedStatementGroups {
+interface UnprocessedStatementGroups {
   awaiting_password: UnprocessedStatementEntry[];
   pending_retry: UnprocessedStatementEntry[];
   failed: UnprocessedStatementEntry[];
@@ -253,7 +245,14 @@ export interface DraftMetadataInput {
 export interface ProcessingProgressPayload {
   draft_id: string | null;
   instrument_id: string;
-  stage: 'parsing' | 'metadata' | 'instrument_check' | 'duplicate_check' | 'extracting_rows' | 'staged' | 'failed';
+  stage:
+    | 'parsing'
+    | 'metadata'
+    | 'instrument_check'
+    | 'duplicate_check'
+    | 'extracting_rows'
+    | 'staged'
+    | 'failed';
   percent: number;
 }
 
@@ -270,7 +269,7 @@ export interface CategoryRecord {
   icon: string | null;
 }
 
-export interface TagRecord {
+interface TagRecord {
   id: string;
   name: string;
   color_hex: string | null;
@@ -414,7 +413,7 @@ interface BackendStatus {
 // TASK-OPS-003: coarse operational status only — never the underlying
 // financial content, email address, JWT, or tokens (see
 // src-tauri/src/health.rs's NEVER_INCLUDED list).
-export interface HealthReport {
+interface HealthReport {
   backend_ready: boolean;
   db_integrity_ok: boolean;
   checkpoint_age_seconds: number | null;
@@ -465,13 +464,14 @@ export interface SpendingLimits {
 // Scaffold examples for Phase 5 frontend
 export const API = {
   dashboard: {
-    getSummary: () =>
-      invokeCommand<DashboardSummary>('dashboard_summary'),
+    getSummary: () => invokeCommand<DashboardSummary>('dashboard_summary'),
     // TASK-API-006 built these with no frontend call site; wired here.
     getUpcomingBills: () =>
       invokeCommand<{ bills: UpcomingBill[] }>('dashboard_upcoming_bills').then((r) => r.bills),
     getCategories: (month: string) =>
-      invokeCommand<{ categories: CategorySpend[] }>('dashboard_categories', { month }).then((r) => r.categories),
+      invokeCommand<{ categories: CategorySpend[] }>('dashboard_categories', { month }).then(
+        (r) => r.categories
+      ),
   },
   analytics: {
     getSpendTrend: (granularity: SpendTrendGranularity) =>
@@ -507,7 +507,8 @@ export const API = {
           instrument_id: input.instrumentId,
         },
       }),
-    delete: (transactionId: string) => invokeCommand<string>('transactions_delete', { transactionId }),
+    delete: (transactionId: string) =>
+      invokeCommand<string>('transactions_delete', { transactionId }),
     // Doc 30 TASK-API-003: matches the real `TransactionUpdatePayload`
     // contract (renamed from `ManualTransactionUpdatePayload` -- this
     // command was never actually restricted to manual transactions).
@@ -519,7 +520,13 @@ export const API = {
     // Document 19's editable-field list.
     update: (
       transactionId: string,
-      updates: { merchantDisplayName?: string; categoryId?: string; notes?: string; location?: string; tags?: string[] },
+      updates: {
+        merchantDisplayName?: string;
+        categoryId?: string;
+        notes?: string;
+        location?: string;
+        tags?: string[];
+      }
     ) =>
       invokeCommand<string>('transactions_update', {
         payload: {
@@ -533,10 +540,14 @@ export const API = {
       }),
     get: (id: string) => invokeCommand<TransactionDetailResponse>('transactions_get', { id }),
     getObservations: (id: string) =>
-      invokeCommand<TransactionObservation[]>('fetch_transaction_observations', { transactionId: id }),
-    getSourceLog: (id: string) => invokeCommand<string>('fetch_transaction_source_log', { transactionId: id }),
+      invokeCommand<TransactionObservation[]>('fetch_transaction_observations', {
+        transactionId: id,
+      }),
+    getSourceLog: (id: string) =>
+      invokeCommand<string>('fetch_transaction_source_log', { transactionId: id }),
     // G13 fix: the tag names currently on a transaction (relational, not free-text).
-    getTags: (id: string) => invokeCommand<string[]>('fetch_transaction_tags', { transactionId: id }),
+    getTags: (id: string) =>
+      invokeCommand<string[]>('fetch_transaction_tags', { transactionId: id }),
     addTag: (transactionId: string, tagId: string) =>
       invokeCommand<string>('transactions_add_tag', { transactionId, tagId }),
     removeTag: (transactionId: string, tagId: string) =>
@@ -549,7 +560,8 @@ export const API = {
     // full rows (id + name) so callers can resolve a name to the id
     // `transactions_add_tag`/`_remove_tag` (Doc19 §8.7/§8.8) require.
     list: () => invokeCommand<TagRecord[]>('tags_list'),
-    create: (name: string) => invokeCommand<{ id: string; status: string }>('tags_create', { payload: { name } }),
+    create: (name: string) =>
+      invokeCommand<{ id: string; status: string }>('tags_create', { payload: { name } }),
   },
   categories: {
     // TASK-API-007 built categories_list with no frontend call site at all
@@ -575,7 +587,7 @@ export const API = {
           const bytes = await readFile(path);
           const filename = path.split(/[/\\]/).pop() || path;
           return { file_bytes: Array.from(bytes), filename };
-        }),
+        })
       );
       // Doc 30 TASK-API-004 fix: the real command wraps its array in
       // `{ results: [...] }` (Document 19 §9.1's exact response shape) --
@@ -583,31 +595,37 @@ export const API = {
       // bare array), which would have thrown ("not iterable") the moment
       // upload actually reached a real response.
       const response = await invokeCommand<{
-        results: Array<{ status: string; statement_id?: string; filename?: string; error?: string }>;
+        results: Array<{
+          status: string;
+          statement_id?: string;
+          filename?: string;
+          error?: string;
+        }>;
       }>('statements_upload', { files });
       return response.results;
     },
-    submitPassword: (
-      statementId: string,
-      instrumentId: string,
-      password: string,
-    ) =>
-      invokeCommand<{ status: string; statement_id?: string; draft_id?: string; attempts_remaining?: number }>(
-        'statements_submit_password',
-        { statementId, instrumentId, password },
-      ),
+    submitPassword: (statementId: string, instrumentId: string, password: string) =>
+      invokeCommand<{
+        status: string;
+        statement_id?: string;
+        draft_id?: string;
+        attempts_remaining?: number;
+      }>('statements_submit_password', { statementId, instrumentId, password }),
     confirmInstrument: (
       statementId: string,
       issuerName: string,
       maskedIdentifier: string,
-      instrumentType: string,
+      instrumentType: string
     ) =>
-      invokeCommand<{ status: string; statement_id?: string; draft_id?: string }>('statements_confirm_instrument', {
-        statementId,
-        issuerName,
-        maskedIdentifier,
-        instrumentType,
-      }),
+      invokeCommand<{ status: string; statement_id?: string; draft_id?: string }>(
+        'statements_confirm_instrument',
+        {
+          statementId,
+          issuerName,
+          maskedIdentifier,
+          instrumentType,
+        }
+      ),
     // TASK-FE-012: TASK-STMT-010 built this dedicated unprocessed-items
     // retry/recovery backend (statements_list_unprocessed/_retry_unprocessed/
     // _discard) with zero frontend call sites -- the pre-existing page
@@ -615,10 +633,11 @@ export const API = {
     // general statement history for PASSWORD_REQUIRED/FAILED, missing the
     // real 3-bucket grouping (awaiting_password/pending_retry/failed) and
     // the discard action entirely.
-    listUnprocessed: () =>
-      invokeCommand<UnprocessedStatementGroups>('statements_list_unprocessed'),
+    listUnprocessed: () => invokeCommand<UnprocessedStatementGroups>('statements_list_unprocessed'),
     retryUnprocessed: (statementId: string) =>
-      invokeCommand<{ status: string; statement_id: string }>('statements_retry_unprocessed', { statementId }),
+      invokeCommand<{ status: string; statement_id: string }>('statements_retry_unprocessed', {
+        statementId,
+      }),
     discard: (statementId: string) =>
       invokeCommand<{ status: string }>('statements_discard', { statementId }),
     // Doc 30 TASK-API-004: `statements_list` now returns a real paginated
@@ -627,12 +646,12 @@ export const API = {
     // `.records` here so the existing array-shaped consumer keeps working;
     // `page`/`total` are available for a future paginated statements UI.
     listHistory: (page = 1) =>
-      invokeCommand<{ records: StatementRecord[]; total: number }>('statements_list', { page })
-        .then((res) => res.records),
+      invokeCommand<{ records: StatementRecord[]; total: number }>('statements_list', {
+        page,
+      }).then((res) => res.records),
     getEntries: (statementId: string) =>
       invokeCommand<any[]>('statements_get_entries', { statementId }),
-    getPdf: (statementId: string) =>
-      invokeCommand<string>('statements_get_pdf', { statementId }),
+    getPdf: (statementId: string) => invokeCommand<string>('statements_get_pdf', { statementId }),
     deletePdf: (statementId: string) =>
       invokeCommand<void>('statements_delete_pdf', { statementId }),
     getDraft: (draftId: string) =>
@@ -661,8 +680,7 @@ export const API = {
   reconciliation: {
     // G20/H10/J8 fix: both renamed to match Doc 19 §10.1/§10.3's documented
     // `reconciliation_clusters_*` naming family.
-    listUnresolved: () =>
-      invokeCommand<ClusterRecord[]>('reconciliation_clusters_list'),
+    listUnresolved: () => invokeCommand<ClusterRecord[]>('reconciliation_clusters_list'),
     // TASK-FE-013: `reconciliation_clusters_get` (Doc 19 §10.2) existed on
     // the backend with zero frontend call site -- needed for the cluster
     // detail page.
@@ -688,7 +706,7 @@ export const API = {
       clusterId: string,
       observationId: string,
       action: 'confirm_match' | 'reject_candidate' | 'keep_separate' | 'mark_unresolved',
-      chosenCanonicalId?: string,
+      chosenCanonicalId?: string
     ) =>
       invokeCommand<string>('reconciliation_clusters_resolve', {
         clusterId,
@@ -699,7 +717,14 @@ export const API = {
   },
   instruments: {
     list: () => invokeCommand<InstrumentRecord[]>('instruments_list'),
-    create: (instrumentType: string, issuerName: string, maskedIdentifier: string, fullIdentifier?: string, billingCycleDay?: number, bankIfsc?: string) =>
+    create: (
+      instrumentType: string,
+      issuerName: string,
+      maskedIdentifier: string,
+      fullIdentifier?: string,
+      billingCycleDay?: number,
+      bankIfsc?: string
+    ) =>
       invokeCommand<InstrumentRecord>('instruments_create', {
         payload: {
           instrument_type: instrumentType,
@@ -708,7 +733,7 @@ export const API = {
           full_identifier: fullIdentifier,
           billing_cycle_day: billingCycleDay,
           bank_ifsc: bankIfsc,
-        }
+        },
       }),
     // Doc 30 TASK-API-002: issuer_name/masked_identifier are identity
     // fields (used by resolve_instrument()'s matching key, Document 15
@@ -722,16 +747,14 @@ export const API = {
           full_identifier: fullIdentifier,
           billing_cycle_day: billingCycleDay,
           bank_ifsc: bankIfsc,
-        }
+        },
       }),
     get: (id: string) => invokeCommand<InstrumentRecord>('instruments_get', { id }),
-    delete: (id: string) =>
-      invokeCommand<string>('instruments_archive', { id }),
+    delete: (id: string) => invokeCommand<string>('instruments_archive', { id }),
   },
   spendingLimits: {
     get: () => invokeCommand<SpendingLimits>('fetch_spending_limits'),
-    update: (limits: SpendingLimits) =>
-      invokeCommand<string>('update_spending_limits', { limits }),
+    update: (limits: SpendingLimits) => invokeCommand<string>('update_spending_limits', { limits }),
   },
   onboarding: {
     // G19 fix: previously onboarding choices were only written to browser
@@ -809,18 +832,12 @@ export const API = {
     // Doc 16 §12.3: the single source of truth for the 5-tier model catalog —
     // frontend selectors must render this, not a hardcoded local list.
     getAvailableModels: () => invokeCommand<LlmModelInfo[]>('llm_get_available_models'),
-    downloadModel: (modelId: string) =>
-      invokeCommand<void>('llm_download_model', { modelId }),
-    deleteModel: (modelId: string) =>
-      invokeCommand<string>('llm_delete_model', { modelId }),
-    cancelDownload: (modelId: string) =>
-      invokeCommand<void>('llm_cancel_download', { modelId }),
-    getDownloadedModels: () =>
-      invokeCommand<string[]>('llm_get_downloaded_models'),
-    getActiveModel: () =>
-      invokeCommand<string>('llm_get_active_model'),
-    setActiveModel: (modelId: string) =>
-      invokeCommand<void>('llm_set_active_model', { modelId }),
+    downloadModel: (modelId: string) => invokeCommand<void>('llm_download_model', { modelId }),
+    deleteModel: (modelId: string) => invokeCommand<string>('llm_delete_model', { modelId }),
+    cancelDownload: (modelId: string) => invokeCommand<void>('llm_cancel_download', { modelId }),
+    getDownloadedModels: () => invokeCommand<string[]>('llm_get_downloaded_models'),
+    getActiveModel: () => invokeCommand<string>('llm_get_active_model'),
+    setActiveModel: (modelId: string) => invokeCommand<void>('llm_set_active_model', { modelId }),
   },
   debug: {
     fetchParseErrors: () => invokeCommand<any[]>('debug_fetch_parse_errors'),
@@ -830,8 +847,10 @@ export const API = {
     fetchPatternRuleHealth: () => invokeCommand<any[]>('debug_fetch_pattern_rule_health'),
     fetchReconciliationClusters: () => invokeCommand<any[]>('debug_fetch_reconciliation_clusters'),
     getPipelineState: () => invokeCommand<any>('debug_get_pipeline_state'),
-    setGmailPollPaused: (paused: boolean) => invokeCommand<void>('debug_set_gmail_poll_paused', { paused }),
-    setScanQueuePaused: (paused: boolean) => invokeCommand<void>('debug_set_scan_queue_paused', { paused }),
+    setGmailPollPaused: (paused: boolean) =>
+      invokeCommand<void>('debug_set_gmail_poll_paused', { paused }),
+    setScanQueuePaused: (paused: boolean) =>
+      invokeCommand<void>('debug_set_scan_queue_paused', { paused }),
     captureReleaseReadinessSnapshot: () =>
       invokeCommand<ReleaseReadinessSnapshot>('release_readiness_capture_snapshot'),
     listReleaseReadinessSnapshots: () =>
@@ -845,10 +864,26 @@ export const API = {
     // G14 fix: a real Settings-facing toggle, not just a Debug-only view.
     // TASK-API-008: now backed by the real settings_pattern_rules_list
     // command (previously borrowed the debug-only health view as a
-    // stopgap).
-    list: () => invokeCommand<PatternRuleHealth[]>('settings_pattern_rules_list'),
-    setStatus: (ruleId: string, newStatus: 'active' | 'inactive' | 'flagged') =>
+    // stopgap). Returns the raw row (real regex, real 5-state status) --
+    // no more lossy remap into the debug-only PatternRuleHealth shape.
+    list: () => invokeCommand<PatternRule[]>('settings_pattern_rules_list'),
+    setStatus: (ruleId: string, newStatus: PatternRuleStatus) =>
       invokeCommand<void>('settings_pattern_rules_update', { ruleId, newStatus }),
+    delete: (ruleId: string) => invokeCommand<void>('settings_pattern_rules_delete', { ruleId }),
+    updatePayload: (ruleId: string, regex: string) =>
+      invokeCommand<PatternRule>('settings_pattern_rules_update_payload', { ruleId, regex }),
+    create: (bankName: string, fieldName: string, regex: string, sampleBody: string) =>
+      invokeCommand<PatternRule>('settings_pattern_rules_create', {
+        bankName,
+        fieldName,
+        regex,
+        sampleBody,
+      }),
+    test: (regex: string, sampleBody: string) =>
+      invokeCommand<PatternRuleTestResult>('settings_pattern_rules_test', {
+        regex,
+        sampleBody,
+      }),
   },
   pdfPasswords: {
     // G15 fix: management UI for stored PDF passwords (metadata only — the
@@ -869,7 +904,12 @@ export const API = {
     getStatus: () => invokeCommand<LicenseStatusResponse>('license_get_status'),
     // Doc 19 §14.2: Razorpay payment confirmation, bound to this device — no
     // separate license-key concept (C10).
-    activate: (email: string, razorpayPaymentId: string, razorpaySignature: string, billingInterval: string) =>
+    activate: (
+      email: string,
+      razorpayPaymentId: string,
+      razorpaySignature: string,
+      billingInterval: string
+    ) =>
       invokeCommand<LicenseActivateResponse>('license_activate', {
         email,
         razorpayPaymentId,
@@ -885,7 +925,10 @@ export const API = {
     // -- never renders card-entry fields in this app. Returns the payment
     // confirmation for `activate` to verify server-side.
     startCheckout: (email: string, planId: string) =>
-      invokeCommand<{ razorpay_payment_id: string; razorpay_signature: string }>('billing_start_checkout', { email, planId }),
+      invokeCommand<{ razorpay_payment_id: string; razorpay_signature: string }>(
+        'billing_start_checkout',
+        { email, planId }
+      ),
   },
   updater: {
     // Doc 30 TASK-DESK-005: not in Document 19's catalog (this task
@@ -968,7 +1011,7 @@ export interface LicenseStatusResponse {
   days_remaining: number | null;
 }
 
-export interface LicenseActivateResponse {
+interface LicenseActivateResponse {
   status: string;
   state: string;
   device_bound: boolean;
@@ -977,24 +1020,40 @@ export interface LicenseActivateResponse {
   expires_at: string | null;
 }
 
-export interface LicenseDeactivateResponse {
+interface LicenseDeactivateResponse {
   status: string;
   state: string;
 }
 
-export interface LicenseRefreshResponse {
+interface LicenseRefreshResponse {
   status: string;
   state: string;
 }
 
-export interface PatternRuleHealth {
+export type PatternRuleStatus = 'pending' | 'active' | 'trusted' | 'inactive' | 'flagged';
+export type PatternRuleField = 'amount' | 'merchant' | 'currency' | 'direction' | 'event_time';
+
+// Mirrors src-tauri/src/db/pattern_rules.rs's PatternRulesRow verbatim --
+// the real row, not a remapped/lossy view.
+export interface PatternRule {
   id: string;
-  merchant_id: string;
-  pattern_type: string;
-  pattern_value: string;
-  is_active: boolean;
+  bank_name: string;
+  template_hash: string;
+  field_name: string;
+  rule_payload_json: { regex: string; source?: string };
+  status: PatternRuleStatus;
   success_count: number;
   failure_count: number;
+  confidence: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface PatternRuleTestResult {
+  compiles: boolean;
+  error: string | null;
+  matched: boolean;
+  captured_value: string | null;
 }
 
 export interface PdfPasswordSummary {
