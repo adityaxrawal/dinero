@@ -11,6 +11,7 @@ function cluster(overrides: Partial<ClusterRecord> = {}): ClusterRecord {
     members_count: 2,
     members: [],
     created_at: null,
+    explanation: 'Two possible matches, close in score.',
     ...overrides,
   };
 }

@@ -340,6 +340,13 @@ export interface ClusterMember {
   /** "debit" | "credit" — amount is always a positive magnitude. */
   direction: string | null;
   date: string;
+  instrument_issuer_name: string | null;
+  instrument_masked_identifier: string | null;
+  reference_id: string | null;
+  /** null for the "incoming" member — it has no score against itself. */
+  match_score: number | null;
+  /** only ever populated for member_role === "incoming". */
+  source_raw_payload_json: string | null;
 }
 
 export interface ClusterRecord {
@@ -349,6 +356,10 @@ export interface ClusterRecord {
   members: ClusterMember[];
   // Doc 30 TASK-RT-006: backs the "unresolved > 7 days" stale-cluster reminder.
   created_at: string | null;
+  // TASK-FE-013: plain-language explanation computed server-side from the
+  // members' real match scores — replaces rendering the raw `reason`
+  // bucket string directly.
+  explanation: string;
 }
 
 export interface UnassignedTransactionRecord {
@@ -714,6 +725,12 @@ export const API = {
         action,
         chosenCanonicalId,
       }),
+    // Backend has supported undoing a confirmed match since
+    // `reconciliation_clusters_unmerge` was added, but no frontend caller
+    // ever existed -- a confirmed match was effectively permanent from the
+    // UI's perspective.
+    unmergeCluster: (clusterId: string) =>
+      invokeCommand<string>('reconciliation_clusters_unmerge', { clusterId }),
   },
   instruments: {
     list: () => invokeCommand<InstrumentRecord[]>('instruments_list'),
