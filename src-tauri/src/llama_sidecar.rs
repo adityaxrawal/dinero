@@ -22,14 +22,38 @@
 
 use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::process::{Child, Command};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 
 const LLAMA_CPP_RELEASE_TAG: &str = "b10068";
 const LLAMA_SERVER_PORT: u16 = 58121;
-const CONTEXT_SIZE: &str = "2048";
+
+/// Runtime-configurable count of concurrent `/completion` requests
+/// `llama-server` will batch-process at once, set by the user in Settings
+/// (`llm_set_parallel_slots`, clamped 1-10). Starts at the original safe
+/// default of 1 — a historical scan started before Settings ever pushes a
+/// real value just runs single-slot, same as before this feature existed.
+static CURRENT_PARALLEL_SLOTS: AtomicUsize = AtomicUsize::new(1);
+
+pub fn set_parallel_slots(n: usize) {
+    CURRENT_PARALLEL_SLOTS.store(n.clamp(1, 10), Ordering::Relaxed);
+}
+
+pub fn current_parallel_slots() -> usize {
+    CURRENT_PARALLEL_SLOTS.load(Ordering::Relaxed)
+}
+
+fn context_size_for(slots: usize) -> usize {
+    // llama-server splits its total context evenly across `--parallel`
+    // slots (`n_ctx_slot = n_ctx / n_parallel`), so this must scale with
+    // the slot count to keep each slot's own budget at the server's
+    // original single-slot default (2048) — otherwise more parallelism
+    // would silently truncate the email body in every prompt.
+    2048 * slots
+}
 
 /// How long a fresh `llama-server` process gets to finish loading a
 /// multi-GB model before it's considered a failed startup and killed. Only
@@ -98,31 +122,6 @@ fn http_client() -> &'static reqwest::Client {
     CLIENT.get_or_init(reqwest::Client::new)
 }
 
-/// `llama-server` defaults to a single processing slot -- historical scan
-/// can have up to `MAX_CONCURRENT_FETCHES` (50) emails in flight at once,
-/// and every one that reaches Layer 6 used to open its own concurrent
-/// `/completion` connection against that one slot. Real logs show this
-/// producing not just per-request timeouts but outright connection-level
-/// failures ("`/completion` request failed", "returned an error status").
-/// Serializing here means only one request is ever actually in flight.
-///
-/// `complete()` below uses `try_acquire`, not a blocking `acquire().await`:
-/// the caller's whole call (`LlmEngine::INFERENCE_TIMEOUT`, 10s) wraps
-/// *both* the queue wait and the actual inference, so blocking here made
-/// every queued caller burn its entire budget doing nothing but waiting
-/// and then fail anyway once the timeout fired -- with up to 50 emails
-/// racing one slot, this was a structural near-100% Layer 6 failure rate,
-/// not an occasional slow response (real logs: every single Layer 6
-/// invocation across a 15-minute scan ended in "inference exceeded 10s
-/// timeout"). Failing fast when the slot's already taken means whichever
-/// caller does hold it gets an uncontended shot at the real 10s budget,
-/// and everyone else falls through to the next ladder tier immediately
-/// instead of after a wasted 10s.
-fn completion_semaphore() -> &'static tokio::sync::Semaphore {
-    static SEM: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
-    SEM.get_or_init(|| tokio::sync::Semaphore::new(1))
-}
-
 enum ServerState {
     NotStarted,
     Starting,
@@ -134,6 +133,8 @@ struct SidecarState {
     state: ServerState,
     child: Option<Child>,
     model_id: Option<String>,
+    parallel_slots: usize,
+    semaphore: Arc<Semaphore>,
 }
 
 fn state() -> &'static Mutex<SidecarState> {
@@ -143,8 +144,26 @@ fn state() -> &'static Mutex<SidecarState> {
             state: ServerState::NotStarted,
             child: None,
             model_id: None,
+            // 0 can never equal a real requested slot count (always >= 1
+            // after clamping), so this can't accidentally "match" before a
+            // server has actually been spawned.
+            parallel_slots: 0,
+            semaphore: Arc::new(Semaphore::new(1)),
         })
     })
+}
+
+/// Whether an already-`Ready` server (running `current_model` at
+/// `current_slots`) already satisfies a request for `requested_model` at
+/// `requested_slots` — true means no restart needed. Pure so the four
+/// independent combinations are unit-testable without spawning a process.
+fn server_matches(
+    current_model: Option<&str>,
+    current_slots: usize,
+    requested_model: &str,
+    requested_slots: usize,
+) -> bool {
+    current_model == Some(requested_model) && current_slots == requested_slots
 }
 
 /// Downloads (if not already present) and extracts the llama.cpp release
@@ -232,7 +251,7 @@ async fn health_check(port: u16) -> bool {
 /// (or `SERVER_STARTUP_TIMEOUT` elapses). Runs as a detached background
 /// task — never awaited directly by a request in flight, so a cold model
 /// load never blocks any single email's Layer 6 budget.
-async fn start_server_task(app_dir: PathBuf, model_id: String) {
+async fn start_server_task(app_dir: PathBuf, model_id: String, slots: usize) {
     let outcome: Result<Option<Child>> = async {
         let binary = ensure_binary(&app_dir).await?;
         let model_path = crate::llm_manager::get_model_path(&app_dir, &model_id)
@@ -246,7 +265,9 @@ async fn start_server_task(app_dir: PathBuf, model_id: String) {
             .arg("--host")
             .arg("127.0.0.1")
             .arg("-c")
-            .arg(CONTEXT_SIZE)
+            .arg(context_size_for(slots).to_string())
+            .arg("--parallel")
+            .arg(slots.to_string())
             .arg("-ngl")
             .arg(gpu_layers_arg())
             // `--host 127.0.0.1` already blocks remote network access, but
@@ -317,6 +338,8 @@ async fn start_server_task(app_dir: PathBuf, model_id: String) {
         Ok(child) => {
             st.child = child;
             st.model_id = Some(model_id);
+            st.parallel_slots = slots;
+            st.semaphore = Arc::new(Semaphore::new(slots));
             st.state = ServerState::Ready {
                 port: LLAMA_SERVER_PORT,
             };
@@ -344,10 +367,15 @@ pub async fn shutdown() {
 /// a cold start; kicks one off in the background and reports "not ready
 /// yet" immediately so the caller (a single email's Layer 6 attempt) can
 /// fail fast rather than hang on someone else's multi-GB model load.
-async fn ensure_server_ready(app_dir: &Path, model_id: &str) -> Result<u16> {
+async fn ensure_server_ready(app_dir: &Path, model_id: &str) -> Result<(u16, Arc<Semaphore>)> {
+    let requested_slots = current_parallel_slots();
     let mut st = state().lock().await;
     match &st.state {
-        ServerState::Ready { port } if st.model_id.as_deref() == Some(model_id) => Ok(*port),
+        ServerState::Ready { port }
+            if server_matches(st.model_id.as_deref(), st.parallel_slots, model_id, requested_slots) =>
+        {
+            Ok((*port, Arc::clone(&st.semaphore)))
+        }
         ServerState::Ready { .. } => {
             if let Some(mut child) = st.child.take() {
                 let _ = child.kill().await;
@@ -356,9 +384,10 @@ async fn ensure_server_ready(app_dir: &Path, model_id: &str) -> Result<u16> {
             tokio::spawn(start_server_task(
                 app_dir.to_path_buf(),
                 model_id.to_string(),
+                requested_slots,
             ));
             Err(anyhow!(
-                "llama-server restarting for a model change — try again shortly"
+                "llama-server restarting for a model/parallelism change — try again shortly"
             ))
         }
         ServerState::Starting => Err(anyhow!("llama-server still starting — try again shortly")),
@@ -370,6 +399,7 @@ async fn ensure_server_ready(app_dir: &Path, model_id: &str) -> Result<u16> {
             tokio::spawn(start_server_task(
                 app_dir.to_path_buf(),
                 model_id.to_string(),
+                requested_slots,
             ));
             Err(anyhow!("llama-server starting — try again shortly"))
         }
@@ -388,8 +418,8 @@ struct CompletionResponse {
 /// waited on, so nothing here can eat into that budget except the actual
 /// HTTP request.
 pub async fn complete(app_dir: &Path, model_id: &str, prompt: &str) -> Result<String> {
-    let port = ensure_server_ready(app_dir, model_id).await?;
-    let _permit = completion_semaphore()
+    let (port, semaphore) = ensure_server_ready(app_dir, model_id).await?;
+    let _permit = semaphore
         .try_acquire()
         .context("llama-server busy with another completion")?;
 
@@ -416,6 +446,8 @@ pub async fn complete(app_dir: &Path, model_id: &str, prompt: &str) -> Result<St
 
 #[cfg(test)]
 mod tests {
+    use super::server_matches;
+
     /// Regression test for the fix above: a caller must never block on the
     /// single completion slot. Blocking here is what made every queued
     /// email in a concurrent batch burn its whole `INFERENCE_TIMEOUT`
@@ -428,5 +460,25 @@ mod tests {
             sem.try_acquire().is_err(),
             "a contended slot must be rejected immediately, not waited on"
         );
+    }
+
+    #[test]
+    fn server_matches_true_when_model_and_slots_both_match() {
+        assert!(server_matches(Some("gemma4_e4b"), 4, "gemma4_e4b", 4));
+    }
+
+    #[test]
+    fn server_matches_false_when_model_differs() {
+        assert!(!server_matches(Some("gemma4_12b"), 4, "gemma4_e4b", 4));
+    }
+
+    #[test]
+    fn server_matches_false_when_slots_differ() {
+        assert!(!server_matches(Some("gemma4_e4b"), 4, "gemma4_e4b", 6));
+    }
+
+    #[test]
+    fn server_matches_false_when_nothing_has_run_yet() {
+        assert!(!server_matches(None, 4, "gemma4_e4b", 4));
     }
 }
