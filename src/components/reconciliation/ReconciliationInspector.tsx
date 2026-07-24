@@ -80,11 +80,7 @@ export default function ReconciliationInspector({
           >
             Ambiguous Match
           </span>
-          <p className="text-[15px] font-semibold text-[#064E3B]">
-            {cluster.reason.startsWith('Ambiguous match')
-              ? cluster.reason.substring(15).trim()
-              : cluster.reason}
-          </p>
+          <p className="text-[15px] font-semibold text-[#064E3B]">{cluster.explanation}</p>
         </div>
 
         <button
@@ -135,6 +131,9 @@ export default function ReconciliationInspector({
           <p className="text-[11px] font-medium flex items-center gap-1.5 text-[#064E3B]/60 uppercase tracking-wide">
             <SplitSquareHorizontal className="w-3.5 h-3.5" /> Resolution Actions
           </p>
+          <p className="text-[11px] italic text-[#064E3B]/60">
+            Review carefully — these actions alter your financial records.
+          </p>
 
           <div className="grid grid-cols-2 gap-2">
             <Button
@@ -142,6 +141,7 @@ export default function ReconciliationInspector({
               className="w-full text-xs h-8 border-[#064E3B]/10 text-[#064E3B] hover:bg-[#064E3B]/5 hover:text-[#064E3B]"
               onClick={handleReviewLater}
               disabled={isPending}
+              title="No changes made. Stays in your queue for another day."
             >
               <Clock className="w-3.5 h-3.5 mr-1.5" /> Later
             </Button>
@@ -150,6 +150,7 @@ export default function ReconciliationInspector({
               className="w-full text-xs h-8 border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700 hover:border-red-300"
               onClick={handleRejectCandidates}
               disabled={isPending}
+              title="Marks this as not a duplicate. The new charge stays unmatched — it won't auto-link to any of these candidates again."
             >
               <Ban className="w-3.5 h-3.5 mr-1.5" /> Reject
             </Button>
@@ -158,6 +159,7 @@ export default function ReconciliationInspector({
               className="w-full text-[13px] h-8 col-span-2 border-[#064E3B]/10 text-[#064E3B] hover:bg-[#064E3B]/5 hover:text-[#064E3B] font-semibold"
               onClick={handleKeepSeparate}
               disabled={isPending}
+              title="Creates a new transaction for the incoming charge. Both this and the existing one(s) remain in your records independently."
             >
               Keep Separate
             </Button>
@@ -165,6 +167,7 @@ export default function ReconciliationInspector({
               className="w-full text-[13px] h-8 col-span-2 font-semibold bg-[#064E3B] text-[#F8E7C9] hover:bg-[#064E3B]/90 focus-visible:ring-[#064E3B]"
               onClick={handleConfirmMatch}
               disabled={isPending || candidates.length === 0 || !selectedCandidateId}
+              title="Links this new charge to the selected existing transaction. It stops appearing as a separate entry."
             >
               <GitMerge className="w-3.5 h-3.5 mr-1.5" /> Confirm Selected Match
             </Button>

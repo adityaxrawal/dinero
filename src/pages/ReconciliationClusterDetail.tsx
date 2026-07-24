@@ -72,16 +72,7 @@ export default function ReconciliationClusterDetail() {
 
       <div>
         <h1 className="text-2xl font-bold">Ambiguous Match Cluster</h1>
-        <p className="text-muted-foreground mt-1">
-          {cluster.reason.startsWith('Ambiguous match') ? (
-            <>
-              <span>Ambiguous match</span>
-              {cluster.reason.substring(15)}
-            </>
-          ) : (
-            cluster.reason
-          )}
-        </p>
+        <p className="text-muted-foreground mt-1">{cluster.explanation}</p>
       </div>
 
       <Card>
@@ -116,6 +107,7 @@ export default function ReconciliationClusterDetail() {
               className="text-muted-foreground"
               onClick={handleReviewLater}
               disabled={isPending}
+              title="No changes made. Stays in your queue for another day."
             >
               <Clock className="w-4 h-4 mr-2" aria-hidden="true" /> Review Later
             </Button>
@@ -124,10 +116,16 @@ export default function ReconciliationClusterDetail() {
               className="text-red-700 hover:text-red-700 hover:bg-destructive/10"
               onClick={handleRejectCandidates}
               disabled={isPending}
+              title="Marks this as not a duplicate. The new charge stays unmatched — it won't auto-link to any of these candidates again."
             >
               <X className="w-4 h-4 mr-2" aria-hidden="true" /> Reject Matches
             </Button>
-            <Button variant="outline" onClick={handleKeepSeparate} disabled={isPending}>
+            <Button
+              variant="outline"
+              onClick={handleKeepSeparate}
+              disabled={isPending}
+              title="Creates a new transaction for the incoming charge. Both this and the existing one(s) remain in your records independently."
+            >
               Keep Separate
             </Button>
             <Button
@@ -135,6 +133,7 @@ export default function ReconciliationClusterDetail() {
               disabled={isPending || candidates.length === 0 || !selectedCandidateId}
               variant="outline"
               className="border-emerald-500/50 text-emerald-700 hover:bg-emerald-500/10 hover:text-emerald-800"
+              title="Links this new charge to the selected existing transaction. It stops appearing as a separate entry."
             >
               <GitMerge className="w-4 h-4 mr-2" aria-hidden="true" /> Confirm Match
             </Button>

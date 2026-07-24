@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { useResolveCluster } from '@/hooks/mutations/useResolveCluster';
 import { useToast } from '@/hooks/use-toast';
 import { getErrorToast } from '@/lib/errorMapping';
+import { ToastAction } from '@/components/ui/toast';
+import { API } from '@/lib/ipc';
 import type { ClusterRecord } from '@/lib/ipc';
 
 interface UseResolveClusterActionsProps {
@@ -48,18 +50,37 @@ export function useResolveClusterActions({ cluster, onSuccess }: UseResolveClust
     }
     if (!confirmed) return;
 
+    const clusterIdSnapshot = cluster.id;
+
     resolveCluster.mutate(
-      { clusterId: cluster.id, observationId: incomingObservationId, action, chosenCanonicalId },
+      { clusterId: clusterIdSnapshot, observationId: incomingObservationId, action, chosenCanonicalId },
       {
         onSuccess: () => {
-          toast(
-            action === 'mark_unresolved'
-              ? {
-                  title: 'Marked for Later Review',
-                  description: 'This cluster will stay in your queue.',
-                }
-              : { title: 'Cluster Resolved', description: 'Your decision has been recorded.' }
-          );
+          if (action === 'mark_unresolved') {
+            toast({
+              title: 'Marked for Later Review',
+              description: 'This cluster will stay in your queue.',
+            });
+          } else if (action === 'confirm_match') {
+            toast({
+              title: 'Cluster Resolved',
+              description: 'Your decision has been recorded.',
+              action: (
+                <ToastAction
+                  altText="Undo"
+                  onClick={() => {
+                    API.reconciliation.unmergeCluster(clusterIdSnapshot).catch((err) => {
+                      toast({ variant: 'destructive', ...getErrorToast(err) });
+                    });
+                  }}
+                >
+                  Undo
+                </ToastAction>
+              ),
+            });
+          } else {
+            toast({ title: 'Cluster Resolved', description: 'Your decision has been recorded.' });
+          }
           onSuccess();
         },
         onError: (err) => toast({ variant: 'destructive', ...getErrorToast(err) }),
