@@ -13,6 +13,8 @@ vi.mock('@/lib/ipc', () => ({
       deleteModel: vi.fn(),
       cancelDownload: vi.fn(),
       setActiveModel: vi.fn(),
+      getHardwareInfo: vi.fn(),
+      setParallelSlots: vi.fn(),
     },
     dev: {
       checkSystemRam: vi.fn().mockResolvedValue(64),
@@ -56,6 +58,16 @@ describe('LocalLlmSettings', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     ipcListenHandler = null;
+    localStorage.clear();
+    // Default hardware info for tests that don't care about it — the four
+    // pre-existing tests below just need the load Promise.all to resolve.
+    (API.llm.getHardwareInfo as any).mockResolvedValue({
+      ram_gb: 64,
+      cpu_cores: 8,
+      recommended_slots: 4,
+      recommended_model_id: null,
+    });
+    (API.llm.setParallelSlots as any).mockResolvedValue(4);
   });
 
   it('reassigns the Active badge to the remaining downloaded model when the active model is deleted', async () => {
@@ -189,5 +201,68 @@ describe('LocalLlmSettings', () => {
     await waitFor(() => {
       expect(screen.queryByTitle('Cancel download')).toBeNull();
     });
+  });
+
+  it('shows recommended parallel instances and a hardware-recommended model badge', async () => {
+    (API.llm.getAvailableModels as any).mockResolvedValue(MODELS);
+    (API.llm.getDownloadedModels as any).mockResolvedValue(['gemma4_e4b']);
+    (API.llm.getActiveModel as any).mockResolvedValue('gemma4_e4b');
+    (API.llm.getHardwareInfo as any).mockResolvedValue({
+      ram_gb: 24,
+      cpu_cores: 10,
+      recommended_slots: 5,
+      recommended_model_id: 'gemma4_12b',
+    });
+    (API.llm.setParallelSlots as any).mockResolvedValue(5);
+
+    render(<LocalLlmSettings />);
+
+    await waitFor(() => {
+      expect(screen.getByDisplayValue('5')).toBeInTheDocument();
+    });
+    // "Recommended: " and the "5" are separate text nodes (the count is
+    // wrapped in <strong>), so a plain string/regex match against a single
+    // node won't find it — match on the element's full merged textContent
+    // instead, scoped to the deepest element that contains it.
+    expect(
+      screen.getByText((_content, node) => {
+        const text = node?.textContent?.replace(/\s+/g, ' ') ?? '';
+        const hasIt = text.includes('Recommended: 5');
+        const childHasIt = Array.from(node?.children ?? []).some((child) =>
+          (child.textContent?.replace(/\s+/g, ' ') ?? '').includes('Recommended: 5')
+        );
+        return hasIt && !childHasIt;
+      })
+    ).toBeInTheDocument();
+
+    const twelveBCard = screen.getByText('Gemma 4 12B').closest('div.p-5') as HTMLElement;
+    expect(within(twelveBCard).getByText('Recommended for your Mac')).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(API.llm.setParallelSlots).toHaveBeenCalledWith(5);
+    });
+  });
+
+  it('clamps a user-entered instance count to 1-10 and persists it', async () => {
+    (API.llm.getAvailableModels as any).mockResolvedValue(MODELS);
+    (API.llm.getDownloadedModels as any).mockResolvedValue([]);
+    (API.llm.getActiveModel as any).mockResolvedValue('');
+    (API.llm.getHardwareInfo as any).mockResolvedValue({
+      ram_gb: 8,
+      cpu_cores: 4,
+      recommended_slots: 1,
+      recommended_model_id: 'gemma4_e4b',
+    });
+    (API.llm.setParallelSlots as any).mockResolvedValue(1);
+
+    render(<LocalLlmSettings />);
+
+    const input = await screen.findByLabelText('Number of parallel LLM instances');
+    fireEvent.change(input, { target: { value: '15' } });
+
+    await waitFor(() => {
+      expect(API.llm.setParallelSlots).toHaveBeenCalledWith(10);
+    });
+    expect(localStorage.getItem('llm_parallel_slots')).toBe('10');
   });
 });

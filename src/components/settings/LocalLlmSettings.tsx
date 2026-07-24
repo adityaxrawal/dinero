@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Cpu, Loader2, Download, Trash2, CheckCircle, Server } from 'lucide-react';
-import { API, LlmModelInfo } from '@/lib/ipc';
+import { API, LlmModelInfo, LlmHardwareInfo } from '@/lib/ipc';
 import { useIpcListen } from '@/hooks/useIpcListen';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -12,6 +12,13 @@ interface LlmDownloadProgress {
   bytes_per_sec: number;
 }
 
+const PARALLEL_SLOTS_STORAGE_KEY = 'llm_parallel_slots';
+
+const clampSlots = (n: number) => {
+  if (!Number.isFinite(n)) return 1;
+  return Math.min(10, Math.max(1, Math.round(n)));
+};
+
 export default function LocalLlmSettings() {
   const [availableModels, setAvailableModels] = useState<LlmModelInfo[]>([]);
   const [downloadedModels, setDownloadedModels] = useState<Set<string>>(new Set());
@@ -19,20 +26,42 @@ export default function LocalLlmSettings() {
   const [downloads, setDownloads] = useState<Record<string, LlmDownloadProgress>>({});
   const [isDeleting, setIsDeleting] = useState<string | null>(null);
   const [cancellingModelId, setCancellingModelId] = useState<string | null>(null);
+  const [hwInfo, setHwInfo] = useState<LlmHardwareInfo | null>(null);
+  const [parallelSlots, setParallelSlotsState] = useState<number>(1);
 
   useEffect(() => {
     Promise.all([
       API.llm.getAvailableModels(),
       API.llm.getDownloadedModels(),
       API.llm.getActiveModel(),
+      API.llm.getHardwareInfo(),
     ])
-      .then(([models, downloaded, active]) => {
+      .then(([models, downloaded, active, hw]) => {
         setAvailableModels(models);
         setDownloadedModels(new Set(downloaded));
         setActiveModel(active);
+        setHwInfo(hw);
+
+        const stored = localStorage.getItem(PARALLEL_SLOTS_STORAGE_KEY);
+        const initial = stored ? clampSlots(parseInt(stored, 10)) : hw.recommended_slots;
+        setParallelSlotsState(initial);
+        API.llm
+          .setParallelSlots(initial)
+          .catch((err) => console.error('Failed to sync parallel slots:', err));
       })
       .catch((err) => console.error('Failed to load LLM state:', err));
   }, []);
+
+  const handleSlotsChange = async (raw: number) => {
+    const clamped = clampSlots(raw);
+    setParallelSlotsState(clamped);
+    localStorage.setItem(PARALLEL_SLOTS_STORAGE_KEY, String(clamped));
+    try {
+      await API.llm.setParallelSlots(clamped);
+    } catch (err) {
+      alert(`Failed to update parallel instances: ${err}`);
+    }
+  };
 
   useIpcListen<LlmDownloadProgress>('llm_download_progress', (progress) => {
     setDownloads((prev) => ({ ...prev, [progress.model_id]: progress }));
@@ -162,6 +191,34 @@ export default function LocalLlmSettings() {
         </p>
       </div>
 
+      <div className="mb-6 p-5 rounded-xl border bg-[#F8E7C9]/50 border-[#064E3B]/10">
+        <h3 className="font-bold text-[15px] text-[#064E3B] flex items-center gap-2">
+          <Server className="w-4 h-4" /> Parallel Processing
+        </h3>
+        <p className="text-[13px] mt-1 text-[#064E3B]/70 leading-relaxed max-w-2xl">
+          Run multiple statement extractions at once during a scan.
+          {hwInfo && (
+            <>
+              {' '}
+              Recommended: <strong>{hwInfo.recommended_slots}</strong> (based on your{' '}
+              {hwInfo.ram_gb.toFixed(0)}GB RAM, {hwInfo.cpu_cores} CPU cores).
+            </>
+          )}
+        </p>
+        <div className="flex items-center gap-3 mt-3">
+          <input
+            type="number"
+            min={1}
+            max={10}
+            value={parallelSlots}
+            onChange={(e) => handleSlotsChange(parseInt(e.target.value, 10))}
+            className="w-20 h-9 px-3 rounded-lg border border-[#064E3B]/20 text-[#064E3B] font-semibold text-center"
+            aria-label="Number of parallel LLM instances"
+          />
+          <span className="text-[12px] text-[#064E3B]/60">instances (1-10)</span>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 gap-4">
         {availableModels.map((m) => {
           const isDownloaded = downloadedModels.has(m.id);
@@ -190,6 +247,11 @@ export default function LocalLlmSettings() {
                   {isDownloaded && !isActive && (
                     <span className="px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-700 border border-emerald-500/20 text-[11px] font-bold tracking-wide uppercase">
                       Downloaded
+                    </span>
+                  )}
+                  {hwInfo?.recommended_model_id === m.id && (
+                    <span className="px-2.5 py-1 rounded-full bg-blue-500/10 text-blue-700 border border-blue-500/20 text-[11px] font-bold tracking-wide uppercase">
+                      Recommended for your Mac
                     </span>
                   )}
                 </div>
