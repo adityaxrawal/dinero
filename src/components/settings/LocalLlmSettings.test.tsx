@@ -243,7 +243,7 @@ describe('LocalLlmSettings', () => {
     });
   });
 
-  it('clamps a user-entered instance count to 1-10 and persists it', async () => {
+  it('clamps a user-entered instance count to 1-10 but waits for Save to persist it', async () => {
     (API.llm.getAvailableModels as any).mockResolvedValue(MODELS);
     (API.llm.getDownloadedModels as any).mockResolvedValue([]);
     (API.llm.getActiveModel as any).mockResolvedValue('');
@@ -258,11 +258,43 @@ describe('LocalLlmSettings', () => {
     render(<LocalLlmSettings />);
 
     const input = await screen.findByLabelText('Number of parallel LLM instances');
+    await waitFor(() => expect(API.llm.setParallelSlots).toHaveBeenCalledWith(1)); // initial load sync
+
     fireEvent.change(input, { target: { value: '15' } });
+    expect(input).toHaveValue(10); // clamped immediately in the input
+
+    // Typing alone must not push a new value or restart the server. Nothing
+    // has been explicitly saved yet, so localStorage stays untouched (the
+    // initial-load sync pushes to the backend only, never to localStorage).
+    expect(API.llm.setParallelSlots).not.toHaveBeenCalledWith(10);
+    expect(localStorage.getItem('llm_parallel_slots')).toBeNull();
+
+    const saveButton = screen.getByRole('button', { name: /save/i });
+    expect(saveButton).toBeEnabled();
+    fireEvent.click(saveButton);
 
     await waitFor(() => {
       expect(API.llm.setParallelSlots).toHaveBeenCalledWith(10);
     });
     expect(localStorage.getItem('llm_parallel_slots')).toBe('10');
+  });
+
+  it('disables Save until the instance count is actually changed', async () => {
+    (API.llm.getAvailableModels as any).mockResolvedValue(MODELS);
+    (API.llm.getDownloadedModels as any).mockResolvedValue([]);
+    (API.llm.getActiveModel as any).mockResolvedValue('');
+    (API.llm.getHardwareInfo as any).mockResolvedValue({
+      ram_gb: 8,
+      cpu_cores: 4,
+      recommended_slots: 1,
+      recommended_model_id: 'gemma4_e4b',
+    });
+    (API.llm.setParallelSlots as any).mockResolvedValue(1);
+
+    render(<LocalLlmSettings />);
+    await screen.findByLabelText('Number of parallel LLM instances');
+
+    const saveButton = screen.getByRole('button', { name: /save/i });
+    expect(saveButton).toBeDisabled();
   });
 });

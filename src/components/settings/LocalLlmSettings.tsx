@@ -27,7 +27,16 @@ export default function LocalLlmSettings() {
   const [isDeleting, setIsDeleting] = useState<string | null>(null);
   const [cancellingModelId, setCancellingModelId] = useState<string | null>(null);
   const [hwInfo, setHwInfo] = useState<LlmHardwareInfo | null>(null);
-  const [parallelSlots, setParallelSlotsState] = useState<number>(1);
+  // `savedSlots` is the last value actually pushed to the backend/localStorage;
+  // `draftSlots` is what's in the input right now. They diverge the moment the
+  // user edits the input and stay diverged until Save is clicked — typing
+  // alone never reaches the backend, avoiding a server restart on every
+  // keystroke (each change forces `llama-server` to respawn, see
+  // `llama_sidecar.rs`'s `ensure_server_ready`).
+  const [savedSlots, setSavedSlots] = useState<number>(1);
+  const [draftSlots, setDraftSlots] = useState<number>(1);
+  const [isSavingSlots, setIsSavingSlots] = useState(false);
+  const [slotsJustSaved, setSlotsJustSaved] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -44,7 +53,8 @@ export default function LocalLlmSettings() {
 
         const stored = localStorage.getItem(PARALLEL_SLOTS_STORAGE_KEY);
         const initial = stored ? clampSlots(parseInt(stored, 10)) : hw.recommended_slots;
-        setParallelSlotsState(initial);
+        setSavedSlots(initial);
+        setDraftSlots(initial);
         API.llm
           .setParallelSlots(initial)
           .catch((err) => console.error('Failed to sync parallel slots:', err));
@@ -52,14 +62,22 @@ export default function LocalLlmSettings() {
       .catch((err) => console.error('Failed to load LLM state:', err));
   }, []);
 
-  const handleSlotsChange = async (raw: number) => {
-    const clamped = clampSlots(raw);
-    setParallelSlotsState(clamped);
-    localStorage.setItem(PARALLEL_SLOTS_STORAGE_KEY, String(clamped));
+  const slotsDirty = draftSlots !== savedSlots;
+
+  const handleSaveSlots = async () => {
+    const clamped = clampSlots(draftSlots);
+    setIsSavingSlots(true);
     try {
       await API.llm.setParallelSlots(clamped);
+      localStorage.setItem(PARALLEL_SLOTS_STORAGE_KEY, String(clamped));
+      setSavedSlots(clamped);
+      setDraftSlots(clamped);
+      setSlotsJustSaved(true);
+      setTimeout(() => setSlotsJustSaved(false), 2000);
     } catch (err) {
       alert(`Failed to update parallel instances: ${err}`);
+    } finally {
+      setIsSavingSlots(false);
     }
   };
 
@@ -191,10 +209,28 @@ export default function LocalLlmSettings() {
         </p>
       </div>
 
-      <div className="mb-6 p-5 rounded-xl border bg-[#F8E7C9]/50 border-[#064E3B]/10">
-        <h3 className="font-bold text-[15px] text-[#064E3B] flex items-center gap-2">
-          <Server className="w-4 h-4" /> Parallel Processing
-        </h3>
+      <div
+        className={cn(
+          'mb-6 p-5 rounded-xl border transition-colors',
+          slotsDirty
+            ? 'bg-[#064E3B]/[0.06] border-[#064E3B]/30'
+            : 'bg-[#F8E7C9]/50 border-[#064E3B]/10'
+        )}
+      >
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <h3 className="font-bold text-[15px] text-[#064E3B] flex items-center gap-2">
+            <Server className="w-4 h-4" /> Parallel Processing
+          </h3>
+          {hwInfo && draftSlots !== hwInfo.recommended_slots && (
+            <button
+              type="button"
+              onClick={() => setDraftSlots(hwInfo.recommended_slots)}
+              className="text-[12px] font-semibold text-[#064E3B] underline underline-offset-2 hover:text-[#053d2f]"
+            >
+              Use recommended ({hwInfo.recommended_slots})
+            </button>
+          )}
+        </div>
         <p className="text-[13px] mt-1 text-[#064E3B]/70 leading-relaxed max-w-2xl">
           Run multiple statement extractions at once during a scan.
           {hwInfo && (
@@ -210,12 +246,34 @@ export default function LocalLlmSettings() {
             type="number"
             min={1}
             max={10}
-            value={parallelSlots}
-            onChange={(e) => handleSlotsChange(parseInt(e.target.value, 10))}
-            className="w-20 h-9 px-3 rounded-lg border border-[#064E3B]/20 text-[#064E3B] font-semibold text-center"
+            value={draftSlots}
+            onChange={(e) => setDraftSlots(clampSlots(parseInt(e.target.value, 10)))}
+            className={cn(
+              'w-20 h-9 px-3 rounded-lg border text-[#064E3B] font-semibold text-center transition-colors',
+              slotsDirty ? 'border-[#064E3B]/60 ring-1 ring-[#064E3B]/20' : 'border-[#064E3B]/20'
+            )}
             aria-label="Number of parallel LLM instances"
           />
           <span className="text-[12px] text-[#064E3B]/60">instances (1-10)</span>
+          {slotsDirty && !isSavingSlots && (
+            <span className="text-[11px] font-semibold text-[#064E3B]/60 flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#064E3B]/60" /> Unsaved changes
+            </span>
+          )}
+          <Button
+            variant="accent"
+            size="sm"
+            className="ml-auto"
+            onClick={handleSaveSlots}
+            disabled={!slotsDirty || isSavingSlots}
+          >
+            {isSavingSlots ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : slotsJustSaved ? (
+              <CheckCircle className="w-3.5 h-3.5" />
+            ) : null}
+            {isSavingSlots ? 'Saving…' : slotsJustSaved ? 'Saved' : 'Save'}
+          </Button>
         </div>
       </div>
 
