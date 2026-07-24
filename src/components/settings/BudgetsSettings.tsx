@@ -45,9 +45,7 @@ export default function BudgetsSettings() {
 
   const handleCategoryBudgetChange = (name: string, value: string) => {
     const budget = parseFloat(value) || 0;
-    setCategories((prev) =>
-      prev.map((c) => (c.name === name ? { ...c, budget } : c)),
-    );
+    setCategories((prev) => prev.map((c) => (c.name === name ? { ...c, budget } : c)));
   };
 
   const handleSave = async () => {
@@ -60,7 +58,7 @@ export default function BudgetsSettings() {
       });
       return;
     }
-    
+
     if (parsedLimit > 999999999999) {
       toast({
         variant: 'destructive',
@@ -69,7 +67,7 @@ export default function BudgetsSettings() {
       });
       return;
     }
-    
+
     setIsSaving(true);
     try {
       const updated: SpendingLimitsData = {
@@ -78,7 +76,10 @@ export default function BudgetsSettings() {
         categories,
       };
       await API.spendingLimits.update(updated);
-      toast({ title: 'Spending Limits Saved', description: 'Your spending limits have been updated.' });
+      toast({
+        title: 'Spending Limits Saved',
+        description: 'Your spending limits have been updated.',
+      });
     } catch (e: unknown) {
       toast({
         variant: 'destructive',
@@ -102,17 +103,35 @@ export default function BudgetsSettings() {
     <div className="space-y-12">
       <div className="flex items-start justify-between">
         <div>
-          <h2 className="text-xl font-bold flex items-center gap-2 text-[#064E3B]">Global Monthly Limit</h2>
-          <p className="text-sm mt-1 text-[#064E3B]/70">Set the total amount you want to spend across all categories per month.</p>
+          <h2 className="text-xl font-bold flex items-center gap-2 text-[#064E3B]">
+            Global Monthly Limit
+          </h2>
+          <p className="text-sm mt-1 text-[#064E3B]/70">
+            Set the total amount you want to spend across all categories per month.
+          </p>
         </div>
-        <Button onClick={handleSave} disabled={isSaving} className="h-9 px-4 font-semibold shrink-0" style={{ background: '#064E3B', color: '#F8E7C9' }}>
-          {isSaving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
+        <Button
+          onClick={handleSave}
+          disabled={isSaving}
+          className="h-9 px-4 font-semibold shrink-0"
+          style={{ background: '#064E3B', color: '#F8E7C9' }}
+        >
+          {isSaving ? (
+            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+          ) : (
+            <Save className="w-4 h-4 mr-2" />
+          )}
           {isSaving ? 'Saving…' : 'Save Changes'}
         </Button>
       </div>
 
       <div className="flex items-center gap-4 max-w-xs">
-        <Label htmlFor="global-limit" className="shrink-0 text-[13px] font-bold uppercase tracking-wider text-[#064E3B]/60">₹ Limit</Label>
+        <Label
+          htmlFor="global-limit"
+          className="shrink-0 text-[13px] font-bold uppercase tracking-wider text-[#064E3B]/60"
+        >
+          ₹ Limit
+        </Label>
         <Input
           id="global-limit"
           type="number"
@@ -130,8 +149,10 @@ export default function BudgetsSettings() {
         <h2 className="text-xl font-bold flex items-center gap-2 mb-1 text-[#064E3B]">
           <Bell className="w-5 h-5" /> Alert Thresholds
         </h2>
-        <p className="text-sm mb-6 text-[#064E3B]/70">Receive notifications when you cross these percentages of your spending limit.</p>
-        
+        <p className="text-sm mb-6 text-[#064E3B]/70">
+          Receive notifications when you cross these percentages of your spending limit.
+        </p>
+
         <div className="flex flex-wrap gap-4">
           {(
             [
@@ -154,14 +175,25 @@ export default function BudgetsSettings() {
                     : 'border-[#064E3B]/20 bg-[#F8E7C9]/50 hover:border-[#064E3B]/30 hover:bg-[#064E3B]/5'
                 )}
               >
-                <span className={cn('text-2xl font-bold transition-colors', isActive ? 'text-[#064E3B]' : 'text-[#064E3B]/70')}>
+                <span
+                  className={cn(
+                    'text-2xl font-bold transition-colors',
+                    isActive ? 'text-[#064E3B]' : 'text-[#064E3B]/70'
+                  )}
+                >
                   {label}
                 </span>
-                <span className="text-[12px] font-medium mt-1 text-[#064E3B]/70">{description}</span>
-                <span className={cn(
-                  'mt-3 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider',
-                  isActive ? 'bg-[#064E3B]/10 text-[#064E3B]' : 'bg-[#064E3B]/5 text-[#064E3B]/60 border border-[#064E3B]/10'
-                )}>
+                <span className="text-[12px] font-medium mt-1 text-[#064E3B]/70">
+                  {description}
+                </span>
+                <span
+                  className={cn(
+                    'mt-3 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider',
+                    isActive
+                      ? 'bg-[#064E3B]/10 text-[#064E3B]'
+                      : 'bg-[#064E3B]/5 text-[#064E3B]/60 border border-[#064E3B]/10'
+                  )}
+                >
                   {isActive ? 'ON' : 'OFF'}
                 </span>
               </button>
@@ -174,15 +206,25 @@ export default function BudgetsSettings() {
 
       <div>
         <h2 className="text-xl font-bold mb-1 text-[#064E3B]">Per-Category Budgets</h2>
-        <p className="text-sm mb-6 text-[#064E3B]/70">Set monthly spending budgets for individual categories. Leave at 0 for no limit.</p>
-        
+        <p className="text-sm mb-6 text-[#064E3B]/70">
+          Set monthly spending budgets for individual categories. Leave at 0 for no limit.
+        </p>
+
         {categories.length === 0 ? (
           <p className="text-[13px] font-medium text-[#064E3B]/70">No categories configured.</p>
         ) : (
-          <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))' }}>
+          <div
+            className="grid gap-4"
+            style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))' }}
+          >
             {categories.map((cat) => (
-              <div key={cat.name} className="space-y-3 p-5 rounded-xl border border-[#064E3B]/10 bg-[#064E3B]/5">
-                <Label htmlFor={`cat-${cat.name}`} className="text-[14px] font-bold text-[#064E3B]">{cat.name}</Label>
+              <div
+                key={cat.name}
+                className="space-y-3 p-5 rounded-xl border border-[#064E3B]/10 bg-[#064E3B]/5"
+              >
+                <Label htmlFor={`cat-${cat.name}`} className="text-[14px] font-bold text-[#064E3B]">
+                  {cat.name}
+                </Label>
                 <div className="flex items-center gap-2">
                   <span className="text-[13px] font-medium text-[#064E3B]/70 shrink-0">₹</span>
                   <Input
@@ -196,7 +238,9 @@ export default function BudgetsSettings() {
                   />
                 </div>
                 {cat.budget > 0 && (
-                  <p className="text-[12px] font-semibold text-[#064E3B]/60">₹ {cat.budget.toLocaleString()} / month</p>
+                  <p className="text-[12px] font-semibold text-[#064E3B]/60">
+                    ₹ {cat.budget.toLocaleString()} / month
+                  </p>
                 )}
               </div>
             ))}

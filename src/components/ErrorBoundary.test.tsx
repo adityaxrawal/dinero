@@ -21,9 +21,13 @@ describe('test_renderer_and_rust_errors_are_captured (React error boundary half)
     render(
       <ErrorBoundary>
         <Bomb />
-      </ErrorBoundary>,
+      </ErrorBoundary>
     );
-    expect(reportRendererError).toHaveBeenCalledWith('render exploded', expect.any(String), 'react_error_boundary');
+    expect(reportRendererError).toHaveBeenCalledWith(
+      'render exploded',
+      expect.any(String),
+      'react_error_boundary'
+    );
     expect(screen.getByRole('alert')).toBeInTheDocument();
     consoleErrorSpy.mockRestore();
   });

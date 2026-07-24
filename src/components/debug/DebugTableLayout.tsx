@@ -21,7 +21,7 @@ export function DebugTableLayout<T>({
   emptyMessage,
   headers,
   renderRow,
-  headerActions
+  headerActions,
 }: DebugTableLayoutProps<T>) {
   return (
     <div className="flex flex-col gap-4">
@@ -29,10 +29,12 @@ export function DebugTableLayout<T>({
         <h2 className="heading-md">{title}</h2>
         <div className="flex items-center gap-2">
           {headerActions}
-          <button className="btn btn-secondary text-sm" onClick={onRefresh}>Refresh</button>
+          <button className="btn btn-secondary text-sm" onClick={onRefresh}>
+            Refresh
+          </button>
         </div>
       </div>
-      
+
       {loading ? (
         <div>{loadingMessage}</div>
       ) : data.length === 0 ? (
@@ -43,13 +45,9 @@ export function DebugTableLayout<T>({
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
-              <tr className="border-b border-[var(--border-color)]">
-                {headers}
-              </tr>
+              <tr className="border-b border-[var(--border-color)]">{headers}</tr>
             </thead>
-            <tbody>
-              {data.map(renderRow)}
-            </tbody>
+            <tbody>{data.map(renderRow)}</tbody>
           </table>
         </div>
       )}

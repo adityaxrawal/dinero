@@ -1,10 +1,23 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
 import { API } from '@/lib/ipc';
 import { getErrorToast } from '@/lib/errorMapping';
@@ -60,7 +73,7 @@ export default function AddInstrumentModal({ open, onOpenChange }: AddInstrument
         form.maskedIdentifier,
         form.fullIdentifier || undefined,
         form.billingCycleDay ? parseInt(form.billingCycleDay, 10) : undefined,
-        form.bankIfsc || undefined,
+        form.bankIfsc || undefined
       );
       toast({ title: 'Instrument added' });
       queryClient.invalidateQueries({ queryKey: queryKeys.instruments.all() });
@@ -72,7 +85,8 @@ export default function AddInstrumentModal({ open, onOpenChange }: AddInstrument
     }
   };
 
-  const maskedIdLabel = form.instrumentType === 'upi_vpa' ? 'VPA (e.g. user@upi)' : 'Masked Identifier (e.g. XXXX1234)';
+  const maskedIdLabel =
+    form.instrumentType === 'upi_vpa' ? 'VPA (e.g. user@upi)' : 'Masked Identifier (e.g. XXXX1234)';
 
   return (
     <Dialog open={open} onOpenChange={(o) => (o ? onOpenChange(true) : close())}>
@@ -93,11 +107,18 @@ export default function AddInstrumentModal({ open, onOpenChange }: AddInstrument
           </div>
           <div className="grid gap-2">
             <Label htmlFor="add-type">Type</Label>
-            <Select value={form.instrumentType} onValueChange={(val) => setForm({ ...form, instrumentType: val })}>
-              <SelectTrigger id="add-type"><SelectValue placeholder="Select type" /></SelectTrigger>
+            <Select
+              value={form.instrumentType}
+              onValueChange={(val) => setForm({ ...form, instrumentType: val })}
+            >
+              <SelectTrigger id="add-type">
+                <SelectValue placeholder="Select type" />
+              </SelectTrigger>
               <SelectContent>
                 {INSTRUMENT_TYPES.map((t) => (
-                  <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
+                  <SelectItem key={t.value} value={t.value}>
+                    {t.label}
+                  </SelectItem>
                 ))}
               </SelectContent>
             </Select>
@@ -118,7 +139,8 @@ export default function AddInstrumentModal({ open, onOpenChange }: AddInstrument
           )}
           <div className="grid gap-2">
             <Label htmlFor="fullId">
-              Full Identifier (Account / Card No) <span className="text-muted-foreground text-xs">(Optional)</span>
+              Full Identifier (Account / Card No){' '}
+              <span className="text-muted-foreground text-xs">(Optional)</span>
             </Label>
             <Input
               id="fullId"
@@ -129,7 +151,9 @@ export default function AddInstrumentModal({ open, onOpenChange }: AddInstrument
           </div>
           {form.instrumentType === 'credit_card' && (
             <div className="grid gap-2">
-              <Label htmlFor="billingCycle">Billing Cycle Day <span className="text-muted-foreground text-xs">(Optional)</span></Label>
+              <Label htmlFor="billingCycle">
+                Billing Cycle Day <span className="text-muted-foreground text-xs">(Optional)</span>
+              </Label>
               <Input
                 id="billingCycle"
                 type="number"
@@ -143,7 +167,9 @@ export default function AddInstrumentModal({ open, onOpenChange }: AddInstrument
           )}
           {form.instrumentType === 'bank_account' && (
             <div className="grid gap-2">
-              <Label htmlFor="ifsc">IFSC Code <span className="text-muted-foreground text-xs">(Optional)</span></Label>
+              <Label htmlFor="ifsc">
+                IFSC Code <span className="text-muted-foreground text-xs">(Optional)</span>
+              </Label>
               <Input
                 id="ifsc"
                 value={form.bankIfsc}
@@ -154,7 +180,9 @@ export default function AddInstrumentModal({ open, onOpenChange }: AddInstrument
           )}
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={close}>Cancel</Button>
+          <Button variant="outline" onClick={close}>
+            Cancel
+          </Button>
           <Button onClick={handleCreate} disabled={isSaving}>
             {isSaving ? 'Adding...' : 'Add Instrument'}
           </Button>

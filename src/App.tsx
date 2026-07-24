@@ -75,9 +75,9 @@ function IpcEventBridge() {
             <ToastAction
               altText="Update Now"
               onClick={() => {
-                void API.updater.confirmInstall().catch((e) =>
-                  console.error('Failed to install update', e),
-                );
+                void API.updater
+                  .confirmInstall()
+                  .catch((e) => console.error('Failed to install update', e));
               }}
             >
               Update Now
@@ -114,7 +114,7 @@ function App() {
         if (selected && ramGb < selected.min_ram_gb && !override) {
           if (
             window.confirm(
-              `Warning: Your system has ${ramGb.toFixed(1)}GB of RAM, but ${selected.name} requires at least ${selected.min_ram_gb}GB for optimal performance. You may experience slow downs or crashes.\n\nDo you want to continue anyway (allow override)?`,
+              `Warning: Your system has ${ramGb.toFixed(1)}GB of RAM, but ${selected.name} requires at least ${selected.min_ram_gb}GB for optimal performance. You may experience slow downs or crashes.\n\nDo you want to continue anyway (allow override)?`
             )
           ) {
             localStorage.setItem('llm_ram_override', 'true');
@@ -123,7 +123,7 @@ function App() {
             const fallback = models.reduce((a, b) => (a.min_ram_gb <= b.min_ram_gb ? a : b));
             localStorage.setItem('llm_model', fallback.id);
             alert(
-              `Model automatically switched to a lighter version (${fallback.name}). You can change this in Settings.`,
+              `Model automatically switched to a lighter version (${fallback.name}). You can change this in Settings.`
             );
           }
         }

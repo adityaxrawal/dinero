@@ -54,7 +54,9 @@ export default function StatementOnlyModeBanner() {
   const navigate = useNavigate();
   const [dismissed, setDismissed] = useState(false);
 
-  const hasNoWorkingGmailAccount = connectedAccounts.every((a) => a.account_status?.toLowerCase() !== 'active');
+  const hasNoWorkingGmailAccount = connectedAccounts.every(
+    (a) => a.account_status?.toLowerCase() !== 'active'
+  );
 
   useEffect(() => {
     if (!hasNoWorkingGmailAccount) setDismissed(false);

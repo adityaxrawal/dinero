@@ -43,16 +43,18 @@ export default function NetworkActivity() {
           <Activity className="w-5 h-5 text-[#064E3B]" />
           <h3 className="text-xl font-bold text-[#064E3B]">Network Activity</h3>
         </div>
-        <button className="h-8 px-3 text-[12px] font-semibold rounded-lg border border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5 transition-colors flex items-center gap-1.5 disabled:opacity-50" onClick={fetchLogs} disabled={loading}>
+        <button
+          className="h-8 px-3 text-[12px] font-semibold rounded-lg border border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5 transition-colors flex items-center gap-1.5 disabled:opacity-50"
+          onClick={fetchLogs}
+          disabled={loading}
+        >
           <RefreshCcw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
           Refresh
         </button>
       </div>
 
       <div className="p-4 rounded-xl border border-[#064E3B]/10 bg-[#064E3B]/5 mb-4">
-        <p className="text-[13px] font-bold text-[#064E3B] mb-2">
-          Outbound Channels Disclosure:
-        </p>
+        <p className="text-[13px] font-bold text-[#064E3B] mb-2">Outbound Channels Disclosure:</p>
         <ul className="text-[12px] font-medium text-[#064E3B]/70 list-disc pl-5 space-y-1">
           {OUTBOUND_CHANNEL_DISCLOSURE.map((item, i) => (
             <li key={i}>{item}</li>
@@ -68,7 +70,9 @@ export default function NetworkActivity() {
           Loading network activity...
         </div>
       ) : logs.length === 0 ? (
-        <div className="text-[13px] font-medium text-[#064E3B]/70">No outbound requests recorded yet.</div>
+        <div className="text-[13px] font-medium text-[#064E3B]/70">
+          No outbound requests recorded yet.
+        </div>
       ) : (
         <div className="overflow-x-auto rounded-xl border border-[#064E3B]/10 bg-[#F8E7C9]/50">
           <table className="w-full text-left border-collapse">
@@ -85,14 +89,30 @@ export default function NetworkActivity() {
             </thead>
             <tbody>
               {logs.map((log) => (
-                <tr key={log.id} className="border-b border-[#064E3B]/10 last:border-0 hover:bg-[#064E3B]/5">
-                  <td className="p-3 text-[12px] font-medium text-[#064E3B]/80">{new Date(log.timestamp).toLocaleString()}</td>
+                <tr
+                  key={log.id}
+                  className="border-b border-[#064E3B]/10 last:border-0 hover:bg-[#064E3B]/5"
+                >
+                  <td className="p-3 text-[12px] font-medium text-[#064E3B]/80">
+                    {new Date(log.timestamp).toLocaleString()}
+                  </td>
                   <td className="p-3 text-[12px] font-bold text-[#064E3B]">{log.method}</td>
                   <td className="p-3 text-[12px] font-medium text-[#064E3B]/80">{log.domain}</td>
-                  <td className="p-3 text-[12px] font-mono text-[#064E3B]/70 truncate max-w-[200px]" title={log.url_redacted}>{log.url_redacted}</td>
-                  <td className="p-3 text-[12px] font-mono text-[#064E3B]/80">{log.bytes_sent ?? '-'}</td>
-                  <td className="p-3 text-[12px] font-mono text-[#064E3B]/80">{log.bytes_received ?? '-'}</td>
-                  <td className="p-3 text-[12px] font-bold text-[#064E3B]">{log.status_code ?? '-'}</td>
+                  <td
+                    className="p-3 text-[12px] font-mono text-[#064E3B]/70 truncate max-w-[200px]"
+                    title={log.url_redacted}
+                  >
+                    {log.url_redacted}
+                  </td>
+                  <td className="p-3 text-[12px] font-mono text-[#064E3B]/80">
+                    {log.bytes_sent ?? '-'}
+                  </td>
+                  <td className="p-3 text-[12px] font-mono text-[#064E3B]/80">
+                    {log.bytes_received ?? '-'}
+                  </td>
+                  <td className="p-3 text-[12px] font-bold text-[#064E3B]">
+                    {log.status_code ?? '-'}
+                  </td>
                 </tr>
               ))}
             </tbody>

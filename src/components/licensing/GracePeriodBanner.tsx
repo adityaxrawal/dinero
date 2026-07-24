@@ -54,8 +54,20 @@ export default function GracePeriodBanner() {
   if (!isGrace || dismissed) return null;
 
   const palette = urgent
-    ? { border: 'border-red-500/40', bg: 'bg-red-500/10', icon: 'text-red-400', text: 'text-red-200', dismiss: 'text-red-400/50 hover:text-red-200' }
-    : { border: 'border-amber-400/30', bg: 'bg-amber-400/10', icon: 'text-amber-300', text: 'text-amber-200', dismiss: 'text-amber-300/50 hover:text-amber-200' };
+    ? {
+        border: 'border-red-500/40',
+        bg: 'bg-red-500/10',
+        icon: 'text-red-400',
+        text: 'text-red-200',
+        dismiss: 'text-red-400/50 hover:text-red-200',
+      }
+    : {
+        border: 'border-amber-400/30',
+        bg: 'bg-amber-400/10',
+        icon: 'text-amber-300',
+        text: 'text-amber-200',
+        dismiss: 'text-amber-300/50 hover:text-amber-200',
+      };
 
   return (
     <div
@@ -63,7 +75,10 @@ export default function GracePeriodBanner() {
       className={`flex flex-col gap-2 mx-4 mb-2 px-3 py-2.5 rounded-lg border ${palette.border} ${palette.bg}`}
     >
       <div className="flex items-start gap-2">
-        <AlertTriangle className={`w-3.5 h-3.5 ${palette.icon} shrink-0 mt-0.5`} aria-hidden="true" />
+        <AlertTriangle
+          className={`w-3.5 h-3.5 ${palette.icon} shrink-0 mt-0.5`}
+          aria-hidden="true"
+        />
         <p className={`flex-1 text-[11.5px] leading-snug ${palette.text}`}>
           Subscription in grace period
           {daysRemainingInTrial != null
@@ -101,7 +116,11 @@ export default function GracePeriodBanner() {
         aria-label="Retry validation now"
         className={`h-7 text-[11.5px] w-full bg-transparent ${urgent ? 'border-red-500/40 text-red-200 hover:bg-red-500/10 hover:text-red-100' : 'border-amber-400/30 text-amber-200 hover:bg-amber-400/10 hover:text-amber-100'}`}
       >
-        {isRetrying ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : 'Retry validation now'}
+        {isRetrying ? (
+          <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+        ) : (
+          'Retry validation now'
+        )}
       </Button>
     </div>
   );

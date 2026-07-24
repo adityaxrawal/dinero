@@ -59,7 +59,7 @@ export default function ClusterMemberComparison({
             className={cn(
               'min-w-[240px] shrink-0 snap-center',
               selectable && 'cursor-pointer hover:border-primary/60',
-              isSelected && 'border-emerald-500 ring-2 ring-emerald-500/30',
+              isSelected && 'border-emerald-500 ring-2 ring-emerald-500/30'
             )}
           >
             <CardHeader className="py-3 px-4 bg-muted/30 border-b border-border/40">
@@ -67,24 +67,40 @@ export default function ClusterMemberComparison({
                 <span>{ROLE_LABEL[member.member_role] ?? member.member_role}</span>
                 <span className="flex items-center gap-1 text-muted-foreground font-normal">
                   <SourcePipelineIcon sourceMix={member.source_pipeline} />
-                  {isSelected && <Check className="w-3.5 h-3.5 text-emerald-600" aria-label="Selected as match" />}
+                  {isSelected && (
+                    <Check
+                      className="w-3.5 h-3.5 text-emerald-600"
+                      aria-label="Selected as match"
+                    />
+                  )}
                 </span>
               </CardTitle>
             </CardHeader>
             <CardContent className="p-4 space-y-3">
               <div>
-                <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Merchant</p>
+                <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">
+                  Merchant
+                </p>
                 <p className="font-medium">{member.merchant}</p>
               </div>
               <div>
-                <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Amount</p>
-                <p className={cn('font-medium', member.direction === 'debit' ? 'text-red-700' : 'text-emerald-700')}>
+                <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">
+                  Amount
+                </p>
+                <p
+                  className={cn(
+                    'font-medium',
+                    member.direction === 'debit' ? 'text-red-700' : 'text-emerald-700'
+                  )}
+                >
                   {member.direction === 'debit' ? '-' : '+'} ₹{Math.abs(member.amount).toFixed(2)}
                 </p>
               </div>
               <div>
                 <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Date</p>
-                <p className="text-sm">{member.date === 'Unknown' ? 'Unknown' : formatCustomDate(member.date)}</p>
+                <p className="text-sm">
+                  {member.date === 'Unknown' ? 'Unknown' : formatCustomDate(member.date)}
+                </p>
               </div>
             </CardContent>
           </Card>

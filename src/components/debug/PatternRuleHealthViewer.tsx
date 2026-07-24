@@ -34,8 +34,6 @@ export function PatternRuleHealthViewer() {
     fetchRules();
   }, []);
 
-
-
   return (
     <DebugTableLayout
       title="Pattern Rule Health"
@@ -55,17 +53,22 @@ export function PatternRuleHealthViewer() {
           <th className="p-2 text-sm font-medium text-muted-foreground">Failure</th>
         </>
       }
-      renderRow={rule => (
+      renderRow={(rule) => (
         <tr key={rule.id} className="border-b border-[var(--border-color)] last:border-0">
           <td className="p-2 text-sm font-mono">{rule.id.substring(0, 8)}</td>
           <td className="p-2 text-sm">{rule.merchant_id}</td>
-          <td className="p-2 text-sm"><Badge variant="outline">{rule.pattern_type}</Badge></td>
+          <td className="p-2 text-sm">
+            <Badge variant="outline">{rule.pattern_type}</Badge>
+          </td>
           <td className="p-2 text-sm">{rule.pattern_value}</td>
           <td className="p-2 text-sm">
-            {rule.is_active ? 
-              <Badge variant="default" className="bg-green-600">Active</Badge> : 
+            {rule.is_active ? (
+              <Badge variant="default" className="bg-green-600">
+                Active
+              </Badge>
+            ) : (
               <Badge variant="destructive">Inactive</Badge>
-            }
+            )}
           </td>
           <td className="p-2 text-sm text-green-700 font-bold">{rule.success_count}</td>
           <td className="p-2 text-sm text-red-500 font-bold">{rule.failure_count}</td>

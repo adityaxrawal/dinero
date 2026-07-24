@@ -15,7 +15,7 @@ export default function Reconciliation() {
 
   const { data: clusters = [], isLoading: clustersLoading } = useReconciliationClusters();
   const { data: unassigned = [], isLoading: unassignedLoading } = useUnassignedTransactions();
-  
+
   const [selectedClusterId, setSelectedClusterId] = useState<string | null>(null);
   const [selectedUnassignedId, setSelectedUnassignedId] = useState<string | null>(null);
 
@@ -40,20 +40,18 @@ export default function Reconciliation() {
   return (
     <div className="flex h-full w-full overflow-hidden">
       {/* ── Column 2: Master List (Reconciliation) ─────────────────────────────────── */}
-      <div 
+      <div
         className="flex-shrink-0 flex flex-col h-full border-r border-[#064E3B]/20"
         style={{ width: '320px', backgroundColor: 'var(--bg-canvas)' }}
       >
         {/* Header bar */}
-        <div
-          className="flex flex-col gap-3 px-4 py-3 flex-shrink-0 border-b border-[#064E3B]/10"
-        >
+        <div className="flex flex-col gap-3 px-4 py-3 flex-shrink-0 border-b border-[#064E3B]/10">
           <div className="flex items-center justify-between">
             <h1 className="text-[14px] font-semibold text-[#064E3B] tracking-tight">
               Reconciliation
             </h1>
           </div>
-          
+
           <div className="flex gap-1 overflow-x-auto pb-1" role="tablist">
             {SECTIONS.map((s) => (
               <button
@@ -62,19 +60,23 @@ export default function Reconciliation() {
                 aria-selected={currentSection === s.id}
                 onClick={() => setSection(s.id)}
                 className={cn(
-                  "px-3 py-1.5 text-[12px] font-medium rounded-full transition-colors whitespace-nowrap flex items-center gap-1.5",
+                  'px-3 py-1.5 text-[12px] font-medium rounded-full transition-colors whitespace-nowrap flex items-center gap-1.5',
                   currentSection === s.id
-                    ? "bg-[#064E3B] text-[#F8E7C9]"
-                    : "text-[#064E3B]/70 hover:bg-[#064E3B]/10"
+                    ? 'bg-[#064E3B] text-[#F8E7C9]'
+                    : 'text-[#064E3B]/70 hover:bg-[#064E3B]/10'
                 )}
               >
                 <s.icon className="w-3.5 h-3.5" />
                 {s.label}
                 {s.badge > 0 && (
-                  <span className={cn(
-                    "ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold",
-                    currentSection === s.id ? "bg-[#F8E7C9]/20 text-[#F8E7C9]" : "bg-[#064E3B]/10 text-[#064E3B]"
-                  )}>
+                  <span
+                    className={cn(
+                      'ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold',
+                      currentSection === s.id
+                        ? 'bg-[#F8E7C9]/20 text-[#F8E7C9]'
+                        : 'bg-[#064E3B]/10 text-[#064E3B]'
+                    )}
+                  >
                     {s.badge}
                   </span>
                 )}
@@ -100,9 +102,11 @@ export default function Reconciliation() {
             </div>
           ) : (
             <div className="py-2">
-              {currentSection === 'clusters' && (
-                clusters.length === 0 ? (
-                  <p className="text-[12px] text-center p-4 text-[#064E3B]/60">No pending clusters.</p>
+              {currentSection === 'clusters' &&
+                (clusters.length === 0 ? (
+                  <p className="text-[12px] text-center p-4 text-[#064E3B]/60">
+                    No pending clusters.
+                  </p>
                 ) : (
                   <div className="flex flex-col gap-1">
                     {clusters.map((cluster) => {
@@ -116,72 +120,95 @@ export default function Reconciliation() {
                           key={cluster.id}
                           onClick={() => setSelectedClusterId(isSelected ? null : cluster.id)}
                           className={cn(
-                            "flex flex-col w-full text-left px-4 py-2.5 mx-2 rounded-md transition-colors max-w-[calc(100%-16px)] cursor-pointer select-none",
+                            'flex flex-col w-full text-left px-4 py-2.5 mx-2 rounded-md transition-colors max-w-[calc(100%-16px)] cursor-pointer select-none',
                             isSelected
-                              ? "bg-[#064E3B] text-[#F8E7C9]"
-                              : "hover:bg-[#064E3B]/5 text-[#064E3B]"
+                              ? 'bg-[#064E3B] text-[#F8E7C9]'
+                              : 'hover:bg-[#064E3B]/5 text-[#064E3B]'
                           )}
                         >
                           <div className="flex items-center gap-1.5 mb-1">
-                            <span className={cn(
-                              "text-[9px] font-bold px-1.5 py-0.5 rounded-sm uppercase tracking-wider",
-                              isSelected ? "bg-[#F8E7C9]/20 text-[#F8E7C9]" : "bg-amber-500/20 text-amber-700"
-                            )}>
+                            <span
+                              className={cn(
+                                'text-[9px] font-bold px-1.5 py-0.5 rounded-sm uppercase tracking-wider',
+                                isSelected
+                                  ? 'bg-[#F8E7C9]/20 text-[#F8E7C9]'
+                                  : 'bg-amber-500/20 text-amber-700'
+                              )}
+                            >
                               Ambiguous
                             </span>
                           </div>
-                          <p className={cn("text-[13px] font-semibold truncate mb-0.5", isSelected ? "text-white" : "text-[#064E3B]")}>
+                          <p
+                            className={cn(
+                              'text-[13px] font-semibold truncate mb-0.5',
+                              isSelected ? 'text-white' : 'text-[#064E3B]'
+                            )}
+                          >
                             {title || 'Match requires review'}
                           </p>
-                          <p className={cn("text-[11px] truncate opacity-70 font-medium")}>
+                          <p className={cn('text-[11px] truncate opacity-70 font-medium')}>
                             {cluster.members_count} member(s)
                           </p>
                         </button>
                       );
                     })}
                   </div>
-                )
-              )}
+                ))}
 
-              {currentSection === 'unassigned' && (
-                unassigned.length === 0 ? (
-                  <p className="text-[12px] text-center p-4 text-[#064E3B]/60">No unassigned transactions.</p>
+              {currentSection === 'unassigned' &&
+                (unassigned.length === 0 ? (
+                  <p className="text-[12px] text-center p-4 text-[#064E3B]/60">
+                    No unassigned transactions.
+                  </p>
                 ) : (
                   <div className="flex flex-col gap-1">
                     {unassigned.map((item) => {
                       const isSelected = selectedUnassignedId === item.id;
-                      const title = item.reason === 'extraction_failed' ? 'Failed to Extract' : (item.reason === 'issuer_name_not_found' ? 'Unknown Instrument' : item.reason || 'Unresolved');
+                      const title =
+                        item.reason === 'extraction_failed'
+                          ? 'Failed to Extract'
+                          : item.reason === 'issuer_name_not_found'
+                            ? 'Unknown Instrument'
+                            : item.reason || 'Unresolved';
                       return (
                         <button
                           key={item.id}
                           onClick={() => setSelectedUnassignedId(isSelected ? null : item.id)}
                           className={cn(
-                            "flex flex-col w-full text-left px-4 py-2.5 mx-2 rounded-md transition-colors max-w-[calc(100%-16px)] cursor-pointer select-none",
+                            'flex flex-col w-full text-left px-4 py-2.5 mx-2 rounded-md transition-colors max-w-[calc(100%-16px)] cursor-pointer select-none',
                             isSelected
-                              ? "bg-[#064E3B] text-[#F8E7C9]"
-                              : "hover:bg-[#064E3B]/5 text-[#064E3B]"
+                              ? 'bg-[#064E3B] text-[#F8E7C9]'
+                              : 'hover:bg-[#064E3B]/5 text-[#064E3B]'
                           )}
                         >
                           <div className="flex items-center gap-1.5 mb-1">
-                            <span className={cn(
-                              "text-[9px] font-bold px-1.5 py-0.5 rounded-sm uppercase tracking-wider",
-                              isSelected ? "bg-[#F8E7C9]/20 text-[#F8E7C9]" : "bg-red-500/20 text-red-700"
-                            )}>
+                            <span
+                              className={cn(
+                                'text-[9px] font-bold px-1.5 py-0.5 rounded-sm uppercase tracking-wider',
+                                isSelected
+                                  ? 'bg-[#F8E7C9]/20 text-[#F8E7C9]'
+                                  : 'bg-red-500/20 text-red-700'
+                              )}
+                            >
                               Action Required
                             </span>
                           </div>
-                          <p className={cn("text-[13px] font-semibold truncate mb-0.5", isSelected ? "text-white" : "text-[#064E3B]")}>
+                          <p
+                            className={cn(
+                              'text-[13px] font-semibold truncate mb-0.5',
+                              isSelected ? 'text-white' : 'text-[#064E3B]'
+                            )}
+                          >
                             {title}
                           </p>
-                          <p className={cn("text-[11px] truncate opacity-70 font-medium")}>
-                            Obs: {item.observation_id.substring(0,8)}...
+                          <p className={cn('text-[11px] truncate opacity-70 font-medium')}>
+                            Obs: {item.observation_id.substring(0, 8)}...
                           </p>
                         </button>
                       );
                     })}
                   </div>
-                )
-              )}
+                ))}
             </div>
           )}
         </div>
@@ -211,7 +238,9 @@ export default function Reconciliation() {
               <Layers className="w-6 h-6 text-[#064E3B]" />
             </div>
             <p className="text-[#064E3B] font-medium text-sm">
-              {currentSection === 'clusters' ? 'Select a cluster to resolve' : 'Select an item to view details'}
+              {currentSection === 'clusters'
+                ? 'Select a cluster to resolve'
+                : 'Select an item to view details'}
             </p>
           </div>
         )}

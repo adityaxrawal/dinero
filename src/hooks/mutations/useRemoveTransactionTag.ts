@@ -18,7 +18,10 @@ export function useRemoveTransactionTag() {
 
   return useMutation({
     mutationFn: async ({ transactionId, tagName }: { transactionId: string; tagName: string }) => {
-      const existingTags = await queryClient.fetchQuery({ queryKey: queryKeys.tags.list(), queryFn: API.tags.list });
+      const existingTags = await queryClient.fetchQuery({
+        queryKey: queryKeys.tags.list(),
+        queryFn: API.tags.list,
+      });
       const tag = existingTags.find((t) => t.name.toLowerCase() === tagName.toLowerCase());
       if (!tag) return;
       await API.transactions.removeTag(transactionId, tag.id);
@@ -26,12 +29,12 @@ export function useRemoveTransactionTag() {
     onMutate: async ({ transactionId, tagName }) => {
       await queryClient.cancelQueries({ queryKey: queryKeys.transactions.all() });
       const snapshot = snapshotTransactionQueries(queryClient);
-      
+
       patchTransactionInCaches(queryClient, transactionId, (tx) => ({
         ...tx,
         tags: (tx.tags ?? []).filter((t) => t.toLowerCase() !== tagName.toLowerCase()),
       }));
-      
+
       return { snapshot };
     },
     onError: (_err, _vars, context) => {

@@ -54,7 +54,11 @@ export default function PrivacySettings() {
           <History className="w-5 h-5 text-[#064E3B]" />
           <h3 className="text-xl font-bold text-[#064E3B]">Consent History</h3>
         </div>
-        <ConsentHistoryList events={consentHistory} isLoading={isLoadingConsent} onRefresh={loadConsentHistory} />
+        <ConsentHistoryList
+          events={consentHistory}
+          isLoading={isLoadingConsent}
+          onRefresh={loadConsentHistory}
+        />
       </div>
 
       <div className="h-px w-full bg-[#064E3B]/10" />
@@ -71,10 +75,15 @@ export default function PrivacySettings() {
         <div className="mb-6 pb-6 border-b border-[#064E3B]/10">
           <p className="text-sm text-[#064E3B]/70 mb-4">
             A diagnostic bundle (app logs and error reports) helps troubleshoot issues. It never
-            includes your financial data, and it is <strong>saved locally on this device only</strong> —
-            it is never automatically uploaded anywhere. You choose if and when to share it.
+            includes your financial data, and it is{' '}
+            <strong>saved locally on this device only</strong> — it is never automatically uploaded
+            anywhere. You choose if and when to share it.
           </p>
-          <button className="h-9 px-4 rounded-lg font-semibold bg-[#064E3B]/5 border border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/10 transition-colors inline-flex items-center justify-center gap-2 disabled:opacity-50" onClick={handleExportDiagnosticBundle} disabled={isExporting}>
+          <button
+            className="h-9 px-4 rounded-lg font-semibold bg-[#064E3B]/5 border border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/10 transition-colors inline-flex items-center justify-center gap-2 disabled:opacity-50"
+            onClick={handleExportDiagnosticBundle}
+            disabled={isExporting}
+          >
             <FileText className="w-4 h-4" />
             {isExporting ? 'Exporting…' : 'Export Diagnostic Bundle'}
           </button>

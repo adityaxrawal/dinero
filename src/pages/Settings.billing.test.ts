@@ -18,7 +18,13 @@ describe('test_refresh_button_calls_license_refresh_ipc', () => {
 
 describe('test_no_payment_instrument_fields_ever_rendered_in_app', () => {
   it('no card number/CVV/expiry input exists anywhere in the Settings page', () => {
-    const FORBIDDEN_PATTERNS = [/card.?number/i, /\bcvv\b/i, /\bcvc\b/i, /card.?expiry/i, /expiry.?date.*card/i];
+    const FORBIDDEN_PATTERNS = [
+      /card.?number/i,
+      /\bcvv\b/i,
+      /\bcvc\b/i,
+      /card.?expiry/i,
+      /expiry.?date.*card/i,
+    ];
     for (const pattern of FORBIDDEN_PATTERNS) {
       expect(source).not.toMatch(pattern);
     }

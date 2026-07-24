@@ -13,7 +13,7 @@ describe('computeMonthOverMonthDelta', () => {
       computeMonthOverMonthDelta([
         { period: '2026-05', total_spend: 0 },
         { period: '2026-06', total_spend: 500 },
-      ]),
+      ])
     ).toBeNull();
   });
 

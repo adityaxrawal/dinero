@@ -9,10 +9,7 @@ interface UseResolveClusterActionsProps {
   onSuccess: () => void;
 }
 
-export function useResolveClusterActions({
-  cluster,
-  onSuccess,
-}: UseResolveClusterActionsProps) {
+export function useResolveClusterActions({ cluster, onSuccess }: UseResolveClusterActionsProps) {
   const { toast } = useToast();
   const resolveCluster = useResolveCluster();
 
@@ -31,10 +28,14 @@ export function useResolveClusterActions({
     title: string,
     plainLanguageExplanation: string,
     action: 'confirm_match' | 'reject_candidate' | 'keep_separate' | 'mark_unresolved',
-    chosenCanonicalId?: string,
+    chosenCanonicalId?: string
   ) => {
     if (!cluster?.id || !incomingObservationId) {
-      toast({ variant: 'destructive', title: 'Cannot resolve', description: 'This cluster has no incoming evidence to act on.' });
+      toast({
+        variant: 'destructive',
+        title: 'Cannot resolve',
+        description: 'This cluster has no incoming evidence to act on.',
+      });
       return;
     }
 
@@ -53,27 +54,34 @@ export function useResolveClusterActions({
         onSuccess: () => {
           toast(
             action === 'mark_unresolved'
-              ? { title: 'Marked for Later Review', description: 'This cluster will stay in your queue.' }
-              : { title: 'Cluster Resolved', description: 'Your decision has been recorded.' },
+              ? {
+                  title: 'Marked for Later Review',
+                  description: 'This cluster will stay in your queue.',
+                }
+              : { title: 'Cluster Resolved', description: 'Your decision has been recorded.' }
           );
           onSuccess();
         },
         onError: (err) => toast({ variant: 'destructive', ...getErrorToast(err) }),
-      },
+      }
     );
   };
 
   const handleConfirmMatch = () => {
     const candidate = candidates.find((c) => c.canonical_transaction_id === selectedCandidateId);
     if (!candidate) {
-      toast({ variant: 'destructive', title: 'Pick a match first', description: 'Select which existing transaction this matches before confirming.' });
+      toast({
+        variant: 'destructive',
+        title: 'Pick a match first',
+        description: 'Select which existing transaction this matches before confirming.',
+      });
       return;
     }
     confirmAndResolve(
       'Confirm Match',
       `Link this transaction to "${candidate.merchant}" (₹${Math.abs(candidate.amount).toFixed(2)})? The two records will be merged as the same transaction.`,
       'confirm_match',
-      selectedCandidateId ?? undefined,
+      selectedCandidateId ?? undefined
     );
   };
 
@@ -81,7 +89,7 @@ export function useResolveClusterActions({
     confirmAndResolve(
       'Reject Matches',
       'None of the existing transactions shown are a match. The new evidence will be recorded as a separate, unmatched transaction.',
-      'reject_candidate',
+      'reject_candidate'
     );
   };
 
@@ -89,7 +97,7 @@ export function useResolveClusterActions({
     confirmAndResolve(
       'Keep Separate',
       'This transaction is genuinely distinct from the ones shown, even though they look similar. It will be kept as its own separate transaction.',
-      'keep_separate',
+      'keep_separate'
     );
   };
 
@@ -97,7 +105,7 @@ export function useResolveClusterActions({
     confirmAndResolve(
       'Review Later',
       "This cluster will stay in your queue and won't be resolved yet.",
-      'mark_unresolved',
+      'mark_unresolved'
     );
   };
 

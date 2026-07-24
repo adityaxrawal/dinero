@@ -7,7 +7,11 @@ import { API } from '@/lib/ipc';
  * throws itself -- a reporting failure must not compound the error being
  * reported.
  */
-export function reportRendererError(message: string, stack: string | undefined, source: string): void {
+export function reportRendererError(
+  message: string,
+  stack: string | undefined,
+  source: string
+): void {
   API.support.logRendererError(message, stack, source).catch(() => {
     // Best-effort only. If IPC itself is broken, there is nothing further
     // to do here -- console.error (already called by every caller of this

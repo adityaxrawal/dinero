@@ -10,19 +10,21 @@ import { queryKeys } from '@/lib/queryKeys';
  * the cancel/snapshot/patch/rollback dance three times.
  */
 export function snapshotTransactionQueries(queryClient: QueryClient) {
-  return queryClient.getQueriesData<InfiniteData<TransactionsPage>>({ queryKey: queryKeys.transactions.all() });
+  return queryClient.getQueriesData<InfiniteData<TransactionsPage>>({
+    queryKey: queryKeys.transactions.all(),
+  });
 }
 
 export function rollbackTransactionQueries(
   queryClient: QueryClient,
-  snapshot: ReturnType<typeof snapshotTransactionQueries>,
+  snapshot: ReturnType<typeof snapshotTransactionQueries>
 ) {
   snapshot.forEach(([key, data]) => queryClient.setQueryData(key, data));
 }
 
 function _updateTransactionCaches(
   queryClient: QueryClient,
-  updatePage: (page: TransactionsPage) => TransactionsPage,
+  updatePage: (page: TransactionsPage) => TransactionsPage
 ) {
   queryClient.setQueriesData<InfiniteData<TransactionsPage>>(
     { queryKey: queryKeys.transactions.all() },
@@ -32,14 +34,14 @@ function _updateTransactionCaches(
         ...old,
         pages: old.pages.map(updatePage),
       };
-    },
+    }
   );
 }
 
 export function patchTransactionInCaches(
   queryClient: QueryClient,
   transactionId: string,
-  patch: (tx: TransactionRecord) => TransactionRecord,
+  patch: (tx: TransactionRecord) => TransactionRecord
 ) {
   _updateTransactionCaches(queryClient, (page) => ({
     ...page,

@@ -1,4 +1,4 @@
-import type { AppError } from '@/types/ipc'
+import type { AppError } from '@/types/ipc';
 
 /**
  * TASK-FE-018 (Doc 30): "maps every AppError variant to a specific toast
@@ -10,11 +10,11 @@ import type { AppError } from '@/types/ipc'
  * wording for the same backend error code.
  */
 export interface ErrorToastContent {
-  title: string
-  description: string
+  title: string;
+  description: string;
   /** Hash-router path for a clickable toast action, e.g. '/settings'. */
-  actionTo?: string
-  actionLabel?: string
+  actionTo?: string;
+  actionLabel?: string;
 }
 
 const CODE_MAP: Record<string, (error: AppError) => ErrorToastContent> = {
@@ -87,15 +87,15 @@ const CODE_MAP: Record<string, (error: AppError) => ErrorToastContent> = {
     title: 'Unsupported file type',
     description: error.message || 'Only PDF files are supported.',
   }),
-}
+};
 
 export function mapAppErrorToToast(error: AppError): ErrorToastContent {
-  const mapper = CODE_MAP[error.code]
-  if (mapper) return mapper(error)
+  const mapper = CODE_MAP[error.code];
+  if (mapper) return mapper(error);
   return {
     title: 'Something went wrong',
     description: error.message || 'An unexpected error occurred.',
-  }
+  };
 }
 
 // These are utility functions needed by the application (missing previously)
@@ -109,9 +109,9 @@ export function getErrorMessage(
     'message' in error &&
     typeof (error as Record<string, unknown>).message === 'string'
   ) {
-    return (error as Record<string, unknown>).message as string
+    return (error as Record<string, unknown>).message as string;
   }
-  return defaultMessage
+  return defaultMessage;
 }
 
 export function getErrorToast(
@@ -119,13 +119,13 @@ export function getErrorToast(
   defaultMessage = 'An unexpected error occurred'
 ): ErrorToastContent {
   if (isAppError(error)) {
-    return mapAppErrorToToast(error)
+    return mapAppErrorToToast(error);
   }
   return {
     title: 'Error',
     description: getErrorMessage(error, defaultMessage),
-  }
+  };
 }
 function isAppError(error: unknown): error is AppError {
-  return !!error && typeof error === 'object' && 'code' in error && 'message' in error
+  return !!error && typeof error === 'object' && 'code' in error && 'message' in error;
 }

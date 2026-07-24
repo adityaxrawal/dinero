@@ -3,7 +3,14 @@ import { groupCategoriesForChart } from './groupCategoriesForChart';
 import type { CategorySpend } from '@/lib/ipc';
 
 function cat(id: string, name: string, spend: number): CategorySpend {
-  return { category_id: id, name, total_spend: spend, monthly_budget: null, utilization_pct: 0, currency: 'INR' };
+  return {
+    category_id: id,
+    name,
+    total_spend: spend,
+    monthly_budget: null,
+    utilization_pct: 0,
+    currency: 'INR',
+  };
 }
 
 describe('groupCategoriesForChart', () => {

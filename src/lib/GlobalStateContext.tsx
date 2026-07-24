@@ -1,6 +1,12 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
-import { API, ConnectedAccountInfo, ProcessingProgressPayload, ScanProgressPayload, StatementRecord } from './ipc';
+import {
+  API,
+  ConnectedAccountInfo,
+  ProcessingProgressPayload,
+  ScanProgressPayload,
+  StatementRecord,
+} from './ipc';
 import { useToast } from '@/hooks/use-toast';
 
 interface GlobalStateContextType {
@@ -15,7 +21,7 @@ interface GlobalStateContextType {
   setScanProgress: React.Dispatch<React.SetStateAction<ScanProgressPayload | null>>;
   scanError: string | null;
   setScanError: React.Dispatch<React.SetStateAction<string | null>>;
-  
+
   // Settings Connected Accounts (Doc 03 §8.2: up to 10 simultaneously connected)
   connectedAccounts: ConnectedAccountInfo[];
   setConnectedAccounts: React.Dispatch<React.SetStateAction<ConnectedAccountInfo[]>>;
@@ -31,8 +37,10 @@ interface GlobalStateContextType {
   // 5-concurrent-parser cap" -- mirrors the real statement_batch_progress
   // event (queues.rs's BatchProgressTracker, batches over 10 files only).
   batchProgress: { parsed: number; total: number; etaSeconds: number } | null;
-  setBatchProgress: React.Dispatch<React.SetStateAction<{ parsed: number; total: number; etaSeconds: number } | null>>;
-  
+  setBatchProgress: React.Dispatch<
+    React.SetStateAction<{ parsed: number; total: number; etaSeconds: number } | null>
+  >;
+
   // Password Modal State (from Statements)
   passwordModalOpen: boolean;
   setPasswordModalOpen: React.Dispatch<React.SetStateAction<boolean>>;
@@ -66,7 +74,7 @@ const GlobalStateContext = createContext<GlobalStateContextType | undefined>(und
 // eslint-disable-next-line react-refresh/only-export-components
 export const useGlobalState = () => {
   const context = useContext(GlobalStateContext);
-  if (!context) throw new Error("useGlobalState must be used within a GlobalStateProvider");
+  if (!context) throw new Error('useGlobalState must be used within a GlobalStateProvider');
   return context;
 };
 
@@ -87,7 +95,11 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [scanError, setScanError] = useState<string | null>(null);
   const unlistenScanRef = useRef<(() => void) | null>(null);
   const [connectedAccounts, setConnectedAccounts] = useState<ConnectedAccountInfo[]>([]);
-  const [batchProgress, setBatchProgress] = useState<{ parsed: number; total: number; etaSeconds: number } | null>(null);
+  const [batchProgress, setBatchProgress] = useState<{
+    parsed: number;
+    total: number;
+    etaSeconds: number;
+  } | null>(null);
 
   const refreshConnectedAccounts = async () => {
     try {
@@ -133,7 +145,7 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
       statements_found: 0,
       mandate_events_found: 0,
       non_financial: 0,
-      errors: 0
+      errors: 0,
     });
     setScanError(null);
 
@@ -155,7 +167,7 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
           unlistenScanRef.current = null;
         }
       });
-      
+
       const unlistenError = await listen<{ error: string }>('scan_failed', (event) => {
         setScanStatus('error');
         setScanError(event.payload.error);
@@ -164,15 +176,19 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
           unlistenScanRef.current = null;
         }
       });
-      
+
       const prev = unlistenScanRef.current;
       unlistenScanRef.current = () => {
         if (prev) prev();
         unlistenDone();
         unlistenError();
       };
-      
-      await API.ingestion.startHistoricalScan(primaryConnectedAccount.account_id, scanStartDate, scanEndDate);
+
+      await API.ingestion.startHistoricalScan(
+        primaryConnectedAccount.account_id,
+        scanStartDate,
+        scanEndDate
+      );
     } catch (err: unknown) {
       setScanStatus('error');
       setScanError(err instanceof Error ? err.message : String(err));
@@ -182,14 +198,16 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
   // ----- Statements State -----
   const [statementHistory, setStatementHistory] = useState<StatementRecord[]>([]);
   const [statementLoading, setStatementLoading] = useState(true);
-  
+
   const [passwordModalOpen, setPasswordModalOpen] = useState(false);
   const [pendingStatementId, setPendingStatementId] = useState<string | null>(null);
   const [pendingInstrumentId, setPendingInstrumentId] = useState<string>('UNKNOWN');
 
   // ----- Statement Instrument Gate confirmation modal (C2) -----
   const [instrumentModalOpen, setInstrumentModalOpen] = useState(false);
-  const [pendingInstrumentStatementId, setPendingInstrumentStatementId] = useState<string | null>(null);
+  const [pendingInstrumentStatementId, setPendingInstrumentStatementId] = useState<string | null>(
+    null
+  );
   const [pendingInstrumentFilename, setPendingInstrumentFilename] = useState('');
   const [pendingInstrumentIssuerHint, setPendingInstrumentIssuerHint] = useState('');
   const [pendingInstrumentReason, setPendingInstrumentReason] = useState('');
@@ -202,7 +220,7 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
       setPendingInstrumentReason(reason);
       setInstrumentModalOpen(true);
     },
-    [],
+    []
   );
 
   const closeInstrumentModal = useCallback(() => {
@@ -213,7 +231,9 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
   // ----- Statement Review Modal -----
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
-  const [processingProgress, setProcessingProgress] = useState<ProcessingProgressPayload | null>(null);
+  const [processingProgress, setProcessingProgress] = useState<ProcessingProgressPayload | null>(
+    null
+  );
   const watchedOriginIds = useRef<Set<string>>(new Set());
 
   // TASK-RT-008 (Doc 30): while a `statement_batch_progress`-tracked batch
@@ -221,7 +241,11 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
   // toasts are suppressed and tallied here instead, aggregating into one
   // summary toast on batch completion ("8/10 imported, 2 failed") rather
   // than one toast per file.
-  const batchOutcomesRef = useRef<{ succeeded: number; failed: number; failureReasons: string[] } | null>(null);
+  const batchOutcomesRef = useRef<{
+    succeeded: number;
+    failed: number;
+    failureReasons: string[];
+  } | null>(null);
 
   const watchDraftOrigin = useCallback((originId: string) => {
     watchedOriginIds.current.add(originId);
@@ -256,14 +280,11 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setPendingStatementId(null);
   }, []);
 
-  const openPasswordModal = useCallback(
-    (statementId: string, instrumentId = 'UNKNOWN') => {
-      setPendingStatementId(statementId);
-      setPendingInstrumentId(instrumentId);
-      setPasswordModalOpen(true);
-    },
-    [],
-  );
+  const openPasswordModal = useCallback((statementId: string, instrumentId = 'UNKNOWN') => {
+    setPendingStatementId(statementId);
+    setPendingInstrumentId(instrumentId);
+    setPasswordModalOpen(true);
+  }, []);
 
   useEffect(() => {
     loadStatementHistory();
@@ -309,33 +330,50 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
       unlistenPassword = await listen<{ statementId: string; instrumentId?: string }>(
         'statement_password_required',
         (event) => {
-          const payload = event.payload as { statementId?: string; statement_id?: string; instrumentId?: string; instrument_id?: string };
-          openPasswordModal(payload.statementId || payload.statement_id || '', payload.instrumentId || payload.instrument_id);
-        },
+          const payload = event.payload as {
+            statementId?: string;
+            statement_id?: string;
+            instrumentId?: string;
+            instrument_id?: string;
+          };
+          openPasswordModal(
+            payload.statementId || payload.statement_id || '',
+            payload.instrumentId || payload.instrument_id
+          );
+        }
       );
 
       // Real payload is `{reason, filename}` -- previously discarded in
       // favor of a hardcoded generic message.
-      unlistenFailed = await listen<{ reason?: string; filename?: string }>('statement_parse_failed', (event) => {
-        loadStatementHistory();
-        const { reason, filename } = event.payload;
-        if (batchOutcomesRef.current) {
-          batchOutcomesRef.current.failed += 1;
-          if (reason) batchOutcomesRef.current.failureReasons.push(reason);
-          return;
+      unlistenFailed = await listen<{ reason?: string; filename?: string }>(
+        'statement_parse_failed',
+        (event) => {
+          loadStatementHistory();
+          const { reason, filename } = event.payload;
+          if (batchOutcomesRef.current) {
+            batchOutcomesRef.current.failed += 1;
+            if (reason) batchOutcomesRef.current.failureReasons.push(reason);
+            return;
+          }
+          toast({
+            title: 'Parse Failed',
+            description: filename
+              ? `Failed to parse ${filename}${reason ? `: ${reason}` : ''}.`
+              : 'Failed to extract data from statement.',
+            variant: 'destructive',
+            actionTo: '/statements',
+            actionLabel: 'View retry panel',
+          });
         }
-        toast({
-          title: 'Parse Failed',
-          description: filename ? `Failed to parse ${filename}${reason ? `: ${reason}` : ''}.` : 'Failed to extract data from statement.',
-          variant: 'destructive',
-          actionTo: '/statements',
-          actionLabel: 'View retry panel',
-        });
-      });
+      );
 
       unlistenDuplicate = await listen('statement_duplicate_rejected', () => {
         loadStatementHistory();
-        toast({ title: 'Duplicate Statement', description: 'This statement has already been processed.', variant: 'destructive' });
+        toast({
+          title: 'Duplicate Statement',
+          description: 'This statement has already been processed.',
+          variant: 'destructive',
+        });
       });
 
       unlistenBatchProgress = await listen<{ parsed: number; total: number; eta_seconds: number }>(
@@ -375,7 +413,7 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
           // so this is the only signal for "still working through the
           // 5-concurrent-parser cap" during that window.
           setBatchProgress(parsed >= total ? null : { parsed, total, etaSeconds: eta_seconds });
-        },
+        }
       );
 
       unlistenInstrumentConfirmation = await listen<{
@@ -389,26 +427,36 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
           payload.statement_id,
           payload.filename ?? '',
           payload.issuer ?? '',
-          payload.reason ?? 'The statement issuer or account number could not be read automatically.',
+          payload.reason ??
+            'The statement issuer or account number could not be read automatically.'
         );
       });
 
-      unlistenProgress = await listen<ProcessingProgressPayload>('statement_processing_progress', (event) => {
-        if (event.payload.draft_id && watchedOriginIds.current.has(event.payload.draft_id)) {
-          setProcessingProgress(event.payload);
+      unlistenProgress = await listen<ProcessingProgressPayload>(
+        'statement_processing_progress',
+        (event) => {
+          if (event.payload.draft_id && watchedOriginIds.current.has(event.payload.draft_id)) {
+            setProcessingProgress(event.payload);
+          }
         }
-      });
+      );
 
-      unlistenStaged = await listen<{ draft_id: string; origin: string }>('statement_staged', (event) => {
-        const { draft_id } = event.payload;
-        if (watchedOriginIds.current.has(draft_id)) {
-          watchedOriginIds.current.delete(draft_id);
-          openReviewModal(draft_id);
-        } else {
-          // Background-staged (email/historical scan) — not auto-opened.
-          toast({ title: 'Statement ready for review', description: 'Check the Awaiting Review queue on the Statements page.' });
+      unlistenStaged = await listen<{ draft_id: string; origin: string }>(
+        'statement_staged',
+        (event) => {
+          const { draft_id } = event.payload;
+          if (watchedOriginIds.current.has(draft_id)) {
+            watchedOriginIds.current.delete(draft_id);
+            openReviewModal(draft_id);
+          } else {
+            // Background-staged (email/historical scan) — not auto-opened.
+            toast({
+              title: 'Statement ready for review',
+              description: 'Check the Awaiting Review queue on the Statements page.',
+            });
+          }
         }
-      });
+      );
     };
 
     setupListeners();
@@ -425,24 +473,33 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
     };
   }, [loadStatementHistory, toast, openPasswordModal, openInstrumentModal, openReviewModal]);
 
-
   const value: GlobalStateContextType = {
-    scanStartDate, setScanStartDate,
-    scanEndDate, setScanEndDate,
-    scanStatus, setScanStatus,
-    scanProgress, setScanProgress,
-    scanError, setScanError,
-    connectedAccounts, setConnectedAccounts,
+    scanStartDate,
+    setScanStartDate,
+    scanEndDate,
+    setScanEndDate,
+    scanStatus,
+    setScanStatus,
+    scanProgress,
+    setScanProgress,
+    scanError,
+    setScanError,
+    connectedAccounts,
+    setConnectedAccounts,
     refreshConnectedAccounts,
     handleStartScan,
 
     statementHistory,
     statementLoading,
     loadStatementHistory,
-    batchProgress, setBatchProgress,
-    passwordModalOpen, setPasswordModalOpen,
-    pendingStatementId, setPendingStatementId,
-    pendingInstrumentId, setPendingInstrumentId,
+    batchProgress,
+    setBatchProgress,
+    passwordModalOpen,
+    setPasswordModalOpen,
+    pendingStatementId,
+    setPendingStatementId,
+    pendingInstrumentId,
+    setPendingInstrumentId,
     openPasswordModal,
     closePasswordModal,
 
@@ -461,9 +518,5 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
     watchDraftOrigin,
   };
 
-  return (
-    <GlobalStateContext.Provider value={value}>
-      {children}
-    </GlobalStateContext.Provider>
-  );
+  return <GlobalStateContext.Provider value={value}>{children}</GlobalStateContext.Provider>;
 };

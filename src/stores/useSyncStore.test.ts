@@ -15,7 +15,12 @@ const progress: ScanProgressPayload = {
 
 describe('useSyncStore', () => {
   beforeEach(() => {
-    useSyncStore.setState({ scanStatus: 'idle', scanProgress: null, scanError: null, warnings: [] });
+    useSyncStore.setState({
+      scanStatus: 'idle',
+      scanProgress: null,
+      scanError: null,
+      warnings: [],
+    });
   });
 
   it('moves to running on scan_progress and clears any prior error', () => {

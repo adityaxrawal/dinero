@@ -56,10 +56,9 @@ export default function ConnectedAccountsSettings() {
         <h3 className="text-xl font-bold text-[#064E3B]">Connected Accounts</h3>
       </div>
       <p className="text-sm text-[#064E3B]/70 mb-5">
-        Connect Gmail securely via local OAuth to automate transaction
-        syncing. We only request read access, and extraction happens locally.
-        Up to 10 accounts can be connected; connecting a 2nd account or
-        beyond requires an active subscription.
+        Connect Gmail securely via local OAuth to automate transaction syncing. We only request read
+        access, and extraction happens locally. Up to 10 accounts can be connected; connecting a 2nd
+        account or beyond requires an active subscription.
       </p>
 
       {connectedAccounts.length > 0 && (
@@ -70,12 +69,20 @@ export default function ConnectedAccountsSettings() {
               <div
                 key={account.account_id}
                 className={`flex items-center gap-3 p-4 rounded-xl border ${
-                  isDegraded ? 'bg-amber-500/10 border-amber-500/20' : 'bg-[#064E3B]/5 border-[#064E3B]/10'
+                  isDegraded
+                    ? 'bg-amber-500/10 border-amber-500/20'
+                    : 'bg-[#064E3B]/5 border-[#064E3B]/10'
                 }`}
               >
-                {isDegraded ? <AlertTriangle className="w-5 h-5 text-amber-600" /> : <CheckCircle className="w-5 h-5 text-emerald-600" />}
+                {isDegraded ? (
+                  <AlertTriangle className="w-5 h-5 text-amber-600" />
+                ) : (
+                  <CheckCircle className="w-5 h-5 text-emerald-600" />
+                )}
                 <div className="flex-1">
-                  <p className={`text-[13px] font-bold ${isDegraded ? 'text-amber-700' : 'text-emerald-700'}`}>
+                  <p
+                    className={`text-[13px] font-bold ${isDegraded ? 'text-amber-700' : 'text-emerald-700'}`}
+                  >
                     {isDegraded ? 'Needs Reconnection' : 'Gmail Connected'}
                   </p>
                   <p className="text-[12px] font-medium text-[#064E3B]/70 mt-0.5">
@@ -88,11 +95,18 @@ export default function ConnectedAccountsSettings() {
                   )}
                 </div>
                 {isDegraded && (
-                  <button className="px-3 py-1.5 text-[12px] font-semibold rounded-lg bg-amber-500/20 text-amber-800 hover:bg-amber-500/30 transition-colors" onClick={handleConnectGmail} disabled={isConnecting}>
+                  <button
+                    className="px-3 py-1.5 text-[12px] font-semibold rounded-lg bg-amber-500/20 text-amber-800 hover:bg-amber-500/30 transition-colors"
+                    onClick={handleConnectGmail}
+                    disabled={isConnecting}
+                  >
                     {isConnecting ? 'Reconnecting…' : 'Reconnect'}
                   </button>
                 )}
-                <RevokeGmailButton email={account.email} onRevoke={() => handleDisconnectGmail(account.account_id)} />
+                <RevokeGmailButton
+                  email={account.email}
+                  onRevoke={() => handleDisconnectGmail(account.account_id)}
+                />
               </div>
             );
           })}

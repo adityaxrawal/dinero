@@ -20,7 +20,12 @@ export function useUpdateTransactionFields() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ transactionId, merchantDisplayName, categoryId, notes }: UpdateTransactionFieldsInput) =>
+    mutationFn: ({
+      transactionId,
+      merchantDisplayName,
+      categoryId,
+      notes,
+    }: UpdateTransactionFieldsInput) =>
       API.transactions.update(transactionId, { merchantDisplayName, categoryId, notes }),
     onSuccess: (_data, { transactionId }) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.transactions.detail(transactionId) });

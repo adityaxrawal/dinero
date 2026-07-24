@@ -116,17 +116,29 @@ export default function BackgroundTaskIndicator() {
         <div className="flex-1 min-w-0 text-xs font-medium truncate" style={{ color: '#3d5a50' }}>
           {summary}
         </div>
-        {all.length > 1 && (
-          expanded
-            ? <ChevronUp className="w-3.5 h-3.5 shrink-0" style={{ color: '#6b8a7f' }} aria-hidden="true" />
-            : <ChevronDown className="w-3.5 h-3.5 shrink-0" style={{ color: '#6b8a7f' }} aria-hidden="true" />
-        )}
+        {all.length > 1 &&
+          (expanded ? (
+            <ChevronUp
+              className="w-3.5 h-3.5 shrink-0"
+              style={{ color: '#6b8a7f' }}
+              aria-hidden="true"
+            />
+          ) : (
+            <ChevronDown
+              className="w-3.5 h-3.5 shrink-0"
+              style={{ color: '#6b8a7f' }}
+              aria-hidden="true"
+            />
+          ))}
       </button>
 
       {/* Single task: progress bar (running) or error chip (failed) */}
       {all.length === 1 && running.length === 1 && running[0].total > 0 && (
         <div className="px-3 pb-2.5">
-          <div className="w-full h-1 rounded-full overflow-hidden" style={{ background: 'rgba(6,78,59,0.10)' }}>
+          <div
+            className="w-full h-1 rounded-full overflow-hidden"
+            style={{ background: 'rgba(6,78,59,0.10)' }}
+          >
             <div
               className="h-full rounded-full transition-all duration-300"
               style={{ width: `${running[0].progress_pct}%`, background: '#064E3B' }}
@@ -164,8 +176,14 @@ export default function BackgroundTaskIndicator() {
                 onDismiss={() => dismissTask(task.task_id)}
               />
             ) : (
-              <div key={task.task_id} className="px-3 py-2" style={{ borderBottom: '1px solid rgba(217,200,168,0.40)' }}>
-                <div className="text-xs truncate" style={{ color: '#3d5a50' }}>{task.label}</div>
+              <div
+                key={task.task_id}
+                className="px-3 py-2"
+                style={{ borderBottom: '1px solid rgba(217,200,168,0.40)' }}
+              >
+                <div className="text-xs truncate" style={{ color: '#3d5a50' }}>
+                  {task.label}
+                </div>
                 {task.total > 0 && (
                   <>
                     <div
@@ -184,7 +202,7 @@ export default function BackgroundTaskIndicator() {
                   </>
                 )}
               </div>
-            ),
+            )
           )}
         </div>
       )}

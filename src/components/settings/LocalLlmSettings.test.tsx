@@ -28,8 +28,28 @@ vi.mock('@/hooks/useIpcListen', () => ({
 }));
 
 const MODELS = [
-  { id: 'gemma4_e4b', name: 'Gemma 4 E4B', tag: 'gemma4:e4b', tier: 1, min_ram_gb: 8, approx_size_gb: 5, rationale: 'r1', gguf_url: 'u1', expected_sha256: 'h1' },
-  { id: 'gemma4_12b', name: 'Gemma 4 12B', tag: 'gemma4:12b', tier: 2, min_ram_gb: 16, approx_size_gb: 9, rationale: 'r2', gguf_url: 'u2', expected_sha256: 'h2' },
+  {
+    id: 'gemma4_e4b',
+    name: 'Gemma 4 E4B',
+    tag: 'gemma4:e4b',
+    tier: 1,
+    min_ram_gb: 8,
+    approx_size_gb: 5,
+    rationale: 'r1',
+    gguf_url: 'u1',
+    expected_sha256: 'h1',
+  },
+  {
+    id: 'gemma4_12b',
+    name: 'Gemma 4 12B',
+    tag: 'gemma4:12b',
+    tier: 2,
+    min_ram_gb: 16,
+    approx_size_gb: 9,
+    rationale: 'r2',
+    gguf_url: 'u2',
+    expected_sha256: 'h2',
+  },
 ];
 
 describe('LocalLlmSettings', () => {
@@ -147,7 +167,7 @@ describe('LocalLlmSettings', () => {
     (API.llm.downloadModel as any).mockReturnValue(
       new Promise<void>((resolve) => {
         resolveDownload = resolve;
-      }),
+      })
     );
     (API.llm.cancelDownload as any).mockImplementation(async () => {
       resolveDownload?.();

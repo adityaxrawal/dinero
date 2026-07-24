@@ -28,7 +28,11 @@ export default function ConsentHistoryList({
           disabled={isLoading}
           aria-label="Refresh consent history"
         >
-          {isLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+          {isLoading ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : (
+            <RefreshCw className="w-3.5 h-3.5" />
+          )}
         </button>
       </div>
 

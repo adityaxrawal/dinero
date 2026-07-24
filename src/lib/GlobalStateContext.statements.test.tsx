@@ -37,7 +37,7 @@ function renderProvider() {
   return render(
     <GlobalStateProvider>
       <Probe />
-    </GlobalStateProvider>,
+    </GlobalStateProvider>
   );
 }
 
@@ -52,14 +52,19 @@ describe('GlobalStateContext statement notifications', () => {
     await waitFor(() => expect(listenHandlers['statement_parsed']).toBeDefined());
 
     listenHandlers['statement_parsed']({
-      payload: { statement_id: 'stmt_1', instrument_id: 'inst_1', issuer_name: 'HDFC Card', rows_extracted: 47 },
+      payload: {
+        statement_id: 'stmt_1',
+        instrument_id: 'inst_1',
+        issuer_name: 'HDFC Card',
+        rows_extracted: 47,
+      },
     });
 
     expect(toastSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         title: 'Statement Parsed',
         description: expect.stringContaining('HDFC Card statement parsed — 47 transactions found'),
-      }),
+      })
     );
   });
 
@@ -76,7 +81,7 @@ describe('GlobalStateContext statement notifications', () => {
         title: 'Parse Failed',
         description: expect.stringContaining('axis_statement.pdf'),
         actionTo: '/statements',
-      }),
+      })
     );
   });
 
@@ -89,25 +94,33 @@ describe('GlobalStateContext statement notifications', () => {
     });
 
     // Batch starts (first progress tick).
-    listenHandlers['statement_batch_progress']({ payload: { parsed: 0, total: 10, eta_seconds: 30 } });
+    listenHandlers['statement_batch_progress']({
+      payload: { parsed: 0, total: 10, eta_seconds: 30 },
+    });
 
     // 8 succeed, 2 fail -- none of these should toast individually.
     for (let i = 0; i < 8; i++) {
       listenHandlers['statement_parsed']({ payload: { statement_id: `s${i}` } });
     }
-    listenHandlers['statement_parse_failed']({ payload: { reason: 'Incorrect password', filename: 'a.pdf' } });
-    listenHandlers['statement_parse_failed']({ payload: { reason: 'Incorrect password', filename: 'b.pdf' } });
+    listenHandlers['statement_parse_failed']({
+      payload: { reason: 'Incorrect password', filename: 'a.pdf' },
+    });
+    listenHandlers['statement_parse_failed']({
+      payload: { reason: 'Incorrect password', filename: 'b.pdf' },
+    });
     expect(toastSpy).not.toHaveBeenCalled();
 
     // Batch completes.
-    listenHandlers['statement_batch_progress']({ payload: { parsed: 10, total: 10, eta_seconds: 0 } });
+    listenHandlers['statement_batch_progress']({
+      payload: { parsed: 10, total: 10, eta_seconds: 0 },
+    });
 
     expect(toastSpy).toHaveBeenCalledTimes(1);
     expect(toastSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         title: 'Batch Import Complete',
         description: expect.stringContaining('8/10 imported, 2 failed'),
-      }),
+      })
     );
   });
 

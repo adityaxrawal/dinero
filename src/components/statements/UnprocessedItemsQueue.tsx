@@ -14,7 +14,11 @@ interface UnprocessedItemsQueueProps {
   onEnterPassword: (statementId: string) => void;
 }
 
-const GROUPS: { key: 'awaiting_password' | 'pending_retry' | 'failed'; label: string; badgeVariant: 'destructive' | 'secondary' | 'outline' }[] = [
+const GROUPS: {
+  key: 'awaiting_password' | 'pending_retry' | 'failed';
+  label: string;
+  badgeVariant: 'destructive' | 'secondary' | 'outline';
+}[] = [
   { key: 'awaiting_password', label: 'Awaiting Password', badgeVariant: 'destructive' },
   { key: 'pending_retry', label: 'Pending Retry', badgeVariant: 'secondary' },
   { key: 'failed', label: 'Failed', badgeVariant: 'outline' },
@@ -36,7 +40,10 @@ export default function UnprocessedItemsQueue({ onEnterPassword }: UnprocessedIt
   const discard = useDiscardUnprocessedStatement();
 
   const total = groups
-    ? groups.awaiting_password.length + groups.pending_retry.length + groups.failed.length + groups.awaiting_review.length
+    ? groups.awaiting_password.length +
+      groups.pending_retry.length +
+      groups.failed.length +
+      groups.awaiting_review.length
     : 0;
 
   if (!groups || total === 0) return null;
@@ -47,14 +54,16 @@ export default function UnprocessedItemsQueue({ onEnterPassword }: UnprocessedIt
       return;
     }
     retry.mutate(item.statement_id, {
-      onSuccess: () => toast({ title: 'Retrying', description: `${item.filename} queued for another attempt.` }),
+      onSuccess: () =>
+        toast({ title: 'Retrying', description: `${item.filename} queued for another attempt.` }),
       onError: (err) => toast({ variant: 'destructive', ...getErrorToast(err) }),
     });
   };
 
   const handleDiscard = (item: UnprocessedStatementEntry) => {
     discard.mutate(item.statement_id, {
-      onSuccess: () => toast({ title: 'Discarded', description: `${item.filename} removed from the queue.` }),
+      onSuccess: () =>
+        toast({ title: 'Discarded', description: `${item.filename} removed from the queue.` }),
       onError: (err) => toast({ variant: 'destructive', ...getErrorToast(err) }),
     });
   };
@@ -66,7 +75,9 @@ export default function UnprocessedItemsQueue({ onEnterPassword }: UnprocessedIt
           <AlertTriangle className="w-5 h-5" aria-hidden="true" />
           <span>Unprocessed Statements</span> <span>({total})</span>
         </CardTitle>
-        <CardDescription>These statements require action before they can be processed.</CardDescription>
+        <CardDescription>
+          These statements require action before they can be processed.
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
         {groups.awaiting_review.length > 0 && (
@@ -82,7 +93,9 @@ export default function UnprocessedItemsQueue({ onEnterPassword }: UnprocessedIt
                 >
                   <div className="min-w-0">
                     <p className="text-sm font-medium truncate">
-                      {item.issuer_name ? `${item.issuer_name} •••${item.masked_identifier ?? '????'}` : 'Statement ready for review'}
+                      {item.issuer_name
+                        ? `${item.issuer_name} •••${item.masked_identifier ?? '????'}`
+                        : 'Statement ready for review'}
                     </p>
                   </div>
                   <Button
@@ -113,14 +126,20 @@ export default function UnprocessedItemsQueue({ onEnterPassword }: UnprocessedIt
                     className="flex items-center justify-between p-3 rounded-md bg-background border border-border"
                   >
                     <div className="min-w-0">
-                      <p className="text-sm font-medium truncate">{item.filename || 'Unknown file'}</p>
+                      <p className="text-sm font-medium truncate">
+                        {item.filename || 'Unknown file'}
+                      </p>
                       {item.failure_reason && (
-                        <p className="text-xs text-muted-foreground truncate">{item.failure_reason}</p>
+                        <p className="text-xs text-muted-foreground truncate">
+                          {item.failure_reason}
+                        </p>
                       )}
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       <Badge variant={group.badgeVariant} className="text-xs">
-                        {group.key === 'awaiting_password' && <Lock className="w-3 h-3 mr-1" aria-hidden="true" />}
+                        {group.key === 'awaiting_password' && (
+                          <Lock className="w-3 h-3 mr-1" aria-hidden="true" />
+                        )}
                         {item.failure_type || group.label}
                       </Badge>
                       <Button

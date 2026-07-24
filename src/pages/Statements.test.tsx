@@ -32,7 +32,7 @@ function renderStatements() {
       <MemoryRouter initialEntries={['/statements?section=history']}>
         <Statements />
       </MemoryRouter>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
 }
 

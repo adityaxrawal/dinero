@@ -61,7 +61,10 @@ export function ReleaseReadinessViewer({ metrics }: ReleaseReadinessViewerProps)
       <div className="glass-panel p-6">
         <div className="flex items-center justify-between mb-1">
           <div className="flex items-center gap-2">
-            <ShieldCheck size={18} className={latest?.go_no_go ? 'text-emerald-500' : 'text-amber-500'} />
+            <ShieldCheck
+              size={18}
+              className={latest?.go_no_go ? 'text-emerald-500' : 'text-amber-500'}
+            />
             <h3 className="font-medium">Release Go / No-Go</h3>
           </div>
           <button
@@ -81,7 +84,8 @@ export function ReleaseReadinessViewer({ metrics }: ReleaseReadinessViewerProps)
               <XCircle size={16} className="text-red-500" />
             )}
             <span className="text-sm">
-              {latest.go_no_go ? 'GO' : 'NO-GO'} — last captured {new Date(latest.captured_at).toLocaleString()}
+              {latest.go_no_go ? 'GO' : 'NO-GO'} — last captured{' '}
+              {new Date(latest.captured_at).toLocaleString()}
             </span>
           </div>
         ) : (
@@ -107,7 +111,8 @@ export function ReleaseReadinessViewer({ metrics }: ReleaseReadinessViewerProps)
               >
                 <span>{new Date(s.captured_at).toLocaleString()}</span>
                 <span className="font-mono">
-                  clusters={s.metrics.unresolved_clusters} llm={(s.metrics.llm_fallback_rate * 100).toFixed(1)}%
+                  clusters={s.metrics.unresolved_clusters} llm=
+                  {(s.metrics.llm_fallback_rate * 100).toFixed(1)}%
                 </span>
                 <span className={s.go_no_go ? 'text-emerald-500' : 'text-red-500'}>
                   {s.go_no_go ? 'GO' : 'NO-GO'}
@@ -147,7 +152,9 @@ export function ReleaseReadinessViewer({ metrics }: ReleaseReadinessViewerProps)
             </div>
             <div>
               <p className="text-xs text-muted-foreground">LLM Fallback Rate</p>
-              <p className="text-lg font-semibold">{(metrics.llm_fallback_rate * 100).toFixed(1)}%</p>
+              <p className="text-lg font-semibold">
+                {(metrics.llm_fallback_rate * 100).toFixed(1)}%
+              </p>
             </div>
           </div>
         ) : (
@@ -166,8 +173,13 @@ export function ReleaseReadinessViewer({ metrics }: ReleaseReadinessViewerProps)
         </p>
         <div className="flex flex-col gap-2">
           {QUALITY_GATE_TARGETS.map((g) => (
-            <div key={g.nfr} className="flex justify-between items-center py-2 border-b border-[var(--border-color)] last:border-0">
-              <span className="text-sm">{g.label} <span className="text-xs text-muted-foreground">({g.nfr})</span></span>
+            <div
+              key={g.nfr}
+              className="flex justify-between items-center py-2 border-b border-[var(--border-color)] last:border-0"
+            >
+              <span className="text-sm">
+                {g.label} <span className="text-xs text-muted-foreground">({g.nfr})</span>
+              </span>
               <span className="text-sm font-mono">{g.target}</span>
             </div>
           ))}
@@ -181,10 +193,11 @@ export function ReleaseReadinessViewer({ metrics }: ReleaseReadinessViewerProps)
         </div>
         <p className="text-sm text-muted-foreground">
           Subscription analytics, billing operations, and tenant administration are handled by a
-          separate Licensing Backend service (Vercel + Neon Postgres) that is <strong>not part of this
-          repository</strong> and has no code, UI, or data visible inside this desktop app. This app's
-          only connection to it is the client module <code className="text-xs bg-muted px-1 rounded">src-tauri/src/licensing/</code>,
-          used solely to validate this device's own license state — not to administer other tenants.
+          separate Licensing Backend service (Vercel + Neon Postgres) that is{' '}
+          <strong>not part of this repository</strong> and has no code, UI, or data visible inside
+          this desktop app. This app's only connection to it is the client module{' '}
+          <code className="text-xs bg-muted px-1 rounded">src-tauri/src/licensing/</code>, used
+          solely to validate this device's own license state — not to administer other tenants.
         </p>
       </div>
     </div>

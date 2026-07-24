@@ -1,7 +1,11 @@
 // Doc 30 TASK-BILL-010: "state-appropriate CTA" mapping, extracted as a pure
 // function so Settings.tsx's License & Billing section stays testable
 // without mounting the entire (large) Settings page.
-export type LicenseCtaAction = 'subscribe' | 'manage_billing' | 'update_payment_method' | 'reactivate';
+export type LicenseCtaAction =
+  | 'subscribe'
+  | 'manage_billing'
+  | 'update_payment_method'
+  | 'reactivate';
 
 export interface LicenseCta {
   action: LicenseCtaAction;

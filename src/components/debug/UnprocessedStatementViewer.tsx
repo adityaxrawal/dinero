@@ -32,8 +32,6 @@ export function UnprocessedStatementViewer() {
     fetchStatements();
   }, []);
 
-
-
   return (
     <DebugTableLayout
       title="Unprocessed Statements"
@@ -51,12 +49,14 @@ export function UnprocessedStatementViewer() {
           <th className="p-2 text-sm font-medium text-muted-foreground">Status</th>
         </>
       }
-      renderRow={stmt => (
+      renderRow={(stmt) => (
         <tr key={stmt.id} className="border-b border-[var(--border-color)] last:border-0">
           <td className="p-2 text-sm font-mono">{stmt.id.substring(0, 8)}</td>
           <td className="p-2 text-sm">{new Date(stmt.created_at).toLocaleString()}</td>
           <td className="p-2 text-sm">{stmt.original_filename}</td>
-          <td className="p-2 text-sm font-mono text-muted-foreground">{stmt.file_hash?.substring(0, 12) ?? 'N/A'}...</td>
+          <td className="p-2 text-sm font-mono text-muted-foreground">
+            {stmt.file_hash?.substring(0, 12) ?? 'N/A'}...
+          </td>
           <td className="p-2 text-sm">
             {stmt.needs_password ? (
               <Badge variant="destructive">Needs Password</Badge>

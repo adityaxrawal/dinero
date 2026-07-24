@@ -40,7 +40,9 @@ export default function GmailConsentScreen({
         </p>
       </div>
       <div className="bg-secondary/50 p-4 rounded-md text-left" aria-label="Requested Gmail scopes">
-        <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Requested Scopes</span>
+        <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+          Requested Scopes
+        </span>
         <ul className="mt-2 text-sm space-y-1">
           <li>
             •{' '}
@@ -61,7 +63,10 @@ export default function GmailConsentScreen({
         <span className="text-xs font-semibold uppercase tracking-wider text-amber-700">
           Beta Program — Google Sign-In Limitations
         </span>
-        <ul className="mt-2 text-xs space-y-1.5 text-muted-foreground" style={{ listStyleType: 'disc', paddingLeft: '16px' }}>
+        <ul
+          className="mt-2 text-xs space-y-1.5 text-muted-foreground"
+          style={{ listStyleType: 'disc', paddingLeft: '16px' }}
+        >
           {BETA_PROGRAM_DISCLOSURE.map((item, i) => (
             <li key={i}>{item}</li>
           ))}
@@ -70,11 +75,17 @@ export default function GmailConsentScreen({
 
       {/* Doc 01 §10.4: presented verbatim on the onboarding consent screen,
           before Gmail authorization. */}
-      <div className="bg-secondary/50 p-4 rounded-md text-left" aria-label="Outbound network channels disclosure">
+      <div
+        className="bg-secondary/50 p-4 rounded-md text-left"
+        aria-label="Outbound network channels disclosure"
+      >
         <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           Outbound Channels Disclosure
         </span>
-        <ul className="mt-2 text-xs space-y-1 text-muted-foreground" style={{ listStyleType: 'disc', paddingLeft: '16px' }}>
+        <ul
+          className="mt-2 text-xs space-y-1 text-muted-foreground"
+          style={{ listStyleType: 'disc', paddingLeft: '16px' }}
+        >
           {OUTBOUND_CHANNEL_DISCLOSURE.map((item, i) => (
             <li key={i}>{item}</li>
           ))}

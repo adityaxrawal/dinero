@@ -1,8 +1,15 @@
 import { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  TrendingUp, TrendingDown, ArrowUpRight, ArrowDownRight, AlertCircle,
-  GitMerge, ChevronRight, Loader2, Calendar,
+  TrendingUp,
+  TrendingDown,
+  ArrowUpRight,
+  ArrowDownRight,
+  AlertCircle,
+  GitMerge,
+  ChevronRight,
+  Loader2,
+  Calendar,
   AlertTriangle,
 } from 'lucide-react';
 import RecentTransactions from '@/components/dashboard/RecentTransactions';
@@ -16,11 +23,22 @@ import { useUpcomingBills } from '@/hooks/queries/useUpcomingBills';
 import { useReconciliationClusters } from '@/hooks/queries/useReconciliationClusters';
 import { classifyBillUrgency } from '@/components/dashboard/classifyBillUrgency';
 import { computeMonthOverMonthDelta } from '@/components/dashboard/computeMonthOverMonthDelta';
-import { groupCategoriesForChart, type CategoryChartSlice } from '@/components/dashboard/groupCategoriesForChart';
+import {
+  groupCategoriesForChart,
+  type CategoryChartSlice,
+} from '@/components/dashboard/groupCategoriesForChart';
 import type { SpendTrendGranularity, SpendTrendPoint } from '@/lib/ipc';
 import {
-  LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer,
-  PieChart, Pie, Cell,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  CartesianGrid,
+  ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell,
 } from 'recharts';
 import { SEQUENTIAL_LINE_COLOR } from '@/components/dashboard/chartPalette';
 
@@ -63,13 +81,12 @@ function KpiTile({
             {value}
           </p>
           {delta != null && (
-            <p
-              className="kpi-delta"
-              style={{ color: delta > 0 ? '#ef4444' : '#10b981' }}
-            >
-              {delta > 0
-                ? <TrendingUp className="w-3 h-3" aria-hidden="true" />
-                : <TrendingDown className="w-3 h-3" aria-hidden="true" />}
+            <p className="kpi-delta" style={{ color: delta > 0 ? '#ef4444' : '#10b981' }}>
+              {delta > 0 ? (
+                <TrendingUp className="w-3 h-3" aria-hidden="true" />
+              ) : (
+                <TrendingDown className="w-3 h-3" aria-hidden="true" />
+              )}
               {Math.abs(delta).toFixed(1)}% {deltaLabel ?? 'vs last month'}
             </p>
           )}
@@ -159,8 +176,12 @@ function AttentionCard({
         {icon}
       </div>
       <div className="min-w-0">
-        <p className="text-sm font-semibold leading-tight" style={{ color: 'var(--text-primary)' }}>{title}</p>
-        <p className="text-xs mt-0.5 leading-snug" style={{ color: 'var(--text-muted)' }}>{subtitle}</p>
+        <p className="text-sm font-semibold leading-tight" style={{ color: 'var(--text-primary)' }}>
+          {title}
+        </p>
+        <p className="text-xs mt-0.5 leading-snug" style={{ color: 'var(--text-muted)' }}>
+          {subtitle}
+        </p>
       </div>
       <div
         className="flex items-center gap-1 text-xs font-medium mt-auto"
@@ -177,7 +198,10 @@ function AttentionCard({
 function TrendChart({ data }: { data: SpendTrendPoint[] }) {
   if (!data || data.length === 0) {
     return (
-      <div className="h-48 flex items-center justify-center text-sm" style={{ color: 'var(--text-muted)' }}>
+      <div
+        className="h-48 flex items-center justify-center text-sm"
+        style={{ color: 'var(--text-muted)' }}
+      >
         No spend recorded in this window yet.
       </div>
     );
@@ -186,11 +210,7 @@ function TrendChart({ data }: { data: SpendTrendPoint[] }) {
     <div className="h-48" role="img" aria-label="Line chart of spend over time">
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={data} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
-          <CartesianGrid
-            strokeDasharray="3 3"
-            stroke="rgba(6,78,59,0.10)"
-            vertical={false}
-          />
+          <CartesianGrid strokeDasharray="3 3" stroke="rgba(6,78,59,0.10)" vertical={false} />
           <XAxis
             dataKey="period"
             tick={{ fontSize: 10, fill: '#6b8a7f' }}
@@ -228,10 +248,19 @@ function TrendChart({ data }: { data: SpendTrendPoint[] }) {
 }
 
 /** ── Category Donut ────────────────────────────────────────── */
-function CategoryDonut({ slices, onSliceClick }: { slices: CategoryChartSlice[]; onSliceClick: (id: string) => void }) {
+function CategoryDonut({
+  slices,
+  onSliceClick,
+}: {
+  slices: CategoryChartSlice[];
+  onSliceClick: (id: string) => void;
+}) {
   if (slices.length === 0) {
     return (
-      <div className="h-full flex items-center justify-center text-sm" style={{ color: 'var(--text-muted)' }}>
+      <div
+        className="h-full flex items-center justify-center text-sm"
+        style={{ color: 'var(--text-muted)' }}
+      >
         No spend yet this month.
       </div>
     );
@@ -279,7 +308,9 @@ export default function Dashboard() {
   const { data: txPage, isLoading: txLoading } = useTransactionsList(1);
   const { data: monthlyTrend } = useSpendTrend('monthly');
   const { data: trendData, isLoading: trendLoading } = useSpendTrend(granularity);
-  const { data: categories, isLoading: categoriesLoading } = useDashboardCategories(currentMonthString());
+  const { data: categories, isLoading: categoriesLoading } = useDashboardCategories(
+    currentMonthString()
+  );
   const { data: pending } = usePendingReviewCount();
   const { data: bills } = useUpcomingBills();
   const { data: clusters = [] } = useReconciliationClusters();
@@ -289,18 +320,26 @@ export default function Dashboard() {
   const delta = computeMonthOverMonthDelta(monthlyTrend);
   const categorySlices = groupCategoriesForChart(categories);
 
-  const urgentBills = bills?.filter((b) => {
-    const u = classifyBillUrgency(b.due_date);
-    return u === 'overdue' || u === 'critical';
-  }) ?? [];
+  const urgentBills =
+    bills?.filter((b) => {
+      const u = classifyBillUrgency(b.due_date);
+      return u === 'overdue' || u === 'critical';
+    }) ?? [];
 
-  const handleCategoryClick = useCallback((id: string) => {
-    if (id !== '__other__') navigate(`/transactions?category=${encodeURIComponent(id)}`);
-  }, [navigate]);
+  const handleCategoryClick = useCallback(
+    (id: string) => {
+      if (id !== '__other__') navigate(`/transactions?category=${encodeURIComponent(id)}`);
+    },
+    [navigate]
+  );
 
   if (loading || !summary) {
     return (
-      <div className="flex h-full w-full items-center justify-center" role="status" aria-label="Loading dashboard">
+      <div
+        className="flex h-full w-full items-center justify-center"
+        role="status"
+        aria-label="Loading dashboard"
+      >
         <Loader2 className="w-5 h-5 animate-spin" style={{ color: '#064E3B' }} aria-hidden="true" />
         <span className="sr-only">Loading dashboard…</span>
       </div>
@@ -310,9 +349,7 @@ export default function Dashboard() {
   const net = summary.income - summary.month_to_date_spend;
 
   const hasAttentionItems =
-    (pending?.count ?? 0) > 0 ||
-    urgentBills.length > 0 ||
-    clusters.length > 0;
+    (pending?.count ?? 0) > 0 || urgentBills.length > 0 || clusters.length > 0;
 
   return (
     <div
@@ -322,14 +359,15 @@ export default function Dashboard() {
       {/* ── Header ──────────────────────────────────────────── */}
       <header className="flex items-center justify-between mb-6">
         <div>
-          <h1
-            className="page-title"
-            style={{ fontSize: '22px', fontWeight: 700 }}
-          >
+          <h1 className="page-title" style={{ fontSize: '22px', fontWeight: 700 }}>
             {formatGreeting()}
           </h1>
           <p className="text-sm mt-0.5" style={{ color: 'var(--text-muted)' }}>
-            {new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}
+            {new Date().toLocaleDateString(undefined, {
+              weekday: 'long',
+              month: 'long',
+              day: 'numeric',
+            })}
           </p>
         </div>
         <span
@@ -366,9 +404,11 @@ export default function Dashboard() {
           value={`${net >= 0 ? '+' : ''}₹${Math.abs(net).toLocaleString()}`}
           valueColor={net >= 0 ? '#10b981' : '#ef4444'}
           icon={
-            net >= 0
-              ? <ArrowDownRight className="w-4 h-4" style={{ color: '#10b981' }} />
-              : <ArrowUpRight className="w-4 h-4" style={{ color: '#ef4444' }} />
+            net >= 0 ? (
+              <ArrowDownRight className="w-4 h-4" style={{ color: '#10b981' }} />
+            ) : (
+              <ArrowUpRight className="w-4 h-4" style={{ color: '#ef4444' }} />
+            )
           }
           iconBg={net >= 0 ? 'rgba(16, 185, 129, 0.10)' : 'rgba(239, 68, 68, 0.10)'}
         />
@@ -380,7 +420,9 @@ export default function Dashboard() {
       {/* ── Attention Rail ───────────────────────────────────── */}
       {hasAttentionItems && (
         <section aria-label="Items needing attention" className="mb-5">
-          <p className="section-heading" style={{ paddingLeft: 0 }}>Needs Attention</p>
+          <p className="section-heading" style={{ paddingLeft: 0 }}>
+            Needs Attention
+          </p>
           <div className="attention-rail mt-2">
             {(pending?.count ?? 0) > 0 && (
               <AttentionCard
@@ -398,7 +440,12 @@ export default function Dashboard() {
               return (
                 <AttentionCard
                   key={bill.id}
-                  icon={<AlertTriangle className="w-4 h-4" style={{ color: u === 'overdue' ? '#ef4444' : '#f59e0b' }} />}
+                  icon={
+                    <AlertTriangle
+                      className="w-4 h-4"
+                      style={{ color: u === 'overdue' ? '#ef4444' : '#f59e0b' }}
+                    />
+                  }
                   iconBg={u === 'overdue' ? 'rgba(239,68,68,0.12)' : 'rgba(245,158,11,0.12)'}
                   title={bill.description}
                   subtitle={`₹${bill.amount.toLocaleString()} · Due ${new Date(bill.due_date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`}
@@ -418,7 +465,7 @@ export default function Dashboard() {
                 onClick={() => navigate('/reconciliation')}
               />
             )}
-            {(summary.upcoming_bills_count > 0 && urgentBills.length === 0) && (
+            {summary.upcoming_bills_count > 0 && urgentBills.length === 0 && (
               <AttentionCard
                 icon={<Calendar className="w-4 h-4" style={{ color: '#3d5a50' }} />}
                 iconBg="rgba(6,78,59,0.08)"
@@ -433,13 +480,19 @@ export default function Dashboard() {
       )}
 
       {/* ── Charts Row ───────────────────────────────────────── */}
-      <section aria-label="Spending analytics" className="grid gap-4 mb-5" style={{ gridTemplateColumns: '1fr 340px' }}>
+      <section
+        aria-label="Spending analytics"
+        className="grid gap-4 mb-5"
+        style={{ gridTemplateColumns: '1fr 340px' }}
+      >
         {/* Trend Chart */}
         <div className="card-champagne p-5">
           <div className="flex items-center justify-between mb-4">
             <div>
               <h2 className="heading-sm">Spend Trend</h2>
-              <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>Confirmed spend over time</p>
+              <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
+                Confirmed spend over time
+              </p>
             </div>
             <div
               className="flex gap-0.5 p-0.5 rounded-lg"
@@ -464,26 +517,38 @@ export default function Dashboard() {
               ))}
             </div>
           </div>
-          {trendLoading
-            ? <div className="h-48 flex items-center justify-center"><Loader2 className="w-4 h-4 animate-spin" style={{ color: '#064E3B' }} /></div>
-            : <TrendChart data={trendData ?? []} />
-          }
+          {trendLoading ? (
+            <div className="h-48 flex items-center justify-center">
+              <Loader2 className="w-4 h-4 animate-spin" style={{ color: '#064E3B' }} />
+            </div>
+          ) : (
+            <TrendChart data={trendData ?? []} />
+          )}
         </div>
 
         {/* Category Donut */}
         <div className="card-champagne p-5">
           <h2 className="heading-sm mb-0.5">By Category</h2>
-          <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>This month's spend</p>
-          {categoriesLoading
-            ? <div className="h-[220px] flex items-center justify-center"><Loader2 className="w-4 h-4 animate-spin" style={{ color: '#064E3B' }} /></div>
-            : <CategoryDonut slices={categorySlices} onSliceClick={handleCategoryClick} />
-          }
+          <p className="text-xs mb-3" style={{ color: 'var(--text-muted)' }}>
+            This month's spend
+          </p>
+          {categoriesLoading ? (
+            <div className="h-[220px] flex items-center justify-center">
+              <Loader2 className="w-4 h-4 animate-spin" style={{ color: '#064E3B' }} />
+            </div>
+          ) : (
+            <CategoryDonut slices={categorySlices} onSliceClick={handleCategoryClick} />
+          )}
           {/* Legend */}
           {categorySlices.length > 0 && (
             <ul className="mt-2 space-y-1">
               {categorySlices.slice(0, 5).map((s) => (
                 <li key={s.category_id} className="flex items-center gap-2">
-                  <span className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: s.color }} aria-hidden="true" />
+                  <span
+                    className="w-2.5 h-2.5 rounded-sm flex-shrink-0"
+                    style={{ background: s.color }}
+                    aria-hidden="true"
+                  />
                   <button
                     type="button"
                     className="text-xs truncate hover:underline text-left"
@@ -493,7 +558,10 @@ export default function Dashboard() {
                   >
                     {s.name}
                   </button>
-                  <span className="ml-auto text-xs font-medium amount" style={{ color: 'var(--text-primary)' }}>
+                  <span
+                    className="ml-auto text-xs font-medium amount"
+                    style={{ color: 'var(--text-primary)' }}
+                  >
                     ₹{s.total_spend.toLocaleString()}
                   </span>
                 </li>

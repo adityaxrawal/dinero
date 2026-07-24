@@ -30,8 +30,6 @@ export function ParseErrorViewer() {
     fetchErrors();
   }, []);
 
-
-
   return (
     <DebugTableLayout
       title="Parse Errors"
@@ -48,7 +46,7 @@ export function ParseErrorViewer() {
           <th className="p-2 text-sm font-medium text-muted-foreground">Raw Payload</th>
         </>
       }
-      renderRow={err => (
+      renderRow={(err) => (
         <tr key={err.id} className="border-b border-[var(--border-color)] last:border-0">
           <td className="p-2 text-sm font-mono">{err.id.substring(0, 8)}</td>
           <td className="p-2 text-sm">{err.instrument_id}</td>

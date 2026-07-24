@@ -27,8 +27,18 @@ export default function AlertBanner() {
 
   const isExhausted = top.alert_type.endsWith('_100');
   const palette = isExhausted
-    ? { border: 'border-red-500/40', bg: 'bg-red-500/10', icon: 'text-red-400', text: 'text-red-200' }
-    : { border: 'border-amber-400/30', bg: 'bg-amber-400/10', icon: 'text-amber-300', text: 'text-amber-200' };
+    ? {
+        border: 'border-red-500/40',
+        bg: 'bg-red-500/10',
+        icon: 'text-red-400',
+        text: 'text-red-200',
+      }
+    : {
+        border: 'border-amber-400/30',
+        bg: 'bg-amber-400/10',
+        icon: 'text-amber-300',
+        text: 'text-amber-200',
+      };
 
   return (
     <div

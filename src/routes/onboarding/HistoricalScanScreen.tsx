@@ -56,7 +56,9 @@ export default function HistoricalScanScreen({ onDone }: HistoricalScanScreenPro
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const minDate = isoDate(new Date(new Date().setFullYear(new Date().getFullYear() - MAX_YEARS_BACK)));
+  const minDate = isoDate(
+    new Date(new Date().setFullYear(new Date().getFullYear() - MAX_YEARS_BACK))
+  );
   const maxDate = isoDate(new Date());
 
   if (scanStatus === 'running') {
@@ -73,12 +75,19 @@ export default function HistoricalScanScreen({ onDone }: HistoricalScanScreenPro
           aria-valuemax={100}
           aria-label="Historical scan progress"
         >
-          <div className="h-full bg-[#064E3B] transition-all duration-300" style={{ width: `${pct}%` }} />
+          <div
+            className="h-full bg-[#064E3B] transition-all duration-300"
+            style={{ width: `${pct}%` }}
+          />
         </div>
         <p className="text-xs text-muted-foreground">
           {scanProgress?.processed ?? 0} of {scanProgress?.total ?? '…'} messages processed
         </p>
-        <Button variant="outline" onClick={onDone} aria-label="Continue to the dashboard while the scan runs in the background">
+        <Button
+          variant="outline"
+          onClick={onDone}
+          aria-label="Continue to the dashboard while the scan runs in the background"
+        >
           Continue in Background
         </Button>
       </div>
@@ -90,8 +99,8 @@ export default function HistoricalScanScreen({ onDone }: HistoricalScanScreenPro
       <div className="space-y-4 text-center animate-in fade-in slide-in-from-bottom-4">
         <p className="text-sm font-medium">Historical scan complete.</p>
         <p className="text-xs text-muted-foreground">
-          Found {scanProgress?.transactions_found ?? 0} transactions and {scanProgress?.statements_found ?? 0}{' '}
-          statements.
+          Found {scanProgress?.transactions_found ?? 0} transactions and{' '}
+          {scanProgress?.statements_found ?? 0} statements.
         </p>
         <Button onClick={onDone} variant="accent" aria-label="Continue to the dashboard">
           Continue

@@ -99,15 +99,18 @@ export default function LifecycleSettings() {
           Continue syncing when app is closed
         </label>
         <p className="text-[13px] font-medium text-[#064E3B]/70 pl-6">
-          When enabled, closing the window keeps Dinero running in the background (no Dock icon)
-          so Gmail syncing continues. When disabled, closing the window quits Dinero.
+          When enabled, closing the window keeps Dinero running in the background (no Dock icon) so
+          Gmail syncing continues. When disabled, closing the window quits Dinero.
         </p>
       </div>
 
       {backgroundSync && (
         <div className="flex items-center gap-2 pl-6 mt-4">
           <RefreshCw className="w-4 h-4 text-[#064E3B]/50" aria-hidden="true" />
-          <label htmlFor="low-battery-threshold" className="text-[13px] font-semibold text-[#064E3B]">
+          <label
+            htmlFor="low-battery-threshold"
+            className="text-[13px] font-semibold text-[#064E3B]"
+          >
             Slow down background syncing below
           </label>
           <input
@@ -121,7 +124,9 @@ export default function LifecycleSettings() {
             onChange={(e) => handleThresholdChange(Number(e.target.value))}
             className="w-16 px-2 py-1.5 rounded-lg border text-[13px] font-medium bg-[#F8E7C9]/50 border-[#064E3B]/20 text-[#064E3B] focus:border-[#064E3B] focus:ring-1 focus:ring-[#064E3B]"
           />
-          <span className="text-[13px] font-medium text-[#064E3B]/70">% battery on AC-disconnected</span>
+          <span className="text-[13px] font-medium text-[#064E3B]/70">
+            % battery on AC-disconnected
+          </span>
         </div>
       )}
     </div>

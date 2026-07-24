@@ -41,7 +41,10 @@ describe('ConnectionStatusBanner', () => {
     ]);
     render(<ConnectionStatusBanner />);
     await waitFor(() => {
-      expect(screen.getByTestId('connection-status-banner')).toHaveAttribute('data-warning-type', 'low_ram');
+      expect(screen.getByTestId('connection-status-banner')).toHaveAttribute(
+        'data-warning-type',
+        'low_ram'
+      );
     });
     expect(screen.getByText('Low RAM detected')).toBeTruthy();
   });
@@ -49,18 +52,36 @@ describe('ConnectionStatusBanner', () => {
   it('prioritizes the highest-severity warning when multiple are active', async () => {
     (API.systemWarnings.getActive as any).mockResolvedValue([
       { warning_type: 'low_ram', message: 'Low RAM', severity: 'info', action_hint: null },
-      { warning_type: 'gmail_quota_exhausted', message: 'Gmail paused', severity: 'degraded', action_hint: null },
-      { warning_type: 'clock_skew', message: 'Clock skew', severity: 'critical', action_hint: 'check_system_clock' },
+      {
+        warning_type: 'gmail_quota_exhausted',
+        message: 'Gmail paused',
+        severity: 'degraded',
+        action_hint: null,
+      },
+      {
+        warning_type: 'clock_skew',
+        message: 'Clock skew',
+        severity: 'critical',
+        action_hint: 'check_system_clock',
+      },
     ]);
     render(<ConnectionStatusBanner />);
     await waitFor(() => {
-      expect(screen.getByTestId('connection-status-banner')).toHaveAttribute('data-warning-type', 'clock_skew');
+      expect(screen.getByTestId('connection-status-banner')).toHaveAttribute(
+        'data-warning-type',
+        'clock_skew'
+      );
     });
   });
 
   it('excludes keychain_denied/notification_denied -- owned by PermissionDeniedOverlay', async () => {
     (API.systemWarnings.getActive as any).mockResolvedValue([
-      { warning_type: 'keychain_denied', message: 'Keychain', severity: 'critical', action_hint: null },
+      {
+        warning_type: 'keychain_denied',
+        message: 'Keychain',
+        severity: 'critical',
+        action_hint: null,
+      },
     ]);
     render(<ConnectionStatusBanner />);
     await waitFor(() => expect(API.systemWarnings.getActive).toHaveBeenCalled());
@@ -82,7 +103,7 @@ describe('ConnectionStatusBanner', () => {
     await waitFor(() => {
       expect(screen.getByTestId('connection-status-banner')).toHaveAttribute(
         'data-warning-type',
-        'gmail_token_degraded',
+        'gmail_token_degraded'
       );
     });
   });

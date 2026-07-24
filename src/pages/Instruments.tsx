@@ -21,24 +21,20 @@ export default function Instruments() {
 
   const selectedInst = useMemo(
     () => instruments.find((i) => i.id === selectedInstId),
-    [instruments, selectedInstId],
+    [instruments, selectedInstId]
   );
 
   return (
     <div className="flex h-full w-full overflow-hidden">
       {/* ── Column 2: Master List (Accounts) ─────────────────────────────────── */}
-      <div 
+      <div
         className="flex-shrink-0 flex flex-col h-full border-r border-[#064E3B]/20"
         style={{ width: '320px', backgroundColor: 'var(--bg-canvas)' }}
       >
         {/* Header bar */}
-        <div
-          className="flex flex-col gap-3 px-4 py-3 flex-shrink-0 border-b border-[#064E3B]/10"
-        >
+        <div className="flex flex-col gap-3 px-4 py-3 flex-shrink-0 border-b border-[#064E3B]/10">
           <div className="flex items-center justify-between">
-            <h1 className="text-[14px] font-semibold text-[#064E3B] tracking-tight">
-              Accounts
-            </h1>
+            <h1 className="text-[14px] font-semibold text-[#064E3B] tracking-tight">Accounts</h1>
 
             <div className="flex items-center gap-1">
               <button
@@ -63,7 +59,13 @@ export default function Instruments() {
           ) : groups.length === 0 ? (
             <div className="text-center py-10 px-4">
               <p className="text-xs text-[#064E3B]/50">No accounts linked yet.</p>
-              <Button variant="link" className="text-xs h-auto p-0 mt-2 text-[#064E3B]" onClick={() => setAddModalOpen(true)}>Add one</Button>
+              <Button
+                variant="link"
+                className="text-xs h-auto p-0 mt-2 text-[#064E3B]"
+                onClick={() => setAddModalOpen(true)}
+              >
+                Add one
+              </Button>
             </div>
           ) : (
             <nav className="flex flex-col gap-4 py-2">
@@ -79,18 +81,28 @@ export default function Instruments() {
                         key={inst.id}
                         onClick={() => setSelectedInstId(inst.id)}
                         className={cn(
-                          "flex flex-col w-full text-left px-4 py-2.5 mx-2 rounded-md transition-colors max-w-[calc(100%-16px)] cursor-pointer select-none",
+                          'flex flex-col w-full text-left px-4 py-2.5 mx-2 rounded-md transition-colors max-w-[calc(100%-16px)] cursor-pointer select-none',
                           isSelected
-                            ? "bg-[#064E3B] text-[#F8E7C9]"
-                            : "hover:bg-[#064E3B]/5 text-[#064E3B]"
+                            ? 'bg-[#064E3B] text-[#F8E7C9]'
+                            : 'hover:bg-[#064E3B]/5 text-[#064E3B]'
                         )}
                       >
                         <div className="flex items-center justify-between w-full">
                           <div className="flex items-center gap-2 truncate">
-                            <div className={cn("shrink-0", isSelected ? "text-[#F8E7C9]" : "text-[#064E3B]")}>
+                            <div
+                              className={cn(
+                                'shrink-0',
+                                isSelected ? 'text-[#F8E7C9]' : 'text-[#064E3B]'
+                              )}
+                            >
                               {instrumentIcon(inst.instrument_type, 14)}
                             </div>
-                            <span className={cn("text-[13px] font-semibold truncate", isSelected ? "text-white" : "text-[#064E3B]")}>
+                            <span
+                              className={cn(
+                                'text-[13px] font-semibold truncate',
+                                isSelected ? 'text-white' : 'text-[#064E3B]'
+                              )}
+                            >
                               {inst.issuer_name}
                             </span>
                           </div>

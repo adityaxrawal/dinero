@@ -1,6 +1,5 @@
 import { create } from 'zustand';
 
-
 interface DateRangeFilter {
   start: string | null;
   end: string | null;

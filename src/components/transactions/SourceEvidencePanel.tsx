@@ -50,7 +50,10 @@ function OriginalEmailFrame({ html }: { html: string }) {
   );
 }
 
-export default function SourceEvidencePanel({ transactionId, observations }: SourceEvidencePanelProps) {
+export default function SourceEvidencePanel({
+  transactionId,
+  observations,
+}: SourceEvidencePanelProps) {
   const [sourceLog, setSourceLog] = useState<string | null>(null);
   const [isLoadingLog, setIsLoadingLog] = useState(false);
 
@@ -58,9 +61,7 @@ export default function SourceEvidencePanel({ transactionId, observations }: Sou
     let mounted = true;
     const fetchLog = async () => {
       // Only fetch if there is a gmail observation
-      const hasGmail = observations.some(obs => 
-        obs.source_pipeline?.includes('gmail')
-      );
+      const hasGmail = observations.some((obs) => obs.source_pipeline?.includes('gmail'));
       if (!hasGmail) return;
 
       setIsLoadingLog(true);
@@ -78,7 +79,9 @@ export default function SourceEvidencePanel({ transactionId, observations }: Sou
       }
     };
     fetchLog();
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+    };
   }, [transactionId, observations]);
 
   // First observation carrying a sanitized original-HTML body -- there is
@@ -100,7 +103,9 @@ export default function SourceEvidencePanel({ transactionId, observations }: Sou
           <CardTitle>Source Evidence</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-sm text-muted-foreground">No linked observations found for this transaction.</p>
+          <p className="text-sm text-muted-foreground">
+            No linked observations found for this transaction.
+          </p>
         </CardContent>
       </Card>
     );
@@ -118,7 +123,10 @@ export default function SourceEvidencePanel({ transactionId, observations }: Sou
             const isStatementSourced = obs.source_pipeline === 'statement_pdf';
             const { label, detail } = evidenceDescription(obs.source_pipeline);
             return (
-              <div key={obs.id} className="p-3 bg-secondary/50 rounded-md border-l-2 border-primary text-sm space-y-1.5">
+              <div
+                key={obs.id}
+                className="p-3 bg-secondary/50 rounded-md border-l-2 border-primary text-sm space-y-1.5"
+              >
                 <div className="flex items-center justify-between">
                   <p className="font-medium flex items-center gap-2">
                     <SourcePipelineIcon sourceMix={obs.source_pipeline} />
@@ -158,7 +166,8 @@ export default function SourceEvidencePanel({ transactionId, observations }: Sou
               Original Email (as received in Gmail)
             </CardTitle>
             <CardDescription>
-              The bank's actual email layout and styling, rendered from the sanitized HTML Gmail sent.
+              The bank's actual email layout and styling, rendered from the sanitized HTML Gmail
+              sent.
             </CardDescription>
           </CardHeader>
           <CardContent>

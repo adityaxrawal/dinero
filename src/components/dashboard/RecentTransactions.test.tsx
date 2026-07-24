@@ -51,14 +51,16 @@ describe('RecentTransactions', () => {
   });
 
   it('test_new_row_gets_highlight_animation: a newly-arrived row is marked highlighted, an already-seen one is not', async () => {
-    const { rerender } = renderWithRouter(<RecentTransactions transactions={[tx({ id: 'tx_1' })]} />);
+    const { rerender } = renderWithRouter(
+      <RecentTransactions transactions={[tx({ id: 'tx_1' })]} />
+    );
     // First render establishes the baseline -- nothing is "new" yet.
     expect(screen.getByTestId('recent-tx-row-tx_1')).toHaveAttribute('data-highlighted', 'false');
 
     rerender(
       <MemoryRouter>
         <RecentTransactions transactions={[tx({ id: 'tx_2' }), tx({ id: 'tx_1' })]} />
-      </MemoryRouter>,
+      </MemoryRouter>
     );
 
     await waitFor(() => {
@@ -69,11 +71,13 @@ describe('RecentTransactions', () => {
 
   it('the highlight clears itself after the animation duration', async () => {
     vi.useFakeTimers();
-    const { rerender } = renderWithRouter(<RecentTransactions transactions={[tx({ id: 'tx_1' })]} />);
+    const { rerender } = renderWithRouter(
+      <RecentTransactions transactions={[tx({ id: 'tx_1' })]} />
+    );
     rerender(
       <MemoryRouter>
         <RecentTransactions transactions={[tx({ id: 'tx_2' }), tx({ id: 'tx_1' })]} />
-      </MemoryRouter>,
+      </MemoryRouter>
     );
     expect(screen.getByTestId('recent-tx-row-tx_2')).toHaveAttribute('data-highlighted', 'true');
 

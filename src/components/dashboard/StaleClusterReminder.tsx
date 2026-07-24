@@ -50,7 +50,8 @@ export default function StaleClusterReminder({ clusters }: StaleClusterReminderP
     >
       <Clock className="w-4 h-4 shrink-0" style={{ color: '#6b8a7f' }} aria-hidden="true" />
       <p className="flex-1 text-xs" style={{ color: 'var(--text-secondary)' }}>
-        {staleCount} transaction match{staleCount === 1 ? '' : 'es'} still need review — open more than 7 days.
+        {staleCount} transaction match{staleCount === 1 ? '' : 'es'} still need review — open more
+        than 7 days.
       </p>
       <button
         type="button"

@@ -59,7 +59,10 @@ export default function ConnectionStatusBanner() {
 
   useIpcListen<SystemWarningPayload>('system_warning', (payload) => {
     if (OWNED_ELSEWHERE.has(payload.warning_type)) return;
-    setWarnings((prev) => [...prev.filter((w) => w.warning_type !== payload.warning_type), payload]);
+    setWarnings((prev) => [
+      ...prev.filter((w) => w.warning_type !== payload.warning_type),
+      payload,
+    ]);
   });
 
   useIpcListen<string>('system_warning_cleared', (warningType) => {
@@ -71,12 +74,28 @@ export default function ConnectionStatusBanner() {
 
   const palette =
     top.severity === 'critical'
-      ? { border: 'border-red-500/40', bg: 'bg-red-500/10', icon: 'text-red-400', text: 'text-red-200' }
+      ? {
+          border: 'border-red-500/40',
+          bg: 'bg-red-500/10',
+          icon: 'text-red-400',
+          text: 'text-red-200',
+        }
       : top.severity === 'degraded'
-        ? { border: 'border-amber-400/30', bg: 'bg-amber-400/10', icon: 'text-amber-300', text: 'text-amber-200' }
-        : { border: 'border-border', bg: 'bg-secondary', icon: 'text-muted-foreground', text: 'text-muted-foreground' };
+        ? {
+            border: 'border-amber-400/30',
+            bg: 'bg-amber-400/10',
+            icon: 'text-amber-300',
+            text: 'text-amber-200',
+          }
+        : {
+            border: 'border-border',
+            bg: 'bg-secondary',
+            icon: 'text-muted-foreground',
+            text: 'text-muted-foreground',
+          };
 
-  const Icon = top.severity === 'critical' ? WifiOff : top.severity === 'degraded' ? AlertTriangle : Info;
+  const Icon =
+    top.severity === 'critical' ? WifiOff : top.severity === 'degraded' ? AlertTriangle : Info;
 
   return (
     <div

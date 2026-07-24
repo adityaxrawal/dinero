@@ -64,9 +64,12 @@ export default function LicenseLockOverlay() {
       <div className="flex items-start gap-2">
         <AlertTriangle className="w-3.5 h-3.5 text-red-300 shrink-0 mt-0.5" aria-hidden="true" />
         <div className="flex-1 text-[11.5px] leading-snug">
-          <span id="license-locked-title" className="font-semibold text-red-200">License Locked.</span>{' '}
+          <span id="license-locked-title" className="font-semibold text-red-200">
+            License Locked.
+          </span>{' '}
           <span id="license-locked-desc" className="text-red-200/80">
-            Editing and syncing are paused until you reactivate — you can still browse existing data.
+            Editing and syncing are paused until you reactivate — you can still browse existing
+            data.
           </span>
         </div>
       </div>
@@ -79,7 +82,11 @@ export default function LicenseLockOverlay() {
           aria-label="Retry license validation now"
           className="h-7 text-[11.5px] flex-1 border-red-400/30 text-red-200 bg-transparent hover:bg-red-400/10 hover:text-red-100"
         >
-          {isRetrying ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" /> : 'Retry'}
+          {isRetrying ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+          ) : (
+            'Retry'
+          )}
         </Button>
         <Button
           variant="default"

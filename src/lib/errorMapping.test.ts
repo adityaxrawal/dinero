@@ -10,7 +10,10 @@ describe('mapAppErrorToToast', () => {
   });
 
   it('surfaces the backend message verbatim for VALIDATION_ERROR (field-level detail)', () => {
-    const result = mapAppErrorToToast({ code: 'VALIDATION_ERROR', message: 'amount must be positive' });
+    const result = mapAppErrorToToast({
+      code: 'VALIDATION_ERROR',
+      message: 'amount must be positive',
+    });
     expect(result.description).toBe('amount must be positive');
   });
 

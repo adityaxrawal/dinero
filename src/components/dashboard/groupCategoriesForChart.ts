@@ -18,9 +18,13 @@ const MAX_SLICES = CATEGORICAL_PALETTE.length;
  * generated hue, it folds into a single "Other" slice (dataviz skill
  * non-negotiable).
  */
-export function groupCategoriesForChart(categories: CategorySpend[] | undefined): CategoryChartSlice[] {
+export function groupCategoriesForChart(
+  categories: CategorySpend[] | undefined
+): CategoryChartSlice[] {
   if (!categories) return [];
-  const withSpend = categories.filter((c) => c.total_spend > 0).sort((a, b) => b.total_spend - a.total_spend);
+  const withSpend = categories
+    .filter((c) => c.total_spend > 0)
+    .sort((a, b) => b.total_spend - a.total_spend);
 
   const top: CategoryChartSlice[] = withSpend.slice(0, MAX_SLICES).map((c, i) => ({
     category_id: c.category_id,

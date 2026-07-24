@@ -35,7 +35,9 @@ function renderWithRouter(ui: React.ReactElement) {
 
 describe('StaleClusterReminder', () => {
   it('renders nothing when no cluster is stale', () => {
-    renderWithRouter(<StaleClusterReminder clusters={[cluster({ created_at: new Date().toISOString() })]} />);
+    renderWithRouter(
+      <StaleClusterReminder clusters={[cluster({ created_at: new Date().toISOString() })]} />
+    );
     expect(screen.queryByTestId('stale-cluster-reminder')).toBeNull();
   });
 
@@ -48,7 +50,7 @@ describe('StaleClusterReminder', () => {
           cluster({ id: 'cl_stale_2', created_at: eightDaysAgo }),
           cluster({ id: 'cl_fresh', created_at: new Date().toISOString() }),
         ]}
-      />,
+      />
     );
     expect(screen.getByTestId('stale-cluster-reminder')).toBeTruthy();
     expect(screen.getByText(/2 transaction matches still need review/)).toBeTruthy();

@@ -99,7 +99,8 @@ export default function StatementUploadDropzone({ onUploaded }: StatementUploadD
       }
       if (succeeded > 0) {
         toast({
-          title: paths.length > 1 ? `${succeeded} of ${paths.length} Uploads Started` : 'Upload Started',
+          title:
+            paths.length > 1 ? `${succeeded} of ${paths.length} Uploads Started` : 'Upload Started',
           description: 'Statement(s) are being processed.',
         });
       }
@@ -111,16 +112,23 @@ export default function StatementUploadDropzone({ onUploaded }: StatementUploadD
         });
       }
       if (otherFailures.length > 0) {
-        toast({ variant: 'destructive', title: 'Some Uploads Failed', description: otherFailures.slice(0, 3).join('; ') });
+        toast({
+          variant: 'destructive',
+          title: 'Some Uploads Failed',
+          description: otherFailures.slice(0, 3).join('; '),
+        });
       }
       onUploaded();
     },
-    [onUploaded, toast, setBatchProgress, watchDraftOrigin],
+    [onUploaded, toast, setBatchProgress, watchDraftOrigin]
   );
 
   const handleFileUpload = useCallback(async () => {
     try {
-      const selected = await open({ multiple: true, filters: [{ name: 'PDF', extensions: ['pdf'] }] });
+      const selected = await open({
+        multiple: true,
+        filters: [{ name: 'PDF', extensions: ['pdf'] }],
+      });
       if (!selected) return;
       const paths = Array.isArray(selected) ? selected : [selected];
       if (paths.length === 0) return;
@@ -131,7 +139,11 @@ export default function StatementUploadDropzone({ onUploaded }: StatementUploadD
       const tooLarge: string[] = [];
       for (const path of paths) {
         if (!isPdf(path)) {
-          toast({ variant: 'destructive', title: 'Upload Error', description: 'Only PDF files are allowed.' });
+          toast({
+            variant: 'destructive',
+            title: 'Upload Error',
+            description: 'Only PDF files are allowed.',
+          });
           return;
         }
         const bytes = await readFile(path);
@@ -169,12 +181,20 @@ export default function StatementUploadDropzone({ onUploaded }: StatementUploadD
       if (files.length > 0) {
         const nonPdf = files.find((file) => !isPdf(file.name, file.type));
         if (nonPdf) {
-          toast({ variant: 'destructive', title: 'Upload Error', description: 'Only PDF files are allowed.' });
+          toast({
+            variant: 'destructive',
+            title: 'Upload Error',
+            description: 'Only PDF files are allowed.',
+          });
           return;
         }
         const tooLarge = files.find((file) => file.size > MAX_FILE_SIZE_BYTES);
         if (tooLarge) {
-          toast({ variant: 'destructive', title: 'File Too Large', description: `${tooLarge.name} exceeds the 25MB limit.` });
+          toast({
+            variant: 'destructive',
+            title: 'File Too Large',
+            description: `${tooLarge.name} exceeds the 25MB limit.`,
+          });
           return;
         }
       }
@@ -184,14 +204,16 @@ export default function StatementUploadDropzone({ onUploaded }: StatementUploadD
       // which does, once the immediate client-side checks above have passed.
       handleFileUpload();
     },
-    [handleFileUpload, toast],
+    [handleFileUpload, toast]
   );
 
   return (
     <Card
       className={cn(
         'border-2 border-dashed transition-colors cursor-pointer',
-        isDragging ? 'border-primary bg-primary/10' : 'border-border hover:border-primary/50 hover:bg-secondary/50',
+        isDragging
+          ? 'border-primary bg-primary/10'
+          : 'border-border hover:border-primary/50 hover:bg-secondary/50'
       )}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
@@ -204,7 +226,10 @@ export default function StatementUploadDropzone({ onUploaded }: StatementUploadD
       onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleFileUpload()}
     >
       <CardContent className="flex flex-col items-center justify-center py-12 text-center">
-        <div className="w-16 h-16 rounded-full bg-secondary flex items-center justify-center mb-4" aria-hidden="true">
+        <div
+          className="w-16 h-16 rounded-full bg-secondary flex items-center justify-center mb-4"
+          aria-hidden="true"
+        >
           <UploadCloud className="w-8 h-8 text-muted-foreground" />
         </div>
         <h2 className="text-lg font-semibold mb-1">Upload Statement</h2>

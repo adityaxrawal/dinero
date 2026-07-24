@@ -23,7 +23,10 @@ export function useAddTransactionTag() {
   return useMutation({
     mutationFn: async ({ transactionId, tagName }: { transactionId: string; tagName: string }) => {
       const trimmed = tagName.trim();
-      const existingTags = await queryClient.fetchQuery({ queryKey: queryKeys.tags.list(), queryFn: API.tags.list });
+      const existingTags = await queryClient.fetchQuery({
+        queryKey: queryKeys.tags.list(),
+        queryFn: API.tags.list,
+      });
       const existing = existingTags.find((t) => t.name.toLowerCase() === trimmed.toLowerCase());
       const tagId = existing ? existing.id : (await API.tags.create(trimmed)).id;
       await API.transactions.addTag(transactionId, tagId);
@@ -32,11 +35,11 @@ export function useAddTransactionTag() {
     onMutate: async ({ transactionId, tagName }) => {
       await queryClient.cancelQueries({ queryKey: queryKeys.transactions.all() });
       const snapshot = snapshotTransactionQueries(queryClient);
-      
+
       const trimmed = tagName.trim();
       patchTransactionInCaches(queryClient, transactionId, (tx) => {
         const currentTags = tx.tags ?? [];
-        if (currentTags.some(t => t.toLowerCase() === trimmed.toLowerCase())) {
+        if (currentTags.some((t) => t.toLowerCase() === trimmed.toLowerCase())) {
           return tx;
         }
         return {
@@ -44,7 +47,7 @@ export function useAddTransactionTag() {
           tags: [...currentTags, trimmed],
         };
       });
-      
+
       return { snapshot };
     },
     onError: (_err, _vars, context) => {

@@ -14,7 +14,12 @@ export function useResolveCluster() {
 
   return useMutation({
     mutationFn: (input: ResolveClusterInput) =>
-      API.reconciliation.resolve(input.clusterId, input.observationId, input.action, input.chosenCanonicalId),
+      API.reconciliation.resolve(
+        input.clusterId,
+        input.observationId,
+        input.action,
+        input.chosenCanonicalId
+      ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.reconciliation.all() });
       queryClient.invalidateQueries({ queryKey: queryKeys.dashboard.all() });

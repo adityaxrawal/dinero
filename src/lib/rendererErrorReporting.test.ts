@@ -21,7 +21,11 @@ describe('test_renderer_and_rust_errors_are_captured', () => {
 
   it('reportRendererError forwards message/stack/source to the log_renderer_error IPC command', () => {
     reportRendererError('boom', 'at foo.tsx:1:1', 'react_error_boundary');
-    expect(API.support.logRendererError).toHaveBeenCalledWith('boom', 'at foo.tsx:1:1', 'react_error_boundary');
+    expect(API.support.logRendererError).toHaveBeenCalledWith(
+      'boom',
+      'at foo.tsx:1:1',
+      'react_error_boundary'
+    );
   });
 
   it('never throws even if the IPC call itself rejects', async () => {
@@ -34,7 +38,11 @@ describe('test_renderer_and_rust_errors_are_captured', () => {
     installGlobalErrorHandlers();
     const error = new Error('uncaught');
     window.dispatchEvent(new ErrorEvent('error', { message: 'uncaught', error }));
-    expect(API.support.logRendererError).toHaveBeenCalledWith('uncaught', error.stack, 'window_onerror');
+    expect(API.support.logRendererError).toHaveBeenCalledWith(
+      'uncaught',
+      error.stack,
+      'window_onerror'
+    );
   });
 
   it('installGlobalErrorHandlers captures an unhandled promise rejection', () => {
@@ -43,6 +51,10 @@ describe('test_renderer_and_rust_errors_are_captured', () => {
     const event = new Event('unhandledrejection') as PromiseRejectionEvent & { reason: unknown };
     Object.defineProperty(event, 'reason', { value: reason });
     window.dispatchEvent(event);
-    expect(API.support.logRendererError).toHaveBeenCalledWith('rejected', reason.stack, 'unhandled_rejection');
+    expect(API.support.logRendererError).toHaveBeenCalledWith(
+      'rejected',
+      reason.stack,
+      'unhandled_rejection'
+    );
   });
 });

@@ -22,7 +22,10 @@ describe('AlertBanner', () => {
       message: 'Global monthly spending at 80% of limit',
     });
     render(<AlertBanner />);
-    expect(screen.getByTestId('alert-banner')).toHaveAttribute('data-alert-type', 'global_budget_80');
+    expect(screen.getByTestId('alert-banner')).toHaveAttribute(
+      'data-alert-type',
+      'global_budget_80'
+    );
     expect(screen.getByText('Global monthly spending at 80% of limit')).toBeTruthy();
   });
 
@@ -40,7 +43,7 @@ describe('AlertBanner', () => {
     render(<AlertBanner />);
     expect(screen.getByTestId('alert-banner')).toHaveAttribute(
       'data-alert-type',
-      'category_budget_cat_food_100',
+      'category_budget_cat_food_100'
     );
   });
 
@@ -63,6 +66,9 @@ describe('AlertBanner', () => {
       message: 'Global monthly spending at 90% of limit',
     });
     rerender(<AlertBanner />);
-    expect(screen.getByTestId('alert-banner')).toHaveAttribute('data-alert-type', 'global_budget_90');
+    expect(screen.getByTestId('alert-banner')).toHaveAttribute(
+      'data-alert-type',
+      'global_budget_90'
+    );
   });
 });

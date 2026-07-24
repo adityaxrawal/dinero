@@ -84,20 +84,29 @@ export default function RecentTransactions({ transactions }: RecentTransactionsP
           View all →
         </button>
       </div>
-      <p className="text-[11px] mb-2" style={{ color: 'var(--text-muted)' }} data-testid="last-synced-label">
+      <p
+        className="text-[11px] mb-2"
+        style={{ color: 'var(--text-muted)' }}
+        data-testid="last-synced-label"
+      >
         Near-real-time · Last synced {formatLastSynced(lastSyncedAt)}
       </p>
 
       <div className="card-champagne overflow-hidden">
         {transactions.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-12 text-center" role="status">
+          <div
+            className="flex flex-col items-center justify-center py-12 text-center"
+            role="status"
+          >
             <div
               className="w-10 h-10 rounded-xl flex items-center justify-center mb-3"
               style={{ background: 'rgba(6,78,59,0.07)' }}
             >
               <Activity className="w-5 h-5" style={{ color: '#6b8a7f' }} aria-hidden="true" />
             </div>
-            <p className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>No transactions yet</p>
+            <p className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>
+              No transactions yet
+            </p>
             <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
               Sync your bank or upload a statement to get started.
             </p>
@@ -137,10 +146,17 @@ export default function RecentTransactions({ transactions }: RecentTransactionsP
                     className="transition-colors duration-700"
                     style={isNew ? { backgroundColor: 'rgba(16,185,129,0.14)' } : undefined}
                     onClick={() => navigate(`/transactions/${tx.id}`)}
-                    onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && navigate(`/transactions/${tx.id}`)}
+                    onKeyDown={(e) =>
+                      (e.key === 'Enter' || e.key === ' ') && navigate(`/transactions/${tx.id}`)
+                    }
                   >
                     <td>
-                      <span className="text-xs font-medium" style={{ color: 'var(--text-primary)' }}>{dateLabel}</span>
+                      <span
+                        className="text-xs font-medium"
+                        style={{ color: 'var(--text-primary)' }}
+                      >
+                        {dateLabel}
+                      </span>
                     </td>
                     <td>
                       <div className="flex items-center gap-2.5">
@@ -151,7 +167,10 @@ export default function RecentTransactions({ transactions }: RecentTransactionsP
                         >
                           {tx.merchant.charAt(0).toUpperCase()}
                         </div>
-                        <span className="text-sm font-medium truncate" style={{ color: 'var(--text-primary)' }}>
+                        <span
+                          className="text-sm font-medium truncate"
+                          style={{ color: 'var(--text-primary)' }}
+                        >
                           {tx.merchant}
                         </span>
                       </div>
@@ -166,16 +185,25 @@ export default function RecentTransactions({ transactions }: RecentTransactionsP
                     </td>
                     <td className="text-right">
                       <span
-                        className={cn('text-sm font-semibold amount', tx.amount < 0 ? 'amount-debit' : 'amount-credit')}
+                        className={cn(
+                          'text-sm font-semibold amount',
+                          tx.amount < 0 ? 'amount-debit' : 'amount-credit'
+                        )}
                       >
-                        {tx.amount < 0 ? '−' : '+'}₹{Math.abs(tx.amount).toLocaleString(undefined, { minimumFractionDigits: 0 })}
+                        {tx.amount < 0 ? '−' : '+'}₹
+                        {Math.abs(tx.amount).toLocaleString(undefined, {
+                          minimumFractionDigits: 0,
+                        })}
                       </span>
                     </td>
                     <td>
                       <span
                         className="text-[11px] font-medium px-2 py-0.5 rounded-full"
                         style={{
-                          background: tx.status.toLowerCase() === 'posted' ? 'rgba(16,185,129,0.10)' : 'rgba(107,138,127,0.10)',
+                          background:
+                            tx.status.toLowerCase() === 'posted'
+                              ? 'rgba(16,185,129,0.10)'
+                              : 'rgba(107,138,127,0.10)',
                           color: tx.status.toLowerCase() === 'posted' ? '#10b981' : '#6b8a7f',
                         }}
                       >

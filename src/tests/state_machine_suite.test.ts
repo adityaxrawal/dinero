@@ -40,7 +40,13 @@ describe('test_screen_states_cover_loading_empty_error_success', () => {
   // minimum show a real loading indicator while their primary data is
   // in flight -- a blank/frozen screen on a slow IPC round trip is the
   // single most common "is this app broken?" user report.
-  const criticalPages = ['Dashboard.tsx', 'Transactions.tsx', 'Statements.tsx', 'Reconciliation.tsx', 'Settings.tsx'];
+  const criticalPages = [
+    'Dashboard.tsx',
+    'Transactions.tsx',
+    'Statements.tsx',
+    'Reconciliation.tsx',
+    'Settings.tsx',
+  ];
 
   it.each(criticalPages)('%s renders a loading state while data is in flight', (page) => {
     const content = readFileSync(join(PAGES_DIR, page), 'utf-8');
@@ -50,7 +56,9 @@ describe('test_screen_states_cover_loading_empty_error_success', () => {
   it('Dashboard, Transactions, and Instruments each render a real empty-state message', () => {
     for (const page of ['Dashboard.tsx', 'Transactions.tsx', 'Instruments.tsx']) {
       const content = readFileSync(join(PAGES_DIR, page), 'utf-8');
-      expect(content.toLowerCase()).toMatch(/no transactions|no instruments|nothing to show|no .*yet/);
+      expect(content.toLowerCase()).toMatch(
+        /no transactions|no instruments|nothing to show|no .*yet/
+      );
     }
   });
 });
@@ -59,7 +67,9 @@ describe('test_events_update_correct_ui_regions', () => {
   it('transaction_created invalidates the transactions and dashboard query regions specifically', () => {
     const entry = EVENT_INVALIDATIONS.find((e) => e.event === 'transaction_created');
     expect(entry).toBeDefined();
-    expect(entry!.keys.map((k) => k[0])).toEqual(expect.arrayContaining(['transactions', 'dashboard']));
+    expect(entry!.keys.map((k) => k[0])).toEqual(
+      expect.arrayContaining(['transactions', 'dashboard'])
+    );
   });
 
   it('each of the 5 documented key events has at least one real subscriber in the frontend source', () => {
@@ -80,14 +90,19 @@ describe('test_events_update_correct_ui_regions', () => {
     const files = walkFiles(SRC_DIR);
     for (const file of files) {
       const content = readFileSync(file, 'utf-8');
-      const listenCalls = [...content.matchAll(/(?:listen|useIpcListen)\(['"]([a-z_]+)['"]/g)].map((m) => m[1]);
+      const listenCalls = [...content.matchAll(/(?:listen|useIpcListen)\(['"]([a-z_]+)['"]/g)].map(
+        (m) => m[1]
+      );
       const seen = new Set<string>();
       const duplicates = listenCalls.filter((event) => {
         if (seen.has(event)) return true;
         seen.add(event);
         return false;
       });
-      expect(duplicates, `${file} registers the same event listener twice within one module`).toEqual([]);
+      expect(
+        duplicates,
+        `${file} registers the same event listener twice within one module`
+      ).toEqual([]);
     }
   });
 });
@@ -130,14 +145,18 @@ describe('test_copy_uses_near_real_time_language_only', () => {
       // discussing the naming convention itself (which legitimately quote
       // both "near-real-time" and the forbidden bare "real-time" as an
       // example of what not to say).
-      const withoutComments = content
-        .replace(/\/\*[\s\S]*?\*\//g, '')
-        .replace(/^\s*\/\/.*$/gm, '');
+      const withoutComments = content.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
       const withoutNearRealTime = withoutComments.replace(/near-real-time/gi, '');
-      if (/\breal-time\b/i.test(withoutNearRealTime) || /\breal time\b/i.test(withoutNearRealTime)) {
+      if (
+        /\breal-time\b/i.test(withoutNearRealTime) ||
+        /\breal time\b/i.test(withoutNearRealTime)
+      ) {
         violations.push(file);
       }
     }
-    expect(violations, 'these files render bare "real-time" delivery copy, overstating the polling-based latency guarantee').toEqual([]);
+    expect(
+      violations,
+      'these files render bare "real-time" delivery copy, overstating the polling-based latency guarantee'
+    ).toEqual([]);
   });
 });

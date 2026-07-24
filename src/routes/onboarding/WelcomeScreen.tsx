@@ -1,5 +1,12 @@
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
 import { ShieldCheck, Zap, LayoutGrid, RefreshCw } from 'lucide-react';
 
 interface WelcomeScreenProps {
@@ -13,22 +20,26 @@ const VALUE_PROPS = [
   {
     icon: Zap,
     title: 'Zero manual data entry',
-    description: 'Transactions are captured automatically from Gmail, categorized, and deduplicated — no spreadsheets.',
+    description:
+      'Transactions are captured automatically from Gmail, categorized, and deduplicated — no spreadsheets.',
   },
   {
     icon: LayoutGrid,
     title: 'Every account, one dashboard',
-    description: 'All your credit cards, debit cards, and bank accounts in a single, unified view, organized by issuer.',
+    description:
+      'All your credit cards, debit cards, and bank accounts in a single, unified view, organized by issuer.',
   },
   {
     icon: ShieldCheck,
     title: 'Complete privacy',
-    description: 'The optional local LLM runs entirely on your Mac. No financial data ever leaves your device.',
+    description:
+      'The optional local LLM runs entirely on your Mac. No financial data ever leaves your device.',
   },
   {
     icon: RefreshCw,
     title: 'Self-improving accuracy',
-    description: 'The extraction engine learns from your corrections locally — repeated mistakes disappear over time.',
+    description:
+      'The extraction engine learns from your corrections locally — repeated mistakes disappear over time.',
   },
 ];
 
@@ -39,8 +50,8 @@ export default function WelcomeScreen({ onContinue }: WelcomeScreenProps) {
         <CardHeader>
           <CardTitle className="text-2xl">Welcome to Dinero</CardTitle>
           <CardDescription className="mt-2">
-            The most trusted personal finance tool for privacy-conscious Mac users — the only tool that
-            knows your complete financial picture without ever leaving your device.
+            The most trusted personal finance tool for privacy-conscious Mac users — the only tool
+            that knows your complete financial picture without ever leaving your device.
           </CardDescription>
         </CardHeader>
 

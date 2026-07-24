@@ -36,7 +36,8 @@ export default function EmiInstallmentTimeline({ emiGroupId }: EmiInstallmentTim
         <CardTitle>EMI Installments</CardTitle>
         <CardDescription>
           {summary.installments_paid} of {total} paid
-          {summary.total_installments === null && ' (total unknown — no installment reported "X of Y" yet)'}
+          {summary.total_installments === null &&
+            ' (total unknown — no installment reported "X of Y" yet)'}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -48,7 +49,10 @@ export default function EmiInstallmentTimeline({ emiGroupId }: EmiInstallmentTim
           aria-valuemax={100}
           aria-label="EMI installments paid"
         >
-          <div className="h-full bg-[#064E3B] transition-all duration-300" style={{ width: `${pct}%` }} />
+          <div
+            className="h-full bg-[#064E3B] transition-all duration-300"
+            style={{ width: `${pct}%` }}
+          />
         </div>
 
         <ul className="space-y-1.5" aria-label="Installment list">
@@ -64,7 +68,10 @@ export default function EmiInstallmentTimeline({ emiGroupId }: EmiInstallmentTim
             </li>
           ))}
           {Array.from({ length: remaining }).map((_, i) => (
-            <li key={`remaining-${i}`} className="flex items-center gap-2 text-sm text-muted-foreground/60">
+            <li
+              key={`remaining-${i}`}
+              className="flex items-center gap-2 text-sm text-muted-foreground/60"
+            >
               <Circle className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
               <span>Installment {summary.installments.length + i + 1} — upcoming</span>
             </li>

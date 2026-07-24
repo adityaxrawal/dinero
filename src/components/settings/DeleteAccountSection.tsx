@@ -1,6 +1,13 @@
 import { useState } from 'react';
 import { AlertTriangle, HardDrive } from 'lucide-react';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -41,7 +48,9 @@ export default function DeleteAccountSection() {
       window.location.reload();
     } catch (e) {
       if (e === 'DEV_RESTART_REQUIRED') {
-        alert("Development Mode: Database has been deleted successfully! However, Tauri's dev mode cannot restart automatically without breaking the Vite dev server. Please close this app and manually restart `npm run tauri dev` in your terminal.");
+        alert(
+          "Development Mode: Database has been deleted successfully! However, Tauri's dev mode cannot restart automatically without breaking the Vite dev server. Please close this app and manually restart `npm run tauri dev` in your terminal."
+        );
         return;
       }
       console.error('Failed to reset database:', e);
@@ -56,7 +65,10 @@ export default function DeleteAccountSection() {
         Permanently delete all your data from this device: transactions, statements, instruments,
         connected Gmail accounts, and encryption keys. This action cannot be undone.
       </p>
-      <button className="h-9 px-4 rounded-lg font-semibold bg-red-500/10 border border-red-500/20 text-red-600 hover:bg-red-500/20 transition-colors inline-flex items-center justify-center gap-2" onClick={() => setResetModalOpen(true)}>
+      <button
+        className="h-9 px-4 rounded-lg font-semibold bg-red-500/10 border border-red-500/20 text-red-600 hover:bg-red-500/20 transition-colors inline-flex items-center justify-center gap-2"
+        onClick={() => setResetModalOpen(true)}
+      >
         <HardDrive className="w-4 h-4" />
         Delete My Data
       </button>
@@ -75,11 +87,17 @@ export default function DeleteAccountSection() {
           {resetStep === 1 ? (
             <>
               <DialogHeader>
-                <DialogTitle id="reset-dialog-title" className="flex items-center gap-2 text-red-700">
+                <DialogTitle
+                  id="reset-dialog-title"
+                  className="flex items-center gap-2 text-red-700"
+                >
                   <AlertTriangle className="w-5 h-5" aria-hidden="true" />
                   Delete My Data
                 </DialogTitle>
-                <DialogDescription id="reset-dialog-desc" className="text-[14px] pt-2 text-[#064E3B]">
+                <DialogDescription
+                  id="reset-dialog-desc"
+                  className="text-[14px] pt-2 text-[#064E3B]"
+                >
                   This permanently deletes, on this device:
                 </DialogDescription>
               </DialogHeader>
@@ -92,7 +110,12 @@ export default function DeleteAccountSection() {
               </ul>
               <p className="text-[13px] font-bold text-red-700">This cannot be undone.</p>
               <DialogFooter>
-                <Button variant="outline" className="border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5" onClick={closeResetModal} aria-label="Cancel data deletion">
+                <Button
+                  variant="outline"
+                  className="border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5"
+                  onClick={closeResetModal}
+                  aria-label="Cancel data deletion"
+                >
                   Cancel
                 </Button>
                 <Button
@@ -107,16 +130,22 @@ export default function DeleteAccountSection() {
           ) : (
             <>
               <DialogHeader>
-                <DialogTitle id="reset-dialog-title" className="flex items-center gap-2 text-red-700">
+                <DialogTitle
+                  id="reset-dialog-title"
+                  className="flex items-center gap-2 text-red-700"
+                >
                   <AlertTriangle className="w-5 h-5" aria-hidden="true" />
                   Confirm Deletion
                 </DialogTitle>
                 <DialogDescription id="reset-dialog-desc" className="text-[#064E3B]/80 font-medium">
-                  Type <strong className="text-[#064E3B]">{RESET_CONFIRM_PHRASE}</strong> below to confirm. This is your last chance to cancel.
+                  Type <strong className="text-[#064E3B]">{RESET_CONFIRM_PHRASE}</strong> below to
+                  confirm. This is your last chance to cancel.
                 </DialogDescription>
               </DialogHeader>
               <div className="py-2 space-y-2">
-                <Label htmlFor="reset-confirm-text" className="text-[#064E3B]">Confirmation phrase</Label>
+                <Label htmlFor="reset-confirm-text" className="text-[#064E3B]">
+                  Confirmation phrase
+                </Label>
                 <Input
                   id="reset-confirm-text"
                   value={resetConfirmText}
@@ -131,7 +160,13 @@ export default function DeleteAccountSection() {
                 </p>
               </div>
               <DialogFooter>
-                <Button variant="outline" className="border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5" onClick={closeResetModal} disabled={isResetting} aria-label="Cancel data deletion">
+                <Button
+                  variant="outline"
+                  className="border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5"
+                  onClick={closeResetModal}
+                  disabled={isResetting}
+                  aria-label="Cancel data deletion"
+                >
                   Cancel
                 </Button>
                 <Button

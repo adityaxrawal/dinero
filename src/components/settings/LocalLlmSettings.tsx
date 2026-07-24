@@ -25,20 +25,22 @@ export default function LocalLlmSettings() {
       API.llm.getAvailableModels(),
       API.llm.getDownloadedModels(),
       API.llm.getActiveModel(),
-    ]).then(([models, downloaded, active]) => {
-      setAvailableModels(models);
-      setDownloadedModels(new Set(downloaded));
-      setActiveModel(active);
-    }).catch(err => console.error('Failed to load LLM state:', err));
+    ])
+      .then(([models, downloaded, active]) => {
+        setAvailableModels(models);
+        setDownloadedModels(new Set(downloaded));
+        setActiveModel(active);
+      })
+      .catch((err) => console.error('Failed to load LLM state:', err));
   }, []);
 
   useIpcListen<LlmDownloadProgress>('llm_download_progress', (progress) => {
-    setDownloads(prev => ({ ...prev, [progress.model_id]: progress }));
+    setDownloads((prev) => ({ ...prev, [progress.model_id]: progress }));
     if (progress.total_bytes && progress.bytes_downloaded >= progress.total_bytes) {
       setTimeout(() => {
-        API.llm.getDownloadedModels().then(d => {
+        API.llm.getDownloadedModels().then((d) => {
           setDownloadedModels(new Set(d));
-          setDownloads(prev => {
+          setDownloads((prev) => {
             const next = { ...prev };
             delete next[progress.model_id];
             return next;
@@ -50,22 +52,22 @@ export default function LocalLlmSettings() {
 
   const handleDownload = async (modelId: string) => {
     try {
-      setDownloads(prev => ({
+      setDownloads((prev) => ({
         ...prev,
-        [modelId]: { model_id: modelId, bytes_downloaded: 0, total_bytes: null, bytes_per_sec: 0 }
+        [modelId]: { model_id: modelId, bytes_downloaded: 0, total_bytes: null, bytes_per_sec: 0 },
       }));
       await API.llm.downloadModel(modelId);
-      
+
       const updated = await API.llm.getDownloadedModels();
       setDownloadedModels(new Set(updated));
-      setDownloads(prev => {
+      setDownloads((prev) => {
         const next = { ...prev };
         delete next[modelId];
         return next;
       });
     } catch (err) {
       alert(`Failed to download model: ${err}`);
-      setDownloads(prev => {
+      setDownloads((prev) => {
         const next = { ...prev };
         delete next[modelId];
         return next;
@@ -104,12 +106,17 @@ export default function LocalLlmSettings() {
       alert('You need to download this model first.');
       return;
     }
-    
+
     try {
       const ramGb = await API.dev.checkSystemRam();
       const override = localStorage.getItem('llm_ram_override') === 'true';
       if (ramGb < modelInfo.min_ram_gb && !override) {
-        if (!confirm(`Warning: Your system has ${ramGb.toFixed(1)}GB of RAM. ${modelInfo.name} requires at least ${modelInfo.min_ram_gb}GB. Allow override?`)) return;
+        if (
+          !confirm(
+            `Warning: Your system has ${ramGb.toFixed(1)}GB of RAM. ${modelInfo.name} requires at least ${modelInfo.min_ram_gb}GB. Allow override?`
+          )
+        )
+          return;
         localStorage.setItem('llm_ram_override', 'true');
       }
     } catch (err) {
@@ -150,7 +157,8 @@ export default function LocalLlmSettings() {
           <Cpu className="w-5 h-5" /> Local LLM Configuration
         </h2>
         <p className="text-sm mt-1 text-[#064E3B]/70">
-          Select the local AI model for parsing statements. Heavier models perform better but require more RAM. Models must be downloaded before they can be selected.
+          Select the local AI model for parsing statements. Heavier models perform better but
+          require more RAM. Models must be downloaded before they can be selected.
         </p>
       </div>
 
@@ -160,15 +168,15 @@ export default function LocalLlmSettings() {
           const isActive = activeModel === m.id;
           const dlProgress = downloads[m.id];
           const isDownloading = !!dlProgress;
-          
+
           return (
-            <div 
-              key={m.id} 
+            <div
+              key={m.id}
               className={cn(
-                "p-5 rounded-xl border flex flex-col sm:flex-row gap-5 items-start sm:items-center justify-between transition-colors",
-                isActive 
-                  ? "bg-[#064E3B]/5 border-[#064E3B]/30 shadow-sm" 
-                  : "bg-[#F8E7C9]/50 border-[#064E3B]/10 hover:border-[#064E3B]/20"
+                'p-5 rounded-xl border flex flex-col sm:flex-row gap-5 items-start sm:items-center justify-between transition-colors',
+                isActive
+                  ? 'bg-[#064E3B]/5 border-[#064E3B]/30 shadow-sm'
+                  : 'bg-[#F8E7C9]/50 border-[#064E3B]/10 hover:border-[#064E3B]/20'
               )}
             >
               <div className="flex-1 space-y-2">
@@ -185,67 +193,71 @@ export default function LocalLlmSettings() {
                     </span>
                   )}
                 </div>
-                
+
                 <p className="text-[13px] text-[#064E3B]/70 leading-relaxed max-w-2xl">
                   {m.rationale}
                 </p>
-                
+
                 <div className="flex flex-wrap items-center gap-4 text-[12px] font-medium text-[#064E3B]/60 pt-1">
-                  <span className="flex items-center gap-1.5"><Server className="w-3.5 h-3.5"/> RAM: {m.min_ram_gb}GB+</span>
+                  <span className="flex items-center gap-1.5">
+                    <Server className="w-3.5 h-3.5" /> RAM: {m.min_ram_gb}GB+
+                  </span>
                   <span className="flex items-center gap-1.5">~{m.approx_size_gb}GB Size</span>
                   <span className="flex items-center gap-1.5">Tier {m.tier}</span>
                 </div>
 
-                {isDownloading && (() => {
-                  const pct = dlProgress.total_bytes
-                    ? (dlProgress.bytes_downloaded / dlProgress.total_bytes) * 100
-                    : null;
-                  const speed = formatSpeed(dlProgress.bytes_per_sec);
-                  const remaining = dlProgress.total_bytes
-                    ? dlProgress.total_bytes - dlProgress.bytes_downloaded
-                    : null;
-                  const eta = remaining !== null && dlProgress.bytes_per_sec > 0
-                    ? formatDuration(remaining / dlProgress.bytes_per_sec)
-                    : null;
-                  const detailParts = [
-                    dlProgress.total_bytes
-                      ? `${formatBytes(dlProgress.bytes_downloaded)} / ${formatBytes(dlProgress.total_bytes)}`
-                      : formatBytes(dlProgress.bytes_downloaded),
-                    ...(speed ? [speed] : []),
-                    ...(eta ? [`~${eta} left`] : []),
-                  ];
+                {isDownloading &&
+                  (() => {
+                    const pct = dlProgress.total_bytes
+                      ? (dlProgress.bytes_downloaded / dlProgress.total_bytes) * 100
+                      : null;
+                    const speed = formatSpeed(dlProgress.bytes_per_sec);
+                    const remaining = dlProgress.total_bytes
+                      ? dlProgress.total_bytes - dlProgress.bytes_downloaded
+                      : null;
+                    const eta =
+                      remaining !== null && dlProgress.bytes_per_sec > 0
+                        ? formatDuration(remaining / dlProgress.bytes_per_sec)
+                        : null;
+                    const detailParts = [
+                      dlProgress.total_bytes
+                        ? `${formatBytes(dlProgress.bytes_downloaded)} / ${formatBytes(dlProgress.total_bytes)}`
+                        : formatBytes(dlProgress.bytes_downloaded),
+                      ...(speed ? [speed] : []),
+                      ...(eta ? [`~${eta} left`] : []),
+                    ];
 
-                  return (
-                    <div className="mt-3 w-full max-w-sm">
-                      <div className="flex justify-between text-[11px] font-semibold text-[#064E3B]/60 mb-1.5">
-                        <span>Downloading...</span>
-                        {pct !== null && <span>{Math.round(pct)}%</span>}
+                    return (
+                      <div className="mt-3 w-full max-w-sm">
+                        <div className="flex justify-between text-[11px] font-semibold text-[#064E3B]/60 mb-1.5">
+                          <span>Downloading...</span>
+                          {pct !== null && <span>{Math.round(pct)}%</span>}
+                        </div>
+                        <div className="w-full h-1.5 rounded-full overflow-hidden bg-[#064E3B]/10">
+                          <div
+                            className="h-full bg-[#064E3B] transition-all duration-300"
+                            style={{ width: pct !== null ? `${pct}%` : '100%' }}
+                          />
+                        </div>
+                        <div className="mt-1.5 text-[11px] text-[#064E3B]/60">
+                          {detailParts.join(' · ')}
+                        </div>
                       </div>
-                      <div className="w-full h-1.5 rounded-full overflow-hidden bg-[#064E3B]/10">
-                        <div
-                          className="h-full bg-[#064E3B] transition-all duration-300"
-                          style={{ width: pct !== null ? `${pct}%` : '100%' }}
-                        />
-                      </div>
-                      <div className="mt-1.5 text-[11px] text-[#064E3B]/60">
-                        {detailParts.join(' · ')}
-                      </div>
-                    </div>
-                  );
-                })()}
+                    );
+                  })()}
               </div>
 
               <div className="flex items-center gap-3 w-full sm:w-auto shrink-0 mt-2 sm:mt-0">
                 {!isDownloaded && !isDownloading && (
-                  <Button 
+                  <Button
                     variant="outline"
-                    className="flex-1 sm:flex-none h-9 font-semibold border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5" 
+                    className="flex-1 sm:flex-none h-9 font-semibold border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5"
                     onClick={() => handleDownload(m.id)}
                   >
                     <Download className="w-4 h-4 mr-2" /> Download
                   </Button>
                 )}
-                
+
                 {isDownloading && (
                   <>
                     <Button
@@ -268,8 +280,8 @@ export default function LocalLlmSettings() {
                 )}
 
                 {isDownloaded && !isActive && (
-                  <Button 
-                    className="flex-1 sm:flex-none h-9 font-semibold bg-[#064E3B] text-[#F8E7C9] hover:bg-[#064E3B]/90 shadow-sm" 
+                  <Button
+                    className="flex-1 sm:flex-none h-9 font-semibold bg-[#064E3B] text-[#F8E7C9] hover:bg-[#064E3B]/90 shadow-sm"
                     onClick={() => handleSetActive(m)}
                   >
                     <CheckCircle className="w-4 h-4 mr-2" /> Set Active
@@ -277,14 +289,18 @@ export default function LocalLlmSettings() {
                 )}
 
                 {isDownloaded && (
-                  <Button 
+                  <Button
                     variant="outline"
                     className="h-9 px-3 border-red-200 text-red-600 hover:text-red-700 hover:bg-red-50 hover:border-red-300"
                     onClick={() => handleDelete(m.id)}
                     disabled={isDeleting === m.id}
                     title="Delete model"
                   >
-                    {isDeleting === m.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                    {isDeleting === m.id ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Trash2 className="w-4 h-4" />
+                    )}
                   </Button>
                 )}
               </div>

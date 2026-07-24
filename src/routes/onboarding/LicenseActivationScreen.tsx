@@ -10,7 +10,11 @@ interface LicenseActivationScreenProps {
 function formatDate(iso: string | null): string | null {
   if (!iso) return null;
   try {
-    return new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
+    return new Date(iso).toLocaleDateString(undefined, {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
   } catch {
     return null;
   }
@@ -51,14 +55,19 @@ export default function LicenseActivationScreen({ onContinue }: LicenseActivatio
       ) : alreadyPaid ? (
         <div>
           <h3 className="text-lg font-medium">You already have an active subscription</h3>
-          <p className="text-sm text-muted-foreground mt-2">All paid features are unlocked on this Mac.</p>
+          <p className="text-sm text-muted-foreground mt-2">
+            All paid features are unlocked on this Mac.
+          </p>
         </div>
       ) : (
         <div>
           <h3 className="text-lg font-medium">Your 14-day free trial has started</h3>
           <p className="text-sm text-muted-foreground mt-2">
             {trialEndsOn ? (
-              <>Trial ends on <span className="font-medium text-foreground">{trialEndsOn}</span>. No credit card required.</>
+              <>
+                Trial ends on <span className="font-medium text-foreground">{trialEndsOn}</span>. No
+                credit card required.
+              </>
             ) : (
               'No credit card required.'
             )}
@@ -69,7 +78,8 @@ export default function LicenseActivationScreen({ onContinue }: LicenseActivatio
       {!alreadyPaid && (
         <p className="text-xs text-muted-foreground bg-secondary/50 rounded-md p-3">
           Already have a subscription? You can activate it from{' '}
-          <span className="font-medium text-foreground">Settings → License</span> once you've completed checkout.
+          <span className="font-medium text-foreground">Settings → License</span> once you've
+          completed checkout.
         </p>
       )}
 

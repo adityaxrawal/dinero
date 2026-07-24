@@ -3,7 +3,9 @@ import { mapOauthError } from './mapOauthError';
 
 describe('mapOauthError', () => {
   it('maps the oauth_timeout backend error to a friendly, actionable message', () => {
-    expect(mapOauthError('Authentication error: oauth_timeout')).toBe('Connection timed out, try again.');
+    expect(mapOauthError('Authentication error: oauth_timeout')).toBe(
+      'Connection timed out, try again.'
+    );
   });
 
   it('passes through other error messages unchanged', () => {

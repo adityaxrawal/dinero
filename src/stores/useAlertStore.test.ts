@@ -41,7 +41,7 @@ describe('isBudgetThresholdAlert', () => {
 describe('highestPriorityAlert', () => {
   it('picks the highest severity band regardless of array order', () => {
     expect(highestPriorityAlert([global80, category100, global90])?.alert_type).toBe(
-      'category_budget_cat_transport_100',
+      'category_budget_cat_transport_100'
     );
   });
 
@@ -79,7 +79,9 @@ describe('useAlertStore', () => {
 
     const global80Again = { ...global80, transaction_id: 'tx_5' };
     useAlertStore.getState().onAlertThresholdCrossed(global80Again);
-    expect(useAlertStore.getState().alerts.filter((a) => a.alert_type === 'global_budget_80')).toHaveLength(1);
+    expect(
+      useAlertStore.getState().alerts.filter((a) => a.alert_type === 'global_budget_80')
+    ).toHaveLength(1);
   });
 
   it('a dismissed alert stops rendering, but a fresh crossing of that type un-dismisses it', () => {

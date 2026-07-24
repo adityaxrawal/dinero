@@ -6,8 +6,15 @@ export function useCommitStatementDraft() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ draftId, metadata, rows }: { draftId: string; metadata: DraftMetadataInput; rows: DraftRow[] }) =>
-      API.statements.commitDraft(draftId, metadata, rows),
+    mutationFn: ({
+      draftId,
+      metadata,
+      rows,
+    }: {
+      draftId: string;
+      metadata: DraftMetadataInput;
+      rows: DraftRow[];
+    }) => API.statements.commitDraft(draftId, metadata, rows),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.statements.all() });
     },

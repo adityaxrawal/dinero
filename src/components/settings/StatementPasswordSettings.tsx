@@ -62,8 +62,8 @@ export default function StatementPasswordSettings() {
         <h3 className="text-xl font-bold text-[#064E3B]">Stored Statement Passwords</h3>
       </div>
       <p className="text-sm text-[#064E3B]/70 mb-4">
-        Passwords Dinero has learned for encrypted statements, encrypted at rest and never shown here.
-        Forgetting one just means you'll be re-prompted next time.
+        Passwords Dinero has learned for encrypted statements, encrypted at rest and never shown
+        here. Forgetting one just means you'll be re-prompted next time.
       </p>
 
       {isLoadingPasswords ? (
@@ -79,10 +79,15 @@ export default function StatementPasswordSettings() {
             >
               <div>
                 <strong className="text-[14px] font-bold text-[#064E3B]">{pw.issuer_name}</strong>
-                <span className="text-[13px] font-medium text-[#064E3B]/70"> •••• {pw.masked_identifier}</span>
+                <span className="text-[13px] font-medium text-[#064E3B]/70">
+                  {' '}
+                  •••• {pw.masked_identifier}
+                </span>
                 <div className="text-[12px] font-medium text-[#064E3B]/60 mt-1">
                   Used successfully {pw.success_count} time{pw.success_count === 1 ? '' : 's'}
-                  {pw.last_used_at ? ` — last on ${new Date(pw.last_used_at).toLocaleDateString()}` : ''}
+                  {pw.last_used_at
+                    ? ` — last on ${new Date(pw.last_used_at).toLocaleDateString()}`
+                    : ''}
                 </div>
               </div>
               <button
@@ -90,7 +95,8 @@ export default function StatementPasswordSettings() {
                 onClick={() => handleDeletePassword(pw)}
                 disabled={deletingPasswordId === pw.id}
               >
-                <Trash2 className="w-3.5 h-3.5" /> {deletingPasswordId === pw.id ? 'Forgetting…' : 'Forget'}
+                <Trash2 className="w-3.5 h-3.5" />{' '}
+                {deletingPasswordId === pw.id ? 'Forgetting…' : 'Forget'}
               </button>
             </div>
           ))}
