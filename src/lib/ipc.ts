@@ -464,6 +464,13 @@ export interface LlmModelInfo {
   tokenizer_url: string | null;
 }
 
+export interface LlmHardwareInfo {
+  ram_gb: number;
+  cpu_cores: number;
+  recommended_slots: number;
+  recommended_model_id: string | null;
+}
+
 export interface SpendingLimits {
   global_limit: number;
   thresholds: {
@@ -886,6 +893,9 @@ export const API = {
     getDownloadedModels: () => invokeCommand<string[]>('llm_get_downloaded_models'),
     getActiveModel: () => invokeCommand<string>('llm_get_active_model'),
     setActiveModel: (modelId: string) => invokeCommand<void>('llm_set_active_model', { modelId }),
+    getHardwareInfo: () => invokeCommand<LlmHardwareInfo>('llm_get_hardware_info'),
+    setParallelSlots: (slots: number) =>
+      invokeCommand<number>('llm_set_parallel_slots', { slots }),
   },
   debug: {
     fetchParseErrors: () => invokeCommand<any[]>('debug_fetch_parse_errors'),
