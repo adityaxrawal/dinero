@@ -6,6 +6,25 @@
 // or real keys.
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
+// Constant-time compare, shared by the payment and webhook signature checks
+// below -- the HMAC input differs, the verification tail doesn't.
+function hmacMatches(input: string, signature: string, secret: string): boolean {
+  const expected = createHmac('sha256', secret).update(input).digest('hex');
+  const expectedBuf = Buffer.from(expected, 'hex');
+  const providedBuf = Buffer.from(signature, 'hex');
+  if (expectedBuf.length !== providedBuf.length) return false;
+  return timingSafeEqual(expectedBuf, providedBuf);
+}
+
+// Every endpoint that talks to Razorpay directly (order creation, refunds,
+// the reconciliation cron) reads and validates the same pair of env vars.
+export function getRazorpayCredentials(): { keyId: string; keySecret: string } | null {
+  const keyId = process.env.RAZORPAY_KEY_ID;
+  const keySecret = process.env.RAZORPAY_KEY_SECRET;
+  if (!keyId || !keySecret) return null;
+  return { keyId, keySecret };
+}
+
 export interface RazorpayOrder {
   id: string;
   amount: number;
@@ -13,7 +32,11 @@ export interface RazorpayOrder {
 }
 
 export interface RazorpayOrders {
-  create(params: { amount: number; currency: string; notes?: Record<string, string> }): Promise<RazorpayOrder>;
+  create(params: {
+    amount: number;
+    currency: string;
+    notes?: Record<string, string>;
+  }): Promise<RazorpayOrder>;
 }
 
 /// Real Razorpay SDK-backed implementation. Constructed lazily so importing
@@ -105,20 +128,21 @@ export function realRazorpaySubscriptions(keyId: string, keySecret: string): Raz
 /// Razorpay's documented signature scheme: HMAC-SHA256(order_id + "|" +
 /// payment_id, key_secret), hex-encoded. Constant-time compare against
 /// timing attacks.
-export function verifyPaymentSignature(orderId: string, paymentId: string, signature: string, keySecret: string): boolean {
-  const expected = createHmac('sha256', keySecret).update(`${orderId}|${paymentId}`).digest('hex');
-  const expectedBuf = Buffer.from(expected, 'hex');
-  const providedBuf = Buffer.from(signature, 'hex');
-  if (expectedBuf.length !== providedBuf.length) return false;
-  return timingSafeEqual(expectedBuf, providedBuf);
+export function verifyPaymentSignature(
+  orderId: string,
+  paymentId: string,
+  signature: string,
+  keySecret: string
+): boolean {
+  return hmacMatches(`${orderId}|${paymentId}`, signature, keySecret);
 }
 
 /// Webhook signature scheme (distinct secret from the payment signature,
 /// Doc 30 TASK-BILL-003): HMAC-SHA256 of the raw request body.
-export function verifyWebhookSignature(rawBody: string, signature: string, webhookSecret: string): boolean {
-  const expected = createHmac('sha256', webhookSecret).update(rawBody).digest('hex');
-  const expectedBuf = Buffer.from(expected, 'hex');
-  const providedBuf = Buffer.from(signature, 'hex');
-  if (expectedBuf.length !== providedBuf.length) return false;
-  return timingSafeEqual(expectedBuf, providedBuf);
+export function verifyWebhookSignature(
+  rawBody: string,
+  signature: string,
+  webhookSecret: string
+): boolean {
+  return hmacMatches(rawBody, signature, webhookSecret);
 }

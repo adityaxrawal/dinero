@@ -5,7 +5,8 @@ import { withRequestLogging } from '../../lib/request_logging';
 import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
-import { LicensingApiError } from '../../lib/errors';
+import { LicensingApiError, sendApiError } from '../../lib/errors';
+import { requirePostWithFields, getTokenAndSubscription } from '../../lib/api_helpers';
 import { signLicenseJwt, verifyLicenseJwt, JwtVerificationError } from '../../lib/jwt';
 import { logAuditEvent, type AuditWriter } from '../../lib/audit';
 
@@ -59,23 +60,22 @@ export async function refreshLicenseToken(
   }
 
   if (claims.device_id !== input.device_id) {
-    throw new LicensingApiError('DEVICE_MISMATCH', 'JWT device_id does not match the requesting device');
+    throw new LicensingApiError(
+      'DEVICE_MISMATCH',
+      'JWT device_id does not match the requesting device'
+    );
   }
 
   const nowMs = Date.now();
   const staleness = nowMs - claims.exp * 1000;
   if (staleness > MAX_STALENESS_MS) {
-    throw new LicensingApiError('LICENSE_INVALID', 'Token too stale to refresh -- call validate instead');
+    throw new LicensingApiError(
+      'LICENSE_INVALID',
+      'Token too stale to refresh -- call validate instead'
+    );
   }
 
-  const token = await db.licenseToken.findFirst({ where: { deviceFingerprint: input.device_id } });
-  if (!token) {
-    throw new LicensingApiError('LICENSE_INVALID', 'No license bound to this device');
-  }
-  const subscription = await db.subscription.findFirst({
-    where: { accountId: token.accountId },
-    orderBy: { createdAt: 'desc' },
-  });
+  const { token, subscription } = await getTokenAndSubscription(db, input.device_id);
   if (!subscription || !['trialing', 'active', 'past_due'].includes(subscription.status)) {
     throw new LicensingApiError('LICENSE_INVALID', 'Subscription is no longer refreshable');
   }
@@ -83,7 +83,12 @@ export async function refreshLicenseToken(
   const now = new Date();
   const expiresAt = new Date(now.getTime() + 48 * 60 * 60 * 1000);
   const newJwt = signLicenseJwt(
-    { sub: claims.sub, device_id: input.device_id, plan: subscription.planId, billing_interval: subscription.billingInterval },
+    {
+      sub: claims.sub,
+      device_id: input.device_id,
+      plan: subscription.planId,
+      billing_interval: subscription.billingInterval,
+    },
     privateKeyPem
   );
 
@@ -91,15 +96,8 @@ export async function refreshLicenseToken(
 }
 
 async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST') {
-    res.status(405).json({ code: 'VALIDATION_ERROR', message: 'POST only' });
-    return;
-  }
-  const { jwt: currentJwt, device_id } = req.body ?? {};
-  if (!currentJwt || !device_id) {
-    res.status(400).json({ code: 'VALIDATION_ERROR', message: 'jwt and device_id are required' });
-    return;
-  }
+  if (!requirePostWithFields(req, res, ['jwt', 'device_id'])) return;
+  const { jwt: currentJwt, device_id } = req.body;
   const privateKeyPem = process.env.JWT_PRIVATE_KEY_PEM;
   const publicKeyPem = process.env.JWT_PUBLIC_KEY_PEM;
   if (!privateKeyPem || !publicKeyPem) {
@@ -107,14 +105,15 @@ async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
   try {
-    const result = await refreshLicenseToken(prisma, { jwt: currentJwt, device_id }, publicKeyPem, privateKeyPem);
+    const result = await refreshLicenseToken(
+      prisma,
+      { jwt: currentJwt, device_id },
+      publicKeyPem,
+      privateKeyPem
+    );
     res.status(200).json(result);
   } catch (e) {
-    if (e instanceof LicensingApiError) {
-      res.status(400).json({ code: e.code, message: e.message });
-      return;
-    }
-    res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Unexpected error' });
+    sendApiError(res, e);
   }
 }
 

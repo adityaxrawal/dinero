@@ -3,7 +3,7 @@ import { withRequestLogging } from '../../lib/request_logging';
 import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
-import { LicensingApiError } from '../../lib/errors';
+import { LicensingApiError, sendApiError } from '../../lib/errors';
 import { logAuditEvent, type AuditWriter } from '../../lib/audit';
 
 export interface CancelInput {
@@ -22,7 +22,10 @@ export type CancelDb = {
 };
 
 export async function cancelSubscription(db: CancelDb, input: CancelInput): Promise<CancelResult> {
-  const subscription = await db.subscription.findFirst({ where: { accountId: input.account_id }, orderBy: { createdAt: 'desc' } });
+  const subscription = await db.subscription.findFirst({
+    where: { accountId: input.account_id },
+    orderBy: { createdAt: 'desc' },
+  });
   if (!subscription) {
     throw new LicensingApiError('NOT_FOUND', 'No subscription found for this account');
   }
@@ -51,16 +54,31 @@ export async function cancelSubscription(db: CancelDb, input: CancelInput): Prom
 /// Doc 30 TASK-BILL-005: "a 'Reactivate' button if still within the
 /// cancelled-but-active period" -- undoes cancel_at_period_end before the
 /// period actually ends.
-export async function reactivateSubscription(db: CancelDb, accountId: string): Promise<CancelResult> {
-  const subscription = await db.subscription.findFirst({ where: { accountId }, orderBy: { createdAt: 'desc' } });
+export async function reactivateSubscription(
+  db: CancelDb,
+  accountId: string
+): Promise<CancelResult> {
+  const subscription = await db.subscription.findFirst({
+    where: { accountId },
+    orderBy: { createdAt: 'desc' },
+  });
   if (!subscription) {
     throw new LicensingApiError('NOT_FOUND', 'No subscription found for this account');
   }
-  if (subscription.currentPeriodEnd && new Date(subscription.currentPeriodEnd as unknown as string) < new Date()) {
-    throw new LicensingApiError('VALIDATION_ERROR', 'Subscription period has already ended -- reactivation requires a new checkout');
+  if (
+    subscription.currentPeriodEnd &&
+    new Date(subscription.currentPeriodEnd as unknown as string) < new Date()
+  ) {
+    throw new LicensingApiError(
+      'VALIDATION_ERROR',
+      'Subscription period has already ended -- reactivation requires a new checkout'
+    );
   }
 
-  await db.subscription.update({ where: { id: subscription.id }, data: { cancelAtPeriodEnd: false } });
+  await db.subscription.update({
+    where: { id: subscription.id },
+    data: { cancelAtPeriodEnd: false },
+  });
 
   await logAuditEvent(db.licensingAuditLog, { accountId, eventType: 'subscription_reactivated' });
 
@@ -83,11 +101,7 @@ async function handler(req: VercelRequest, res: VercelResponse) {
       : await cancelSubscription(prisma, { account_id, cancel_at_period_end });
     res.status(200).json(result);
   } catch (e) {
-    if (e instanceof LicensingApiError) {
-      res.status(400).json({ code: e.code, message: e.message });
-      return;
-    }
-    res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Unexpected error' });
+    sendApiError(res, e);
   }
 }
 

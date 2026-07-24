@@ -9,7 +9,8 @@ import { withRequestLogging } from '../../lib/request_logging';
 import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
-import { LicensingApiError } from '../../lib/errors';
+import { LicensingApiError, sendApiError } from '../../lib/errors';
+import { requirePostWithFields, handleAdminSupportError } from '../../lib/api_helpers';
 import { assertAdminAuthorized } from '../../lib/admin_auth';
 import { signLicenseJwt } from '../../lib/jwt';
 import { maskDeviceFingerprint } from '../../lib/license_key';
@@ -36,7 +37,10 @@ export type ReissueTokenDb = {
     }): Promise<{ planId: string; billingInterval: string; status: string } | null>;
   };
   licenseToken: {
-    findFirst(args: { where: { accountId?: string; deviceFingerprint?: string }; orderBy?: { createdAt: 'desc' } }): Promise<{ id: string; accountId: string } | null>;
+    findFirst(args: {
+      where: { accountId?: string; deviceFingerprint?: string };
+      orderBy?: { createdAt: 'desc' };
+    }): Promise<{ id: string; accountId: string } | null>;
     update: PrismaClient['licenseToken']['update'];
     create: PrismaClient['licenseToken']['create'];
   };
@@ -78,19 +82,39 @@ export async function reissueToken(
   const now = new Date();
   const expiresAt = new Date(now.getTime() + 48 * 60 * 60 * 1000);
   const newJwt = signLicenseJwt(
-    { sub: input.email, device_id: input.new_device_id, plan: subscription.planId, billing_interval: subscription.billingInterval },
+    {
+      sub: input.email,
+      device_id: input.new_device_id,
+      plan: subscription.planId,
+      billing_interval: subscription.billingInterval,
+    },
     privateKeyPem
   );
 
-  const existing = await db.licenseToken.findFirst({ where: { accountId: account.id }, orderBy: { createdAt: 'desc' } });
+  const existing = await db.licenseToken.findFirst({
+    where: { accountId: account.id },
+    orderBy: { createdAt: 'desc' },
+  });
   if (existing) {
     await db.licenseToken.update({
       where: { id: existing.id },
-      data: { deviceFingerprint: input.new_device_id, deviceBoundAt: now, jwtIssuedAt: now, jwtExpiresAt: expiresAt, revokedAt: null },
+      data: {
+        deviceFingerprint: input.new_device_id,
+        deviceBoundAt: now,
+        jwtIssuedAt: now,
+        jwtExpiresAt: expiresAt,
+        revokedAt: null,
+      },
     });
   } else {
     await db.licenseToken.create({
-      data: { accountId: account.id, deviceFingerprint: input.new_device_id, deviceBoundAt: now, jwtIssuedAt: now, jwtExpiresAt: expiresAt },
+      data: {
+        accountId: account.id,
+        deviceFingerprint: input.new_device_id,
+        deviceBoundAt: now,
+        jwtIssuedAt: now,
+        jwtExpiresAt: expiresAt,
+      },
     });
   }
 
@@ -107,15 +131,8 @@ export async function reissueToken(
 async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     assertAdminAuthorized(req.headers.authorization);
-    if (req.method !== 'POST') {
-      res.status(405).json({ code: 'VALIDATION_ERROR', message: 'POST only' });
-      return;
-    }
-    const { email, new_device_id, reason } = req.body ?? {};
-    if (!email || !new_device_id) {
-      res.status(400).json({ code: 'VALIDATION_ERROR', message: 'email and new_device_id are required' });
-      return;
-    }
+    if (!requirePostWithFields(req, res, ['email', 'new_device_id'])) return;
+    const { email, new_device_id, reason } = req.body;
     const privateKeyPem = process.env.JWT_PRIVATE_KEY_PEM;
     if (!privateKeyPem) {
       res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Server misconfigured' });
@@ -124,11 +141,7 @@ async function handler(req: VercelRequest, res: VercelResponse) {
     const result = await reissueToken(prisma, { email, new_device_id, reason }, privateKeyPem);
     res.status(200).json(result);
   } catch (e) {
-    if (e instanceof LicensingApiError) {
-      res.status(e.code === 'NOT_FOUND' ? 404 : 400).json({ code: e.code, message: e.message });
-      return;
-    }
-    res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Unexpected error' });
+    handleAdminSupportError(res, e);
   }
 }
 

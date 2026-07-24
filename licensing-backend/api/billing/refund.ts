@@ -4,7 +4,8 @@ import { withRequestLogging } from '../../lib/request_logging';
 import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
-import { LicensingApiError } from '../../lib/errors';
+import { LicensingApiError, sendApiError } from '../../lib/errors';
+import { requirePostWithFields } from '../../lib/api_helpers';
 import { assertAdminAuthorized } from '../../lib/admin_auth';
 import { logAuditEvent, type AuditWriter } from '../../lib/audit';
 import { consoleEmailSender, type EmailSender } from '../../lib/email';
@@ -68,10 +69,7 @@ export async function refundAccount(
 }
 
 async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST') {
-    res.status(405).json({ code: 'VALIDATION_ERROR', message: 'POST only' });
-    return;
-  }
+  if (!requirePostWithFields(req, res, ['account_id', 'reason'])) return;
   try {
     assertAdminAuthorized(req.headers.authorization);
   } catch (e) {
@@ -81,11 +79,7 @@ async function handler(req: VercelRequest, res: VercelResponse) {
     }
     throw e;
   }
-  const { account_id, reason } = req.body ?? {};
-  if (!account_id || !reason) {
-    res.status(400).json({ code: 'VALIDATION_ERROR', message: 'account_id and reason are required' });
-    return;
-  }
+  const { account_id, reason } = req.body;
   const keyId = process.env.RAZORPAY_KEY_ID;
   const keySecret = process.env.RAZORPAY_KEY_SECRET;
   if (!keyId || !keySecret) {

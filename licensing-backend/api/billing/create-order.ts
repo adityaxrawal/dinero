@@ -9,9 +9,14 @@ import { withRequestLogging } from '../../lib/request_logging';
 // find-or-create so a first-time purchaser never needs one in advance.
 import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { prisma } from '../../lib/db';
-import { LicensingApiError } from '../../lib/errors';
-import { realRazorpayOrders, type RazorpayOrders } from '../../lib/razorpay';
+import { prisma, findOrCreateAccount } from '../../lib/db';
+import { LicensingApiError, sendApiError } from '../../lib/errors';
+import { requirePostWithFields } from '../../lib/api_helpers';
+import {
+  realRazorpayOrders,
+  getRazorpayCredentials,
+  type RazorpayOrders,
+} from '../../lib/razorpay';
 
 export interface CreateOrderInput {
   email: string;
@@ -41,10 +46,7 @@ export async function createOrder(
     throw new LicensingApiError('NOT_FOUND', 'Unknown or inactive plan');
   }
 
-  let account = await db.account.findUnique({ where: { email: input.email } });
-  if (!account) {
-    account = await db.account.create({ data: { email: input.email } });
-  }
+  const account = await findOrCreateAccount(db, input.email);
 
   const order = await razorpay.create({
     amount: plan.amountMinor,
@@ -52,34 +54,33 @@ export async function createOrder(
     notes: { account_id: account.id, plan_id: input.plan_id },
   });
 
-  return { order_id: order.id, amount: order.amount, currency: order.currency, key_id: razorpayKeyId };
+  return {
+    order_id: order.id,
+    amount: order.amount,
+    currency: order.currency,
+    key_id: razorpayKeyId,
+  };
 }
 
 async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST') {
-    res.status(405).json({ code: 'VALIDATION_ERROR', message: 'POST only' });
-    return;
-  }
-  const { email, plan_id } = req.body ?? {};
-  if (!email || !plan_id) {
-    res.status(400).json({ code: 'VALIDATION_ERROR', message: 'email and plan_id are required' });
-    return;
-  }
-  const keyId = process.env.RAZORPAY_KEY_ID;
-  const keySecret = process.env.RAZORPAY_KEY_SECRET;
-  if (!keyId || !keySecret) {
+  if (!requirePostWithFields(req, res, ['email', 'plan_id'])) return;
+  const { email, plan_id } = req.body;
+  const credentials = getRazorpayCredentials();
+  if (!credentials) {
     res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Server misconfigured' });
     return;
   }
+  const { keyId, keySecret } = credentials;
   try {
-    const result = await createOrder(prisma, realRazorpayOrders(keyId, keySecret), { email, plan_id }, keyId);
+    const result = await createOrder(
+      prisma,
+      realRazorpayOrders(keyId, keySecret),
+      { email, plan_id },
+      keyId
+    );
     res.status(200).json(result);
   } catch (e) {
-    if (e instanceof LicensingApiError) {
-      res.status(400).json({ code: e.code, message: e.message });
-      return;
-    }
-    res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Unexpected error' });
+    sendApiError(res, e);
   }
 }
 

@@ -11,7 +11,8 @@ import { withRequestLogging } from '../../lib/request_logging';
 import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
-import { LicensingApiError } from '../../lib/errors';
+import { LicensingApiError, sendApiError } from '../../lib/errors';
+import { requirePostWithFields, getTokenAndSubscription } from '../../lib/api_helpers';
 import { signLicenseJwt } from '../../lib/jwt';
 import { logAuditEvent, type AuditWriter } from '../../lib/audit';
 
@@ -52,22 +53,21 @@ function computeState(subscriptionStatus: string): ServerLicenseState {
 
 export type ValidateDb = {
   licenseToken: {
-    findUnique(args: { where: { deviceFingerprint: string }; include: { account: true } }): Promise<{ accountId: string; account: { email: string } } | null>;
+    findUnique(args: {
+      where: { deviceFingerprint: string };
+      include: { account: true };
+    }): Promise<{ accountId: string; account: { email: string } } | null>;
   };
   subscription: Pick<PrismaClient['subscription'], 'findFirst'>;
   licensingAuditLog: AuditWriter;
 };
 
-export async function validateLicense(db: ValidateDb, input: ValidateInput, privateKeyPem: string): Promise<ValidateResult> {
-  const token = await db.licenseToken.findUnique({ where: { deviceFingerprint: input.device_id }, include: { account: true } });
-  if (!token) {
-    throw new LicensingApiError('LICENSE_INVALID', 'No license bound to this device');
-  }
-
-  const subscription = await db.subscription.findFirst({
-    where: { accountId: token.accountId },
-    orderBy: { createdAt: 'desc' },
-  });
+export async function validateLicense(
+  db: ValidateDb,
+  input: ValidateInput,
+  privateKeyPem: string
+): Promise<ValidateResult> {
+  const { token, subscription } = await getTokenAndSubscription(db, input.device_id, true);
   if (!subscription) {
     throw new LicensingApiError('LICENSE_INVALID', 'No subscription found for this license');
   }
@@ -77,7 +77,12 @@ export async function validateLicense(db: ValidateDb, input: ValidateInput, priv
   const expiresAt = new Date(now.getTime() + 48 * 60 * 60 * 1000);
 
   const jwtToken = signLicenseJwt(
-    { sub: token.account.email, device_id: input.device_id, plan: subscription.planId, billing_interval: subscription.billingInterval },
+    {
+      sub: token.account.email,
+      device_id: input.device_id,
+      plan: subscription.planId,
+      billing_interval: subscription.billingInterval,
+    },
     privateKeyPem
   );
 
@@ -100,15 +105,8 @@ export async function validateLicense(db: ValidateDb, input: ValidateInput, priv
 }
 
 async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST') {
-    res.status(405).json({ code: 'VALIDATION_ERROR', message: 'POST only' });
-    return;
-  }
-  const { device_id } = req.body ?? {};
-  if (!device_id) {
-    res.status(400).json({ code: 'VALIDATION_ERROR', message: 'device_id is required' });
-    return;
-  }
+  if (!requirePostWithFields(req, res, ['device_id'])) return;
+  const { device_id } = req.body;
   const privateKeyPem = process.env.JWT_PRIVATE_KEY_PEM;
   if (!privateKeyPem) {
     res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Server misconfigured' });
@@ -118,11 +116,7 @@ async function handler(req: VercelRequest, res: VercelResponse) {
     const result = await validateLicense(prisma, { device_id }, privateKeyPem);
     res.status(200).json(result);
   } catch (e) {
-    if (e instanceof LicensingApiError) {
-      res.status(400).json({ code: e.code, message: e.message });
-      return;
-    }
-    res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Unexpected error' });
+    sendApiError(res, e);
   }
 }
 

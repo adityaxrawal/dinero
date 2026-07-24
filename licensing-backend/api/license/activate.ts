@@ -13,11 +13,16 @@ import { withRequestLogging } from '../../lib/request_logging';
 // interface and is unit-tested with zero HTTP/Vercel/live-DB dependency.
 import type { Prisma, PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { prisma } from '../../lib/db';
-import { LicensingApiError } from '../../lib/errors';
+import { prisma, findOrCreateAccount } from '../../lib/db';
+import { LicensingApiError, sendApiError } from '../../lib/errors';
+import { requirePostWithFields } from '../../lib/api_helpers';
 import { signLicenseJwt } from '../../lib/jwt';
 import { logAuditEvent, countRecentEvents, type AuditWriter } from '../../lib/audit';
-import { verifyPaymentSignature, realRazorpayPayments, type RazorpayPayments } from '../../lib/razorpay';
+import {
+  verifyPaymentSignature,
+  realRazorpayPayments,
+  type RazorpayPayments,
+} from '../../lib/razorpay';
 import { maskDeviceFingerprint } from '../../lib/license_key';
 
 export interface ActivateInput {
@@ -77,9 +82,17 @@ export async function activateLicense(
   // Doc 40 §4: "The backend independently verifies the payment signature
   // server-side... before ever trusting the client-supplied success claim."
   const payment = await razorpayPayments.fetch(input.razorpay_payment_id);
-  const signatureValid = verifyPaymentSignature(payment.orderId, input.razorpay_payment_id, input.razorpay_signature, razorpayKeySecret);
+  const signatureValid = verifyPaymentSignature(
+    payment.orderId,
+    input.razorpay_payment_id,
+    input.razorpay_signature,
+    razorpayKeySecret
+  );
   if (!signatureValid) {
-    throw new LicensingApiError('PAYMENT_VERIFICATION_FAILED', 'Razorpay payment signature could not be verified');
+    throw new LicensingApiError(
+      'PAYMENT_VERIFICATION_FAILED',
+      'Razorpay payment signature could not be verified'
+    );
   }
 
   const planInfo = PLAN_BY_BILLING_INTERVAL[input.billing_interval];
@@ -87,10 +100,7 @@ export async function activateLicense(
     throw new LicensingApiError('VALIDATION_ERROR', 'Unknown billing_interval');
   }
 
-  let account = await db.account.findUnique({ where: { email: input.email } });
-  if (!account) {
-    account = await db.account.create({ data: { email: input.email } });
-  }
+  const account = await findOrCreateAccount(db, input.email);
 
   // Doc 19 §14.2 backend enforcement: "looks up existing device bindings for
   // this license... if the device_id matches an existing binding
@@ -98,7 +108,10 @@ export async function activateLicense(
   // creates a new binding." accountId isn't unique on this table (a device
   // can be rebound over time, leaving historical rows), so this takes the
   // most recent one.
-  const currentBinding = await db.licenseToken.findFirst({ where: { accountId: account.id }, orderBy: { createdAt: 'desc' } });
+  const currentBinding = await db.licenseToken.findFirst({
+    where: { accountId: account.id },
+    orderBy: { createdAt: 'desc' },
+  });
 
   if (currentBinding?.deviceFingerprint && currentBinding.deviceFingerprint !== input.device_id) {
     throw new LicensingApiError(
@@ -110,7 +123,10 @@ export async function activateLicense(
   const now = new Date();
   const expiresAt = new Date(now.getTime() + 48 * 60 * 60 * 1000);
 
-  const existingSubscription = await db.subscription.findFirst({ where: { accountId: account.id }, orderBy: { createdAt: 'desc' } });
+  const existingSubscription = await db.subscription.findFirst({
+    where: { accountId: account.id },
+    orderBy: { createdAt: 'desc' },
+  });
   if (!existingSubscription) {
     await db.subscription.create({
       data: {
@@ -136,7 +152,12 @@ export async function activateLicense(
   });
 
   const jwtToken = signLicenseJwt(
-    { sub: input.email, device_id: input.device_id, plan: planInfo.planId, billing_interval: planInfo.billingInterval },
+    {
+      sub: input.email,
+      device_id: input.device_id,
+      plan: planInfo.planId,
+      billing_interval: planInfo.billingInterval,
+    },
     privateKeyPem
   );
 
@@ -146,19 +167,19 @@ export async function activateLicense(
     deviceFingerprint: input.device_id,
   });
 
-  return { status: 'activated', jwt: jwtToken, plan: planInfo.planId, billing_interval: planInfo.billingInterval, expires_at: expiresAt.toISOString() };
+  return {
+    status: 'activated',
+    jwt: jwtToken,
+    plan: planInfo.planId,
+    billing_interval: planInfo.billingInterval,
+    expires_at: expiresAt.toISOString(),
+  };
 }
 
 async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST') {
-    res.status(405).json({ code: 'VALIDATION_ERROR', message: 'POST only' });
-    return;
-  }
-  const { email, razorpay_payment_id, razorpay_signature, device_id, billing_interval } = req.body ?? {};
-  if (!email || !razorpay_payment_id || !razorpay_signature || !device_id || !billing_interval) {
-    res.status(400).json({ code: 'VALIDATION_ERROR', message: 'email, razorpay_payment_id, razorpay_signature, device_id, and billing_interval are required' });
-    return;
-  }
+  const required = ['email', 'razorpay_payment_id', 'razorpay_signature', 'device_id', 'billing_interval'];
+  if (!requirePostWithFields(req, res, required)) return;
+  const { email, razorpay_payment_id, razorpay_signature, device_id, billing_interval } = req.body;
   const privateKeyPem = process.env.JWT_PRIVATE_KEY_PEM;
   const razorpayKeySecret = process.env.RAZORPAY_KEY_SECRET;
   if (!privateKeyPem || !razorpayKeySecret) {
@@ -175,11 +196,10 @@ async function handler(req: VercelRequest, res: VercelResponse) {
     );
     res.status(200).json(result);
   } catch (e) {
-    if (e instanceof LicensingApiError) {
-      res.status(e.code === 'RATE_LIMITED' ? 429 : 400).json({ code: e.code, message: e.message, details: e.details });
-      return;
-    }
-    res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Unexpected error' });
+    sendApiError(res, e, {
+      statusFor: (code) => (code === 'RATE_LIMITED' ? 429 : 400),
+      includeDetails: true,
+    });
   }
 }
 

@@ -5,7 +5,7 @@ import { withRequestLogging } from '../../lib/request_logging';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
 import { runBillingReconciliation } from '../../jobs/billing_reconciliation';
-import { realRazorpaySubscriptions } from '../../lib/razorpay';
+import { realRazorpaySubscriptions, getRazorpayCredentials } from '../../lib/razorpay';
 
 async function handler(req: VercelRequest, res: VercelResponse) {
   const cronSecret = process.env.CRON_SECRET;
@@ -13,13 +13,16 @@ async function handler(req: VercelRequest, res: VercelResponse) {
     res.status(401).json({ code: 'VALIDATION_ERROR', message: 'Unauthorized' });
     return;
   }
-  const keyId = process.env.RAZORPAY_KEY_ID;
-  const keySecret = process.env.RAZORPAY_KEY_SECRET;
-  if (!keyId || !keySecret) {
+  const credentials = getRazorpayCredentials();
+  if (!credentials) {
     res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Server misconfigured' });
     return;
   }
-  const summary = await runBillingReconciliation(prisma, realRazorpaySubscriptions(keyId, keySecret));
+  const { keyId, keySecret } = credentials;
+  const summary = await runBillingReconciliation(
+    prisma,
+    realRazorpaySubscriptions(keyId, keySecret)
+  );
   res.status(200).json(summary);
 }
 

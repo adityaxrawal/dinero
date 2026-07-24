@@ -24,10 +24,15 @@ import { withRequestLogging } from '../../lib/request_logging';
 import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
-import { LicensingApiError } from '../../lib/errors';
+import { LicensingApiError, sendApiError } from '../../lib/errors';
+import { requirePostWithFields } from '../../lib/api_helpers';
 import { signLicenseJwt } from '../../lib/jwt';
 import { logAuditEvent, type AuditWriter } from '../../lib/audit';
-import { decideTrialEligibility, logTrialGuardDecision, deviceHasPriorTrialStartedEvent } from '../../lib/trial_guard';
+import {
+  decideTrialEligibility,
+  logTrialGuardDecision,
+  deviceHasPriorTrialStartedEvent,
+} from '../../lib/trial_guard';
 
 export interface StartTrialInput {
   email: string;
@@ -36,7 +41,12 @@ export interface StartTrialInput {
 
 export type StartTrialResult =
   | { status: 'trial_started'; jwt: string; trial_ends_at: string }
-  | { status: 'existing_subscription_recognized'; jwt: string; plan: string; billing_interval: string };
+  | {
+      status: 'existing_subscription_recognized';
+      jwt: string;
+      plan: string;
+      billing_interval: string;
+    };
 
 const TRIAL_DAYS = 14;
 const TRIAL_PLAN_ID = 'desktop_pro_monthly';
@@ -48,13 +58,22 @@ export type StartTrialDb = {
   licensingAuditLog: AuditWriter;
 };
 
-export async function startTrial(db: StartTrialDb, input: StartTrialInput, privateKeyPem: string): Promise<StartTrialResult> {
+export async function startTrial(
+  db: StartTrialDb,
+  input: StartTrialInput,
+  privateKeyPem: string
+): Promise<StartTrialResult> {
   // Doc 30 TASK-BILL-009: is this device already bound to an account with a
   // real (non-trial) subscription? That's continuity, not abuse.
-  const existingBinding = await db.licenseToken.findUnique({ where: { deviceFingerprint: input.device_id } });
+  const existingBinding = await db.licenseToken.findUnique({
+    where: { deviceFingerprint: input.device_id },
+  });
   let deviceBoundSubscriptionStatus: string | null = null;
   if (existingBinding) {
-    const boundSub = await db.subscription.findFirst({ where: { accountId: existingBinding.accountId }, orderBy: { createdAt: 'desc' } });
+    const boundSub = await db.subscription.findFirst({
+      where: { accountId: existingBinding.accountId },
+      orderBy: { createdAt: 'desc' },
+    });
     deviceBoundSubscriptionStatus = boundSub?.status ?? null;
   }
 
@@ -63,20 +82,39 @@ export async function startTrial(db: StartTrialDb, input: StartTrialInput, priva
   const decision = decideTrialEligibility({
     accountTrialUsed: account?.trialUsed ?? false,
     deviceBoundSubscriptionStatus,
-    deviceHasPriorTrialStartedEvent: await deviceHasPriorTrialStartedEvent(db.licensingAuditLog, input.device_id),
+    deviceHasPriorTrialStartedEvent: await deviceHasPriorTrialStartedEvent(
+      db.licensingAuditLog,
+      input.device_id
+    ),
   });
   await logTrialGuardDecision(db.licensingAuditLog, input.device_id, decision);
 
   if (decision.outcome === 'recognized_returning_device') {
-    const boundSub = await db.subscription.findFirst({ where: { accountId: existingBinding!.accountId }, orderBy: { createdAt: 'desc' } });
+    const boundSub = await db.subscription.findFirst({
+      where: { accountId: existingBinding!.accountId },
+      orderBy: { createdAt: 'desc' },
+    });
     const jwtToken = signLicenseJwt(
-      { sub: input.email, device_id: input.device_id, plan: boundSub!.planId, billing_interval: boundSub!.billingInterval },
+      {
+        sub: input.email,
+        device_id: input.device_id,
+        plan: boundSub!.planId,
+        billing_interval: boundSub!.billingInterval,
+      },
       privateKeyPem
     );
-    return { status: 'existing_subscription_recognized', jwt: jwtToken, plan: boundSub!.planId, billing_interval: boundSub!.billingInterval };
+    return {
+      status: 'existing_subscription_recognized',
+      jwt: jwtToken,
+      plan: boundSub!.planId,
+      billing_interval: boundSub!.billingInterval,
+    };
   }
   if (decision.outcome === 'blocked_device_reused') {
-    throw new LicensingApiError('VALIDATION_ERROR', 'A trial has already been started on this device');
+    throw new LicensingApiError(
+      'VALIDATION_ERROR',
+      'A trial has already been started on this device'
+    );
   }
   if (decision.outcome === 'blocked_email_reused') {
     throw new LicensingApiError('VALIDATION_ERROR', 'This account has already used its trial');
@@ -120,7 +158,12 @@ export async function startTrial(db: StartTrialDb, input: StartTrialInput, priva
   });
 
   const jwtToken = signLicenseJwt(
-    { sub: input.email, device_id: input.device_id, plan: TRIAL_PLAN_ID, billing_interval: 'monthly' },
+    {
+      sub: input.email,
+      device_id: input.device_id,
+      plan: TRIAL_PLAN_ID,
+      billing_interval: 'monthly',
+    },
     privateKeyPem
   );
 
@@ -128,15 +171,8 @@ export async function startTrial(db: StartTrialDb, input: StartTrialInput, priva
 }
 
 async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST') {
-    res.status(405).json({ code: 'VALIDATION_ERROR', message: 'POST only' });
-    return;
-  }
-  const { email, device_id } = req.body ?? {};
-  if (!email || !device_id) {
-    res.status(400).json({ code: 'VALIDATION_ERROR', message: 'email and device_id are required' });
-    return;
-  }
+  if (!requirePostWithFields(req, res, ['email', 'device_id'])) return;
+  const { email, device_id } = req.body;
   const privateKeyPem = process.env.JWT_PRIVATE_KEY_PEM;
   if (!privateKeyPem) {
     res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Server misconfigured' });
@@ -146,11 +182,7 @@ async function handler(req: VercelRequest, res: VercelResponse) {
     const result = await startTrial(prisma, { email, device_id }, privateKeyPem);
     res.status(200).json(result);
   } catch (e) {
-    if (e instanceof LicensingApiError) {
-      res.status(400).json({ code: e.code, message: e.message });
-      return;
-    }
-    res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Unexpected error' });
+    sendApiError(res, e);
   }
 }
 

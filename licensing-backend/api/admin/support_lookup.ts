@@ -1,4 +1,5 @@
 import { withRequestLogging } from '../../lib/request_logging';
+import { handleAdminSupportError } from '../../lib/api_helpers';
 // Doc 30 TASK-OPS-006, Doc 43 §3 action 7: "Look up an account by redacted
 // email or license key, view activation/validation/refresh history."
 // Internal-only endpoint, admin-key-authenticated, read-only. Reuses the
@@ -10,7 +11,7 @@ import { withRequestLogging } from '../../lib/request_logging';
 import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
-import { LicensingApiError } from '../../lib/errors';
+import { LicensingApiError, sendApiError } from '../../lib/errors';
 import { assertAdminAuthorized } from '../../lib/admin_auth';
 import { maskEmail } from '../../lib/license_key';
 import { recommendRecovery, type SupportCaseType } from '../../lib/support_recovery';
@@ -25,7 +26,12 @@ type AccountWithBindings = {
   email: string;
   trialUsed: boolean;
   subscriptions: { status: string; planId: string; currentPeriodEnd: Date | null }[];
-  licenseTokens: { deviceFingerprint: string | null; jwtIssuedAt: Date | null; jwtExpiresAt: Date | null; revokedAt: Date | null }[];
+  licenseTokens: {
+    deviceFingerprint: string | null;
+    jwtIssuedAt: Date | null;
+    jwtExpiresAt: Date | null;
+    revokedAt: Date | null;
+  }[];
 };
 
 export type SupportLookupDb = {
@@ -43,7 +49,12 @@ export interface SupportLookupResult {
   email_masked: string;
   trial_used: boolean;
   subscriptions: { status: string; plan_id: string; current_period_end: string | null }[];
-  license_tokens: { device_bound: boolean; jwt_issued_at: string | null; jwt_expires_at: string | null; revoked_at: string | null }[];
+  license_tokens: {
+    device_bound: boolean;
+    jwt_issued_at: string | null;
+    jwt_expires_at: string | null;
+    revoked_at: string | null;
+  }[];
   history: { event_type: string; created_at: string }[];
   recommended_recovery?: ReturnType<typeof recommendRecovery>;
 }
@@ -82,7 +93,10 @@ export async function lookupSupportAccount(
       jwt_expires_at: t.jwtExpiresAt ? t.jwtExpiresAt.toISOString() : null,
       revoked_at: t.revokedAt ? t.revokedAt.toISOString() : null,
     })),
-    history: historyRows.map((h) => ({ event_type: h.eventType, created_at: h.createdAt.toISOString() })),
+    history: historyRows.map((h) => ({
+      event_type: h.eventType,
+      created_at: h.createdAt.toISOString(),
+    })),
     recommended_recovery: input.case_type ? recommendRecovery(input.case_type) : undefined,
   };
 }
@@ -99,15 +113,14 @@ async function handler(req: VercelRequest, res: VercelResponse) {
       res.status(400).json({ code: 'VALIDATION_ERROR', message: 'email is required' });
       return;
     }
-    const caseType = typeof req.query.case_type === 'string' ? (req.query.case_type as SupportCaseType) : undefined;
+    const caseType =
+      typeof req.query.case_type === 'string'
+        ? (req.query.case_type as SupportCaseType)
+        : undefined;
     const result = await lookupSupportAccount(prisma, { email, case_type: caseType });
     res.status(200).json(result);
   } catch (e) {
-    if (e instanceof LicensingApiError) {
-      res.status(e.code === 'NOT_FOUND' ? 404 : 400).json({ code: e.code, message: e.message });
-      return;
-    }
-    res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Unexpected error' });
+    handleAdminSupportError(res, e);
   }
 }
 

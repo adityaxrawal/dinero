@@ -4,7 +4,7 @@ import { withRequestLogging } from '../../lib/request_logging';
 import type { Prisma, PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
-import { LicensingApiError } from '../../lib/errors';
+import { LicensingApiError, sendApiError } from '../../lib/errors';
 import { assertAdminAuthorized } from '../../lib/admin_auth';
 import { logAuditEvent, type AuditWriter } from '../../lib/audit';
 
@@ -36,7 +36,11 @@ export async function updatePlan(db: PlansDb, input: UpdatePlanInput) {
 
   await logAuditEvent(db.licensingAuditLog, {
     eventType: 'plan_updated',
-    payload: { plan_id: input.plan_id, before: { isActive: before.isActive, amountMinor: before.amountMinor }, after: data } as Prisma.InputJsonValue,
+    payload: {
+      plan_id: input.plan_id,
+      before: { isActive: before.isActive, amountMinor: before.amountMinor },
+      after: data,
+    } as Prisma.InputJsonValue,
   });
 
   return after;
@@ -62,11 +66,7 @@ async function handler(req: VercelRequest, res: VercelResponse) {
     }
     res.status(405).json({ code: 'VALIDATION_ERROR', message: 'GET or PATCH only' });
   } catch (e) {
-    if (e instanceof LicensingApiError) {
-      res.status(400).json({ code: e.code, message: e.message });
-      return;
-    }
-    res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Unexpected error' });
+    sendApiError(res, e);
   }
 }
 

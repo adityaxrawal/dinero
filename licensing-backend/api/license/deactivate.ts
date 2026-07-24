@@ -8,7 +8,8 @@ import { withRequestLogging } from '../../lib/request_logging';
 import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
-import { LicensingApiError } from '../../lib/errors';
+import { LicensingApiError, sendApiError } from '../../lib/errors';
+import { requirePostWithFields } from '../../lib/api_helpers';
 import { logAuditEvent, type AuditWriter } from '../../lib/audit';
 import { consoleEmailSender, type EmailSender } from '../../lib/email';
 
@@ -22,14 +23,24 @@ export interface DeactivateResult {
 
 export type DeactivateDb = {
   licenseToken: {
-    findUnique(args: { where: { deviceFingerprint: string }; include: { account: true } }): Promise<{ id: string; accountId: string; account: { email: string } } | null>;
+    findUnique(args: {
+      where: { deviceFingerprint: string };
+      include: { account: true };
+    }): Promise<{ id: string; accountId: string; account: { email: string } } | null>;
     update: PrismaClient['licenseToken']['update'];
   };
   licensingAuditLog: AuditWriter;
 };
 
-export async function deactivateLicense(db: DeactivateDb, input: DeactivateInput, emailSender: EmailSender = consoleEmailSender): Promise<DeactivateResult> {
-  const token = await db.licenseToken.findUnique({ where: { deviceFingerprint: input.device_id }, include: { account: true } });
+export async function deactivateLicense(
+  db: DeactivateDb,
+  input: DeactivateInput,
+  emailSender: EmailSender = consoleEmailSender
+): Promise<DeactivateResult> {
+  const token = await db.licenseToken.findUnique({
+    where: { deviceFingerprint: input.device_id },
+    include: { account: true },
+  });
   if (!token) {
     throw new LicensingApiError('LICENSE_INVALID', 'No license bound to this device');
   }
@@ -63,24 +74,13 @@ export async function deactivateLicense(db: DeactivateDb, input: DeactivateInput
 }
 
 async function handler(req: VercelRequest, res: VercelResponse) {
-  if (req.method !== 'POST') {
-    res.status(405).json({ code: 'VALIDATION_ERROR', message: 'POST only' });
-    return;
-  }
-  const { device_id } = req.body ?? {};
-  if (!device_id) {
-    res.status(400).json({ code: 'VALIDATION_ERROR', message: 'device_id is required' });
-    return;
-  }
+  if (!requirePostWithFields(req, res, ['device_id'])) return;
+  const { device_id } = req.body;
   try {
     const result = await deactivateLicense(prisma, { device_id });
     res.status(200).json(result);
   } catch (e) {
-    if (e instanceof LicensingApiError) {
-      res.status(400).json({ code: e.code, message: e.message });
-      return;
-    }
-    res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Unexpected error' });
+    sendApiError(res, e);
   }
 }
 

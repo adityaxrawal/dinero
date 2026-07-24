@@ -10,7 +10,8 @@ import { withRequestLogging } from '../../lib/request_logging';
 import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
-import { LicensingApiError } from '../../lib/errors';
+import { LicensingApiError, sendApiError } from '../../lib/errors';
+import { requirePostWithFields, handleAdminSupportError } from '../../lib/api_helpers';
 import { assertAdminAuthorized } from '../../lib/admin_auth';
 import { logAuditEvent, type AuditWriter } from '../../lib/audit';
 
@@ -26,13 +27,19 @@ export interface ResetBindingResult {
 export type ResetBindingDb = {
   account: { findUnique(args: { where: { email: string } }): Promise<{ id: string } | null> };
   licenseToken: {
-    findFirst(args: { where: { accountId: string }; orderBy: { createdAt: 'desc' } }): Promise<{ id: string } | null>;
+    findFirst(args: {
+      where: { accountId: string };
+      orderBy: { createdAt: 'desc' };
+    }): Promise<{ id: string } | null>;
     update: PrismaClient['licenseToken']['update'];
   };
   licensingAuditLog: AuditWriter;
 };
 
-export async function resetDeviceBinding(db: ResetBindingDb, input: ResetBindingInput): Promise<ResetBindingResult> {
+export async function resetDeviceBinding(
+  db: ResetBindingDb,
+  input: ResetBindingInput
+): Promise<ResetBindingResult> {
   if (!input.reason || input.reason.trim().length === 0) {
     throw new LicensingApiError('VALIDATION_ERROR', 'reason is required to reset a device binding');
   }
@@ -67,23 +74,12 @@ export async function resetDeviceBinding(db: ResetBindingDb, input: ResetBinding
 async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     assertAdminAuthorized(req.headers.authorization);
-    if (req.method !== 'POST') {
-      res.status(405).json({ code: 'VALIDATION_ERROR', message: 'POST only' });
-      return;
-    }
-    const { email, reason } = req.body ?? {};
-    if (!email) {
-      res.status(400).json({ code: 'VALIDATION_ERROR', message: 'email is required' });
-      return;
-    }
+    if (!requirePostWithFields(req, res, ['email'])) return;
+    const { email, reason } = req.body;
     const result = await resetDeviceBinding(prisma, { email, reason });
     res.status(200).json(result);
   } catch (e) {
-    if (e instanceof LicensingApiError) {
-      res.status(e.code === 'NOT_FOUND' ? 404 : 400).json({ code: e.code, message: e.message });
-      return;
-    }
-    res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Unexpected error' });
+    handleAdminSupportError(res, e);
   }
 }
 
