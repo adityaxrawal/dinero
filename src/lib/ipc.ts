@@ -882,6 +882,7 @@ export const API = {
   ingestion: {
     startHistoricalScan: (accountId: string, startDate: string, endDate: string) =>
       invokeCommand<string>('scans_historical', { accountId, startDate, endDate }),
+    cancelScan: (accountId: string) => invokeCommand<string>('scans_cancel', { accountId }),
   },
   llm: {
     // Doc 16 §12.3: the single source of truth for the 5-tier model catalog —

@@ -15,12 +15,18 @@ interface GlobalStateContextType {
   setScanStartDate: React.Dispatch<React.SetStateAction<string>>;
   scanEndDate: string;
   setScanEndDate: React.Dispatch<React.SetStateAction<string>>;
-  scanStatus: 'idle' | 'running' | 'done' | 'error';
-  setScanStatus: React.Dispatch<React.SetStateAction<'idle' | 'running' | 'done' | 'error'>>;
+  scanStatus: 'idle' | 'running' | 'done' | 'error' | 'cancelled';
+  setScanStatus: React.Dispatch<
+    React.SetStateAction<'idle' | 'running' | 'done' | 'error' | 'cancelled'>
+  >;
   scanProgress: ScanProgressPayload | null;
   setScanProgress: React.Dispatch<React.SetStateAction<ScanProgressPayload | null>>;
   scanError: string | null;
   setScanError: React.Dispatch<React.SetStateAction<string | null>>;
+  scanStartedAt: number | null;
+  scanFinishedAt: number | null;
+  handleCancelScan: () => Promise<void>;
+  resetScan: () => void;
 
   // Settings Connected Accounts (Doc 03 §8.2: up to 10 simultaneously connected)
   connectedAccounts: ConnectedAccountInfo[];
@@ -90,9 +96,13 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [scanEndDate, setScanEndDate] = useState(() => {
     return new Date().toISOString().split('T')[0];
   });
-  const [scanStatus, setScanStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
+  const [scanStatus, setScanStatus] = useState<
+    'idle' | 'running' | 'done' | 'error' | 'cancelled'
+  >('idle');
   const [scanProgress, setScanProgress] = useState<ScanProgressPayload | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
+  const [scanStartedAt, setScanStartedAt] = useState<number | null>(null);
+  const [scanFinishedAt, setScanFinishedAt] = useState<number | null>(null);
   const unlistenScanRef = useRef<(() => void) | null>(null);
   const [connectedAccounts, setConnectedAccounts] = useState<ConnectedAccountInfo[]>([]);
   const [batchProgress, setBatchProgress] = useState<{
@@ -148,6 +158,8 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
       errors: 0,
     });
     setScanError(null);
+    setScanStartedAt(Date.now());
+    setScanFinishedAt(null);
 
     try {
       if (unlistenScanRef.current) {
@@ -162,6 +174,7 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
       const unlistenDone = await listen<ScanProgressPayload>('scan_completed', (event) => {
         setScanStatus('done');
         setScanProgress(event.payload);
+        setScanFinishedAt(Date.now());
         if (unlistenScanRef.current) {
           unlistenScanRef.current();
           unlistenScanRef.current = null;
@@ -171,6 +184,17 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
       const unlistenError = await listen<{ error: string }>('scan_failed', (event) => {
         setScanStatus('error');
         setScanError(event.payload.error);
+        setScanFinishedAt(Date.now());
+        if (unlistenScanRef.current) {
+          unlistenScanRef.current();
+          unlistenScanRef.current = null;
+        }
+      });
+
+      const unlistenCancelled = await listen<ScanProgressPayload>('scan_cancelled', (event) => {
+        setScanStatus('cancelled');
+        setScanProgress(event.payload);
+        setScanFinishedAt(Date.now());
         if (unlistenScanRef.current) {
           unlistenScanRef.current();
           unlistenScanRef.current = null;
@@ -182,6 +206,7 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
         if (prev) prev();
         unlistenDone();
         unlistenError();
+        unlistenCancelled();
       };
 
       await API.ingestion.startHistoricalScan(
@@ -192,7 +217,24 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
     } catch (err: unknown) {
       setScanStatus('error');
       setScanError(err instanceof Error ? err.message : String(err));
+      setScanFinishedAt(Date.now());
     }
+  };
+
+  const handleCancelScan = async () => {
+    if (!primaryConnectedAccount) return;
+    try {
+      await API.ingestion.cancelScan(primaryConnectedAccount.account_id);
+    } catch (err: unknown) {
+      setScanError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const resetScan = () => {
+    setScanStatus('idle');
+    setScanProgress(null);
+    setScanStartedAt(null);
+    setScanFinishedAt(null);
   };
 
   // ----- Statements State -----
@@ -484,10 +526,14 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
     setScanProgress,
     scanError,
     setScanError,
+    scanStartedAt,
+    scanFinishedAt,
     connectedAccounts,
     setConnectedAccounts,
     refreshConnectedAccounts,
     handleStartScan,
+    handleCancelScan,
+    resetScan,
 
     statementHistory,
     statementLoading,
