@@ -70,7 +70,12 @@ export default function BackgroundTaskIndicator() {
     setDetailsFor((d) => (d === taskId ? null : d));
   };
 
-  const all = Object.values(tasks);
+  // Historical scans get their own status readout in the main app sidebar
+  // (ScanStatusSidebarItem) instead of this floating overlay --
+  // historical_scan.rs only ever registers a static 0/0 "Starting…" entry
+  // here and never ticks real progress into this generic registry, so
+  // surfacing it in this indicator was always misleading.
+  const all = Object.values(tasks).filter((t) => t.task_type !== 'historical_scan');
   if (all.length === 0) return null;
 
   const running = all.filter((t) => t.status === 'running');
