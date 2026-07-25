@@ -21,6 +21,7 @@ import LicenseLockOverlay from '@/components/licensing/LicenseLockOverlay';
 import GracePeriodBanner from '@/components/licensing/GracePeriodBanner';
 import StatementOnlyModeBanner from '@/components/shell/StatementOnlyModeBanner';
 import BackgroundTaskIndicator from '@/components/shell/BackgroundTaskIndicator';
+import ScanStatusSidebarItem from '@/components/layout/ScanStatusSidebarItem';
 import PermissionDeniedOverlay from '@/components/shell/PermissionDeniedOverlay';
 import ConnectionStatusBanner from '@/components/notifications/ConnectionStatusBanner';
 import AlertBanner from '@/components/notifications/AlertBanner';
@@ -401,6 +402,8 @@ export default function AppLayout() {
             const isActive = location.pathname.startsWith(item.path);
             return <SidebarItem key={item.path} item={item} isActive={isActive} />;
           })}
+
+          <ScanStatusSidebarItem />
 
           {/* Status Indicator */}
           <div className="px-6 mt-4 flex items-center justify-between">
