@@ -19,6 +19,7 @@ import {
   Shield,
   Users,
   Settings as SettingsIcon,
+  XCircle,
 } from 'lucide-react';
 import { API, LlmModelInfo, LicenseStatusResponse } from '../lib/ipc';
 import { getLicenseCta } from '../lib/licenseCta';
@@ -26,6 +27,8 @@ import { useGlobalState } from '../lib/GlobalStateContext';
 import { cn } from '@/lib/utils';
 import { PageSidebar } from '@/components/layout/PageSidebar';
 import { Button } from '@/components/ui/button';
+import { formatDuration, estimateEtaSeconds } from '@/lib/scanTiming';
+import { useNowTicker } from '@/hooks/useNowTicker';
 
 import NetworkActivity from '../components/NetworkActivity';
 import PrivacySettings from '../components/settings/PrivacySettings';
@@ -60,13 +63,44 @@ export default function Settings() {
     scanEndDate,
     setScanEndDate,
     scanStatus,
-    setScanStatus,
     scanProgress,
-    setScanProgress,
+    scanStartedAt,
+    scanFinishedAt,
     connectedAccounts,
     handleStartScan,
+    handleCancelScan,
+    resetScan,
   } = useGlobalState();
   const connectedAccount = connectedAccounts[0] ?? null;
+
+  const [isCancelling, setIsCancelling] = useState(false);
+  useEffect(() => {
+    if (scanStatus !== 'running') setIsCancelling(false);
+  }, [scanStatus]);
+
+  const now = useNowTicker(scanStatus === 'running');
+  const elapsedSeconds =
+    scanStartedAt != null ? ((scanFinishedAt ?? now) - scanStartedAt) / 1000 : null;
+  const etaSeconds =
+    scanStatus === 'running' && scanProgress
+      ? estimateEtaSeconds(scanProgress.processed, scanProgress.total, elapsedSeconds ?? 0)
+      : null;
+
+  const handleCancelClick = async () => {
+    let confirmed: boolean;
+    const warning =
+      'Cancel the in-progress scan? Emails already processed keep their imported transactions.';
+    try {
+      const { ask } = await import('@tauri-apps/plugin-dialog');
+      confirmed = await ask(warning, { title: 'Cancel Scan', kind: 'warning' });
+    } catch {
+      confirmed = confirm(warning);
+    }
+    if (!confirmed) return;
+
+    setIsCancelling(true);
+    await handleCancelScan();
+  };
 
   // ── Recovery Phrase ──────────────────────────────────────────────────
   const [recoveryPhrase, setRecoveryPhrase] = useState<string | null>(null);
@@ -327,12 +361,15 @@ export default function Settings() {
                             : 'bg-[#064E3B]/5 border-[#064E3B]/10'
                       )}
                     >
-                      <div className="flex items-center gap-2 mb-4 font-semibold text-[14px]">
+                      <div className="flex items-center gap-2 mb-1 font-semibold text-[14px]">
                         {scanStatus === 'running' && (
                           <Loader2 className="w-4 h-4 animate-spin text-[#064E3B]" />
                         )}
                         {scanStatus === 'done' && (
                           <CheckCircle className="w-4 h-4 text-emerald-600" />
+                        )}
+                        {scanStatus === 'cancelled' && (
+                          <XCircle className="w-4 h-4 text-[#064E3B]/60" />
                         )}
                         {scanStatus === 'error' && <AlertCircle className="w-4 h-4 text-red-600" />}
                         <span
@@ -342,10 +379,23 @@ export default function Settings() {
                             ? 'Scanning emails…'
                             : scanStatus === 'done'
                               ? 'Scan complete!'
-                              : 'Scan failed.'}
+                              : scanStatus === 'cancelled'
+                                ? 'Scan cancelled.'
+                                : 'Scan failed.'}
                           {scanProgress && ` (${scanProgress.processed} / ${scanProgress.total})`}
                         </span>
                       </div>
+
+                      {elapsedSeconds != null && (
+                        <div className="mb-4 text-[12px] text-[#064E3B]/60">
+                          {scanStatus === 'running'
+                            ? `Elapsed: ${formatDuration(elapsedSeconds)}`
+                            : scanStatus === 'done'
+                              ? `Completed in ${formatDuration(elapsedSeconds)}`
+                              : `Ran for ${formatDuration(elapsedSeconds)}`}
+                          {etaSeconds != null && ` · ~${formatDuration(etaSeconds)} remaining`}
+                        </div>
+                      )}
 
                       {scanProgress && scanStatus === 'running' && (
                         <div className="w-full h-1.5 rounded-full overflow-hidden bg-[#064E3B]/10 mb-5">
@@ -429,14 +479,28 @@ export default function Settings() {
                       )}
                       Start Scan
                     </Button>
-                    {(scanStatus === 'done' || scanStatus === 'error') && (
+                    {scanStatus === 'running' && (
+                      <Button
+                        variant="outline"
+                        onClick={handleCancelClick}
+                        disabled={isCancelling}
+                        className="h-9 px-4 font-semibold border-red-300 text-red-600 hover:bg-red-50"
+                      >
+                        {isCancelling ? (
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        ) : (
+                          <XCircle className="w-4 h-4 mr-2" />
+                        )}
+                        {isCancelling ? 'Cancelling…' : 'Cancel Scan'}
+                      </Button>
+                    )}
+                    {(scanStatus === 'done' ||
+                      scanStatus === 'error' ||
+                      scanStatus === 'cancelled') && (
                       <Button
                         variant="outline"
                         className="h-9 px-4 font-semibold border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5"
-                        onClick={() => {
-                          setScanStatus('idle');
-                          setScanProgress(null);
-                        }}
+                        onClick={resetScan}
                       >
                         Clear
                       </Button>
