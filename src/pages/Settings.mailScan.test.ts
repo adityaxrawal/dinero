@@ -8,10 +8,25 @@ import { join } from 'node:path';
 const source = readFileSync(join(__dirname, 'Settings.tsx'), 'utf-8');
 
 describe('Mail Scan: cancel button', () => {
-  it('confirms before cancelling, then calls handleCancelScan', () => {
+  it('opens an in-app confirm dialog rather than a native OS dialog', () => {
+    // A native `ask()`/`window.confirm()` dialog renders outside React's
+    // tree and was found to overlap/garble the button in the Tauri
+    // webview -- this codebase already has a real Dialog component
+    // (see DeleteAccountSection.tsx) for exactly this kind of
+    // confirm-before-destructive-action flow, so cancel reuses it instead.
+    // (Other, unrelated flows in this file -- license deactivation,
+    // recovery phrase -- still legitimately use the native dialog; this
+    // only asserts the cancel-scan handler itself doesn't.)
     expect(source).toMatch(/onClick=\{handleCancelClick\}/);
-    expect(source).toMatch(/await handleCancelScan\(\)/);
-    expect(source).toMatch(/title: 'Cancel Scan'/);
+    expect(source).toMatch(/const handleCancelClick = \(\) => setCancelDialogOpen\(true\)/);
+    expect(source).toMatch(/<Dialog open=\{cancelDialogOpen\} onOpenChange=\{setCancelDialogOpen\}>/);
+  });
+
+  it('only cancels after the dialog is confirmed, then calls handleCancelScan', () => {
+    expect(source).toMatch(/onClick=\{handleConfirmCancelScan\}/);
+    expect(source).toMatch(
+      /const handleConfirmCancelScan = async \(\) => \{[\s\S]{0,120}await handleCancelScan\(\)/
+    );
   });
 
   it('is only rendered while a scan is running', () => {

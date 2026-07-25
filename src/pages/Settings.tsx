@@ -27,6 +27,14 @@ import { useGlobalState } from '../lib/GlobalStateContext';
 import { cn } from '@/lib/utils';
 import { PageSidebar } from '@/components/layout/PageSidebar';
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { formatDuration, estimateEtaSeconds } from '@/lib/scanTiming';
 import { useNowTicker } from '@/hooks/useNowTicker';
 
@@ -86,18 +94,10 @@ export default function Settings() {
       ? estimateEtaSeconds(scanProgress.processed, scanProgress.total, elapsedSeconds ?? 0)
       : null;
 
-  const handleCancelClick = async () => {
-    let confirmed: boolean;
-    const warning =
-      'Cancel the in-progress scan? Emails already processed keep their imported transactions.';
-    try {
-      const { ask } = await import('@tauri-apps/plugin-dialog');
-      confirmed = await ask(warning, { title: 'Cancel Scan', kind: 'warning' });
-    } catch {
-      confirmed = confirm(warning);
-    }
-    if (!confirmed) return;
-
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+  const handleCancelClick = () => setCancelDialogOpen(true);
+  const handleConfirmCancelScan = async () => {
+    setCancelDialogOpen(false);
     setIsCancelling(true);
     await handleCancelScan();
   };
@@ -507,6 +507,46 @@ export default function Settings() {
                     )}
                   </div>
                 </div>
+
+                <Dialog open={cancelDialogOpen} onOpenChange={setCancelDialogOpen}>
+                  <DialogContent
+                    className="sm:max-w-[440px] bg-[#F8E7C9] border-[#064E3B]/20 text-[#064E3B]"
+                    aria-labelledby="cancel-scan-dialog-title"
+                    aria-describedby="cancel-scan-dialog-desc"
+                  >
+                    <DialogHeader>
+                      <DialogTitle
+                        id="cancel-scan-dialog-title"
+                        className="flex items-center gap-2 text-[#064E3B]"
+                      >
+                        <XCircle className="w-5 h-5" aria-hidden="true" />
+                        Cancel Scan
+                      </DialogTitle>
+                      <DialogDescription
+                        id="cancel-scan-dialog-desc"
+                        className="text-[13px] pt-2 text-[#064E3B]/70"
+                      >
+                        Cancel the in-progress scan? Emails already processed keep their imported
+                        transactions.
+                      </DialogDescription>
+                    </DialogHeader>
+                    <DialogFooter>
+                      <Button
+                        variant="outline"
+                        className="border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5"
+                        onClick={() => setCancelDialogOpen(false)}
+                      >
+                        Keep Scanning
+                      </Button>
+                      <Button
+                        className="bg-red-600 text-white hover:bg-red-700"
+                        onClick={handleConfirmCancelScan}
+                      >
+                        Cancel Scan
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
               </section>
             </div>
           )}
