@@ -1,3 +1,4 @@
+use crate::extraction::llm::Layer6Outcome;
 use anyhow::Result;
 use deadpool_sqlite::Pool;
 use regex::Regex;
@@ -1480,6 +1481,71 @@ impl Layer5CrossrefLayer {
 pub struct Layer6LlmLayer {
     pub app_dir: Option<std::path::PathBuf>,
 }
+impl Layer6LlmLayer {
+    /// The real Layer 6 logic, returning the full [`Layer6Outcome`] —
+    /// including the timed-out-vs-failed distinction the `ExtractionLayer`
+    /// trait's fixed `Option<ExtractionResult>` return can't carry. Used
+    /// directly by `run_extraction_ladder` (Layer 6 is called directly, not
+    /// through the `Vec<Box<dyn ExtractionLayer>>`, same as `Layer5CrossrefLayer`
+    /// above); the trait impl below just narrows this for anything that does
+    /// need the plain trait-object interface.
+    async fn run(&self, pool: &Pool, bank_name: &str, body: &str) -> Layer6Outcome {
+        let app_dir = match &self.app_dir {
+            Some(dir) => dir,
+            None => {
+                tracing::warn!("Layer 6: No app_dir provided, cannot locate LLM model");
+                return Layer6Outcome::Failed;
+            }
+        };
+
+        // Whichever model the user actually selected in Settings
+        // (`local_profile.llm_model`, written by `llm_set_active_model`
+        // and by onboarding's `onboarding_save_preferences`), resolved the
+        // same way `llm_get_active_model` resolves it for the Settings UI:
+        // via `resolve_active_model` against what's actually downloaded on
+        // disk. Previously this fell back straight to
+        // `DEFAULT_ACTIVE_MODEL_ID` whenever `local_profile.llm_model` was
+        // unset (e.g. right after "Delete My Data", which wipes `finance.db`
+        // but leaves the `models/` directory untouched) — so a user with a
+        // different model downloaded got a "model not found" failure for a
+        // model they never chose, while Settings correctly showed their real
+        // model as downloaded and active.
+        let stored = match pool.get().await {
+            Ok(conn) => conn
+                .interact(|c| crate::db::local_profile::get_llm_model(c))
+                .await
+                .ok()
+                .and_then(|r| r.ok())
+                .flatten(),
+            Err(_) => None,
+        };
+        let downloaded: Vec<String> = crate::llm_manager::get_available_models()
+            .into_iter()
+            .filter(|m| crate::llm_manager::get_model_path(app_dir, &m.id).is_some())
+            .map(|m| m.id)
+            .collect();
+        let Some(model_id) = crate::llm_manager::resolve_active_model(&downloaded, stored.as_deref())
+        else {
+            tracing::warn!("Layer 6: No downloaded LLM model available");
+            return Layer6Outcome::Failed;
+        };
+
+        tracing::info!(bank_name = bank_name, "Layer 6 (LLM) extraction invoked");
+
+        let engine = crate::extraction::llm::LlmEngine::new(app_dir, &model_id);
+        let result = engine.extract(bank_name, body).await;
+
+        // Track Layer 5 usage rate in structured logs
+        tracing::info!(
+            event = "layer5_usage",
+            bank_name = bank_name,
+            success = matches!(result, Layer6Outcome::Extracted(_)),
+            "Layer 6 fallback utilized"
+        );
+
+        result
+    }
+}
 impl ExtractionLayer for Layer6LlmLayer {
     fn extract<'a>(
         &'a self,
@@ -1488,51 +1554,10 @@ impl ExtractionLayer for Layer6LlmLayer {
         body: &'a str,
     ) -> BoxFuture<'a, Option<ExtractionResult>> {
         Box::pin(async move {
-            let app_dir = match &self.app_dir {
-                Some(dir) => dir,
-                None => {
-                    tracing::warn!("Layer 6: No app_dir provided, cannot locate LLM model");
-                    return None;
-                }
-            };
-
-            // Whichever model the user actually selected in Settings
-            // (`local_profile.llm_model`, written by `llm_set_active_model`
-            // and by onboarding's `onboarding_save_preferences`) —
-            // previously hardcoded to a misspelled id ("gemma-4-e4b" vs the
-            // catalog's real "gemma4_e4b") that could never match a
-            // downloaded file, and ignored the user's selection entirely
-            // regardless. Falls back to the same default Settings' picker
-            // itself defaults to when nothing has been chosen yet.
-            let model_id = match pool.get().await {
-                Ok(conn) => conn
-                    .interact(|c| crate::db::local_profile::get_llm_model(c))
-                    .await
-                    .ok()
-                    .and_then(|r| r.ok())
-                    .flatten()
-                    .unwrap_or_else(|| crate::llm_manager::DEFAULT_ACTIVE_MODEL_ID.to_string()),
-                Err(_) => crate::llm_manager::DEFAULT_ACTIVE_MODEL_ID.to_string(),
-            };
-            if crate::llm_manager::get_model_path(app_dir, &model_id).is_none() {
-                tracing::warn!("Layer 6: Model file not found for {}", model_id);
-                return None;
+            match self.run(pool, bank_name, body).await {
+                Layer6Outcome::Extracted(result) => Some(*result),
+                Layer6Outcome::TimedOut | Layer6Outcome::Failed => None,
             }
-
-            tracing::info!(bank_name = bank_name, "Layer 6 (LLM) extraction invoked");
-
-            let engine = crate::extraction::llm::LlmEngine::new(app_dir, &model_id);
-            let result = engine.extract(bank_name, body).await;
-
-            // Track Layer 5 usage rate in structured logs
-            tracing::info!(
-                event = "layer5_usage",
-                bank_name = bank_name,
-                success = result.is_some(),
-                "Layer 6 fallback utilized"
-            );
-
-            result
         })
     }
     fn layer_name(&self) -> &'static str {
@@ -1742,6 +1767,7 @@ pub async fn run_extraction_ladder(
     app_dir: Option<std::path::PathBuf>,
     llm_eligible: bool,
     internal_date: Option<i64>,
+    layer6_timed_out: &mut bool,
 ) -> Result<Option<ExtractionResult>> {
     let layers: Vec<Box<dyn ExtractionLayer>> = vec![
         Box::new(LearnedPatternLayer),
@@ -1867,7 +1893,12 @@ pub async fn run_extraction_ladder(
     let layer6 = Layer6LlmLayer {
         app_dir: app_dir.clone(),
     };
-    if let Some(mut llm_result) = layer6.extract(pool, bank_name, body).await {
+    let layer6_outcome = layer6.run(pool, bank_name, body).await;
+    if matches!(layer6_outcome, Layer6Outcome::TimedOut) {
+        *layer6_timed_out = true;
+    }
+    if let Layer6Outcome::Extracted(boxed_llm_result) = layer6_outcome {
+        let mut llm_result = *boxed_llm_result;
         if llm_result.is_valid() {
             // Augment with instrument signals.
             let signals = extract_instrument_signals(bank_name, body);
@@ -2068,7 +2099,8 @@ mod tests {
         let pool = setup_db_with_rule("active".to_string()).await;
         let body = "Your amount is 1500 INR at Amazon debit time 123";
 
-        let result = run_extraction_ladder(&pool, "Chase", body, None, false, None)
+        let mut layer6_timed_out = false;
+        let result = run_extraction_ladder(&pool, "Chase", body, None, false, None, &mut layer6_timed_out)
             .await
             .unwrap();
 
@@ -2150,7 +2182,8 @@ mod tests {
         .await
         .unwrap();
 
-        let result = run_extraction_ladder(&pool, "WrongRuleBank", body, None, false, None)
+        let mut layer6_timed_out = false;
+        let result = run_extraction_ladder(&pool, "WrongRuleBank", body, None, false, None, &mut layer6_timed_out)
             .await
             .unwrap()
             .expect("the (wrong) learned rule is schema-valid and must still be returned");
@@ -2192,7 +2225,8 @@ mod tests {
             tracing::subscriber::set_default(tracing_subscriber::registry().with(NoopLayer));
 
         let pool = dummy_pool();
-        let res = run_extraction_ladder(&pool, "Chase", "unparseable body", None, false, None)
+        let mut layer6_timed_out = false;
+        let res = run_extraction_ladder(&pool, "Chase", "unparseable body", None, false, None, &mut layer6_timed_out)
             .await
             .unwrap();
         assert!(res.is_none());
@@ -2234,7 +2268,8 @@ mod tests {
         let _guard = tracing::subscriber::set_default(subscriber);
 
         let pool = dummy_pool();
-        let res = run_extraction_ladder(&pool, "Chase", "unparseable body", None, false, None)
+        let mut layer6_timed_out = false;
+        let res = run_extraction_ladder(&pool, "Chase", "unparseable body", None, false, None, &mut layer6_timed_out)
             .await
             .unwrap();
         assert!(res.is_none());
@@ -3250,7 +3285,8 @@ mod tests {
         // Use BankTemplateLayer body that will match HDFC credit card pattern
         let body =
             "Rs 1500.00 spent on your HDFC Bank CREDIT Card ending 1234 at Amazon on 25-May-23.";
-        let result = run_extraction_ladder(&pool, "HDFC Bank", body, None, false, None)
+        let mut layer6_timed_out = false;
+        let result = run_extraction_ladder(&pool, "HDFC Bank", body, None, false, None, &mut layer6_timed_out)
             .await
             .unwrap();
         assert!(result.is_some());

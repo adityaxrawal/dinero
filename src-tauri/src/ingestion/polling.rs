@@ -42,7 +42,7 @@ pub(crate) fn next_backoff(current: Duration) -> Duration {
 }
 
 /// Applies +/-15% jitter to a backoff duration so concurrent retries don't synchronize.
-fn jittered(d: Duration) -> Duration {
+pub(crate) fn jittered(d: Duration) -> Duration {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|t| t.subsec_nanos())
@@ -401,6 +401,11 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                             &msg_id,
                             app_dir.clone(),
                             llm_eligible,
+                            // Live polling has no batch/retry-queue infrastructure
+                            // (unlike historical_scan's requeue-at-the-end
+                            // mechanism) — a Layer 6 timeout here falls straight
+                            // through to the normal unassigned-transaction path.
+                            false,
                         ).await {
                             Ok(Some(crate::ingestion::message_processor::ProcessResult::TransactionAlert(extracted, boxed_obs, html))) => {
                                 // Doc 15 §2 principle 7 / Doc 12 §6.2a: route to the Transaction
@@ -566,6 +571,14 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                 }
                             }
                             Ok(None) => {}
+                            Ok(Some(crate::ingestion::message_processor::ProcessResult::RetryableFailure)) => {
+                                // Unreachable in practice: this call passes
+                                // allow_llm_retry=false above, so
+                                // process_message never returns this variant
+                                // here. Handled anyway so the match stays
+                                // exhaustive if that ever changes.
+                                tracing::warn!("Realtime poll: msg_id='{}' returned RetryableFailure with no retry path — treating as unprocessed", msg_id);
+                            }
                             Err(e) => {
                                 tracing::error!("Failed to process message {} for account {}: {}", msg_id, account.id, e);
                             }

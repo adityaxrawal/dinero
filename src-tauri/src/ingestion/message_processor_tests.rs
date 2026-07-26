@@ -263,7 +263,7 @@ async fn test_metadata_fetch_before_full_fetch() {
     let client =
         GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
 
-    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, false)
+    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, false, false)
         .await
         .unwrap();
     assert!(
@@ -273,6 +273,280 @@ async fn test_metadata_fetch_before_full_fetch() {
 
     metadata_mock.assert_async().await;
     full_mock.assert_async().await;
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+/// Spec optimization #2: Gate 2a classifies off the metadata-only Subject +
+/// snippet *before* any `format=full` fetch. A verified sender ("HDFC
+/// Bank") sending an unambiguous non-transactional subject must never
+/// trigger the full-body fetch at all -- `full_mock.expect(0)` fails the
+/// test otherwise.
+#[tokio::test]
+async fn test_gate2a_rejects_marketing_subject_without_full_fetch() {
+    let mut server = mockito::Server::new_async().await;
+
+    let metadata_mock = server
+        .mock("GET", "/gmail/v1/users/me/messages/msg1")
+        .match_query(mockito::Matcher::UrlEncoded(
+            "format".into(),
+            "metadata".into(),
+        ))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            serde_json::json!({
+                "id": "msg1",
+                "threadId": "t1",
+                "snippet": "We've updated our terms. No action needed from you.",
+                "payload": {
+                    "mimeType": "multipart/mixed",
+                    "headers": [
+                        {"name": "From", "value": "\"HDFC Bank\" <alerts@hdfcbank.net>"},
+                        {"name": "Subject", "value": "Updated Privacy Policy"}
+                    ]
+                }
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let full_mock = server
+        .mock("GET", "/gmail/v1/users/me/messages/msg1")
+        .match_query(mockito::Matcher::UrlEncoded("format".into(), "full".into()))
+        .expect(0)
+        .create_async()
+        .await;
+
+    let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+
+    let client =
+        GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
+
+    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, false, false)
+        .await
+        .unwrap();
+    assert!(
+        result.is_none(),
+        "an unambiguous non-transactional subject must be rejected at Gate 2a"
+    );
+
+    metadata_mock.assert_async().await;
+    full_mock.assert_async().await;
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+/// Spec optimization #5: a Gate 2a `Noise`/`Unknown` verdict (ambiguous, not
+/// a confident rejection like Marketing/OTP/KYC/Reminder) must land in the
+/// recoverable `ignored_messages` table, not just the audit log.
+#[tokio::test]
+async fn test_gate2a_noise_routes_to_ignored_table() {
+    let mut server = mockito::Server::new_async().await;
+
+    let _metadata_mock = server
+        .mock("GET", "/gmail/v1/users/me/messages/msg1")
+        .match_query(mockito::Matcher::UrlEncoded(
+            "format".into(),
+            "metadata".into(),
+        ))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            serde_json::json!({
+                "id": "msg1",
+                "threadId": "t1",
+                "snippet": "Please review the attached notice.",
+                "payload": {
+                    "mimeType": "multipart/mixed",
+                    "headers": [
+                        {"name": "From", "value": "\"HDFC Bank\" <alerts@hdfcbank.net>"},
+                        {"name": "Subject", "value": "Important notice regarding your account"}
+                    ]
+                }
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let full_mock = server
+        .mock("GET", "/gmail/v1/users/me/messages/msg1")
+        .match_query(mockito::Matcher::UrlEncoded("format".into(), "full".into()))
+        .expect(0)
+        .create_async()
+        .await;
+
+    let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+
+    let client =
+        GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
+
+    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, false, false)
+        .await
+        .unwrap();
+    assert!(result.is_none());
+    full_mock.assert_async().await;
+
+    let conn = pool.get().await.unwrap();
+    let ignored = conn
+        .interact(|c| crate::db::ignored_messages::select_recent(c, 10))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        ignored.len(),
+        1,
+        "a Gate 2a Noise/Unknown verdict must be recorded in ignored_messages, not just discarded"
+    );
+    assert_eq!(ignored[0].message_id, "msg1");
+    assert!(ignored[0].reason.starts_with("gate2a_reject_"));
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+/// Spec optimization #2's Gate 2b test: a metadata Subject that plausibly
+/// looks transactional must still trigger the full-body fetch (Gate 2a must
+/// not falsely reject real transaction candidates just to save bandwidth).
+#[tokio::test]
+async fn test_gate2a_proceeds_to_full_fetch_for_transactional_subject() {
+    let mut server = mockito::Server::new_async().await;
+
+    let _metadata_mock = server
+        .mock("GET", "/gmail/v1/users/me/messages/msg1")
+        .match_query(mockito::Matcher::UrlEncoded(
+            "format".into(),
+            "metadata".into(),
+        ))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            serde_json::json!({
+                "id": "msg1",
+                "threadId": "t1",
+                "snippet": "Rs 500.00 debited from your account.",
+                "payload": {
+                    "mimeType": "multipart/mixed",
+                    "headers": [
+                        {"name": "From", "value": "\"HDFC Bank\" <alerts@hdfcbank.net>"},
+                        {"name": "Subject", "value": "Rs 500 debited from your account"}
+                    ]
+                }
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let full_mock = server
+        .mock("GET", "/gmail/v1/users/me/messages/msg1")
+        .match_query(mockito::Matcher::UrlEncoded("format".into(), "full".into()))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            serde_json::json!({
+                "id": "msg1",
+                "threadId": "t1",
+                "snippet": "Rs 500.00 debited from your account.",
+                "payload": {
+                    "mimeType": "text/plain",
+                    "headers": [
+                        {"name": "From", "value": "\"HDFC Bank\" <alerts@hdfcbank.net>"},
+                        {"name": "Subject", "value": "Rs 500 debited from your account"}
+                    ],
+                    "body": {"data": ""}
+                }
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+
+    let client =
+        GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
+
+    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, false, false).await;
+    assert!(result.is_ok(), "must not error: {:?}", result.err());
+
+    full_mock.assert_async().await;
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+/// Spec optimization #1: a Gate 3 mandatory-field-gate failure (partial
+/// extraction -- merchant found, amount missing) must still land in
+/// `unassigned_transactions` with the specific failure reason, and the
+/// linked `transaction_observations` row must keep the fields that *were*
+/// extracted, not just a raw-body stub.
+#[tokio::test]
+async fn test_gate3_partial_extraction_salvaged_to_unassigned_queue() {
+    let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+
+    let partial_obs = ExtractionResult {
+        merchant_raw: Some("Amazon".to_string()),
+        currency: Some("INR".to_string()),
+        direction: Some("debit".to_string()),
+        event_time: Some(1704067200),
+        extraction_method: "test_layer".to_string(),
+        // amount_minor deliberately left None -- this is the missing field.
+        ..Default::default()
+    };
+    assert!(!MessageProcessor::evaluate_mandatory_field_gate(&partial_obs));
+    let reason = MessageProcessor::gate3_failure_reason(&partial_obs);
+    assert_eq!(reason, "gate3_failed:missing_amount");
+
+    MessageProcessor::record_unassigned_transaction(
+        &pool,
+        "msg_partial",
+        partial_obs,
+        "You spent at Amazon.",
+        None,
+        reason,
+    )
+    .await
+    .unwrap();
+
+    let conn = pool.get().await.unwrap();
+    let (obs_reason, obs_id): (String, String) = conn
+        .interact(|c| {
+            c.query_row(
+                "SELECT reason, observation_id FROM unassigned_transactions",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(obs_reason, "gate3_failed:missing_amount");
+
+    let merchant_raw: Option<String> = conn
+        .interact(move |c| {
+            c.query_row(
+                "SELECT merchant_raw FROM transaction_observations WHERE id = ?1",
+                [obs_id],
+                |r| r.get(0),
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        merchant_raw,
+        Some("Amazon".to_string()),
+        "partial extraction fields must survive into the salvaged observation row"
+    );
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }

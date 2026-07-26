@@ -50,6 +50,19 @@ pub enum ProcessResult {
         crate::extraction::mandate_extractor::MandateExtraction,
         MandateEventType,
     ),
+    /// Layer 6 hit its wall-clock timeout (not a hallucination/rejection —
+    /// the model just didn't finish in time) and the caller allowed a retry
+    /// for this attempt (see `process_message`'s `allow_llm_retry`). Unlike
+    /// every other failure, this is deliberately *not* persisted to
+    /// `unassigned_transactions` yet: the `UNIQUE(source_pipeline,
+    /// source_record_id)` constraint on `transaction_observations` means a
+    /// row inserted now would make a later successful retry silently
+    /// collide as a "duplicate" and get dropped (see
+    /// `insert_observation_idempotent`'s doc comment). The caller is
+    /// responsible for eventually recording the message one way or another
+    /// (retry it with `allow_llm_retry: false`, which falls back to the
+    /// normal unassigned-transaction path on a second failure).
+    RetryableFailure,
 }
 
 pub struct MessageProcessor;
@@ -79,12 +92,19 @@ fn dev_review_full_fetch_enabled() -> bool {
 impl MessageProcessor {
     /// Processes a message by first fetching its metadata to check against a sender/subject gate.
     /// If it passes the gate, it fetches the full message and extracts its contents.
+    /// `allow_llm_retry`: when true, a Layer 6 wall-clock timeout returns
+    /// `ProcessResult::RetryableFailure` instead of recording the message to
+    /// `unassigned_transactions` immediately — the caller gets one chance to
+    /// re-run this message (with `allow_llm_retry: false` on that attempt,
+    /// so a second timeout falls back to the normal unassigned-transaction
+    /// path rather than retrying forever).
     pub async fn process_message(
         pool: &Pool,
         client: &GmailClient,
         message_id: &str,
         app_dir: Option<std::path::PathBuf>,
         llm_eligible: bool,
+        allow_llm_retry: bool,
     ) -> Result<Option<ProcessResult>> {
         // 1. Fetch metadata first (fast, low bandwidth)
         let metadata_msg = client
@@ -187,6 +207,7 @@ impl MessageProcessor {
                     None,
                 )
                 .await;
+                tracing::info!("msg_id='{}' rejected by Gate 1: gate1_verified_noise", message_id);
                 return Ok(None);
             }
             SenderVerificationResult::UnverifiedReject(reason)
@@ -217,9 +238,59 @@ impl MessageProcessor {
                     None,
                 )
                 .await;
+                tracing::info!("msg_id='{}' rejected by Gate 1: {}", message_id, reason);
                 return Ok(None);
             }
         };
+
+        // GATE 2a: Fast Classify off metadata alone (Subject + snippet) --
+        // spec optimization #2. Gmail's `format=metadata` response already
+        // includes `snippet` at no extra cost; classifying on it before
+        // paying for a `FetchFormat::Full` fetch means a verified sender's
+        // 2MB promo/policy email never has its body downloaded at all.
+        let metadata_subject = Self::header_value(&metadata_msg, "subject");
+        let metadata_snippet = metadata_msg.snippet.clone().unwrap_or_default();
+        let fast_class = ContentClassifier::classify(&metadata_subject, &metadata_snippet);
+        if !Self::content_class_may_be_transactional(&fast_class) {
+            crate::ingestion::gmail_telemetry::gmail_telemetry().record_gate_rejection("gate2a");
+            let reason = format!("gate2a_reject_{:?}", fast_class);
+            crate::dev_review::record(
+                "non_transaction",
+                serde_json::to_value(&metadata_msg).unwrap_or_default(),
+                Some(gate1_variant),
+                Some(&current_bank_name),
+                Some(&format!("{fast_class:?}")),
+                None,
+                Some(&reason),
+                Vec::new(),
+            );
+            if matches!(fast_class, ContentClass::Noise | ContentClass::Unknown) {
+                // Weaker signal than the full-body Gate 2 (snippet, not the
+                // whole email) -- an even stronger case for the recoverable
+                // Ignored table over a hard discard (spec optimization #5).
+                Self::record_ignored_noise(
+                    pool,
+                    message_id,
+                    Some(&current_bank_name),
+                    &metadata_subject,
+                    &metadata_snippet,
+                    &reason,
+                )
+                .await;
+            } else {
+                Self::log_rejection(pool, message_id, &reason).await?;
+            }
+            Self::append_to_scan_log(
+                message_id,
+                "REJECTED",
+                &reason,
+                Some(&serde_json::to_value(&metadata_msg).unwrap_or_default()),
+                None,
+            )
+            .await;
+            tracing::info!("msg_id='{}' rejected by Gate 2a: {}", message_id, reason);
+            return Ok(None);
+        }
 
         // 3. If gate passes, fetch full body
         let full_msg = client.fetch_message(message_id, FetchFormat::Full).await?;
@@ -309,13 +380,23 @@ impl MessageProcessor {
                         Some(body_text),
                     )
                     .await;
+                    tracing::info!("msg_id='{}' rejected by Gate 2: {}", message_id, reason);
                     return Ok(None);
                 }
                 ContentClass::Noise | ContentClass::Unknown => {
                     crate::ingestion::gmail_telemetry::gmail_telemetry()
                         .record_gate_rejection("gate2");
                     let reason = format!("gate2_reject_{:?}", content_class);
-                    Self::log_rejection(pool, message_id, &reason).await?;
+                    // Spec optimization #5: recoverable, not a hard discard.
+                    Self::record_ignored_noise(
+                        pool,
+                        message_id,
+                        Some(&current_bank_name),
+                        &subject,
+                        &email_meta.snippet,
+                        &reason,
+                    )
+                    .await;
                     crate::dev_review::record(
                         "non_transaction",
                         serde_json::to_value(&full_msg).unwrap_or_default(),
@@ -334,6 +415,7 @@ impl MessageProcessor {
                         Some(body_text),
                     )
                     .await;
+                    tracing::info!("msg_id='{}' rejected by Gate 2: {}", message_id, reason);
                     return Ok(None);
                 }
                 ContentClass::StatementEmail => {
@@ -422,6 +504,7 @@ impl MessageProcessor {
                     // only signal always available at this point.
                     let internal_date_seconds =
                         Self::internal_date_fallback(&full_msg.internal_date);
+                    let mut layer6_timed_out = false;
                     let extracted_data = crate::extraction::ladder::run_extraction_ladder(
                         pool,
                         &current_bank_name,
@@ -429,6 +512,7 @@ impl MessageProcessor {
                         app_dir.clone(),
                         llm_eligible,
                         internal_date_seconds,
+                        &mut layer6_timed_out,
                     )
                     .await
                     .unwrap_or(None);
@@ -475,6 +559,25 @@ impl MessageProcessor {
                                 .record_gate_rejection("gate3");
                             let reason = Self::gate3_failure_reason(&obs);
                             Self::log_rejection(pool, message_id, reason).await?;
+                            // Spec optimization #1: Gate 2 already confidently
+                            // classified this as a transaction/balance-update —
+                            // a Gate 3 mandatory-field miss must never be a
+                            // silent discard. Salvage whatever fields were
+                            // actually extracted into the Unassigned Queue,
+                            // tagged with the specific missing-field reason
+                            // (`gate3_failed:missing_amount` /
+                            // `gate3_failed:missing_counterparty`) so the user
+                            // can manually complete it instead of the
+                            // transaction vanishing outright.
+                            Self::record_unassigned_transaction(
+                                pool,
+                                message_id,
+                                obs.clone(),
+                                body_text,
+                                email_meta.html.as_deref(),
+                                reason,
+                            )
+                            .await?;
                             crate::dev_review::record(
                                 "non_transaction",
                                 serde_json::to_value(&full_msg).unwrap_or_default(),
@@ -495,12 +598,30 @@ impl MessageProcessor {
                             .await;
                             return Ok(None);
                         }
+                    } else if layer6_timed_out && allow_llm_retry {
+                        // Layer 6 timed out and the caller gave us one retry
+                        // for this message — don't record it to
+                        // `unassigned_transactions` yet (see
+                        // `ProcessResult::RetryableFailure`'s doc comment for
+                        // why that would poison a later successful retry).
+                        Self::log_rejection(pool, message_id, "llm_timeout_retry").await?;
+                        Self::append_to_scan_log(
+                            message_id,
+                            "RETRY",
+                            "llm_timeout_retry",
+                            Some(&serde_json::to_value(&full_msg).unwrap_or_default()),
+                            Some(body_text),
+                        )
+                        .await;
+                        return Ok(Some(ProcessResult::RetryableFailure));
                     } else {
                         Self::log_rejection(pool, message_id, "extraction_failed").await?;
                         Self::record_unassigned_transaction(
                             pool,
                             message_id,
+                            crate::extraction::ladder::ExtractionResult::default(),
                             body_text,
+                            email_meta.html.as_deref(),
                             "extraction_failed",
                         )
                         .await?;
@@ -741,6 +862,57 @@ impl MessageProcessor {
     /// Short tag persisted to `sender_reputation.last_verification_result`
     /// (and used to decide `verified_pass_count`) -- see
     /// `db::sender_reputation::record_sighting`.
+    /// Spec optimization #2's Gate 2b test: "transaction, statement, or
+    /// mandate" — every `ContentClass` that justifies paying for a full-body
+    /// fetch. Everything else (`Noise`/`Unknown`/`Otp`/`Kyc`/`Marketing`/
+    /// `Reminder`) is rejected off metadata alone.
+    fn content_class_may_be_transactional(class: &ContentClass) -> bool {
+        matches!(
+            class,
+            ContentClass::TransactionAlert
+                | ContentClass::BalanceUpdate
+                | ContentClass::StatementEmail
+                | ContentClass::MandateRegistration
+                | ContentClass::MandateCancellation
+        )
+    }
+
+    /// Spec optimization #5: `Noise`/`Unknown` is Gate 2's "I don't know"
+    /// bucket, not a confident rejection like `Otp`/`Marketing`/`Kyc`/
+    /// `Reminder` — a heuristic misfire here must be recoverable, not a hard
+    /// delete. Best-effort: a DB error recording the ignore must not fail
+    /// the caller's early-return (matches `log_rejection`'s existing
+    /// best-effort framing elsewhere in this file).
+    async fn record_ignored_noise(
+        pool: &Pool,
+        message_id: &str,
+        bank_name: Option<&str>,
+        subject: &str,
+        snippet: &str,
+        reason: &str,
+    ) {
+        let row = crate::db::ignored_messages::IgnoredMessageRow::new(
+            message_id, bank_name, reason, subject, snippet,
+        );
+        if let Ok(conn) = pool.get().await {
+            let _ = conn
+                .interact(move |c| crate::db::ignored_messages::insert(c, &row))
+                .await;
+        }
+    }
+
+    /// Metadata-format messages only carry a `headers` array on `payload`
+    /// (no body) — same shape `evaluate_metadata_gate`/`extract_sender_domain`
+    /// already read, factored out here since Gate 2a needs the Subject too.
+    fn header_value(msg: &Message, name: &str) -> String {
+        msg.payload
+            .as_ref()
+            .and_then(|p| p.headers.as_ref())
+            .and_then(|hs| hs.iter().find(|h| h.name.eq_ignore_ascii_case(name)))
+            .map(|h| h.value.clone())
+            .unwrap_or_default()
+    }
+
     fn classification_tag(result: &SenderVerificationResult) -> &'static str {
         match result {
             SenderVerificationResult::VerifiedTransactionCandidate(_) => {
@@ -821,56 +993,31 @@ impl MessageProcessor {
         Ok(())
     }
 
-    /// Doc 30 TASK-TXN-001: "If no layer succeeds, route the observation to
-    /// `unassigned_transactions` with `reason = 'extraction_failed'`." A
-    /// `transaction_observations` row is a required FK for
-    /// `unassigned_transactions`, so a minimal observation (raw body only,
-    /// no extracted fields) is recorded first, mirroring the
-    /// `source_pipeline`/`source_record_id` convention used by the
-    /// successful-extraction path.
-    async fn record_unassigned_transaction(
+    /// Doc 30 TASK-TXN-001 / spec optimization #1: "never silently drop data
+    /// Gate 2 believed was a transaction." Called both when extraction found
+    /// nothing at all (`obs = ExtractionResult::default()`) and when Gate 3's
+    /// mandatory-field check rejected a *partial* extraction (missing amount
+    /// or counterparty) — the latter previously bypassed this function
+    /// entirely and was audit-logged only, discarding whatever fields *were*
+    /// found. Reuses `normalize_observation` (the same obs -> row conversion
+    /// the successful-extraction path uses via
+    /// `queues::process_transaction_job`) so a partial extraction keeps
+    /// every field it actually resolved, not just the raw body.
+    pub(crate) async fn record_unassigned_transaction(
         pool: &Pool,
         message_id: &str,
+        obs: crate::extraction::ladder::ExtractionResult,
         body_text: &str,
+        raw_html: Option<&str>,
         reason: &str,
     ) -> Result<()> {
-        let obs_row = crate::db::transaction_observations::TransactionObservationsRow {
-            id: Uuid::new_v4().to_string(),
-            canonical_transaction_id: None,
-            source_pipeline: Some("gmail_transaction".to_string()),
-            source_record_id: Some(message_id.to_string()),
-            source_message_id: Some(message_id.to_string()),
-            source_thread_id: None,
-            statement_id: None,
-            statement_entry_id: None,
-            instrument_id: None,
-            direction: None,
-            amount: None,
-            amount_minor: None,
-            currency: None,
-            event_time: None,
-            event_time_confidence: None,
-            posting_date: None,
-            merchant_raw: None,
-            merchant_normalized: None,
-            reference_id: None,
-            original_amount_minor: None,
-            original_currency: None,
-            exchange_rate: None,
-            balance_after_transaction: None,
-            timezone_at_ingestion: None,
-            fingerprint: None,
-            extraction_method: Some("extraction_failed".to_string()),
-            confidence_score: None,
-            raw_payload_json: Some(json!({ "body": body_text }).to_string()),
-            parser_version: None,
-            emi_total_installments: None,
-            emi_installment_number: None,
-            emi_original_amount_minor: None,
-            is_deleted: false,
-            created_at: Some(Utc::now().naive_utc()),
-            updated_at: Some(Utc::now().naive_utc()),
-        };
+        let obs_row = crate::extraction::normalization::normalize_observation(
+            obs,
+            "gmail_transaction",
+            message_id,
+            Some(body_text),
+            raw_html,
+        );
         let reason_owned = reason.to_string();
 
         let conn = pool.get().await?;

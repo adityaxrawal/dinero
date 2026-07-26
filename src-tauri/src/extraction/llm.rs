@@ -16,6 +16,28 @@ pub struct LlmEngine {
     model_id: String,
 }
 
+/// Result of a Layer 6 attempt, distinguishing a wall-clock timeout (worth
+/// retrying — see `extract`'s doc comment) from every other failure mode.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Layer6Outcome {
+    Extracted(Box<ExtractionResult>),
+    TimedOut,
+    Failed,
+}
+
+/// Internal to `LlmEngine::run_completion` -- one sidecar call's raw outcome,
+/// before `extract` decides whether a `Rejected` attempt gets a
+/// self-correction retry (spec optimization #3).
+enum CompletionAttempt {
+    Extracted(Box<ExtractionResult>),
+    TimedOut,
+    /// Sidecar responded but the output was unparseable JSON or failed
+    /// `validate_against_source` -- carries the raw text so a correction
+    /// prompt can quote it back to the model.
+    Rejected(String),
+    InfraFailed,
+}
+
 #[derive(Debug, Deserialize)]
 struct LlmJsonOutput {
     amount: Option<f64>,
@@ -44,7 +66,7 @@ impl LlmEngine {
     pub fn generate_prompt(bank_name: &str, body_text: &str) -> String {
         format!(
             "Extract the following fields from a bank transaction alert email sent by {bank_name}. \
-             Return ONLY valid JSON and nothing else.\n\
+             Return ONLY valid JSON and nothing else -- no markdown fences, no commentary.\n\
              Fields:\n\
              - amount: number (e.g., 1500.50)\n\
              - currency: string (e.g., \"INR\", \"USD\")\n\
@@ -52,6 +74,26 @@ impl LlmEngine {
              - merchant: string (e.g., \"Amazon\")\n\
              - event_time: integer (Unix timestamp, e.g., 1704067200)\n\
              - reference_id: string (e.g., \"1234567890\")\n\n\
+             Every field's value must come from the email body verbatim (or a straightforward \
+             conversion of it, e.g. \"Rs. 1,500.50\" -> 1500.50) -- never invent a value that \
+             doesn't appear in the text.\n\n\
+             Example 1 (debit):\n\
+             Email Body: \"Dear Customer, Rs 1,299.00 has been debited from your HDFC Bank \
+             account ending 4521 on 05-Jan-24 towards purchase at Amazon. Available balance: \
+             Rs 45,000.00. Ref No 987654321.\"\n\
+             JSON Output: {{\"amount\": 1299.00, \"currency\": \"INR\", \"direction\": \"debit\", \
+             \"merchant\": \"Amazon\", \"event_time\": 1704412200, \"reference_id\": \"987654321\"}}\n\n\
+             Example 2 (credit, no reference number stated):\n\
+             Email Body: \"Your ICICI Bank account XX7890 has been credited with INR 5,000.00 \
+             on 12-Mar-24 from NEFT transfer by RAVI KUMAR.\"\n\
+             JSON Output: {{\"amount\": 5000.00, \"currency\": \"INR\", \"direction\": \"credit\", \
+             \"merchant\": \"RAVI KUMAR\", \"event_time\": 1710201000, \"reference_id\": null}}\n\n\
+             Example 3 (UPI app confirmation, nested/cluttered layout):\n\
+             Email Body: \"Payment Successful You paid \u{20B9}300.00 Paid to Swiggy UPI \
+             Transaction ID: 302514789632 Order confirmed 22 Feb 2024, 8:45 PM\"\n\
+             JSON Output: {{\"amount\": 300.00, \"currency\": \"INR\", \"direction\": \"debit\", \
+             \"merchant\": \"Swiggy\", \"event_time\": 1708613100, \"reference_id\": \"302514789632\"}}\n\n\
+             Now extract from this email:\n\
              Email Body:\n\
              \"\"\"\n\
              {body_text}\n\
@@ -60,35 +102,93 @@ impl LlmEngine {
         )
     }
 
-    /// Doc 30 TASK-TXN-006: hard 10-second execution timeout per email.
+    /// Spec optimization #3's self-correction loop: quotes the model's own
+    /// rejected output back to it along with a concrete complaint, rather
+    /// than re-asking the exact same zero-shot question a second time.
+    fn generate_correction_prompt(bank_name: &str, body_text: &str, previous_output: &str) -> String {
+        format!(
+            "Your previous answer was not accepted: either it was not valid JSON, or one of the \
+             values (amount / merchant / reference_id) does not actually appear anywhere in the \
+             email body below -- every value must come from the text verbatim.\n\n\
+             Your previous answer was:\n{previous_output}\n\n\
+             Look at the email body again carefully and try again. Return ONLY valid JSON, no \
+             markdown fences, no commentary.\n\
+             Fields: amount (number), currency (string), direction (\"credit\" or \"debit\"), \
+             merchant (string), event_time (integer Unix timestamp), reference_id (string).\n\n\
+             Bank: {bank_name}\n\
+             Email Body:\n\
+             \"\"\"\n\
+             {body_text}\n\
+             \"\"\"\n\
+             JSON Output:"
+        )
+    }
+
+    /// Doc 30 TASK-TXN-006: hard execution timeout per email. Was 10s;
+    /// widened to 60s because the completion semaphore in `llama_sidecar.rs`
+    /// now allows parallel execution up to the hardware capability, and
+    /// evaluating a batch of prompts takes longer.
     /// Exceeding it is treated as a Layer 6 failure (falls through to
     /// `unassigned_transactions` once TASK-TXN-009 wires observation
-    /// persistence in).
-    const INFERENCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+    /// persistence in) unless the caller asked for a retry (see
+    /// `Layer6Outcome::TimedOut`).
+    const INFERENCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
-    /// Runs the completion against the `llama_sidecar` server (starting it
-    /// first if needed), bounded by a hard timeout, then a source-text
-    /// sanity check on the result. OOM/crash isolation now comes from
-    /// `llama-server` being a separate OS process (see the struct-level doc
-    /// comment) rather than an in-process `catch_unwind`.
-    pub async fn extract(&self, bank_name: &str, body_text: &str) -> Option<ExtractionResult> {
+    /// Evaluates `prompt` against `llama-server`. Retries transient
+    /// (server-starting) errors up to 120s; returns `TimedOut` if the server
+    /// is up but the prompt inference itself takes longer than
+    /// `INFERENCE_TIMEOUT`. Returns `Failed` on non-recoverable errors (model
+    /// missing, parse failed, hardware incompatible).
+    ///
+    /// Never blocks the main `historical_scan` loop — this async function
+    /// yields to the Tokio runtime while waiting, so other concurrent
+    /// fetches proceed while this one waits for `llama-server` or until its
+    /// single-slot inference lock (`llama_sidecar::completion_semaphore`) is free next time.
+    pub async fn extract(&self, bank_name: &str, body_text: &str) -> Layer6Outcome {
         let prompt = Self::generate_prompt(bank_name, body_text);
+        match self.run_completion(&prompt, body_text).await {
+            CompletionAttempt::Extracted(result) => Layer6Outcome::Extracted(result),
+            CompletionAttempt::TimedOut => Layer6Outcome::TimedOut,
+            CompletionAttempt::Rejected(raw_output) => {
+                debug!("Layer 6 LLM output rejected on first attempt, retrying with correction prompt");
+                let correction_prompt =
+                    Self::generate_correction_prompt(bank_name, body_text, &raw_output);
+                match self.run_completion(&correction_prompt, body_text).await {
+                    CompletionAttempt::Extracted(result) => Layer6Outcome::Extracted(result),
+                    CompletionAttempt::TimedOut => Layer6Outcome::TimedOut,
+                    CompletionAttempt::Rejected(_) => {
+                        debug!("Layer 6 LLM output rejected again after self-correction retry");
+                        Layer6Outcome::Failed
+                    }
+                    CompletionAttempt::InfraFailed => Layer6Outcome::Failed,
+                }
+            }
+            CompletionAttempt::InfraFailed => Layer6Outcome::Failed,
+        }
+    }
 
+    /// One prompt -> one sidecar call -> one classified outcome. Factored out
+    /// of `extract` so the self-correction retry (spec optimization #3) can
+    /// reuse the exact same timeout/backoff/parse/validate logic instead of
+    /// duplicating it.
+    async fn run_completion(&self, prompt: &str, body_text: &str) -> CompletionAttempt {
         let mut retry_delay = std::time::Duration::from_millis(1000);
         let max_delay = std::time::Duration::from_millis(2000);
         let max_total_wait = std::time::Duration::from_secs(120);
         let start_time = std::time::Instant::now();
 
+        let mut timed_out = false;
         let raw_output = loop {
-            let result = tokio::time::timeout(
-                Self::INFERENCE_TIMEOUT,
-                crate::llama_sidecar::complete(&self.app_dir, &self.model_id, &prompt),
-            )
-            .await;
+            let result = crate::llama_sidecar::complete(
+                &self.app_dir, 
+                &self.model_id, 
+                prompt,
+                Self::INFERENCE_TIMEOUT
+            ).await;
 
             match result {
-                Ok(Ok(output)) => break Some(output),
-                Ok(Err(e)) => {
+                Ok(output) => break Some(output),
+                Err(e) => {
                     let msg = e.to_string();
                     if (msg.contains("starting") || msg.contains("try again shortly"))
                         && start_time.elapsed() < max_total_wait
@@ -97,30 +197,32 @@ impl LlmEngine {
                         retry_delay = std::cmp::min(retry_delay * 2, max_delay);
                         continue;
                     }
+                    if msg.contains("timeout") || msg.contains("timed out") {
+                        error!(
+                            "Layer 6 LLM Failure: inference exceeded {:?} timeout",
+                            Self::INFERENCE_TIMEOUT
+                        );
+                        timed_out = true;
+                        break None;
+                    }
                     error!("Layer 6 LLM Failure: {}", e);
-                    break None;
-                }
-                Err(_) => {
-                    error!(
-                        "Layer 6 LLM Failure: inference exceeded {:?} timeout",
-                        Self::INFERENCE_TIMEOUT
-                    );
                     break None;
                 }
             }
         };
 
         match raw_output {
-            Some(raw) => {
-                let parsed = self.parse_json_to_result(&raw)?;
-                if Self::validate_against_source(&parsed, body_text) {
-                    Some(parsed)
-                } else {
-                    debug!("Layer 6 LLM output rejected: value not present in source text");
-                    None
+            Some(raw) => match self.parse_json_to_result(&raw) {
+                Some(parsed) if Self::validate_against_source(&parsed, body_text) => {
+                    CompletionAttempt::Extracted(Box::new(parsed))
                 }
-            }
-            None => None,
+                _ => {
+                    debug!("Layer 6 LLM output rejected: value not present in source text");
+                    CompletionAttempt::Rejected(raw)
+                }
+            },
+            None if timed_out => CompletionAttempt::TimedOut,
+            None => CompletionAttempt::InfraFailed,
         }
     }
 
@@ -363,6 +465,36 @@ mod tests {
             prompt.contains("HDFC Bank"),
             "prompt must include the bank name Gate 1 already resolved: {prompt}"
         );
+    }
+
+    /// Spec optimization #3: the prompt must carry worked examples, not just
+    /// a bare field-list instruction -- cheap structural proof the few-shot
+    /// block is actually present (multiple "JSON Output:" occurrences: the
+    /// examples plus the real trailing prompt).
+    #[test]
+    fn test_prompt_includes_few_shot_examples() {
+        let prompt = LlmEngine::generate_prompt("HDFC Bank", "You spent Rs 500 at Amazon.");
+        let json_output_count = prompt.matches("JSON Output:").count();
+        assert!(
+            json_output_count >= 3,
+            "prompt must include multiple worked examples, not just the trailing prompt: \
+             found {json_output_count} \"JSON Output:\" occurrences in: {prompt}"
+        );
+        assert!(prompt.contains("Example 1"), "prompt must include worked examples");
+    }
+
+    /// Spec optimization #3's self-correction loop: the correction prompt
+    /// must quote the model's own rejected output back to it, and still
+    /// include the original email body to re-ground the retry.
+    #[test]
+    fn test_correction_prompt_quotes_previous_output() {
+        let prompt = LlmEngine::generate_correction_prompt(
+            "HDFC Bank",
+            "You spent Rs 500 at Amazon.",
+            "garbage output",
+        );
+        assert!(prompt.contains("garbage output"));
+        assert!(prompt.contains("You spent Rs 500 at Amazon."));
     }
 
     /// Doc 30 TASK-TXN-006 acceptance test. Exercising real `llama-server`
