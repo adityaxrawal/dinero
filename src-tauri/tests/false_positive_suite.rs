@@ -180,7 +180,8 @@ async fn process_record(pool: &deadpool_sqlite::Pool, rec: &GoldenRecord) -> Pip
     }
 
     // Full extraction ladder (Layers 1-4).
-    let extracted = run_extraction_ladder(pool, bank_name, body, None, false, None)
+    let mut layer6_timed_out = false;
+    let extracted = run_extraction_ladder(pool, bank_name, body, None, false, None, &mut layer6_timed_out)
         .await
         .expect("run_extraction_ladder returned an Err, not a rejection");
     let Some(obs) = extracted else {

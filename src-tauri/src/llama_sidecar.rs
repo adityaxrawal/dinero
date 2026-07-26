@@ -29,7 +29,6 @@ use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, Semaphore};
 
 const LLAMA_CPP_RELEASE_TAG: &str = "b10068";
-const LLAMA_SERVER_PORT: u16 = 58121;
 
 /// Runtime-configurable count of concurrent `/completion` requests
 /// `llama-server` will batch-process at once, set by the user in Settings
@@ -247,12 +246,20 @@ async fn health_check(port: u16) -> bool {
         .unwrap_or(false)
 }
 
+fn get_free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|listener| listener.local_addr())
+        .map(|addr| addr.port())
+        .unwrap_or(58121)
+}
+
 /// Spawns `llama-server` for `model_id` and polls `/health` until ready
 /// (or `SERVER_STARTUP_TIMEOUT` elapses). Runs as a detached background
 /// task — never awaited directly by a request in flight, so a cold model
 /// load never blocks any single email's Layer 6 budget.
 async fn start_server_task(app_dir: PathBuf, model_id: String, slots: usize) {
-    let outcome: Result<Option<Child>> = async {
+    let port = get_free_port();
+    let outcome: Result<Child> = async {
         let binary = ensure_binary(&app_dir).await?;
         let model_path = crate::llm_manager::get_model_path(&app_dir, &model_id)
             .ok_or_else(|| anyhow!("model file not present on disk for {model_id}"))?;
@@ -261,7 +268,7 @@ async fn start_server_task(app_dir: PathBuf, model_id: String, slots: usize) {
             .arg("-m")
             .arg(&model_path)
             .arg("--port")
-            .arg(LLAMA_SERVER_PORT.to_string())
+            .arg(port.to_string())
             .arg("--host")
             .arg("127.0.0.1")
             .arg("-c")
@@ -287,40 +294,10 @@ async fn start_server_task(app_dir: PathBuf, model_id: String, slots: usize) {
         let deadline = Instant::now() + SERVER_STARTUP_TIMEOUT;
         loop {
             if let Ok(Some(exit_status)) = child.try_wait() {
-                // A common dev-mode cause: an earlier run of this same app
-                // (killed by a hot-reload restart or force-quit) never got to
-                // call `shutdown()`, so its `llama-server` child is still
-                // alive and holding the port -- our own spawn above then
-                // fails to bind and exits immediately. Rather than declaring
-                // a hard `Failed` and sitting out `FAILURE_COOLDOWN` with
-                // Layer 6 unavailable the whole time, check whether whatever
-                // already holds the port is actually healthy before giving
-                // up; if so, adopt it (we don't own its process, so no
-                // `Child` to store — `shutdown()` simply has nothing of ours
-                // to kill).
-                //
-                // Caveat: `/health` only proves *a* server answers, not that
-                // it has `model_id` loaded rather than whatever the prior
-                // session last selected. Not verified here -- llama-server's
-                // model-introspection endpoint shape isn't stable enough
-                // across releases to key correctness off of, and a wrong
-                // model's output still has to clear
-                // `LlmEngine::validate_against_source`'s merchant/reference/
-                // amount check same as any other Layer 6 attempt, bounding
-                // the damage to an extra miss rather than a silent bad
-                // value. Logged so a real mismatch is at least diagnosable.
-                if health_check(LLAMA_SERVER_PORT).await {
-                    tracing::warn!(
-                        "adopted an already-running llama-server on port {LLAMA_SERVER_PORT} \
-                         instead of starting our own for model_id='{model_id}' -- its actual \
-                         loaded model is unverified"
-                    );
-                    break Ok(None);
-                }
                 anyhow::bail!("llama-server exited during startup: {exit_status}");
             }
-            if health_check(LLAMA_SERVER_PORT).await {
-                break Ok(Some(child));
+            if health_check(port).await {
+                break Ok(child);
             }
             if Instant::now() > deadline {
                 let _ = child.kill().await;
@@ -336,13 +313,11 @@ async fn start_server_task(app_dir: PathBuf, model_id: String, slots: usize) {
     let mut st = state().lock().await;
     match outcome {
         Ok(child) => {
-            st.child = child;
+            st.child = Some(child);
             st.model_id = Some(model_id);
             st.parallel_slots = slots;
             st.semaphore = Arc::new(Semaphore::new(slots));
-            st.state = ServerState::Ready {
-                port: LLAMA_SERVER_PORT,
-            };
+            st.state = ServerState::Ready { port };
         }
         Err(e) => {
             tracing::error!("llama-server startup failed: {e}");
@@ -417,14 +392,16 @@ struct CompletionResponse {
 /// cold start and the completion slot below is `try_acquire`d rather than
 /// waited on, so nothing here can eat into that budget except the actual
 /// HTTP request.
-pub async fn complete(app_dir: &Path, model_id: &str, prompt: &str) -> Result<String> {
+pub async fn complete(app_dir: &Path, model_id: &str, prompt: &str, timeout: Duration) -> Result<String> {
     let (port, semaphore) = ensure_server_ready(app_dir, model_id).await?;
     let _permit = semaphore
-        .try_acquire()
-        .context("llama-server busy with another completion")?;
+        .acquire()
+        .await
+        .context("llama-server semaphore closed")?;
 
     let resp = http_client()
         .post(format!("http://127.0.0.1:{port}/completion"))
+        .timeout(timeout)
         .json(&serde_json::json!({
             "prompt": prompt,
             "n_predict": 256,

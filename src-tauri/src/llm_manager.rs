@@ -355,11 +355,11 @@ pub fn get_model_path(app_dir: &Path, model_id: &str) -> Option<PathBuf> {
             Some(path)
         }
         Ok(meta) => {
-            tracing::error!(
+            tracing::warn!(
                 model_id,
                 actual_bytes = meta.len(),
                 expected_bytes = expected_bytes as u64,
-                "model file is drastically undersized -- likely a truncated/corrupt download, refusing to load it"
+                "Model file is undersized (possibly actively downloading or a truncated/cancelled download)"
             );
             None
         }
