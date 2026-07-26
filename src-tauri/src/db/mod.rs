@@ -13,6 +13,7 @@ pub mod crypto;
 pub mod feedback_log;
 #[cfg(test)]
 mod feedback_log_tests;
+pub mod ignored_messages;
 pub mod instruments;
 pub mod local_profile;
 pub mod maintenance;

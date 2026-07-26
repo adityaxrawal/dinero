@@ -59,7 +59,7 @@ pub fn run() {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,dinero_app_lib=trace,dinero_app=trace"));
 
     tracing_subscriber::registry()
         .with(env_filter)
@@ -714,6 +714,16 @@ pub fn run() {
                     if let Ok(conn) = pool_for_backup.get().await {
                         let _ = conn
                             .interact(|c| crate::db::retention::sweep_raw_payloads(c))
+                            .await;
+                    }
+
+                    // Doc-30-style optimization #5: purges `ignored_messages`
+                    // rows past their 30-day TTL. Runs on the same daily
+                    // cadence as the raw-payload sweep above — no dedicated
+                    // background task needed for a monthly-scale cleanup.
+                    if let Ok(conn) = pool_for_backup.get().await {
+                        let _ = conn
+                            .interact(|c| crate::db::ignored_messages::purge_expired(c))
                             .await;
                     }
 
