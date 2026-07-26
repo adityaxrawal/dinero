@@ -415,3 +415,214 @@ async fn test_quota_pause_and_resume_behavior() {
 
     SCAN_QUEUE_PAUSED.store(false, Ordering::Relaxed);
 }
+
+/// Root-cause regression for the reported "clicking Cancel doesn't stop the
+/// scan" bug. The pre-existing cancellation test
+/// (`historical_scan.rs`'s `test_historical_scan_cancellation_emits_scan_cancelled_not_scan_completed`)
+/// only proves the flag-check mechanism works when cancellation is requested
+/// *before* the scan starts (nothing is ever in flight). It never exercises
+/// the real `scans_cancel` command against a scan with genuinely concurrent
+/// in-flight fetches (up to `MAX_CONCURRENT_FETCHES` = 50 in production) --
+/// the actual scenario a user hits clicking Cancel mid-scan. This drives the
+/// real command against a large corpus and proves the scan halts well short
+/// of the full total, not just that the checkpoint eventually says
+/// "cancelled" after silently processing everything anyway.
+#[tokio::test]
+async fn test_cancel_mid_flight_stops_before_processing_all_messages() {
+    let _guard = test_lock().lock().unwrap();
+    SCAN_QUEUE_PAUSED.store(false, Ordering::Relaxed);
+
+    let pool = migrated_pool("cancel_mid_flight").await;
+    let app = mock_app();
+    let handles = spawn_queues(app.clone(), pool.clone());
+    app.manage(handles);
+
+    let (server, hits) = mock_gmail_server().await;
+    let client =
+        GmailClient::new_with_base_url("fake_token".to_string(), pool.clone(), server.url(), None);
+
+    const TOTAL: usize = 300;
+    let ids: Vec<String> = (0..TOTAL).map(|i| format!("msg_{i}")).collect();
+    // `scans_cancel` validates the `gmail_<uuid>` shape (see
+    // `validate_account_id`) -- unlike this file's other tests, which
+    // construct/read checkpoints directly and never pass their plain
+    // "acc_..." id through that validator.
+    let account_id = format!("gmail_{}", uuid::Uuid::new_v4());
+
+    let state = ScanCheckpointState {
+        start_date: "2026-01-01".into(),
+        end_date: "2026-06-30".into(),
+        all_message_ids: ids,
+        processed_count: 0,
+        ..Default::default()
+    };
+
+    let scan_pool = pool.clone();
+    let scan_app = app.clone();
+    let scan_account = account_id.clone();
+    let handle = tokio::spawn(async move {
+        run_scan_batches(scan_app, scan_pool, scan_account, state, client).await
+    });
+
+    // Let a handful of real fetches actually land before requesting
+    // cancellation -- proves this exercises genuinely concurrent in-flight
+    // requests, not a cancel-before-anything-happens shortcut.
+    for _ in 0..2000 {
+        if hits.load(Ordering::SeqCst) >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(
+        hits.load(Ordering::SeqCst) >= 2,
+        "scan never got moving after 10s ({} hits) -- test setup is broken, not proving cancellation",
+        hits.load(Ordering::SeqCst)
+    );
+
+    dinero_app_lib::ingestion::historical_scan::scans_cancel(account_id.clone())
+        .await
+        .expect("scans_cancel failed");
+
+    tokio::time::timeout(Duration::from_secs(30), handle)
+        .await
+        .expect("scan did not stop within 30s of cancellation -- this is the reported bug")
+        .expect("task panicked")
+        .expect("run_scan_batches failed");
+
+    let conn = pool.get().await.unwrap();
+    let cp = conn
+        .interact(move |c| get_checkpoint(c, "historical_scan", &account_id))
+        .await
+        .unwrap()
+        .unwrap()
+        .expect("checkpoint must exist after a cancelled scan");
+    assert_eq!(
+        cp.status, "cancelled",
+        "a genuinely cancelled mid-flight scan must checkpoint as cancelled, not completed"
+    );
+
+    // Every well-formed message is fetched twice (metadata, then full) --
+    // see test_checkpoint_resume_after_interruption's identical note. If
+    // cancellation actually stopped the fetch loop, total hits must land far
+    // short of processing the full 300-message corpus.
+    let final_hits = hits.load(Ordering::SeqCst);
+    assert!(
+        final_hits < TOTAL * 2,
+        "cancellation did not stop the scan early: {final_hits} fetches happened, \
+         which is the full {TOTAL}-message corpus (x2 for metadata+full) -- \
+         the scan ran to completion instead of stopping"
+    );
+}
+
+/// Root-cause regression, second half: the previous test proves cancellation
+/// works when in-flight fetches resolve at a normal pace. It does NOT cover
+/// the actual production failure mode -- every in-flight fetch stuck at once
+/// (a Gmail rate-limit backoff sleep, or an unresponsive local LLM call
+/// during Layer 6 classification). Before the fix, `run_scan_batches`' loop
+/// only got a chance to check `is_scan_cancelled` when `join_set.join_next()`
+/// resolved -- if every in-flight task is stuck, that never happens, and
+/// `scans_cancel` has no way to take effect no matter how long the user
+/// waits. This makes every in-flight fetch hang indefinitely and asserts the
+/// scan still stops within a few seconds (the new 1s cancellation-poll
+/// ticker), not "whenever the stuck request happens to resolve, if ever."
+///
+/// `flavor = "multi_thread"`: the mock server's response handler blocks its
+/// worker thread with `std::thread::sleep` to simulate a hung request --
+/// needs more than one worker thread so the scan's own polling loop (a
+/// separate, non-blocking task) can still make progress.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_cancel_is_not_blocked_by_a_stuck_in_flight_fetch() {
+    let _guard = test_lock().lock().unwrap();
+    SCAN_QUEUE_PAUSED.store(false, Ordering::Relaxed);
+
+    let pool = migrated_pool("cancel_stuck_fetch").await;
+    let app = mock_app();
+    let handles = spawn_queues(app.clone(), pool.clone());
+    app.manage(handles);
+
+    // A hand-rolled hanging mock rather than `mock_gmail_server()`: every
+    // request blocks for far longer than this test's assertion window,
+    // simulating an in-flight fetch that never resolves on its own.
+    const HANG_SECS: u64 = 8;
+    let mut server = mockito::Server::new_async().await;
+    server
+        .mock(
+            "GET",
+            mockito::Matcher::Regex(r"^/gmail/v1/users/me/messages/msg_\d+$".to_string()),
+        )
+        .match_query(mockito::Matcher::Any)
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body_from_request(move |request| {
+            std::thread::sleep(Duration::from_secs(HANG_SECS));
+            let path = request.path();
+            let idx: usize = path
+                .rsplit('_')
+                .next()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            serde_json::to_vec(&synthetic_message_json(idx)).unwrap()
+        })
+        .expect_at_least(1)
+        .create_async()
+        .await;
+
+    let client =
+        GmailClient::new_with_base_url("fake_token".to_string(), pool.clone(), server.url(), None);
+
+    // Small corpus -- every fetch it dispatches gets stuck in the mock's 8s
+    // sleep, so there's no risk of exhausting the test's worker threads.
+    const TOTAL: usize = 2;
+    let ids: Vec<String> = (0..TOTAL).map(|i| format!("msg_{i}")).collect();
+    let account_id = format!("gmail_{}", uuid::Uuid::new_v4());
+
+    let state = ScanCheckpointState {
+        start_date: "2026-01-01".into(),
+        end_date: "2026-06-30".into(),
+        all_message_ids: ids,
+        processed_count: 0,
+        ..Default::default()
+    };
+
+    let scan_pool = pool.clone();
+    let scan_app = app.clone();
+    let scan_account = account_id.clone();
+    let handle = tokio::spawn(async move {
+        run_scan_batches(scan_app, scan_pool, scan_account, state, client).await
+    });
+
+    // Give the scan a brief moment to actually dispatch its fetches (so
+    // they're genuinely in flight and stuck, not cancelled before anything
+    // started), well short of the 8s hang.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    dinero_app_lib::ingestion::historical_scan::scans_cancel(account_id.clone())
+        .await
+        .expect("scans_cancel failed");
+
+    // The old code could only notice cancellation once a fetch resolved --
+    // with every fetch stuck for HANG_SECS (8s), that means this would not
+    // return until ~8s. The fix's 1s poll ticker should catch it well
+    // before that; 5s leaves comfortable margin over the ticker's 1s period
+    // while still failing well short of the old behavior's ~8s floor.
+    tokio::time::timeout(Duration::from_secs(5), handle)
+        .await
+        .expect(
+            "scan did not stop within 5s of cancellation while every in-flight fetch was stuck \
+             -- this is the reported \"Cancel doesn't stop the process\" bug",
+        )
+        .expect("task panicked")
+        .expect("run_scan_batches failed");
+
+    let conn = pool.get().await.unwrap();
+    let cp = conn
+        .interact(move |c| get_checkpoint(c, "historical_scan", &account_id))
+        .await
+        .unwrap()
+        .unwrap()
+        .expect("checkpoint must exist after a cancelled scan");
+    assert_eq!(
+        cp.status, "cancelled",
+        "a scan cancelled while every in-flight fetch was stuck must still checkpoint as cancelled"
+    );
+}

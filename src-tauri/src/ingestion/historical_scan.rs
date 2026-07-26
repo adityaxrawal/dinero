@@ -399,8 +399,10 @@ async fn run_scan<R: tauri::Runtime>(
         // far, so at minimum the numbers visibly move.
         let account_id_for_search_progress = account_id.clone();
         let app_for_search_progress = app.clone();
+        tracing::info!("Starting search_messages with query: {}", query);
         let ids = client
             .search_messages(&query, move |found_so_far| {
+                tracing::info!("search_messages found so far: {}", found_so_far);
                 let _ = crate::ipc::events::emit_event(
                     &app_for_search_progress,
                     crate::ipc::events::AppEvent::ScanProgress,
@@ -418,6 +420,7 @@ async fn run_scan<R: tauri::Runtime>(
                 );
             })
             .await?;
+        tracing::info!("search_messages completed. Total messages found: {}", ids.len());
         state.all_message_ids = ids;
         state.processed_count = 0;
 
@@ -527,7 +530,9 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
         msg_id: String,
         app_dir: Option<std::path::PathBuf>,
         llm_eligible: bool,
+        allow_llm_retry: bool,
     ) {
+        tracing::info!("Spawning fetch for msg_id='{}' allow_llm_retry={}", msg_id, allow_llm_retry);
         join_set.spawn(async move {
             let res = MessageProcessor::process_message(
                 &pool_arc,
@@ -535,6 +540,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                 &msg_id,
                 app_dir,
                 llm_eligible,
+                allow_llm_retry,
             )
             .await;
             (msg_id, res)
@@ -542,6 +548,19 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
     }
 
     let mut ids_iter = to_process.into_iter().skip(processed_count);
+
+    // Messages that fail transiently — a network fetch that exhausted its
+    // in-request retries (`gmail_client.rs`'s own 3-attempt backoff), or a
+    // Layer 6 timeout — get one more shot at the *end* of this queue rather
+    // than being dropped. Requeuing to the *front* instead would let a
+    // persistently-failing message cut in line ahead of everything else
+    // forever (historical_scan and the LLM sidecar both cap concurrency to a
+    // single effective slot — see `llama_sidecar::completion_semaphore`), so
+    // "end of queue" means it's only retried after every originally-planned
+    // message already had its turn. `retried_once` bounds it to exactly one
+    // retry per message so a permanently-broken message can't loop forever.
+    let mut retry_queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    let mut retried_once: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     // Doc 30 TASK-GMAIL-007: keep up to MAX_CONCURRENT_FETCHES tasks in
     // flight at once. Priming here, then refilling one-for-one as each
@@ -552,24 +571,68 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
     // that used to gate it.
     for _ in 0..MAX_CONCURRENT_FETCHES {
         wait_while_paused().await;
-        match ids_iter.next() {
-            Some(msg_id) => spawn_fetch(
+        // Fresh ids get `allow_llm_retry: true` (may earn one retry on
+        // failure); ids pulled back off `retry_queue` are already using
+        // their one retry, so `false` — whatever happens this time is final.
+        match ids_iter.next().map(|id| (id, true)).or_else(|| retry_queue.pop_front().map(|id| (id, false))) {
+            Some((msg_id, allow_llm_retry)) => spawn_fetch(
                 &mut join_set,
                 Arc::clone(&client),
                 Arc::clone(&pool_arc),
                 msg_id,
                 app_dir.clone(),
                 llm_eligible,
+                allow_llm_retry,
             ),
             None => break,
         }
     }
 
-    while let Some(join_res) = join_set.join_next().await {
+    // TASK-RT-CANCEL-RESPONSIVE: `join_set.join_next().await` alone only
+    // gets a chance to notice `is_scan_cancelled` once some in-flight fetch
+    // completes. If every currently in-flight task is stuck -- a Gmail
+    // rate-limit backoff sleep (`execute_with_retry`'s up-to-~14s
+    // exponential backoff), or a slow/unresponsive local LLM call during
+    // Layer 6 classification -- a `scans_cancel` request could go
+    // unnoticed for an unbounded amount of time, which is exactly the
+    // "clicked Cancel and it never stops" symptom this fixes. Racing
+    // `join_next()` against a 1s ticker bounds worst-case cancellation
+    // latency to ~1s no matter how slow or stuck any individual in-flight
+    // task is. The per-message check further down is left in place too --
+    // this is additive, not a replacement.
+    let mut cancel_poll = tokio::time::interval(std::time::Duration::from_secs(1));
+    cancel_poll.tick().await; // first tick fires immediately; consume it up front
+
+    loop {
+        let join_res = tokio::select! {
+            res = join_set.join_next() => match res {
+                Some(r) => r,
+                None => break,
+            },
+            _ = cancel_poll.tick() => {
+                if is_scan_cancelled(&account_id) {
+                    tracing::warn!("Scan cancelled by user for account_id='{}'", account_id);
+                    clear_scan_cancellation(&account_id);
+                    was_cancelled = true;
+                    break;
+                }
+                continue;
+            }
+        };
+
+        // `processed_count` is a resume cursor into `all_message_ids`
+        // (`skip(processed_count)` at scan start), not a raw completion
+        // tally — a retried message must only advance it once, on whichever
+        // of its (up to two) attempts is its *first*, or a scan with retries
+        // would overrun `total` and desync resume from the original list.
+        let mut advance_processed_count = true;
         match join_res {
             Ok((msg_id, result)) => {
+                advance_processed_count = !retried_once.contains(&msg_id);
+                tracing::info!("Finished processing msg_id='{}'", msg_id);
                 match result {
                     Ok(Some(ProcessResult::TransactionAlert(extracted, boxed_obs, html))) => {
+                        tracing::info!("Classified msg_id='{}' as Transaction", msg_id);
                         // Doc 15 §2 principle 7 / Doc 12 §6.2a: route to the Transaction
                         // Queue rather than processing inline — no code path may write an
                         // observation directly, only via the queue's shared worker logic.
@@ -601,6 +664,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                         }
                     }
                     Ok(Some(ProcessResult::StatementEmail(extracted, email_meta))) => {
+                        tracing::info!("Classified msg_id='{}' as Statement", msg_id);
                         // Doc 15 §2 principle 7 / Doc 12 §7.2: email-detected statements
                         // route onto the same Statement Queue as manual uploads — no
                         // lesser-validated path for either entry point.
@@ -723,6 +787,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                         mandate_extraction,
                         event_type,
                     ))) => {
+                        tracing::info!("Classified msg_id='{}' as Mandate", msg_id);
                         // docs/superpowers/specs/2026-07-18-mandate-tracking-design.md
                         // §4.2: route to the Mandate Queue, same shared worker logic
                         // as the live-poll entry point.
@@ -747,21 +812,50 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                         }
                     }
                     Ok(None) => {
+                        tracing::info!("Classified msg_id='{}' as Non-Financial", msg_id);
                         state.non_financial += 1;
                     }
-                    Err(e) => {
-                        state.errors += 1;
-                        crate::dev_review::record(
-                            "error",
-                            serde_json::json!({ "id": msg_id }),
-                            None,
-                            None,
-                            None,
-                            None,
-                            Some(&e.to_string()),
-                            Vec::new(),
+                    Ok(Some(ProcessResult::RetryableFailure)) => {
+                        // First-attempt Layer 6 timeout — `allow_llm_retry`
+                        // guarantees this variant is only ever returned once
+                        // per message (see `process_message`'s doc comment),
+                        // so this is always a fresh requeue, never a second one.
+                        retried_once.insert(msg_id.clone());
+                        retry_queue.push_back(msg_id.clone());
+                        tracing::info!(
+                            "Layer 6 timed out for msg_id='{}' — requeued for one retry",
+                            msg_id
                         );
-                        tracing::error!("Failed to process message {}: {}", msg_id, e);
+                    }
+                    Err(e) => {
+                        if retried_once.insert(msg_id.clone()) {
+                            // First failure for this message — one more shot
+                            // at the end of the queue instead of dropping it
+                            // (see `retry_queue`'s doc comment above).
+                            retry_queue.push_back(msg_id.clone());
+                            tracing::warn!(
+                                "Failed to process message {} (will retry once): {}",
+                                msg_id,
+                                e
+                            );
+                        } else {
+                            state.errors += 1;
+                            crate::dev_review::record(
+                                "error",
+                                serde_json::json!({ "id": msg_id }),
+                                None,
+                                None,
+                                None,
+                                None,
+                                Some(&e.to_string()),
+                                Vec::new(),
+                            );
+                            tracing::error!(
+                                "Failed to process message {} (retry exhausted): {}",
+                                msg_id,
+                                e
+                            );
+                        }
                     }
                 }
             }
@@ -781,7 +875,9 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
             }
         }
 
-        processed_count += 1;
+        if advance_processed_count {
+            processed_count += 1;
+        }
         batch_count += 1;
 
         if should_checkpoint(batch_count) {
@@ -806,6 +902,8 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
             tracing::info!(
                 elapsed_ms = elapsed.as_millis(),
                 batch_size = CHECKPOINT_INTERVAL,
+                processed = processed_count,
+                total = total,
                 "Historical scan batch completed"
             );
             batch_start_time = std::time::Instant::now();
@@ -839,7 +937,11 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
             break;
         }
 
-        if let Some(next_id) = ids_iter.next() {
+        if let Some((next_id, allow_llm_retry)) = ids_iter
+            .next()
+            .map(|id| (id, true))
+            .or_else(|| retry_queue.pop_front().map(|id| (id, false)))
+        {
             spawn_fetch(
                 &mut join_set,
                 Arc::clone(&client),
@@ -847,9 +949,29 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                 next_id,
                 app_dir.clone(),
                 llm_eligible,
+                allow_llm_retry,
             );
         }
     }
+
+    // Root cause of slow cancellation: `is_scan_cancelled` breaks this loop
+    // within ~1s (the `cancel_poll` race above), but up to
+    // `MAX_CONCURRENT_FETCHES` (50) `process_message` tasks are still
+    // running in the background at that point -- each potentially mid a
+    // Gmail retry sequence that can take up to ~51s
+    // (`gmail_client::execute_with_retry`'s 15s timeout x 3 attempts +
+    // backoff) and each pulling connections from the same shared,
+    // finite-size `pool` for its own DB work (sender reputation, audit log,
+    // extraction-ladder lookups). Left running, they keep contending for
+    // that pool right through the cancellation cleanup below (which also
+    // needs a connection from it), so the `scan_cancelled` event the UI is
+    // waiting on doesn't fire until that backlog happens to clear -- not
+    // because cancellation was detected slowly, but because nothing ever
+    // told those tasks to stop. `abort_all()` cuts them immediately (Tokio
+    // interrupts each at its next await point), instead of leaving them to
+    // run until `join_set`'s implicit drop at this function's end, which is
+    // *after* cleanup and event emission.
+    join_set.abort_all();
 
     state.processed_count = processed_count;
 
@@ -858,24 +980,76 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
     // aren't left stranded in memory. No-op in release builds.
     crate::dev_review::flush();
 
-    let final_cp = ProcessingCheckpointRow {
-        id: Uuid::new_v4().to_string(),
-        job_type: "historical_scan".to_string(),
-        job_key: account_id.clone(),
-        checkpoint_state_json: serde_json::to_string(&state).unwrap_or_default(),
-        last_processed_token: None,
-        status: if was_cancelled {
-            "cancelled".to_string()
-        } else {
-            "completed".to_string()
-        },
-        updated_at: Some(Utc::now().naive_utc()),
-    };
+    if was_cancelled {
+        // User requested to cancel and wipe progress so the next scan starts from scratch,
+        // but keep any successfully extracted transactions/statements.
+        if let Ok(conn) = pool.get().await {
+            let acct_id = account_id.clone();
+            let msg_ids = state.all_message_ids.clone();
+            
+            let _ = conn.interact(move |c| {
+                if let Ok(tx) = c.transaction() {
+                    // 1. Delete checkpoint so progress is completely wiped
+                    let _ = tx.execute(
+                        "DELETE FROM processing_checkpoints WHERE job_type = 'historical_scan' AND job_key = ?",
+                        rusqlite::params![acct_id],
+                    );
+                    
+                    // 2. Wipe unresolved items generated by THIS scan's fetched messages
+                    // Chunking to stay well under SQLite's parameter limits
+                    for chunk in msg_ids.chunks(900) {
+                        let placeholders = vec!["?"; chunk.len()].join(", ");
+                        
+                        let sql_unassigned = format!(
+                            "DELETE FROM unassigned_transactions WHERE observation_id IN (
+                                SELECT id FROM transaction_observations WHERE source_record_id IN ({})
+                            )",
+                            placeholders
+                        );
+                        let _ = tx.execute(&sql_unassigned, rusqlite::params_from_iter(chunk.iter()));
 
-    if let Ok(conn) = pool.get().await {
-        let _ = conn
-            .interact(move |c| upsert_checkpoint(c, &final_cp))
-            .await;
+                        let sql_obs = format!(
+                            "DELETE FROM transaction_observations 
+                             WHERE source_record_id IN ({}) 
+                             AND canonical_transaction_id IS NULL
+                             AND id NOT IN (SELECT observation_id FROM match_decisions)",
+                            placeholders
+                        );
+                        let _ = tx.execute(&sql_obs, rusqlite::params_from_iter(chunk.iter()));
+
+                        let sql_ignored = format!(
+                            "DELETE FROM ignored_messages WHERE message_id IN ({})",
+                            placeholders
+                        );
+                        let _ = tx.execute(&sql_ignored, rusqlite::params_from_iter(chunk.iter()));
+
+                        let sql_unproc = format!(
+                            "DELETE FROM unprocessed_statements WHERE json_extract(statement_source_json, '$.message_id') IN ({})",
+                            placeholders
+                        );
+                        let _ = tx.execute(&sql_unproc, rusqlite::params_from_iter(chunk.iter()));
+                    }
+                    
+                    let _ = tx.commit();
+                }
+            }).await;
+        }
+    } else {
+        let final_cp = ProcessingCheckpointRow {
+            id: Uuid::new_v4().to_string(),
+            job_type: "historical_scan".to_string(),
+            job_key: account_id.clone(),
+            checkpoint_state_json: serde_json::to_string(&state).unwrap_or_default(),
+            last_processed_token: None,
+            status: "completed".to_string(),
+            updated_at: Some(Utc::now().naive_utc()),
+        };
+
+        if let Ok(conn) = pool.get().await {
+            let _ = conn
+                .interact(move |c| upsert_checkpoint(c, &final_cp))
+                .await;
+        }
     }
 
     // A cancelled scan didn't actually complete -- `scan_completed` would
@@ -1155,15 +1329,16 @@ mod tests {
             .expect("run_scan_batches failed");
 
         let conn = pool.get().await.unwrap();
-        let cp = conn
+        let cp_opt = conn
             .interact(move |c| {
                 get_checkpoint(c, "historical_scan", &account_id)
-                    .unwrap()
                     .unwrap()
             })
             .await
             .unwrap();
-        assert_eq!(cp.status, "cancelled");
+        
+        // Assert the checkpoint was completely deleted so progress starts from 0 next time
+        assert!(cp_opt.is_none(), "Checkpoint should be deleted on cancel");
 
         let captured = captured_events.lock().unwrap();
         assert!(

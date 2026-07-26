@@ -17,6 +17,8 @@ use futures_util::future::BoxFuture;
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::polling::jittered;
+
 pub type TokenRefresher = Arc<dyn Fn() -> BoxFuture<'static, Result<String>> + Send + Sync>;
 
 use crate::network_client::NetworkClient;
@@ -170,9 +172,11 @@ impl GmailClient {
                 Ok(r) => r,
                 Err(e) => {
                     if attempts >= max_retries {
+                        tracing::warn!(operation, attempts, error = %e, "gmail request failed, retries exhausted");
                         return Err(e).context(format!("Failed to send {} request", operation));
                     }
-                    tokio::time::sleep(backoff).await;
+                    tracing::warn!(operation, attempts, error = %e, ?backoff, "gmail request failed, retrying");
+                    tokio::time::sleep(jittered(backoff)).await;
                     backoff *= 2;
                     continue;
                 }
@@ -217,6 +221,7 @@ impl GmailClient {
             if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
                 if attempts >= max_retries {
                     let error_text = res.text().await.unwrap_or_default();
+                    tracing::warn!(operation, attempts, %status, "gmail request failed, retries exhausted");
                     anyhow::bail!(
                         "{} failed with status {}: {}",
                         operation,
@@ -224,7 +229,8 @@ impl GmailClient {
                         error_text
                     );
                 }
-                tokio::time::sleep(backoff).await;
+                tracing::warn!(operation, attempts, %status, ?backoff, "gmail request throttled/errored, retrying");
+                tokio::time::sleep(jittered(backoff)).await;
                 backoff *= 2;
                 continue;
             }
@@ -271,7 +277,8 @@ impl GmailClient {
                     if attempts >= max_retries {
                         return Err(e).context("Failed to read response body");
                     }
-                    tokio::time::sleep(backoff).await;
+                    tracing::warn!(operation, attempts, error = %e, "gmail response body read failed, retrying");
+                    tokio::time::sleep(jittered(backoff)).await;
                     backoff *= 2;
                     continue;
                 }
@@ -287,7 +294,8 @@ impl GmailClient {
                             operation, snippet
                         ));
                     }
-                    tokio::time::sleep(backoff).await;
+                    tracing::warn!(operation, attempts, error = %e, "gmail response JSON parse failed, retrying");
+                    tokio::time::sleep(jittered(backoff)).await;
                     backoff *= 2;
                 }
             }
