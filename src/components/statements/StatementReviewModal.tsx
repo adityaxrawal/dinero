@@ -16,6 +16,7 @@ import { useToast } from '@/hooks/use-toast';
 import { API, DraftMetadataInput, DraftRow, StatementDraft } from '@/lib/ipc';
 import { useGlobalState } from '@/lib/GlobalStateContext';
 import { useCommitStatementDraft } from '@/hooks/mutations/useCommitStatementDraft';
+import { DatePicker } from '@/components/ui/date-picker';
 import { useDiscardStatementDraft } from '@/hooks/mutations/useDiscardStatementDraft';
 
 function base64ToBlob(base64: string): Blob {
@@ -182,8 +183,8 @@ export default function StatementReviewModal() {
         className="sm:max-w-[1200px] w-[95vw] p-0 overflow-hidden flex flex-col max-h-[92vh] h-[820px]"
         aria-labelledby="review-dialog-title"
       >
-        <div className="grid grid-cols-1 md:grid-cols-[1fr_480px] flex-1 min-h-0 h-full">
-          <div className="bg-white border-r flex flex-col min-h-0 h-full">
+        <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_480px] flex-1 min-h-0 h-full">
+          <div className="bg-[#F3EBDD] border-r flex flex-col min-h-0 min-w-0 h-full">
             {pdfUrl ? (
               <iframe src={pdfUrl} className="w-full h-full border-0" title="Statement PDF" />
             ) : (
@@ -235,46 +236,46 @@ export default function StatementReviewModal() {
                   </div>
                   <div>
                     <Label htmlFor="rm-due">Due date</Label>
-                    <Input
+                    <DatePicker
                       id="rm-due"
-                      type="date"
                       value={metadata.dueDate ?? ''}
-                      onChange={(e) =>
-                        setMetadata({ ...metadata, dueDate: e.target.value || null })
+                      onChange={(val) =>
+                        setMetadata({ ...metadata, dueDate: val || null })
                       }
+                      clearable
                     />
                   </div>
                   <div>
                     <Label htmlFor="rm-billing-date">Billing date</Label>
-                    <Input
+                    <DatePicker
                       id="rm-billing-date"
-                      type="date"
                       value={metadata.statementDate ?? ''}
-                      onChange={(e) =>
-                        setMetadata({ ...metadata, statementDate: e.target.value || null })
+                      onChange={(val) =>
+                        setMetadata({ ...metadata, statementDate: val || null })
                       }
+                      clearable
                     />
                   </div>
                   <div>
                     <Label htmlFor="rm-period-start">Billing cycle start</Label>
-                    <Input
+                    <DatePicker
                       id="rm-period-start"
-                      type="date"
                       value={metadata.billingPeriodStart ?? ''}
-                      onChange={(e) =>
-                        setMetadata({ ...metadata, billingPeriodStart: e.target.value || null })
+                      onChange={(val) =>
+                        setMetadata({ ...metadata, billingPeriodStart: val || null })
                       }
+                      clearable
                     />
                   </div>
                   <div>
                     <Label htmlFor="rm-period-end">Billing cycle end</Label>
-                    <Input
+                    <DatePicker
                       id="rm-period-end"
-                      type="date"
                       value={metadata.billingPeriodEnd ?? ''}
-                      onChange={(e) =>
-                        setMetadata({ ...metadata, billingPeriodEnd: e.target.value || null })
+                      onChange={(val) =>
+                        setMetadata({ ...metadata, billingPeriodEnd: val || null })
                       }
+                      clearable
                     />
                   </div>
                   <div>
@@ -324,10 +325,10 @@ export default function StatementReviewModal() {
                         key={i}
                         className="grid grid-cols-[110px_1fr_90px_70px_28px] gap-1.5 items-center"
                       >
-                        <Input
-                          type="date"
+                        <DatePicker
+                          size="sm"
                           value={row.transaction_date}
-                          onChange={(e) => updateRow(i, 'transaction_date', e.target.value)}
+                          onChange={(val) => updateRow(i, 'transaction_date', val)}
                           aria-label={`Row ${i + 1} date`}
                         />
                         <Input

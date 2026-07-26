@@ -6,6 +6,7 @@ import type { TransactionObservation } from '@/lib/ipc';
 import { API } from '@/lib/ipc';
 import SourcePipelineIcon from './SourcePipelineIcon';
 import { evidenceDescription } from './evidenceDescription';
+import { GmailEmailViewer } from '@/components/common/GmailEmailViewer';
 
 interface SourceEvidencePanelProps {
   transactionId: string;
@@ -16,6 +17,8 @@ interface SourceEvidencePanelProps {
 interface RawPayload {
   body?: string;
   html?: string | null;
+  subject?: string | null;
+  sender?: string | null;
 }
 
 function parseRawPayload(raw: string | null): RawPayload | null {
@@ -28,23 +31,18 @@ function parseRawPayload(raw: string | null): RawPayload | null {
 }
 
 /**
- * The email's own HTML/CSS, exactly as it rendered in Gmail (backend
- * already ran it through `sanitize_html_for_display` -- ammonia strips
- * `<script>`/`on*`/`javascript:`, drops `<img>`/`<a>`, and defangs CSS
- * `url()` before it ever reaches here). Rendered inside a sandboxed,
- * scriptless iframe via `srcDoc` so the email's own styles apply only
- * inside that isolated document — never bleeding into, or being bled into
- * by, the app's own CSS.
+ * Rendered using GmailEmailViewer so the email's exact layout and CSS styles apply
+ * inside an isolated canvas, exactly as shown in Gmail.
  */
-function OriginalEmailFrame({ html }: { html: string }) {
+function OriginalEmailFrame({ payload }: { payload: RawPayload }) {
   return (
-    <div className="rounded-md border border-[#064E3B]/10 overflow-hidden bg-white">
-      <iframe
-        title="Original email as received in Gmail"
-        srcDoc={html}
-        sandbox=""
-        className="w-full"
-        style={{ height: 420, border: 'none' }}
+    <div className="rounded-xl overflow-hidden mt-2">
+      <GmailEmailViewer
+        html={payload.html}
+        text={payload.body}
+        subject={payload.subject}
+        sender={payload.sender}
+        maxHeight="460px"
       />
     </div>
   );
@@ -88,10 +86,10 @@ export default function SourceEvidencePanel({
   // normally at most one gmail-sourced observation per transaction, but if
   // several exist (e.g. a merged email+statement match) the first with real
   // HTML wins rather than picking arbitrarily.
-  const originalHtml = useMemo(() => {
+  const originalPayload = useMemo(() => {
     for (const obs of observations) {
       const payload = parseRawPayload(obs.raw_payload_json);
-      if (payload?.html) return payload.html;
+      if (payload?.html || payload?.body) return payload;
     }
     return null;
   }, [observations]);
@@ -158,7 +156,7 @@ export default function SourceEvidencePanel({
 
       {/* Original email exactly as it rendered in Gmail -- its own HTML/CSS,
           not a reformatted summary. */}
-      {originalHtml && (
+      {originalPayload && (
         <Card>
           <CardHeader className="pb-3">
             <CardTitle className="text-[13px] flex items-center gap-2 text-[#064E3B]">
@@ -171,7 +169,7 @@ export default function SourceEvidencePanel({
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <OriginalEmailFrame html={originalHtml} />
+            <OriginalEmailFrame payload={originalPayload} />
           </CardContent>
         </Card>
       )}
@@ -191,7 +189,7 @@ export default function SourceEvidencePanel({
                 <Loader2 className="w-4 h-4 animate-spin text-[#064E3B]/60" />
               </div>
             ) : sourceLog ? (
-              <div className="bg-white rounded-md border border-[#064E3B]/10 p-3 max-h-[300px] overflow-y-auto">
+              <div className="bg-[#F3EBDD] rounded-md border border-[#064E3B]/10 p-3 max-h-[300px] overflow-y-auto">
                 <pre className="text-[10px] font-mono whitespace-pre-wrap text-[#064E3B]/80 leading-relaxed">
                   {sourceLog}
                 </pre>

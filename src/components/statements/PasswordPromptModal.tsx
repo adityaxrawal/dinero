@@ -15,6 +15,7 @@ import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 import { API } from '@/lib/ipc';
 import { useGlobalState } from '@/lib/GlobalStateContext';
+import { GmailEmailViewer } from '@/components/common/GmailEmailViewer';
 
 /**
  * TASK-FE-012 (Doc 30): triggered by the backend's `statement_password_required`
@@ -190,28 +191,28 @@ export default function PasswordPromptModal({ onUnlocked }: { onUnlocked: () => 
         aria-labelledby="password-dialog-title"
         aria-describedby="password-dialog-desc"
       >
-        <div className="grid grid-cols-1 md:grid-cols-[1fr_400px] flex-1 min-h-0 h-full">
+        <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_400px] flex-1 min-h-0 h-full">
           {/* Left Side: Email Context (Gmail UI) */}
-          <div className="bg-white text-black border-r flex flex-col min-h-0 h-full">
+          <div className="bg-[#F3EBDD] text-black border-r flex flex-col min-h-0 min-w-0 h-full">
             {/* Subject */}
-            <div className="px-8 pt-8 pb-4">
-              <h2 className="text-2xl font-normal leading-tight text-gray-900">
+            <div className="px-8 pt-8 pb-4 min-w-0">
+              <h2 className="text-2xl font-normal leading-tight text-gray-900 break-words">
                 {statementDetails?.subject || 'Statement Context'}
               </h2>
             </div>
 
             {/* Sender Header */}
-            <div className="px-8 flex items-start justify-between pb-6">
-              <div className="flex items-center gap-4">
-                <div className="w-12 h-12 rounded-full bg-[#1a73e8] flex items-center justify-center text-white font-medium flex-shrink-0 text-xl">
+            <div className="px-8 flex items-start justify-between pb-6 min-w-0 gap-4">
+              <div className="flex items-center gap-4 min-w-0">
+                <div className="w-12 h-12 rounded-full bg-[#1a73e8] flex items-center justify-center text-white font-medium shrink-0 text-xl">
                   {statementDetails?.sender ? statementDetails.sender.charAt(0).toUpperCase() : '?'}
                 </div>
-                <div className="flex flex-col">
-                  <div className="flex items-baseline gap-1.5 flex-wrap">
-                    <span className="font-bold text-sm text-gray-900">
+                <div className="flex flex-col min-w-0">
+                  <div className="flex items-baseline gap-1.5 flex-wrap min-w-0">
+                    <span className="font-bold text-sm text-gray-900 truncate">
                       {statementDetails?.sender?.split('<')[0]?.trim() || 'Unknown Sender'}
                     </span>
-                    <span className="text-xs text-gray-500">
+                    <span className="text-xs text-gray-500 truncate">
                       {statementDetails?.sender?.includes('<')
                         ? `<${statementDetails.sender.split('<')[1]}`
                         : ''}
@@ -225,7 +226,7 @@ export default function PasswordPromptModal({ onUnlocked }: { onUnlocked: () => 
                   </div>
                 </div>
               </div>
-              <div className="text-xs text-gray-500 whitespace-nowrap mt-1">
+              <div className="text-xs text-gray-500 whitespace-nowrap mt-1 shrink-0">
                 {statementDetails?.date
                   ? new Date(statementDetails.date).toLocaleString([], {
                       dateStyle: 'medium',
@@ -236,28 +237,19 @@ export default function PasswordPromptModal({ onUnlocked }: { onUnlocked: () => 
             </div>
 
             {/* Email Body */}
-            <div className="flex-1 min-h-0 px-8 pb-8">
-              {statementDetails?.html ? (
-                <div className="w-full h-full rounded-lg border border-slate-200 shadow-sm bg-white overflow-hidden">
-                  <iframe
-                    srcDoc={statementDetails.html}
-                    className="w-full h-full border-0"
-                    title="Email Content"
-                    sandbox=""
-                  />
-                </div>
-              ) : (
-                <div className="w-full h-full rounded-lg border border-slate-200 bg-slate-50 p-6 overflow-y-auto">
-                  <p className="whitespace-pre-wrap text-sm text-slate-800 font-sans leading-relaxed">
-                    {statementDetails?.snippet || 'No email context available.'}
-                  </p>
-                </div>
-              )}
+            <div className="flex-1 min-h-0 min-w-0 px-8 pb-8 flex flex-col overflow-y-auto">
+              <GmailEmailViewer
+                html={statementDetails?.html}
+                text={statementDetails?.snippet}
+                showHeader={false}
+                className="flex-1 border-slate-200/60 shadow-xs min-w-0"
+                maxHeight="100%"
+              />
             </div>
           </div>
 
           {/* Right Side: Password Input */}
-          <div className="p-8 flex flex-col h-full overflow-y-auto bg-background">
+          <div className="p-8 flex flex-col h-full overflow-y-auto bg-background min-w-0">
             <DialogHeader className="mb-8">
               <DialogTitle
                 id="password-dialog-title"
