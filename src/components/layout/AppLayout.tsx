@@ -397,13 +397,14 @@ export default function AppLayout() {
         </div>
 
         {/* Bottom area (System & Status) */}
-        <div className="mt-auto pb-4 pt-4 flex flex-col gap-1 border-t border-[#F8E7C9]/10">
-          {systemItems.map((item) => {
-            const isActive = location.pathname.startsWith(item.path);
-            return <SidebarItem key={item.path} item={item} isActive={isActive} />;
-          })}
-
+        <div className="mt-auto flex flex-col">
           <ScanStatusSidebarItem />
+
+          <div className="pb-4 pt-4 flex flex-col gap-1 border-t border-[#F8E7C9]/10">
+            {systemItems.map((item) => {
+              const isActive = location.pathname.startsWith(item.path);
+              return <SidebarItem key={item.path} item={item} isActive={isActive} />;
+            })}
 
           {/* Status Indicator */}
           <div className="px-6 mt-4 flex items-center justify-between">
@@ -418,6 +419,7 @@ export default function AppLayout() {
                 {backendStatus === 'healthy' ? 'Engine Online' : 'Engine Offline'}
               </span>
             </div>
+          </div>
           </div>
         </div>
       </aside>

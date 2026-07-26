@@ -57,10 +57,16 @@ export function useIpcQueryInvalidation(): void {
             queryClient.invalidateQueries({ queryKey: key });
           }
         });
+        const safeUnlisten = () => {
+          Promise.resolve(unlisten()).catch((e) => {
+            console.debug('Failed to unlisten to IPC event (likely already unlistened or component unmounted):', e);
+          });
+        };
+
         if (cancelled) {
-          unlisten();
+          safeUnlisten();
         } else {
-          unlisteners.push(unlisten);
+          unlisteners.push(safeUnlisten);
         }
       }
     };

@@ -1,7 +1,6 @@
 import { useEffect } from 'react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
+import { DateRangePicker } from '@/components/ui/date-picker';
 import { Loader2 } from 'lucide-react';
 import { useGlobalState } from '@/lib/GlobalStateContext';
 import { scanProgressPercent } from './scanProgressPercent';
@@ -110,34 +109,26 @@ export default function HistoricalScanScreen({ onDone }: HistoricalScanScreenPro
   }
 
   return (
-    <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4">
-      <div className="space-y-2">
-        <Label htmlFor="scan-start">Scan From</Label>
-        <Input
-          id="scan-start"
-          type="date"
+    <div className="space-y-5 animate-in fade-in slide-in-from-bottom-4">
+      <div className="p-4 rounded-xl bg-[#F8E7C9]/30 border border-[#064E3B]/10">
+        <DateRangePicker
+          startDate={scanStartDate}
+          endDate={scanEndDate}
+          onChange={({ startDate, endDate }) => {
+            setScanStartDate(startDate);
+            setScanEndDate(endDate);
+          }}
           min={minDate}
-          max={scanEndDate || maxDate}
-          value={scanStartDate}
-          onChange={(e) => setScanStartDate(e.target.value)}
-        />
-      </div>
-      <div className="space-y-2">
-        <Label htmlFor="scan-end">Scan To</Label>
-        <Input
-          id="scan-end"
-          type="date"
-          min={scanStartDate || minDate}
           max={maxDate}
-          value={scanEndDate}
-          onChange={(e) => setScanEndDate(e.target.value)}
         />
       </div>
+
       {scanStatus === 'error' && scanError && (
         <p role="alert" className="text-xs text-red-700">
           {scanError}
         </p>
       )}
+
       <div className="flex justify-between items-center pt-2">
         <button
           type="button"

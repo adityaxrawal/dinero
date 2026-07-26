@@ -22,9 +22,9 @@
 
     --background: 36 70% 88%;
     --foreground: 160 84% 10%;
-    --card: 38 55% 91%;
+    --card: 38.2 47.8% 91%;
     --card-foreground: 160 84% 10%;
-    --popover: 38 55% 91%;
+    --popover: 38.2 47.8% 91%;
     --popover-foreground: 160 84% 10%;
     --primary: 160 84% 16%;
     --primary-foreground: 36 78% 93%;
@@ -54,10 +54,10 @@
     /* Surface hierarchy */
     --bg-canvas: #f8e7c9; /* page background */
     --bg-surface: #ecddb0; /* subtle lift */
-    --bg-card: hsl(38, 55%, 91%); /* cards */
-    --bg-card-hover: hsl(38, 50%, 87%); /* card hover */
+    --bg-card: #F3EBDD; /* cards */
+    --bg-card-hover: #e8dbc8; /* card hover */
     --bg-rail: #064e3b; /* icon rail */
-    --bg-panel: hsl(38, 52%, 90%); /* context panels */
+    --bg-panel: #F3EBDD; /* context panels */
     --bg-sidebar: #064e3b;
 
     /* Text hierarchy */

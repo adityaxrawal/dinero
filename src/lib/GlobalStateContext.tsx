@@ -227,6 +227,7 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
       await API.ingestion.cancelScan(primaryConnectedAccount.account_id);
     } catch (err: unknown) {
       setScanError(err instanceof Error ? err.message : String(err));
+      throw err;
     }
   };
 

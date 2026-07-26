@@ -434,7 +434,7 @@ export default function TransactionInspector({
                         value={newTag}
                         onChange={(e) => setNewTag(e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && handleAddTag()}
-                        className="flex-1 h-8 px-2 rounded-md text-[13px] border outline-none bg-white/50 border-[#064E3B]/10 focus:border-[#064E3B]/30 text-[#064E3B]"
+                        className="flex-1 h-8 px-2 rounded-md text-[13px] border outline-none bg-[#F3EBDD]/50 border-[#064E3B]/10 focus:border-[#064E3B]/30 text-[#064E3B]"
                       />
                       <TagDatalist
                         id="insp-tag-suggestions"

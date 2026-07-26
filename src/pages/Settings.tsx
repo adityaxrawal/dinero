@@ -25,6 +25,7 @@ import { API, LlmModelInfo, LicenseStatusResponse } from '../lib/ipc';
 import { getLicenseCta } from '../lib/licenseCta';
 import { useGlobalState } from '../lib/GlobalStateContext';
 import { cn } from '@/lib/utils';
+import { DateRangePicker } from '@/components/ui/date-picker';
 import { PageSidebar } from '@/components/layout/PageSidebar';
 import { Button } from '@/components/ui/button';
 import {
@@ -78,6 +79,7 @@ export default function Settings() {
     handleStartScan,
     handleCancelScan,
     resetScan,
+    scanError,
   } = useGlobalState();
   const connectedAccount = connectedAccounts[0] ?? null;
 
@@ -99,7 +101,11 @@ export default function Settings() {
   const handleConfirmCancelScan = async () => {
     setCancelDialogOpen(false);
     setIsCancelling(true);
-    await handleCancelScan();
+    try {
+      await handleCancelScan();
+    } catch {
+      setIsCancelling(false);
+    }
   };
 
   // ── Recovery Phrase ──────────────────────────────────────────────────
@@ -306,39 +312,16 @@ export default function Settings() {
                     </div>
                   )}
 
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <label
-                        htmlFor="scan-start-date"
-                        className="text-[11px] font-bold uppercase tracking-wider flex items-center gap-1 text-[#064E3B]/60"
-                      >
-                        <CalendarRange className="w-3.5 h-3.5" /> Start Date
-                      </label>
-                      <input
-                        id="scan-start-date"
-                        type="date"
-                        value={scanStartDate}
-                        onChange={(e) => setScanStartDate(e.target.value)}
-                        disabled={scanStatus === 'running' || !connectedAccount}
-                        className="w-full px-3 py-2 rounded-lg border text-[13px] font-medium bg-[#F8E7C9]/50 border-[#064E3B]/20 text-[#064E3B] focus:border-[#064E3B] focus:ring-1 focus:ring-[#064E3B]"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <label
-                        htmlFor="scan-end-date"
-                        className="text-[11px] font-bold uppercase tracking-wider flex items-center gap-1 text-[#064E3B]/60"
-                      >
-                        <CalendarRange className="w-3.5 h-3.5" /> End Date
-                      </label>
-                      <input
-                        id="scan-end-date"
-                        type="date"
-                        value={scanEndDate}
-                        onChange={(e) => setScanEndDate(e.target.value)}
-                        disabled={scanStatus === 'running' || !connectedAccount}
-                        className="w-full px-3 py-2 rounded-lg border text-[13px] font-medium bg-[#F8E7C9]/50 border-[#064E3B]/20 text-[#064E3B] focus:border-[#064E3B] focus:ring-1 focus:ring-[#064E3B]"
-                      />
-                    </div>
+                  <div className="p-4 rounded-xl bg-[#F8E7C9]/40 border border-[#064E3B]/10">
+                    <DateRangePicker
+                      startDate={scanStartDate}
+                      endDate={scanEndDate}
+                      onChange={({ startDate, endDate }) => {
+                        setScanStartDate(startDate);
+                        setScanEndDate(endDate);
+                      }}
+                      disabled={scanStatus === 'running' || !connectedAccount}
+                    />
                   </div>
 
                   {connectedAccount && (
@@ -364,9 +347,6 @@ export default function Settings() {
                       <div className="flex items-center gap-2 mb-1 font-semibold text-[14px]">
                         {scanStatus === 'running' && (
                           <Loader2 className="w-4 h-4 animate-spin text-[#064E3B]" />
-                        )}
-                        {scanStatus === 'done' && (
-                          <CheckCircle className="w-4 h-4 text-emerald-600" />
                         )}
                         {scanStatus === 'cancelled' && (
                           <XCircle className="w-4 h-4 text-[#064E3B]/60" />
@@ -455,6 +435,11 @@ export default function Settings() {
                               {scanProgress.errors ?? 0}
                             </strong>
                           </div>
+                        </div>
+                      )}
+                      {scanError && (
+                        <div className="mt-3 text-sm text-red-600 bg-red-50 p-2 rounded border border-red-200">
+                          {scanError}
                         </div>
                       )}
                     </div>

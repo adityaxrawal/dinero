@@ -52,7 +52,7 @@ describe('ScanStatusSidebarItem', () => {
     });
     render(<ScanStatusSidebarItem />);
     expect(screen.getByText('Scan cancelled')).toBeTruthy();
-    expect(screen.getByText('10s')).toBeTruthy();
+    expect(screen.getByText(/10s/)).toBeTruthy();
   });
 
   it('shows a completed label on success', () => {

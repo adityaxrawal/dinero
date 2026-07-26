@@ -33,8 +33,14 @@ export default function LocalLlmSettings() {
   // alone never reaches the backend, avoiding a server restart on every
   // keystroke (each change forces `llama-server` to respawn, see
   // `llama_sidecar.rs`'s `ensure_server_ready`).
-  const [savedSlots, setSavedSlots] = useState<number>(1);
-  const [draftSlots, setDraftSlots] = useState<number>(1);
+  const [savedSlots, setSavedSlots] = useState<number>(() => {
+    const stored = localStorage.getItem(PARALLEL_SLOTS_STORAGE_KEY);
+    return stored ? clampSlots(parseInt(stored, 10)) : 1;
+  });
+  const [draftSlots, setDraftSlots] = useState<number>(() => {
+    const stored = localStorage.getItem(PARALLEL_SLOTS_STORAGE_KEY);
+    return stored ? clampSlots(parseInt(stored, 10)) : 1;
+  });
   const [isSavingSlots, setIsSavingSlots] = useState(false);
   const [slotsJustSaved, setSlotsJustSaved] = useState(false);
 
