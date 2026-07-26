@@ -223,6 +223,10 @@ pub fn sanitize_html(html: &str) -> String {
     let style_re = Regex::new(r"(?is)<style.*?>.*?</style>").unwrap();
     text = style_re.replace_all(&text, "").to_string();
 
+    // Strip any bare CSS rule blocks left un-enclosed
+    let loose_css_re = Regex::new(r"(?i)(?:@media[^{]+\{[\s\S]*?\}|body|table|td|th|p|a|img|\.[a-z0-9_-]+|#[a-z0-9_-]+)\s*\{[^}]*\}").unwrap();
+    text = loose_css_re.replace_all(&text, "").to_string();
+
     let block_re = Regex::new(r"(?i)<(div|p|br|li|tr|table|h1|h2|h3|h4|h5|h6)[^>]*>").unwrap();
     text = block_re.replace_all(&text, "\n").to_string();
 
@@ -270,10 +274,18 @@ pub fn sanitize_html_for_display(html: &str) -> String {
     let defanged = css_url_re.replace_all(html, "none").to_string();
 
     ammonia::Builder::default()
-        .rm_tags(["img", "a"])
+        .rm_clean_content_tags(["style"])
+        .add_tags([
+            "style", "img", "a", "div", "span", "p", "b", "i", "strong", "em", "u", "s", "sub", "sup",
+            "font", "center", "h1", "h2", "h3", "h4", "h5", "h6", "table", "tbody", "thead", "tfoot",
+            "tr", "td", "th", "caption", "colgroup", "col", "ul", "ol", "li", "dl", "dt", "dd", "br",
+            "hr", "blockquote", "pre", "code", "section", "article", "header", "footer", "main", "nav",
+            "aside", "head", "body", "html", "title", "meta", "link",
+        ])
         .add_generic_attributes([
-            "style", "width", "height", "align", "valign", "bgcolor", "color", "face", "size",
-            "cellpadding", "cellspacing", "border",
+            "style", "class", "id", "width", "height", "align", "valign", "bgcolor", "color", "face",
+            "size", "cellpadding", "cellspacing", "border", "colspan", "rowspan", "dir", "lang",
+            "alt", "title", "target", "type", "media", "href", "src", "srcset",
         ])
         .clean(&defanged)
         .to_string()

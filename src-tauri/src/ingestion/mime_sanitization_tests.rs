@@ -199,24 +199,20 @@ fn test_sanitize_html_for_display_strips_script_and_event_handlers() {
 }
 
 #[test]
-fn test_sanitize_html_for_display_strips_img_tracking_pixel() {
-    let html = r#"<p>Statement attached.</p><img src="https://tracker.example/pixel.gif" width="1" height="1">"#;
+fn test_sanitize_html_for_display_preserves_img_and_links() {
+    let html = r#"<p>Statement attached.</p><img src="https://bank.example/logo.png" width="100"><a href="https://bank.example/click">Manage your account</a>"#;
     let out = sanitize_html_for_display(html);
-    assert!(!out.contains("<img"), "img tag must be removed entirely: {out}");
-    assert!(!out.contains("tracker.example"), "tracking URL must not survive: {out}");
-    assert!(out.contains("Statement attached"));
+    assert!(out.contains("<img"), "img tag must be preserved: {out}");
+    assert!(out.contains("<a"), "anchor tag must be preserved: {out}");
+    assert!(out.contains("Manage your account"), "link text should be visible: {out}");
 }
 
 #[test]
-fn test_sanitize_html_for_display_strips_links_but_keeps_text() {
-    let html = r#"<a href="https://bank.example/click">Manage your account</a>"#;
+fn test_sanitize_html_for_display_preserves_style_block() {
+    let html = r#"<style>body { margin: 0; padding: 0; } table { border-collapse: collapse; }</style><div>Hello</div>"#;
     let out = sanitize_html_for_display(html);
-    assert!(!out.contains("<a "), "anchor tag must be removed: {out}");
-    assert!(!out.contains("href"), "href must not survive: {out}");
-    assert!(
-        out.contains("Manage your account"),
-        "link text should still be visible, just not clickable: {out}"
-    );
+    assert!(out.contains("<style>"), "<style> tag must be preserved: {out}");
+    assert!(out.contains("border-collapse"), "CSS rules inside <style> block must survive: {out}");
 }
 
 #[test]
