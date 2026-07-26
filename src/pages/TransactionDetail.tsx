@@ -268,7 +268,7 @@ export default function TransactionDetail() {
                 onChange={setCategoryId}
                 categories={categories}
                 id="category"
-                triggerClassName="w-full bg-white/50 backdrop-blur-sm border-[#064E3B]/20 focus:ring-[#064E3B]/30"
+                triggerClassName="w-full bg-[#F3EBDD]/50 backdrop-blur-sm border-[#064E3B]/20 focus:ring-[#064E3B]/30"
               />
             </div>
 

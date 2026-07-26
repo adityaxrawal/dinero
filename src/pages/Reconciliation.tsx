@@ -7,6 +7,74 @@ import { useUnassignedTransactions } from '@/hooks/queries/useUnassignedTransact
 import ReconciliationInspector from '@/components/reconciliation/ReconciliationInspector';
 import UnassignedInspector from '@/components/reconciliation/UnassignedInspector';
 import { cn } from '@/lib/utils';
+import { cleanTextForReader } from '@/components/common/GmailEmailViewer';
+
+function getUnassignedDisplayInfo(item: any) {
+  let name = item.merchant_raw || '';
+  let subject = '';
+  let rawHtml = '';
+  let rawText = item.body_snippet || '';
+
+  if (item.raw_payload_json) {
+    try {
+      const parsed = JSON.parse(item.raw_payload_json);
+      if (parsed.sender || parsed.from) name = parsed.sender || parsed.from;
+      if (parsed.subject) subject = parsed.subject;
+      if (parsed.html) rawHtml = parsed.html;
+      if (parsed.body) rawText = parsed.body;
+    } catch {}
+  }
+
+  // Clean RFC 822 name (e.g. "IndusInd Bank <alerts@indusind.com>" -> "IndusInd Bank")
+  if (name.includes('<')) {
+    name = name.split('<')[0].replace(/^["']|["']$/g, '').trim();
+  }
+
+  // Clean text for reader view to strip all raw CSS blocks and HTML tags
+  let cleanedTextSnippet = cleanTextForReader(rawHtml, rawText);
+
+  if (!name || name === 'Bank Alert' || name === 'Bank / Service Alert') {
+    if (/HDFC/i.test(cleanedTextSnippet)) name = 'HDFC Bank';
+    else if (/IndusInd/i.test(cleanedTextSnippet)) name = 'IndusInd Bank';
+    else if (/ICICI/i.test(cleanedTextSnippet)) name = 'ICICI Bank';
+    else if (/Axis/i.test(cleanedTextSnippet)) name = 'Axis Bank';
+    else if (/SBI/i.test(cleanedTextSnippet)) name = 'SBI Bank';
+    else if (/Kotak/i.test(cleanedTextSnippet)) name = 'Kotak Bank';
+    else name = 'Bank Alert';
+  }
+
+  // If snippet starts with repeated bank name (e.g. "IndusInd Bank IndusInd Bank ..."), trim it
+  if (name && cleanedTextSnippet.startsWith(name)) {
+    cleanedTextSnippet = cleanedTextSnippet.slice(name.length).trim();
+  }
+
+  const amountStr = item.amount_minor != null 
+    ? `₹${(item.amount_minor / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    : null;
+
+  const snippet = subject || cleanedTextSnippet || 'Transaction alert details missing';
+
+  const dateStr = item.event_time 
+    ? new Date(item.event_time).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+    : '';
+
+  const issueLabel = item.reason === 'extraction_failed'
+    ? 'Missing Fields'
+    : item.reason === 'issuer_name_not_found'
+      ? 'Unknown Card/Bank'
+      : 'Action Needed';
+
+  const avatarLetter = name.charAt(0).toUpperCase();
+
+  return {
+    name,
+    snippet,
+    amountStr,
+    dateStr,
+    issueLabel,
+    avatarLetter,
+  };
+}
 
 export default function Reconciliation() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -86,7 +154,7 @@ export default function Reconciliation() {
         </div>
 
         {/* List items */}
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto px-1 py-2">
           {isLoading ? (
             <div className="flex flex-col items-center justify-center h-40 gap-2">
               <Loader2 className="w-4 h-4 animate-spin text-[#064E3B]/50" />
@@ -101,14 +169,14 @@ export default function Reconciliation() {
               <p className="text-[11px] text-[#064E3B]">No pending clusters requiring review.</p>
             </div>
           ) : (
-            <div className="py-2">
+            <div>
               {currentSection === 'clusters' &&
                 (clusters.length === 0 ? (
                   <p className="text-[12px] text-center p-4 text-[#064E3B]/60">
                     No pending clusters.
                   </p>
                 ) : (
-                  <div className="flex flex-col gap-1">
+                  <div className="flex flex-col gap-1.5">
                     {clusters.map((cluster) => {
                       const isSelected = selectedClusterId === cluster.id;
                       const title = cluster.reason.startsWith('Ambiguous match')
@@ -120,34 +188,34 @@ export default function Reconciliation() {
                           key={cluster.id}
                           onClick={() => setSelectedClusterId(isSelected ? null : cluster.id)}
                           className={cn(
-                            'flex flex-col w-full text-left px-4 py-2.5 mx-2 rounded-md transition-colors max-w-[calc(100%-16px)] cursor-pointer select-none',
+                            'flex flex-col w-full text-left px-3.5 py-3 mx-2 rounded-xl transition-all max-w-[calc(100%-16px)] cursor-pointer select-none border',
                             isSelected
-                              ? 'bg-[#064E3B] text-[#F8E7C9]'
-                              : 'hover:bg-[#064E3B]/5 text-[#064E3B]'
+                              ? 'bg-[#064E3B] text-[#F8E7C9] border-[#064E3B] shadow-sm'
+                              : 'bg-white/60 hover:bg-white text-[#064E3B] border-[#064E3B]/10 hover:border-[#064E3B]/20'
                           )}
                         >
-                          <div className="flex items-center gap-1.5 mb-1">
+                          <div className="flex items-center justify-between gap-2 mb-1 w-full">
                             <span
                               className={cn(
-                                'text-[9px] font-bold px-1.5 py-0.5 rounded-sm uppercase tracking-wider',
+                                'text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider',
                                 isSelected
                                   ? 'bg-[#F8E7C9]/20 text-[#F8E7C9]'
-                                  : 'bg-amber-500/20 text-amber-700'
+                                  : 'bg-amber-100 text-amber-800 border border-amber-200'
                               )}
                             >
                               Ambiguous
                             </span>
+                            <span className={cn('text-[10px] font-medium', isSelected ? 'text-[#F8E7C9]/70' : 'text-slate-400')}>
+                              {cluster.members_count} entries
+                            </span>
                           </div>
                           <p
                             className={cn(
-                              'text-[13px] font-semibold truncate mb-0.5',
+                              'text-[13px] font-bold truncate mb-0.5',
                               isSelected ? 'text-white' : 'text-[#064E3B]'
                             )}
                           >
                             {title || 'Match requires review'}
-                          </p>
-                          <p className={cn('text-[11px] truncate opacity-70 font-medium')}>
-                            {cluster.members_count} member(s)
                           </p>
                         </button>
                       );
@@ -161,49 +229,85 @@ export default function Reconciliation() {
                     No unassigned transactions.
                   </p>
                 ) : (
-                  <div className="flex flex-col gap-1">
+                  <div className="flex flex-col gap-1.5">
                     {unassigned.map((item) => {
                       const isSelected = selectedUnassignedId === item.id;
-                      const title =
-                        item.reason === 'extraction_failed'
-                          ? 'Failed to Extract'
-                          : item.reason === 'issuer_name_not_found'
-                            ? 'Unknown Instrument'
-                            : item.reason || 'Unresolved';
+                      const info = getUnassignedDisplayInfo(item);
+
                       return (
                         <button
                           key={item.id}
                           onClick={() => setSelectedUnassignedId(isSelected ? null : item.id)}
                           className={cn(
-                            'flex flex-col w-full text-left px-4 py-2.5 mx-2 rounded-md transition-colors max-w-[calc(100%-16px)] cursor-pointer select-none',
+                            'flex flex-col w-full text-left px-3.5 py-3 mx-2 rounded-xl transition-all max-w-[calc(100%-16px)] cursor-pointer select-none border',
                             isSelected
-                              ? 'bg-[#064E3B] text-[#F8E7C9]'
-                              : 'hover:bg-[#064E3B]/5 text-[#064E3B]'
+                              ? 'bg-[#064E3B] text-[#F8E7C9] border-[#064E3B] shadow-sm'
+                              : 'bg-white/60 hover:bg-white text-[#064E3B] border-[#064E3B]/10 hover:border-[#064E3B]/20'
                           )}
                         >
-                          <div className="flex items-center gap-1.5 mb-1">
+                          {/* Header Row */}
+                          <div className="flex items-center justify-between gap-2 mb-1.5 w-full">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <div
+                                className={cn(
+                                  'w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0',
+                                  isSelected ? 'bg-[#F8E7C9] text-[#064E3B]' : 'bg-[#064E3B]/10 text-[#064E3B]'
+                                )}
+                              >
+                                {info.avatarLetter}
+                              </div>
+                              <span
+                                className={cn(
+                                  'text-[13px] font-bold truncate tracking-tight',
+                                  isSelected ? 'text-white' : 'text-slate-900'
+                                )}
+                              >
+                                {info.name}
+                              </span>
+                            </div>
+
                             <span
                               className={cn(
-                                'text-[9px] font-bold px-1.5 py-0.5 rounded-sm uppercase tracking-wider',
+                                'text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider shrink-0',
                                 isSelected
                                   ? 'bg-[#F8E7C9]/20 text-[#F8E7C9]'
-                                  : 'bg-red-500/20 text-red-700'
+                                  : item.reason === 'issuer_name_not_found'
+                                    ? 'bg-purple-100 text-purple-700 border border-purple-200'
+                                    : 'bg-amber-100 text-amber-800 border border-amber-200'
                               )}
                             >
-                              Action Required
+                              {info.issueLabel}
                             </span>
                           </div>
+
+                          {/* Snippet Line */}
                           <p
                             className={cn(
-                              'text-[13px] font-semibold truncate mb-0.5',
-                              isSelected ? 'text-white' : 'text-[#064E3B]'
+                              'text-[11px] line-clamp-1 mb-2 font-normal',
+                              isSelected ? 'text-[#F8E7C9]/80' : 'text-slate-600'
                             )}
                           >
-                            {title}
+                            {info.snippet}
                           </p>
-                          <p className={cn('text-[11px] truncate opacity-70 font-medium')}>
-                            Obs: {item.observation_id.substring(0, 8)}...
-                          </p>
+
+                          {/* Footer Row */}
+                          <div className="flex items-center justify-between text-[11px] font-medium pt-1 border-t border-current/10 w-full">
+                            {info.amountStr ? (
+                              <span className={cn('font-semibold font-mono text-[12px]', isSelected ? 'text-[#F8E7C9]' : 'text-emerald-700')}>
+                                {info.amountStr}
+                              </span>
+                            ) : (
+                              <span className={cn('italic text-[10px]', isSelected ? 'text-[#F8E7C9]/60' : 'text-slate-400')}>
+                                Amount missing
+                              </span>
+                            )}
+
+                            {info.dateStr && (
+                              <span className={cn('text-[10px]', isSelected ? 'text-[#F8E7C9]/70' : 'text-slate-400')}>
+                                {info.dateStr}
+                              </span>
+                            )}
+                          </div>
                         </button>
                       );
                     })}

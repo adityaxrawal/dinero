@@ -223,10 +223,13 @@ export default function Debug() {
 
           {activeTab === 'system' && (
             <div className="animate-in fade-in duration-300 flex flex-col gap-6">
-              <div className="flex justify-between items-center">
-                <h2 className="text-xl font-bold">System Metrics</h2>
+              <div className="flex justify-between items-end mb-2">
+                <div>
+                  <h2 className="text-2xl font-black tracking-tight text-[#064E3B]">System Metrics</h2>
+                  <p className="text-[13px] font-medium text-[#064E3B]/60 mt-1">Overview of the processing pipeline health and memory usage.</p>
+                </div>
                 <button
-                  className="h-8 px-3 rounded-lg text-[13px] font-semibold flex items-center gap-2 bg-[#064E3B]/10 text-[#064E3B] hover:bg-[#064E3B]/20 transition-colors"
+                  className="h-9 px-4 rounded-xl text-[13px] font-bold flex items-center gap-2 bg-[#F3EBDD] border border-[#064E3B]/10 text-[#064E3B] hover:bg-[#064E3B]/5 shadow-sm transition-all active:scale-95"
                   onClick={fetchGlobalMetrics}
                 >
                   <RefreshCw size={14} /> Refresh
@@ -234,120 +237,169 @@ export default function Debug() {
               </div>
               {metrics ? (
                 <>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
-                    <div className="bg-[#F8E7C9]/50 border border-[#064E3B]/10 rounded-xl p-4 flex flex-col gap-2">
-                      <ListOrdered size={20} className="text-[#064E3B]/70" />
-                      <div>
-                        <p className="text-[11px] font-semibold uppercase tracking-wider text-[#064E3B]/60">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 lg:gap-6">
+                    <div className="bg-[#F3EBDD]/90 backdrop-blur-md border border-[#064E3B]/10 rounded-2xl p-5 lg:p-6 flex flex-col justify-between gap-4 shadow-[0_2px_10px_rgba(6,78,59,0.03)] hover:shadow-[0_4px_15px_rgba(6,78,59,0.06)] transition-all">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[12px] font-bold uppercase tracking-wider text-[#064E3B]/60 truncate">
                           Transactions
                         </p>
-                        <h3 className="text-2xl font-bold text-[#064E3B]">
+                        <div className="w-8 h-8 shrink-0 rounded-full bg-[#064E3B]/5 flex items-center justify-center text-[#064E3B]/70">
+                          <ListOrdered size={16} />
+                        </div>
+                      </div>
+                      <div>
+                        <h3 className="text-3xl lg:text-4xl font-black text-[#064E3B] tracking-tighter truncate">
                           {metrics.total_transactions}
                         </h3>
                       </div>
                     </div>
-                    <div className="bg-[#F8E7C9]/50 border border-[#064E3B]/10 rounded-xl p-4 flex flex-col gap-2">
-                      <FileText size={20} className="text-[#064E3B]/70" />
-                      <div>
-                        <p className="text-[11px] font-semibold uppercase tracking-wider text-[#064E3B]/60">
+                    
+                    <div className="bg-[#F3EBDD]/90 backdrop-blur-md border border-[#064E3B]/10 rounded-2xl p-5 lg:p-6 flex flex-col justify-between gap-4 shadow-[0_2px_10px_rgba(6,78,59,0.03)] hover:shadow-[0_4px_15px_rgba(6,78,59,0.06)] transition-all">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[12px] font-bold uppercase tracking-wider text-[#064E3B]/60 truncate">
                           Statements
                         </p>
-                        <h3 className="text-2xl font-bold text-[#064E3B]">
+                        <div className="w-8 h-8 shrink-0 rounded-full bg-[#064E3B]/5 flex items-center justify-center text-[#064E3B]/70">
+                          <FileText size={16} />
+                        </div>
+                      </div>
+                      <div>
+                        <h3 className="text-3xl lg:text-4xl font-black text-[#064E3B] tracking-tighter truncate">
                           {metrics.total_statements}
                         </h3>
                       </div>
                     </div>
-                    <div className="bg-[#F8E7C9]/50 border border-[#064E3B]/10 rounded-xl p-4 flex flex-col gap-2">
-                      <Database size={20} className="text-[#064E3B]/70" />
-                      <div>
-                        <p className="text-[11px] font-semibold uppercase tracking-wider text-[#064E3B]/60">
+                    
+                    <div className="bg-[#F3EBDD]/90 backdrop-blur-md border border-[#064E3B]/10 rounded-2xl p-5 lg:p-6 flex flex-col justify-between gap-4 shadow-[0_2px_10px_rgba(6,78,59,0.03)] hover:shadow-[0_4px_15px_rgba(6,78,59,0.06)] transition-all">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[12px] font-bold uppercase tracking-wider text-[#064E3B]/60 truncate">
                           Unresolved
                         </p>
-                        <h3 className="text-2xl font-bold text-[#064E3B]">
+                        <div className="w-8 h-8 shrink-0 rounded-full bg-rose-500/10 flex items-center justify-center text-rose-600">
+                          <Database size={16} />
+                        </div>
+                      </div>
+                      <div>
+                        <h3 className="text-3xl lg:text-4xl font-black text-[#064E3B] tracking-tighter truncate">
                           {metrics.unresolved_clusters}
                         </h3>
                       </div>
                     </div>
-                    <div className="bg-[#F8E7C9]/50 border border-[#064E3B]/10 rounded-xl p-4 flex flex-col gap-2">
-                      <Activity size={20} className="text-[#064E3B]/70" />
-                      <div>
-                        <p className="text-[11px] font-semibold uppercase tracking-wider text-[#064E3B]/60">
+                    
+                    <div className="bg-[#F3EBDD]/90 backdrop-blur-md border border-[#064E3B]/10 rounded-2xl p-5 lg:p-6 flex flex-col justify-between gap-4 shadow-[0_2px_10px_rgba(6,78,59,0.03)] hover:shadow-[0_4px_15px_rgba(6,78,59,0.06)] transition-all">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[12px] font-bold uppercase tracking-wider text-[#064E3B]/60 truncate">
                           LLM Fallback
                         </p>
-                        <h3 className="text-2xl font-bold text-[#064E3B]">
+                        <div className="w-8 h-8 shrink-0 rounded-full bg-[#064E3B]/5 flex items-center justify-center text-[#064E3B]/70">
+                          <Activity size={16} />
+                        </div>
+                      </div>
+                      <div>
+                        <h3 className="text-3xl lg:text-4xl font-black text-[#064E3B] tracking-tighter truncate">
                           {(metrics.llm_fallback_rate * 100).toFixed(1)}%
                         </h3>
                       </div>
                     </div>
-                    <div className="bg-[#F8E7C9]/50 border border-[#064E3B]/10 rounded-xl p-4 flex flex-col gap-2">
-                      <Settings size={20} className="text-[#064E3B]/70" />
-                      <div>
-                        <p className="text-[11px] font-semibold uppercase tracking-wider text-[#064E3B]/60">
+                    
+                    <div className="bg-[#F3EBDD]/90 backdrop-blur-md border border-[#064E3B]/10 rounded-2xl p-5 lg:p-6 flex flex-col justify-between gap-4 shadow-[0_2px_10px_rgba(6,78,59,0.03)] hover:shadow-[0_4px_15px_rgba(6,78,59,0.06)] transition-all">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[12px] font-bold uppercase tracking-wider text-[#064E3B]/60 truncate">
                           Queue Depth
                         </p>
-                        <h3 className="text-2xl font-bold text-[#064E3B]">{metrics.queue_depth}</h3>
+                        <div className="w-8 h-8 shrink-0 rounded-full bg-[#064E3B]/5 flex items-center justify-center text-[#064E3B]/70">
+                          <Settings size={16} />
+                        </div>
+                      </div>
+                      <div>
+                        <h3 className="text-3xl lg:text-4xl font-black text-[#064E3B] tracking-tighter truncate">
+                          {metrics.queue_depth}
+                        </h3>
                       </div>
                     </div>
-                    <div className="bg-[#F8E7C9]/50 border border-[#064E3B]/10 rounded-xl p-4 flex flex-col gap-2">
-                      <Server size={20} className="text-[#064E3B]/70" />
-                      <div>
-                        <p className="text-[11px] font-semibold uppercase tracking-wider text-[#064E3B]/60">
-                          Available RAM
+                    
+                    <div className="bg-[#F3EBDD]/90 backdrop-blur-md border border-[#064E3B]/10 rounded-2xl p-5 lg:p-6 flex flex-col justify-between gap-4 shadow-[0_2px_10px_rgba(6,78,59,0.03)] hover:shadow-[0_4px_15px_rgba(6,78,59,0.06)] transition-all">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-[12px] font-bold uppercase tracking-wider text-[#064E3B]/60 truncate">
+                          Avail RAM
                         </p>
-                        <h3 className="text-2xl font-bold text-[#064E3B]">
-                          {ram ? `${ram} GB` : '...'}
+                        <div className="w-8 h-8 shrink-0 rounded-full bg-[#064E3B]/5 flex items-center justify-center text-[#064E3B]/70">
+                          <Server size={16} />
+                        </div>
+                      </div>
+                      <div className="flex items-baseline gap-1 truncate">
+                        <h3 className="text-3xl lg:text-4xl font-black text-[#064E3B] tracking-tighter">
+                          {ram ? ram : '...'}
                         </h3>
+                        <span className="text-lg font-bold text-[#064E3B]/50">GB</span>
                       </div>
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
-                    <div className="bg-[#F8E7C9]/50 border border-[#064E3B]/10 rounded-xl p-6">
-                      <h3 className="text-[14px] font-bold mb-4">Extraction Layer Distribution</h3>
-                      <div className="flex flex-col gap-2">
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+                    <div className="bg-[#F3EBDD]/90 backdrop-blur-md border border-[#064E3B]/10 rounded-2xl p-6 shadow-[0_2px_10px_rgba(6,78,59,0.03)]">
+                      <h3 className="text-[15px] font-extrabold mb-5 text-[#064E3B] flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full bg-[#064E3B]/40" />
+                        Extraction Layer Distribution
+                      </h3>
+                      <div className="flex flex-col gap-1.5">
                         {Object.entries(metrics.extraction_layer_distribution || {}).map(
                           ([layer, count]) => (
                             <div
                               key={layer}
-                              className="flex justify-between items-center py-2 border-b border-[#064E3B]/10 last:border-0"
+                              className="flex justify-between items-center py-2.5 px-3 rounded-xl hover:bg-[#064E3B]/5 transition-colors border border-transparent hover:border-[#064E3B]/5"
                             >
-                              <span className="text-[13px] font-medium">{layer}</span>
-                              <span className="text-[13px] font-semibold text-[#064E3B]/70">
+                              <span className="text-[13px] font-semibold text-[#064E3B]">
+                                {layer || 'unspecified'}
+                              </span>
+                              <span className="text-[13px] font-bold text-[#064E3B] bg-[#064E3B]/5 px-3 py-1 rounded-full shadow-sm">
                                 {count}
                               </span>
                             </div>
                           )
                         )}
                         {Object.keys(metrics.extraction_layer_distribution || {}).length === 0 && (
-                          <p className="text-[13px] text-[#064E3B]/60">No data available.</p>
+                          <div className="py-6 text-center text-[13px] text-[#064E3B]/50 font-medium bg-[#064E3B]/5 rounded-xl border border-dashed border-[#064E3B]/10">
+                            No data available.
+                          </div>
                         )}
                       </div>
                     </div>
 
-                    <div className="bg-[#F8E7C9]/50 border border-[#064E3B]/10 rounded-xl p-6">
-                      <h3 className="text-[14px] font-bold mb-4">Reconciliation Decisions</h3>
-                      <div className="flex flex-col gap-2">
+                    <div className="bg-[#F3EBDD]/90 backdrop-blur-md border border-[#064E3B]/10 rounded-2xl p-6 shadow-[0_2px_10px_rgba(6,78,59,0.03)]">
+                      <h3 className="text-[15px] font-extrabold mb-5 text-[#064E3B] flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full bg-[#064E3B]/40" />
+                        Reconciliation Decisions
+                      </h3>
+                      <div className="flex flex-col gap-1.5">
                         {Object.entries(metrics.reconciliation_decision_distribution || {}).map(
                           ([decision, count]) => (
                             <div
                               key={decision}
-                              className="flex justify-between items-center py-2 border-b border-[#064E3B]/10 last:border-0"
+                              className="flex justify-between items-center py-2.5 px-3 rounded-xl hover:bg-[#064E3B]/5 transition-colors border border-transparent hover:border-[#064E3B]/5"
                             >
-                              <span className="text-[13px] font-medium">{decision}</span>
-                              <span className="text-[13px] font-semibold text-[#064E3B]/70">
+                              <span className="text-[13px] font-semibold text-[#064E3B]">
+                                {decision || 'unspecified'}
+                              </span>
+                              <span className="text-[13px] font-bold text-[#064E3B] bg-[#064E3B]/5 px-3 py-1 rounded-full shadow-sm">
                                 {count}
                               </span>
                             </div>
                           )
                         )}
-                        {Object.keys(metrics.reconciliation_decision_distribution || {}).length ===
-                          0 && <p className="text-[13px] text-[#064E3B]/60">No data available.</p>}
+                        {Object.keys(metrics.reconciliation_decision_distribution || {}).length === 0 && (
+                          <div className="py-6 text-center text-[13px] text-[#064E3B]/50 font-medium bg-[#064E3B]/5 rounded-xl border border-dashed border-[#064E3B]/10">
+                            No data available.
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
                 </>
               ) : (
-                <div className="text-[#064E3B]/60 text-[13px]">Loading metrics...</div>
+                <div className="flex items-center justify-center py-12 text-[#064E3B]/60 text-[14px] font-medium animate-pulse">
+                  Loading metrics...
+                </div>
               )}
             </div>
           )}

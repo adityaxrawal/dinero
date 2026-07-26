@@ -5,6 +5,7 @@ import SourcePipelineIcon from '@/components/transactions/SourcePipelineIcon';
 import { formatCustomDate } from '@/lib/formatCustomDate';
 import { cn } from '@/lib/utils';
 import type { ClusterMember } from '@/lib/ipc';
+import { GmailEmailViewer } from '@/components/common/GmailEmailViewer';
 
 const ROLE_LABEL: Record<string, string> = {
   incoming: 'New Evidence',
@@ -157,24 +158,29 @@ export default function ClusterMemberComparison({
 function SourceMessagePreview({ rawPayloadJson }: { rawPayloadJson: string }) {
   let html = '';
   let text = '';
+  let subject = '';
+  let sender = '';
   try {
     const parsed = JSON.parse(rawPayloadJson);
     html = parsed.html || '';
     text = parsed.body || parsed.snippet || '';
+    subject = parsed.subject || '';
+    sender = parsed.sender || parsed.from || '';
   } catch {
     // malformed payload -- leave both empty, nothing to show
   }
-  if (html) {
-    return (
-      <iframe
-        srcDoc={html}
-        className="w-full h-[300px] rounded-md border border-border mt-2 bg-white"
-        sandbox="allow-same-origin"
-        title="Source message"
-      />
-    );
-  }
+  
+  if (!html && !text) return null;
+
   return (
-    <p className="text-xs text-muted-foreground mt-2 whitespace-pre-wrap font-mono">{text}</p>
+    <div className="mt-2">
+      <GmailEmailViewer
+        html={html}
+        text={text}
+        subject={subject}
+        sender={sender}
+        maxHeight="320px"
+      />
+    </div>
   );
 }

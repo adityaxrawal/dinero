@@ -23,6 +23,7 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog';
+import { DatePicker } from '@/components/ui/date-picker';
 import { cn, formatRelativeDate } from '@/lib/utils';
 import { useTransactionsInfiniteList } from '@/hooks/queries/useTransactionsInfiniteList';
 import { useTransactionSearch } from '@/hooks/queries/useTransactionSearch';
@@ -476,11 +477,10 @@ export default function Transactions() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="new-txn-date">Date</Label>
-              <Input
+              <DatePicker
                 id="new-txn-date"
-                type="date"
                 value={newTxnDate}
-                onChange={(e) => setNewTxnDate(e.target.value)}
+                onChange={(val) => setNewTxnDate(val)}
               />
             </div>
             <div className="space-y-2">
