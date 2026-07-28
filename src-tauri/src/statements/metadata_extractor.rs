@@ -336,6 +336,26 @@ pub async fn write_statement_row(
                 ],
             )?;
         }
+
+        // Auto-populate extracted statement metadata onto the target instrument row
+        let cycle_day: Option<u8> = if bpe != "1970-01-01" {
+            bpe.split('-').nth(2).and_then(|s| s.parse::<u8>().ok())
+        } else {
+            None
+        };
+
+        c.execute(
+            "UPDATE instruments SET \
+             statement_due_date = COALESCE(?2, statement_due_date), \
+             minimum_due = COALESCE(?3, minimum_due), \
+             current_balance = COALESCE(?4, current_balance), \
+             rewards_summary = COALESCE(?5, rewards_summary), \
+             billing_cycle_day = COALESCE(billing_cycle_day, ?6), \
+             updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?1",
+            rusqlite::params![inst_id, due, min_due, cur_bal, rewards, cycle_day],
+        )?;
+
         Ok::<(), rusqlite::Error>(())
     })
     .await
