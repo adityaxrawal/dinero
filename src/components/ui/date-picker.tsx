@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Calendar as CalendarIcon, ChevronLeft, ChevronRight, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -67,7 +67,9 @@ export const DatePicker: React.FC<DatePickerProps> = ({
   'aria-label': ariaLabel,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
+  const [openUpward, setOpenUpward] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLDivElement>(null);
 
   const selectedDate = parseISODate(value);
   const minDate = parseISODate(min);
@@ -177,12 +179,27 @@ export const DatePicker: React.FC<DatePickerProps> = ({
     <div ref={containerRef} className={cn('relative inline-block w-full', className)}>
       {/* Input Trigger Button */}
       <div
+        ref={triggerRef}
         id={id}
         tabIndex={disabled ? -1 : 0}
         role="button"
         aria-label={ariaLabel || placeholder}
         aria-expanded={isOpen}
-        onClick={() => !disabled && setIsOpen(!isOpen)}
+        onClick={() => {
+          if (disabled) return;
+          if (!isOpen) {
+            // Compute available space to decide direction
+            if (triggerRef.current) {
+              const rect = triggerRef.current.getBoundingClientRect();
+              const viewportHeight = window.innerHeight;
+              const spaceBelow = viewportHeight - rect.bottom;
+              const spaceAbove = rect.top;
+              // Calendar is ~320px tall; flip upward if not enough room below
+              setOpenUpward(spaceBelow < 330 && spaceAbove > spaceBelow);
+            }
+          }
+          setIsOpen(!isOpen);
+        }}
         onKeyDown={(e) => {
           if (!disabled && (e.key === 'Enter' || e.key === ' ')) {
             e.preventDefault();
@@ -225,7 +242,14 @@ export const DatePicker: React.FC<DatePickerProps> = ({
 
       {/* Calendar Popover */}
       {isOpen && (
-        <div className="absolute z-50 mt-1.5 w-72 rounded-xl bg-[#F3EBDD] border border-[#d9c8a8] shadow-xl p-3.5 animate-in fade-in slide-in-from-top-2 duration-150">
+        <div
+          className={cn(
+            'absolute z-50 w-72 rounded-xl bg-[#F3EBDD] border border-[#d9c8a8] shadow-xl p-3.5 duration-150',
+            openUpward
+              ? 'bottom-full mb-1.5 animate-in fade-in slide-in-from-bottom-2'
+              : 'top-full mt-1.5 animate-in fade-in slide-in-from-top-2'
+          )}
+        >
           {/* Header Controls (Month/Year dropdowns & Chevrons) */}
           <div className="flex items-center justify-between mb-3 gap-1">
             <button

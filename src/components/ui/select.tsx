@@ -10,8 +10,8 @@ const SelectValue = SelectPrimitive.Value;
 
 const SelectTrigger = React.forwardRef<
   React.ElementRef<typeof SelectPrimitive.Trigger>,
-  React.ComponentPropsWithoutRef<typeof SelectPrimitive.Trigger>
->(({ className, children, ...props }, ref) => (
+  React.ComponentPropsWithoutRef<typeof SelectPrimitive.Trigger> & { hideChevron?: boolean }
+>(({ className, children, hideChevron = false, ...props }, ref) => (
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
@@ -38,9 +38,11 @@ const SelectTrigger = React.forwardRef<
     {...props}
   >
     {children}
-    <SelectPrimitive.Icon asChild>
-      <ChevronDown className="h-4 w-4 opacity-50 transition-transform duration-200 data-[state=open]:rotate-180" />
-    </SelectPrimitive.Icon>
+    {!hideChevron && (
+      <SelectPrimitive.Icon asChild>
+        <ChevronDown className="h-4 w-4 opacity-50 transition-transform duration-200 data-[state=open]:rotate-180" />
+      </SelectPrimitive.Icon>
+    )}
   </SelectPrimitive.Trigger>
 ));
 SelectTrigger.displayName = SelectPrimitive.Trigger.displayName;
@@ -75,8 +77,8 @@ SelectScrollDownButton.displayName = SelectPrimitive.ScrollDownButton.displayNam
 
 const SelectContent = React.forwardRef<
   React.ElementRef<typeof SelectPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof SelectPrimitive.Content>
->(({ className, children, position = 'popper', ...props }, ref) => (
+  React.ComponentPropsWithoutRef<typeof SelectPrimitive.Content> & { hideScrollButtons?: boolean }
+>(({ className, children, position = 'popper', hideScrollButtons = true, ...props }, ref) => (
   <SelectPrimitive.Portal>
     <SelectPrimitive.Content
       ref={ref}
@@ -99,7 +101,7 @@ const SelectContent = React.forwardRef<
       position={position}
       {...props}
     >
-      <SelectScrollUpButton />
+      {!hideScrollButtons && <SelectScrollUpButton />}
       <SelectPrimitive.Viewport
         className={cn(
           'p-1.5',
@@ -109,7 +111,7 @@ const SelectContent = React.forwardRef<
       >
         {children}
       </SelectPrimitive.Viewport>
-      <SelectScrollDownButton />
+      {!hideScrollButtons && <SelectScrollDownButton />}
     </SelectPrimitive.Content>
   </SelectPrimitive.Portal>
 ));
@@ -132,8 +134,8 @@ SelectLabel.displayName = SelectPrimitive.Label.displayName;
 
 const SelectItem = React.forwardRef<
   React.ElementRef<typeof SelectPrimitive.Item>,
-  React.ComponentPropsWithoutRef<typeof SelectPrimitive.Item>
->(({ className, children, ...props }, ref) => (
+  React.ComponentPropsWithoutRef<typeof SelectPrimitive.Item> & { hideCheckmark?: boolean }
+>(({ className, children, hideCheckmark = false, ...props }, ref) => (
   <SelectPrimitive.Item
     ref={ref}
     className={cn(
@@ -155,11 +157,13 @@ const SelectItem = React.forwardRef<
     {...props}
   >
     {/* Checkmark indicator — right side */}
-    <span className="absolute right-2.5 flex h-4 w-4 items-center justify-center">
-      <SelectPrimitive.ItemIndicator>
-        <Check className="h-3.5 w-3.5 text-[#064E3B]" strokeWidth={3} />
-      </SelectPrimitive.ItemIndicator>
-    </span>
+    {!hideCheckmark && (
+      <span className="absolute right-2.5 flex h-4 w-4 items-center justify-center">
+        <SelectPrimitive.ItemIndicator>
+          <Check className="h-3.5 w-3.5 text-[#064E3B]" strokeWidth={3} />
+        </SelectPrimitive.ItemIndicator>
+      </span>
+    )}
     <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
   </SelectPrimitive.Item>
 ));
@@ -177,4 +181,6 @@ const SelectSeparator = React.forwardRef<
 ));
 SelectSeparator.displayName = SelectPrimitive.Separator.displayName;
 
-export { Select, SelectValue, SelectTrigger, SelectContent, SelectItem };
+const SelectGroup = SelectPrimitive.Group;
+
+export { Select, SelectValue, SelectTrigger, SelectContent, SelectItem, SelectGroup, SelectLabel, SelectSeparator };

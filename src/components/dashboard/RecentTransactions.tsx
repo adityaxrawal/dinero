@@ -184,17 +184,22 @@ export default function RecentTransactions({ transactions }: RecentTransactionsP
                       </span>
                     </td>
                     <td className="text-right">
-                      <span
-                        className={cn(
-                          'text-sm font-semibold amount',
-                          tx.amount < 0 ? 'amount-debit' : 'amount-credit'
-                        )}
-                      >
-                        {tx.amount < 0 ? '−' : '+'}₹
-                        {Math.abs(tx.amount).toLocaleString(undefined, {
-                          minimumFractionDigits: 0,
-                        })}
-                      </span>
+                      {(() => {
+                        const isDebit = tx.direction === 'debit' || tx.amount < 0;
+                        return (
+                          <span
+                            className={cn(
+                              'text-sm font-semibold amount',
+                              isDebit ? 'amount-debit' : 'amount-credit'
+                            )}
+                          >
+                            {isDebit ? '−' : '+'}₹
+                            {Math.abs(tx.amount).toLocaleString(undefined, {
+                              minimumFractionDigits: 0,
+                            })}
+                          </span>
+                        );
+                      })()}
                     </td>
                     <td>
                       <span

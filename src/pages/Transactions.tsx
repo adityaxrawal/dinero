@@ -166,44 +166,101 @@ export default function Transactions() {
       }
       return next;
     });
-  };
+  };  // Keyboard navigation through list items
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      if (!transactions || transactions.length === 0) return;
+
+      const currentIndex = selectedTxId
+        ? transactions.findIndex((t) => t.id === selectedTxId)
+        : -1;
+
+      if (e.key === 'ArrowDown' || e.key === 'j') {
+        e.preventDefault();
+        const nextIndex = Math.min(transactions.length - 1, currentIndex + 1);
+        if (transactions[nextIndex]) setSelectedTxId(transactions[nextIndex].id);
+      } else if (e.key === 'ArrowUp' || e.key === 'k') {
+        e.preventDefault();
+        const prevIndex = Math.max(0, currentIndex - 1);
+        if (transactions[prevIndex]) setSelectedTxId(transactions[prevIndex].id);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [transactions, selectedTxId]);
+
+  const groupedTransactions = useMemo(() => {
+    const groups: { dateLabel: string; items: typeof transactions }[] = [];
+    let currentLabel = '';
+    let currentItems: typeof transactions = [];
+
+    for (const tx of transactions) {
+      const dateLabel = formatRelativeDate(tx.date);
+      if (dateLabel !== currentLabel) {
+        if (currentItems.length > 0) {
+          groups.push({ dateLabel: currentLabel, items: currentItems });
+        }
+        currentLabel = dateLabel;
+        currentItems = [tx];
+      } else {
+        currentItems.push(tx);
+      }
+    }
+    if (currentItems.length > 0) {
+      groups.push({ dateLabel: currentLabel, items: currentItems });
+    }
+    return groups;
+  }, [transactions]);
 
   return (
-    <div className="flex h-full w-full overflow-hidden">
+    <div className="flex h-full w-full overflow-hidden select-none">
       {/* ── Column 2: Master List (Feed) ─────────────────────────────────── */}
       <div
-        className="flex-shrink-0 flex flex-col h-full border-r border-[#064E3B]/20 bg-[#F8E7C9]"
-        style={{ width: '320px' }}
+        className="flex-shrink-0 flex flex-col h-full border-r border-[#064E3B]/15 bg-[#F8E7C9]"
+        style={{ width: '340px' }}
       >
         {/* Header bar */}
-        <div className="flex flex-col gap-3 px-4 py-3 flex-shrink-0 border-b border-[#064E3B]/10">
+        <div className="flex flex-col gap-3 px-4 py-3.5 flex-shrink-0 border-b border-[#064E3B]/10 bg-[#F8E7C9]/60 backdrop-blur-sm">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <h1 className="text-[14px] font-semibold text-[#064E3B] tracking-tight">
+              <h1 className="text-[15px] font-bold text-[#064E3B] tracking-tight">
                 All Transactions
               </h1>
               <span
-                className="text-[10px] font-medium px-1.5 py-0.5 rounded-md"
-                style={{ background: 'rgba(6,78,59,0.07)', color: '#064E3B' }}
+                className="text-[11px] font-bold px-2 py-0.5 rounded-full font-mono shadow-2xs"
+                style={{ background: 'rgba(6,78,59,0.08)', color: '#064E3B' }}
               >
                 {total.toLocaleString()}
               </span>
             </div>
 
-            <div className="flex items-center gap-1">
+            <div className="flex items-center gap-1.5">
               <button
                 type="button"
-                className="flex items-center justify-center w-7 h-7 rounded-md transition-colors hover:bg-[#064E3B]/10 text-[#064E3B]"
+                className="flex items-center justify-center w-7 h-7 rounded-lg transition-colors hover:bg-[#064E3B]/10 text-[#064E3B]/70 hover:text-[#064E3B] cursor-pointer"
                 onClick={handleExportCsv}
                 aria-label="Export CSV"
+                title="Export CSV"
               >
-                <Download className="w-3.5 h-3.5" aria-hidden="true" />
+                <Download className="w-4 h-4" aria-hidden="true" />
               </button>
               <button
                 type="button"
-                className="flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-[#064E3B] hover:bg-[#064E3B]/90 text-[#F8E7C9]"
+                className="flex items-center justify-center w-7 h-7 rounded-lg transition-colors bg-[#064E3B] hover:bg-[#064E3B]/90 text-[#F8E7C9] shadow-2xs cursor-pointer"
                 onClick={() => setIsCreateModalOpen(true)}
                 aria-label="New transaction"
+                title="Record transaction"
               >
                 <Plus className="w-4 h-4" aria-hidden="true" />
               </button>
@@ -213,43 +270,40 @@ export default function Transactions() {
           {/* Search */}
           <div className="relative w-full">
             <Search
-              className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 pointer-events-none opacity-50"
-              style={{ color: '#064E3B' }}
+              className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 pointer-events-none text-[#064E3B]/50"
               aria-hidden="true"
             />
             <input
               type="text"
-              placeholder="Search..."
+              placeholder="Search merchant, category..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={(e) => e.key === 'Escape' && setSearchQuery('')}
-              className="w-full pl-8 pr-8 h-7 rounded-md text-[13px] outline-none placeholder:text-[#064E3B]/40 focus:ring-1 ring-[#064E3B]/30"
-              style={{
-                backgroundColor: 'rgba(6,78,59,0.04)',
-                border: '1px solid rgba(6,78,59,0.08)',
-                color: '#064E3B',
-              }}
+              className="w-full pl-8 pr-12 h-8 rounded-xl text-[12px] font-medium outline-none placeholder:text-[#064E3B]/40 focus:ring-1 focus:ring-[#064E3B]/30 focus:border-[#064E3B]/40 transition-all bg-[#F3EBDD]/60 border border-[#064E3B]/15 text-[#064E3B]"
               aria-label="Search transactions"
             />
-            {searchQuery && (
+            {searchQuery ? (
               <button
                 type="button"
-                className="absolute right-2 top-1/2 -translate-y-1/2 opacity-50 hover:opacity-100"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#064E3B]/50 hover:text-[#064E3B]"
                 onClick={() => setSearchQuery('')}
                 aria-label="Clear search"
               >
-                <X className="w-3.5 h-3.5 text-[#064E3B]" />
+                <X className="w-3.5 h-3.5" />
               </button>
+            ) : (
+              <kbd className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] font-mono font-medium text-[#064E3B]/40 bg-[#064E3B]/5 px-1.5 py-0.5 rounded border border-[#064E3B]/10 pointer-events-none">
+                ⌘K
+              </kbd>
             )}
           </div>
         </div>
 
         {/* Filter chips row */}
         {!isSearching && (
-          <div className="flex items-center gap-2 px-3 py-2 flex-shrink-0 border-b border-[#064E3B]/10">
+          <div className="flex items-center gap-1.5 px-3.5 py-2 flex-shrink-0 border-b border-[#064E3B]/10 bg-[#064E3B]/[0.02]">
             <SlidersHorizontal
-              className="w-3 h-3 flex-shrink-0 opacity-40 mx-1"
-              style={{ color: '#064E3B' }}
+              className="w-3 h-3 flex-shrink-0 opacity-40 mx-0.5 text-[#064E3B]"
               aria-hidden="true"
             />
 
@@ -259,7 +313,7 @@ export default function Transactions() {
             >
               <SelectTrigger
                 className={cn(
-                  'h-6 text-[11px] font-medium border-0 rounded-full px-2.5 min-w-[90px] max-w-[120px]',
+                  'h-6 text-[11px] font-semibold border-0 rounded-full px-2.5 min-w-[85px] max-w-[125px] cursor-pointer shadow-2xs',
                   filters.instrument_id
                     ? 'bg-[#064E3B] text-[#F8E7C9]'
                     : 'bg-[#064E3B]/5 text-[#064E3B] hover:bg-[#064E3B]/10'
@@ -283,7 +337,7 @@ export default function Transactions() {
             >
               <SelectTrigger
                 className={cn(
-                  'h-6 text-[11px] font-medium border-0 rounded-full px-2.5 min-w-[90px] max-w-[120px]',
+                  'h-6 text-[11px] font-semibold border-0 rounded-full px-2.5 min-w-[85px] max-w-[125px] cursor-pointer shadow-2xs',
                   filters.category_id
                     ? 'bg-[#064E3B] text-[#F8E7C9]'
                     : 'bg-[#064E3B]/5 text-[#064E3B] hover:bg-[#064E3B]/10'
@@ -304,91 +358,122 @@ export default function Transactions() {
             {activeFilterCount > 0 && (
               <button
                 type="button"
-                className="filter-chip text-[11px] py-0.5 px-2 rounded-full border text-[#ef4444] border-[#ef4444]/20 hover:bg-[#ef4444]/10"
+                className="filter-chip text-[10px] font-bold py-0.5 px-2 rounded-full border text-red-600 border-red-500/20 hover:bg-red-500/10 cursor-pointer ml-auto"
                 onClick={() => setFilters({})}
                 aria-label="Clear all filters"
               >
-                Clear
+                Reset
               </button>
             )}
           </div>
         )}
 
         {/* List items */}
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto px-2 py-2 space-y-3">
           {loading ? (
-            <div className="flex flex-col items-center justify-center h-40 gap-2">
-              <Loader2 className="w-4 h-4 animate-spin text-[#064E3B]/50" />
-              <span className="text-xs text-[#064E3B]/50">Loading...</span>
+            <div className="flex flex-col items-center justify-center h-48 gap-2">
+              <Loader2 className="w-5 h-5 animate-spin text-[#064E3B]/60" />
+              <span className="text-xs font-medium text-[#064E3B]/60">Loading transactions…</span>
             </div>
           ) : transactions.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-40">
-              <p className="text-xs text-[#064E3B]/50">
-                {isSearching ? `No results for "${searchQuery}"` : 'No transactions found.'}
+            <div className="flex flex-col items-center justify-center h-48 px-4 text-center">
+              <p className="text-xs font-medium text-[#064E3B]/60">
+                {isSearching ? `No transactions match "${searchQuery}"` : 'No transactions found.'}
               </p>
             </div>
           ) : (
-            <div className="flex flex-col py-1">
-              {transactions.map((tx) => {
-                const instrument = tx.instrument_id
-                  ? instrumentById.get(tx.instrument_id)
-                  : undefined;
-                const dateStr = formatRelativeDate(tx.date);
+            <div className="flex flex-col gap-3">
+              {groupedTransactions.map((group) => (
+                <div key={group.dateLabel} className="space-y-1">
+                  <div className="sticky top-0 z-10 px-2 py-1 bg-[#F8E7C9]/90 backdrop-blur-xs text-[10px] font-bold text-[#064E3B]/60 uppercase tracking-wider">
+                    {group.dateLabel}
+                  </div>
+                  {group.items.map((tx) => {
+                    const instrument = tx.instrument_id
+                      ? instrumentById.get(tx.instrument_id)
+                      : undefined;
+                    const isSelected = selectedTxId === tx.id;
 
-                const isSelected = selectedTxId === tx.id;
-
-                return (
-                  <button
-                    key={tx.id}
-                    className={cn(
-                      'flex flex-col w-full text-left px-4 py-2.5 mx-2 rounded-md transition-colors max-w-[calc(100%-16px)] cursor-pointer select-none',
-                      isSelected
-                        ? 'bg-[#064E3B] text-[#F8E7C9]'
-                        : 'hover:bg-[#064E3B]/5 text-[#064E3B]'
-                    )}
-                    onClick={() => setSelectedTxId(tx.id)}
-                  >
-                    <div className="flex items-start justify-between w-full mb-1">
-                      <span
+                    return (
+                      <button
+                        key={tx.id}
                         className={cn(
-                          'font-semibold text-[13px] truncate pr-2',
-                          isSelected ? 'text-white' : 'text-[#064E3B]'
-                        )}
-                      >
-                        {tx.merchant}
-                      </span>
-                      <span
-                        className={cn(
-                          'text-[13px] font-semibold whitespace-nowrap',
+                          'flex items-center gap-3 w-full text-left px-3 py-2.5 rounded-xl transition-all cursor-pointer border select-none',
                           isSelected
-                            ? 'text-white'
-                            : tx.direction === 'debit'
-                              ? 'text-red-700'
-                              : 'text-[#10b981]'
+                            ? 'bg-[#064E3B] text-[#F8E7C9] border-[#064E3B] shadow-sm'
+                            : 'bg-[#F8E7C9]/40 hover:bg-[#064E3B]/5 border-transparent text-[#064E3B]'
                         )}
+                        onClick={() => setSelectedTxId(tx.id)}
                       >
-                        {tx.direction === 'debit' ? '−' : '+'}₹
-                        {Math.abs(tx.amount).toLocaleString(undefined, {
-                          minimumFractionDigits: 0,
-                        })}
-                      </span>
-                    </div>
+                        {/* Merchant Avatar Icon */}
+                        <div
+                          className={cn(
+                            'w-8 h-8 rounded-lg flex items-center justify-center text-[13px] font-bold shrink-0 transition-colors',
+                            isSelected
+                              ? 'bg-[#F8E7C9]/20 text-[#F8E7C9]'
+                              : 'bg-[#064E3B]/10 text-[#064E3B]'
+                          )}
+                        >
+                          {tx.merchant?.charAt(0).toUpperCase() ?? '?'}
+                        </div>
 
-                    <div className="flex items-center justify-between w-full text-[11px] opacity-70 font-medium">
-                      <span className="truncate pr-2">
-                        {tx.category} • {instrument ? instrument.issuer_name : 'Unknown'}
-                      </span>
-                      <span className="whitespace-nowrap flex-shrink-0">{dateStr}</span>
-                    </div>
-                  </button>
-                );
-              })}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between gap-1 mb-0.5">
+                            <span
+                              className={cn(
+                                'font-semibold text-[13px] truncate pr-1',
+                                isSelected ? 'text-white' : 'text-[#064E3B]'
+                              )}
+                            >
+                              {tx.merchant}
+                            </span>
+                            <span
+                              className={cn(
+                                'text-[13px] font-bold font-mono whitespace-nowrap shrink-0',
+                                isSelected
+                                  ? 'text-white'
+                                  : tx.direction === 'debit'
+                                    ? 'text-red-700'
+                                    : 'text-emerald-700'
+                              )}
+                            >
+                              {tx.direction === 'debit' ? '−' : '+'}₹
+                              {Math.abs(tx.amount).toLocaleString(undefined, {
+                                minimumFractionDigits: 0,
+                              })}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center justify-between text-[11px] font-medium opacity-80 gap-1 mt-0.5">
+                            <span className="truncate">
+                              {tx.category || 'Uncategorized'}
+                              {instrument ? ` • ${instrument.issuer_name}` : ''}
+                            </span>
+                            <span
+                              className={cn(
+                                'text-[9px] font-extrabold px-1.5 py-0.2 rounded uppercase tracking-wider border shrink-0',
+                                isSelected
+                                  ? 'bg-white/20 text-white border-white/30'
+                                  : tx.direction === 'debit'
+                                    ? 'bg-red-500/10 text-red-700 border-red-500/20'
+                                    : 'bg-emerald-500/10 text-emerald-700 border-emerald-500/20'
+                              )}
+                            >
+                              {tx.direction === 'debit' ? 'DEBIT' : 'CREDIT'}
+                            </span>
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
 
               {!isSearching && hasNextPage && (
-                <div ref={sentinelRef} className="flex justify-center py-4">
+                <div ref={sentinelRef} className="flex justify-center py-3">
                   <button
                     type="button"
-                    className="text-xs font-medium px-4 py-1.5 rounded-full border border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5"
+                    className="text-xs font-semibold px-4 py-1.5 rounded-full border border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/10 transition-colors cursor-pointer"
                     onClick={() => fetchNextPage()}
                     disabled={isFetchingNextPage}
                   >
@@ -417,12 +502,15 @@ export default function Transactions() {
             categories={categories}
           />
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center h-full opacity-30">
-            <div className="w-12 h-12 border-2 border-[#064E3B] rounded-xl mb-4 border-dashed flex items-center justify-center">
-              <span className="text-[#064E3B] font-bold text-xl">D</span>
+          <div className="flex-1 flex flex-col items-center justify-center h-full opacity-40 gap-3">
+            <div className="w-14 h-14 border-2 border-[#064E3B] rounded-2xl border-dashed flex items-center justify-center bg-[#064E3B]/5">
+              <span className="text-[#064E3B] font-extrabold text-2xl">D</span>
             </div>
-            <p className="text-[#064E3B] font-medium text-sm">
-              Select a transaction to view details
+            <p className="text-[#064E3B] font-semibold text-sm">
+              Select a transaction to inspect details &amp; edit
+            </p>
+            <p className="text-[#064E3B]/60 text-xs font-mono">
+              Use ↑ / ↓ arrow keys to quickly navigate
             </p>
           </div>
         )}
