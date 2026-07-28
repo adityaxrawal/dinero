@@ -31,6 +31,49 @@ impl NetworkClient {
         Self {
             client: Client::builder()
                 .timeout(timeout)
+                // Google's frontend closes idle keep-alive connections well
+                // under reqwest's 90s default pool_idle_timeout. A scan's
+                // bursty concurrency (many requests firing at once after a
+                // quiet moment) kept grabbing those stale pooled connections
+                // and failing instantly with "error sending request" --
+                // 306 of ~630 fetches in one logged scan -- each eating a
+                // 2-6s retry backoff. Recycling connections before Google's
+                // side does avoids the failure instead of retrying around it.
+                .pool_idle_timeout(Duration::from_secs(30))
+                // `pool_idle_timeout` alone only stops reqwest from reusing a
+                // connection idle *longer* than 30s -- one that Google closed
+                // at, say, 20s is still inside that window and still handed
+                // out, so the request writes fine but the server never
+                // answers, and we only notice once our own 15s REQUEST_TIMEOUT
+                // fires (logged as "gmail request timed out" despite the
+                // connection being the actual problem). HTTP/2 keepalive pings
+                // idle connections proactively and evicts ones that don't
+                // answer, so a dead connection is caught before being handed
+                // to a real request at all, regardless of Google's actual
+                // close threshold.
+                .http2_keep_alive_interval(Duration::from_secs(10))
+                .http2_keep_alive_timeout(Duration::from_secs(5))
+                .http2_keep_alive_while_idle(true)
+                // Doc 2026-07-28 mail scan performance (root cause of the
+                // 35-minute scan): HTTP/2 multiplexes every concurrent
+                // request over ONE physical connection. A historical scan
+                // fires `MAX_CONCURRENT_FETCHES` requests at once -- under
+                // h2 they all rode that single connection, so one hiccup
+                // (Google rotating the connection, a Wi-Fi/VPN blip) killed
+                // every in-flight request simultaneously and all of them
+                // re-contended to re-establish the same one connection --
+                // observed in logs as ~19 lockstep ~100s stalls (dozens of
+                // "Spawning fetch" lines go silent, then everything finishes
+                // in one burst) accounting for ~88% of total scan time. The
+                // keepalive settings above stop *idle* connections going
+                // stale but can't stop a *live* connection's hiccup from
+                // taking every concurrent request down with it. Forcing
+                // HTTP/1.1 makes reqwest open one connection per concurrent
+                // request instead, so a dead connection only costs the one
+                // request riding it (bounded by REQUEST_TIMEOUT + retry
+                // below), not all of them. Do not remove this without
+                // re-confirming the thundering-herd behavior is gone.
+                .http1_only()
                 .build()
                 .expect("reqwest::Client::builder() with only a timeout set must always succeed"),
             db_pool,

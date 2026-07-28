@@ -252,9 +252,21 @@ impl GmailClient {
                         tracing::warn!(operation, attempts, error = %e, "gmail request failed, retries exhausted");
                         return Err(e).context(format!("Failed to send {} request", operation));
                     }
-                    tracing::warn!(operation, attempts, error = %e, ?backoff, "gmail request failed, retrying");
-                    tokio::time::sleep(jittered(backoff)).await;
-                    backoff *= 2;
+                    // Doc 2026-07-28 mail scan performance: a non-timeout
+                    // error here (e.g. "error sending request") means the
+                    // pooled connection reqwest picked was already dead --
+                    // reqwest evicts it and opens a fresh one on the very
+                    // next attempt, so there's nothing to back off from.
+                    // Sleeping 2-4s here is pure waste for a failure mode
+                    // that a same-instant retry already fixes; a real
+                    // request timeout is the one case worth spacing out.
+                    if e.is_timeout() {
+                        tracing::warn!(operation, attempts, error = %e, ?backoff, "gmail request timed out, retrying");
+                        tokio::time::sleep(jittered(backoff)).await;
+                        backoff *= 2;
+                    } else {
+                        tracing::warn!(operation, attempts, error = %e, "gmail request failed (stale connection), retrying immediately");
+                    }
                     continue;
                 }
             };
@@ -552,20 +564,26 @@ mod quota_limiter_tests {
     #[tokio::test(start_paused = true)]
     async fn acquire_caps_the_burst_below_capacity_for_a_large_budget() {
         // Doc 2026-07-28 dev-scan-log-issues: production's real budget
-        // (225 units/sec) is far above MAX_BURST_UNITS (45) -- this proves
-        // the *starting* bucket for a large budget is capped at 45, not the
-        // full 225, by requesting one unit more than the cap and confirming
-        // it still has to wait for a sliver of refill instead of being
-        // instantly available (which would only be possible if the ceiling
-        // weren't actually being enforced). The other tests in this module
-        // all use capacities <= 10, already under the cap, so they can't
-        // catch a regression here.
+        // (225 units/sec) is far above MAX_BURST_UNITS (30) -- this proves
+        // the *starting* bucket for a large budget is capped at 30, not the
+        // full 225. `acquire()`'s refill is `.min(self.burst_ceiling)` on
+        // every call, so tokens can structurally never exceed the ceiling --
+        // a request *above* it (the original version of this test asked for
+        // 31.0) can never be satisfied and spins in `acquire()`'s retry loop
+        // forever. Proving the cap instead by draining exactly the ceiling
+        // (must be instant) and then requesting one more unit (must have to
+        // wait -- if the starting bucket had really been the full 225, 195
+        // units would still be left and this would also be instant).
         let limiter = QuotaLimiter::new(225.0);
         let start = tokio::time::Instant::now();
-        limiter.acquire(31.0).await; // 1 unit above the 30-unit ceiling
+        limiter.acquire(30.0).await; // drains the capped starting bucket
+        assert_eq!(start.elapsed(), std::time::Duration::ZERO);
+
+        let start = tokio::time::Instant::now();
+        limiter.acquire(1.0).await; // bucket empty; must wait for refill
         assert!(
             start.elapsed() > std::time::Duration::ZERO,
-            "a request above the burst ceiling must still be paced, even for a large budget"
+            "starting bucket must be capped at MAX_BURST_UNITS, not the full 225/sec budget"
         );
     }
 }
