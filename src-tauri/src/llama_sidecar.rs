@@ -104,6 +104,45 @@ fn gpu_layers_arg() -> &'static str {
     "0"
 }
 
+/// Doc 2026-07-26 mail scan performance: `--parallel N` on a single
+/// `llama-server` process batches N concurrent generations sharing the same
+/// GPU/memory-bandwidth budget — it does not multiply compute. This
+/// measures whether `requested_slots` concurrent completions actually stay
+/// within a tolerable slowdown of one solo completion on THIS machine, and
+/// steps down proportionally if not, rather than trusting the static
+/// RAM/CPU-derived recommendation blindly.
+const SLOWDOWN_BUDGET: f64 = 1.5;
+
+pub(crate) fn calibrate_effective_slots(
+    requested_slots: usize,
+    solo_latency: Duration,
+    burst_latency: Duration,
+) -> usize {
+    if requested_slots <= 1 {
+        return requested_slots.max(1);
+    }
+    let solo_ms = (solo_latency.as_millis().max(1)) as f64;
+    let burst_ms = burst_latency.as_millis() as f64;
+    let budget_ms = solo_ms * SLOWDOWN_BUDGET;
+    if burst_ms <= budget_ms {
+        return requested_slots;
+    }
+    let ratio = budget_ms / burst_ms;
+    ((requested_slots as f64 * ratio).floor() as usize).clamp(1, requested_slots)
+}
+
+const TIMEOUT_SAFETY_MARGIN: f64 = 1.5;
+const MIN_CALIBRATED_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Replaces the old fixed 60s `INFERENCE_TIMEOUT` constant with a value
+/// derived from what this machine actually measured, so a genuinely-slow
+/// (but working) completion under real concurrency isn't killed early and
+/// thrown into a wasted retry.
+pub(crate) fn calibrate_timeout(burst_latency: Duration) -> Duration {
+    let scaled = Duration::from_secs_f64(burst_latency.as_secs_f64() * TIMEOUT_SAFETY_MARGIN);
+    scaled.max(MIN_CALIBRATED_TIMEOUT)
+}
+
 fn base_dir(app_dir: &Path) -> PathBuf {
     app_dir.join("llama_cpp")
 }
@@ -133,7 +172,9 @@ struct SidecarState {
     child: Option<Child>,
     model_id: Option<String>,
     parallel_slots: usize,
-    semaphore: Arc<Semaphore>,
+    effective_slots: usize,     // what calibration actually settled on
+    semaphore: Arc<Semaphore>,  // sized to effective_slots, not parallel_slots
+    calibrated_timeout: Duration,
 }
 
 fn state() -> &'static Mutex<SidecarState> {
@@ -147,7 +188,9 @@ fn state() -> &'static Mutex<SidecarState> {
             // after clamping), so this can't accidentally "match" before a
             // server has actually been spawned.
             parallel_slots: 0,
+            effective_slots: 0,
             semaphore: Arc::new(Semaphore::new(1)),
+            calibrated_timeout: Duration::from_secs(60),
         })
     })
 }
@@ -310,13 +353,51 @@ async fn start_server_task(app_dir: PathBuf, model_id: String, slots: usize) {
     }
     .await;
 
+    let calibration = if outcome.is_ok() {
+        const CALIBRATION_PROMPT: &str = "Reply with exactly the single word: OK";
+
+        let solo_start = Instant::now();
+        let _ = raw_complete(port, CALIBRATION_PROMPT, Duration::from_secs(30)).await;
+        let solo_latency = solo_start.elapsed();
+
+        let burst_latency = if slots > 1 {
+            let burst_start = Instant::now();
+            let mut set = tokio::task::JoinSet::new();
+            for _ in 0..slots {
+                set.spawn(raw_complete(port, CALIBRATION_PROMPT, Duration::from_secs(90)));
+            }
+            while set.join_next().await.is_some() {}
+            burst_start.elapsed()
+        } else {
+            solo_latency
+        };
+
+        let effective_slots = calibrate_effective_slots(slots, solo_latency, burst_latency);
+        let calibrated_timeout = calibrate_timeout(burst_latency);
+        tracing::info!(
+            requested_slots = slots,
+            effective_slots,
+            solo_latency_ms = solo_latency.as_millis() as u64,
+            burst_latency_ms = burst_latency.as_millis() as u64,
+            calibrated_timeout_ms = calibrated_timeout.as_millis() as u64,
+            "Layer 6 sidecar calibration complete"
+        );
+        Some((effective_slots, calibrated_timeout))
+    } else {
+        None
+    };
+
     let mut st = state().lock().await;
     match outcome {
         Ok(child) => {
+            let (effective_slots, calibrated_timeout) =
+                calibration.expect("calibration always runs when outcome is Ok");
             st.child = Some(child);
             st.model_id = Some(model_id);
             st.parallel_slots = slots;
-            st.semaphore = Arc::new(Semaphore::new(slots));
+            st.effective_slots = effective_slots;
+            st.semaphore = Arc::new(Semaphore::new(effective_slots));
+            st.calibrated_timeout = calibrated_timeout;
             st.state = ServerState::Ready { port };
         }
         Err(e) => {
@@ -342,14 +423,17 @@ pub async fn shutdown() {
 /// a cold start; kicks one off in the background and reports "not ready
 /// yet" immediately so the caller (a single email's Layer 6 attempt) can
 /// fail fast rather than hang on someone else's multi-GB model load.
-async fn ensure_server_ready(app_dir: &Path, model_id: &str) -> Result<(u16, Arc<Semaphore>)> {
+async fn ensure_server_ready(
+    app_dir: &Path,
+    model_id: &str,
+) -> Result<(u16, Arc<Semaphore>, Duration)> {
     let requested_slots = current_parallel_slots();
     let mut st = state().lock().await;
     match &st.state {
         ServerState::Ready { port }
             if server_matches(st.model_id.as_deref(), st.parallel_slots, model_id, requested_slots) =>
         {
-            Ok((*port, Arc::clone(&st.semaphore)))
+            Ok((*port, Arc::clone(&st.semaphore), st.calibrated_timeout))
         }
         ServerState::Ready { .. } => {
             if let Some(mut child) = st.child.take() {
@@ -392,13 +476,7 @@ struct CompletionResponse {
 /// cold start and the completion slot below is `try_acquire`d rather than
 /// waited on, so nothing here can eat into that budget except the actual
 /// HTTP request.
-pub async fn complete(app_dir: &Path, model_id: &str, prompt: &str, timeout: Duration) -> Result<String> {
-    let (port, semaphore) = ensure_server_ready(app_dir, model_id).await?;
-    let _permit = semaphore
-        .acquire()
-        .await
-        .context("llama-server semaphore closed")?;
-
+async fn raw_complete(port: u16, prompt: &str, timeout: Duration) -> Result<String> {
     let resp = http_client()
         .post(format!("http://127.0.0.1:{port}/completion"))
         .timeout(timeout)
@@ -413,12 +491,36 @@ pub async fn complete(app_dir: &Path, model_id: &str, prompt: &str, timeout: Dur
         .context("llama-server /completion request failed")?
         .error_for_status()
         .context("llama-server /completion returned an error status")?;
-
     let parsed: CompletionResponse = resp
         .json()
         .await
         .context("llama-server /completion response was not the expected JSON shape")?;
     Ok(parsed.content)
+}
+
+pub async fn complete(app_dir: &Path, model_id: &str, prompt: &str, timeout: Duration) -> Result<String> {
+    let (port, semaphore, _calibrated_timeout) = ensure_server_ready(app_dir, model_id).await?;
+    let _permit = semaphore
+        .acquire()
+        .await
+        .context("llama-server semaphore closed")?;
+    raw_complete(port, prompt, timeout).await
+}
+
+/// Same as `complete`, but sources its timeout from this server's own
+/// calibration (Doc 2026-07-26 mail scan performance) instead of a caller-
+/// supplied fixed constant.
+pub async fn complete_with_calibrated_timeout(
+    app_dir: &Path,
+    model_id: &str,
+    prompt: &str,
+) -> Result<String> {
+    let (port, semaphore, calibrated_timeout) = ensure_server_ready(app_dir, model_id).await?;
+    let _permit = semaphore
+        .acquire()
+        .await
+        .context("llama-server semaphore closed")?;
+    raw_complete(port, prompt, calibrated_timeout).await
 }
 
 #[cfg(test)]
@@ -457,5 +559,67 @@ mod tests {
     #[test]
     fn server_matches_false_when_nothing_has_run_yet() {
         assert!(!server_matches(None, 4, "gemma4_e4b", 4));
+    }
+
+    use super::{calibrate_effective_slots, calibrate_timeout};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    #[test]
+    fn calibrate_effective_slots_keeps_requested_when_burst_is_within_budget() {
+        // Burst only 1.2x slower than solo — well within the 1.5x budget.
+        let result = calibrate_effective_slots(10, Duration::from_secs(5), Duration::from_secs(6));
+        assert_eq!(result, 10);
+    }
+
+    #[test]
+    fn calibrate_effective_slots_steps_down_when_burst_exceeds_budget() {
+        // Burst 3x slower than solo, budget is 1.5x — hardware can sustain
+        // roughly requested_slots * (1.5/3.0) = 5 slots, not 10.
+        let result = calibrate_effective_slots(10, Duration::from_secs(5), Duration::from_secs(15));
+        assert_eq!(result, 5);
+    }
+
+    #[test]
+    fn calibrate_effective_slots_never_goes_below_one() {
+        let result = calibrate_effective_slots(10, Duration::from_secs(1), Duration::from_secs(1000));
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn calibrate_effective_slots_skips_calibration_at_slots_equal_one() {
+        // No burst to compare against when the user only asked for 1 slot.
+        let result = calibrate_effective_slots(1, Duration::from_secs(5), Duration::from_secs(50));
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn calibrate_timeout_scales_with_measured_burst_latency() {
+        let timeout = calibrate_timeout(Duration::from_secs(40));
+        assert_eq!(timeout, Duration::from_secs(60)); // 40 * 1.5
+    }
+
+    #[test]
+    fn calibrate_timeout_never_goes_below_the_floor() {
+        let timeout = calibrate_timeout(Duration::from_secs(2));
+        assert_eq!(timeout, Duration::from_secs(20)); // floor, not 2*1.5=3
+    }
+
+    #[test]
+    fn server_state_defaults_have_no_calibration_yet() {
+        // A freshly-constructed SidecarState (before any server has started)
+        // must not claim a calibrated timeout of zero — that would make
+        // complete() time out instantly. Documents the required initial value
+        // so start_server_task's struct literal is held to it.
+        let st = super::SidecarState {
+            state: super::ServerState::NotStarted,
+            child: None,
+            model_id: None,
+            parallel_slots: 0,
+            effective_slots: 0,
+            semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
+            calibrated_timeout: Duration::from_secs(60),
+        };
+        assert_eq!(st.calibrated_timeout, Duration::from_secs(60));
     }
 }
