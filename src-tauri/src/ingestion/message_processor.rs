@@ -50,19 +50,13 @@ pub enum ProcessResult {
         crate::extraction::mandate_extractor::MandateExtraction,
         MandateEventType,
     ),
-    /// Layer 6 hit its wall-clock timeout (not a hallucination/rejection —
-    /// the model just didn't finish in time) and the caller allowed a retry
-    /// for this attempt (see `process_message`'s `allow_llm_retry`). Unlike
-    /// every other failure, this is deliberately *not* persisted to
-    /// `unassigned_transactions` yet: the `UNIQUE(source_pipeline,
-    /// source_record_id)` constraint on `transaction_observations` means a
-    /// row inserted now would make a later successful retry silently
-    /// collide as a "duplicate" and get dropped (see
-    /// `insert_observation_idempotent`'s doc comment). The caller is
-    /// responsible for eventually recording the message one way or another
-    /// (retry it with `allow_llm_retry: false`, which falls back to the
-    /// normal unassigned-transaction path on a second failure).
-    RetryableFailure,
+    /// Layers 1-5 failed, this machine is LLM-eligible, and a `Layer6Job`
+    /// was enqueued for background enrichment (Doc 2026-07-26 mail scan
+    /// performance) — distinct from a hard `Ok(None)` rejection so callers
+    /// (`historical_scan.rs`) can track it separately from `non_financial`.
+    /// Carries no data: the observation/`unassigned_transactions` rows are
+    /// already persisted by the time this is returned.
+    EnqueuedForEnrichment,
 }
 
 pub struct MessageProcessor;
@@ -92,19 +86,19 @@ fn dev_review_full_fetch_enabled() -> bool {
 impl MessageProcessor {
     /// Processes a message by first fetching its metadata to check against a sender/subject gate.
     /// If it passes the gate, it fetches the full message and extracts its contents.
-    /// `allow_llm_retry`: when true, a Layer 6 wall-clock timeout returns
-    /// `ProcessResult::RetryableFailure` instead of recording the message to
-    /// `unassigned_transactions` immediately — the caller gets one chance to
-    /// re-run this message (with `allow_llm_retry: false` on that attempt,
-    /// so a second timeout falls back to the normal unassigned-transaction
-    /// path rather than retrying forever).
+    /// `layer6_tx`: when Layers 1-5 fail and this machine is LLM-eligible, a
+    /// `Layer6Job` is enqueued onto this channel instead of awaiting Layer 6
+    /// inline (Doc 2026-07-26 mail scan performance) — `None` when the
+    /// caller has no queue to enqueue onto (e.g. a plain extraction-only
+    /// test), in which case the message is still recorded to
+    /// `unassigned_transactions` but no background enrichment happens for it.
     pub async fn process_message(
         pool: &Pool,
         client: &GmailClient,
         message_id: &str,
         app_dir: Option<std::path::PathBuf>,
         llm_eligible: bool,
-        allow_llm_retry: bool,
+        layer6_tx: Option<tokio::sync::mpsc::Sender<crate::ingestion::queues::Layer6Job>>,
     ) -> Result<Option<ProcessResult>> {
         // 1. Fetch metadata first (fast, low bandwidth)
         let metadata_msg = client
@@ -504,15 +498,21 @@ impl MessageProcessor {
                     // only signal always available at this point.
                     let internal_date_seconds =
                         Self::internal_date_fallback(&full_msg.internal_date);
-                    let mut layer6_timed_out = false;
+                    // Doc 2026-07-26 mail scan performance: always pass
+                    // `false` here so `run_extraction_ladder` only ever runs
+                    // Layers 1-5 (fast, regex-based) on this path — Layer 6
+                    // (LLM) is never awaited inline anymore; a message that
+                    // needs it is enqueued below instead of blocking this
+                    // scan slot on LLM inference.
+                    let mut _layer6_timed_out_unused = false;
                     let extracted_data = crate::extraction::ladder::run_extraction_ladder(
                         pool,
                         &current_bank_name,
                         body_text,
                         app_dir.clone(),
-                        llm_eligible,
+                        false,
                         internal_date_seconds,
-                        &mut layer6_timed_out,
+                        &mut _layer6_timed_out_unused,
                     )
                     .await
                     .unwrap_or(None);
@@ -598,22 +598,48 @@ impl MessageProcessor {
                             .await;
                             return Ok(None);
                         }
-                    } else if layer6_timed_out && allow_llm_retry {
-                        // Layer 6 timed out and the caller gave us one retry
-                        // for this message — don't record it to
-                        // `unassigned_transactions` yet (see
-                        // `ProcessResult::RetryableFailure`'s doc comment for
-                        // why that would poison a later successful retry).
-                        Self::log_rejection(pool, message_id, "llm_timeout_retry").await?;
+                    } else if llm_eligible {
+                        // Layers 1-5 failed but this machine can run Layer 6
+                        // — record now (recoverable, same principle as every
+                        // other unassigned path) and hand off to the
+                        // background Layer 6 worker instead of blocking this
+                        // scan slot on LLM inference.
+                        Self::log_rejection(pool, message_id, "pending_llm_enrichment").await?;
+                        let ids = Self::record_unassigned_transaction(
+                            pool,
+                            message_id,
+                            crate::extraction::ladder::ExtractionResult::default(),
+                            body_text,
+                            email_meta.html.as_deref(),
+                            "pending_llm_enrichment",
+                        )
+                        .await?;
+                        if let (Some((observation_id, unassigned_id)), Some(dir), Some(tx)) =
+                            (ids, app_dir.clone(), layer6_tx.as_ref())
+                        {
+                            let job = crate::ingestion::queues::Layer6Job {
+                                observation_id,
+                                unassigned_id,
+                                bank_name: current_bank_name.clone(),
+                                body_text: body_text.to_string(),
+                                app_dir: dir,
+                            };
+                            if tx.send(job).await.is_err() {
+                                tracing::error!(
+                                    "Layer 6 Queue closed — dropping enrichment job for msg_id='{}'",
+                                    message_id
+                                );
+                            }
+                        }
                         Self::append_to_scan_log(
                             message_id,
-                            "RETRY",
-                            "llm_timeout_retry",
+                            "PENDING",
+                            "pending_llm_enrichment",
                             Some(&serde_json::to_value(&full_msg).unwrap_or_default()),
                             Some(body_text),
                         )
                         .await;
-                        return Ok(Some(ProcessResult::RetryableFailure));
+                        return Ok(Some(ProcessResult::EnqueuedForEnrichment));
                     } else {
                         Self::log_rejection(pool, message_id, "extraction_failed").await?;
                         Self::record_unassigned_transaction(

@@ -261,6 +261,10 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
         .try_state::<crate::startup::LlmEligibility>()
         .map(|s| s.eligible)
         .unwrap_or(false);
+    let layer6_tx = app
+        .state::<crate::ingestion::queues::QueueHandles>()
+        .layer6_tx
+        .clone();
 
     loop {
         let mut url = format!(
@@ -401,11 +405,7 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                             &msg_id,
                             app_dir.clone(),
                             llm_eligible,
-                            // Live polling has no batch/retry-queue infrastructure
-                            // (unlike historical_scan's requeue-at-the-end
-                            // mechanism) — a Layer 6 timeout here falls straight
-                            // through to the normal unassigned-transaction path.
-                            false,
+                            Some(layer6_tx.clone()),
                         ).await {
                             Ok(Some(crate::ingestion::message_processor::ProcessResult::TransactionAlert(extracted, boxed_obs, html))) => {
                                 // Doc 15 §2 principle 7 / Doc 12 §6.2a: route to the Transaction
@@ -571,13 +571,8 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                 }
                             }
                             Ok(None) => {}
-                            Ok(Some(crate::ingestion::message_processor::ProcessResult::RetryableFailure)) => {
-                                // Unreachable in practice: this call passes
-                                // allow_llm_retry=false above, so
-                                // process_message never returns this variant
-                                // here. Handled anyway so the match stays
-                                // exhaustive if that ever changes.
-                                tracing::warn!("Realtime poll: msg_id='{}' returned RetryableFailure with no retry path — treating as unprocessed", msg_id);
+                            Ok(Some(crate::ingestion::message_processor::ProcessResult::EnqueuedForEnrichment)) => {
+                                tracing::info!("Realtime poll: msg_id='{}' enqueued for background Layer 6 enrichment", msg_id);
                             }
                             Err(e) => {
                                 tracing::error!("Failed to process message {} for account {}: {}", msg_id, account.id, e);

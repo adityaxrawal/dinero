@@ -157,6 +157,7 @@ struct ScanProgressPayload {
     mandate_events_found: usize,
     non_financial: usize,
     errors: usize,
+    pending_enrichment: usize,
     error_message: Option<String>,
 }
 
@@ -179,6 +180,8 @@ pub struct ScanCheckpointState {
     pub non_financial: usize,
     #[serde(default)]
     pub errors: usize,
+    #[serde(default)]
+    pub pending_enrichment: usize,
 }
 
 #[tauri::command]
@@ -327,6 +330,7 @@ pub async fn scans_historical<R: tauri::Runtime>(
                     mandate_events_found: 0,
                     non_financial: 0,
                     errors: 1,
+                    pending_enrichment: 0,
                     error_message: Some(e.to_string()),
                 },
             );
@@ -415,6 +419,7 @@ async fn run_scan<R: tauri::Runtime>(
                         mandate_events_found: 0,
                         non_financial: 0,
                         errors: 0,
+                        pending_enrichment: 0,
                         error_message: None,
                     },
                 );
@@ -487,6 +492,10 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
         .try_state::<crate::startup::LlmEligibility>()
         .map(|s| s.eligible)
         .unwrap_or(false);
+    let layer6_tx = app
+        .state::<crate::ingestion::queues::QueueHandles>()
+        .layer6_tx
+        .clone();
 
     let mut join_set: JoinSet<(String, anyhow::Result<Option<ProcessResult>>)> = JoinSet::new();
 
@@ -508,6 +517,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
             mandate_events_found: state.mandate_events_found,
             non_financial: state.non_financial,
             errors: state.errors,
+            pending_enrichment: state.pending_enrichment,
             error_message: None,
         },
     );
@@ -530,9 +540,9 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
         msg_id: String,
         app_dir: Option<std::path::PathBuf>,
         llm_eligible: bool,
-        allow_llm_retry: bool,
+        layer6_tx: tokio::sync::mpsc::Sender<crate::ingestion::queues::Layer6Job>,
     ) {
-        tracing::info!("Spawning fetch for msg_id='{}' allow_llm_retry={}", msg_id, allow_llm_retry);
+        tracing::info!("Spawning fetch for msg_id='{}'", msg_id);
         join_set.spawn(async move {
             let res = MessageProcessor::process_message(
                 &pool_arc,
@@ -540,7 +550,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                 &msg_id,
                 app_dir,
                 llm_eligible,
-                allow_llm_retry,
+                Some(layer6_tx),
             )
             .await;
             (msg_id, res)
@@ -548,19 +558,6 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
     }
 
     let mut ids_iter = to_process.into_iter().skip(processed_count);
-
-    // Messages that fail transiently — a network fetch that exhausted its
-    // in-request retries (`gmail_client.rs`'s own 3-attempt backoff), or a
-    // Layer 6 timeout — get one more shot at the *end* of this queue rather
-    // than being dropped. Requeuing to the *front* instead would let a
-    // persistently-failing message cut in line ahead of everything else
-    // forever (historical_scan and the LLM sidecar both cap concurrency to a
-    // single effective slot — see `llama_sidecar::completion_semaphore`), so
-    // "end of queue" means it's only retried after every originally-planned
-    // message already had its turn. `retried_once` bounds it to exactly one
-    // retry per message so a permanently-broken message can't loop forever.
-    let mut retry_queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
-    let mut retried_once: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     // Doc 30 TASK-GMAIL-007: keep up to MAX_CONCURRENT_FETCHES tasks in
     // flight at once. Priming here, then refilling one-for-one as each
@@ -571,18 +568,15 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
     // that used to gate it.
     for _ in 0..MAX_CONCURRENT_FETCHES {
         wait_while_paused().await;
-        // Fresh ids get `allow_llm_retry: true` (may earn one retry on
-        // failure); ids pulled back off `retry_queue` are already using
-        // their one retry, so `false` — whatever happens this time is final.
-        match ids_iter.next().map(|id| (id, true)).or_else(|| retry_queue.pop_front().map(|id| (id, false))) {
-            Some((msg_id, allow_llm_retry)) => spawn_fetch(
+        match ids_iter.next() {
+            Some(msg_id) => spawn_fetch(
                 &mut join_set,
                 Arc::clone(&client),
                 Arc::clone(&pool_arc),
                 msg_id,
                 app_dir.clone(),
                 llm_eligible,
-                allow_llm_retry,
+                layer6_tx.clone(),
             ),
             None => break,
         }
@@ -620,15 +614,8 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
             }
         };
 
-        // `processed_count` is a resume cursor into `all_message_ids`
-        // (`skip(processed_count)` at scan start), not a raw completion
-        // tally — a retried message must only advance it once, on whichever
-        // of its (up to two) attempts is its *first*, or a scan with retries
-        // would overrun `total` and desync resume from the original list.
-        let mut advance_processed_count = true;
         match join_res {
             Ok((msg_id, result)) => {
-                advance_processed_count = !retried_once.contains(&msg_id);
                 tracing::info!("Finished processing msg_id='{}'", msg_id);
                 match result {
                     Ok(Some(ProcessResult::TransactionAlert(extracted, boxed_obs, html))) => {
@@ -815,47 +802,26 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                         tracing::info!("Classified msg_id='{}' as Non-Financial", msg_id);
                         state.non_financial += 1;
                     }
-                    Ok(Some(ProcessResult::RetryableFailure)) => {
-                        // First-attempt Layer 6 timeout — `allow_llm_retry`
-                        // guarantees this variant is only ever returned once
-                        // per message (see `process_message`'s doc comment),
-                        // so this is always a fresh requeue, never a second one.
-                        retried_once.insert(msg_id.clone());
-                        retry_queue.push_back(msg_id.clone());
+                    Ok(Some(ProcessResult::EnqueuedForEnrichment)) => {
                         tracing::info!(
-                            "Layer 6 timed out for msg_id='{}' — requeued for one retry",
+                            "msg_id='{}' enqueued for background Layer 6 enrichment",
                             msg_id
                         );
+                        state.pending_enrichment += 1;
                     }
                     Err(e) => {
-                        if retried_once.insert(msg_id.clone()) {
-                            // First failure for this message — one more shot
-                            // at the end of the queue instead of dropping it
-                            // (see `retry_queue`'s doc comment above).
-                            retry_queue.push_back(msg_id.clone());
-                            tracing::warn!(
-                                "Failed to process message {} (will retry once): {}",
-                                msg_id,
-                                e
-                            );
-                        } else {
-                            state.errors += 1;
-                            crate::dev_review::record(
-                                "error",
-                                serde_json::json!({ "id": msg_id }),
-                                None,
-                                None,
-                                None,
-                                None,
-                                Some(&e.to_string()),
-                                Vec::new(),
-                            );
-                            tracing::error!(
-                                "Failed to process message {} (retry exhausted): {}",
-                                msg_id,
-                                e
-                            );
-                        }
+                        state.errors += 1;
+                        crate::dev_review::record(
+                            "error",
+                            serde_json::json!({ "id": msg_id }),
+                            None,
+                            None,
+                            None,
+                            None,
+                            Some(&e.to_string()),
+                            Vec::new(),
+                        );
+                        tracing::error!("Failed to process message {}: {}", msg_id, e);
                     }
                 }
             }
@@ -875,9 +841,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
             }
         }
 
-        if advance_processed_count {
-            processed_count += 1;
-        }
+        processed_count += 1;
         batch_count += 1;
 
         if should_checkpoint(batch_count) {
@@ -920,6 +884,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                     mandate_events_found: state.mandate_events_found,
                     non_financial: state.non_financial,
                     errors: state.errors,
+                    pending_enrichment: state.pending_enrichment,
                     error_message: None,
                 },
             );
@@ -937,11 +902,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
             break;
         }
 
-        if let Some((next_id, allow_llm_retry)) = ids_iter
-            .next()
-            .map(|id| (id, true))
-            .or_else(|| retry_queue.pop_front().map(|id| (id, false)))
-        {
+        if let Some(next_id) = ids_iter.next() {
             spawn_fetch(
                 &mut join_set,
                 Arc::clone(&client),
@@ -949,7 +910,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                 next_id,
                 app_dir.clone(),
                 llm_eligible,
-                allow_llm_retry,
+                layer6_tx.clone(),
             );
         }
     }
@@ -1068,6 +1029,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
         mandate_events_found: state.mandate_events_found,
         non_financial: state.non_financial,
         errors: state.errors,
+        pending_enrichment: state.pending_enrichment,
         error_message: None,
     };
     let _ = crate::ipc::events::emit_event(
@@ -1089,6 +1051,24 @@ mod tests {
     use crate::db::init_db;
     use std::fs;
     use tauri::test::{mock_builder, mock_context};
+
+    /// `run_scan_batches` now unconditionally sources `layer6_tx` from
+    /// `QueueHandles` (Doc 2026-07-26 mail scan performance), so any test
+    /// driving it through a bare `mock_builder()` app needs this managed or
+    /// `app.state::<QueueHandles>()` panics with "state() called before
+    /// manage()" even when no message in the test actually reaches Layer 6.
+    fn test_queue_handles() -> crate::ingestion::queues::QueueHandles {
+        let (transaction_tx, _) = tokio::sync::mpsc::channel(1);
+        let (statement_tx, _) = tokio::sync::mpsc::channel(1);
+        let (mandate_tx, _) = tokio::sync::mpsc::channel(1);
+        let (layer6_tx, _) = tokio::sync::mpsc::channel(1);
+        crate::ingestion::queues::QueueHandles {
+            transaction_tx,
+            statement_tx,
+            mandate_tx,
+            layer6_tx,
+        }
+    }
 
     /// Doc 30 TASK-GMAIL-007: pure, deterministic proof that the checkpoint
     /// cadence is every 5 (not 10, the value the code used to have before
@@ -1127,6 +1107,7 @@ mod tests {
             mandate_events_found: 0,
             non_financial: 1,
             errors: 0,
+        pending_enrichment: 0,
         };
         let cp = ProcessingCheckpointRow {
             id: "cp_status".into(),
@@ -1210,6 +1191,7 @@ mod tests {
             .unwrap()
             .handle()
             .clone();
+        app.manage(test_queue_handles());
 
         let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
@@ -1233,6 +1215,7 @@ mod tests {
             mandate_events_found: 0,
             non_financial: 0,
             errors: 0,
+        pending_enrichment: 0,
         };
 
         let client = GmailClient::new("fake_token".into(), pool.clone(), None);
@@ -1274,6 +1257,7 @@ mod tests {
             .unwrap()
             .handle()
             .clone();
+        app.manage(test_queue_handles());
 
         let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
@@ -1304,6 +1288,7 @@ mod tests {
             mandate_events_found: 0,
             non_financial: 0,
             errors: 0,
+        pending_enrichment: 0,
         };
 
         let client = GmailClient::new("fake_token".into(), pool.clone(), None);
@@ -1362,6 +1347,7 @@ mod tests {
             .unwrap()
             .handle()
             .clone();
+        app.manage(test_queue_handles());
 
         let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
@@ -1386,6 +1372,7 @@ mod tests {
             mandate_events_found: 0,
             non_financial: 0,
             errors: 0,
+        pending_enrichment: 0,
         };
 
         let client = GmailClient::new("fake_token".into(), pool.clone(), None);

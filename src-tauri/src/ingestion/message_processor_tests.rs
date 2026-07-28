@@ -263,7 +263,7 @@ async fn test_metadata_fetch_before_full_fetch() {
     let client =
         GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
 
-    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, false, false)
+    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, false, None)
         .await
         .unwrap();
     assert!(
@@ -326,7 +326,7 @@ async fn test_gate2a_rejects_marketing_subject_without_full_fetch() {
     let client =
         GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
 
-    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, false, false)
+    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, false, None)
         .await
         .unwrap();
     assert!(
@@ -387,7 +387,7 @@ async fn test_gate2a_noise_routes_to_ignored_table() {
     let client =
         GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
 
-    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, false, false)
+    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, false, None)
         .await
         .unwrap();
     assert!(result.is_none());
@@ -474,10 +474,97 @@ async fn test_gate2a_proceeds_to_full_fetch_for_transactional_subject() {
     let client =
         GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
 
-    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, false, false).await;
+    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, false, None).await;
     assert!(result.is_ok(), "must not error: {:?}", result.err());
 
     full_mock.assert_async().await;
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+/// Doc 2026-07-26 mail scan performance: Layers 1-5 all fail on an empty
+/// body, this machine is LLM-eligible, so a Layer6Job must be enqueued for
+/// background processing instead of awaiting Layer 6 inline.
+#[tokio::test]
+async fn transaction_needing_layer6_enqueues_job_instead_of_blocking() {
+    let mut server = mockito::Server::new_async().await;
+
+    let _metadata_mock = server
+        .mock("GET", "/gmail/v1/users/me/messages/msg1")
+        .match_query(mockito::Matcher::UrlEncoded("format".into(), "metadata".into()))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            serde_json::json!({
+                "id": "msg1",
+                "threadId": "t1",
+                "snippet": "Rs 500.00 debited from your account.",
+                "payload": {
+                    "mimeType": "multipart/mixed",
+                    "headers": [
+                        {"name": "From", "value": "\"HDFC Bank\" <alerts@hdfcbank.net>"},
+                        {"name": "Subject", "value": "Rs 500 debited from your account"}
+                    ]
+                }
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let _full_mock = server
+        .mock("GET", "/gmail/v1/users/me/messages/msg1")
+        .match_query(mockito::Matcher::UrlEncoded("format".into(), "full".into()))
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            serde_json::json!({
+                "id": "msg1",
+                "threadId": "t1",
+                "snippet": "Rs 500.00 debited from your account.",
+                "payload": {
+                    "mimeType": "text/plain",
+                    "headers": [
+                        {"name": "From", "value": "\"HDFC Bank\" <alerts@hdfcbank.net>"},
+                        {"name": "Subject", "value": "Rs 500 debited from your account"}
+                    ],
+                    "body": {"data": ""}
+                }
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+    let client = GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
+
+    let (layer6_tx, mut layer6_rx) = tokio::sync::mpsc::channel(4);
+
+    let start = std::time::Instant::now();
+    let result = MessageProcessor::process_message(
+        &pool,
+        &client,
+        "msg1",
+        Some(temp_dir.clone()),
+        /* llm_eligible */ true,
+        Some(layer6_tx),
+    )
+    .await
+    .unwrap();
+
+    // Must return promptly — no inline LLM wait. This test never spawns a
+    // real llama-server, so any accidental inline await would hang/timeout
+    // this test rather than merely being slow; 2s is generous headroom.
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    assert!(matches!(result, Some(ProcessResult::EnqueuedForEnrichment)));
+
+    let job = layer6_rx.try_recv().expect("a Layer6Job must have been enqueued");
+    assert_eq!(job.bank_name, "HDFC Bank");
+    assert!(!job.observation_id.is_empty());
+    assert!(!job.unassigned_id.is_empty());
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }

@@ -17,6 +17,24 @@ mod tests {
     use tauri::test::{mock_builder, mock_context};
     use tauri::Manager;
 
+    /// `poll_single_account` now unconditionally sources `layer6_tx` from
+    /// `QueueHandles` (Doc 2026-07-26 mail scan performance), so any test
+    /// driving it through a bare `mock_builder()` app needs this managed or
+    /// `app.state::<QueueHandles>()` panics with "state() called before
+    /// manage()" even when no message in the test actually reaches Layer 6.
+    fn test_queue_handles() -> crate::ingestion::queues::QueueHandles {
+        let (transaction_tx, _) = tokio::sync::mpsc::channel(1);
+        let (statement_tx, _) = tokio::sync::mpsc::channel(1);
+        let (mandate_tx, _) = tokio::sync::mpsc::channel(1);
+        let (layer6_tx, _) = tokio::sync::mpsc::channel(1);
+        crate::ingestion::queues::QueueHandles {
+            transaction_tx,
+            statement_tx,
+            mandate_tx,
+            layer6_tx,
+        }
+    }
+
     /// Doc 30 TASK-API-009 acceptance test: "Sync Now" is debounced to at
     /// most once per 10 seconds -- a second call before the window elapses
     /// is rejected; a call after it elapses is allowed.
@@ -454,6 +472,7 @@ mod tests {
         let app = mock_builder().build(mock_context(tauri::test::noop_assets())).unwrap();
         app.manage(crate::auth::session::SessionState::default());
         app.manage(crate::security::incident_response::IncidentMonitor::default());
+        app.manage(test_queue_handles());
         let app_handle = app.handle().clone();
 
         poll_all_accounts(&app_handle, &pool, &server.url()).await.unwrap();
@@ -528,6 +547,7 @@ mod tests {
         let app = mock_builder().build(mock_context(tauri::test::noop_assets())).unwrap();
         app.manage(crate::auth::session::SessionState::default());
         app.manage(crate::security::incident_response::IncidentMonitor::default());
+        app.manage(test_queue_handles());
         let app_handle = app.handle().clone();
 
         poll_all_accounts(&app_handle, &pool, &server.url()).await.unwrap();
@@ -601,6 +621,7 @@ mod tests {
         let app = mock_builder().build(mock_context(tauri::test::noop_assets())).unwrap();
         app.manage(crate::auth::session::SessionState::default());
         app.manage(crate::security::incident_response::IncidentMonitor::default());
+        app.manage(test_queue_handles());
         let app_handle = app.handle().clone();
 
         poll_all_accounts(&app_handle, &pool, &server.url()).await.unwrap();
@@ -664,6 +685,7 @@ mod tests {
         let app = mock_builder().build(mock_context(tauri::test::noop_assets())).unwrap();
         app.manage(crate::auth::session::SessionState::default());
         app.manage(crate::security::incident_response::IncidentMonitor::default());
+        app.manage(test_queue_handles());
         let app_handle = app.handle().clone();
 
         let captured = Arc::new(Mutex::new(Vec::<String>::new()));
