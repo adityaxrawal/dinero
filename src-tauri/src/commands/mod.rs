@@ -2279,22 +2279,13 @@ pub struct TransactionUpdatePayload {
     pub category_id: Option<String>,
     pub notes: Option<String>,
     pub location: Option<String>,
-    /// Not itself in Document 19 §8.3's editable-field list (§8.7/§8.8 name
-    /// dedicated `transactions_add_tag`/`transactions_remove_tag` commands
-    /// instead, both now also implemented below) — kept here as an
-    /// additive, non-contradicting bulk-replace convenience the existing
-    /// frontend tag-editor UI already depends on.
     pub tags: Option<Vec<String>>,
+    pub amount_minor: Option<i64>,
+    pub direction: Option<String>,
+    pub event_time: Option<String>,
+    pub instrument_id: Option<String>,
 }
 
-/// Doc 30 TASK-API-003: the actual field-update logic, extracted to a plain
-/// synchronous function so it's directly testable (`tauri::State` has no
-/// public test constructor) without needing the full async IPC plumbing
-/// around it. Applies Document 19 §8.3's exact editable set
-/// (`merchant_display_name`/`category_id`/`notes`/`location`); every
-/// changed field writes a `feedback_log` entry via `log_user_correction`,
-/// and a merchant change additionally resolves/creates a `merchants` row
-/// and records the old raw text as a `merchant_aliases` entry.
 fn apply_transaction_field_update(
     conn: &rusqlite::Connection,
     tx_id: &str,
@@ -2302,6 +2293,10 @@ fn apply_transaction_field_update(
     category_id: Option<String>,
     notes: Option<String>,
     location: Option<String>,
+    amount_minor: Option<i64>,
+    direction: Option<String>,
+    event_time: Option<String>,
+    instrument_id: Option<String>,
 ) -> Result<(), crate::error::AppError> {
     let old_tx = crate::db::transactions::get_transaction(conn, tx_id)
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?
@@ -2313,12 +2308,34 @@ fn apply_transaction_field_update(
     let mut new_category_id = old_tx.category_id.clone();
     let mut new_notes = old_tx.notes.clone();
     let mut new_location = old_tx.location.clone();
+    let mut new_amount_minor = old_tx.amount_minor;
+    let mut new_amount = old_tx.amount;
+    let mut new_direction = old_tx.direction.clone();
+    let mut new_event_time = old_tx.best_event_time;
+    let mut new_instrument_id = old_tx.instrument_id.clone();
+
+    if let Some(amt_minor) = amount_minor {
+        new_amount_minor = Some(amt_minor);
+        new_amount = Some(amt_minor as f64 / 100.0);
+    }
+    if let Some(dir) = direction {
+        new_direction = Some(dir);
+    }
+    if let Some(ev_time) = event_time {
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(&ev_time, "%Y-%m-%d %H:%M:%S")
+            .or_else(|_| chrono::NaiveDateTime::parse_from_str(&ev_time, "%Y-%m-%dT%H:%M:%S"))
+            .or_else(|_| chrono::NaiveDateTime::parse_from_str(&ev_time, "%Y-%m-%d"))
+        {
+            new_event_time = Some(dt);
+        }
+    }
+    if let Some(inst_id) = instrument_id {
+        new_instrument_id = Some(inst_id);
+    }
 
     if let Some(cat) = category_id {
         let old_val = old_tx.category_id.clone().unwrap_or_default();
         if old_val != cat {
-            // Doc 30 TASK-API-003 acceptance test: category changes must
-            // write a feedback_log entry too, same as merchant.
             let _ = crate::reconciliation::audit::log_user_correction(
                 conn,
                 tx_id,
@@ -2341,13 +2358,6 @@ fn apply_transaction_field_update(
             let _ = crate::reconciliation::audit::log_user_correction(
                 conn, tx_id, "merchant", &old_val, &merch,
             );
-            // Doc 30 TASK-API-003: "for merchant, merchant_aliases" --
-            // resolves/creates a canonical merchant entity for the
-            // corrected name and records the *old* raw text as a new
-            // alias pointing at it, so future occurrences of the same
-            // misrecognized raw text auto-resolve correctly next time
-            // (the same learning mechanism TASK-TXN-007 already
-            // established for extraction-time normalization).
             let cleaned = crate::extraction::merchant_normalizer::strip_noise_tokens(&merch);
             if !cleaned.is_empty() {
                 if let Ok(Some(existing)) = crate::db::merchants::select_by_alias(conn, &cleaned) {
@@ -2408,8 +2418,9 @@ fn apply_transaction_field_update(
         "UPDATE transactions
          SET merchant_display_name = ?1, merchant_normalized_name = ?2, merchant_entity_id = ?3,
              category_id = ?4, notes = ?5, location = ?6,
+             amount_minor = ?7, amount = ?8, direction = ?9, best_event_time = ?10, instrument_id = ?11,
              updated_at = CURRENT_TIMESTAMP
-         WHERE id = ?7",
+         WHERE id = ?12",
         rusqlite::params![
             new_merchant,
             new_merchant_normalized,
@@ -2417,6 +2428,11 @@ fn apply_transaction_field_update(
             new_category_id,
             new_notes,
             new_location,
+            new_amount_minor,
+            new_amount,
+            new_direction,
+            new_event_time,
+            new_instrument_id,
             tx_id
         ],
     )
@@ -2425,11 +2441,6 @@ fn apply_transaction_field_update(
     Ok(())
 }
 
-// G20/H10/J8 fix: renamed from `transaction_update` to match Doc 19 §8.3's
-// documented `transactions_update` naming. Doc 30 TASK-API-003 fix: payload
-// type renamed from `ManualTransactionUpdatePayload` (misleading -- this
-// command was never actually restricted to manually-created transactions)
-// to `TransactionUpdatePayload`, matching its real, universal scope.
 #[tauri::command]
 pub async fn transactions_update(
     payload: TransactionUpdatePayload,
@@ -2455,6 +2466,10 @@ pub async fn transactions_update(
             payload.category_id,
             payload.notes,
             payload.location,
+            payload.amount_minor,
+            payload.direction,
+            payload.event_time,
+            payload.instrument_id,
         )?;
 
         // G13 fix: resolve each tag name to an existing tag or create one,
@@ -3566,6 +3581,10 @@ mod tests {
             Some("cat_new".to_string()),
             None,
             None,
+            None,
+            None,
+            None,
+            None,
         )
         .unwrap();
 
@@ -3603,6 +3622,10 @@ mod tests {
             &conn,
             "tx_1",
             Some("Acme Streaming".to_string()),
+            None,
+            None,
+            None,
+            None,
             None,
             None,
             None,

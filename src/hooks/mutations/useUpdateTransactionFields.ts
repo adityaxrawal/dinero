@@ -4,9 +4,13 @@ import { queryKeys } from '@/lib/queryKeys';
 
 interface UpdateTransactionFieldsInput {
   transactionId: string;
-  merchantDisplayName: string;
-  categoryId: string;
-  notes: string;
+  merchantDisplayName?: string | undefined;
+  categoryId?: string | undefined;
+  notes?: string | undefined;
+  amountMinor?: number | undefined;
+  direction?: string | undefined;
+  eventTime?: string | undefined;
+  instrumentId?: string | undefined;
 }
 
 /**
@@ -25,8 +29,20 @@ export function useUpdateTransactionFields() {
       merchantDisplayName,
       categoryId,
       notes,
+      amountMinor,
+      direction,
+      eventTime,
+      instrumentId,
     }: UpdateTransactionFieldsInput) =>
-      API.transactions.update(transactionId, { merchantDisplayName, categoryId, notes }),
+      API.transactions.update(transactionId, {
+        merchantDisplayName,
+        categoryId,
+        notes,
+        amountMinor,
+        direction,
+        eventTime,
+        instrumentId,
+      }),
     onSuccess: (_data, { transactionId }) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.transactions.detail(transactionId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.transactions.all() });

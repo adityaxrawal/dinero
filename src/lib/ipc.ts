@@ -389,6 +389,13 @@ export interface InstrumentRecord {
   full_identifier?: string;
   billing_cycle_day?: number;
   bank_ifsc?: string;
+  nickname?: string;
+  network?: string;
+  account_type?: string;
+  upi_vpa?: string;
+  rewards_summary?: string;
+  statement_due_date?: string;
+  minimum_due?: number;
 }
 
 export interface DebugMetrics {
@@ -543,11 +550,15 @@ export const API = {
     update: (
       transactionId: string,
       updates: {
-        merchantDisplayName?: string;
-        categoryId?: string;
-        notes?: string;
-        location?: string;
-        tags?: string[];
+        merchantDisplayName?: string | undefined;
+        categoryId?: string | undefined;
+        notes?: string | undefined;
+        location?: string | undefined;
+        tags?: string[] | undefined;
+        amountMinor?: number | undefined;
+        direction?: string | undefined;
+        eventTime?: string | undefined;
+        instrumentId?: string | undefined;
       }
     ) =>
       invokeCommand<string>('transactions_update', {
@@ -558,6 +569,10 @@ export const API = {
           notes: updates.notes,
           location: updates.location,
           tags: updates.tags,
+          amount_minor: updates.amountMinor,
+          direction: updates.direction,
+          event_time: updates.eventTime,
+          instrument_id: updates.instrumentId,
         },
       }),
     get: (id: string) => invokeCommand<TransactionDetailResponse>('transactions_get', { id }),
@@ -795,13 +810,34 @@ export const API = {
     // §2.8) and are never editable post-creation -- the backend's
     // InstrumentUpdatePayload no longer even has fields for them, so this
     // wrapper no longer accepts them either.
-    update: (id: string, fullIdentifier?: string, billingCycleDay?: number, bankIfsc?: string) =>
+    update: (
+      id: string,
+      fullIdentifier?: string,
+      billingCycleDay?: number,
+      bankIfsc?: string,
+      extra?: {
+        nickname?: string;
+        credit_limit?: number;
+        account_type?: string;
+        network?: string;
+        status?: string;
+        upi_vpa?: string;
+        rewards_summary?: string;
+        instrument_type?: string;
+        issuer_name?: string;
+        masked_identifier?: string;
+        current_balance?: number;
+        statement_due_date?: string;
+        minimum_due?: number;
+      }
+    ) =>
       invokeCommand<string>('instruments_update', {
         payload: {
           id,
           full_identifier: fullIdentifier,
           billing_cycle_day: billingCycleDay,
           bank_ifsc: bankIfsc,
+          ...extra,
         },
       }),
     get: (id: string) => invokeCommand<InstrumentRecord>('instruments_get', { id }),

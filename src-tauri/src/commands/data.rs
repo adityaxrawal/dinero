@@ -666,7 +666,10 @@ pub fn do_fetch_cluster_detail(
 
 pub fn do_fetch_instruments(conn: &Connection) -> Result<Vec<InstrumentRecord>, String> {
     let mut stmt = conn.prepare(
-        "SELECT id, type, issuer_name, masked_identifier, status, current_balance, credit_limit, full_identifier, billing_cycle_day, bank_ifsc FROM instruments WHERE is_deleted = 0 ORDER BY issuer_name ASC"
+        "SELECT i.id, i.type, i.issuer_name, i.masked_identifier, i.status, i.current_balance, i.credit_limit, i.full_identifier, i.billing_cycle_day, i.bank_ifsc, \
+         (SELECT COALESCE(SUM(CASE WHEN i.type = 'credit_card' THEN CASE WHEN t.direction = 'debit' THEN COALESCE(t.amount_minor, CAST(t.amount * 100 AS INTEGER)) ELSE -COALESCE(t.amount_minor, CAST(t.amount * 100 AS INTEGER)) END ELSE CASE WHEN t.direction = 'credit' THEN COALESCE(t.amount_minor, CAST(t.amount * 100 AS INTEGER)) ELSE -COALESCE(t.amount_minor, CAST(t.amount * 100 AS INTEGER)) END END), 0) \
+          FROM transactions t WHERE t.instrument_id = i.id AND t.is_deleted = 0) AS tx_balance_minor \
+         FROM instruments i WHERE i.is_deleted = 0 ORDER BY i.issuer_name ASC"
     ).map_err(|e| e.to_string())?;
 
     let iter = stmt
@@ -675,18 +678,32 @@ pub fn do_fetch_instruments(conn: &Connection) -> Result<Vec<InstrumentRecord>, 
             let issuer: Option<String> = row.get(2)?;
             let masked: Option<String> = row.get(3)?;
             let status: Option<String> = row.get(4)?;
-            let bal: Option<f64> = match row.get(5) {
-                Ok(v) => v,
-                Err(_) => {
-                    let i: Option<i64> = row.get(5)?;
-                    i.map(|x| x as f64)
+            let db_bal_paise: Option<i64> = match row.get::<_, i64>(5) {
+                Ok(v) => Some(v),
+                Err(_) => row.get::<_, f64>(5).ok().map(|f| f as i64),
+            };
+            let tx_bal_minor: i64 = row.get(10).unwrap_or(0);
+            
+            let inst_type_str = t.as_deref().unwrap_or("credit_card");
+
+            let effective_bal = match db_bal_paise {
+                Some(p) => p as f64 / 100.0,
+                None => {
+                    if inst_type_str == "credit_card" {
+                        tx_bal_minor as f64 / 100.0
+                    } else if tx_bal_minor > 0 {
+                        tx_bal_minor as f64 / 100.0
+                    } else {
+                        0.0
+                    }
                 }
             };
+
             let limit: Option<f64> = match row.get(6) {
                 Ok(v) => v,
                 Err(_) => {
                     let i: Option<i64> = row.get(6)?;
-                    i.map(|x| x as f64)
+                    i.map(|x| x as f64 / 100.0)
                 }
             };
             let full_id: Option<String> = row.get(7)?;
@@ -698,7 +715,7 @@ pub fn do_fetch_instruments(conn: &Connection) -> Result<Vec<InstrumentRecord>, 
                 issuer_name: issuer.unwrap_or_else(|| "Unknown".to_string()),
                 masked_identifier: masked.unwrap_or_else(|| "****".to_string()),
                 status: status.unwrap_or_else(|| "active".to_string()),
-                current_balance: bal,
+                current_balance: Some(effective_bal),
                 credit_limit: limit,
                 full_identifier: full_id,
                 billing_cycle_day: billing,
@@ -2900,20 +2917,9 @@ pub async fn instruments_get(
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(move |c| {
-        crate::db::instruments::get_instrument(c, &id)
-            .map_err(|e| crate::error::AppError::Db(e.to_string()))?
-            .map(|row| InstrumentRecord {
-                id: row.id,
-                instrument_type: row.r#type,
-                issuer_name: row.issuer_name,
-                masked_identifier: row.masked_identifier,
-                status: row.status,
-                current_balance: row.current_balance.map(|v| v as f64 / 100.0),
-                credit_limit: row.credit_limit.map(|v| v as f64 / 100.0),
-                full_identifier: row.full_identifier,
-                billing_cycle_day: row.billing_cycle_day,
-                bank_ifsc: row.bank_ifsc,
-            })
+        let list = do_fetch_instruments(c).map_err(crate::error::AppError::Db)?;
+        list.into_iter()
+            .find(|inst| inst.id == id)
             .ok_or_else(|| crate::error::AppError::Validation("instrument not found".to_string()))
     })
     .await
@@ -3047,6 +3053,19 @@ pub struct InstrumentUpdatePayload {
     pub full_identifier: Option<String>,
     pub billing_cycle_day: Option<u8>,
     pub bank_ifsc: Option<String>,
+    pub nickname: Option<String>,
+    pub credit_limit: Option<f64>,
+    pub account_type: Option<String>,
+    pub network: Option<String>,
+    pub status: Option<String>,
+    pub upi_vpa: Option<String>,
+    pub rewards_summary: Option<String>,
+    pub instrument_type: Option<String>,
+    pub issuer_name: Option<String>,
+    pub masked_identifier: Option<String>,
+    pub current_balance: Option<f64>,
+    pub statement_due_date: Option<String>,
+    pub minimum_due: Option<f64>,
 }
 
 #[tauri::command]
@@ -3062,16 +3081,6 @@ pub async fn instruments_update(
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(move |c| {
-        // Real bug fixed here: `update_instrument` is a full-row overwrite
-        // (no partial-column UPDATE exists at the DB layer) -- the previous
-        // version of this handler only fetched `type`/`status` before
-        // calling it, silently wiping every other field on every single
-        // update (current_balance, credit_limit, statement_due_date,
-        // minimum_due, network, account_type, upi_vpa, nickname,
-        // rewards_summary — several of which are populated elsewhere, e.g.
-        // TASK-STMT-007's bill classifier). Fetching the *full* existing
-        // row first and only overwriting this payload's allowed fields is
-        // what actually makes this a partial update.
         let mut row = crate::db::instruments::get_instrument(c, &payload.id)
             .map_err(|e| crate::error::AppError::Db(e.to_string()))?
             .ok_or_else(|| {
@@ -3081,9 +3090,25 @@ pub async fn instruments_update(
         row.full_identifier = payload.full_identifier;
         row.billing_cycle_day = payload.billing_cycle_day;
         row.bank_ifsc = payload.bank_ifsc;
-        // issuer_name/masked_identifier/type/status/current_balance/
-        // credit_limit/statement_due_date/etc. all carry over untouched
-        // from the fetched row.
+        if let Some(nick) = payload.nickname { row.nickname = if nick.trim().is_empty() { None } else { Some(nick) }; }
+        if let Some(limit) = payload.credit_limit { row.credit_limit = Some((limit * 100.0) as i64); }
+        if let Some(acct) = payload.account_type { row.account_type = if acct.trim().is_empty() { None } else { Some(acct) }; }
+        if let Some(net) = payload.network { row.network = if net.trim().is_empty() { None } else { Some(net) }; }
+        if let Some(st) = payload.status { if !st.trim().is_empty() { row.status = st; } }
+        if let Some(vpa) = payload.upi_vpa { row.upi_vpa = if vpa.trim().is_empty() { None } else { Some(vpa) }; }
+        if let Some(rew) = payload.rewards_summary { row.rewards_summary = if rew.trim().is_empty() { None } else { Some(rew) }; }
+        if let Some(itype) = payload.instrument_type { if !itype.trim().is_empty() { row.r#type = itype; } }
+        if let Some(iname) = payload.issuer_name { if !iname.trim().is_empty() { row.issuer_name = iname; } }
+        if let Some(mask) = payload.masked_identifier { if !mask.trim().is_empty() { row.masked_identifier = mask; } }
+        if let Some(bal) = payload.current_balance { row.current_balance = Some((bal * 100.0) as i64); }
+        if let Some(min_due) = payload.minimum_due { row.minimum_due = Some((min_due * 100.0) as i64); }
+        if let Some(date_str) = payload.statement_due_date {
+            row.statement_due_date = if date_str.trim().is_empty() {
+                None
+            } else {
+                chrono::NaiveDate::parse_from_str(date_str.trim(), "%Y-%m-%d").ok()
+            };
+        }
 
         crate::db::instruments::update_instrument(c, &row)
             .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
