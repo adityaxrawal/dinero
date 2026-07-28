@@ -124,26 +124,17 @@ impl LlmEngine {
         )
     }
 
-    /// Doc 30 TASK-TXN-006: hard execution timeout per email. Was 10s;
-    /// widened to 60s because the completion semaphore in `llama_sidecar.rs`
-    /// now allows parallel execution up to the hardware capability, and
-    /// evaluating a batch of prompts takes longer.
-    /// Exceeding it is treated as a Layer 6 failure (falls through to
-    /// `unassigned_transactions` once TASK-TXN-009 wires observation
-    /// persistence in) unless the caller asked for a retry (see
-    /// `Layer6Outcome::TimedOut`).
-    const INFERENCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
-
     /// Evaluates `prompt` against `llama-server`. Retries transient
     /// (server-starting) errors up to 120s; returns `TimedOut` if the server
-    /// is up but the prompt inference itself takes longer than
-    /// `INFERENCE_TIMEOUT`. Returns `Failed` on non-recoverable errors (model
-    /// missing, parse failed, hardware incompatible).
+    /// is up but the prompt inference itself takes longer than the sidecar's
+    /// own calibrated timeout (`llama_sidecar::calibrate_timeout`). Returns
+    /// `Failed` on non-recoverable errors (model missing, parse failed,
+    /// hardware incompatible).
     ///
     /// Never blocks the main `historical_scan` loop — this async function
     /// yields to the Tokio runtime while waiting, so other concurrent
     /// fetches proceed while this one waits for `llama-server` or until its
-    /// single-slot inference lock (`llama_sidecar::completion_semaphore`) is free next time.
+    /// completion semaphore is free next time.
     pub async fn extract(&self, bank_name: &str, body_text: &str) -> Layer6Outcome {
         let prompt = Self::generate_prompt(bank_name, body_text);
         match self.run_completion(&prompt, body_text).await {
@@ -179,11 +170,10 @@ impl LlmEngine {
 
         let mut timed_out = false;
         let raw_output = loop {
-            let result = crate::llama_sidecar::complete(
-                &self.app_dir, 
-                &self.model_id, 
+            let result = crate::llama_sidecar::complete_with_calibrated_timeout(
+                &self.app_dir,
+                &self.model_id,
                 prompt,
-                Self::INFERENCE_TIMEOUT
             ).await;
 
             match result {
@@ -198,10 +188,7 @@ impl LlmEngine {
                         continue;
                     }
                     if msg.contains("timeout") || msg.contains("timed out") {
-                        error!(
-                            "Layer 6 LLM Failure: inference exceeded {:?} timeout",
-                            Self::INFERENCE_TIMEOUT
-                        );
+                        error!("Layer 6 LLM Failure: inference exceeded its calibrated timeout");
                         timed_out = true;
                         break None;
                     }
