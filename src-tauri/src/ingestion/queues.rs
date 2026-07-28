@@ -118,7 +118,24 @@ pub struct MandateJob {
     pub raw_body: Option<String>,
 }
 
-/// Senders for all three queues, stored as Tauri managed state so every
+/// A message whose regex-based Layers 1-5 all failed but this machine is
+/// LLM-eligible — enqueued instead of running Layer 6 inline (Doc
+/// 2026-07-26 mail scan performance: Layer 6 no longer blocks the scan's
+/// critical path). `observation_id`/`unassigned_id` are the rows
+/// `record_unassigned_transaction`'s `pending_llm_enrichment` path already
+/// created — this job's success path upgrades them in place rather than
+/// inserting a duplicate.
+pub struct Layer6Job {
+    pub observation_id: String,
+    pub unassigned_id: String,
+    pub bank_name: String,
+    pub body_text: String,
+    pub app_dir: std::path::PathBuf,
+}
+
+pub(crate) const LAYER6_QUEUE_CAPACITY: usize = 256;
+
+/// Senders for all four queues, stored as Tauri managed state so every
 /// entry point (Gmail polling, historical scan, manual upload) reaches the
 /// same queues.
 #[derive(Clone)]
@@ -126,6 +143,7 @@ pub struct QueueHandles {
     pub transaction_tx: mpsc::Sender<TransactionJob>,
     pub statement_tx: mpsc::Sender<StatementJob>,
     pub mandate_tx: mpsc::Sender<MandateJob>,
+    pub layer6_tx: mpsc::Sender<Layer6Job>,
 }
 
 /// Multi-parallel worker pool size for the Transaction Queue (Doc 15 §5: 2–8 workers).
@@ -269,16 +287,97 @@ pub fn spawn_queues<R: tauri::Runtime>(
         mpsc::channel::<TransactionJob>(TRANSACTION_QUEUE_CAPACITY);
     let (statement_tx, statement_rx) = mpsc::channel::<StatementJob>(STATEMENT_QUEUE_CAPACITY);
     let (mandate_tx, mandate_rx) = mpsc::channel::<MandateJob>(MANDATE_QUEUE_CAPACITY);
+    let (layer6_tx, layer6_rx) = mpsc::channel::<Layer6Job>(LAYER6_QUEUE_CAPACITY);
 
     spawn_transaction_workers(transaction_rx, pool.clone(), app.clone());
     spawn_statement_dispatcher(statement_rx, pool.clone(), app);
-    spawn_mandate_workers(mandate_rx, pool, transaction_tx.clone());
+    spawn_mandate_workers(mandate_rx, pool.clone(), transaction_tx.clone());
+    spawn_layer6_workers(layer6_rx, pool);
 
     QueueHandles {
         transaction_tx,
         statement_tx,
         mandate_tx,
+        layer6_tx,
     }
+}
+
+/// Single dispatcher for the Layer 6 background queue — concurrency is
+/// already bounded by the sidecar's own calibrated semaphore
+/// (`llama_sidecar::ensure_server_ready`), so no separate worker-count
+/// constant is needed here, same rationale as `spawn_mandate_workers`.
+fn spawn_layer6_workers(mut rx: mpsc::Receiver<Layer6Job>, pool: Pool) {
+    tauri::async_runtime::spawn(async move {
+        while let Some(job) = rx.recv().await {
+            process_layer6_job(job, &pool).await;
+        }
+    });
+}
+
+async fn process_layer6_job(job: Layer6Job, pool: &Pool) {
+    use crate::extraction::ladder::ExtractionLayer;
+    let layer = crate::extraction::ladder::Layer6LlmLayer {
+        app_dir: Some(job.app_dir.clone()),
+    };
+    let result = layer.extract(pool, &job.bank_name, &job.body_text).await;
+    match result {
+        Some(enriched) => {
+            if let Err(e) =
+                apply_layer6_success(pool, &job.observation_id, &job.unassigned_id, enriched).await
+            {
+                tracing::error!(
+                    "Layer 6 background worker: failed to apply success for observation_id='{}': {}",
+                    job.observation_id, e
+                );
+            }
+        }
+        None => {
+            tracing::info!(
+                "Layer 6 background worker: no extraction for observation_id='{}' — leaving as unassigned",
+                job.observation_id
+            );
+        }
+    }
+}
+
+/// Upgrades the existing `pending_llm_enrichment` observation in place with
+/// the LLM's result and resolves the matching `unassigned_transactions` row
+/// — never inserts a new observation, since one already exists from the
+/// scan's fast path (`record_unassigned_transaction`).
+async fn apply_layer6_success(
+    pool: &Pool,
+    observation_id: &str,
+    unassigned_id: &str,
+    enriched: ExtractionResult,
+) -> anyhow::Result<()> {
+    let observation_id = observation_id.to_string();
+    let unassigned_id = unassigned_id.to_string();
+    let conn = pool.get().await?;
+    conn.interact(move |c| -> anyhow::Result<()> {
+        let mut row = crate::db::transaction_observations::get_observation(c, &observation_id)?
+            .ok_or_else(|| anyhow::anyhow!("observation {} not found", observation_id))?;
+        row.amount_minor = enriched.amount_minor;
+        row.currency = enriched.currency;
+        row.direction = enriched.direction;
+        row.merchant_raw = enriched.merchant_raw;
+        row.reference_id = enriched.reference_id;
+        // enriched.event_time is an i64 Unix timestamp (UTC), same shape
+        // normalize_observation converts from — mirror that conversion here.
+        if let Some(ts) = enriched.event_time {
+            use chrono::TimeZone;
+            let dt_utc = chrono::Utc.timestamp_opt(ts, 0).unwrap();
+            let ist_offset = chrono::FixedOffset::east_opt(5 * 3600 + 30 * 60).unwrap();
+            row.event_time = Some(dt_utc.with_timezone(&ist_offset).naive_local());
+        }
+        row.extraction_method = Some("llm_layer6".to_string());
+        row.confidence_score = enriched.confidence_score;
+        crate::db::transaction_observations::update_observation(c, &row)?;
+        crate::db::unassigned_transactions::update_status(c, &unassigned_id, "resolved")?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("Interact error: {}", e))??;
+    Ok(())
 }
 
 /// Single dispatcher for the Mandate Queue -- mandate volume is expected to
@@ -820,5 +919,133 @@ mod tests {
             eta, 2,
             "rolling average must reflect both samples, not just the first"
         );
+    }
+}
+
+#[cfg(test)]
+mod layer6_tests {
+    use super::*;
+    use crate::db::init_db;
+    use std::fs;
+
+    /// A Layer6Job whose LLM call succeeds must update the existing
+    /// observation in place (not insert a duplicate) and resolve the
+    /// matching unassigned_transactions row — proving the background
+    /// worker's success path wires the existing DB functions correctly,
+    /// without needing a real llama-server (this test constructs the
+    /// observation/unassigned rows directly and calls the worker's
+    /// extracted processing function with a fake "always succeeds"
+    /// outcome rather than spawning a real sidecar).
+    #[tokio::test]
+    async fn successful_layer6_job_upgrades_observation_and_resolves_unassigned() {
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let pool = init_db(temp_dir.join("test.db")).await.expect("DB init failed");
+        let conn = pool.get().await.unwrap();
+
+        let observation_id = uuid::Uuid::new_v4().to_string();
+        let unassigned_id = uuid::Uuid::new_v4().to_string();
+
+        let base_row = crate::db::transaction_observations::TransactionObservationsRow {
+            id: observation_id.clone(),
+            canonical_transaction_id: None,
+            source_pipeline: Some("gmail_transaction".to_string()),
+            source_record_id: Some("msg_1".to_string()),
+            source_message_id: Some("msg_1".to_string()),
+            source_thread_id: None,
+            statement_id: None,
+            statement_entry_id: None,
+            instrument_id: None,
+            direction: None,
+            amount: None,
+            amount_minor: None,
+            currency: None,
+            event_time: None,
+            event_time_confidence: None,
+            posting_date: None,
+            merchant_raw: None,
+            merchant_normalized: None,
+            reference_id: None,
+            original_amount_minor: None,
+            original_currency: None,
+            exchange_rate: None,
+            balance_after_transaction: None,
+            timezone_at_ingestion: None,
+            fingerprint: Some(format!("pending_{}", observation_id)),
+            extraction_method: Some("pending_llm_enrichment".to_string()),
+            confidence_score: None,
+            raw_payload_json: None,
+            parser_version: None,
+            emi_total_installments: None,
+            emi_installment_number: None,
+            emi_original_amount_minor: None,
+            is_deleted: false,
+            created_at: Some(chrono::Utc::now().naive_utc()),
+            updated_at: Some(chrono::Utc::now().naive_utc()),
+        };
+        conn.interact({
+            let row = base_row.clone();
+            move |c| crate::db::transaction_observations::insert_observation(c, &row)
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        conn.interact({
+            let unassigned_id = unassigned_id.clone();
+            let observation_id = observation_id.clone();
+            move |c| {
+                crate::db::unassigned_transactions::insert(
+                    c,
+                    &crate::db::unassigned_transactions::UnassignedTransactionRow {
+                        id: unassigned_id,
+                        observation_id,
+                        reason: "pending_llm_enrichment".to_string(),
+                        status: "open".to_string(),
+                        created_at: None,
+                    },
+                )
+            }
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+        let enriched = crate::extraction::ladder::ExtractionResult {
+            amount_minor: Some(50000),
+            currency: Some("INR".to_string()),
+            direction: Some("debit".to_string()),
+            merchant_raw: Some("Test Merchant".to_string()),
+            extraction_method: "llm_layer6".to_string(),
+            confidence_score: Some(0.7),
+            ..Default::default()
+        };
+
+        apply_layer6_success(&pool, &observation_id, &unassigned_id, enriched)
+            .await
+            .unwrap();
+
+        let updated = conn
+            .interact({
+                let id = observation_id.clone();
+                move |c| crate::db::transaction_observations::get_observation(c, &id)
+            })
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.amount_minor, Some(50000));
+        assert_eq!(updated.merchant_raw.as_deref(), Some("Test Merchant"));
+
+        let open = conn
+            .interact(|c| crate::db::unassigned_transactions::select_open(c))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            open.iter().all(|r| r.id != unassigned_id),
+            "resolved unassigned row must no longer appear in select_open"
+        );
+
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 }
