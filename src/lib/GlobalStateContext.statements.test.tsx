@@ -1,8 +1,9 @@
 // Doc 30 TASK-RT-008 acceptance: test_single_upload_shows_summary_toast,
-// test_batch_upload_aggregates_into_single_summary,
-// test_password_required_uses_modal_not_toast.
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+// test_batch_upload_aggregates_into_single_summary.
+// Doc 2026-07-26 mail scan performance: statement_password_required no
+// longer auto-opens the modal -- it's batched into one debounced toast.
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { render, screen, waitFor, act } from '@testing-library/react';
 import { GlobalStateProvider, useGlobalState } from './GlobalStateContext';
 
 vi.mock('@/lib/ipc', () => ({
@@ -124,7 +125,7 @@ describe('GlobalStateContext statement notifications', () => {
     );
   });
 
-  it('test_password_required_uses_modal_not_toast: opens the password modal, never a toast', async () => {
+  it('statement_password_required never auto-opens the modal', async () => {
     renderProvider();
     await waitFor(() => expect(listenHandlers['statement_password_required']).toBeDefined());
 
@@ -132,9 +133,39 @@ describe('GlobalStateContext statement notifications', () => {
       payload: { statementId: 'stmt_locked', instrumentId: 'inst_1' },
     });
 
-    await waitFor(() => {
-      expect(screen.getByTestId('password-modal-open').textContent).toBe('true');
-    });
-    expect(toastSpy).not.toHaveBeenCalled();
+    expect(screen.getByTestId('password-modal-open').textContent).toBe('false');
+  });
+
+  it('batches multiple statement_password_required events into one toast and does not open the modal', async () => {
+    renderProvider();
+    await waitFor(() => expect(listenHandlers['statement_password_required']).toBeDefined());
+
+    vi.useFakeTimers();
+    try {
+      // Simulate the backend firing the event 3 times in quick succession
+      // (matches the real burst behavior during a historical scan, per
+      // `resolve_statement_password`'s doc comment).
+      listenHandlers['statement_password_required']({ payload: { statementId: 'stmt_1' } });
+      listenHandlers['statement_password_required']({ payload: { statementId: 'stmt_2' } });
+      listenHandlers['statement_password_required']({ payload: { statementId: 'stmt_3' } });
+
+      expect(screen.getByTestId('password-modal-open').textContent).toBe('false');
+      expect(toastSpy).not.toHaveBeenCalled();
+
+      // Advance past the debounce window (~2s) and confirm exactly one
+      // toast fired, mentioning the batched count.
+      await act(async () => {
+        vi.advanceTimersByTime(2100);
+      });
+
+      expect(toastSpy).toHaveBeenCalledTimes(1);
+      expect(toastSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          description: expect.stringContaining('3 statements need a password'),
+        })
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

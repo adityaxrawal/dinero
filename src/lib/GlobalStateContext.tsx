@@ -291,6 +291,12 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
     failureReasons: string[];
   } | null>(null);
 
+  // Doc 2026-07-26 mail scan performance: `statement_password_required` can
+  // fire dozens of times in a burst during a historical scan -- these
+  // accumulate the count between debounced toast flushes.
+  const pendingPasswordCountRef = useRef(0);
+  const passwordToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const watchDraftOrigin = useCallback((originId: string) => {
     watchedOriginIds.current.add(originId);
   }, []);
@@ -367,23 +373,32 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
         });
       });
 
-      // `test_password_required_uses_modal_not_toast`: this is the only
-      // handler for this event -- it opens the password modal and never
-      // calls `toast()`, matching Doc 30's "the password-retry modal is the
-      // primary UI for that specific interaction."
+      // Doc 2026-07-26 mail scan performance: a locked statement PDF
+      // encountered mid-scan must never hijack the screen --
+      // `resolve_statement_password`'s backend comment notes this event
+      // "can fire dozens of times in a burst during a historical scan."
+      // Previously every single firing called `openPasswordModal`,
+      // repeatedly reassigning it to whichever PDF fired last. The row is
+      // already durably queryable via `UnprocessedItemsQueue`'s "Awaiting
+      // Password" section (`Statements.tsx`'s `onEnterPassword` already
+      // opens this same modal on demand) -- this listener now only
+      // refreshes that queue and shows one debounced, batched toast.
       unlistenPassword = await listen<{ statementId: string; instrumentId?: string }>(
         'statement_password_required',
-        (event) => {
-          const payload = event.payload as {
-            statementId?: string;
-            statement_id?: string;
-            instrumentId?: string;
-            instrument_id?: string;
-          };
-          openPasswordModal(
-            payload.statementId || payload.statement_id || '',
-            payload.instrumentId || payload.instrument_id
-          );
+        () => {
+          loadStatementHistory();
+          pendingPasswordCountRef.current += 1;
+          if (passwordToastTimerRef.current) {
+            clearTimeout(passwordToastTimerRef.current);
+          }
+          passwordToastTimerRef.current = setTimeout(() => {
+            const count = pendingPasswordCountRef.current;
+            pendingPasswordCountRef.current = 0;
+            toast({
+              title: 'Password Required',
+              description: `${count} statement${count === 1 ? '' : 's'} need${count === 1 ? 's' : ''} a password — check Action Needed.`,
+            });
+          }, 2000);
         }
       );
 
