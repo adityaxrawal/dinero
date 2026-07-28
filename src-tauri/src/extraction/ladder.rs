@@ -349,7 +349,11 @@ fn vpa_merchant_fallback(body: &str) -> Option<String> {
 // Instrument signal detection statics
 static INSTR_CARD_LAST4_RE: OnceLock<Regex> = OnceLock::new();
 static INSTR_ACCOUNT_SUFFIX_RE: OnceLock<Regex> = OnceLock::new();
-static INSTR_UPI_VPA_RE: OnceLock<Regex> = OnceLock::new();
+static INSTR_USER_UPI_VPA_DEBIT_RE: OnceLock<Regex> = OnceLock::new();
+static INSTR_USER_UPI_VPA_CREDIT_RE: OnceLock<Regex> = OnceLock::new();
+static INSTR_USER_UPI_VPA_EXPLICIT_RE: OnceLock<Regex> = OnceLock::new();
+static INSTR_CP_UPI_VPA_DEBIT_RE: OnceLock<Regex> = OnceLock::new();
+static INSTR_CP_UPI_VPA_CREDIT_RE: OnceLock<Regex> = OnceLock::new();
 static INSTR_NETWORK_RE: OnceLock<Regex> = OnceLock::new();
 
 /// InstrumentSignals holds the parsed signals extracted from an email body.
@@ -410,29 +414,105 @@ pub fn extract_instrument_signals(bank_name: &str, body: &str) -> InstrumentSign
         }
     }
 
-    // 3. Try to extract UPI VPA regardless of whether an instrument was found
-    let upi_re = INSTR_UPI_VPA_RE
-        .get_or_init(|| Regex::new(r"(?i)(?:UPI/[^/]+/)?([\w.\-+]+@[\w.\-]+)").unwrap());
-    if let Some(caps) = upi_re.captures(body) {
-        if let Some(vpa) = caps.get(1) {
-            let vpa_str = vpa
-                .as_str()
-                .to_lowercase()
-                .trim_end_matches('.')
-                .to_string();
-            // Filter out generic email-like domains that are not VPAs
-            if !vpa_str.ends_with("@gmail.com")
-                && !vpa_str.ends_with("@yahoo.com")
-                && !vpa_str.ends_with("@outlook.com")
-                && !vpa_str.ends_with("@hotmail.com")
-            {
-                signals.upi_vpa = Some(vpa_str.clone());
-                // If we didn't find any other instrument, use this as the primary identifier
-                if signals.masked_identifier.is_none() {
-                    signals.masked_identifier = Some(vpa_str);
-                    signals.instrument_type = Some("upi_vpa".to_string());
-                }
+    // 3. Direction-aware extraction of user's UPI VPA.
+    // Counterparty VPAs (e.g. 'Paid to ...', 'towards VPA ...', 'payee ...') belong to external
+    // merchants/receivers and MUST NEVER be saved as the user's VPA instrument.
+    let body_lower = body.to_lowercase();
+    let is_credit = body_lower.contains("credited")
+        || body_lower.contains("received")
+        || body_lower.contains("deposited")
+        || body_lower.contains("added to")
+        || body_lower.contains("refund");
+
+    // Collect counterparty VPAs (payees in debits, senders in credits) to build an explicit blacklist
+    let mut cp_vpas: Vec<String> = Vec::new();
+
+    if is_credit {
+        let cp_credit_re = INSTR_CP_UPI_VPA_CREDIT_RE.get_or_init(|| {
+            Regex::new(
+                r"(?i)\b(?:payment\s+from|received\s+from|paid\s+by|remitter|sender|from)\s*:?\s*(?:(?:VPA|UPI\s+ID)\s*:?\s*)?(?:[A-Za-z0-9._\-'\s]{1,40}?\s+)?([\w.\-+]+@[\w.\-]+)",
+            )
+            .unwrap()
+        });
+        for caps in cp_credit_re.captures_iter(body) {
+            if let Some(m) = caps.get(1) {
+                cp_vpas.push(m.as_str().to_lowercase().trim_end_matches('.').to_string());
             }
+        }
+    } else {
+        let cp_debit_re = INSTR_CP_UPI_VPA_DEBIT_RE.get_or_init(|| {
+            Regex::new(
+                r"(?i)\b(?:paid\s+to|to|payee|towards|beneficiary|recipient|merchant)\s*:?\s*(?:(?:VPA|UPI\s+ID)\s*:?\s*)?(?:[A-Za-z0-9._\-'\s]{1,40}?\s+)?([\w.\-+]+@[\w.\-]+)",
+            )
+            .unwrap()
+        });
+        for caps in cp_debit_re.captures_iter(body) {
+            if let Some(m) = caps.get(1) {
+                cp_vpas.push(m.as_str().to_lowercase().trim_end_matches('.').to_string());
+            }
+        }
+    }
+
+    // Try extracting explicit User VPA candidates (source VPA in debits, destination VPA in credits)
+    let mut user_vpa_candidates: Vec<String> = Vec::new();
+
+    let user_explicit_re = INSTR_USER_UPI_VPA_EXPLICIT_RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)\b(?:your|user)\s+(?:UPI\s+VPA|VPA|UPI\s+ID)\s*:?\s*([\w.\-+]+@[\w.\-]+)",
+        )
+        .unwrap()
+    });
+    for caps in user_explicit_re.captures_iter(body) {
+        if let Some(m) = caps.get(1) {
+            user_vpa_candidates.push(m.as_str().to_lowercase().trim_end_matches('.').to_string());
+        }
+    }
+
+    if is_credit {
+        let user_credit_re = INSTR_USER_UPI_VPA_CREDIT_RE.get_or_init(|| {
+            Regex::new(
+                r"(?i)\b(?:credited\s+to|deposited\s+to|received\s+in|to|beneficiary|recipient|destination)\s*:?\s*(?:(?:UPI\s+VPA|VPA|UPI\s+ID|account)\s*:?\s*)?(?:[A-Za-z0-9._\-'\s]{1,40}?\s+)?([\w.\-+]+@[\w.\-]+)",
+            )
+            .unwrap()
+        });
+        for caps in user_credit_re.captures_iter(body) {
+            if let Some(m) = caps.get(1) {
+                user_vpa_candidates.push(m.as_str().to_lowercase().trim_end_matches('.').to_string());
+            }
+        }
+    } else {
+        let user_debit_re = INSTR_USER_UPI_VPA_DEBIT_RE.get_or_init(|| {
+            Regex::new(
+                r"(?i)\b(?:from|debited\s+from|sent\s+from|remitter|sender|source|using|via|linked\s+to)\s*:?\s*(?:(?:UPI\s+VPA|VPA|UPI\s+ID|account)\s*:?\s*)?(?:[A-Za-z0-9._\-'\s]{1,40}?\s+)?([\w.\-+]+@[\w.\-]+)",
+            )
+            .unwrap()
+        });
+        for caps in user_debit_re.captures_iter(body) {
+            if let Some(m) = caps.get(1) {
+                user_vpa_candidates.push(m.as_str().to_lowercase().trim_end_matches('.').to_string());
+            }
+        }
+    }
+
+    let mut detected_user_vpa: Option<String> = None;
+    for cand in user_vpa_candidates {
+        if !cand.ends_with("@gmail.com")
+            && !cand.ends_with("@yahoo.com")
+            && !cand.ends_with("@outlook.com")
+            && !cand.ends_with("@hotmail.com")
+            && !cp_vpas.contains(&cand)
+        {
+            detected_user_vpa = Some(cand);
+            break;
+        }
+    }
+
+    if let Some(vpa_str) = detected_user_vpa {
+        signals.upi_vpa = Some(vpa_str.clone());
+        // If we didn't find any card or bank account suffix, use the user's VPA as the primary instrument
+        if signals.masked_identifier.is_none() {
+            signals.masked_identifier = Some(vpa_str);
+            signals.instrument_type = Some("upi_vpa".to_string());
         }
     }
 
@@ -3252,11 +3332,21 @@ mod tests {
 
     #[test]
     fn test_instrument_signals_upi_vpa_detected() {
-        let body = "Dear Customer, UPI payment of Rs 200 received from merchant@upi on 25-May-23.";
+        let body = "Dear Customer, UPI payment of Rs 200 credited to your VPA user@icici from merchant@upi on 25-May-23.";
         let signals = extract_instrument_signals("ICICI Bank", body);
-        assert_eq!(signals.masked_identifier, Some("merchant@upi".to_string()));
+        assert_eq!(signals.masked_identifier, Some("user@icici".to_string()));
         assert_eq!(signals.instrument_type, Some("upi_vpa".to_string()));
+        assert_eq!(signals.upi_vpa, Some("user@icici".to_string()));
         assert_eq!(signals.issuer_name, Some("ICICI Bank".to_string()));
+    }
+
+    #[test]
+    fn test_instrument_signals_counterparty_vpa_ignored_for_user_instrument() {
+        let body = "Dear Customer, Rs.750.00 is debited from your account ending 4691 towards VPA 8127696200@jupiteraxis (ADITYA RAWAL) on 07-06-26.";
+        let signals = extract_instrument_signals("HDFC Bank", body);
+        assert_eq!(signals.masked_identifier, Some("XXXX4691".to_string()));
+        assert_eq!(signals.instrument_type, Some("bank_account".to_string()));
+        assert_eq!(signals.upi_vpa, None);
     }
 
     #[test]
@@ -3277,6 +3367,24 @@ mod tests {
         assert!(signals.instrument_type.is_none());
         assert_eq!(signals.issuer_name, Some("SBI".to_string()));
         assert!(signals.network.is_none());
+    }
+
+    #[test]
+    fn test_instrument_signals_jupiter_debit_vpa_extraction() {
+        let body = "Hey, Aditya\nYour UPI payment was successful\n\nYou paid ₹14000\n\nPaid to T Jyoshna\n7674036967@ybl\n\nDate Jul 05, 2026\n\nFrom Aditya\n8127696200@jupiteraxis\n\nTransaction ID 1321783237916267118\n\nBank reference Number 699841171866";
+        let signals = extract_instrument_signals("Jupiter", body);
+        assert_eq!(signals.upi_vpa, Some("8127696200@jupiteraxis".to_string()));
+        assert_eq!(signals.masked_identifier, Some("8127696200@jupiteraxis".to_string()));
+        assert_eq!(signals.instrument_type, Some("upi_vpa".to_string()));
+    }
+
+    #[test]
+    fn test_instrument_signals_payee_vpa_only_never_saved_as_user_instrument() {
+        let body = "You paid ₹1958.00 to MAX SUPER SPECIALITY HOSPITAL saharahospital.42752193@hdfcbank on 08-Jun-26.";
+        let signals = extract_instrument_signals("Jupiter", body);
+        assert_eq!(signals.upi_vpa, None);
+        assert_eq!(signals.masked_identifier, None);
+        assert_eq!(signals.instrument_type, None);
     }
 
     #[tokio::test]

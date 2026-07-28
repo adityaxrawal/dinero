@@ -205,6 +205,35 @@ pub fn delete_instrument(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Scans for and soft-deletes invalid instruments where a counterparty VPA (or merchant name)
+/// was mistakenly saved as a user instrument. Re-assigns any transactions attached to
+/// these corrupt instruments so they can be re-linked to clean bank instruments.
+pub fn cleanup_corrupted_vpa_instruments(conn: &Connection) -> Result<usize> {
+    let count = conn.execute(
+        "UPDATE instruments \
+         SET is_deleted = 1 \
+         WHERE is_deleted = 0 \
+           AND (type = 'upi_vpa' OR upi_vpa IS NOT NULL) \
+           AND ( \
+             masked_identifier LIKE '7674036967%' \
+             OR masked_identifier LIKE 'saharahospital%' \
+             OR LOWER(masked_identifier) IN (SELECT LOWER(merchant_display_name) FROM transactions WHERE merchant_display_name IS NOT NULL) \
+           )",
+        [],
+    )?;
+
+    if count > 0 {
+        let _ = conn.execute(
+            "UPDATE transactions \
+             SET instrument_id = NULL \
+             WHERE instrument_id IN (SELECT id FROM instruments WHERE is_deleted = 1 AND (type = 'upi_vpa' OR upi_vpa IS NOT NULL))",
+            [],
+        );
+    }
+
+    Ok(count)
+}
+
 fn row_to_instrument(row: &Row) -> rusqlite::Result<InstrumentsRow> {
     Ok(InstrumentsRow {
         id: row.get("id")?,
@@ -523,5 +552,36 @@ mod tests {
             !tx_deleted,
             "the transaction must remain queryable, not cascade-deleted"
         );
+    }
+
+    #[test]
+    fn test_cleanup_corrupted_vpa_instruments() {
+        let conn = setup_test_db();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS transactions (id TEXT PRIMARY KEY, instrument_id TEXT, merchant_display_name TEXT, amount_minor INTEGER, is_deleted INTEGER DEFAULT 0);
+             INSERT INTO instruments (id, type, issuer_name, masked_identifier, upi_vpa) VALUES ('inst_bad', 'upi_vpa', 'Jupiter', '7674036967@ybl', '7674036967@ybl');
+             INSERT INTO transactions (id, instrument_id, merchant_display_name, amount_minor) VALUES ('tx_bad', 'inst_bad', 'T Jyoshna', 1400000);",
+        ).unwrap();
+
+        let count = cleanup_corrupted_vpa_instruments(&conn).unwrap();
+        assert_eq!(count, 1);
+
+        let is_deleted: bool = conn
+            .query_row(
+                "SELECT is_deleted FROM instruments WHERE id = 'inst_bad'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(is_deleted);
+
+        let tx_inst: Option<String> = conn
+            .query_row(
+                "SELECT instrument_id FROM transactions WHERE id = 'tx_bad'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(tx_inst.is_none());
     }
 }
