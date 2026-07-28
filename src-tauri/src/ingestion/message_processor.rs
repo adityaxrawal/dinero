@@ -1010,7 +1010,7 @@ impl MessageProcessor {
         body_text: &str,
         raw_html: Option<&str>,
         reason: &str,
-    ) -> Result<()> {
+    ) -> Result<Option<(String, String)>> {
         let obs_row = crate::extraction::normalization::normalize_observation(
             obs,
             "gmail_transaction",
@@ -1018,31 +1018,45 @@ impl MessageProcessor {
             Some(body_text),
             raw_html,
         );
+        let observation_id = obs_row.id.clone();
+        let unassigned_id = Uuid::new_v4().to_string();
         let reason_owned = reason.to_string();
 
         let conn = pool.get().await?;
-        conn.interact(move |c| -> Result<()> {
-            use crate::db::transaction_observations::InsertObservationOutcome;
-            let outcome =
-                crate::db::transaction_observations::insert_observation_idempotent(c, &obs_row)?;
-            if let InsertObservationOutcome::Inserted = outcome {
-                crate::db::unassigned_transactions::insert(
-                    c,
-                    &crate::db::unassigned_transactions::UnassignedTransactionRow {
-                        id: Uuid::new_v4().to_string(),
-                        observation_id: obs_row.id.clone(),
-                        reason: reason_owned.clone(),
-                        status: "open".to_string(),
-                        created_at: None,
-                    },
-                )?;
-            }
-            Ok(())
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("Interact error: {}", e))??;
+        let inserted = conn
+            .interact({
+                let unassigned_id = unassigned_id.clone();
+                let observation_id = observation_id.clone();
+                move |c| -> Result<bool> {
+                    use crate::db::transaction_observations::InsertObservationOutcome;
+                    let outcome = crate::db::transaction_observations::insert_observation_idempotent(
+                        c, &obs_row,
+                    )?;
+                    if let InsertObservationOutcome::Inserted = outcome {
+                        crate::db::unassigned_transactions::insert(
+                            c,
+                            &crate::db::unassigned_transactions::UnassignedTransactionRow {
+                                id: unassigned_id,
+                                observation_id,
+                                reason: reason_owned,
+                                status: "open".to_string(),
+                                created_at: None,
+                            },
+                        )?;
+                        Ok(true)
+                    } else {
+                        Ok(false)
+                    }
+                }
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("Interact error: {}", e))??;
 
-        Ok(())
+        Ok(if inserted {
+            Some((observation_id, unassigned_id))
+        } else {
+            None
+        })
     }
 
     async fn append_to_scan_log(

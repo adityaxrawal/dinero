@@ -550,3 +550,49 @@ async fn test_gate3_partial_extraction_salvaged_to_unassigned_queue() {
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+#[tokio::test]
+async fn record_unassigned_transaction_returns_ids_on_fresh_insert() {
+    let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let pool = crate::db::init_db(temp_dir.join("test.db")).await.expect("DB init failed");
+
+    let obs = crate::extraction::ladder::ExtractionResult::default();
+    let result = MessageProcessor::record_unassigned_transaction(
+        &pool, "msg_fresh", obs, "body text", None, "pending_llm_enrichment",
+    )
+    .await
+    .unwrap();
+
+    assert!(result.is_some(), "a fresh insert must return Some((observation_id, unassigned_id))");
+    let (observation_id, unassigned_id) = result.unwrap();
+    assert!(!observation_id.is_empty());
+    assert!(!unassigned_id.is_empty());
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn record_unassigned_transaction_returns_none_on_duplicate() {
+    let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let pool = crate::db::init_db(temp_dir.join("test.db")).await.expect("DB init failed");
+
+    let obs = crate::extraction::ladder::ExtractionResult::default();
+    MessageProcessor::record_unassigned_transaction(
+        &pool, "msg_dup", obs.clone(), "body text", None, "pending_llm_enrichment",
+    )
+    .await
+    .unwrap();
+
+    // Same message_id + same default obs => same fingerprint => duplicate.
+    let second = MessageProcessor::record_unassigned_transaction(
+        &pool, "msg_dup", obs, "body text", None, "pending_llm_enrichment",
+    )
+    .await
+    .unwrap();
+
+    assert!(second.is_none(), "a duplicate insert must return None, not a fresh id pair");
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
