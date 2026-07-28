@@ -86,7 +86,7 @@ export default function AddInstrumentModal({ open, onOpenChange }: AddInstrument
   };
 
   const maskedIdLabel =
-    form.instrumentType === 'upi_vpa' ? 'VPA (e.g. user@upi)' : 'Masked Identifier (e.g. XXXX1234)';
+    form.instrumentType === 'upi_vpa' ? 'VPA (e.g. user@upi)' : 'Last 4 Digits (e.g. 1234)';
 
   return (
     <Dialog open={open} onOpenChange={(o) => (o ? onOpenChange(true) : close())}>
@@ -129,7 +129,7 @@ export default function AddInstrumentModal({ open, onOpenChange }: AddInstrument
               id="add-masked"
               value={form.maskedIdentifier}
               onChange={(e) => setForm({ ...form, maskedIdentifier: e.target.value })}
-              placeholder={form.instrumentType === 'upi_vpa' ? 'user@upi' : 'XXXX1234'}
+              placeholder={form.instrumentType === 'upi_vpa' ? 'user@upi' : '1234'}
             />
           </div>
           {formError && (

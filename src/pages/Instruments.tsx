@@ -210,7 +210,7 @@ export default function Instruments() {
             </div>
           ) : groups.length === 0 ? (
             <div className="text-center py-10 px-4 space-y-2">
-              <p className="text-xs text-[#064E3B]/50">No accounts match your criteria.</p>
+              <p className="text-xs text-[#064E3B]/50">No instruments yet or none match your criteria.</p>
               <Button
                 variant="link"
                 className="text-xs h-auto p-0 text-[#064E3B] font-bold"

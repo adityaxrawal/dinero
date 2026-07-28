@@ -12,6 +12,8 @@ pub struct MandateExtraction {
     pub masked_identifier: Option<String>,
 }
 
+use crate::extraction::normalization::clean_masked_identifier;
+
 static MERCHANT_RE: OnceLock<Regex> = OnceLock::new();
 static CADENCE_RE: OnceLock<Regex> = OnceLock::new();
 static AMOUNT_RE: OnceLock<Regex> = OnceLock::new();
@@ -73,11 +75,11 @@ pub fn extract_mandate_fields(bank_name: &str, body: &str) -> Option<MandateExtr
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().to_string());
 
-    let card_last4_re = CARD_LAST4_RE.get_or_init(|| Regex::new(r"(?i)ending\s+(\d{4})").unwrap());
+    let card_last4_re = CARD_LAST4_RE.get_or_init(|| Regex::new(r"(?i)ending\s*(?:in\s+)?(?:[Xx*\s\-.]*?)(\d{2,4})\b").unwrap());
     let masked_identifier = card_last4_re
         .captures(body)
         .and_then(|c| c.get(1))
-        .map(|m| m.as_str().to_string());
+        .map(|m| clean_masked_identifier(m.as_str()));
 
     let instrument_type = if body.to_lowercase().contains("credit card") {
         Some("credit_card".to_string())

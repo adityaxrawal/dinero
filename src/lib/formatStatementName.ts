@@ -16,7 +16,7 @@ export function formatUnprocessedStatementName(item: UnprocessedStatementEntry):
   // Clean bankName to remove spaces if any (though currently only YES is the one, maybe others like YES BANK)
   bankName = bankName.replace(/\s+/g, '');
 
-  let last4Match = searchStr.match(/(?:ENDING\s+(?:IN\s+)?|XX+|X\s*X\s*X\s*X|\*\*+|ACCOUNT\s+|CARD\s+|A\/C\s+NO\.?\s*)([0-9]{4})\b/);
+  let last4Match = searchStr.match(/(?:ENDING\s+(?:IN\s+)?|(?:X|\*|\s|-)+|ACCOUNT\s+|CARD\s+|A\/C\s+(?:NO\.?\s*)?)([0-9]{2,4})\b/);
   let last4 = last4Match ? last4Match[1] : null;
 
   if (!last4) {

@@ -1,3 +1,4 @@
+use crate::extraction::normalization::clean_masked_identifier;
 use anyhow::Result;
 use chrono::{NaiveDate, NaiveDateTime};
 use rusqlite::{params, Connection, OptionalExtension, Row};
@@ -273,6 +274,9 @@ pub fn get_or_create_instrument(
     masked_identifier: &str,
     network: Option<&str>,
 ) -> Result<String> {
+    let masked_identifier_cleaned = clean_masked_identifier(masked_identifier);
+    let masked_identifier = masked_identifier_cleaned.as_str();
+
     // 1. Attempt to INSERT OR IGNORE a new row. If a row with the same
     //    (type, issuer_name, masked_identifier) already exists the UNIQUE constraint
     //    fires but the error is silently ignored due to `OR IGNORE`.
@@ -351,16 +355,20 @@ mod tests {
     fn test_instrument_linked_from_existing_record() {
         let conn = setup_test_db();
 
-        // Pre-seed a known instrument
+        // Pre-seed a known instrument. Stored in already-cleaned form ("1234"),
+        // matching what get_or_create_instrument itself would have persisted --
+        // it runs every masked_identifier through clean_masked_identifier
+        // before insert/lookup, so DB rows are always in cleaned form.
         let existing_id = "aaaa-bbbb-cccc-dddd";
         conn.execute(
             "INSERT INTO instruments (id, type, issuer_name, masked_identifier, status, created_at, updated_at, is_deleted)
-             VALUES (?1, 'credit_card', 'HDFC Bank', 'XXXX1234', 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0)",
+             VALUES (?1, 'credit_card', 'HDFC Bank', '1234', 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0)",
             rusqlite::params![existing_id],
         )
         .unwrap();
 
-        // Call get_or_create — should link to the existing record
+        // Call get_or_create with the raw masked format -- should clean to
+        // "1234" and link to the existing record rather than creating a new one.
         let returned_id =
             get_or_create_instrument(&conn, "credit_card", "HDFC Bank", "XXXX1234", None).unwrap();
 
@@ -389,10 +397,10 @@ mod tests {
         // Must be a non-empty string (UUID)
         assert!(!id.is_empty(), "Returned id should not be empty");
 
-        // Verify the row was actually persisted
+        // Verify the row was actually persisted, in cleaned form ("5678")
         let count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM instruments WHERE type = 'credit_card' AND issuer_name = 'ICICI Bank' AND masked_identifier = 'XXXX5678'",
+                "SELECT COUNT(*) FROM instruments WHERE type = 'credit_card' AND issuer_name = 'ICICI Bank' AND masked_identifier = '5678'",
                 [],
                 |r| r.get(0),
             )

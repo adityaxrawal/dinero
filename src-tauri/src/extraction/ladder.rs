@@ -1,4 +1,5 @@
 use crate::extraction::llm::Layer6Outcome;
+use crate::extraction::normalization::clean_masked_identifier;
 use anyhow::Result;
 use deadpool_sqlite::Pool;
 use regex::Regex;
@@ -378,14 +379,14 @@ pub fn extract_instrument_signals(bank_name: &str, body: &str) -> InstrumentSign
         ..Default::default()
     };
 
-    // 1. Try to detect a masked card last-4 (e.g. "card ending 1234", "card XX1234", "Card no. XX1234")
+    // 1. Try to detect a masked card last-4 (e.g. "card ending 1234", "card XX1234", "Card no. XX1234", "card XXXX 1234")
     let card_re = INSTR_CARD_LAST4_RE.get_or_init(|| {
-        Regex::new(r"(?i)card\s+(?:ending|no\.?|number|#)?\s*(?:with\s+)?(?:xx+|\*+)?(\d{4})\b")
+        Regex::new(r"(?i)\bcard\b(?:\s+(?:ending|no\.?|number|#|is|in))?\s*(?:with\s+)?(?:[Xx*\s\-.]*?)(\d{2,4})\b")
             .unwrap()
     });
     if let Some(caps) = card_re.captures(body) {
         if let Some(last4) = caps.get(1) {
-            signals.masked_identifier = Some(format!("XXXX{}", last4.as_str()));
+            signals.masked_identifier = Some(clean_masked_identifier(last4.as_str()));
             // Check whether it's a credit or debit card
             let body_lower = body.to_lowercase();
             if body_lower.contains("credit card") || body_lower.contains("cc") {
@@ -398,17 +399,17 @@ pub fn extract_instrument_signals(bank_name: &str, body: &str) -> InstrumentSign
         }
     }
 
-    // 2. If no card found, try bank account suffix (e.g. "A/c ending 1234", "account ending 1234")
+    // 2. If no card found, try bank account suffix (e.g. "A/c ending 1234", "account ending 1234", "account XXXX 1234")
     if signals.masked_identifier.is_none() {
         let acc_re = INSTR_ACCOUNT_SUFFIX_RE.get_or_init(|| {
             Regex::new(
-                r"(?i)(?:a/c|account|acct)\s+(?:ending|no\.?|number|#)?\s*(?:with\s+)?(?:xx+|\*+)?(\d{4})\b",
+                r"(?i)\b(?:a/c|account|acct)\b(?:\s+(?:ending|no\.?|number|#|is|in))?\s*(?:with\s+)?(?:[Xx*\s\-.]*?)(\d{2,4})\b",
             )
             .unwrap()
         });
         if let Some(caps) = acc_re.captures(body) {
             if let Some(last4) = caps.get(1) {
-                signals.masked_identifier = Some(format!("XXXX{}", last4.as_str()));
+                signals.masked_identifier = Some(clean_masked_identifier(last4.as_str()));
                 signals.instrument_type = Some("bank_account".to_string());
             }
         }
@@ -3317,7 +3318,7 @@ mod tests {
         let body =
             "Rs 1500.00 spent on your HDFC Bank CREDIT Card ending 1234 at Amazon on 25-May-23.";
         let signals = extract_instrument_signals("HDFC Bank", body);
-        assert_eq!(signals.masked_identifier, Some("XXXX1234".to_string()));
+        assert_eq!(signals.masked_identifier, Some("1234".to_string()));
         assert_eq!(signals.instrument_type, Some("credit_card".to_string()));
         assert_eq!(signals.issuer_name, Some("HDFC Bank".to_string()));
     }
@@ -3326,9 +3327,44 @@ mod tests {
     fn test_instrument_signals_bank_account_suffix() {
         let body = "Rs 500.00 debited from HDFC Bank A/c ending 5678 at Amazon on 25-May-23.";
         let signals = extract_instrument_signals("HDFC Bank", body);
-        assert_eq!(signals.masked_identifier, Some("XXXX5678".to_string()));
+        assert_eq!(signals.masked_identifier, Some("5678".to_string()));
         assert_eq!(signals.instrument_type, Some("bank_account".to_string()));
         assert_eq!(signals.issuer_name, Some("HDFC Bank".to_string()));
+    }
+
+    #[test]
+    fn test_instrument_signals_edge_cases() {
+        // XXXX1234
+        let s1 = extract_instrument_signals("Bank", "card ending XXXX1234");
+        assert_eq!(s1.masked_identifier, Some("1234".to_string()));
+
+        // XXXXXX1234
+        let s2 = extract_instrument_signals("Bank", "card ending XXXXXX1234");
+        assert_eq!(s2.masked_identifier, Some("1234".to_string()));
+
+        // 1234
+        let s3 = extract_instrument_signals("Bank", "card ending 1234");
+        assert_eq!(s3.masked_identifier, Some("1234".to_string()));
+
+        // XXXX34 (2 digits)
+        let s4 = extract_instrument_signals("Bank", "card ending XXXX34");
+        assert_eq!(s4.masked_identifier, Some("34".to_string()));
+
+        // XXXX 1234
+        let s5 = extract_instrument_signals("Bank", "account XXXX 1234");
+        assert_eq!(s5.masked_identifier, Some("1234".to_string()));
+
+        // XXXX XXXX 1234
+        let s6 = extract_instrument_signals("Bank", "card ending XXXX XXXX 1234");
+        assert_eq!(s6.masked_identifier, Some("1234".to_string()));
+
+        // **** **** **** 1234
+        let s7 = extract_instrument_signals("Bank", "card ending **** **** **** 1234");
+        assert_eq!(s7.masked_identifier, Some("1234".to_string()));
+
+        // XX-1234
+        let s8 = extract_instrument_signals("Bank", "account no. XX-1234");
+        assert_eq!(s8.masked_identifier, Some("1234".to_string()));
     }
 
     #[test]
@@ -3345,7 +3381,7 @@ mod tests {
     fn test_instrument_signals_counterparty_vpa_ignored_for_user_instrument() {
         let body = "Dear Customer, Rs.750.00 is debited from your account ending 4691 towards VPA 8127696200@jupiteraxis (ADITYA RAWAL) on 07-06-26.";
         let signals = extract_instrument_signals("HDFC Bank", body);
-        assert_eq!(signals.masked_identifier, Some("XXXX4691".to_string()));
+        assert_eq!(signals.masked_identifier, Some("4691".to_string()));
         assert_eq!(signals.instrument_type, Some("bank_account".to_string()));
         assert_eq!(signals.upi_vpa, None);
     }
@@ -3356,7 +3392,7 @@ mod tests {
             "Rs 1500.00 spent on your Axis Visa Credit Card ending 9999 at Flipkart on 01-Jan-24.";
         let signals = extract_instrument_signals("Axis Bank", body);
         assert_eq!(signals.network, Some("Visa".to_string()));
-        assert_eq!(signals.masked_identifier, Some("XXXX9999".to_string()));
+        assert_eq!(signals.masked_identifier, Some("9999".to_string()));
     }
 
     #[test]
@@ -3403,7 +3439,7 @@ mod tests {
         // Extraction succeeded
         assert_eq!(obs.amount_minor, Some(150000));
         // Instrument signals populated by run_extraction_ladder
-        assert_eq!(obs.masked_identifier, Some("XXXX1234".to_string()));
+        assert_eq!(obs.masked_identifier, Some("1234".to_string()));
         assert_eq!(obs.instrument_type, Some("credit_card".to_string()));
         assert_eq!(obs.issuer_name, Some("HDFC Bank".to_string()));
     }
@@ -3424,7 +3460,7 @@ mod tests {
                 .unwrap();
             c.execute(
                 "INSERT INTO instruments (id, type, issuer_name, masked_identifier, status) \
-                 VALUES ('inst_1', 'credit_card', 'HDFC Bank', 'XXXX1234', 'active')",
+                 VALUES ('inst_1', 'credit_card', 'HDFC Bank', '1234', 'active')",
                 [],
             )
             .unwrap();
@@ -3496,7 +3532,7 @@ mod tests {
         assert_eq!(obs.merchant_raw, Some("Amazon".to_string()));
         assert_eq!(obs.reference_id, Some("123456789012".to_string()));
         assert_eq!(obs.extraction_method, "layer5_statement_crossref");
-        assert_eq!(obs.masked_identifier, Some("XXXX1234".to_string()));
+        assert_eq!(obs.masked_identifier, Some("1234".to_string()));
     }
 
     /// Doc 30 TASK-TXN-005 acceptance test: multiple candidates matching the

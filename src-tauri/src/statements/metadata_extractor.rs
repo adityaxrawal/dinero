@@ -1,3 +1,4 @@
+use crate::extraction::normalization::clean_masked_identifier;
 use crate::statements::parser::ParsedPage;
 use anyhow::Result;
 use regex::Regex;
@@ -132,13 +133,14 @@ pub fn extract_metadata(pages: &[ParsedPage]) -> Result<StatementMetadata> {
     meta.masked_identifier = extract_text_pattern(
         header_text,
         &[
-            r"(?i)card\s+(?:ending|number)[:\s]+[Xx*\s]+(\d{4})",
-            r"(?i)a/c\s+(?:no\.?|number)[:\s]+[Xx*\s]+(\d{4})",
-            r"(?i)account\s+(?:no\.?|number)[:\s]+[Xx*\s]+(\d{4})",
-            // Inline masked card: XX-1234 or XXXX1234
-            r"(?i)[Xx*]{4}[\s\-]?(\d{4})\b",
+            r"(?i)card\s+(?:ending|number|no\.?)[:\s]*[Xx*\s\-]*(\d{2,4})",
+            r"(?i)a/c\s+(?:no\.?|number|ending)[:\s]*[Xx*\s\-]*(\d{2,4})",
+            r"(?i)account\s+(?:no\.?|number|ending)[:\s]*[Xx*\s\-]*(\d{2,4})",
+            // Inline masked card: XX-1234 or XXXX1234 or XXXX 1234
+            r"(?i)[Xx*]{2,}[\s\-]*(\d{2,4})\b",
         ],
-    );
+    )
+    .map(|s| clean_masked_identifier(&s));
 
     // Network: VISA, MASTERCARD, RUPAY, AMEX
     meta.network = extract_text_pattern(

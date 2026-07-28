@@ -1,3 +1,4 @@
+use crate::extraction::normalization::clean_masked_identifier;
 use chrono::Datelike;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -3099,7 +3100,7 @@ pub async fn instruments_update(
         if let Some(rew) = payload.rewards_summary { row.rewards_summary = if rew.trim().is_empty() { None } else { Some(rew) }; }
         if let Some(itype) = payload.instrument_type { if !itype.trim().is_empty() { row.r#type = itype; } }
         if let Some(iname) = payload.issuer_name { if !iname.trim().is_empty() { row.issuer_name = iname; } }
-        if let Some(mask) = payload.masked_identifier { if !mask.trim().is_empty() { row.masked_identifier = mask; } }
+        if let Some(mask) = payload.masked_identifier { if !mask.trim().is_empty() { row.masked_identifier = clean_masked_identifier(&mask); } }
         if let Some(bal) = payload.current_balance { row.current_balance = Some((bal * 100.0) as i64); }
         if let Some(min_due) = payload.minimum_due { row.minimum_due = Some((min_due * 100.0) as i64); }
         if let Some(date_str) = payload.statement_due_date {

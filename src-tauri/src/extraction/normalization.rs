@@ -117,10 +117,63 @@ pub fn normalize_observation(
     }
 }
 
+/// Cleans and normalizes masked identifiers (card last digits, bank account last digits).
+///
+/// Ensures only ending digits (e.g. "1234" or "34") are extracted and retained, stripping out
+/// prefixes such as "XXXX", "XXXXXX", "****", spaces, dashes, or full masked string representations.
+/// UPI VPAs (containing '@') are preserved as-is.
+///
+/// Examples:
+/// - "XXXX1234" -> "1234"
+/// - "XXXXXX1234" -> "1234"
+/// - "1234" -> "1234"
+/// - "XXXX34" -> "34"
+/// - "XXXX 1234" -> "1234"
+/// - "XXXX XXXX 1234" -> "1234"
+/// - "**** **** **** 1234" -> "1234"
+/// - "XX-1234" -> "1234"
+/// - "user@upi" -> "user@upi"
+pub fn clean_masked_identifier(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if trimmed.contains('@') {
+        return trimmed.to_string();
+    }
+
+    let digits: String = trimmed.chars().filter(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return trimmed.to_string();
+    }
+
+    if digits.len() > 4 {
+        digits[digits.len() - 4..].to_string()
+    } else {
+        digits
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::extraction::ladder::ExtractionResult;
+
+    #[test]
+    fn test_clean_masked_identifier_all_edge_cases() {
+        assert_eq!(clean_masked_identifier("XXXX1234"), "1234");
+        assert_eq!(clean_masked_identifier("XXXXXX1234"), "1234");
+        assert_eq!(clean_masked_identifier("1234"), "1234");
+        assert_eq!(clean_masked_identifier("XXXX34"), "34");
+        assert_eq!(clean_masked_identifier("XXXX 1234"), "1234");
+        assert_eq!(clean_masked_identifier("XXXX XXXX 1234"), "1234");
+        assert_eq!(clean_masked_identifier("**** **** **** 1234"), "1234");
+        assert_eq!(clean_masked_identifier("XX-1234"), "1234");
+        assert_eq!(clean_masked_identifier("4532 1234 5678 9012"), "9012");
+        assert_eq!(clean_masked_identifier("user@upi"), "user@upi");
+        assert_eq!(clean_masked_identifier("  XXXX 5678  "), "5678");
+        assert_eq!(clean_masked_identifier(""), "");
+    }
 
     /// Doc 30 TASK-TXN-008: fingerprint computation moved out of this
     /// function entirely (it needs the resolved `instrument_id`, which
