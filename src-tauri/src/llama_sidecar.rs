@@ -357,14 +357,14 @@ async fn start_server_task(app_dir: PathBuf, model_id: String, slots: usize) {
         const CALIBRATION_PROMPT: &str = "Reply with exactly the single word: OK";
 
         let solo_start = Instant::now();
-        let _ = raw_complete(port, CALIBRATION_PROMPT, Duration::from_secs(30)).await;
+        let _ = raw_complete(port, CALIBRATION_PROMPT, Duration::from_secs(30), None).await;
         let solo_latency = solo_start.elapsed();
 
         let burst_latency = if slots > 1 {
             let burst_start = Instant::now();
             let mut set = tokio::task::JoinSet::new();
             for _ in 0..slots {
-                set.spawn(raw_complete(port, CALIBRATION_PROMPT, Duration::from_secs(90)));
+                set.spawn(raw_complete(port, CALIBRATION_PROMPT, Duration::from_secs(90), None));
             }
             while set.join_next().await.is_some() {}
             burst_start.elapsed()
@@ -476,16 +476,47 @@ struct CompletionResponse {
 /// cold start and the completion slot below is `try_acquire`d rather than
 /// waited on, so nothing here can eat into that budget except the actual
 /// HTTP request.
-async fn raw_complete(port: u16, prompt: &str, timeout: Duration) -> Result<String> {
+/// Doc 2026-07-28 mail scan performance: real scan logs showed Layer 6
+/// rejecting the model's output as "unparseable JSON" on essentially every
+/// first attempt, paying for a second full inference (self-correction retry)
+/// that often failed too — pure wasted latency for a syntax problem, not a
+/// content problem. `json_schema` has llama-server constrain decoding to
+/// this shape via grammar sampling, so the output is *always* syntactically
+/// valid JSON; `parse_json_to_result`'s field/source validation (the
+/// content-correctness check) still runs unchanged on top of it.
+fn layer6_json_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "amount": {"type": ["number", "null"]},
+            "currency": {"type": ["string", "null"]},
+            "direction": {"type": ["string", "null"]},
+            "merchant": {"type": ["string", "null"]},
+            "event_time": {"type": ["integer", "null"]},
+            "reference_id": {"type": ["string", "null"]}
+        }
+    })
+}
+
+async fn raw_complete(
+    port: u16,
+    prompt: &str,
+    timeout: Duration,
+    json_schema: Option<serde_json::Value>,
+) -> Result<String> {
+    let mut body = serde_json::json!({
+        "prompt": prompt,
+        "n_predict": 256,
+        "temperature": 0.0,
+        "stream": false,
+    });
+    if let Some(schema) = json_schema {
+        body["json_schema"] = schema;
+    }
     let resp = http_client()
         .post(format!("http://127.0.0.1:{port}/completion"))
         .timeout(timeout)
-        .json(&serde_json::json!({
-            "prompt": prompt,
-            "n_predict": 256,
-            "temperature": 0.0,
-            "stream": false,
-        }))
+        .json(&body)
         .send()
         .await
         .context("llama-server /completion request failed")?
@@ -504,7 +535,7 @@ pub async fn complete(app_dir: &Path, model_id: &str, prompt: &str, timeout: Dur
         .acquire()
         .await
         .context("llama-server semaphore closed")?;
-    raw_complete(port, prompt, timeout).await
+    raw_complete(port, prompt, timeout, None).await
 }
 
 /// Same as `complete`, but sources its timeout from this server's own
@@ -520,7 +551,7 @@ pub async fn complete_with_calibrated_timeout(
         .acquire()
         .await
         .context("llama-server semaphore closed")?;
-    raw_complete(port, prompt, calibrated_timeout).await
+    raw_complete(port, prompt, calibrated_timeout, Some(layer6_json_schema())).await
 }
 
 #[cfg(test)]

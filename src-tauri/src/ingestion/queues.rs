@@ -302,16 +302,38 @@ pub fn spawn_queues<R: tauri::Runtime>(
     }
 }
 
-/// Single dispatcher for the Layer 6 background queue — concurrency is
-/// already bounded by the sidecar's own calibrated semaphore
-/// (`llama_sidecar::ensure_server_ready`), so no separate worker-count
-/// constant is needed here, same rationale as `spawn_mandate_workers`.
-fn spawn_layer6_workers(mut rx: mpsc::Receiver<Layer6Job>, pool: Pool) {
-    tauri::async_runtime::spawn(async move {
-        while let Some(job) = rx.recv().await {
-            process_layer6_job(job, &pool).await;
-        }
-    });
+/// Doc 2026-07-28 mail scan performance: was a single consumer looping
+/// `rx.recv().await` -> `process_layer6_job(...).await` sequentially, so
+/// only one LLM call was ever in flight no matter how many concurrent slots
+/// the sidecar calibrated (`llama_sidecar::current_parallel_slots()`,
+/// observed calibrating to 7 effective slots in production logs) — the
+/// "concurrency is already bounded by the sidecar's semaphore" reasoning
+/// this comment used to have only holds with multiple concurrent callers.
+/// Spawns a small pool instead so up to `LAYER6_WORKER_COUNT` jobs can be
+/// in flight together; the sidecar's own semaphore inside `extract()` still
+/// gate-keeps actual concurrent LLM calls, so over-spawning here is
+/// harmless (extra workers just queue there instead of at `rx.recv()`).
+/// ponytail: fixed clamp to 6 rather than plumbing the runtime-calibrated
+/// `effective_slots` value out of `llama_sidecar`'s internal state — revisit
+/// if that's ever exposed as a cheap public getter.
+fn spawn_layer6_workers(rx: mpsc::Receiver<Layer6Job>, pool: Pool) {
+    const LAYER6_WORKER_COUNT: usize = 6;
+    let worker_count = crate::llama_sidecar::current_parallel_slots()
+        .clamp(1, LAYER6_WORKER_COUNT);
+    let rx = Arc::new(Mutex::new(rx));
+    for _ in 0..worker_count {
+        let rx = Arc::clone(&rx);
+        let pool = pool.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                let job = { rx.lock().await.recv().await };
+                match job {
+                    Some(job) => process_layer6_job(job, &pool).await,
+                    None => break,
+                }
+            }
+        });
+    }
 }
 
 async fn process_layer6_job(job: Layer6Job, pool: &Pool) {
