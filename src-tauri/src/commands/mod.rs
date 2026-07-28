@@ -3138,7 +3138,7 @@ pub async fn ipc_trigger_patch_sync(
 }
 
 #[tauri::command]
-pub fn log_frontend_event(level: String, message: String, data: Option<serde_json::Value>) {
+pub fn log_frontend_event(level: String, message: String, data: Option<String>) {
     let data_str = data.map(|d| format!("| Data: {}", d)).unwrap_or_default();
     match level.to_lowercase().as_str() {
         "error" => tracing::error!("FRONTEND: {} {}", message, data_str),
