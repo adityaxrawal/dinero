@@ -54,7 +54,7 @@ impl QuotaLimiter {
     /// a burst large enough to trigger Gmail-side 429s/connection resets
     /// (observed in production logs as "error sending request" storms
     /// immediately after "Spawning fetch" bursts).
-    const MAX_BURST_UNITS: f64 = 45.0;
+    const MAX_BURST_UNITS: f64 = 30.0;
 
     fn new(units_per_sec: f64) -> Self {
         let burst_ceiling = units_per_sec.min(Self::MAX_BURST_UNITS);
@@ -85,7 +85,9 @@ impl QuotaLimiter {
                     None
                 } else {
                     let deficit = cost - state.tokens;
-                    Some(std::time::Duration::from_secs_f64(deficit / self.refill_per_sec))
+                    Some(std::time::Duration::from_secs_f64(
+                        deficit / self.refill_per_sec,
+                    ))
                 }
             };
             match wait {
@@ -560,7 +562,7 @@ mod quota_limiter_tests {
         // catch a regression here.
         let limiter = QuotaLimiter::new(225.0);
         let start = tokio::time::Instant::now();
-        limiter.acquire(46.0).await; // 1 unit above the 45-unit ceiling
+        limiter.acquire(31.0).await; // 1 unit above the 30-unit ceiling
         assert!(
             start.elapsed() > std::time::Duration::ZERO,
             "a request above the burst ceiling must still be paced, even for a large budget"
