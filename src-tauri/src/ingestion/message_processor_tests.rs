@@ -263,7 +263,7 @@ async fn test_metadata_fetch_before_full_fetch() {
     let client =
         GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
 
-    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, false, None)
+    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, false, None, None)
         .await
         .unwrap();
     assert!(
@@ -326,7 +326,7 @@ async fn test_gate2a_rejects_marketing_subject_without_full_fetch() {
     let client =
         GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
 
-    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, false, None)
+    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, false, None, None)
         .await
         .unwrap();
     assert!(
@@ -387,7 +387,7 @@ async fn test_gate2a_noise_routes_to_ignored_table() {
     let client =
         GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
 
-    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, false, None)
+    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, false, None, None)
         .await
         .unwrap();
     assert!(result.is_none());
@@ -474,7 +474,7 @@ async fn test_gate2a_proceeds_to_full_fetch_for_transactional_subject() {
     let client =
         GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
 
-    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, false, None).await;
+    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, false, None, None).await;
     assert!(result.is_ok(), "must not error: {:?}", result.err());
 
     full_mock.assert_async().await;
@@ -551,6 +551,7 @@ async fn transaction_needing_layer6_enqueues_job_instead_of_blocking() {
         Some(temp_dir.clone()),
         /* llm_eligible */ true,
         Some(layer6_tx),
+        None,
     )
     .await
     .unwrap();

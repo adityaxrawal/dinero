@@ -406,6 +406,7 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                             app_dir.clone(),
                             llm_eligible,
                             Some(layer6_tx.clone()),
+                            None,
                         ).await {
                             Ok(Some(crate::ingestion::message_processor::ProcessResult::TransactionAlert(extracted, boxed_obs, html))) => {
                                 // Doc 15 §2 principle 7 / Doc 12 §6.2a: route to the Transaction

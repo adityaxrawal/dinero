@@ -144,11 +144,17 @@ fn should_checkpoint(batch_count: usize) -> bool {
     batch_count >= CHECKPOINT_INTERVAL
 }
 
-/// Doc 30 TASK-GMAIL-007 / TASK-GMAIL-002: bounded concurrent batches, max 50
-/// full-message fetches in flight at once — the same figure the shared Gmail
-/// quota semaphore in `gmail_client.rs` enforces globally across both the
-/// live poll worker and historical scans.
-const MAX_CONCURRENT_FETCHES: usize = 50;
+/// Doc 2026-07-28 mail scan performance: was 50, then dropped to 12 to
+/// reduce simultaneous connections onto the single HTTP/2 socket every
+/// concurrent fetch used to share (see `NetworkClient::with_timeout`'s
+/// `.http1_only()`, which is the actual fix for that thundering-herd
+/// behavior). With connections isolated per-request, that constraint no
+/// longer applies. `gmail_quota_limiter()` paces total *quota units*/sec —
+/// a metadata fetch costs 1 unit against a 30-unit burst ceiling refilling
+/// at 225/sec, so 25 concurrent metadata fetches fit inside one burst
+/// window with no added pacing delay; bursts of concurrent full-format (5
+/// unit) fetches just see brief pacing, not stalls.
+const MAX_CONCURRENT_FETCHES: usize = 25;
 
 #[derive(Clone, Serialize)]
 struct ScanProgressPayload {
@@ -487,6 +493,17 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
     let client = Arc::new(client);
     let pool_arc = Arc::new(pool.clone());
 
+    // Doc 2026-07-28 mail scan performance: pre-filter bookkeeping (sender
+    // sightings, audit-log rejections, ignored-noise rows) used to write one
+    // row at a time from inside every spawned `process_message` call --
+    // O(N) DB round-trips serialized through SQLite's single-writer lock.
+    // Batched here and flushed at the same cadence as the scan checkpoint
+    // (`should_checkpoint` below) instead.
+    let scan_batcher: crate::ingestion::message_processor::ScanBatcherHandle =
+        Arc::new(tokio::sync::Mutex::new(
+            crate::ingestion::scan_db_batcher::ScanDbBatcher::new(),
+        ));
+
     // TASK-TXN-001: resolved once per scan and threaded into every spawned
     // `process_message` call so Layer 5 (local LLM fallback) can actually
     // run during a historical scan — previously hardcoded to `None`.
@@ -536,6 +553,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn spawn_fetch(
         join_set: &mut JoinSet<(String, anyhow::Result<Option<ProcessResult>>)>,
         client: Arc<GmailClient>,
@@ -544,6 +562,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
         app_dir: Option<std::path::PathBuf>,
         llm_eligible: bool,
         layer6_tx: tokio::sync::mpsc::Sender<crate::ingestion::queues::Layer6Job>,
+        scan_batcher: crate::ingestion::message_processor::ScanBatcherHandle,
     ) {
         tracing::info!("Spawning fetch for msg_id='{}'", msg_id);
         join_set.spawn(async move {
@@ -554,6 +573,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                 app_dir,
                 llm_eligible,
                 Some(layer6_tx),
+                Some(&scan_batcher),
             )
             .await;
             (msg_id, res)
@@ -580,6 +600,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                 app_dir.clone(),
                 llm_eligible,
                 layer6_tx.clone(),
+                Arc::clone(&scan_batcher),
             ),
             None => break,
         }
@@ -668,108 +689,129 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                                 extracted.skipped_pdf_parts.join("; ")
                             );
                         } else {
-                            for att in &extracted.pdf_attachments {
-                                let filename = &att.filename;
-                                // Prefer bytes Gmail already inlined in the payload
-                                // (`body.data`) — no network round-trip needed, and this
-                                // is exactly the case that used to be silently dropped
-                                // (see `PdfAttachmentMeta::inline_bytes`'s doc comment).
-                                let fetch_result: anyhow::Result<Vec<u8>> =
-                                    if let Some(bytes) = &att.inline_bytes {
-                                        Ok(bytes.clone())
-                                    } else if let Some(att_id) = &att.attachment_id {
-                                        client.fetch_attachment(&msg_id, att_id).await
-                                    } else {
-                                        // push_pdf_attachment never inserts an entry with
-                                        // neither source, so this is unreachable in practice.
-                                        continue;
-                                    };
-                                match fetch_result {
-                                    Ok(pdf_bytes) => {
-                                        // Doc 18 §4.7: the `statements` row must exist in
-                                        // `queued` state before parsing begins, regardless
-                                        // of entry point — same invariant as manual upload.
-                                        let stmt_id = uuid::Uuid::new_v4().to_string();
+                            // Doc 2026-07-28 mail scan performance: attachment download
+                            // and password resolution used to run inline in this loop --
+                            // `resolve_statement_password` can spawn several `pdf_sidecar`
+                            // processes in sequence (one per stored password, each with
+                            // its own up-to-30s timeout), and this loop is the same
+                            // single-threaded consumer that drains every other fetch and
+                            // refills `MAX_CONCURRENT_FETCHES`. One slow password-protected
+                            // statement stalled fetching, checkpointing, and cancellation
+                            // for the *entire* scan, not just its own message -- real logs
+                            // showed 60-200s wall-clock freezes lining up exactly with
+                            // password prompts. Detaching it here lets this loop keep
+                            // draining/refilling while the statement resolves in the
+                            // background, the same fix already applied to Layer 6.
+                            let client = Arc::clone(&client);
+                            let pool = pool.clone();
+                            let app = app.clone();
+                            let msg_id = msg_id.clone();
+                            let email_meta = email_meta.clone();
+                            let attachments = extracted.pdf_attachments.clone();
+                            tokio::spawn(async move {
+                                for att in &attachments {
+                                    let filename = &att.filename;
+                                    // Prefer bytes Gmail already inlined in the payload
+                                    // (`body.data`) — no network round-trip needed, and this
+                                    // is exactly the case that used to be silently dropped
+                                    // (see `PdfAttachmentMeta::inline_bytes`'s doc comment).
+                                    let fetch_result: anyhow::Result<Vec<u8>> =
+                                        if let Some(bytes) = &att.inline_bytes {
+                                            Ok(bytes.clone())
+                                        } else if let Some(att_id) = &att.attachment_id {
+                                            client.fetch_attachment(&msg_id, att_id).await
+                                        } else {
+                                            // push_pdf_attachment never inserts an entry with
+                                            // neither source, so this is unreachable in practice.
+                                            continue;
+                                        };
+                                    match fetch_result {
+                                        Ok(pdf_bytes) => {
+                                            // Doc 18 §4.7: the `statements` row must exist in
+                                            // `queued` state before parsing begins, regardless
+                                            // of entry point — same invariant as manual upload.
+                                            let stmt_id = uuid::Uuid::new_v4().to_string();
 
-                                        // TASK-GMAIL: this path previously skipped password
-                                        // resolution entirely — an encrypted attachment was
-                                        // enqueued with no password and died in pdfium with
-                                        // PasswordError. Same choke point manual upload uses
-                                        // (see `resolve_statement_password`'s doc comment).
-                                        let password = match crate::statements::password::resolve_statement_password(
-                                            &stmt_id,
-                                            &pdf_bytes,
-                                            filename,
-                                            &msg_id,
-                                            &pool,
-                                            &app,
-                                            email_meta.clone(),
-                                        )
-                                        .await
-                                        {
-                                            Ok(crate::statements::password::StatementPasswordResolution::Proceed(password)) => password,
-                                            Ok(crate::statements::password::StatementPasswordResolution::PromptCreated) => {
-                                                continue;
+                                            // TASK-GMAIL: this path previously skipped password
+                                            // resolution entirely — an encrypted attachment was
+                                            // enqueued with no password and died in pdfium with
+                                            // PasswordError. Same choke point manual upload uses
+                                            // (see `resolve_statement_password`'s doc comment).
+                                            let password = match crate::statements::password::resolve_statement_password(
+                                                &stmt_id,
+                                                &pdf_bytes,
+                                                filename,
+                                                &msg_id,
+                                                &pool,
+                                                &app,
+                                                email_meta.clone(),
+                                            )
+                                            .await
+                                            {
+                                                Ok(crate::statements::password::StatementPasswordResolution::Proceed(password)) => password,
+                                                Ok(crate::statements::password::StatementPasswordResolution::PromptCreated) => {
+                                                    continue;
+                                                }
+                                                Err(e) => {
+                                                    tracing::error!(
+                                                        "Password resolution failed for msg_id='{}' file='{}': {}",
+                                                        msg_id, filename, e
+                                                    );
+                                                    continue;
+                                                }
+                                            };
+
+                                            if let Ok(conn) = pool.get().await {
+                                                let id = stmt_id.clone();
+                                                let msg_id_for_row = msg_id.clone();
+                                                let _ = conn
+                                                    .interact(move |c| {
+                                                        crate::db::statements::insert_queued(
+                                                            c,
+                                                            &id,
+                                                            "gmail_email",
+                                                            Some(&msg_id_for_row),
+                                                            None,
+                                                        )
+                                                    })
+                                                    .await;
                                             }
-                                            Err(e) => {
+                                            let job = crate::ingestion::queues::StatementJob {
+                                                bytes: pdf_bytes,
+                                                filename: filename.clone(),
+                                                // Use message_id as the source_record_id /
+                                                // file_hash proxy for email-sourced statements.
+                                                file_hash: msg_id.clone(),
+                                                stmt_id,
+                                                // Doc 30 TASK-STMT-009: batch progress is a
+                                                // manual-upload-batch concept only.
+                                                batch_progress: None,
+                                                password,
+                                                origin: "email_scan".to_string(),
+                                            };
+                                            let st_tx = app
+                                                .state::<crate::ingestion::queues::QueueHandles>()
+                                                .statement_tx
+                                                .clone();
+                                            if st_tx.send(job).await.is_err() {
                                                 tracing::error!(
-                                                    "Password resolution failed for msg_id='{}' file='{}': {}",
-                                                    msg_id, filename, e
-                                                );
-                                                continue;
+                                                        "Statement Queue closed — dropping job for msg_id='{}' file='{}'",
+                                                        msg_id, filename
+                                                    );
                                             }
-                                        };
-
-                                        if let Ok(conn) = pool.get().await {
-                                            let id = stmt_id.clone();
-                                            let msg_id_for_row = msg_id.clone();
-                                            let _ = conn
-                                                .interact(move |c| {
-                                                    crate::db::statements::insert_queued(
-                                                        c,
-                                                        &id,
-                                                        "gmail_email",
-                                                        Some(&msg_id_for_row),
-                                                        None,
-                                                    )
-                                                })
-                                                .await;
                                         }
-                                        let job = crate::ingestion::queues::StatementJob {
-                                            bytes: pdf_bytes,
-                                            filename: filename.clone(),
-                                            // Use message_id as the source_record_id /
-                                            // file_hash proxy for email-sourced statements.
-                                            file_hash: msg_id.clone(),
-                                            stmt_id,
-                                            // Doc 30 TASK-STMT-009: batch progress is a
-                                            // manual-upload-batch concept only.
-                                            batch_progress: None,
-                                            password,
-                                            origin: "email_scan".to_string(),
-                                        };
-                                        let st_tx = app
-                                            .state::<crate::ingestion::queues::QueueHandles>()
-                                            .statement_tx
-                                            .clone();
-                                        if st_tx.send(job).await.is_err() {
-                                            tracing::error!(
-                                                    "Statement Queue closed — dropping job for msg_id='{}' file='{}'",
-                                                    msg_id, filename
-                                                );
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                "Failed to fetch PDF attachment '{}' for \
+                                                     msg_id='{}': {}",
+                                                filename,
+                                                msg_id,
+                                                e
+                                            );
                                         }
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            "Failed to fetch PDF attachment '{}' for \
-                                                 msg_id='{}': {}",
-                                            filename,
-                                            msg_id,
-                                            e
-                                        );
                                     }
                                 }
-                            }
+                            });
                         }
                     }
                     Ok(Some(ProcessResult::MandateEvent(
@@ -879,6 +921,13 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                 let _ = conn.interact(move |c| upsert_checkpoint(c, &cp)).await;
             }
 
+            // Flush the batched pre-filter bookkeeping (sightings,
+            // rejections, ignored-noise rows) at the same cadence as the
+            // checkpoint above rather than every message.
+            if let Err(e) = scan_batcher.lock().await.flush(&pool).await {
+                tracing::warn!("scan_batcher flush failed (best-effort): {}", e);
+            }
+
             batch_count = 0;
             let elapsed = batch_start_time.elapsed();
             tracing::info!(
@@ -929,8 +978,17 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                 app_dir.clone(),
                 llm_eligible,
                 layer6_tx.clone(),
+                Arc::clone(&scan_batcher),
             );
         }
+    }
+
+    // Flush whatever's left in the batcher (< CHECKPOINT_INTERVAL trailing
+    // records, or anything buffered when the loop broke on cancellation)
+    // rather than losing it -- every checkpoint-cadence flush above except
+    // this final one is covered by `should_checkpoint`.
+    if let Err(e) = scan_batcher.lock().await.flush(&pool).await {
+        tracing::warn!("scan_batcher final flush failed (best-effort): {}", e);
     }
 
     // Root cause of slow cancellation: `is_scan_cancelled` breaks this loop

@@ -2,14 +2,22 @@ use crate::db::audit_log::{self, AuditLogRow};
 use crate::ingestion::content_classifier::{ContentClass, ContentClassifier};
 use crate::ingestion::gmail_client::{FetchFormat, GmailClient, Message};
 use crate::ingestion::mime_sanitization::{extract_body_and_attachments, ExtractedMessage};
+use crate::ingestion::scan_db_batcher::ScanDbBatcher;
 use crate::ingestion::verified_senders::{SenderValidator, SenderVerificationResult};
 use anyhow::Result;
 use chrono::Utc;
 use deadpool_sqlite::Pool;
 use serde_json::json;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use tokio::io::AsyncWriteExt;
+use tokio::sync::Mutex;
 use uuid::Uuid;
+
+/// Doc 2026-07-28 mail scan performance: `Some` only for the historical-scan
+/// call path (`historical_scan.rs`) -- live polling (`polling.rs`) processes
+/// one message at a time so batching buys it nothing and it keeps passing
+/// `None`, preserving today's immediate-write behavior there unchanged.
+pub type ScanBatcherHandle = Arc<Mutex<ScanDbBatcher>>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MandateEventType {
@@ -99,6 +107,7 @@ impl MessageProcessor {
         app_dir: Option<std::path::PathBuf>,
         llm_eligible: bool,
         layer6_tx: Option<tokio::sync::mpsc::Sender<crate::ingestion::queues::Layer6Job>>,
+        scan_batcher: Option<&ScanBatcherHandle>,
     ) -> Result<Option<ProcessResult>> {
         // 1. Fetch metadata first (fast, low bandwidth)
         let metadata_msg = client
@@ -135,37 +144,41 @@ impl MessageProcessor {
         // Best-effort history/learning-loop bookkeeping -- never blocks or
         // fails the gate decision itself, only records it for next time.
         if let Some(domain) = &sender_domain {
-            let domain_owned = domain.clone();
             let tag = Self::classification_tag(&gate_result).to_string();
-            let subject_looks_like_transaction =
-                Self::subject_looks_like_transaction(&metadata_msg);
-            let gate_result_owned = gate_result.clone();
-            if let Ok(conn) = pool.get().await {
-                let _ = conn
-                    .interact(move |c| -> anyhow::Result<()> {
-                        crate::db::sender_reputation::record_sighting(c, &domain_owned, &tag)?;
-                        // Only flag rejections that plausibly look like a
-                        // real bank alert (transaction-shaped subject) for
-                        // human review -- otherwise every random rejected
-                        // domain (marketing spam, unrelated mail) would
-                        // flood the promotion queue.
-                        if matches!(
-                            gate_result_owned,
-                            SenderVerificationResult::UnverifiedReject(_)
-                                | SenderVerificationResult::SpoofReject(_)
-                        ) && subject_looks_like_transaction
-                        {
-                            crate::db::sender_reputation::record_rejection_candidate(
-                                c,
-                                &Uuid::new_v4().to_string(),
-                                &domain_owned,
-                                &domain_owned,
-                                "transaction_candidate",
-                            )?;
-                        }
-                        Ok(())
-                    })
-                    .await;
+            // Only flag rejections that plausibly look like a real bank
+            // alert (transaction-shaped subject) for human review --
+            // otherwise every random rejected domain (marketing spam,
+            // unrelated mail) would flood the promotion queue.
+            let is_rejection_candidate = matches!(
+                gate_result,
+                SenderVerificationResult::UnverifiedReject(_)
+                    | SenderVerificationResult::SpoofReject(_)
+            ) && Self::subject_looks_like_transaction(&metadata_msg);
+
+            if let Some(batcher) = scan_batcher {
+                batcher
+                    .lock()
+                    .await
+                    .record_sighting(domain, &tag, is_rejection_candidate);
+            } else {
+                let domain_owned = domain.clone();
+                if let Ok(conn) = pool.get().await {
+                    let _ = conn
+                        .interact(move |c| -> anyhow::Result<()> {
+                            crate::db::sender_reputation::record_sighting(c, &domain_owned, &tag)?;
+                            if is_rejection_candidate {
+                                crate::db::sender_reputation::record_rejection_candidate(
+                                    c,
+                                    &Uuid::new_v4().to_string(),
+                                    &domain_owned,
+                                    &domain_owned,
+                                    "transaction_candidate",
+                                )?;
+                            }
+                            Ok(())
+                        })
+                        .await;
+                }
             }
         }
 
@@ -208,7 +221,7 @@ impl MessageProcessor {
             | SenderVerificationResult::SpoofReject(reason) => {
                 // Log to audit log and return None
                 crate::ingestion::gmail_telemetry::gmail_telemetry().record_gate_rejection("gate1");
-                Self::log_rejection(pool, message_id, &reason).await?;
+                Self::log_rejection(pool, scan_batcher, message_id, &reason).await?;
                 let dev_msg = if dev_review_full_fetch_enabled() {
                     client.fetch_message(message_id, crate::ingestion::gmail_client::FetchFormat::Full).await.unwrap_or_else(|_| metadata_msg.clone())
                 } else {
@@ -264,6 +277,7 @@ impl MessageProcessor {
                 // Ignored table over a hard discard (spec optimization #5).
                 Self::record_ignored_noise(
                     pool,
+                    scan_batcher,
                     message_id,
                     Some(&current_bank_name),
                     &metadata_subject,
@@ -272,7 +286,7 @@ impl MessageProcessor {
                 )
                 .await;
             } else {
-                Self::log_rejection(pool, message_id, &reason).await?;
+                Self::log_rejection(pool, scan_batcher, message_id, &reason).await?;
             }
             Self::append_to_scan_log(
                 message_id,
@@ -355,7 +369,7 @@ impl MessageProcessor {
                     crate::ingestion::gmail_telemetry::gmail_telemetry()
                         .record_gate_rejection("gate2");
                     let reason = format!("gate2_reject_{:?}", content_class);
-                    Self::log_rejection(pool, message_id, &reason).await?;
+                    Self::log_rejection(pool, scan_batcher, message_id, &reason).await?;
                     crate::dev_review::record(
                         "non_transaction",
                         serde_json::to_value(&full_msg).unwrap_or_default(),
@@ -384,6 +398,7 @@ impl MessageProcessor {
                     // Spec optimization #5: recoverable, not a hard discard.
                     Self::record_ignored_noise(
                         pool,
+                        scan_batcher,
                         message_id,
                         Some(&current_bank_name),
                         &subject,
@@ -466,7 +481,7 @@ impl MessageProcessor {
                         None => {
                             crate::ingestion::gmail_telemetry::gmail_telemetry()
                                 .record_gate_rejection("gate3");
-                            Self::log_rejection(pool, message_id, "mandate_missing_merchant")
+                            Self::log_rejection(pool, scan_batcher, message_id, "mandate_missing_merchant")
                                 .await?;
                             crate::dev_review::record(
                                 "non_transaction",
@@ -558,7 +573,7 @@ impl MessageProcessor {
                             crate::ingestion::gmail_telemetry::gmail_telemetry()
                                 .record_gate_rejection("gate3");
                             let reason = Self::gate3_failure_reason(&obs);
-                            Self::log_rejection(pool, message_id, reason).await?;
+                            Self::log_rejection(pool, scan_batcher, message_id, reason).await?;
                             // Spec optimization #1: Gate 2 already confidently
                             // classified this as a transaction/balance-update —
                             // a Gate 3 mandatory-field miss must never be a
@@ -604,7 +619,7 @@ impl MessageProcessor {
                         // other unassigned path) and hand off to the
                         // background Layer 6 worker instead of blocking this
                         // scan slot on LLM inference.
-                        Self::log_rejection(pool, message_id, "pending_llm_enrichment").await?;
+                        Self::log_rejection(pool, scan_batcher, message_id, "pending_llm_enrichment").await?;
                         let ids = Self::record_unassigned_transaction(
                             pool,
                             message_id,
@@ -641,7 +656,7 @@ impl MessageProcessor {
                         .await;
                         return Ok(Some(ProcessResult::EnqueuedForEnrichment));
                     } else {
-                        Self::log_rejection(pool, message_id, "extraction_failed").await?;
+                        Self::log_rejection(pool, scan_batcher, message_id, "extraction_failed").await?;
                         Self::record_unassigned_transaction(
                             pool,
                             message_id,
@@ -911,12 +926,20 @@ impl MessageProcessor {
     /// best-effort framing elsewhere in this file).
     async fn record_ignored_noise(
         pool: &Pool,
+        scan_batcher: Option<&ScanBatcherHandle>,
         message_id: &str,
         bank_name: Option<&str>,
         subject: &str,
         snippet: &str,
         reason: &str,
     ) {
+        if let Some(batcher) = scan_batcher {
+            batcher
+                .lock()
+                .await
+                .record_ignored(message_id, bank_name, reason, subject, snippet);
+            return;
+        }
         let row = crate::db::ignored_messages::IgnoredMessageRow::new(
             message_id, bank_name, reason, subject, snippet,
         );
@@ -998,7 +1021,16 @@ impl MessageProcessor {
         (from.trim().to_string(), None)
     }
 
-    async fn log_rejection(pool: &Pool, message_id: &str, reason: &str) -> Result<()> {
+    async fn log_rejection(
+        pool: &Pool,
+        scan_batcher: Option<&ScanBatcherHandle>,
+        message_id: &str,
+        reason: &str,
+    ) -> Result<()> {
+        if let Some(batcher) = scan_batcher {
+            batcher.lock().await.record_rejection(message_id, reason);
+            return Ok(());
+        }
         let row = AuditLogRow {
             id: Uuid::new_v4().to_string(),
             actor_type: Some("system".to_string()),
