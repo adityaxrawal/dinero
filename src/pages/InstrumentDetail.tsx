@@ -44,6 +44,10 @@ export default function InstrumentDetail() {
     isSaving,
     isDeleting,
     recentTransactions,
+    totalTxCount,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
     instrumentStatements,
     instrumentPasswords,
     handleSave,
@@ -162,14 +166,52 @@ export default function InstrumentDetail() {
           ) : (
             <ul className="space-y-2">
               {recentTransactions.map((tx) => (
-                <li key={tx.id} className="flex items-center justify-between text-sm">
-                  <span>{tx.merchant}</span>
-                  <span className={cn('font-medium', tx.direction === 'debit' ? 'text-red-700' : 'text-emerald-700')}>
-                    {tx.direction === 'debit' ? '- ' : '+ '}₹{Math.abs(tx.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                <li key={tx.id} className="flex items-center justify-between text-sm py-1 border-b border-border/20 last:border-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-[#064E3B]">{tx.merchant}</span>
+                    <span
+                      className={cn(
+                        'text-[9px] font-extrabold px-1.5 py-0.2 rounded uppercase tracking-wider border',
+                        tx.direction === 'debit'
+                          ? 'bg-red-500/10 text-red-700 border-red-500/20'
+                          : 'bg-emerald-500/10 text-emerald-700 border-emerald-500/20'
+                      )}
+                    >
+                      {tx.direction === 'debit' ? 'DEBIT' : 'CREDIT'}
+                    </span>
+                  </div>
+                  <span className={cn('font-bold font-mono text-xs', tx.direction === 'debit' ? 'text-red-700' : 'text-emerald-700')}>
+                    {tx.direction === 'debit' ? '−' : '+'}₹{Math.abs(tx.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                   </span>
                 </li>
               ))}
             </ul>
+          )}
+
+          {hasNextPage && (
+            <div className="pt-3 text-center">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => fetchNextPage()}
+                disabled={isFetchingNextPage}
+                className="w-full text-xs font-bold"
+              >
+                {isFetchingNextPage ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" /> Loading transactions...
+                  </>
+                ) : (
+                  `Load More Transactions (${recentTransactions.length} of ${totalTxCount})`
+                )}
+              </Button>
+            </div>
+          )}
+
+          {recentTransactions.length > 0 && (
+            <p className="text-center text-[11px] font-mono text-muted-foreground pt-2">
+              Showing {recentTransactions.length} of {totalTxCount} transactions
+            </p>
           )}
         </CardContent>
       </Card>
