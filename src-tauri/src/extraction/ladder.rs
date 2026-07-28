@@ -636,6 +636,7 @@ const BANK_TEMPLATE_FILES: &[&str] = &[
     include_str!("../../assets/bank_templates/hdfc_v1.json"),
     include_str!("../../assets/bank_templates/icici_v1.json"),
     include_str!("../../assets/bank_templates/sbi_v1.json"),
+    include_str!("../../assets/bank_templates/sbicard_v1.json"),
     include_str!("../../assets/bank_templates/axis_v1.json"),
     include_str!("../../assets/bank_templates/kotak_v1.json"),
     include_str!("../../assets/bank_templates/yes_bank_v1.json"),
