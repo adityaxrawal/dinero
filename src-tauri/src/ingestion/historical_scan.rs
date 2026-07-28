@@ -825,6 +825,21 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                             Vec::new(),
                         );
                         tracing::error!("Failed to process message {}: {}", msg_id, e);
+
+                        let failed_row = crate::db::scan_failed_messages::ScanFailedMessageRow {
+                            id: Uuid::new_v4().to_string(),
+                            account_id: account_id.clone(),
+                            msg_id: msg_id.clone(),
+                            error: e.to_string(),
+                            failed_at: None,
+                        };
+                        if let Ok(conn) = pool.get().await {
+                            let _ = conn
+                                .interact(move |c| {
+                                    crate::db::scan_failed_messages::insert(c, &failed_row)
+                                })
+                                .await;
+                        }
                     }
                 }
             }
@@ -1265,6 +1280,66 @@ mod tests {
         let final_state: ScanCheckpointState =
             serde_json::from_str(&cp.checkpoint_state_json).unwrap();
         assert_eq!(final_state.processed_count, 7);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    /// Doc 2026-07-28 dev-scan-log-issues: previously an exhausted-retry
+    /// fetch failure was only ever logged (`tracing::error!`), never
+    /// persisted anywhere queryable -- a transaction could vanish from a
+    /// scan with nothing user-visible beyond an incremented `errors`
+    /// counter. `GmailClient::new(..., None)` here has no mock server and
+    /// no token refresher, so every fetch immediately fails with 401
+    /// Unauthorized (no retry loop -- there's no refresher to retry with),
+    /// driving every message through the exact failure path this fixes.
+    #[tokio::test]
+    async fn test_exhausted_fetch_failure_is_persisted_to_scan_failed_messages() {
+        let app = mock_builder()
+            .build(mock_context(tauri::test::noop_assets()))
+            .unwrap()
+            .handle()
+            .clone();
+        app.manage(test_queue_handles());
+
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let db_path = temp_dir.join("test_scan_failed.db");
+        let pool = init_db(db_path.clone()).await.expect("DB init failed");
+
+        let account_id = "acc_failed_test".to_string();
+        let state = ScanCheckpointState {
+            start_date: "2023-01-01".into(),
+            end_date: "2023-01-31".into(),
+            all_message_ids: vec!["msg_a".to_string(), "msg_b".to_string()],
+            processed_count: 0,
+            ..Default::default()
+        };
+
+        let client = GmailClient::new("fake_token".into(), pool.clone(), None);
+
+        run_scan_batches(app, pool.clone(), account_id.clone(), state, client)
+            .await
+            .expect("run_scan_batches failed");
+
+        let conn = pool.get().await.unwrap();
+        let account_id_for_query = account_id.clone();
+        let failed = conn
+            .interact(move |c| {
+                crate::db::scan_failed_messages::select_by_account(c, &account_id_for_query)
+            })
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(failed.len(), 2);
+        let mut msg_ids: Vec<String> = failed.iter().map(|r| r.msg_id.clone()).collect();
+        msg_ids.sort();
+        assert_eq!(msg_ids, vec!["msg_a".to_string(), "msg_b".to_string()]);
+        assert!(
+            failed[0].error.contains("401") || failed[0].error.contains("Unauthorized"),
+            "expected a 401/Unauthorized error string, got: {}",
+            failed[0].error
+        );
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

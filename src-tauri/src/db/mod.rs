@@ -40,6 +40,7 @@ pub mod recurring_payments;
 #[cfg(test)]
 mod recurring_payments_tests;
 pub mod retention;
+pub mod scan_failed_messages;
 pub mod scoping;
 pub mod sender_reputation;
 #[cfg(test)]
@@ -366,6 +367,9 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
             "UPDATE processing_checkpoints SET status = 'failed' WHERE status = 'in_progress'",
             [],
         );
+
+        // Run automated cleanup for any legacy corrupted VPA instruments
+        let _ = instruments::cleanup_corrupted_vpa_instruments(c);
     })
     .await
     .map_err(|e| {
