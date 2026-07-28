@@ -1,4 +1,4 @@
-use crate::ingestion::gmail_client::{full_fetch_semaphore, GmailClient};
+use crate::ingestion::gmail_client::GmailClient;
 use base64::Engine as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -171,44 +171,18 @@ async fn test_search_messages_caps_at_max_search_pages() {
     assert_eq!(page_count.load(Ordering::SeqCst), 500);
 }
 
-/// Doc 30 TASK-GMAIL-002: "Respect Gmail's 250 quota-units/second limit via a
-/// Tokio semaphore (max 50 concurrent full-message fetches/second)." Proves
-/// the shared semaphore behind `fetch_message(.., FetchFormat::Full)` never
-/// lets more than 50 holders in at once, and that the cap is genuinely near
-/// 50 rather than accidentally much smaller.
+/// Doc 2026-07-26 mail scan performance: proves the limiter itself blocks
+/// correctly under real elapsed time (a small, deliberately real sleep
+/// budget — not `start_paused`, since this test also drives a real mockito
+/// socket in the same file, and paused virtual time breaks real TCP
+/// connections).
 #[tokio::test]
-async fn test_quota_throttling_caps_concurrent_fetches() {
-    let in_flight = Arc::new(AtomicUsize::new(0));
-    let max_seen = Arc::new(AtomicUsize::new(0));
-
-    let mut handles = Vec::new();
-    for _ in 0..60 {
-        let in_flight = in_flight.clone();
-        let max_seen = max_seen.clone();
-        handles.push(tokio::spawn(async move {
-            let _permit = full_fetch_semaphore().acquire().await.unwrap();
-            let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
-            max_seen.fetch_max(now, Ordering::SeqCst);
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            in_flight.fetch_sub(1, Ordering::SeqCst);
-        }));
-    }
-
-    for h in handles {
-        h.await.unwrap();
-    }
-
-    let observed_max = max_seen.load(Ordering::SeqCst);
-    assert!(
-        observed_max <= 50,
-        "never more than 50 concurrent full-message fetches, saw {}",
-        observed_max
-    );
-    assert!(
-        observed_max > 40,
-        "cap should be genuinely near 50, not accidentally much smaller: saw {}",
-        observed_max
-    );
+async fn quota_limiter_paces_a_drained_bucket_before_the_request_fires() {
+    let limiter = crate::ingestion::gmail_client::QuotaLimiter::new_for_test(2.0); // 2 units/sec, capacity 2
+    limiter.acquire(2.0).await; // drain the starting bucket
+    let start = std::time::Instant::now();
+    limiter.acquire(1.0).await; // needs 0.5s of real refill at 2/sec
+    assert!(start.elapsed() >= Duration::from_millis(400));
 }
 
 /// Doc 30 TASK-GMAIL-008: "PDF bytes are never written to disk or SQLite at

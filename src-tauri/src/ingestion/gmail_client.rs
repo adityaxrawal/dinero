@@ -10,8 +10,6 @@ const URL_SAFE_IGNORE_PAD: GeneralPurpose = GeneralPurpose::new(
         .with_decode_padding_mode(base64::engine::DecodePaddingMode::Indifferent),
 );
 use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
-use tokio::sync::Semaphore;
 
 use futures_util::future::BoxFuture;
 use std::sync::Arc;
@@ -27,13 +25,75 @@ use crate::network_client::NetworkClient;
 /// (same pattern as `LicensingClient::new`).
 pub const GMAIL_API_BASE_URL: &str = "https://gmail.googleapis.com";
 
-/// Doc 30 TASK-GMAIL-002: caps concurrent full-message (`format=FULL`) fetches
-/// at 50, the mechanism approximating Gmail's 250 quota-units/second budget
-/// across every caller (real-time poll and historical scan alike). Metadata-only
-/// fetches (1 quota unit) are cheap and are not gated by this semaphore.
-pub(crate) fn full_fetch_semaphore() -> &'static Semaphore {
-    static SEM: OnceLock<Semaphore> = OnceLock::new();
-    SEM.get_or_init(|| Semaphore::new(50))
+/// Doc 2026-07-26 mail scan performance: paces total Gmail quota-unit
+/// consumption (metadata + full fetches + search pages all draw from the
+/// same bucket) instead of only capping full-fetch *concurrency* — a
+/// concurrency cap assumes ~1s/request, which real Gmail requests (a few
+/// hundred ms) violate constantly, causing bursts well past the real
+/// 250-units/sec budget and the 429-storm this replaces.
+pub(crate) struct QuotaLimiter {
+    capacity: f64,
+    refill_per_sec: f64,
+    state: tokio::sync::Mutex<QuotaState>,
+}
+
+struct QuotaState {
+    tokens: f64,
+    last_refill: tokio::time::Instant,
+}
+
+impl QuotaLimiter {
+    fn new(units_per_sec: f64) -> Self {
+        Self {
+            capacity: units_per_sec,
+            refill_per_sec: units_per_sec,
+            state: tokio::sync::Mutex::new(QuotaState {
+                tokens: units_per_sec,
+                last_refill: tokio::time::Instant::now(),
+            }),
+        }
+    }
+
+    /// Blocks until `cost` units are available, refilling based on elapsed
+    /// wall-clock (or, under test, virtual-paused) time since the last call.
+    pub(crate) async fn acquire(&self, cost: f64) {
+        loop {
+            let wait = {
+                let mut state = self.state.lock().await;
+                let now = tokio::time::Instant::now();
+                let elapsed = now.duration_since(state.last_refill).as_secs_f64();
+                state.tokens = (state.tokens + elapsed * self.refill_per_sec).min(self.capacity);
+                state.last_refill = now;
+
+                if state.tokens >= cost {
+                    state.tokens -= cost;
+                    None
+                } else {
+                    let deficit = cost - state.tokens;
+                    Some(std::time::Duration::from_secs_f64(deficit / self.refill_per_sec))
+                }
+            };
+            match wait {
+                None => return,
+                Some(d) => tokio::time::sleep(d).await,
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+impl QuotaLimiter {
+    pub(crate) fn new_for_test(units_per_sec: f64) -> Self {
+        Self::new(units_per_sec)
+    }
+}
+
+/// Doc 30 TASK-GMAIL-002's 250/sec budget, kept at a 90% safety margin
+/// (225/sec) so normal jitter and clock granularity don't still clip the
+/// real ceiling.
+pub(crate) fn gmail_quota_limiter() -> &'static QuotaLimiter {
+    static LIMITER: std::sync::OnceLock<QuotaLimiter> = std::sync::OnceLock::new();
+    LIMITER.get_or_init(|| QuotaLimiter::new(225.0))
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -303,15 +363,11 @@ impl GmailClient {
     }
 
     pub async fn fetch_message(&self, message_id: &str, format: FetchFormat) -> Result<Message> {
-        let _permit = match format {
-            FetchFormat::Full => Some(
-                full_fetch_semaphore()
-                    .acquire()
-                    .await
-                    .expect("full_fetch_semaphore never closed"),
-            ),
-            FetchFormat::Metadata => None,
+        let cost = match format {
+            FetchFormat::Full => 5.0,
+            FetchFormat::Metadata => 1.0,
         };
+        gmail_quota_limiter().acquire(cost).await;
 
         let url = format!(
             "{}/gmail/v1/users/me/messages/{}?format={}",
@@ -360,6 +416,7 @@ impl GmailClient {
                 url.push_str(&format!("&pageToken={}", token));
             }
 
+            gmail_quota_limiter().acquire(5.0).await;
             let search_response = self
                 .execute_with_retry_and_parse::<_, _, SearchResponse>("search_messages", |token| {
                     let url = url.clone();
@@ -442,4 +499,36 @@ pub struct GmailProfile {
     pub email_address: String,
     #[serde(rename = "historyId")]
     pub history_id: Option<String>,
+}
+
+#[cfg(test)]
+mod quota_limiter_tests {
+    use super::QuotaLimiter;
+
+    #[tokio::test(start_paused = true)]
+    async fn acquire_does_not_wait_when_tokens_available() {
+        let limiter = QuotaLimiter::new(250.0);
+        let start = tokio::time::Instant::now();
+        limiter.acquire(5.0).await;
+        assert_eq!(start.elapsed(), std::time::Duration::ZERO);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn acquire_waits_for_refill_when_bucket_drained() {
+        let limiter = QuotaLimiter::new(10.0); // 10 units/sec, capacity 10
+        limiter.acquire(10.0).await; // drains the full starting bucket
+        let start = tokio::time::Instant::now();
+        limiter.acquire(5.0).await; // needs 0.5s of refill at 10/sec
+        assert!(start.elapsed() >= std::time::Duration::from_millis(500));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn acquire_never_exceeds_capacity_even_after_long_idle() {
+        let limiter = QuotaLimiter::new(10.0);
+        limiter.acquire(10.0).await; // drain
+        tokio::time::advance(std::time::Duration::from_secs(3600)).await; // idle an hour
+        let start = tokio::time::Instant::now();
+        limiter.acquire(10.0).await; // must not wait — capacity caps the refill
+        assert_eq!(start.elapsed(), std::time::Duration::ZERO);
+    }
 }
