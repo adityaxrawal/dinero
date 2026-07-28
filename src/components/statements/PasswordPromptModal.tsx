@@ -237,12 +237,13 @@ export default function PasswordPromptModal({ onUnlocked }: { onUnlocked: () => 
             </div>
 
             {/* Email Body */}
-            <div className="flex-1 min-h-0 min-w-0 px-8 pb-8 flex flex-col overflow-y-auto">
+            <div className="flex-1 min-h-0 min-w-0 px-8 pb-8 flex flex-col">
               <GmailEmailViewer
                 html={statementDetails?.html}
                 text={statementDetails?.snippet}
                 showHeader={false}
-                className="flex-1 border-slate-200/60 shadow-xs min-w-0"
+                showViewModeSwitcher={true}
+                className="flex-1 border-slate-200/60 shadow-xs min-w-0 h-full"
                 maxHeight="100%"
               />
             </div>

@@ -16,6 +16,8 @@ interface GmailEmailViewerProps {
   subject?: string | null | undefined;
   date?: string | null | undefined;
   showHeader?: boolean | undefined;
+  showViewModeSwitcher?: boolean | undefined;
+  initialViewMode?: 'reader' | 'html' | 'text' | undefined;
   className?: string | undefined;
   maxHeight?: string | number | undefined;
   onQuickFill?: (data: QuickFillData) => void;
@@ -335,11 +337,15 @@ export function GmailEmailViewer({
   subject,
   date,
   showHeader = true,
+  showViewModeSwitcher = true,
+  initialViewMode,
   className,
   maxHeight = '480px',
   onQuickFill,
 }: GmailEmailViewerProps) {
-  const [viewMode, setViewMode] = useState<'reader' | 'html' | 'text'>('reader');
+  const [viewMode, setViewMode] = useState<'reader' | 'html' | 'text'>(
+    initialViewMode || (html && html.trim() ? 'html' : 'reader')
+  );
   const [iframeHeight, setIframeHeight] = useState<number>(320);
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
@@ -404,7 +410,7 @@ export function GmailEmailViewer({
 
   return (
     <div className={cn('bg-white border border-[#064E3B]/15 rounded-xl shadow-xs overflow-hidden flex flex-col', className)}>
-      {/* Gmail Header */}
+      {/* Full Gmail Header */}
       {showHeader && (
         <div className="bg-[#f6f8fc] px-4 py-3.5 border-b border-slate-200/80 flex flex-col gap-2.5 shrink-0">
           {/* Subject Row */}
@@ -505,6 +511,59 @@ export function GmailEmailViewer({
         </div>
       )}
 
+      {/* Compact View Mode Switcher when full showHeader is false */}
+      {!showHeader && showViewModeSwitcher && (
+        <div className="bg-[#f6f8fc] px-4 py-2 border-b border-slate-200/80 flex items-center justify-between shrink-0">
+          <span className="text-[12px] font-medium text-slate-600 flex items-center gap-1.5">
+            <Mail className="w-3.5 h-3.5 text-slate-500" /> View Mode
+          </span>
+          {/* View Mode Segmented Switcher */}
+          <div className="flex items-center bg-slate-200/60 rounded-lg p-0.5">
+            <button
+              type="button"
+              onClick={() => setViewMode('reader')}
+              className={cn(
+                'px-2.5 py-1 text-[11px] font-medium rounded-md transition-all flex items-center gap-1.5',
+                viewMode === 'reader'
+                  ? 'bg-white text-slate-900 shadow-xs font-semibold'
+                  : 'text-slate-600 hover:text-slate-900'
+              )}
+              title="View Cleaned Reader Text"
+            >
+              <Sparkles className="w-3 h-3 text-amber-500" /> Reader View
+            </button>
+            {hasHtml && (
+              <button
+                type="button"
+                onClick={() => setViewMode('html')}
+                className={cn(
+                  'px-2.5 py-1 text-[11px] font-medium rounded-md transition-all flex items-center gap-1.5',
+                  viewMode === 'html'
+                    ? 'bg-white text-slate-900 shadow-xs font-semibold'
+                    : 'text-slate-600 hover:text-slate-900'
+                )}
+                title="View Original Gmail HTML"
+              >
+                <Eye className="w-3 h-3 text-blue-600" /> Gmail View
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setViewMode('text')}
+              className={cn(
+                'px-2.5 py-1 text-[11px] font-medium rounded-md transition-all flex items-center gap-1.5',
+                viewMode === 'text'
+                  ? 'bg-white text-slate-900 shadow-xs font-semibold'
+                  : 'text-slate-600 hover:text-slate-900'
+              )}
+              title="View Plain Text"
+            >
+              <Code className="w-3 h-3" /> Text
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Quick-Fill Suggestion Chips Bar */}
       {onQuickFill && quickCandidates.length > 0 && (
         <div className="bg-amber-50/60 px-4 py-2 border-b border-amber-200/60 flex items-center gap-2 flex-wrap">
@@ -567,5 +626,3 @@ export function GmailEmailViewer({
     </div>
   );
 }
-
-export default GmailEmailViewer;

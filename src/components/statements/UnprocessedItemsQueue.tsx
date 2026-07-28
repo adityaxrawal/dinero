@@ -9,6 +9,7 @@ import { useUnprocessedStatements } from '@/hooks/queries/useUnprocessedStatemen
 import { useRetryUnprocessedStatement } from '@/hooks/mutations/useRetryUnprocessedStatement';
 import { useDiscardUnprocessedStatement } from '@/hooks/mutations/useDiscardUnprocessedStatement';
 import { useGlobalState } from '@/lib/GlobalStateContext';
+import { formatUnprocessedStatementName } from '@/lib/formatStatementName';
 
 interface UnprocessedItemsQueueProps {
   onEnterPassword: (statementId: string) => void;
@@ -127,7 +128,7 @@ export default function UnprocessedItemsQueue({ onEnterPassword }: UnprocessedIt
                   >
                     <div className="min-w-0">
                       <p className="text-sm font-medium truncate">
-                        {item.filename || 'Unknown file'}
+                        {formatUnprocessedStatementName(item)}
                       </p>
                       {item.failure_reason && (
                         <p className="text-xs text-muted-foreground truncate">
