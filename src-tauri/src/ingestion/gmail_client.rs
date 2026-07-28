@@ -32,7 +32,7 @@ pub const GMAIL_API_BASE_URL: &str = "https://gmail.googleapis.com";
 /// hundred ms) violate constantly, causing bursts well past the real
 /// 250-units/sec budget and the 429-storm this replaces.
 pub(crate) struct QuotaLimiter {
-    capacity: f64,
+    burst_ceiling: f64,
     refill_per_sec: f64,
     state: tokio::sync::Mutex<QuotaState>,
 }
@@ -43,12 +43,26 @@ struct QuotaState {
 }
 
 impl QuotaLimiter {
+    /// Doc 2026-07-28 dev-scan-log-issues: caps how many units can ever be
+    /// available at once, regardless of the configured per-second budget --
+    /// a full-capacity bucket (the old behavior) let a cold start or a long
+    /// idle gap (e.g. mid-scan retry backoff) release the *entire*
+    /// per-second budget in one instant, which is exactly what a
+    /// steady-rate token bucket is supposed to prevent. 45 units is ~9
+    /// Full-format fetches (5 units each) worth of simultaneous
+    /// connections -- enough to keep throughput high without synchronizing
+    /// a burst large enough to trigger Gmail-side 429s/connection resets
+    /// (observed in production logs as "error sending request" storms
+    /// immediately after "Spawning fetch" bursts).
+    const MAX_BURST_UNITS: f64 = 45.0;
+
     fn new(units_per_sec: f64) -> Self {
+        let burst_ceiling = units_per_sec.min(Self::MAX_BURST_UNITS);
         Self {
-            capacity: units_per_sec,
+            burst_ceiling,
             refill_per_sec: units_per_sec,
             state: tokio::sync::Mutex::new(QuotaState {
-                tokens: units_per_sec,
+                tokens: burst_ceiling,
                 last_refill: tokio::time::Instant::now(),
             }),
         }
@@ -62,7 +76,8 @@ impl QuotaLimiter {
                 let mut state = self.state.lock().await;
                 let now = tokio::time::Instant::now();
                 let elapsed = now.duration_since(state.last_refill).as_secs_f64();
-                state.tokens = (state.tokens + elapsed * self.refill_per_sec).min(self.capacity);
+                state.tokens =
+                    (state.tokens + elapsed * self.refill_per_sec).min(self.burst_ceiling);
                 state.last_refill = now;
 
                 if state.tokens >= cost {
@@ -530,5 +545,25 @@ mod quota_limiter_tests {
         let start = tokio::time::Instant::now();
         limiter.acquire(10.0).await; // must not wait — capacity caps the refill
         assert_eq!(start.elapsed(), std::time::Duration::ZERO);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn acquire_caps_the_burst_below_capacity_for_a_large_budget() {
+        // Doc 2026-07-28 dev-scan-log-issues: production's real budget
+        // (225 units/sec) is far above MAX_BURST_UNITS (45) -- this proves
+        // the *starting* bucket for a large budget is capped at 45, not the
+        // full 225, by requesting one unit more than the cap and confirming
+        // it still has to wait for a sliver of refill instead of being
+        // instantly available (which would only be possible if the ceiling
+        // weren't actually being enforced). The other tests in this module
+        // all use capacities <= 10, already under the cap, so they can't
+        // catch a regression here.
+        let limiter = QuotaLimiter::new(225.0);
+        let start = tokio::time::Instant::now();
+        limiter.acquire(46.0).await; // 1 unit above the 45-unit ceiling
+        assert!(
+            start.elapsed() > std::time::Duration::ZERO,
+            "a request above the burst ceiling must still be paced, even for a large budget"
+        );
     }
 }
