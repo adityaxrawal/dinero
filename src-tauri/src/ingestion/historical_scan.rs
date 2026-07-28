@@ -55,6 +55,7 @@ pub struct ScanStatusResponse {
     pub statements_found: usize,
     pub mandate_events_found: usize,
     pub errors: usize,
+    pub pending_enrichment: usize,
 }
 
 fn checkpoint_to_status(checkpoint: Option<ProcessingCheckpointRow>) -> ScanStatusResponse {
@@ -67,6 +68,7 @@ fn checkpoint_to_status(checkpoint: Option<ProcessingCheckpointRow>) -> ScanStat
             statements_found: 0,
             mandate_events_found: 0,
             errors: 0,
+            pending_enrichment: 0,
         },
         Some(cp) => {
             let state: ScanCheckpointState =
@@ -79,6 +81,7 @@ fn checkpoint_to_status(checkpoint: Option<ProcessingCheckpointRow>) -> ScanStat
                 statements_found: state.statements_found,
                 mandate_events_found: state.mandate_events_found,
                 errors: state.errors,
+                pending_enrichment: state.pending_enrichment,
             }
         }
     }
@@ -1124,6 +1127,29 @@ mod tests {
         assert_eq!(status.processed, 2);
         assert_eq!(status.total, 3);
         assert_eq!(status.transactions_found, 1);
+    }
+
+    #[test]
+    fn test_scan_status_reflects_pending_enrichment_count() {
+        let state = ScanCheckpointState {
+            start_date: "2026-01-01".to_string(),
+            end_date: "2026-02-01".to_string(),
+            all_message_ids: vec!["a".to_string()],
+            processed_count: 1,
+            pending_enrichment: 3,
+            ..Default::default()
+        };
+        let cp = ProcessingCheckpointRow {
+            id: "cp_pending".into(),
+            job_type: "historical_scan".into(),
+            job_key: "acc_1".into(),
+            checkpoint_state_json: serde_json::to_string(&state).unwrap(),
+            last_processed_token: None,
+            status: "completed".into(),
+            updated_at: None,
+        };
+        let status = checkpoint_to_status(Some(cp));
+        assert_eq!(status.pending_enrichment, 3);
     }
 
     /// Doc 30 TASK-GMAIL-007 / Doc 19 §3.6 / TASK-API-009: only one active

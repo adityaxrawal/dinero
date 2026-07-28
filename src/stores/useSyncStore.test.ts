@@ -11,6 +11,7 @@ const progress: ScanProgressPayload = {
   mandate_events_found: 0,
   non_financial: 6,
   errors: 0,
+  pending_enrichment: 0,
 };
 
 describe('useSyncStore', () => {

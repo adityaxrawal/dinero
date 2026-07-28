@@ -156,6 +156,7 @@ export const GlobalStateProvider: React.FC<{ children: React.ReactNode }> = ({ c
       mandate_events_found: 0,
       non_financial: 0,
       errors: 0,
+      pending_enrichment: 0,
     });
     setScanError(null);
     setScanStartedAt(Date.now());

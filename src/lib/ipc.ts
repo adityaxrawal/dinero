@@ -1144,5 +1144,6 @@ export interface ScanProgressPayload {
   mandate_events_found: number;
   non_financial: number;
   errors: number;
+  pending_enrichment: number;
   error_message?: string | null;
 }
