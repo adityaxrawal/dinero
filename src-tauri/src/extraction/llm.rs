@@ -38,6 +38,19 @@ enum CompletionAttempt {
     InfraFailed,
 }
 
+/// What a raw sidecar completion turned out to be, once parsed and
+/// validated -- split out from `run_completion`'s match arms (Doc
+/// 2026-07-28 dev-scan-log-issues) so a JSON-parse failure and a
+/// `validate_against_source` failure log distinguishably, instead of both
+/// collapsing into the same "value not present in source text" message,
+/// which made it impossible to tell from logs which one was actually
+/// happening.
+enum RawOutputOutcome {
+    Accepted(Box<ExtractionResult>),
+    FailedValidation,
+    UnparseableJson,
+}
+
 #[derive(Debug, Deserialize)]
 struct LlmJsonOutput {
     amount: Option<f64>,
@@ -199,17 +212,32 @@ impl LlmEngine {
         };
 
         match raw_output {
-            Some(raw) => match self.parse_json_to_result(&raw) {
-                Some(parsed) if Self::validate_against_source(&parsed, body_text) => {
-                    CompletionAttempt::Extracted(Box::new(parsed))
+            Some(raw) => match self.classify_raw_output(&raw, body_text) {
+                RawOutputOutcome::Accepted(parsed) => CompletionAttempt::Extracted(parsed),
+                RawOutputOutcome::FailedValidation => {
+                    debug!(
+                        "Layer 6 LLM output rejected: parsed JSON failed source validation \
+                         (a field doesn't appear in the email body)"
+                    );
+                    CompletionAttempt::Rejected(raw)
                 }
-                _ => {
-                    debug!("Layer 6 LLM output rejected: value not present in source text");
+                RawOutputOutcome::UnparseableJson => {
+                    debug!("Layer 6 LLM output rejected: unparseable JSON");
                     CompletionAttempt::Rejected(raw)
                 }
             },
             None if timed_out => CompletionAttempt::TimedOut,
             None => CompletionAttempt::InfraFailed,
+        }
+    }
+
+    fn classify_raw_output(&self, raw: &str, body_text: &str) -> RawOutputOutcome {
+        match self.parse_json_to_result(raw) {
+            Some(parsed) if Self::validate_against_source(&parsed, body_text) => {
+                RawOutputOutcome::Accepted(Box::new(parsed))
+            }
+            Some(_) => RawOutputOutcome::FailedValidation,
+            None => RawOutputOutcome::UnparseableJson,
         }
     }
 
@@ -345,6 +373,38 @@ mod tests {
 
         let not_json_at_all = "I'm sorry, I cannot help with that request.";
         assert!(engine.parse_json_to_result(not_json_at_all).is_none());
+    }
+
+    /// Doc 2026-07-28 dev-scan-log-issues: `run_completion` previously
+    /// logged the same "value not present in source text" message whether
+    /// the raw output was unparseable JSON or well-formed JSON that failed
+    /// `validate_against_source` -- two different problems that were
+    /// indistinguishable in logs. `classify_raw_output` is what the fix
+    /// hangs off of; this proves the three outcomes are actually
+    /// distinguished.
+    #[test]
+    fn classify_raw_output_distinguishes_unparseable_json_from_failed_validation() {
+        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
+        let source_body = "Dear Customer, Rs 1,299.00 has been debited from your HDFC Bank \
+            account ending 4521 on 05-Jan-24 towards purchase at Amazon. Ref No 987654321.";
+
+        let malformed = r#"{ "amount": 50.0, "currency": "USD" "merchant": "Netflix" "#;
+        assert!(matches!(
+            engine.classify_raw_output(malformed, source_body),
+            RawOutputOutcome::UnparseableJson
+        ));
+
+        let well_formed_but_hallucinated = r#"{"amount": 1299.00, "currency": "INR", "direction": "debit", "merchant": "Totally Fake Store", "event_time": 1704412200, "reference_id": "987654321"}"#;
+        assert!(matches!(
+            engine.classify_raw_output(well_formed_but_hallucinated, source_body),
+            RawOutputOutcome::FailedValidation
+        ));
+
+        let valid = r#"{"amount": 1299.00, "currency": "INR", "direction": "debit", "merchant": "Amazon", "event_time": 1704412200, "reference_id": "987654321"}"#;
+        assert!(matches!(
+            engine.classify_raw_output(valid, source_body),
+            RawOutputOutcome::Accepted(_)
+        ));
     }
 
     /// Doc 30 TASK-TXN-006 acceptance test: a syntactically valid JSON
