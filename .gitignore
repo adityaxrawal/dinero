@@ -87,3 +87,5 @@ fix-log.md
 implementation-log.md
 README.md
 /docs/
+.tokensave
+*.db
