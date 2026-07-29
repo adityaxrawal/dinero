@@ -1,0 +1,140 @@
+{
+  "bank_name": "China Merchants Bank",
+  "version": 1,
+  "patterns": [
+    {
+      "name": "credit_card_spend",
+      "regex": "(?i)(?:CNY|\\$|£|€)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+(?:has\\s+been\\s+|was\\s+|is\\s+)?(?:spent|charged|debited)\\s+(?:on|from|via)\\s+(?:your\\s+)?(?:(?:China\\s+Merchants\\s+Bank|CMB)\\s+)?Credit\\s+Card\\s+(?:no\\.?\\s*|ending\\s+|ending\\s+with\\s+|xx)?[Xx*\\s\\-]*(\\d{4})\\s+(?:at|towards|for)\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "amount_group": 1,
+      "direction": "debit",
+      "currency": "CNY",
+      "merchant_group": 3,
+      "date_group": 4,
+      "last4_group": 2,
+      "txn_type": "credit_card"
+    },
+    {
+      "name": "credit_card_spend_using",
+      "regex": "(?i)using\\s+your\\s+(?:(?:China\\s+Merchants\\s+Bank|CMB)\\s+)?Credit\\s+Card\\s+(?:no\\.?\\s*|ending\\s+|ending\\s+with\\s+|xx)?[Xx*\\s\\-]*(\\d{4})\\s+for\\s+(?:CNY|\\$|£|€)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+at\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "amount_group": 2,
+      "direction": "debit",
+      "currency": "CNY",
+      "merchant_group": 3,
+      "date_group": 4,
+      "last4_group": 1,
+      "txn_type": "credit_card"
+    },
+    {
+      "name": "credit_card_payment_received",
+      "regex": "(?i)Payment\\s+of\\s+(?:CNY|\\$|£|€)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+(?:was\\s+)?received\\s+(?:on|towards)\\s+your\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+Credit\\s+Card\\s+ending\\s+(?:with\\s+)?[Xx*\\s\\-]*(\\d{4})\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "amount_group": 1,
+      "direction": "credit",
+      "currency": "CNY",
+      "merchant_group": 2,
+      "date_group": 4,
+      "last4_group": 3,
+      "txn_type": "credit_card"
+    },
+    {
+      "name": "debit_card_spend",
+      "regex": "(?i)(?:CNY|\\$|£|€)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+(?:has\\s+been\\s+|was\\s+|is\\s+)?(?:spent|debited|charged)\\s+(?:on|from|via)\\s+(?:your\\s+)?(?:(?:China\\s+Merchants\\s+Bank|CMB)\\s+)?Debit\\s+Card\\s+(?:no\\.?\\s*|ending\\s+|ending\\s+with\\s+|xx)?[Xx*\\s\\-]*(\\d{4})\\s+(?:at|towards|for)\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "amount_group": 1,
+      "direction": "debit",
+      "currency": "CNY",
+      "merchant_group": 3,
+      "date_group": 4,
+      "last4_group": 2,
+      "txn_type": "debit_card"
+    },
+    {
+      "name": "upi_debit_to_vpa",
+      "regex": "(?i)(?:CNY|\\$|£|€)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+(?:has\\s+been\\s+|was\\s+|is\\s+)?debited\\s+from\\s+(?:your\\s+)?(?:account|a/c|acct)\\s*[Xx*\\s\\-]*(\\d{4})\\s+to\\s+VPA\\s+([\\w.\\-]+@[\\w.\\-]+)\\s*([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "amount_group": 1,
+      "direction": "debit",
+      "currency": "CNY",
+      "merchant_group": 4,
+      "date_group": 5,
+      "last4_group": 2,
+      "upi_vpa_group": 3,
+      "txn_type": "upi"
+    },
+    {
+      "name": "upi_credit_from_vpa",
+      "regex": "(?i)(?:CNY|\\$|£|€)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+(?:has\\s+been\\s+|was\\s+|is\\s+)?(?:successfully\\s+)?credited\\s+to\\s+(?:your\\s+)?(?:account|a/c|acct)\\s*[Xx*\\s\\-]*(\\d{4})\\s+(?:by|from)\\s+VPA\\s+([\\w.\\-]+@[\\w.\\-]+)\\s*([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "amount_group": 1,
+      "direction": "credit",
+      "currency": "CNY",
+      "merchant_group": 4,
+      "date_group": 5,
+      "last4_group": 2,
+      "upi_vpa_group": 3,
+      "txn_type": "upi"
+    },
+    {
+      "name": "account_debit",
+      "regex": "(?i)(?:CNY|\\$|£|€)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+(?:has\\s+been\\s+|was\\s+|is\\s+)?debited\\s+from\\s+(?:your\\s+)?(?:(?:China\\s+Merchants\\s+Bank|CMB)\\s+)?(?:account|a/c|acct)\\s+(?:ending\\s+(?:with\\s+)?|no\\.?\\s*|xx)?[Xx*\\s\\-]*(\\d{4})\\s+(?:to|towards|at|for)\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "amount_group": 1,
+      "direction": "debit",
+      "currency": "CNY",
+      "merchant_group": 3,
+      "date_group": 4,
+      "last4_group": 2,
+      "txn_type": "net_banking"
+    },
+    {
+      "name": "account_credit",
+      "regex": "(?i)(?:CNY|\\$|£|€)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+(?:has\\s+been\\s+|was\\s+|is\\s+)?credited\\s+to\\s+(?:your\\s+)?(?:(?:China\\s+Merchants\\s+Bank|CMB)\\s+)?(?:account|a/c|acct)\\s+(?:ending\\s+(?:with\\s+)?|no\\.?\\s*|xx)?[Xx*\\s\\-]*(\\d{4})\\s+(?:by|from)\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "amount_group": 1,
+      "direction": "credit",
+      "currency": "CNY",
+      "merchant_group": 3,
+      "date_group": 4,
+      "last4_group": 2,
+      "txn_type": "net_banking"
+    },
+    {
+      "name": "atm_withdrawal",
+      "regex": "(?i)(?:CNY|\\$|£|€)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+(?:has\\s+been\\s+|was\\s+)?withdrawn\\s+from\\s+(?:your\\s+)?(?:account|a/c|acct|card)\\s*(?:ending\\s+(?:with\\s+)?|no\\.?\\s*|xx)?[Xx*\\s\\-]*(\\d{4})\\s+at\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "amount_group": 1,
+      "direction": "debit",
+      "currency": "CNY",
+      "merchant_group": 3,
+      "date_group": 4,
+      "last4_group": 2,
+      "txn_type": "atm"
+    },
+    {
+      "name": "account_balance_available",
+      "regex": "(?i)available\\s+balance\\s+in\\s+your\\s+(?:account|a/c|acct)\\s+(?:ending\\s+(?:with\\s+)?|no\\.?\\s*|xx)?[Xx*\\s\\-]*(\\d{4})\\s+is\\s+(?:Rs\\.?\\s*)?(?:CNY|\\$|£|€)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+as\\s+of\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "amount_group": 2,
+      "direction": "credit",
+      "currency": "CNY",
+      "date_group": 3,
+      "balance_group": 2,
+      "last4_group": 1,
+      "txn_type": "account_balance"
+    },
+    {
+      "name": "emi_installment_debit",
+      "regex": "(?i)EMI\\s+of\\s+(?:CNY|\\$|£|€)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+(?:has\\s+been\\s+|was\\s+|is\\s+)?(?:debited|deducted)\\s+.{0,60}?(?:ending\\s+(?:with\\s+)?|no\\.?\\s*|xx)[Xx*\\s\\-]*(\\d{4})\\s+(?:towards|for|at)\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "amount_group": 1,
+      "direction": "debit",
+      "currency": "CNY",
+      "merchant_group": 3,
+      "date_group": 4,
+      "last4_group": 2,
+      "txn_type": "emi"
+    },
+    {
+      "name": "mandate_registration",
+      "regex": "(?is)(?:e-?mandate|mandate|standing\\s+instruction).{0,400}?Merchant(?:\\s+Name)?:\\s*([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)(?:\\s+Description|[.,\\n]).{0,200}?(?:Limit\\s+Amount|Max\\s+Limit|Amount)\\s*(?:\\((?:CNY|\\$|£|€)\\))?:?\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)(?:.{0,200}?Frequency:?\\s*(monthly|weekly|daily|yearly|quarterly))?(?:.{0,200}?(?:UMRN|Mandate\\s+ID|Mandate\\s+Reference|SiHub\\s+ID)\\s*[-:]?\\s*([A-Za-z0-9]{4,24}))?",
+      "amount_group": 2,
+      "direction": "debit",
+      "currency": "CNY",
+      "merchant_group": 1,
+      "reference_group": 4,
+      "cadence_group": 3,
+      "txn_type": "mandate"
+    }
+  ]
+}

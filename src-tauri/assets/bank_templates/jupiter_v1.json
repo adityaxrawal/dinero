@@ -1,22 +1,63 @@
 {
-  "bank_name": "Yes Bank",
+  "bank_name": "Jupiter",
   "version": 1,
   "patterns": [
     {
-      "name": "credit_card_spend",
-      "regex": "(?i)(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+has\\s+been\\s+spent\\s+on\\s+your\\s+YES\\s+BANK\\s+Credit\\s+Card\\s+ending\\s+(?:with\\s+)?[Xx*\\s\\-]*(\\d{4})\\s+at\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))(?:.{0,40}?Avl\\s+Bal\\s+(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?))?",
+      "name": "upi_payment_sent",
+      "regex": "(?is)You\\s+paid\\s+(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s*Paid\\s+to\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+[\\w.\\-]+@[\\w.\\-]+\\s*Date\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))\\s*From\\s+(?:\\S+\\s+)?([\\w.\\-]+@[\\w.\\-]+)",
       "amount_group": 1,
       "direction": "debit",
       "currency": "INR",
-      "merchant_group": 3,
-      "date_group": 4,
-      "balance_group": 5,
-      "last4_group": 2,
+      "merchant_group": 2,
+      "date_group": 3,
+      "upi_vpa_group": 4,
+      "txn_type": "upi"
+    },
+    {
+      "name": "rupay_credit_card_payment",
+      "regex": "(?is)RuPay\\s+Credit\\s+Card\\s+payment\\s+was\\s+successful.*?You\\s+paid\\s+(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s*Paid\\s+to\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s*Date\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))\\s*Transaction\\s+ID\\s+([A-Za-z0-9]{4,24})",
+      "amount_group": 1,
+      "direction": "debit",
+      "currency": "INR",
+      "merchant_group": 2,
+      "date_group": 3,
+      "reference_group": 4,
       "txn_type": "credit_card"
     },
     {
+      "name": "pot_money_added",
+      "regex": "(?is)Pot\\s+Name\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s*Amount\\s+Added\\s+([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s*Amount\\s+added\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "amount_group": 2,
+      "direction": "debit",
+      "currency": "INR",
+      "merchant_group": 1,
+      "date_group": 3,
+      "txn_type": "wallet"
+    },
+    {
+      "name": "pot_money_withdrawn",
+      "regex": "(?is)Pot\\s+Name\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s*Amount\\s+withdrawn\\s+([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s*Amount\\s+withdrawn\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "amount_group": 2,
+      "direction": "credit",
+      "currency": "INR",
+      "merchant_group": 1,
+      "date_group": 3,
+      "txn_type": "wallet"
+    },
+    {
+      "name": "savings_account_credit",
+      "regex": "(?is)received\\s+(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+in\\s+.{0,40}?Savings\\s+Account\\s+ending\\s+(?:with\\s+)?[Xx*\\s\\-]*(\\d{4})[.\\s]*Payment\\s+from:?\\s*([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s*Date\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "amount_group": 1,
+      "direction": "credit",
+      "currency": "INR",
+      "merchant_group": 3,
+      "date_group": 4,
+      "last4_group": 2,
+      "txn_type": "upi"
+    },
+    {
       "name": "credit_card_spend",
-      "regex": "(?i)(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+(?:has\\s+been\\s+|was\\s+|is\\s+)?(?:spent|charged|debited)\\s+(?:on|from|via)\\s+(?:your\\s+)?(?:(?:Yes\\s+Bank)\\s+)?Credit\\s+Card\\s+(?:no\\.?\\s*|ending\\s+|ending\\s+with\\s+|xx)?[Xx*\\s\\-]*(\\d{4})\\s+(?:at|towards|for)\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "regex": "(?i)(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+(?:has\\s+been\\s+|was\\s+|is\\s+)?(?:spent|charged|debited)\\s+(?:on|from|via)\\s+(?:your\\s+)?(?:(?:Jupiter)\\s+)?Credit\\s+Card\\s+(?:no\\.?\\s*|ending\\s+|ending\\s+with\\s+|xx)?[Xx*\\s\\-]*(\\d{4})\\s+(?:at|towards|for)\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
       "amount_group": 1,
       "direction": "debit",
       "currency": "INR",
@@ -27,7 +68,7 @@
     },
     {
       "name": "credit_card_spend_using",
-      "regex": "(?i)using\\s+your\\s+(?:(?:Yes\\s+Bank)\\s+)?Credit\\s+Card\\s+(?:no\\.?\\s*|ending\\s+|ending\\s+with\\s+|xx)?[Xx*\\s\\-]*(\\d{4})\\s+for\\s+(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+at\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "regex": "(?i)using\\s+your\\s+(?:(?:Jupiter)\\s+)?Credit\\s+Card\\s+(?:no\\.?\\s*|ending\\s+|ending\\s+with\\s+|xx)?[Xx*\\s\\-]*(\\d{4})\\s+for\\s+(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+at\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
       "amount_group": 2,
       "direction": "debit",
       "currency": "INR",
@@ -49,7 +90,7 @@
     },
     {
       "name": "debit_card_spend",
-      "regex": "(?i)(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+(?:has\\s+been\\s+|was\\s+|is\\s+)?(?:spent|debited|charged)\\s+(?:on|from|via)\\s+(?:your\\s+)?(?:(?:Yes\\s+Bank)\\s+)?Debit\\s+Card\\s+(?:no\\.?\\s*|ending\\s+|ending\\s+with\\s+|xx)?[Xx*\\s\\-]*(\\d{4})\\s+(?:at|towards|for)\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "regex": "(?i)(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+(?:has\\s+been\\s+|was\\s+|is\\s+)?(?:spent|debited|charged)\\s+(?:on|from|via)\\s+(?:your\\s+)?(?:(?:Jupiter)\\s+)?Debit\\s+Card\\s+(?:no\\.?\\s*|ending\\s+|ending\\s+with\\s+|xx)?[Xx*\\s\\-]*(\\d{4})\\s+(?:at|towards|for)\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
       "amount_group": 1,
       "direction": "debit",
       "currency": "INR",
@@ -84,7 +125,7 @@
     },
     {
       "name": "account_debit",
-      "regex": "(?i)(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+(?:has\\s+been\\s+|was\\s+|is\\s+)?debited\\s+from\\s+(?:your\\s+)?(?:(?:Yes\\s+Bank)\\s+)?(?:account|a/c|acct)\\s+(?:ending\\s+(?:with\\s+)?|no\\.?\\s*|xx)?[Xx*\\s\\-]*(\\d{4})\\s+(?:to|towards|at|for)\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "regex": "(?i)(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+(?:has\\s+been\\s+|was\\s+|is\\s+)?debited\\s+from\\s+(?:your\\s+)?(?:(?:Jupiter)\\s+)?(?:account|a/c|acct)\\s+(?:ending\\s+(?:with\\s+)?|no\\.?\\s*|xx)?[Xx*\\s\\-]*(\\d{4})\\s+(?:to|towards|at|for)\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
       "amount_group": 1,
       "direction": "debit",
       "currency": "INR",
@@ -95,7 +136,7 @@
     },
     {
       "name": "account_credit",
-      "regex": "(?i)(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+(?:has\\s+been\\s+|was\\s+|is\\s+)?credited\\s+to\\s+(?:your\\s+)?(?:(?:Yes\\s+Bank)\\s+)?(?:account|a/c|acct)\\s+(?:ending\\s+(?:with\\s+)?|no\\.?\\s*|xx)?[Xx*\\s\\-]*(\\d{4})\\s+(?:by|from)\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "regex": "(?i)(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+(?:has\\s+been\\s+|was\\s+|is\\s+)?credited\\s+to\\s+(?:your\\s+)?(?:(?:Jupiter)\\s+)?(?:account|a/c|acct)\\s+(?:ending\\s+(?:with\\s+)?|no\\.?\\s*|xx)?[Xx*\\s\\-]*(\\d{4})\\s+(?:by|from)\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
       "amount_group": 1,
       "direction": "credit",
       "currency": "INR",

@@ -1,22 +1,10 @@
 {
-  "bank_name": "Yes Bank",
+  "bank_name": "India Post Payments Bank",
   "version": 1,
   "patterns": [
     {
       "name": "credit_card_spend",
-      "regex": "(?i)(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+has\\s+been\\s+spent\\s+on\\s+your\\s+YES\\s+BANK\\s+Credit\\s+Card\\s+ending\\s+(?:with\\s+)?[Xx*\\s\\-]*(\\d{4})\\s+at\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))(?:.{0,40}?Avl\\s+Bal\\s+(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?))?",
-      "amount_group": 1,
-      "direction": "debit",
-      "currency": "INR",
-      "merchant_group": 3,
-      "date_group": 4,
-      "balance_group": 5,
-      "last4_group": 2,
-      "txn_type": "credit_card"
-    },
-    {
-      "name": "credit_card_spend",
-      "regex": "(?i)(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+(?:has\\s+been\\s+|was\\s+|is\\s+)?(?:spent|charged|debited)\\s+(?:on|from|via)\\s+(?:your\\s+)?(?:(?:Yes\\s+Bank)\\s+)?Credit\\s+Card\\s+(?:no\\.?\\s*|ending\\s+|ending\\s+with\\s+|xx)?[Xx*\\s\\-]*(\\d{4})\\s+(?:at|towards|for)\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "regex": "(?i)(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+(?:has\\s+been\\s+|was\\s+|is\\s+)?(?:spent|charged|debited)\\s+(?:on|from|via)\\s+(?:your\\s+)?(?:(?:India\\s+Post\\s+Payments\\s+Bank|IPPB)\\s+)?Credit\\s+Card\\s+(?:no\\.?\\s*|ending\\s+|ending\\s+with\\s+|xx)?[Xx*\\s\\-]*(\\d{4})\\s+(?:at|towards|for)\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
       "amount_group": 1,
       "direction": "debit",
       "currency": "INR",
@@ -27,7 +15,7 @@
     },
     {
       "name": "credit_card_spend_using",
-      "regex": "(?i)using\\s+your\\s+(?:(?:Yes\\s+Bank)\\s+)?Credit\\s+Card\\s+(?:no\\.?\\s*|ending\\s+|ending\\s+with\\s+|xx)?[Xx*\\s\\-]*(\\d{4})\\s+for\\s+(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+at\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "regex": "(?i)using\\s+your\\s+(?:(?:India\\s+Post\\s+Payments\\s+Bank|IPPB)\\s+)?Credit\\s+Card\\s+(?:no\\.?\\s*|ending\\s+|ending\\s+with\\s+|xx)?[Xx*\\s\\-]*(\\d{4})\\s+for\\s+(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+at\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
       "amount_group": 2,
       "direction": "debit",
       "currency": "INR",
@@ -49,7 +37,7 @@
     },
     {
       "name": "debit_card_spend",
-      "regex": "(?i)(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+(?:has\\s+been\\s+|was\\s+|is\\s+)?(?:spent|debited|charged)\\s+(?:on|from|via)\\s+(?:your\\s+)?(?:(?:Yes\\s+Bank)\\s+)?Debit\\s+Card\\s+(?:no\\.?\\s*|ending\\s+|ending\\s+with\\s+|xx)?[Xx*\\s\\-]*(\\d{4})\\s+(?:at|towards|for)\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "regex": "(?i)(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+(?:has\\s+been\\s+|was\\s+|is\\s+)?(?:spent|debited|charged)\\s+(?:on|from|via)\\s+(?:your\\s+)?(?:(?:India\\s+Post\\s+Payments\\s+Bank|IPPB)\\s+)?Debit\\s+Card\\s+(?:no\\.?\\s*|ending\\s+|ending\\s+with\\s+|xx)?[Xx*\\s\\-]*(\\d{4})\\s+(?:at|towards|for)\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
       "amount_group": 1,
       "direction": "debit",
       "currency": "INR",
@@ -84,7 +72,7 @@
     },
     {
       "name": "account_debit",
-      "regex": "(?i)(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+(?:has\\s+been\\s+|was\\s+|is\\s+)?debited\\s+from\\s+(?:your\\s+)?(?:(?:Yes\\s+Bank)\\s+)?(?:account|a/c|acct)\\s+(?:ending\\s+(?:with\\s+)?|no\\.?\\s*|xx)?[Xx*\\s\\-]*(\\d{4})\\s+(?:to|towards|at|for)\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "regex": "(?i)(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+(?:has\\s+been\\s+|was\\s+|is\\s+)?debited\\s+from\\s+(?:your\\s+)?(?:(?:India\\s+Post\\s+Payments\\s+Bank|IPPB)\\s+)?(?:account|a/c|acct)\\s+(?:ending\\s+(?:with\\s+)?|no\\.?\\s*|xx)?[Xx*\\s\\-]*(\\d{4})\\s+(?:to|towards|at|for)\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
       "amount_group": 1,
       "direction": "debit",
       "currency": "INR",
@@ -95,7 +83,7 @@
     },
     {
       "name": "account_credit",
-      "regex": "(?i)(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+(?:has\\s+been\\s+|was\\s+|is\\s+)?credited\\s+to\\s+(?:your\\s+)?(?:(?:Yes\\s+Bank)\\s+)?(?:account|a/c|acct)\\s+(?:ending\\s+(?:with\\s+)?|no\\.?\\s*|xx)?[Xx*\\s\\-]*(\\d{4})\\s+(?:by|from)\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "regex": "(?i)(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s+(?:has\\s+been\\s+|was\\s+|is\\s+)?credited\\s+to\\s+(?:your\\s+)?(?:(?:India\\s+Post\\s+Payments\\s+Bank|IPPB)\\s+)?(?:account|a/c|acct)\\s+(?:ending\\s+(?:with\\s+)?|no\\.?\\s*|xx)?[Xx*\\s\\-]*(\\d{4})\\s+(?:by|from)\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
       "amount_group": 1,
       "direction": "credit",
       "currency": "INR",
