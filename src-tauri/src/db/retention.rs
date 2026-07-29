@@ -90,19 +90,31 @@ pub fn archive_old_transactions(
     Ok(total_archived)
 }
 
+/// How long a matched record keeps its raw payload before the sweep nulls it.
+///
+/// Raised from 90 days to 1 year for issue #12: the LLM merchant-cleanup pass
+/// reads `raw_payload_json`'s stored email body to work out what the real
+/// merchant was, and the Evidence pane renders the same body next to the
+/// transaction. At 90 days both went blind on anything older than a quarter —
+/// which is exactly the backlog a cleanup pass exists to fix. Still a bounded
+/// retention window, so the Doc 28 §4.2 storage-minimisation control holds;
+/// only the horizon moved.
+const RAW_PAYLOAD_RETENTION: &str = "-1 year";
+
 /// J2 fix: nulls `raw_payload_json`/`raw_row_json` on records that are both
 /// (a) matched — i.e. reconciled into a canonical transaction, not still
-/// pending/unmatched — and (b) older than 90 days. Unmatched/pending records
-/// are deliberately left alone: their raw payload may still be needed for
-/// reconciliation or user-facing "why wasn't this matched" debugging.
+/// pending/unmatched — and (b) older than [`RAW_PAYLOAD_RETENTION`].
+/// Unmatched/pending records are deliberately left alone: their raw payload
+/// may still be needed for reconciliation or user-facing "why wasn't this
+/// matched" debugging.
 pub fn sweep_raw_payloads(conn: &Connection) -> Result<(usize, usize)> {
     let observations_cleared = conn.execute(
         "UPDATE transaction_observations
          SET raw_payload_json = NULL
          WHERE canonical_transaction_id IS NOT NULL
            AND raw_payload_json IS NOT NULL
-           AND created_at < datetime('now', '-90 days')",
-        [],
+           AND created_at < datetime('now', ?1)",
+        [RAW_PAYLOAD_RETENTION],
     )?;
 
     let entries_cleared = conn.execute(
@@ -113,9 +125,9 @@ pub fn sweep_raw_payloads(conn: &Connection) -> Result<(usize, usize)> {
              SELECT statement_entry_id FROM transaction_observations
              WHERE canonical_transaction_id IS NOT NULL
                AND statement_entry_id IS NOT NULL
-               AND created_at < datetime('now', '-90 days')
+               AND created_at < datetime('now', ?1)
            )",
-        [],
+        [RAW_PAYLOAD_RETENTION],
     )?;
 
     if observations_cleared > 0 || entries_cleared > 0 {
@@ -168,7 +180,7 @@ mod tests {
         // Old + matched — should be cleared.
         conn.execute(
             "INSERT INTO transaction_observations (id, canonical_transaction_id, raw_payload_json, created_at) \
-             VALUES ('obs_old_matched', 'txn_1', '{\"secret\":true}', datetime('now', '-100 days'))",
+             VALUES ('obs_old_matched', 'txn_1', '{\"secret\":true}', datetime('now', '-400 days'))",
             [],
         )
         .unwrap();
@@ -176,7 +188,7 @@ mod tests {
         // Old but unmatched — should NOT be cleared.
         conn.execute(
             "INSERT INTO transaction_observations (id, canonical_transaction_id, raw_payload_json, created_at) \
-             VALUES ('obs_old_unmatched', NULL, '{\"secret\":true}', datetime('now', '-100 days'))",
+             VALUES ('obs_old_unmatched', NULL, '{\"secret\":true}', datetime('now', '-400 days'))",
             [],
         )
         .unwrap();
