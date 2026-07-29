@@ -284,7 +284,7 @@ fn resolve_canonical_merchant(conn: &Connection, name: &str) -> Result<(String, 
 ///
 /// Activating immediately (rather than staging as `pending`) is safe here
 /// only because of the guards upstream: the model's span was verified to
-/// occur in the body, and `synthesize_merchant_regex` refuses to return a
+/// occur in the body, and `rule_synthesis::synthesize_span_regex` refuses to return a
 /// pattern that cannot re-extract that span from the very email it was built
 /// from.
 fn upsert_active_merchant_rule(
@@ -378,7 +378,7 @@ pub fn apply_correction(
 
     // Teach the extraction layer, when there is still a body to learn from.
     let learned_rule_id = candidate.body.as_deref().and_then(|body| {
-        let pattern = crate::extraction::merchant_llm::synthesize_merchant_regex(
+        let pattern = crate::extraction::rule_synthesis::synthesize_span_regex(
             body,
             &resolution.merchant_in_email,
         )?;

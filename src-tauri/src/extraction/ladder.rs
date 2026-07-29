@@ -2859,7 +2859,7 @@ mod tests {
         let body_owned = body.to_string();
         conn.interact(move |c| {
             let template_hash = compute_template_hash(&body_owned);
-            let pattern = crate::extraction::merchant_llm::synthesize_merchant_regex(
+            let pattern = crate::extraction::rule_synthesis::synthesize_span_regex(
                 &body_owned,
                 "RAZ*SWIGGY",
             )
@@ -2912,7 +2912,7 @@ mod tests {
         conn.interact(move |c| {
             let template_hash = compute_template_hash(&taught);
             let pattern =
-                crate::extraction::merchant_llm::synthesize_merchant_regex(&taught, "RAZ*SWIGGY")
+                crate::extraction::rule_synthesis::synthesize_span_regex(&taught, "RAZ*SWIGGY")
                     .unwrap();
             crate::db::pattern_rules::insert(
                 c,

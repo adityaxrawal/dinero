@@ -10,7 +10,8 @@
 //! * `merchant_in_email` -- the exact substring of the body that names the
 //!   counterparty. Verifiable against the source (so a hallucination is
 //!   detectable) and, crucially, *locatable*, which is what lets
-//!   [`synthesize_merchant_regex`] anchor a real pattern around it.
+//!   [`crate::extraction::rule_synthesis::synthesize_span_regex`] anchor a real
+//!   pattern around it.
 //! * `merchant_name` -- the canonical display name, which frequently does
 //!   **not** appear in the body at all ("RAZ*SWIGGY BANGALORE" -> "Swiggy").
 //!
@@ -19,17 +20,6 @@
 //! problem unsolved.
 
 use serde::Deserialize;
-
-/// Longest merchant span the synthesized regex will capture. Generous enough
-/// for "UTTAR PRADESH STATE ROAD TRANSPORT CORPORATION", short enough that a
-/// mis-anchored pattern can't swallow a whole paragraph.
-const MAX_MERCHANT_CAPTURE: usize = 80;
-
-/// How much literal text on each side of the merchant is baked into the
-/// anchor. Long enough to be specific to this email's phrasing, short enough
-/// to survive the small wording differences between two alerts of the same
-/// kind.
-const ANCHOR_CHARS: usize = 24;
 
 /// What the model returns, before validation.
 #[derive(Debug, Deserialize)]
@@ -153,26 +143,6 @@ pub fn generate_prompt(ctx: &TransactionContext, body: &str, categories: &[Strin
     )
 }
 
-/// Case-insensitive search for `needle` in `haystack`, returning a byte range
-/// into `haystack`. Used both to validate the model's verbatim claim and to
-/// locate the anchor context.
-fn find_ignore_case(haystack: &str, needle: &str) -> Option<std::ops::Range<usize>> {
-    if needle.is_empty() {
-        return None;
-    }
-    let hay_lower = haystack.to_lowercase();
-    let needle_lower = needle.to_lowercase();
-    // `to_lowercase` can change byte length (e.g. 'İ'), which would make an
-    // index into the lowered string invalid for the original. Bail out rather
-    // than slice at a wrong offset; these bodies are ASCII in practice.
-    if hay_lower.len() != haystack.len() || needle_lower.len() != needle.len() {
-        return haystack.find(needle).map(|s| s..s + needle.len());
-    }
-    hay_lower
-        .find(&needle_lower)
-        .map(|s| s..s + needle_lower.len())
-}
-
 /// Validates one raw completion against the source body and the closed
 /// category list.
 ///
@@ -200,7 +170,7 @@ pub fn validate(
     // Hallucination guard: the span the model claims to have copied must
     // really be there. This is what makes it safe to synthesize an
     // immediately-active pattern rule from the answer.
-    if find_ignore_case(body, &in_email).is_none() {
+    if crate::extraction::rule_synthesis::find_ignore_case(body, &in_email).is_none() {
         tracing::debug!(
             merchant_in_email = %in_email,
             "merchant cleanup: rejected, claimed span absent from source body"
@@ -219,90 +189,6 @@ pub fn validate(
         category,
         confidence: parsed.confidence.unwrap_or(0.0).clamp(0.0, 1.0),
     })
-}
-
-/// Turns a literal chunk of email text into a regex fragment that still
-/// matches the *next* email of the same kind.
-///
-/// Two relaxations, both load-bearing:
-/// * whitespace runs become `\s+`, because HTML flattening produces wildly
-///   different blank-line counts between two renderings of the same template;
-/// * digit runs become `\d+`, because the anchor otherwise bakes in this
-///   transaction's card digits or amount and never matches again. This mirrors
-///   `compute_template_hash`, which also collapses digits -- so a rule keyed
-///   to a template hash stays consistent with the anchor built for it.
-fn relax_literal(text: &str) -> String {
-    let mut out = String::new();
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c.is_whitespace() {
-            while chars.peek().is_some_and(|n| n.is_whitespace()) {
-                chars.next();
-            }
-            out.push_str(r"\s+");
-        } else if c.is_ascii_digit() {
-            while chars.peek().is_some_and(|n| n.is_ascii_digit()) {
-                chars.next();
-            }
-            out.push_str(r"\d+");
-        } else {
-            out.push_str(&regex::escape(&c.to_string()));
-        }
-    }
-    out
-}
-
-/// Builds a merchant-extraction regex anchored on the literal text
-/// surrounding `merchant_in_email` inside `body`, with capture group 1 on the
-/// merchant itself (the group `LearnedPatternLayer` reads).
-///
-/// Returns `None` unless the finished pattern compiles *and* re-extracts the
-/// expected merchant from the very body it was built from. That self-check is
-/// what makes an immediately-active rule safe: a pattern that cannot even
-/// reproduce its own training example is never stored.
-pub fn synthesize_merchant_regex(body: &str, merchant_in_email: &str) -> Option<String> {
-    let span = find_ignore_case(body, merchant_in_email)?;
-
-    // Take context on each side, snapped to a char boundary.
-    let prefix_start = body[..span.start]
-        .char_indices()
-        .rev()
-        .take(ANCHOR_CHARS)
-        .last()
-        .map(|(i, _)| i)
-        .unwrap_or(span.start);
-    let suffix_end = body[span.end..]
-        .char_indices()
-        .take(ANCHOR_CHARS)
-        .last()
-        .map(|(i, c)| span.end + i + c.len_utf8())
-        .unwrap_or(span.end);
-
-    let prefix = relax_literal(&body[prefix_start..span.start]);
-    let suffix = relax_literal(&body[span.end..suffix_end]);
-
-    // No anchor on either side would make the pattern match anything at all.
-    if prefix.is_empty() && suffix.is_empty() {
-        return None;
-    }
-
-    let pattern = format!("(?is){prefix}(.{{1,{MAX_MERCHANT_CAPTURE}}}?){suffix}");
-
-    // Self-check: compile, and confirm it recovers the merchant it was built
-    // from. Guards against an anchor whose own relaxation (e.g. a `\d+` that
-    // now also matches part of the merchant) shifts the capture.
-    let re = regex::Regex::new(&pattern).ok()?;
-    let recovered = re.captures(body)?.get(1)?.as_str().trim();
-    if !recovered.eq_ignore_ascii_case(merchant_in_email.trim()) {
-        tracing::debug!(
-            expected = %merchant_in_email,
-            recovered = %recovered,
-            "merchant cleanup: synthesized regex failed its own self-check, discarding"
-        );
-        return None;
-    }
-
-    Some(pattern)
 }
 
 #[cfg(test)]
@@ -358,68 +244,11 @@ mod tests {
         assert!(validate(raw, SBI_BODY, &cats()).is_none());
     }
 
-    /// The synthesized rule must survive the thing that broke every previous
-    /// attempt at this: the *next* email has different digits and different
-    /// whitespace, and must still match.
-    #[test]
-    fn synthesized_regex_generalises_to_the_next_email() {
-        let pattern = synthesize_merchant_regex(SBI_BODY, "RAZ*SWIGGY LIMITE BANGALORE")
-            .expect("must synthesize");
-        let re = regex::Regex::new(&pattern).unwrap();
 
-        // Same template, different card digits, amount, date, and merchant.
-        let next = "Dear Cardholder, Rs.1,020.00 spent on your SBI Credit Card \
-                    ending 4412 at RAZ*YULU BIKES on 14/07/26. Not you? Call 18009999.";
-        let caps = re
-            .captures(next)
-            .expect("the learned rule must fire on the next email of this shape");
-        assert_eq!(caps.get(1).unwrap().as_str().trim(), "RAZ*YULU BIKES");
-    }
 
-    /// Whitespace relaxation: the HTML-flattened rendering of the same email
-    /// has different blank-line counts between fields.
-    #[test]
-    fn synthesized_regex_survives_reflowed_whitespace() {
-        let pattern = synthesize_merchant_regex(SBI_BODY, "RAZ*SWIGGY LIMITE BANGALORE").unwrap();
-        let re = regex::Regex::new(&pattern).unwrap();
-        let reflowed = SBI_BODY.replace(' ', "\n\n  ");
-        assert!(
-            re.captures(&reflowed).is_some(),
-            "pattern must tolerate reflowed whitespace"
-        );
-    }
 
-    #[test]
-    fn synthesis_refuses_a_merchant_absent_from_the_body() {
-        assert!(synthesize_merchant_regex(SBI_BODY, "ZOMATO").is_none());
-    }
 
-    /// Capture group 1 is what `LearnedPatternLayer` reads
-    /// (`ladder.rs:163`), so the group index is part of the contract.
-    #[test]
-    fn merchant_lands_in_capture_group_one() {
-        let pattern = synthesize_merchant_regex(SBI_BODY, "RAZ*SWIGGY LIMITE BANGALORE").unwrap();
-        let re = regex::Regex::new(&pattern).unwrap();
-        assert_eq!(
-            re.captures(SBI_BODY).unwrap().get(1).unwrap().as_str().trim(),
-            "RAZ*SWIGGY LIMITE BANGALORE"
-        );
-    }
 
-    #[test]
-    fn relax_literal_collapses_digits_and_whitespace() {
-        assert_eq!(relax_literal("ending 7603 at"), r"ending\s+\d+\s+at");
-    }
-
-    /// `*` and `.` are regex metacharacters and appear constantly in real
-    /// merchant descriptors; an unescaped anchor would silently match the
-    /// wrong thing.
-    #[test]
-    fn relax_literal_escapes_metacharacters() {
-        let out = relax_literal("a*b.c");
-        assert!(regex::Regex::new(&out).unwrap().is_match("a*b.c"));
-        assert!(!regex::Regex::new(&out).unwrap().is_match("axbxc"));
-    }
 
     #[test]
     fn schema_pins_category_to_the_closed_list() {
