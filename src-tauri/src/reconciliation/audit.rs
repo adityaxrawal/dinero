@@ -95,39 +95,79 @@ pub fn append_correction_decision(
     Ok(())
 }
 
-/// Detect when a user corrects an extracted field.
-/// Stores the correction in `feedback_log` and synthesizes/increments a `pattern_rule`.
+/// Everything the learning worker needs about one corrected field, captured at
+/// correction time.
+///
+/// `source_text` is copied here rather than re-fetched by the worker on
+/// purpose: the retention sweep nulls `raw_payload_json` on reconciled
+/// observations past a year, and a job that outlived that sweep would silently
+/// stop learning. Copying costs one string per correction.
+#[derive(Debug, Clone)]
+pub struct CorrectionContext {
+    pub feedback_log_id: String,
+    pub bank_name: String,
+    pub source_type: String,
+    pub source_text: Option<String>,
+    pub observation_id: Option<String>,
+    pub field_name: String,
+    pub old_value: Option<String>,
+    pub new_value: String,
+}
+
+/// Writes the `feedback_log` audit row for one corrected field, decays the rule
+/// that produced the wrong value, and returns the context needed to learn a
+/// better one.
+///
+/// This function used to also *author* a rule -- `{"regex": "learned regex for
+/// <new_value>"}` -- which could never match anything and quietly filled the
+/// table with rules that did nothing. Authoring now belongs to
+/// `learning::worker`, which is the only place that can actually validate what
+/// it writes. What stays here is the half that was always correct: a correction
+/// is direct evidence that whichever rule fired was wrong, so decay it.
+///
+/// Returns `Ok(None)` when the transaction has no observation -- a manually
+/// created transaction has no source text and nothing to learn from. That is a
+/// normal outcome, not an error.
 pub fn log_user_correction(
     conn: &Connection,
     tx_id: &str,
     field_name: &str,
     old_value: &str,
     new_value: &str,
-) -> Result<()> {
-    // Find the observation ID, source pipeline, and (via its instrument) the
-    // real bank name for this transaction.
+) -> Result<Option<CorrectionContext>> {
     let obs_info: rusqlite::Result<(
         String,
         Option<String>,
         Option<String>,
         Option<String>,
         Option<String>,
+        Option<String>,
     )> = conn.query_row(
-        "SELECT o.id, o.source_pipeline, o.source_record_id, o.raw_payload_json, i.issuer_name
+        "SELECT o.id, o.source_pipeline, o.source_record_id, o.raw_payload_json,
+                i.issuer_name, e.description_raw
          FROM transaction_observations o
          LEFT JOIN instruments i ON i.id = o.instrument_id
+         LEFT JOIN statement_entries e ON e.id = o.statement_entry_id
          WHERE o.canonical_transaction_id = ?1 LIMIT 1",
         rusqlite::params![tx_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+            ))
+        },
     );
 
-    let (obs_id, source_pipeline, source_record_id, raw_payload_json, issuer_name) = match obs_info
-    {
-        Ok(info) => info,
-        Err(_) => return Ok(()), // No observation found
-    };
+    let (obs_id, source_pipeline, source_record_id, raw_payload_json, issuer_name, row_text) =
+        match obs_info {
+            Ok(info) => info,
+            Err(_) => return Ok(None),
+        };
     let bank_name = issuer_name.unwrap_or_else(|| "Unknown".to_string());
-
     let feedback_id = Uuid::new_v4().to_string();
 
     let source_context_json = serde_json::json!({
@@ -141,7 +181,7 @@ pub fn log_user_correction(
             feedback_id,
             tx_id,
             obs_id,
-            source_pipeline.unwrap_or_else(|| "manual".to_string()),
+            source_pipeline.clone().unwrap_or_else(|| "manual".to_string()),
             field_name,
             old_value,
             new_value,
@@ -149,58 +189,45 @@ pub fn log_user_correction(
         ]
     )?;
 
-    // For gmail pipelines, we synthesize a candidate pattern rule to learn from this correction
-    if let Some(record_id) = source_record_id {
-        // Doc 30 TASK-TXN-002: the real template hash needs the real
-        // extracted email body (persisted as raw_payload_json's "body" field
-        // at extraction time) -- a fabricated string here means the lookup
-        // below almost never finds the rule that actually produced
-        // old_value. Falls back to the old placeholder only when no body
-        // was persisted for this observation (e.g. non-gmail pipelines).
-        let real_body = raw_payload_json
+    // A statement-sourced correction learns from the entry's own row text; an
+    // email-sourced one from the persisted body.
+    let is_statement = source_pipeline.as_deref() == Some("statement_pdf");
+    let source_type = if is_statement { "statement_pdf" } else { "email" };
+    let source_text = if is_statement {
+        row_text
+    } else {
+        raw_payload_json
             .as_deref()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
-            .and_then(|v| {
-                v.get("body")
-                    .and_then(|b| b.as_str())
-                    .map(|s| s.to_string())
-            });
-        let template_hash = crate::extraction::ladder::compute_template_hash(
-            &real_body.unwrap_or_else(|| format!("mock body for {}", record_id)),
-        );
+            .and_then(|v| v.get("body").and_then(|b| b.as_str()).map(String::from))
+    };
 
-        let existing_rule: rusqlite::Result<String> = conn.query_row(
-            "SELECT v.id FROM pattern_rule_variants v
-             JOIN pattern_rules p ON p.id = v.pattern_rule_id
-             WHERE v.template_hash = ?1 AND p.field_name = ?2 AND p.bank_name = ?3",
-            rusqlite::params![template_hash, field_name, bank_name],
+    // Decay whatever rule covered this exact shape: it fired and was wrong.
+    if let Some(text) = source_text.as_deref() {
+        let template_hash = crate::extraction::ladder::compute_template_hash(text);
+        let existing: rusqlite::Result<String> = conn.query_row(
+            "SELECT v.id FROM field_rule_variants v
+             JOIN field_rules p ON p.id = v.field_rule_id
+             WHERE v.template_hash = ?1 AND p.field_name = ?2 AND p.bank_name = ?3
+               AND p.source_type = ?4 AND v.status IN ('active', 'trusted')",
+            rusqlite::params![template_hash, field_name, bank_name, source_type],
             |row| row.get(0),
         );
-
-        if let Ok(rule_id) = existing_rule {
-            // Doc 30 TASK-TXN-002: "on a later user correction, increment
-            // failure_count and trigger confidence decay" -- a correction
-            // means the matched rule got it wrong, so decay it, not reward it.
-            let _ = crate::db::pattern_rules::record_rule_failure(conn, &rule_id);
-        } else {
-            let rule = crate::db::pattern_rules::PatternRulesRow {
-                id: Uuid::new_v4().to_string(),
-                bank_name: bank_name.clone(),
-                template_hash: template_hash.clone(),
-                field_name: field_name.to_string(),
-                rule_payload_json: serde_json::json!({"regex": format!("learned regex for {}", new_value)}),
-                status: "pending".to_string(),
-                success_count: 1, // Start with 1 success since it's user-driven
-                failure_count: 0,
-                confidence: 1.0,
-                created_at: None,
-                updated_at: None,
-            };
-            let _ = crate::db::pattern_rules::insert(conn, &rule);
+        if let Ok(rule_id) = existing {
+            let _ = crate::db::field_rules::record_failure(conn, &rule_id);
         }
     }
 
-    Ok(())
+    Ok(Some(CorrectionContext {
+        feedback_log_id: feedback_id,
+        bank_name,
+        source_type: source_type.to_string(),
+        source_text,
+        observation_id: Some(obs_id),
+        field_name: field_name.to_string(),
+        old_value: Some(old_value.to_string()),
+        new_value: new_value.to_string(),
+    }))
 }
 
 #[cfg(test)]
@@ -240,31 +267,23 @@ mod tests {
         .unwrap();
     }
 
-    /// The core bug: two different banks' manual corrections for the same
-    /// field must never collide into one shared parent. Before this fix,
-    /// `bank_name` was hardcoded to `"Unknown"` for every synthesized rule.
+    /// Two different banks' corrections must resolve to their own bank names,
+    /// never collide into a shared "Unknown".
     #[test]
     fn test_log_user_correction_resolves_real_bank_name() {
         let conn = setup_db();
         seed_observation(&conn, "tx_hdfc", "HDFC Bank", "Rs 500 debited at Amazon");
         seed_observation(&conn, "tx_icici", "ICICI Bank", "INR 500 spent at Amazon");
 
-        log_user_correction(&conn, "tx_hdfc", "amount", "400", "500").unwrap();
-        log_user_correction(&conn, "tx_icici", "amount", "400", "500").unwrap();
-
-        let bank_names: Vec<String> = conn
-            .prepare("SELECT bank_name FROM pattern_rules WHERE field_name = 'amount' ORDER BY bank_name")
+        let hdfc = log_user_correction(&conn, "tx_hdfc", "amount", "400", "500")
             .unwrap()
-            .query_map([], |row| row.get(0))
+            .unwrap();
+        let icici = log_user_correction(&conn, "tx_icici", "amount", "400", "500")
             .unwrap()
-            .collect::<rusqlite::Result<Vec<String>>>()
             .unwrap();
 
-        assert_eq!(
-            bank_names,
-            vec!["HDFC Bank".to_string(), "ICICI Bank".to_string()],
-            "each bank's correction must synthesize its own parent, not collide into \"Unknown\""
-        );
+        assert_eq!(hdfc.bank_name, "HDFC Bank");
+        assert_eq!(icici.bank_name, "ICICI Bank");
     }
 
     /// When the observation has no resolvable instrument (e.g. a non-gmail
@@ -287,15 +306,111 @@ mod tests {
         )
         .unwrap();
 
-        log_user_correction(&conn, "tx_no_inst", "amount", "400", "500").unwrap();
+        let ctx = log_user_correction(&conn, "tx_no_inst", "amount", "400", "500")
+            .unwrap()
+            .unwrap();
+        assert_eq!(ctx.bank_name, "Unknown");
+    }
 
-        let bank_name: String = conn
+    /// The placeholder regex this function used to write ("learned regex for
+    /// X") could never match anything. It is gone; authoring is the learning
+    /// worker's job now, and this function's only rule-touching duty is to
+    /// decay the rule that got it wrong.
+    #[test]
+    fn a_correction_no_longer_writes_a_placeholder_rule() {
+        let conn = setup_db();
+        seed_observation(&conn, "tx_p", "HDFC Bank", "Rs 500 debited at Amazon");
+        log_user_correction(&conn, "tx_p", "merchant", "Amzon", "Amazon").unwrap();
+
+        let rules: i64 = conn
+            .query_row("SELECT COUNT(*) FROM field_rule_variants", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rules, 0, "authoring belongs to the learning worker, not to this hook");
+    }
+
+    /// A correction means whichever rule produced the wrong value was wrong.
+    #[test]
+    fn a_correction_decays_the_rule_that_produced_the_wrong_value() {
+        let conn = setup_db();
+        let body = "Rs 500 debited at Amazon";
+        seed_observation(&conn, "tx_d", "HDFC Bank", body);
+        let hash = crate::extraction::ladder::compute_template_hash(body);
+        let now = chrono::Utc::now().naive_utc();
+        let id = crate::db::field_rules::upsert_variant(
+            &conn,
+            &crate::db::field_rules::FieldRuleVariant {
+                id: "rule_bad".to_string(),
+                bank_name: "HDFC Bank".to_string(),
+                field_name: "merchant".to_string(),
+                source_type: "email".to_string(),
+                template_hash: hash,
+                rule_payload_json: serde_json::json!({"regex": "at (.+)", "capture_group": 1}),
+                status: "active".to_string(),
+                success_count: 5,
+                failure_count: 0,
+                confidence: 1.0,
+                authored_by: "deterministic".to_string(),
+                learned_from: "user_edit".to_string(),
+                created_at: Some(now),
+                updated_at: Some(now),
+            },
+            None,
+        )
+        .unwrap();
+
+        log_user_correction(&conn, "tx_d", "merchant", "Amzon", "Amazon").unwrap();
+
+        let after = crate::db::field_rules::select_by_id(&conn, &id).unwrap().unwrap();
+        assert_eq!(after.failure_count, 1, "the rule that fired and was wrong must decay");
+    }
+
+    /// The context the learning worker needs, captured at correction time --
+    /// the retention sweep could null the body before the worker runs.
+    #[test]
+    fn a_correction_returns_the_context_needed_to_learn_from_it() {
+        let conn = setup_db();
+        seed_observation(&conn, "tx_c", "HDFC Bank", "Rs 500 debited at Amazon");
+        let ctx = log_user_correction(&conn, "tx_c", "merchant", "Amzon", "Amazon")
+            .unwrap()
+            .expect("a gmail-sourced correction must produce context");
+
+        assert_eq!(ctx.bank_name, "HDFC Bank");
+        assert_eq!(ctx.source_type, "email");
+        assert_eq!(ctx.field_name, "merchant");
+        assert_eq!(ctx.new_value, "Amazon");
+        assert_eq!(ctx.source_text.as_deref(), Some("Rs 500 debited at Amazon"));
+        assert!(!ctx.feedback_log_id.is_empty());
+    }
+
+    /// feedback_log stays the single audit trail every trigger writes to.
+    #[test]
+    fn a_correction_still_writes_exactly_one_feedback_log_row() {
+        let conn = setup_db();
+        seed_observation(&conn, "tx_f", "HDFC Bank", "Rs 500 debited at Amazon");
+        log_user_correction(&conn, "tx_f", "merchant", "Amzon", "Amazon").unwrap();
+
+        let count: i64 = conn
             .query_row(
-                "SELECT bank_name FROM pattern_rules WHERE field_name = 'amount'",
+                "SELECT COUNT(*) FROM feedback_log WHERE transaction_id = 'tx_f'",
                 [],
-                |row| row.get(0),
+                |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(bank_name, "Unknown");
+        assert_eq!(count, 1);
+    }
+
+    /// A transaction with no observation has no source to learn from, and must
+    /// not crash the save.
+    #[test]
+    fn a_correction_without_an_observation_is_a_no_op() {
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO transactions (id, amount_minor) VALUES ('tx_bare', 0)",
+            [],
+        )
+        .unwrap();
+        assert!(log_user_correction(&conn, "tx_bare", "merchant", "a", "b")
+            .unwrap()
+            .is_none());
     }
 }

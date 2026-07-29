@@ -2531,6 +2531,23 @@ pub struct TransactionUpdatePayload {
     pub instrument_id: Option<String>,
 }
 
+/// Transaction columns that are evidence-derived — extracted by a regex from a
+/// bank's message and therefore learnable — paired with the canonical field
+/// name the rule tables and synthesizer use.
+///
+/// `category_id` and `notes` are deliberately absent: they are pure user
+/// classification, never extracted, so a correction there is logged for audit
+/// and never sent to the synthesizer. `last4` and `cadence` are absent because
+/// neither is a transaction column (they live on `instruments` and
+/// `recurring_payments`); adding either is one line here once an edit
+/// affordance for it exists.
+const CORRECTABLE_FIELDS: &[(&str, &str)] = &[
+    ("merchant_display_name", "merchant"),
+    ("amount_minor", "amount"),
+    ("direction", "direction"),
+    ("best_event_time", "event_time"),
+];
+
 fn apply_transaction_field_update(
     conn: &rusqlite::Connection,
     tx_id: &str,
@@ -2542,7 +2559,7 @@ fn apply_transaction_field_update(
     direction: Option<String>,
     event_time: Option<String>,
     instrument_id: Option<String>,
-) -> Result<(), crate::error::AppError> {
+) -> Result<Vec<crate::reconciliation::audit::CorrectionContext>, crate::error::AppError> {
     let old_tx = crate::db::transactions::get_transaction(conn, tx_id)
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?
         .ok_or_else(|| crate::error::AppError::Unknown("Transaction not found".to_string()))?;
@@ -2567,10 +2584,20 @@ fn apply_transaction_field_update(
         new_direction = Some(dir);
     }
     if let Some(ev_time) = event_time {
-        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(&ev_time, "%Y-%m-%d %H:%M:%S")
+        // The date-only arm has to go through `NaiveDate`: chrono's
+        // `NaiveDateTime::parse_from_str` requires a time component, so
+        // parsing "2026-07-14" against "%Y-%m-%d" always errored and the
+        // `.or_else` chain silently dropped the edit. The arm was clearly
+        // meant to work -- it just never could.
+        let parsed = chrono::NaiveDateTime::parse_from_str(&ev_time, "%Y-%m-%d %H:%M:%S")
             .or_else(|_| chrono::NaiveDateTime::parse_from_str(&ev_time, "%Y-%m-%dT%H:%M:%S"))
-            .or_else(|_| chrono::NaiveDateTime::parse_from_str(&ev_time, "%Y-%m-%d"))
-        {
+            .ok()
+            .or_else(|| {
+                chrono::NaiveDate::parse_from_str(&ev_time, "%Y-%m-%d")
+                    .ok()
+                    .and_then(|d| d.and_hms_opt(0, 0, 0))
+            });
+        if let Some(dt) = parsed {
             new_event_time = Some(dt);
         }
     }
@@ -2581,6 +2608,8 @@ fn apply_transaction_field_update(
     if let Some(cat) = category_id {
         let old_val = old_tx.category_id.clone().unwrap_or_default();
         if old_val != cat {
+            // Logged for audit, never queued: a category is a user's judgment,
+            // not something a regex ever produced.
             let _ = crate::reconciliation::audit::log_user_correction(
                 conn,
                 tx_id,
@@ -2600,9 +2629,8 @@ fn apply_transaction_field_update(
     if let Some(merch) = merchant_display_name {
         let old_val = old_tx.merchant_display_name.clone().unwrap_or_default();
         if old_val != merch {
-            let _ = crate::reconciliation::audit::log_user_correction(
-                conn, tx_id, "merchant", &old_val, &merch,
-            );
+            // The merchant diff itself is logged uniformly with every other
+            // evidence-derived field below; this block only owns alias creation.
             let cleaned = crate::extraction::merchant_normalizer::strip_noise_tokens(&merch);
             if !cleaned.is_empty() {
                 if let Ok(Some(existing)) = crate::db::merchants::select_by_alias(conn, &cleaned) {
@@ -2683,13 +2711,58 @@ fn apply_transaction_field_update(
     )
     .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
 
-    Ok(())
+    // Diff old vs. new across every evidence-derived field, after the write has
+    // succeeded. A value corrected back to itself is a no-op: nothing logged,
+    // nothing queued.
+    let changes: Vec<(&str, Option<String>, String)> = CORRECTABLE_FIELDS
+        .iter()
+        .filter_map(|(column, field)| {
+            let (before, after) = match *column {
+                "merchant_display_name" => {
+                    (old_tx.merchant_display_name.clone(), new_merchant.clone())
+                }
+                "amount_minor" => (
+                    old_tx.amount_minor.map(|v| v.to_string()),
+                    new_amount_minor.map(|v| v.to_string()),
+                ),
+                "direction" => (old_tx.direction.clone(), new_direction.clone()),
+                "best_event_time" => (
+                    old_tx.best_event_time.map(|v| v.to_string()),
+                    new_event_time.map(|v| v.to_string()),
+                ),
+                _ => (None, None),
+            };
+            let after = after?;
+            if before.as_deref() == Some(after.as_str()) {
+                return None;
+            }
+            Some((*field, before, after))
+        })
+        .collect();
+
+    let mut contexts = Vec::new();
+    for (field, before, after) in changes {
+        match crate::reconciliation::audit::log_user_correction(
+            conn,
+            tx_id,
+            field,
+            before.as_deref().unwrap_or(""),
+            &after,
+        ) {
+            Ok(Some(ctx)) => contexts.push(ctx),
+            Ok(None) => {}
+            Err(e) => tracing::warn!("failed to log correction for {field}: {e}"),
+        }
+    }
+
+    Ok(contexts)
 }
 
 #[tauri::command]
 pub async fn transactions_update(
     payload: TransactionUpdatePayload,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
+    learning: tauri::State<'_, crate::learning::LearningHandle>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, crate::error::AppError> {
     crate::ipc::validation::validate_uuid("transaction_id", &payload.transaction_id.to_string())?;
@@ -2702,9 +2775,10 @@ pub async fn transactions_update(
 
     let payload_tx_id = payload.transaction_id.to_string();
 
-    conn.interact(move |conn| {
+    let contexts = conn
+        .interact(move |conn| {
         let tx_id = payload.transaction_id;
-        apply_transaction_field_update(
+        let contexts = apply_transaction_field_update(
             conn,
             &tx_id.to_string(),
             payload.merchant_display_name,
@@ -2771,7 +2845,7 @@ pub async fn transactions_update(
             }
         }
 
-        Ok::<(), crate::error::AppError>(())
+        Ok::<_, crate::error::AppError>(contexts)
     })
     .await
     .map_err(|e| crate::error::AppError::Unknown(e.to_string()))??;
@@ -2781,6 +2855,29 @@ pub async fn transactions_update(
         crate::ipc::events::AppEvent::TransactionUpdated,
         serde_json::json!({ "transaction_id": payload_tx_id }),
     );
+
+    // Enqueue learning work *after* the correction is committed and the UI has
+    // been told. A failure here can only mean one correction is not learned
+    // from — never that the save failed.
+    let app_dir = app_handle.path().app_data_dir().ok();
+    for ctx in contexts {
+        crate::learning::enqueue(
+            &learning,
+            crate::learning::FeedbackJob {
+                feedback_log_id: ctx.feedback_log_id,
+                bank_name: ctx.bank_name,
+                field_name: ctx.field_name,
+                source_type: ctx.source_type,
+                source_text: ctx.source_text.unwrap_or_default(),
+                old_value: ctx.old_value,
+                new_value: ctx.new_value,
+                observation_id: ctx.observation_id,
+                learned_from: "user_edit".to_string(),
+                app_dir: app_dir.clone(),
+            },
+        )
+        .await;
+    }
 
     Ok("updated".to_string())
 }
@@ -3924,6 +4021,98 @@ mod tests {
             entity_id.is_some(),
             "the transaction must be linked to a resolved merchant entity"
         );
+    }
+
+    /// The design's "corrected back to itself" edge case: nothing logged,
+    /// nothing queued.
+    #[test]
+    fn test_unchanged_value_produces_no_feedback() {
+        let conn = setup_tx_test_db();
+        let contexts = apply_transaction_field_update(
+            &conn,
+            "tx_1",
+            Some("ZZZTEST MKTP".to_string()), // identical to what is stored
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(contexts.is_empty(), "a no-op edit must not enqueue learning work");
+
+        let logged: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM feedback_log WHERE transaction_id = 'tx_1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(logged, 0);
+    }
+
+    /// Every editable evidence-derived field now feeds the loop, not just the
+    /// two that used to.
+    #[test]
+    fn test_amount_and_date_corrections_are_captured() {
+        let conn = setup_tx_test_db();
+        let contexts = apply_transaction_field_update(
+            &conn,
+            "tx_1",
+            None,
+            None,
+            None,
+            None,
+            Some(99900),
+            Some("credit".to_string()),
+            Some("2026-07-14".to_string()),
+            None,
+        )
+        .unwrap();
+
+        let fields: std::collections::HashSet<&str> =
+            contexts.iter().map(|c| c.field_name.as_str()).collect();
+        assert!(fields.contains("amount"), "got {fields:?}");
+        assert!(fields.contains("direction"), "got {fields:?}");
+        assert!(fields.contains("event_time"), "got {fields:?}");
+    }
+
+    /// Category and notes are user classification, never extracted by regex.
+    /// They are logged, never learned from.
+    #[test]
+    fn test_category_is_logged_but_never_queued_for_learning() {
+        let conn = setup_tx_test_db();
+        let contexts = apply_transaction_field_update(
+            &conn,
+            "tx_1",
+            None,
+            Some("cat_new".to_string()),
+            Some("a note".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert!(
+            contexts
+                .iter()
+                .all(|c| c.field_name != "category_id" && c.field_name != "notes"),
+            "classification fields must not reach the rule synthesizer"
+        );
+        let logged: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM feedback_log
+                 WHERE transaction_id = 'tx_1' AND field_name = 'category_id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(logged, 1, "but the audit trail must still record it");
     }
 
     /// Doc 30 TASK-API-004 acceptance test.
