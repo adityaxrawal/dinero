@@ -48,6 +48,7 @@ mod recurring_payments_tests;
 pub mod retention;
 pub mod scan_failed_messages;
 pub mod scoping;
+pub mod sender_bank_overrides;
 pub mod sender_reputation;
 #[cfg(test)]
 mod sender_reputation_tests;
