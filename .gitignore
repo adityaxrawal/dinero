@@ -1,5 +1,7 @@
 # Logs
 logs
+/logs/
+/src-tauri/logs/
 *.log
 app-logs.log*
 npm-debug.log*
