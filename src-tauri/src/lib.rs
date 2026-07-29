@@ -12,6 +12,7 @@ pub mod health;
 pub mod ingestion;
 pub mod integrity;
 pub mod ipc;
+pub mod learning;
 pub mod licensing;
 pub mod lifecycle;
 pub mod llama_sidecar;
@@ -486,6 +487,12 @@ pub fn run() {
                 pool_clone.clone(),
             );
             app.manage(queue_handles);
+
+            // The feedback learning loop. Deliberately spawned after the
+            // ingest queues and managed separately: it must never be able to
+            // apply backpressure to a scan.
+            let learning_handle = crate::learning::spawn_learning_worker(pool_clone.clone());
+            app.manage(learning_handle);
 
             let pool_for_cleanup = pool_clone.clone();
             let app_data_dir = app_dir.clone();
