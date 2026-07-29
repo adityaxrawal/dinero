@@ -176,7 +176,7 @@ async fn wait_for_queue_drain(pool: &deadpool_sqlite::Pool) {
 /// fetch/classify stage.
 #[tokio::test]
 async fn test_1000_email_scan_p95_under_target() {
-    let _guard = test_lock().lock().unwrap();
+    let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
     SCAN_QUEUE_PAUSED.store(false, Ordering::Relaxed);
 
     let pool = migrated_pool("perf").await;
@@ -215,10 +215,22 @@ async fn test_1000_email_scan_p95_under_target() {
 
     let p95_per_batch = p95(samples.clone());
     let extrapolated_total = p95_per_batch * (TOTAL / BATCH_SIZE) as u32;
-    const TARGET: Duration = Duration::from_secs(15 * 60);
+    // Was 15 minutes, which a 48-minute real scan still "passed" because the
+    // regression it needed to catch (`dev_review`'s O(n^2) rewrite pinning
+    // every tokio worker) lived behind `cfg!(debug_assertions)` and an
+    // unbounded on-disk buffer this harness never grew. 60s is the actual
+    // product target for 1000 mails. This runs against a local mock, so it
+    // measures fetch-loop + extraction + DB, not real Gmail latency or quota
+    // pacing -- treat it as the floor the code must not regress past, not as
+    // a prediction of end-to-end wall time.
+    const TARGET: Duration = Duration::from_secs(60);
+    println!(
+        "1000-email p95 extrapolated total: {:?} (per-batch p95 {:?}, target {:?})",
+        extrapolated_total, p95_per_batch, TARGET
+    );
     assert!(
         extrapolated_total <= TARGET,
-        "p95 extrapolated total ({:?}) exceeds the 15-min-per-1000-email target ({:?}); per-batch samples: {:?}",
+        "p95 extrapolated total ({:?}) exceeds the 60s-per-1000-email target ({:?}); per-batch samples: {:?}",
         extrapolated_total,
         TARGET,
         samples
@@ -268,7 +280,7 @@ async fn test_1000_email_scan_p95_under_target() {
 /// same even if the resume path wrongly re-fetched from the start).
 #[tokio::test]
 async fn test_checkpoint_resume_after_interruption() {
-    let _guard = test_lock().lock().unwrap();
+    let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
     SCAN_QUEUE_PAUSED.store(false, Ordering::Relaxed);
 
     let pool = migrated_pool("resume").await;
@@ -337,7 +349,7 @@ async fn test_checkpoint_resume_after_interruption() {
 /// this test.
 #[tokio::test]
 async fn test_quota_pause_and_resume_behavior() {
-    let _guard = test_lock().lock().unwrap();
+    let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
 
     let pool = migrated_pool("quota_pause").await;
     let app = mock_app();
@@ -429,7 +441,7 @@ async fn test_quota_pause_and_resume_behavior() {
 /// "cancelled" after silently processing everything anyway.
 #[tokio::test]
 async fn test_cancel_mid_flight_stops_before_processing_all_messages() {
-    let _guard = test_lock().lock().unwrap();
+    let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
     SCAN_QUEUE_PAUSED.store(false, Ordering::Relaxed);
 
     let pool = migrated_pool("cancel_mid_flight").await;
@@ -532,7 +544,7 @@ async fn test_cancel_mid_flight_stops_before_processing_all_messages() {
 /// separate, non-blocking task) can still make progress.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_cancel_is_not_blocked_by_a_stuck_in_flight_fetch() {
-    let _guard = test_lock().lock().unwrap();
+    let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
     SCAN_QUEUE_PAUSED.store(false, Ordering::Relaxed);
 
     let pool = migrated_pool("cancel_stuck_fetch").await;

@@ -144,17 +144,229 @@ fn should_checkpoint(batch_count: usize) -> bool {
     batch_count >= CHECKPOINT_INTERVAL
 }
 
-/// Doc 2026-07-28 mail scan performance: was 50, then dropped to 12 to
-/// reduce simultaneous connections onto the single HTTP/2 socket every
-/// concurrent fetch used to share (see `NetworkClient::with_timeout`'s
-/// `.http1_only()`, which is the actual fix for that thundering-herd
-/// behavior). With connections isolated per-request, that constraint no
-/// longer applies. `gmail_quota_limiter()` paces total *quota units*/sec —
-/// a metadata fetch costs 1 unit against a 30-unit burst ceiling refilling
-/// at 225/sec, so 25 concurrent metadata fetches fit inside one burst
-/// window with no added pacing delay; bursts of concurrent full-format (5
-/// unit) fetches just see brief pacing, not stalls.
+/// How many `process_message` tasks stay in flight at once.
+///
+/// This is no longer the throughput governor it once looked like: every
+/// `users.messages.get` costs 5 Gmail quota units against
+/// `gmail_quota_limiter()`'s 225 units/sec refill and 30-unit burst ceiling,
+/// so the limiter — not this constant — sets the real fetch rate (~45
+/// messages/sec). Raising it further just deepens the queue behind that
+/// limiter. It stays at 25 to keep enough work pipelined that extraction and
+/// DB writes overlap network waits.
+///
+/// Earlier revisions swung this between 50 and 12 trying to tame what looked
+/// like connection contention; that was the `dev_review` runtime freeze
+/// (see `NetworkClient::with_timeout`), not concurrency.
 const MAX_CONCURRENT_FETCHES: usize = 25;
+
+/// Longest `from:` clause we'll put in one Gmail `q` parameter, in chars.
+/// The query is percent-encoded into a GET URL, so the encoded form runs
+/// roughly 1.5x this; 1500 keeps a chunk comfortably inside Google's URL
+/// limit even in the worst case, and the ~204 bundled domains split into
+/// three requests.
+const MAX_SENDER_CLAUSE_CHARS: usize = 1500;
+
+/// Builds one or more Gmail search queries covering `domains`, each scoped to
+/// `date_range`. Returns the bare `date_range` when `domains` is empty, so a
+/// registry that somehow failed to load degrades to the old scan-everything
+/// behavior rather than silently matching nothing.
+fn build_sender_scoped_queries(date_range: &str, domains: &[String]) -> Vec<String> {
+    if domains.is_empty() {
+        return vec![date_range.to_string()];
+    }
+
+    let mut queries = Vec::new();
+    let mut chunk: Vec<&str> = Vec::new();
+    let mut chunk_len = 0usize;
+
+    for domain in domains {
+        // +9 for the "from:" prefix and the " OR " separator.
+        let cost = domain.len() + 9;
+        if !chunk.is_empty() && chunk_len + cost > MAX_SENDER_CLAUSE_CHARS {
+            queries.push(format_sender_query(date_range, &chunk));
+            chunk.clear();
+            chunk_len = 0;
+        }
+        chunk.push(domain);
+        chunk_len += cost;
+    }
+    if !chunk.is_empty() {
+        queries.push(format_sender_query(date_range, &chunk));
+    }
+    queries.push(build_rescue_subject_query(date_range));
+    queries
+}
+
+fn format_sender_query(date_range: &str, domains: &[&str]) -> String {
+    let clause = domains
+        .iter()
+        .map(|d| format!("from:{d}"))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    format!("({clause}) {date_range}")
+}
+
+/// The `from:` prefilter alone is NOT equivalent to Gate 1.
+///
+/// Gate 1 has a third acceptance path beyond "registry domain" and "approved
+/// domain": a sender it would otherwise reject is promoted to
+/// `VerifiedTransactionCandidate("Unknown Bank")` when the domain has a prior
+/// `sender_reputation` sighting *and* its subject classifies as a transaction
+/// or balance update. That is how a bank missing from the bundled registry
+/// gets picked up at all. Filtering purely on `from:` would never fetch those
+/// messages, so this adds a subject-scoped query alongside the sender ones.
+///
+/// Deliberately not restricted to previously-seen domains: that set lives in
+/// the DB and can run to thousands of entries (every marketing sender ever
+/// scanned), which would blow the query budget for no benefit. The subject
+/// terms are the narrow half of the rescue condition; the local gate still
+/// applies the `domain_previously_seen` half to whatever comes back.
+fn build_rescue_subject_query(date_range: &str) -> String {
+    let clause = crate::ingestion::content_classifier::RESCUE_SUBJECT_TERMS
+        .iter()
+        .map(|t| format!("subject:({t})"))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    format!("({clause}) {date_range}")
+}
+
+/// Result of `audit_scan_coverage` — proof (or disproof) that the
+/// server-side prefilter drops nothing Gate 1 would have accepted.
+#[derive(Debug, Serialize)]
+pub struct ScanCoverageAudit {
+    /// Messages in the date range with no sender/subject filter at all.
+    pub unfiltered_total: usize,
+    /// Messages the real scan's filtered query set returns.
+    pub filtered_total: usize,
+    /// `unfiltered - filtered`: what the prefilter skipped.
+    pub excluded_total: usize,
+    /// Of those, how many were actually checked against Gate 1.
+    pub excluded_checked: usize,
+    /// **The number that matters.** Excluded messages that Gate 1 *would*
+    /// have accepted. Anything above zero is mail the prefilter is losing.
+    pub missed_total: usize,
+    /// Up to 50 missed messages, as `msg_id | sender | subject`, so a
+    /// non-zero `missed_total` can be investigated rather than just reported.
+    pub missed_samples: Vec<String>,
+}
+
+/// Answers "how do I know the fast scan isn't missing real transactions?"
+/// empirically, against the caller's actual mailbox.
+///
+/// Runs the old unfiltered date-range search AND the current filtered query
+/// set, diffs the two ID sets, then fetches metadata for every excluded ID and
+/// runs the real `evaluate_metadata_gate` over it — the same function the scan
+/// uses. `missed_total == 0` means the prefilter provably lost nothing for
+/// this mailbox and date range.
+///
+/// Deliberately expensive: it does the whole unfiltered metadata sweep the
+/// optimisation exists to avoid. It is a verification tool, not part of a
+/// scan.
+pub async fn audit_scan_coverage(
+    pool: &Pool,
+    client: &GmailClient,
+    start_date: &str,
+    end_date: &str,
+) -> anyhow::Result<ScanCoverageAudit> {
+    let parsed_end = chrono::NaiveDate::parse_from_str(end_date, "%Y-%m-%d")
+        .unwrap_or_else(|_| chrono::Utc::now().naive_utc().date());
+    let inclusive_end = parsed_end + chrono::Duration::days(1);
+    let date_range = format!(
+        "after:{} before:{}",
+        start_date,
+        inclusive_end.format("%Y-%m-%d")
+    );
+
+    // Same domain set the real scan builds.
+    let mut sender_domains =
+        crate::ingestion::message_processor::get_sender_validator().registry_domains();
+    if let Ok(conn) = pool.get().await {
+        if let Ok(Ok(rows)) = conn
+            .interact(|c| crate::db::sender_reputation::select_approved_domains(c))
+            .await
+        {
+            sender_domains.extend(rows.into_iter().map(|r| r.domain.to_lowercase()));
+        }
+    }
+    sender_domains.sort();
+    sender_domains.dedup();
+
+    let filtered: std::collections::HashSet<String> = {
+        let mut acc = std::collections::HashSet::new();
+        for q in build_sender_scoped_queries(&date_range, &sender_domains) {
+            acc.extend(client.search_messages(&q, |_| {}).await?);
+        }
+        acc
+    };
+
+    let unfiltered = client.search_messages(&date_range, |_| {}).await?;
+    let unfiltered_total = unfiltered.len();
+
+    let excluded: Vec<String> = unfiltered
+        .into_iter()
+        .filter(|id| !filtered.contains(id))
+        .collect();
+    let excluded_total = excluded.len();
+
+    let mut excluded_checked = 0usize;
+    let mut missed_total = 0usize;
+    let mut missed_samples = Vec::new();
+
+    for msg_id in &excluded {
+        let Ok(msg) = client.fetch_message(msg_id, crate::ingestion::gmail_client::FetchFormat::Metadata).await else {
+            continue;
+        };
+        excluded_checked += 1;
+
+        // Gate 1 reads reputation/approved state exactly this way.
+        let domain = crate::ingestion::message_processor::MessageProcessor::extract_sender_domain(&msg);
+        let (seen, approved) = match (&domain, pool.get().await) {
+            (Some(d), Ok(conn)) => {
+                let d = d.clone();
+                conn.interact(move |c| {
+                    (
+                        crate::db::sender_reputation::has_prior_sighting(c, &d).unwrap_or(false),
+                        crate::db::sender_reputation::select_approved_domains(c)
+                            .unwrap_or_default(),
+                    )
+                })
+                .await
+                .unwrap_or((false, Vec::new()))
+            }
+            _ => (false, Vec::new()),
+        };
+
+        let verdict = crate::ingestion::message_processor::MessageProcessor::evaluate_metadata_gate(
+            &msg, seen, &approved,
+        );
+        if matches!(
+            verdict,
+            crate::ingestion::verified_senders::SenderVerificationResult::VerifiedTransactionCandidate(_)
+                | crate::ingestion::verified_senders::SenderVerificationResult::VerifiedStatementCandidate(_)
+        ) {
+            missed_total += 1;
+            if missed_samples.len() < 50 {
+                missed_samples.push(format!(
+                    "{} | {} | {}",
+                    msg_id,
+                    domain.unwrap_or_else(|| "?".into()),
+                    crate::ingestion::message_processor::MessageProcessor::header_value(
+                        &msg, "subject"
+                    )
+                ));
+            }
+        }
+    }
+
+    Ok(ScanCoverageAudit {
+        unfiltered_total,
+        filtered_total: filtered.len(),
+        excluded_total,
+        excluded_checked,
+        missed_total,
+        missed_samples,
+    })
+}
 
 #[derive(Clone, Serialize)]
 struct ScanProgressPayload {
@@ -396,10 +608,42 @@ async fn run_scan<R: tauri::Runtime>(
             .unwrap_or_else(|_| chrono::Utc::now().naive_utc().date());
         let inclusive_end = parsed_end + chrono::Duration::days(1);
 
-        let query = format!(
+        let date_range = format!(
             "after:{} before:{}",
             start_date,
             inclusive_end.format("%Y-%m-%d")
+        );
+
+        // Push Gate 1 server-side. Previously every message in the date range
+        // was fetched at `format=metadata` just to read its From header, and
+        // ~80% were then dropped as "Unknown sender domain" -- and Gmail
+        // charges the same 5 quota units for a metadata fetch as a full one,
+        // so that rejected majority was the single largest fixed cost in the
+        // scan. Asking Gmail for `from:` the known-sender set instead means we
+        // only pay for mail that can possibly matter.
+        let mut sender_domains =
+            crate::ingestion::message_processor::get_sender_validator().registry_domains();
+        // User-approved domains live in the DB, not the bundled registry, and
+        // Gate 1 honours them -- so the filter must too, or approving a sender
+        // would silently stop working for historical scans.
+        if let Ok(conn) = pool.get().await {
+            if let Ok(approved) = conn
+                .interact(|c| crate::db::sender_reputation::select_approved_domains(c))
+                .await
+            {
+                if let Ok(rows) = approved {
+                    sender_domains.extend(rows.into_iter().map(|r| r.domain.to_lowercase()));
+                }
+            }
+        }
+        sender_domains.sort();
+        sender_domains.dedup();
+
+        let queries = build_sender_scoped_queries(&date_range, &sender_domains);
+        tracing::info!(
+            domains = sender_domains.len(),
+            queries = queries.len(),
+            "Scoping scan to known sender domains"
         );
         // The search/pagination phase (`search_messages`) is one long
         // `await` from here -- for a wide date range on a large mailbox it
@@ -410,30 +654,46 @@ async fn run_scan<R: tauri::Runtime>(
         // long the search takes, indistinguishable from a genuine hang.
         // `on_page` fires after every page with the running count found so
         // far, so at minimum the numbers visibly move.
-        let account_id_for_search_progress = account_id.clone();
-        let app_for_search_progress = app.clone();
-        tracing::info!("Starting search_messages with query: {}", query);
-        let ids = client
-            .search_messages(&query, move |found_so_far| {
-                tracing::info!("search_messages found so far: {}", found_so_far);
-                let _ = crate::ipc::events::emit_event(
-                    &app_for_search_progress,
-                    crate::ipc::events::AppEvent::ScanProgress,
-                    ScanProgressPayload {
-                        account_id: account_id_for_search_progress.clone(),
-                        processed: 0,
-                        total: found_so_far,
-                        transactions_found: 0,
-                        statements_found: 0,
-                        mandate_events_found: 0,
-                        non_financial: 0,
-                        errors: 0,
-                        pending_enrichment: 0,
-                        error_message: None,
-                    },
-                );
-            })
-            .await?;
+        // Domain chunks are searched sequentially and their results unioned.
+        // `carried` keeps the UI's running total monotonic across chunks --
+        // each `search_messages` call reports a count starting from zero.
+        let mut ids: Vec<String> = Vec::new();
+        let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for query in &queries {
+            let account_id_for_search_progress = account_id.clone();
+            let app_for_search_progress = app.clone();
+            let carried = ids.len();
+            tracing::info!("Starting search_messages with query: {}", query);
+            let chunk = client
+                .search_messages(query, move |found_so_far| {
+                    let running = carried + found_so_far;
+                    tracing::info!("search_messages found so far: {}", running);
+                    let _ = crate::ipc::events::emit_event(
+                        &app_for_search_progress,
+                        crate::ipc::events::AppEvent::ScanProgress,
+                        ScanProgressPayload {
+                            account_id: account_id_for_search_progress.clone(),
+                            processed: 0,
+                            total: running,
+                            transactions_found: 0,
+                            statements_found: 0,
+                            mandate_events_found: 0,
+                            non_financial: 0,
+                            errors: 0,
+                            pending_enrichment: 0,
+                            error_message: None,
+                        },
+                    );
+                })
+                .await?;
+            // A message from a sender matching two chunks would otherwise be
+            // processed (and counted) twice.
+            for id in chunk {
+                if seen_ids.insert(id.clone()) {
+                    ids.push(id);
+                }
+            }
+        }
         tracing::info!("search_messages completed. Total messages found: {}", ids.len());
         state.all_message_ids = ids;
         state.processed_count = 0;
@@ -856,16 +1116,6 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                     }
                     Err(e) => {
                         state.errors += 1;
-                        crate::dev_review::record(
-                            "error",
-                            serde_json::json!({ "id": msg_id }),
-                            None,
-                            None,
-                            None,
-                            None,
-                            Some(&e.to_string()),
-                            Vec::new(),
-                        );
                         tracing::error!("Failed to process message {}: {}", msg_id, e);
 
                         let failed_row = crate::db::scan_failed_messages::ScanFailedMessageRow {
@@ -887,16 +1137,6 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
             }
             Err(e) => {
                 state.errors += 1;
-                crate::dev_review::record(
-                    "error",
-                    serde_json::json!({}),
-                    None,
-                    None,
-                    None,
-                    None,
-                    Some(&format!("join_error: {e}")),
-                    Vec::new(),
-                );
                 tracing::error!("Join error: {}", e);
             }
         }
@@ -1012,11 +1252,6 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
 
     state.processed_count = processed_count;
 
-    // Dev-mode manual-review export (Doc: gmail_export/reviewer_app.py) --
-    // flush now so a short scan's last (< FLUSH_EVERY) buffered records
-    // aren't left stranded in memory. No-op in release builds.
-    crate::dev_review::flush();
-
     if was_cancelled {
         // User requested to cancel and wipe progress so the next scan starts from scratch,
         // but keep any successfully extracted transactions/statements.
@@ -1127,6 +1362,80 @@ mod tests {
     use crate::db::init_db;
     use std::fs;
     use tauri::test::{mock_builder, mock_context};
+
+    /// The sender-scoped query is what stops the scan paying Gmail quota for
+    /// mail Gate 1 would reject anyway, so it has to cover every domain it was
+    /// given, keep each chunk inside the URL budget, and never silently match
+    /// nothing when the registry is empty.
+    #[test]
+    fn sender_scoped_queries_cover_every_domain_within_the_size_budget() {
+        let date_range = "after:2026-05-28 before:2026-07-29";
+
+        // Empty registry must degrade to scanning everything, not to a query
+        // that matches no mail at all.
+        assert_eq!(
+            build_sender_scoped_queries(date_range, &[]),
+            vec![date_range.to_string()]
+        );
+
+        let domains: Vec<String> = (0..204).map(|i| format!("bank{i:03}.example.com")).collect();
+        let queries = build_sender_scoped_queries(date_range, &domains);
+
+        assert!(queries.len() > 1, "204 domains must split into chunks");
+        for q in &queries {
+            assert!(
+                q.len() <= MAX_SENDER_CLAUSE_CHARS + date_range.len() + 16,
+                "chunk overshot the URL budget: {} chars",
+                q.len()
+            );
+            assert!(q.ends_with(date_range), "every chunk keeps the date range");
+        }
+        for d in &domains {
+            assert!(
+                queries.iter().any(|q| q.contains(&format!("from:{d}"))),
+                "domain {d} was dropped from the query set"
+            );
+        }
+
+        // The subject rescue query must always be present -- without it, a
+        // bank missing from the registry can never be discovered.
+        assert!(
+            queries.iter().any(|q| q.contains("subject:(debited)")),
+            "sender-scoped queries must still include the Gate 1 subject rescue"
+        );
+    }
+
+    /// Gate 1's subject rescue is the only way a bank absent from the bundled
+    /// registry ever gets picked up. The server-side prefilter can only be
+    /// lossless if its `subject:` terms cover every phrase that rescue keys
+    /// on, so a phrase added to the classifier without adding it here would
+    /// silently shrink what a scan can discover.
+    #[test]
+    fn subject_terms_cover_classifier_rescue_phrases() {
+        use crate::ingestion::content_classifier::{ContentClass, ContentClassifier};
+
+        for term in crate::ingestion::content_classifier::RESCUE_SUBJECT_TERMS {
+            // Every listed term must actually trigger the rescue classes, or
+            // it is dead weight in the query.
+            let class = ContentClassifier::classify(term, "");
+            assert!(
+                matches!(
+                    class,
+                    ContentClass::TransactionAlert | ContentClass::BalanceUpdate
+                ),
+                "RESCUE_SUBJECT_TERMS lists {term:?} but classify() returns {class:?}"
+            );
+        }
+
+        // And the query must actually carry them.
+        let q = build_rescue_subject_query("after:2026-01-01 before:2026-07-29");
+        for term in crate::ingestion::content_classifier::RESCUE_SUBJECT_TERMS {
+            assert!(
+                q.contains(&format!("subject:({term})")),
+                "rescue query is missing {term:?}"
+            );
+        }
+    }
 
     /// `run_scan_batches` now unconditionally sources `layer6_tx` from
     /// `QueueHandles` (Doc 2026-07-26 mail scan performance), so any test

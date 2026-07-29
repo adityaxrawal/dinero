@@ -31,6 +31,38 @@ fn has_amount_pattern(content: &str) -> bool {
     amount_regex().is_match(content)
 }
 
+/// Every subject-line phrase that can make `classify(subject, "")` return
+/// `TransactionAlert` or `BalanceUpdate`.
+///
+/// Gate 1's "Requirement 6" rescue re-classifies on subject alone, and a hit
+/// there promotes an *otherwise-rejected* sender to
+/// `VerifiedTransactionCandidate("Unknown Bank")` — so a bank that isn't in
+/// the bundled registry can still be picked up. A historical scan's
+/// server-side `from:` prefilter would never fetch those messages, silently
+/// killing that rescue, so it also issues a `subject:` query built from this
+/// list.
+///
+/// MUST stay a superset of the phrases checked in `classify()` rules 6/6b and
+/// `has_transaction_verb` — anything added there and not here becomes mail the
+/// scan can no longer discover. `subject_terms_cover_classifier_rescue_phrases`
+/// enforces that.
+pub const RESCUE_SUBJECT_TERMS: [&str; 12] = [
+    // has_transaction_verb / rule 6
+    "spent",
+    "debited",
+    "credited",
+    "transaction alert",
+    "payment of",
+    "purchase of",
+    "you paid",
+    // rule 6b (balance update)
+    "account update",
+    "money credited",
+    "payment received",
+    "upi payment",
+    "available balance",
+];
+
 fn has_transaction_verb(content: &str) -> bool {
     content.contains("spent")
         || content.contains("debited")

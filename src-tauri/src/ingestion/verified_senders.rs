@@ -40,6 +40,77 @@ impl SenderValidator {
         Self { registry }
     }
 
+    /// Every apex domain in the bundled registry, deduped and sorted.
+    ///
+    /// Used to push Gate 1 server-side: a historical scan asks Gmail for mail
+    /// `from:` these domains rather than downloading metadata for the whole
+    /// mailbox and rejecting ~80% of it locally at full quota cost. Gmail's
+    /// `from:` matches subdomains and substrings, so genuine subdomains
+    /// (`alerts.hdfcbank.net`) and nesting-attack lookalikes
+    /// (`hdfcbank.net.evil.com`) are both still returned and still run through
+    /// the full local `verify_sender` gate — the filter narrows what we pay to
+    /// fetch, it never becomes the security decision.
+    pub fn registry_domains(&self) -> Vec<String> {
+        let mut domains: Vec<String> = self
+            .registry
+            .senders
+            .iter()
+            .map(|s| s.domain.to_lowercase())
+            .collect();
+        domains.sort();
+        domains.dedup();
+        domains
+    }
+
+    /// Issue #9: the shortest name this registry knows the sender's bank by —
+    /// "SBI" rather than "State Bank of India" — for labelling a statement in
+    /// the Action Needed queue.
+    ///
+    /// Deliberately a separate lookup from `verify_sender` rather than a
+    /// refactor of it. That function's domain matching is load-bearing for
+    /// spoof rejection, and this one answers a purely cosmetic question; a
+    /// naming helper must never become a place where a security decision can
+    /// be accidentally changed. It is correspondingly read-only and grants
+    /// nothing: an attacker who gets a lookalike domain to resolve here wins
+    /// only a nicer label on a row that is still blocked.
+    pub fn short_name_for_sender(&self, email_address: &str) -> Option<String> {
+        let domain = email_address.rsplit_once('@')?.1.trim().to_lowercase();
+        let config = self
+            .registry
+            .senders
+            .iter()
+            .filter(|s| domain == s.domain || domain.ends_with(&format!(".{}", s.domain)))
+            .max_by_key(|s| s.domain.len())?;
+        Some(
+            config
+                .display_names
+                .iter()
+                .min_by_key(|n| n.len())
+                .unwrap_or(&config.bank_name)
+                .clone(),
+        )
+    }
+
+    /// Every name any registered bank is known by, for matching an issuer in
+    /// free text when the sender domain is unrecognised (a forwarded
+    /// statement, or a manually uploaded file).
+    pub fn all_display_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .registry
+            .senders
+            .iter()
+            .flat_map(|s| {
+                s.display_names
+                    .iter()
+                    .cloned()
+                    .chain(std::iter::once(s.bank_name.clone()))
+            })
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
     /// Verifies the sender email address and display name against the registry
     pub fn verify_sender(
         &self,

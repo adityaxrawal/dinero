@@ -69,26 +69,9 @@ pub enum ProcessResult {
 
 pub struct MessageProcessor;
 
-fn get_sender_validator() -> &'static SenderValidator {
+pub(crate) fn get_sender_validator() -> &'static SenderValidator {
     static VALIDATOR: OnceLock<SenderValidator> = OnceLock::new();
     VALIDATOR.get_or_init(SenderValidator::new)
-}
-
-/// Doc 30 TASK-GMAIL-002's metadata-first guarantee ("a rejected sender
-/// never triggers a full-body fetch") must hold by default even in debug
-/// builds -- a bare `cfg!(debug_assertions)` check would silently spend a
-/// full Gmail API call on every single rejected message (spam, newsletters,
-/// ...) in every local dev session, never just when someone actually wants
-/// to inspect a rejection's full content in the dev-review UI. Opt-in via
-/// `DINERO_DEV_REVIEW_FULL_FETCH=1`, cached once per process.
-fn dev_review_full_fetch_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        cfg!(debug_assertions)
-            && std::env::var("DINERO_DEV_REVIEW_FULL_FETCH")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false)
-    })
 }
 
 impl MessageProcessor {
@@ -182,7 +165,6 @@ impl MessageProcessor {
             }
         }
 
-        let gate1_variant = crate::dev_review::gate1_variant_name(&gate_result);
         let current_bank_name = match gate_result {
             SenderVerificationResult::VerifiedTransactionCandidate(bank_name)
             | SenderVerificationResult::VerifiedStatementCandidate(bank_name) => {
@@ -191,26 +173,11 @@ impl MessageProcessor {
             }
             SenderVerificationResult::VerifiedNoise => {
                 crate::ingestion::gmail_telemetry::gmail_telemetry().record_gate_rejection("gate1");
-                let dev_msg = if dev_review_full_fetch_enabled() {
-                    client.fetch_message(message_id, crate::ingestion::gmail_client::FetchFormat::Full).await.unwrap_or_else(|_| metadata_msg.clone())
-                } else {
-                    metadata_msg.clone()
-                };
-                crate::dev_review::record(
-                    "non_transaction",
-                    serde_json::to_value(&dev_msg).unwrap_or_default(),
-                    Some(gate1_variant),
-                    None,
-                    None,
-                    None,
-                    Some("gate1_verified_noise"),
-                    Vec::new(),
-                );
                 Self::append_to_scan_log(
                     message_id,
                     "REJECTED",
                     "gate1_verified_noise",
-                    Some(&serde_json::to_value(&metadata_msg).unwrap_or_default()),
+                    Some(&metadata_msg),
                     None,
                 )
                 .await;
@@ -222,26 +189,11 @@ impl MessageProcessor {
                 // Log to audit log and return None
                 crate::ingestion::gmail_telemetry::gmail_telemetry().record_gate_rejection("gate1");
                 Self::log_rejection(pool, scan_batcher, message_id, &reason).await?;
-                let dev_msg = if dev_review_full_fetch_enabled() {
-                    client.fetch_message(message_id, crate::ingestion::gmail_client::FetchFormat::Full).await.unwrap_or_else(|_| metadata_msg.clone())
-                } else {
-                    metadata_msg.clone()
-                };
-                crate::dev_review::record(
-                    "ignored",
-                    serde_json::to_value(&dev_msg).unwrap_or_default(),
-                    Some(gate1_variant),
-                    None,
-                    None,
-                    None,
-                    Some(&reason),
-                    Vec::new(),
-                );
                 Self::append_to_scan_log(
                     message_id,
                     "REJECTED",
                     &reason,
-                    Some(&serde_json::to_value(&metadata_msg).unwrap_or_default()),
+                    Some(&metadata_msg),
                     None,
                 )
                 .await;
@@ -261,16 +213,6 @@ impl MessageProcessor {
         if !Self::content_class_may_be_transactional(&fast_class) {
             crate::ingestion::gmail_telemetry::gmail_telemetry().record_gate_rejection("gate2a");
             let reason = format!("gate2a_reject_{:?}", fast_class);
-            crate::dev_review::record(
-                "non_transaction",
-                serde_json::to_value(&metadata_msg).unwrap_or_default(),
-                Some(gate1_variant),
-                Some(&current_bank_name),
-                Some(&format!("{fast_class:?}")),
-                None,
-                Some(&reason),
-                Vec::new(),
-            );
             if matches!(fast_class, ContentClass::Noise | ContentClass::Unknown) {
                 // Weaker signal than the full-body Gate 2 (snippet, not the
                 // whole email) -- an even stronger case for the recoverable
@@ -292,7 +234,7 @@ impl MessageProcessor {
                 message_id,
                 "REJECTED",
                 &reason,
-                Some(&serde_json::to_value(&metadata_msg).unwrap_or_default()),
+                Some(&metadata_msg),
                 None,
             )
             .await;
@@ -370,21 +312,11 @@ impl MessageProcessor {
                         .record_gate_rejection("gate2");
                     let reason = format!("gate2_reject_{:?}", content_class);
                     Self::log_rejection(pool, scan_batcher, message_id, &reason).await?;
-                    crate::dev_review::record(
-                        "non_transaction",
-                        serde_json::to_value(&full_msg).unwrap_or_default(),
-                        Some(gate1_variant),
-                        Some(&current_bank_name),
-                        Some(&format!("{content_class:?}")),
-                        None,
-                        Some(&reason),
-                        Vec::new(),
-                    );
                     Self::append_to_scan_log(
                         message_id,
                         "REJECTED",
                         &reason,
-                        Some(&serde_json::to_value(&full_msg).unwrap_or_default()),
+                        Some(&full_msg),
                         Some(body_text),
                     )
                     .await;
@@ -406,21 +338,11 @@ impl MessageProcessor {
                         &reason,
                     )
                     .await;
-                    crate::dev_review::record(
-                        "non_transaction",
-                        serde_json::to_value(&full_msg).unwrap_or_default(),
-                        Some(gate1_variant),
-                        Some(&current_bank_name),
-                        Some(&format!("{content_class:?}")),
-                        None,
-                        Some(&reason),
-                        Vec::new(),
-                    );
                     Self::append_to_scan_log(
                         message_id,
                         "REJECTED",
                         &reason,
-                        Some(&serde_json::to_value(&full_msg).unwrap_or_default()),
+                        Some(&full_msg),
                         Some(body_text),
                     )
                     .await;
@@ -428,26 +350,11 @@ impl MessageProcessor {
                     return Ok(None);
                 }
                 ContentClass::StatementEmail => {
-                    let attachment_names: Vec<String> = extracted
-                        .pdf_attachments
-                        .iter()
-                        .map(|a| a.filename.clone())
-                        .collect();
-                    crate::dev_review::record(
-                        "statement",
-                        serde_json::to_value(&full_msg).unwrap_or_default(),
-                        Some(gate1_variant),
-                        Some(&current_bank_name),
-                        Some(&format!("{content_class:?}")),
-                        None,
-                        None,
-                        attachment_names,
-                    );
                     Self::append_to_scan_log(
                         message_id,
                         "SELECTED",
                         "statement_email",
-                        Some(&serde_json::to_value(&full_msg).unwrap_or_default()),
+                        Some(&full_msg),
                         Some(body_text),
                     )
                     .await;
@@ -461,16 +368,28 @@ impl MessageProcessor {
                     } else {
                         MandateEventType::Cancellation
                     };
-                    match crate::extraction::mandate_extractor::extract_mandate_fields(
-                        &current_bank_name,
-                        body_text,
-                    ) {
+                    // Bank-specific mandate template first, global regex set
+                    // as the fallback. A bank with no `txn_type: "mandate"`
+                    // pattern (or whose pattern doesn't match this body)
+                    // resolves to exactly the previous behaviour.
+                    let mandate_fields =
+                        crate::extraction::mandate_extractor::bank_mandate_template(
+                            &current_bank_name,
+                            body_text,
+                        )
+                        .or_else(|| {
+                            crate::extraction::mandate_extractor::extract_mandate_fields(
+                                &current_bank_name,
+                                body_text,
+                            )
+                        });
+                    match mandate_fields {
                         Some(extraction) => {
                             Self::append_to_scan_log(
                                 message_id,
                                 "SELECTED",
                                 "mandate_event",
-                                Some(&serde_json::to_value(&full_msg).unwrap_or_default()),
+                                Some(&full_msg),
                                 Some(body_text),
                             )
                             .await;
@@ -483,21 +402,11 @@ impl MessageProcessor {
                                 .record_gate_rejection("gate3");
                             Self::log_rejection(pool, scan_batcher, message_id, "mandate_missing_merchant")
                                 .await?;
-                            crate::dev_review::record(
-                                "non_transaction",
-                                serde_json::to_value(&full_msg).unwrap_or_default(),
-                                Some(gate1_variant),
-                                Some(&current_bank_name),
-                                Some(&format!("{content_class:?}")),
-                                None,
-                                Some("mandate_missing_merchant"),
-                                Vec::new(),
-                            );
                             Self::append_to_scan_log(
                                 message_id,
                                 "REJECTED",
                                 "mandate_missing_merchant",
-                                Some(&serde_json::to_value(&full_msg).unwrap_or_default()),
+                                Some(&full_msg),
                                 Some(body_text),
                             )
                             .await;
@@ -545,22 +454,39 @@ impl MessageProcessor {
 
                         Self::apply_balance_update_placeholder(&content_class, &mut obs);
 
+                        // Anti-merchant gate, applied *before* Gate 3 rather
+                        // than at normalization time.
+                        //
+                        // `normalize_merchant_sync` already refuses to create a
+                        // merchants row for a generic fragment, but it runs
+                        // during reconciliation — by then Gate 3 has seen a
+                        // non-empty `merchant_raw`, passed the transaction, and
+                        // the row simply ends up permanently merchant-less with
+                        // no signal that anything was wrong. Clearing it here
+                        // instead means a generic capture is treated as the
+                        // missing counterparty it actually is, which routes it
+                        // to Layer 6 below the same way any other unresolved
+                        // field does.
+                        if let Some(raw) = obs.merchant_raw.clone() {
+                            let cleaned =
+                                crate::extraction::merchant_normalizer::strip_noise_tokens(&raw);
+                            if !crate::extraction::merchant_normalizer::is_plausible_merchant_name(
+                                &cleaned,
+                            ) {
+                                tracing::debug!(
+                                    merchant_raw = %raw,
+                                    "Rejected generic merchant candidate; routing as missing counterparty"
+                                );
+                                obs.merchant_raw = None;
+                            }
+                        }
+
                         if Self::evaluate_mandatory_field_gate(&obs) {
-                            crate::dev_review::record(
-                                "transaction",
-                                serde_json::to_value(&full_msg).unwrap_or_default(),
-                                Some(gate1_variant),
-                                Some(&current_bank_name),
-                                Some(&format!("{content_class:?}")),
-                                Some(crate::dev_review::extraction_to_json(&obs)),
-                                None,
-                                Vec::new(),
-                            );
                             Self::append_to_scan_log(
                                 message_id,
                                 "SELECTED",
                                 "transaction_alert",
-                                Some(&serde_json::to_value(&full_msg).unwrap_or_default()),
+                                Some(&full_msg),
                                 Some(body_text),
                             )
                             .await;
@@ -584,7 +510,7 @@ impl MessageProcessor {
                             // `gate3_failed:missing_counterparty`) so the user
                             // can manually complete it instead of the
                             // transaction vanishing outright.
-                            Self::record_unassigned_transaction(
+                            let ids = Self::record_unassigned_transaction(
                                 pool,
                                 message_id,
                                 obs.clone(),
@@ -593,21 +519,43 @@ impl MessageProcessor {
                                 reason,
                             )
                             .await?;
-                            crate::dev_review::record(
-                                "non_transaction",
-                                serde_json::to_value(&full_msg).unwrap_or_default(),
-                                Some(gate1_variant),
-                                Some(&current_bank_name),
-                                Some(&format!("{content_class:?}")),
-                                Some(crate::dev_review::extraction_to_json(&obs)),
-                                Some(reason),
-                                Vec::new(),
-                            );
+                            // A Gate 3 miss on the counterparty is usually the
+                            // anti-merchant gate having thrown away a generic
+                            // fragment ("YOUR HDFC BANK RUPAY CREDIT") rather
+                            // than the email genuinely naming nobody — the
+                            // amount and date parsed fine, only the merchant
+                            // didn't. That is precisely what Layer 6 is good
+                            // at, so hand it off to the same background worker
+                            // the all-layers-failed path uses instead of
+                            // leaving a permanently merchant-less row for the
+                            // user to fix by hand. Enqueue-only: the scan slot
+                            // is never blocked on inference.
+                            let counterparty_missing =
+                                reason == "gate3_failed:missing_counterparty";
+                            if counterparty_missing && llm_eligible {
+                                if let (Some((observation_id, unassigned_id)), Some(dir), Some(tx)) =
+                                    (ids, app_dir.clone(), layer6_tx.as_ref())
+                                {
+                                    let job = crate::ingestion::queues::Layer6Job {
+                                        observation_id,
+                                        unassigned_id,
+                                        bank_name: current_bank_name.clone(),
+                                        body_text: body_text.to_string(),
+                                        app_dir: dir,
+                                    };
+                                    if tx.send(job).await.is_err() {
+                                        tracing::error!(
+                                            "Layer 6 Queue closed — dropping merchant-recovery job for msg_id='{}'",
+                                            message_id
+                                        );
+                                    }
+                                }
+                            }
                             Self::append_to_scan_log(
                                 message_id,
                                 "REJECTED",
                                 reason,
-                                Some(&serde_json::to_value(&full_msg).unwrap_or_default()),
+                                Some(&full_msg),
                                 Some(body_text),
                             )
                             .await;
@@ -650,7 +598,7 @@ impl MessageProcessor {
                             message_id,
                             "PENDING",
                             "pending_llm_enrichment",
-                            Some(&serde_json::to_value(&full_msg).unwrap_or_default()),
+                            Some(&full_msg),
                             Some(body_text),
                         )
                         .await;
@@ -666,21 +614,11 @@ impl MessageProcessor {
                             "extraction_failed",
                         )
                         .await?;
-                        crate::dev_review::record(
-                            "non_transaction",
-                            serde_json::to_value(&full_msg).unwrap_or_default(),
-                            Some(gate1_variant),
-                            Some(&current_bank_name),
-                            Some(&format!("{content_class:?}")),
-                            None,
-                            Some("extraction_failed"),
-                            Vec::new(),
-                        );
                         Self::append_to_scan_log(
                             message_id,
                             "REJECTED",
                             "extraction_failed",
-                            Some(&serde_json::to_value(&full_msg).unwrap_or_default()),
+                            Some(&full_msg),
                             Some(body_text),
                         )
                         .await;
@@ -689,21 +627,11 @@ impl MessageProcessor {
                 }
             }
         } else {
-            crate::dev_review::record(
-                "non_transaction",
-                serde_json::to_value(&full_msg).unwrap_or_default(),
-                Some(gate1_variant),
-                Some(&current_bank_name),
-                None,
-                None,
-                Some("no_payload"),
-                Vec::new(),
-            );
             Self::append_to_scan_log(
                 message_id,
                 "REJECTED",
                 "no_payload",
-                Some(&serde_json::to_value(&full_msg).unwrap_or_default()),
+                Some(&full_msg),
                 None,
             )
             .await;
@@ -884,7 +812,7 @@ impl MessageProcessor {
     /// From header, for the reputation/approved-senders lookups that must
     /// happen before `evaluate_metadata_gate` runs (it needs `pool`, which
     /// that function deliberately doesn't take -- see its doc comment).
-    fn extract_sender_domain(msg: &Message) -> Option<String> {
+    pub(crate) fn extract_sender_domain(msg: &Message) -> Option<String> {
         let headers = msg.payload.as_ref()?.headers.as_ref()?;
         let from_header = headers
             .iter()
@@ -953,7 +881,7 @@ impl MessageProcessor {
     /// Metadata-format messages only carry a `headers` array on `payload`
     /// (no body) — same shape `evaluate_metadata_gate`/`extract_sender_domain`
     /// already read, factored out here since Gate 2a needs the Subject too.
-    fn header_value(msg: &Message, name: &str) -> String {
+    pub(crate) fn header_value(msg: &Message, name: &str) -> String {
         msg.payload
             .as_ref()
             .and_then(|p| p.headers.as_ref())
@@ -1117,38 +1045,27 @@ impl MessageProcessor {
         })
     }
 
+    /// Takes the `Message` itself rather than a `serde_json::Value`: only
+    /// `snippet` and two headers are ever read out of it, and serialising the
+    /// whole message (base64 body included) per call just to read three fields
+    /// was pure waste on every message the scan touched.
     async fn append_to_scan_log(
         message_id: &str,
         decision: &str,
         reason: &str,
-        raw_payload: Option<&serde_json::Value>,
+        raw_msg: Option<&Message>,
         body_text: Option<&str>,
     ) {
         let mut from = "N/A".to_string();
         let mut subject = "N/A".to_string();
         let mut snippet = "N/A".to_string();
 
-        if let Some(payload_val) = raw_payload {
-            if let Some(snip) = payload_val.get("snippet").and_then(|s| s.as_str()) {
-                snippet = snip.to_string();
+        if let Some(msg) = raw_msg {
+            if let Some(snip) = &msg.snippet {
+                snippet = snip.clone();
             }
-            if let Some(headers) = payload_val
-                .pointer("/payload/headers")
-                .and_then(|h| h.as_array())
-            {
-                for h in headers {
-                    if let (Some(name), Some(value)) = (
-                        h.get("name").and_then(|n| n.as_str()),
-                        h.get("value").and_then(|v| v.as_str()),
-                    ) {
-                        if name.eq_ignore_ascii_case("from") {
-                            from = value.to_string();
-                        } else if name.eq_ignore_ascii_case("subject") {
-                            subject = value.to_string();
-                        }
-                    }
-                }
-            }
+            from = Self::header_value(msg, "from");
+            subject = Self::header_value(msg, "subject");
         }
 
         let timestamp = chrono::Utc::now().to_rfc3339();

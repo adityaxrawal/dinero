@@ -3,1231 +3,1830 @@
     {
       "domain": "sbi.co.in",
       "bank_name": "State Bank of India",
-      "display_names": ["State Bank of India", "SBI"],
+      "display_names": [
+        "State Bank of India",
+        "SBI"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "onlinesbi.com",
       "bank_name": "State Bank of India",
-      "display_names": ["SBI", "OnlineSBI"],
+      "display_names": [
+        "SBI",
+        "OnlineSBI"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "sbi.bank.in",
       "bank_name": "State Bank of India",
-      "display_names": ["SBI"],
+      "display_names": [
+        "SBI"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "sbicard.com",
       "bank_name": "SBI Card",
-      "display_names": ["SBI Card"],
+      "display_names": [
+        "SBI Card"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "bankofbaroda.in",
       "bank_name": "Bank of Baroda",
-      "display_names": ["Bank of Baroda", "BOB"],
+      "display_names": [
+        "Bank of Baroda",
+        "BOB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "jupiter.money",
       "bank_name": "Jupiter",
-      "display_names": ["Jupiter"],
+      "display_names": [
+        "Jupiter"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "letsslice.com",
-      "bank_name": "Slice",
-      "display_names": ["Slice"],
+      "bank_name": "Slice (North East Small Finance Bank)",
+      "display_names": [
+        "Slice"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "bankofbaroda.co.in",
       "bank_name": "Bank of Baroda",
-      "display_names": ["Bank of Baroda"],
+      "display_names": [
+        "Bank of Baroda"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "bankofbaroda.bank.in",
       "bank_name": "Bank of Baroda",
-      "display_names": ["Bank of Baroda"],
+      "display_names": [
+        "Bank of Baroda"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "bankofindia.co.in",
       "bank_name": "Bank of India",
-      "display_names": ["Bank of India", "BOI"],
+      "display_names": [
+        "Bank of India",
+        "BOI"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "bankofindia.bank.in",
       "bank_name": "Bank of India",
-      "display_names": ["Bank of India"],
+      "display_names": [
+        "Bank of India"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "bankofmaharashtra.in",
       "bank_name": "Bank of Maharashtra",
-      "display_names": ["Bank of Maharashtra"],
+      "display_names": [
+        "Bank of Maharashtra"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "mahabank.co.in",
       "bank_name": "Bank of Maharashtra",
-      "display_names": ["Mahabank"],
+      "display_names": [
+        "Mahabank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "bankofmaharashtra.bank.in",
       "bank_name": "Bank of Maharashtra",
-      "display_names": ["Bank of Maharashtra"],
+      "display_names": [
+        "Bank of Maharashtra"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "canarabank.com",
       "bank_name": "Canara Bank",
-      "display_names": ["Canara Bank"],
+      "display_names": [
+        "Canara Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "canarabank.bank.in",
       "bank_name": "Canara Bank",
-      "display_names": ["Canara Bank"],
+      "display_names": [
+        "Canara Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "centralbankofindia.co.in",
       "bank_name": "Central Bank of India",
-      "display_names": ["Central Bank of India"],
+      "display_names": [
+        "Central Bank of India"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "centralbank.co.in",
       "bank_name": "Central Bank of India",
-      "display_names": ["Central Bank of India"],
+      "display_names": [
+        "Central Bank of India"
+      ],
       "classification": "transaction_candidate"
     },
     {
-      "domain": "centralbankofindia.bank.in",
+      "domain": "centralbank.bank.in",
       "bank_name": "Central Bank of India",
-      "display_names": ["Central Bank of India"],
+      "display_names": [
+        "Central Bank of India"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "indianbank.in",
       "bank_name": "Indian Bank",
-      "display_names": ["Indian Bank"],
+      "display_names": [
+        "Indian Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "indianbank.bank.in",
       "bank_name": "Indian Bank",
-      "display_names": ["Indian Bank"],
+      "display_names": [
+        "Indian Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "iob.in",
       "bank_name": "Indian Overseas Bank",
-      "display_names": ["Indian Overseas Bank", "IOB"],
+      "display_names": [
+        "Indian Overseas Bank",
+        "IOB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "iob.bank.in",
       "bank_name": "Indian Overseas Bank",
-      "display_names": ["IOB"],
+      "display_names": [
+        "IOB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "punjabandsindbank.co.in",
       "bank_name": "Punjab & Sind Bank",
-      "display_names": ["Punjab & Sind Bank"],
+      "display_names": [
+        "Punjab & Sind Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
-      "domain": "punjabandsindbank.bank.in",
+      "domain": "psb.bank.in",
       "bank_name": "Punjab & Sind Bank",
-      "display_names": ["Punjab & Sind Bank"],
+      "display_names": [
+        "Punjab & Sind Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "pnbindia.in",
       "bank_name": "Punjab National Bank",
-      "display_names": ["Punjab National Bank", "PNB"],
+      "display_names": [
+        "Punjab National Bank",
+        "PNB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "netpnb.com",
       "bank_name": "Punjab National Bank",
-      "display_names": ["PNB"],
+      "display_names": [
+        "PNB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "pnb.bank.in",
       "bank_name": "Punjab National Bank",
-      "display_names": ["PNB"],
+      "display_names": [
+        "PNB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "ucobank.com",
       "bank_name": "UCO Bank",
-      "display_names": ["UCO Bank"],
+      "display_names": [
+        "UCO Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
-      "domain": "ucobank.bank.in",
+      "domain": "uco.bank.in",
       "bank_name": "UCO Bank",
-      "display_names": ["UCO Bank"],
+      "display_names": [
+        "UCO Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "unionbankofindia.co.in",
       "bank_name": "Union Bank of India",
-      "display_names": ["Union Bank of India"],
+      "display_names": [
+        "Union Bank of India"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "unionbankonline.co.in",
       "bank_name": "Union Bank of India",
-      "display_names": ["Union Bank of India"],
+      "display_names": [
+        "Union Bank of India"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "unionbankofindia.bank.in",
       "bank_name": "Union Bank of India",
-      "display_names": ["Union Bank of India"],
+      "display_names": [
+        "Union Bank of India"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "axisbank.com",
       "bank_name": "Axis Bank",
-      "display_names": ["Axis Bank", "Axis"],
+      "display_names": [
+        "Axis Bank",
+        "Axis"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "axisbank.co.in",
       "bank_name": "Axis Bank",
-      "display_names": ["Axis Bank"],
+      "display_names": [
+        "Axis Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "axis.bank.in",
       "bank_name": "Axis Bank",
-      "display_names": ["Axis Bank"],
+      "display_names": [
+        "Axis Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "bandhanbank.com",
       "bank_name": "Bandhan Bank",
-      "display_names": ["Bandhan Bank"],
+      "display_names": [
+        "Bandhan Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "bandhan.bank.in",
       "bank_name": "Bandhan Bank",
-      "display_names": ["Bandhan Bank"],
+      "display_names": [
+        "Bandhan Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "csb.co.in",
       "bank_name": "CSB Bank",
-      "display_names": ["CSB Bank"],
+      "display_names": [
+        "CSB Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "catholicsyrianbank.com",
       "bank_name": "CSB Bank",
-      "display_names": ["CSB Bank"],
+      "display_names": [
+        "CSB Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "csb.bank.in",
       "bank_name": "CSB Bank",
-      "display_names": ["CSB Bank"],
+      "display_names": [
+        "CSB Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "cityunionbank.com",
       "bank_name": "City Union Bank",
-      "display_names": ["City Union Bank"],
+      "display_names": [
+        "City Union Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "cityunionbank.bank.in",
       "bank_name": "City Union Bank",
-      "display_names": ["City Union Bank"],
+      "display_names": [
+        "City Union Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "dcbbank.com",
       "bank_name": "DCB Bank",
-      "display_names": ["DCB Bank"],
+      "display_names": [
+        "DCB Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
-      "domain": "dcbbank.bank.in",
+      "domain": "dcb.bank.in",
       "bank_name": "DCB Bank",
-      "display_names": ["DCB Bank"],
+      "display_names": [
+        "DCB Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "dhanbank.com",
       "bank_name": "Dhanlaxmi Bank",
-      "display_names": ["Dhanlaxmi Bank"],
+      "display_names": [
+        "Dhanlaxmi Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "dhanlaxmibank.com",
       "bank_name": "Dhanlaxmi Bank",
-      "display_names": ["Dhanlaxmi Bank"],
+      "display_names": [
+        "Dhanlaxmi Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "dhanbank.bank.in",
       "bank_name": "Dhanlaxmi Bank",
-      "display_names": ["Dhanlaxmi Bank"],
+      "display_names": [
+        "Dhanlaxmi Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "federalbank.co.in",
       "bank_name": "Federal Bank",
-      "display_names": ["Federal Bank"],
+      "display_names": [
+        "Federal Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
-      "domain": "federalbank.bank.in",
+      "domain": "federal.bank.in",
       "bank_name": "Federal Bank",
-      "display_names": ["Federal Bank"],
+      "display_names": [
+        "Federal Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "hdfcbank.net",
       "bank_name": "HDFC Bank",
-      "display_names": ["HDFC Bank", "HDFCBank"],
+      "display_names": [
+        "HDFC Bank",
+        "HDFCBank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "hdfcbank.com",
       "bank_name": "HDFC Bank",
-      "display_names": ["HDFC Bank", "HDFCBank"],
+      "display_names": [
+        "HDFC Bank",
+        "HDFCBank"
+      ],
       "classification": "statement_candidate"
     },
     {
       "domain": "hdfcbank.bank.in",
       "bank_name": "HDFC Bank",
-      "display_names": ["HDFC Bank"],
+      "display_names": [
+        "HDFC Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "icicibank.com",
       "bank_name": "ICICI Bank",
-      "display_names": ["ICICI Bank", "ICICI", "ICICIBank"],
+      "display_names": [
+        "ICICI Bank",
+        "ICICI",
+        "ICICIBank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "icici.bank.in",
       "bank_name": "ICICI Bank",
-      "display_names": ["ICICI Bank"],
+      "display_names": [
+        "ICICI Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "indusind.com",
       "bank_name": "IndusInd Bank",
-      "display_names": ["IndusInd Bank"],
+      "display_names": [
+        "IndusInd Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "indusind.bank.in",
       "bank_name": "IndusInd Bank",
-      "display_names": ["IndusInd Bank"],
+      "display_names": [
+        "IndusInd Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "idfcfirstbank.com",
       "bank_name": "IDFC FIRST Bank",
-      "display_names": ["IDFC FIRST Bank"],
+      "display_names": [
+        "IDFC FIRST Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "idfcbank.com",
       "bank_name": "IDFC FIRST Bank",
-      "display_names": ["IDFC Bank"],
-      "classification": "transaction_candidate"
-    },
-    {
-      "domain": "idfcfirstbank.bank.in",
-      "bank_name": "IDFC FIRST Bank",
-      "display_names": ["IDFC FIRST Bank"],
+      "display_names": [
+        "IDFC Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "idfcfirst.bank.in",
       "bank_name": "IDFC FIRST Bank",
-      "display_names": ["IDFC FIRST Bank"],
+      "display_names": [
+        "IDFC FIRST Bank"
+      ],
       "classification": "statement_candidate"
     },
     {
       "domain": "jkbank.com",
       "bank_name": "Jammu & Kashmir Bank",
-      "display_names": ["J&K Bank"],
+      "display_names": [
+        "J&K Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "jkbank.net",
       "bank_name": "Jammu & Kashmir Bank",
-      "display_names": ["J&K Bank"],
+      "display_names": [
+        "J&K Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "jkbank.bank.in",
       "bank_name": "Jammu & Kashmir Bank",
-      "display_names": ["J&K Bank"],
+      "display_names": [
+        "J&K Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "karnatakabank.com",
       "bank_name": "Karnataka Bank",
-      "display_names": ["Karnataka Bank"],
+      "display_names": [
+        "Karnataka Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "ktkbank.com",
       "bank_name": "Karnataka Bank",
-      "display_names": ["Karnataka Bank"],
+      "display_names": [
+        "Karnataka Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "karnataka.bank.in",
       "bank_name": "Karnataka Bank",
-      "display_names": ["Karnataka Bank"],
+      "display_names": [
+        "Karnataka Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "kvb.co.in",
       "bank_name": "Karur Vysya Bank",
-      "display_names": ["Karur Vysya Bank", "KVB"],
+      "display_names": [
+        "Karur Vysya Bank",
+        "KVB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "kvb.bank.in",
       "bank_name": "Karur Vysya Bank",
-      "display_names": ["KVB"],
+      "display_names": [
+        "KVB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "kotak.com",
       "bank_name": "Kotak Mahindra Bank",
-      "display_names": ["Kotak Mahindra Bank", "Kotak"],
+      "display_names": [
+        "Kotak Mahindra Bank",
+        "Kotak"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "kotak.bank.in",
       "bank_name": "Kotak Mahindra Bank",
-      "display_names": ["Kotak"],
+      "display_names": [
+        "Kotak"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "nainitalbank.co.in",
       "bank_name": "Nainital Bank",
-      "display_names": ["Nainital Bank"],
+      "display_names": [
+        "Nainital Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "nainitalbank.bank.in",
       "bank_name": "Nainital Bank",
-      "display_names": ["Nainital Bank"],
+      "display_names": [
+        "Nainital Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "rblbank.com",
       "bank_name": "RBL Bank",
-      "display_names": ["RBL Bank"],
+      "display_names": [
+        "RBL Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "ratnakarbank.in",
       "bank_name": "RBL Bank",
-      "display_names": ["RBL Bank"],
+      "display_names": [
+        "RBL Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "rbl.bank.in",
       "bank_name": "RBL Bank",
-      "display_names": ["RBL Bank"],
+      "display_names": [
+        "RBL Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "southindianbank.com",
       "bank_name": "South Indian Bank",
-      "display_names": ["South Indian Bank"],
+      "display_names": [
+        "South Indian Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "southindianbank.bank.in",
       "bank_name": "South Indian Bank",
-      "display_names": ["South Indian Bank"],
+      "display_names": [
+        "South Indian Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "tmb.in",
       "bank_name": "Tamilnad Mercantile Bank",
-      "display_names": ["TMB"],
+      "display_names": [
+        "TMB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "tmbnet.in",
       "bank_name": "Tamilnad Mercantile Bank",
-      "display_names": ["TMB"],
+      "display_names": [
+        "TMB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "tmb.bank.in",
       "bank_name": "Tamilnad Mercantile Bank",
-      "display_names": ["TMB"],
+      "display_names": [
+        "TMB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "yesbank.in",
       "bank_name": "Yes Bank",
-      "display_names": ["Yes Bank"],
+      "display_names": [
+        "Yes Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "yes.bank.in",
       "bank_name": "Yes Bank",
-      "display_names": ["Yes Bank"],
+      "display_names": [
+        "Yes Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "idbibank.in",
       "bank_name": "IDBI Bank",
-      "display_names": ["IDBI Bank"],
+      "display_names": [
+        "IDBI Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "idbi.com",
       "bank_name": "IDBI Bank",
-      "display_names": ["IDBI Bank"],
+      "display_names": [
+        "IDBI Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
-      "domain": "idbibank.bank.in",
+      "domain": "idbi.bank.in",
       "bank_name": "IDBI Bank",
-      "display_names": ["IDBI Bank"],
+      "display_names": [
+        "IDBI Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "aubank.in",
       "bank_name": "AU Small Finance Bank",
-      "display_names": ["AU Small Finance Bank"],
+      "display_names": [
+        "AU Small Finance Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
-      "domain": "aubank.bank.in",
+      "domain": "au.bank.in",
       "bank_name": "AU Small Finance Bank",
-      "display_names": ["AU SFB"],
+      "display_names": [
+        "AU SFB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "capitalbank.co.in",
       "bank_name": "Capital Small Finance Bank",
-      "display_names": ["Capital SFB"],
+      "display_names": [
+        "Capital SFB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "capitalbank.bank.in",
       "bank_name": "Capital Small Finance Bank",
-      "display_names": ["Capital SFB"],
+      "display_names": [
+        "Capital SFB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "equitasbank.com",
       "bank_name": "Equitas Small Finance Bank",
-      "display_names": ["Equitas SFB"],
+      "display_names": [
+        "Equitas SFB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "equitas.bank.in",
       "bank_name": "Equitas Small Finance Bank",
-      "display_names": ["Equitas SFB"],
+      "display_names": [
+        "Equitas SFB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "esafbank.com",
       "bank_name": "ESAF Small Finance Bank",
-      "display_names": ["ESAF SFB"],
+      "display_names": [
+        "ESAF SFB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "esaf.bank.in",
       "bank_name": "ESAF Small Finance Bank",
-      "display_names": ["ESAF SFB"],
+      "display_names": [
+        "ESAF SFB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "suryodaybank.com",
       "bank_name": "Suryoday Small Finance Bank",
-      "display_names": ["Suryoday SFB"],
+      "display_names": [
+        "Suryoday SFB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "suryoday.bank.in",
       "bank_name": "Suryoday Small Finance Bank",
-      "display_names": ["Suryoday SFB"],
+      "display_names": [
+        "Suryoday SFB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "ujjivansfb.in",
       "bank_name": "Ujjivan Small Finance Bank",
-      "display_names": ["Ujjivan SFB"],
+      "display_names": [
+        "Ujjivan SFB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "ujjivan.bank.in",
       "bank_name": "Ujjivan Small Finance Bank",
-      "display_names": ["Ujjivan SFB"],
+      "display_names": [
+        "Ujjivan SFB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "utkarsh.bank",
       "bank_name": "Utkarsh Small Finance Bank",
-      "display_names": ["Utkarsh SFB"],
+      "display_names": [
+        "Utkarsh SFB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "utkarsh.bank.in",
       "bank_name": "Utkarsh Small Finance Bank",
-      "display_names": ["Utkarsh SFB"],
+      "display_names": [
+        "Utkarsh SFB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "janabank.com",
       "bank_name": "Jana Small Finance Bank",
-      "display_names": ["Jana SFB"],
+      "display_names": [
+        "Jana SFB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "jana.bank.in",
       "bank_name": "Jana Small Finance Bank",
-      "display_names": ["Jana SFB"],
+      "display_names": [
+        "Jana SFB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "shivalikbank.com",
       "bank_name": "Shivalik Small Finance Bank",
-      "display_names": ["Shivalik SFB"],
+      "display_names": [
+        "Shivalik SFB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "shivalik.bank.in",
       "bank_name": "Shivalik Small Finance Bank",
-      "display_names": ["Shivalik SFB"],
+      "display_names": [
+        "Shivalik SFB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "unitybank.co.in",
       "bank_name": "Unity Small Finance Bank",
-      "display_names": ["Unity SFB"],
+      "display_names": [
+        "Unity SFB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "unity.bank.in",
       "bank_name": "Unity Small Finance Bank",
-      "display_names": ["Unity SFB"],
-      "classification": "transaction_candidate"
-    },
-    {
-      "domain": "letsslice.com",
-      "bank_name": "Slice (North East Small Finance Bank)",
-      "display_names": ["Slice", "North East SFB"],
+      "display_names": [
+        "Unity SFB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "slice.bank.in",
       "bank_name": "Slice (North East Small Finance Bank)",
-      "display_names": ["Slice", "North East SFB"],
+      "display_names": [
+        "Slice",
+        "North East SFB"
+      ],
       "classification": "statement_candidate"
     },
     {
       "domain": "ippbonline.com",
       "bank_name": "India Post Payments Bank",
-      "display_names": ["IPPB"],
+      "display_names": [
+        "IPPB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "finobank.com",
       "bank_name": "Fino Payments Bank",
-      "display_names": ["Fino Payments Bank"],
+      "display_names": [
+        "Fino Payments Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "paytmbank.com",
       "bank_name": "Paytm Payments Bank",
-      "display_names": ["Paytm Payments Bank"],
+      "display_names": [
+        "Paytm Payments Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "airtel.in",
       "bank_name": "Airtel Payments Bank",
-      "display_names": ["Airtel Payments Bank"],
+      "display_names": [
+        "Airtel Payments Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "apgb.in",
       "bank_name": "Andhra Pragathi Grameena Bank",
-      "display_names": ["APGB"],
+      "display_names": [
+        "APGB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "cbgb.in",
       "bank_name": "Chaitanya Godavari Grameena Bank",
-      "display_names": ["CGGB"],
+      "display_names": [
+        "CGGB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "keralagbank.com",
       "bank_name": "Kerala Gramin Bank",
-      "display_names": ["Kerala Gramin Bank"],
+      "display_names": [
+        "Kerala Gramin Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "brkgb.com",
       "bank_name": "Baroda Rajasthan Kshetriya Gramin Bank",
-      "display_names": ["BRKGB"],
+      "display_names": [
+        "BRKGB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "citibank.co.in",
       "bank_name": "Citibank India",
-      "display_names": ["Citibank", "Citi"],
+      "display_names": [
+        "Citibank",
+        "Citi"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "citi.com",
       "bank_name": "Citigroup",
-      "display_names": ["Citi", "Citibank"],
+      "display_names": [
+        "Citi",
+        "Citibank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "citigroup.com",
       "bank_name": "Citigroup",
-      "display_names": ["Citigroup"],
+      "display_names": [
+        "Citigroup"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "hsbc.co.in",
       "bank_name": "HSBC India",
-      "display_names": ["HSBC"],
+      "display_names": [
+        "HSBC"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "hsbc.com",
       "bank_name": "HSBC",
-      "display_names": ["HSBC"],
+      "display_names": [
+        "HSBC"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "hsbc.bank.in",
       "bank_name": "HSBC India",
-      "display_names": ["HSBC"],
+      "display_names": [
+        "HSBC"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "sc.com",
       "bank_name": "Standard Chartered",
-      "display_names": ["Standard Chartered", "SCB"],
+      "display_names": [
+        "Standard Chartered",
+        "SCB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "sc.bank.in",
       "bank_name": "Standard Chartered India",
-      "display_names": ["Standard Chartered"],
+      "display_names": [
+        "Standard Chartered"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "db.com",
       "bank_name": "Deutsche Bank",
-      "display_names": ["Deutsche Bank"],
+      "display_names": [
+        "Deutsche Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "barclays.co.uk",
       "bank_name": "Barclays",
-      "display_names": ["Barclays"],
+      "display_names": [
+        "Barclays"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "barclays.com",
       "bank_name": "Barclays",
-      "display_names": ["Barclays"],
+      "display_names": [
+        "Barclays"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "dbs.com",
       "bank_name": "DBS Bank",
-      "display_names": ["DBS"],
+      "display_names": [
+        "DBS"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "dbs.bank.in",
       "bank_name": "DBS Bank India",
-      "display_names": ["DBS India"],
+      "display_names": [
+        "DBS India"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "bankofamerica.com",
       "bank_name": "Bank of America",
-      "display_names": ["Bank of America", "BofA"],
+      "display_names": [
+        "Bank of America",
+        "BofA"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "chase.com",
       "bank_name": "JPMorgan Chase",
-      "display_names": ["Chase", "JPMorgan Chase"],
+      "display_names": [
+        "Chase",
+        "JPMorgan Chase"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "jpmorgan.com",
       "bank_name": "JPMorgan Chase",
-      "display_names": ["JPMorgan"],
+      "display_names": [
+        "JPMorgan"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "wellsfargo.com",
       "bank_name": "Wells Fargo",
-      "display_names": ["Wells Fargo"],
+      "display_names": [
+        "Wells Fargo"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "goldmansachs.com",
       "bank_name": "Goldman Sachs",
-      "display_names": ["Goldman Sachs"],
+      "display_names": [
+        "Goldman Sachs"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "morganstanley.com",
       "bank_name": "Morgan Stanley",
-      "display_names": ["Morgan Stanley"],
+      "display_names": [
+        "Morgan Stanley"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "usbank.com",
       "bank_name": "U.S. Bank",
-      "display_names": ["US Bank"],
+      "display_names": [
+        "US Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "pnc.com",
       "bank_name": "PNC Bank",
-      "display_names": ["PNC"],
+      "display_names": [
+        "PNC"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "capitalone.com",
       "bank_name": "Capital One",
-      "display_names": ["Capital One"],
+      "display_names": [
+        "Capital One"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "bnpparibas.com",
       "bank_name": "BNP Paribas",
-      "display_names": ["BNP Paribas"],
+      "display_names": [
+        "BNP Paribas"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "santander.com",
       "bank_name": "Santander",
-      "display_names": ["Santander"],
+      "display_names": [
+        "Santander"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "santander.co.uk",
       "bank_name": "Santander UK",
-      "display_names": ["Santander"],
+      "display_names": [
+        "Santander"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "ubs.com",
       "bank_name": "UBS",
-      "display_names": ["UBS"],
+      "display_names": [
+        "UBS"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "creditsuisse.com",
       "bank_name": "Credit Suisse (UBS)",
-      "display_names": ["Credit Suisse"],
+      "display_names": [
+        "Credit Suisse"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "societegenerale.com",
       "bank_name": "Societe Generale",
-      "display_names": ["Societe Generale"],
+      "display_names": [
+        "Societe Generale"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "ing.com",
       "bank_name": "ING Group",
-      "display_names": ["ING"],
+      "display_names": [
+        "ING"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "lloydsbank.com",
       "bank_name": "Lloyds Bank",
-      "display_names": ["Lloyds Bank"],
+      "display_names": [
+        "Lloyds Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "natwest.com",
       "bank_name": "NatWest",
-      "display_names": ["NatWest"],
+      "display_names": [
+        "NatWest"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "rbs.co.uk",
       "bank_name": "Royal Bank of Scotland (NatWest)",
-      "display_names": ["RBS"],
+      "display_names": [
+        "RBS"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "unicredit.eu",
       "bank_name": "UniCredit",
-      "display_names": ["UniCredit"],
+      "display_names": [
+        "UniCredit"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "intesasanpaolo.com",
       "bank_name": "Intesa Sanpaolo",
-      "display_names": ["Intesa Sanpaolo"],
+      "display_names": [
+        "Intesa Sanpaolo"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "credit-agricole.com",
       "bank_name": "Credit Agricole",
-      "display_names": ["Credit Agricole"],
+      "display_names": [
+        "Credit Agricole"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "commerzbank.com",
       "bank_name": "Commerzbank",
-      "display_names": ["Commerzbank"],
+      "display_names": [
+        "Commerzbank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "rabobank.com",
       "bank_name": "Rabobank",
-      "display_names": ["Rabobank"],
+      "display_names": [
+        "Rabobank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "nordea.com",
       "bank_name": "Nordea",
-      "display_names": ["Nordea"],
+      "display_names": [
+        "Nordea"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "mufg.jp",
       "bank_name": "Mitsubishi UFJ Financial Group",
-      "display_names": ["MUFG"],
+      "display_names": [
+        "MUFG"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "mizuhogroup.com",
       "bank_name": "Mizuho Financial Group",
-      "display_names": ["Mizuho"],
+      "display_names": [
+        "Mizuho"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "smbc.co.jp",
       "bank_name": "Sumitomo Mitsui Banking Corporation",
-      "display_names": ["SMBC"],
+      "display_names": [
+        "SMBC"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "rbc.com",
       "bank_name": "Royal Bank of Canada",
-      "display_names": ["RBC"],
+      "display_names": [
+        "RBC"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "td.com",
       "bank_name": "TD Bank",
-      "display_names": ["TD Bank"],
+      "display_names": [
+        "TD Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "scotiabank.com",
       "bank_name": "Scotiabank",
-      "display_names": ["Scotiabank"],
+      "display_names": [
+        "Scotiabank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "bmo.com",
       "bank_name": "BMO",
-      "display_names": ["BMO"],
+      "display_names": [
+        "BMO"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "cibc.com",
       "bank_name": "CIBC",
-      "display_names": ["CIBC"],
+      "display_names": [
+        "CIBC"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "commbank.com.au",
       "bank_name": "Commonwealth Bank of Australia",
-      "display_names": ["CommBank"],
+      "display_names": [
+        "CommBank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "anz.com",
       "bank_name": "ANZ",
-      "display_names": ["ANZ"],
+      "display_names": [
+        "ANZ"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "anz.com.au",
       "bank_name": "ANZ Australia",
-      "display_names": ["ANZ"],
+      "display_names": [
+        "ANZ"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "westpac.com.au",
       "bank_name": "Westpac",
-      "display_names": ["Westpac"],
+      "display_names": [
+        "Westpac"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "nab.com.au",
       "bank_name": "National Australia Bank",
-      "display_names": ["NAB"],
+      "display_names": [
+        "NAB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "ocbc.com",
       "bank_name": "OCBC Bank",
-      "display_names": ["OCBC"],
+      "display_names": [
+        "OCBC"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "uob.com.sg",
       "bank_name": "United Overseas Bank",
-      "display_names": ["UOB"],
+      "display_names": [
+        "UOB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "maybank.com",
       "bank_name": "Maybank",
-      "display_names": ["Maybank"],
+      "display_names": [
+        "Maybank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "maybank2u.com.my",
       "bank_name": "Maybank",
-      "display_names": ["Maybank2u"],
+      "display_names": [
+        "Maybank2u"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "cimb.com",
       "bank_name": "CIMB Group",
-      "display_names": ["CIMB"],
+      "display_names": [
+        "CIMB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "bankmandiri.co.id",
       "bank_name": "Bank Mandiri",
-      "display_names": ["Bank Mandiri"],
+      "display_names": [
+        "Bank Mandiri"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "bri.co.id",
       "bank_name": "Bank Rakyat Indonesia",
-      "display_names": ["BRI"],
+      "display_names": [
+        "BRI"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "bca.co.id",
       "bank_name": "Bank Central Asia",
-      "display_names": ["BCA"],
+      "display_names": [
+        "BCA"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "emiratesnbd.com",
       "bank_name": "Emirates NBD",
-      "display_names": ["Emirates NBD"],
+      "display_names": [
+        "Emirates NBD"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "qnb.com",
       "bank_name": "Qatar National Bank",
-      "display_names": ["QNB"],
+      "display_names": [
+        "QNB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "bankfab.com",
       "bank_name": "First Abu Dhabi Bank",
-      "display_names": ["FAB"],
+      "display_names": [
+        "FAB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "alrajhibank.com.sa",
       "bank_name": "Al Rajhi Bank",
-      "display_names": ["Al Rajhi Bank"],
+      "display_names": [
+        "Al Rajhi Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "alahli.com",
       "bank_name": "National Commercial Bank / SNB",
-      "display_names": ["SNB"],
+      "display_names": [
+        "SNB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "itau.com.br",
       "bank_name": "Itau Unibanco",
-      "display_names": ["Itau"],
+      "display_names": [
+        "Itau"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "bradesco.com.br",
       "bank_name": "Banco Bradesco",
-      "display_names": ["Bradesco"],
+      "display_names": [
+        "Bradesco"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "bb.com.br",
       "bank_name": "Banco do Brasil",
-      "display_names": ["Banco do Brasil"],
+      "display_names": [
+        "Banco do Brasil"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "bbva.com",
       "bank_name": "BBVA",
-      "display_names": ["BBVA"],
+      "display_names": [
+        "BBVA"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "banorte.com",
       "bank_name": "Banorte",
-      "display_names": ["Banorte"],
+      "display_names": [
+        "Banorte"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "standardbank.com",
       "bank_name": "Standard Bank Group",
-      "display_names": ["Standard Bank"],
+      "display_names": [
+        "Standard Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "firstrand.co.za",
       "bank_name": "FirstRand",
-      "display_names": ["FirstRand"],
+      "display_names": [
+        "FirstRand"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "absa.africa",
       "bank_name": "Absa Group",
-      "display_names": ["Absa"],
+      "display_names": [
+        "Absa"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "nedbank.co.za",
       "bank_name": "Nedbank",
-      "display_names": ["Nedbank"],
+      "display_names": [
+        "Nedbank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "sberbank.com",
       "bank_name": "Sberbank",
-      "display_names": ["Sberbank"],
+      "display_names": [
+        "Sberbank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "vtb.com",
       "bank_name": "VTB Bank",
-      "display_names": ["VTB"],
+      "display_names": [
+        "VTB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "kbstar.com",
       "bank_name": "KB Kookmin Bank",
-      "display_names": ["Kookmin Bank"],
+      "display_names": [
+        "Kookmin Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "shinhan.com",
       "bank_name": "Shinhan Bank",
-      "display_names": ["Shinhan Bank"],
+      "display_names": [
+        "Shinhan Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "hanafn.com",
       "bank_name": "Hana Financial Group",
-      "display_names": ["Hana Bank"],
+      "display_names": [
+        "Hana Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "wooribank.com",
       "bank_name": "Woori Bank",
-      "display_names": ["Woori Bank"],
+      "display_names": [
+        "Woori Bank"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "icbc.com.cn",
       "bank_name": "Industrial and Commercial Bank of China",
-      "display_names": ["ICBC"],
+      "display_names": [
+        "ICBC"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "abchina.com",
       "bank_name": "Agricultural Bank of China",
-      "display_names": ["ABC"],
+      "display_names": [
+        "ABC"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "ccb.com",
       "bank_name": "China Construction Bank",
-      "display_names": ["CCB"],
+      "display_names": [
+        "CCB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "boc.cn",
       "bank_name": "Bank of China",
-      "display_names": ["Bank of China"],
+      "display_names": [
+        "Bank of China"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "psbc.com",
       "bank_name": "Postal Savings Bank of China",
-      "display_names": ["PSBC"],
+      "display_names": [
+        "PSBC"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "cmbchina.com",
       "bank_name": "China Merchants Bank",
-      "display_names": ["CMB"],
+      "display_names": [
+        "CMB"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "bankofcommunications.com",
       "bank_name": "Bank of Communications",
-      "display_names": ["BoCom"],
+      "display_names": [
+        "BoCom"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "hkma.gov.hk",
       "bank_name": "Hong Kong Monetary Authority (regulator, noise)",
-      "display_names": ["HKMA"],
+      "display_names": [
+        "HKMA"
+      ],
       "classification": "noise"
     },
     {
       "domain": "hangseng.com",
       "bank_name": "Hang Seng Bank",
-      "display_names": ["Hang Seng"],
+      "display_names": [
+        "Hang Seng"
+      ],
       "classification": "transaction_candidate"
     },
     {
       "domain": "bochk.com",
       "bank_name": "Bank of China (Hong Kong)",
-      "display_names": ["BOCHK"],
+      "display_names": [
+        "BOCHK"
+      ],
+      "classification": "transaction_candidate"
+    },
+    {
+      "domain": "airtelpayments.bank.in",
+      "bank_name": "Airtel Payments Bank",
+      "display_names": [
+        "Airtel Payments Bank"
+      ],
+      "classification": "transaction_candidate"
+    },
+    {
+      "domain": "apgb.bank.in",
+      "bank_name": "Andhra Pragathi Grameena Bank",
+      "display_names": [
+        "APGB"
+      ],
+      "classification": "transaction_candidate"
+    },
+    {
+      "domain": "fino.bank.in",
+      "bank_name": "Fino Payments Bank",
+      "display_names": [
+        "Fino Payments Bank"
+      ],
+      "classification": "transaction_candidate"
+    },
+    {
+      "domain": "paytm.bank.in",
+      "bank_name": "Paytm Payments Bank",
+      "display_names": [
+        "Paytm Payments Bank"
+      ],
+      "classification": "transaction_candidate"
+    },
+    {
+      "domain": "citi.bank.in",
+      "bank_name": "Citibank India",
+      "display_names": [
+        "Citibank",
+        "Citi"
+      ],
+      "classification": "transaction_candidate"
+    },
+    {
+      "domain": "ippbonline.bank.in",
+      "bank_name": "India Post Payments Bank",
+      "display_names": [
+        "IPPB"
+      ],
+      "classification": "transaction_candidate"
+    },
+    {
+      "domain": "kgb.bank.in",
+      "bank_name": "Kerala Gramin Bank",
+      "display_names": [
+        "Kerala Gramin Bank"
+      ],
+      "classification": "transaction_candidate"
+    },
+    {
+      "domain": "axisbankmail.com",
+      "bank_name": "Axis Bank",
+      "display_names": [
+        "Axis Bank",
+        "Axis"
+      ],
+      "classification": "transaction_candidate"
+    },
+    {
+      "domain": "axisbankmail.in",
+      "bank_name": "Axis Bank",
+      "display_names": [
+        "Axis Bank",
+        "Axis"
+      ],
+      "classification": "transaction_candidate"
+    },
+    {
+      "domain": "sliceit.com",
+      "bank_name": "Slice (North East Small Finance Bank)",
+      "display_names": [
+        "Slice",
+        "slice"
+      ],
+      "classification": "transaction_candidate"
+    },
+    {
+      "domain": "slicebank.com",
+      "bank_name": "Slice (North East Small Finance Bank)",
+      "display_names": [
+        "Slice",
+        "slice"
+      ],
+      "classification": "transaction_candidate"
+    },
+    {
+      "domain": "fi.money",
+      "bank_name": "Fi Money",
+      "display_names": [
+        "Fi",
+        "Fi Money"
+      ],
+      "classification": "transaction_candidate"
+    },
+    {
+      "domain": "fi.care",
+      "bank_name": "Fi Money",
+      "display_names": [
+        "Fi",
+        "Fi Money"
+      ],
+      "classification": "transaction_candidate"
+    },
+    {
+      "domain": "mycardshdfcbank.co",
+      "bank_name": "HDFC Bank",
+      "display_names": [
+        "HDFC Bank",
+        "HDFC Cards"
+      ],
+      "classification": "transaction_candidate"
+    },
+    {
+      "domain": "yesbank.email",
+      "bank_name": "Yes Bank",
+      "display_names": [
+        "Yes Bank"
+      ],
+      "classification": "transaction_candidate"
+    },
+    {
+      "domain": "getonecard.app",
+      "bank_name": "OneCard",
+      "display_names": [
+        "OneCard"
+      ],
+      "classification": "transaction_candidate"
+    },
+    {
+      "domain": "bobcard.co.in",
+      "bank_name": "BOBCARD",
+      "display_names": [
+        "BOBCARD",
+        "BOB Card"
+      ],
+      "classification": "transaction_candidate"
+    },
+    {
+      "domain": "indmoney.com",
+      "bank_name": "IndMoney",
+      "display_names": [
+        "INDmoney",
+        "IndMoney"
+      ],
+      "classification": "transaction_candidate"
+    },
+    {
+      "domain": "freo.money",
+      "bank_name": "Freo",
+      "display_names": [
+        "Freo"
+      ],
+      "classification": "transaction_candidate"
+    },
+    {
+      "domain": "freopay.com",
+      "bank_name": "Freo",
+      "display_names": [
+        "Freo"
+      ],
+      "classification": "transaction_candidate"
+    },
+    {
+      "domain": "incredmoney.com",
+      "bank_name": "InCred",
+      "display_names": [
+        "InCred"
+      ],
+      "classification": "transaction_candidate"
+    },
+    {
+      "domain": "paytm.com",
+      "bank_name": "Paytm",
+      "display_names": [
+        "Paytm"
+      ],
       "classification": "transaction_candidate"
     }
   ]

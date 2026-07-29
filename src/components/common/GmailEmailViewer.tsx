@@ -3,7 +3,7 @@ import { Mail, Eye, Sparkles, Code, DollarSign, Calendar, Hash, Store, Zap } fro
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 
-export interface QuickFillData {
+interface QuickFillData {
   field: 'amount' | 'merchant' | 'date' | 'referenceId';
   value: string;
 }

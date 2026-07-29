@@ -392,11 +392,13 @@ impl GmailClient {
     }
 
     pub async fn fetch_message(&self, message_id: &str, format: FetchFormat) -> Result<Message> {
-        let cost = match format {
-            FetchFormat::Full => 5.0,
-            FetchFormat::Metadata => 1.0,
-        };
-        gmail_quota_limiter().acquire(cost).await;
+        // Gmail bills `users.messages.get` at 5 quota units regardless of
+        // `format` -- `metadata` is cheaper in bandwidth, not in quota. Charging
+        // it 1 unit here made the local limiter believe it was using a fifth of
+        // the quota it actually spent, so a metadata-heavy scan sailed past
+        // Google's real 250 units/sec ceiling and drew server-side throttling
+        // and connection resets that surfaced as "error sending request".
+        gmail_quota_limiter().acquire(5.0).await;
 
         let url = format!(
             "{}/gmail/v1/users/me/messages/{}?format={}",
