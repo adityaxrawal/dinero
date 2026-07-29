@@ -3,6 +3,7 @@ import { RouterProvider } from 'react-router-dom';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { onAction } from '@tauri-apps/plugin-notification';
 import { API } from './lib/ipc';
+import { logger } from './lib/logger';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import ToastProvider from '@/components/ToastProvider';
 import { toast } from '@/hooks/use-toast';
@@ -96,6 +97,16 @@ function IpcEventBridge() {
 }
 
 function App() {
+  useEffect(() => {
+    logger.info('Dinero Frontend Application initialized', { route: window.location.hash || '#/' });
+
+    const handleHashChange = () => {
+      logger.info(`Route changed: ${window.location.hash || '#/'}`);
+    };
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, []);
+
   useEffect(() => {
     // Doc 16 §12.3: the 5-tier model catalog is the single source of truth
     // for RAM requirements — never a hardcoded model id/threshold here.

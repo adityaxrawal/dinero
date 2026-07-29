@@ -1,21 +1,14 @@
 import { API } from '@/lib/ipc';
+import { logger } from '@/lib/logger';
 
-/**
- * TASK-OPS-004: forwards a renderer-side error to Rust-side logging
- * (`log_renderer_error`) so it's captured in `app-logs.log` and included in
- * a diagnostic bundle export, the same as a Rust panic already is. Never
- * throws itself -- a reporting failure must not compound the error being
- * reported.
- */
 export function reportRendererError(
   message: string,
   stack: string | undefined,
   source: string
 ): void {
+  logger.error(`Uncaught Renderer Error (${source}): ${message}`, { stack, source }, 'frontend');
   API.support.logRendererError(message, stack, source).catch(() => {
-    // Best-effort only. If IPC itself is broken, there is nothing further
-    // to do here -- console.error (already called by every caller of this
-    // function) remains the fallback visible in a dev session.
+    // Best-effort fallback
   });
 }
 
