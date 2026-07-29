@@ -95,7 +95,7 @@ pub fn extract_rows(pages: &[ParsedPage], parser: BankParser) -> Result<Vec<Stat
         .collect();
     let pages = &merged_pages[..];
 
-    let rows: Vec<StatementRow> = match parser {
+    let mut rows: Vec<StatementRow> = match parser {
         BankParser::HdfcCreditCard => parse_hdfc_credit(pages),
         BankParser::IciciCreditCard => parse_icici_credit(pages),
         BankParser::AxisCreditCard => parse_axis_credit(pages),
@@ -103,8 +103,23 @@ pub fn extract_rows(pages: &[ParsedPage], parser: BankParser) -> Result<Vec<Stat
         BankParser::HdfcBankAccount => parse_hdfc_account(pages),
         BankParser::IciciBankAccount => parse_icici_account(pages),
         BankParser::SbiCreditCard => parse_sbi_credit(pages),
-        BankParser::Unknown => parse_generic_fallback(pages),
+        BankParser::Unknown => Vec::new(),
     };
+
+    // Issue #8: when the bank-specific parser recognises nothing, fall back to
+    // the universal row shape rather than giving up.
+    //
+    // Measured against real statements, none of the seven parsers above match
+    // the format their bank actually issues: real Axis rows end in `Dr`/`Cr`
+    // where `parse_axis_credit` expects a `+`/`-` prefixed amount, real HDFC
+    // rows carry a `| HH:MM` time after the date and mark credits with a
+    // leading `+` rather than a trailing `CR`, and real SBI rows use a
+    // two-digit year and a single `D`/`C`. They were written against invented
+    // samples. Rather than rewrite seven guesses into seven new guesses, the
+    // shape they all really share is handled once, in `parse_universal`.
+    if rows.is_empty() {
+        rows = parse_universal(pages);
+    }
 
     tracing::info!("Extracted {} statement rows", rows.len());
     Ok(rows)
@@ -120,8 +135,22 @@ pub fn extract_rows(pages: &[ParsedPage], parser: BankParser) -> Result<Vec<Stat
 ///   - Blank or separator lines
 ///   - Reward point redemptions
 ///   - Fee adjustment notes (not actual transaction rows)
-fn is_excluded_row(description: &str) -> bool {
-    let d = description.to_lowercase();
+pub(crate) fn is_excluded_row(description: &str) -> bool {
+    // Issue #8: punctuation is flattened before matching. Every phrase below
+    // is written as plain words, but banks print them with separators —
+    // HDFC's card-payment line is "PAYMENT - THANK YOU", which contains
+    // neither "payment thank" nor "payment received" as a literal substring
+    // and so slipped through as an ordinary debit, double-counting against
+    // the payment already captured from the bank account's own statement.
+    let d: String = description
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let d = d.as_str();
     d.is_empty()
         || d.contains("opening balance")
         || d.contains("closing balance")
@@ -149,10 +178,24 @@ fn is_excluded_row(description: &str) -> bool {
 
 /// Parses a date string to YYYY-MM-DD. Handles dd/MM/YYYY, dd-MM-YYYY, dd MMM YYYY,
 /// DD-MON-YYYY and YYYY-MM-DD.
-fn parse_date(s: &str) -> Option<String> {
+pub(crate) fn parse_date(s: &str) -> Option<String> {
     use chrono::NaiveDate;
     let s = s.trim();
-    let formats = ["%d/%m/%Y", "%d-%m-%Y", "%d %b %Y", "%d-%b-%Y", "%Y-%m-%d"];
+    // Issue #8: the two-digit-year and comma forms come from real statements —
+    // SBI prints "12 Jun 26" and HDFC prints "13 May, 2026". Without them
+    // every SBI row parsed its date as `None` and was silently dropped.
+    //
+    // The two-digit forms must be tried FIRST. `%Y` will happily consume a
+    // bare "26" and yield the year 0026, so "12 Jun 26" parsed against
+    // "%d %b %Y" succeeds with a nonsense date instead of falling through.
+    // The reverse cannot misfire: `%y` reads exactly two digits, so
+    // "12 Jun 2026" leaves "26" unconsumed and is rejected, dropping through
+    // to the four-digit forms below.
+    let formats = [
+        "%d/%m/%y", "%d-%m-%y", "%d.%m.%y", "%d %b %y", "%d-%b-%y", "%d/%b/%y", "%d %b, %y",
+        "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%d %b %Y", "%d-%b-%Y", "%d/%b/%Y", "%Y-%m-%d",
+        "%d %b, %Y",
+    ];
     for fmt in &formats {
         if let Ok(d) = NaiveDate::parse_from_str(s, fmt) {
             return Some(d.format("%Y-%m-%d").to_string());
@@ -168,7 +211,7 @@ fn parse_date(s: &str) -> Option<String> {
 
 /// Parses an amount string (Indian locale: commas, optional decimal) to minor units (paise).
 /// Strips INR/Rs/₹ prefix and leading/trailing whitespace.
-fn parse_amount_minor(s: &str) -> Option<i64> {
+pub(crate) fn parse_amount_minor(s: &str) -> Option<i64> {
     let cleaned = s
         .replace("INR", "")
         .replace("Rs.", "")
@@ -672,71 +715,200 @@ fn parse_sbi_credit(pages: &[ParsedPage]) -> Vec<StatementRow> {
     rows
 }
 
-/// Generic fallback for unsupported banks (OCR/LLM-assist path).
-/// Rows extracted here are tagged `llm_extracted = true` → `extraction_method = llm_assist`
-/// → routed to ambiguous reconciliation clusters, not auto-merged (Doc 10 §11.3).
-fn parse_generic_fallback(pages: &[ParsedPage]) -> Vec<StatementRow> {
-    tracing::warn!("Using generic OCR/LLM-assist fallback — bank format not supported in v1.0");
-    // Generic regex: date + description + amount on any line
+/// Issue #8: the row shape every Indian bank statement actually uses.
+///
+/// The seven bank-specific parsers above were each written against an
+/// invented sample, and measurement against real statements showed none of
+/// them matches what its bank issues:
+///
+/// ```text
+/// Axis   27/06/2026  AIRTEL PAYMENTS BANK L,GURGAON   UTILITIES   588.82 Dr
+/// IDFC   20/06/2026  ZEPTONOW 356 - Ref No: RT2617..  Retail       156.00 Dr
+/// SBI    12 Jun 26   ASSPL      Bangalore   IN                     304.00  D
+/// HDFC   14/04/2026| 00:00   10% Swiggy Cashback            +  C 30.30   l
+/// ```
+///
+/// The differences are cosmetic — a trailing `Dr`/`Cr` versus a single
+/// `D`/`C`, a leading `+` instead of a direction column, a two-digit year, a
+/// `| HH:MM` time, a rupee glyph that decodes as `C` — over one common
+/// structure: date, description, amount, and a marker saying which way the
+/// money went. Handling that structure once beats maintaining seven
+/// divergent guesses, so this runs whenever the bank-specific parser
+/// recognises nothing.
+fn parse_universal(pages: &[ParsedPage]) -> Vec<StatementRow> {
     let re_row = match Regex::new(
         r"(?x)
-        ^(\d{2}[/\-]\d{2}[/\-]\d{4})\s+   # date
-        (.+?)\s+                              # description
-        ([\d,]+\.\d{2})\s*$                 # amount
+        ^(?P<date>
+            \d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}          # 27/06/2026, 4-3-26
+          | \d{1,2}[\s\-/][A-Za-z]{3}[\s\-/]?,?\s?\d{2,4} # 12 Jun 26, 13-May-2026, 21/Oct/2025
+         )
+        (?:\s*\|\s*\d{1,2}:\d{2}(?::\d{2})?)?          # HDFC's '| 00:00' time
+        \s+
+        (?P<desc>\S.*?)??                               # description (+ any category column);
+                                                        # optional — HDFC and IDFC wrap it onto
+                                                        # the neighbouring lines, leaving none
+                                                        # here (see `wrapped_description`)
+        \s*
+        (?P<sign>[+\-])?\s*                             # HDFC marks credits with '+'
+        (?:[C`\x{20B9}]|Rs\.?|INR)?\s*                  # currency glyph; HDFC's decodes as 'C'
+        (?P<amount>\d[\d,]*\.\d{2})
+        (?:\s+(?P<dir>Dr|Cr|DR|CR|D|C))?                # Axis/IDFC 'Dr', SBI 'D'
+        (?:\s+\S{1,2})?                                 # HDFC's trailing bullet glyph
+        \s*$
         ",
     ) {
         Ok(r) => r,
-        Err(_) => return vec![],
+        Err(e) => {
+            tracing::error!("parse_universal regex failed to compile: {e}");
+            return vec![];
+        }
     };
 
     let mut rows = Vec::new();
-    let mut row_index = 0usize;
 
     for page in pages {
-        for line in page.text.lines() {
-            let line = line.trim();
-            if let Some(caps) = re_row.captures(line) {
-                let date_raw = &caps[1];
-                let desc = caps[2].trim().to_string();
-                let amount_str = caps[3].trim();
+        let lines: Vec<&str> = page.text.lines().map(|l| l.trim()).collect();
+        let is_row: Vec<bool> = lines.iter().map(|l| re_row.is_match(l)).collect();
 
-                if is_excluded_row(&desc) {
-                    continue;
-                }
-                let date = match parse_date(date_raw) {
-                    Some(d) => d,
-                    None => continue,
-                };
-                let amount_minor = match parse_amount_minor(amount_str) {
-                    Some(a) => a,
-                    None => continue,
-                };
-
-                let reference_id = extract_reference_id(&desc);
-                let merchant_raw = desc;
-
-                rows.push(StatementRow {
-                    transaction_date: date,
-                    merchant_raw,
-                    amount_minor,
-                    currency: "INR".to_string(),
-                    direction: "debit".to_string(), // unknown — default to debit
-                    reference_id,
-                    row_index,
-                    llm_extracted: true, // tag as LLM-assist path
-                });
-                row_index += 1;
+        for (index, line) in lines.iter().enumerate() {
+            let Some(caps) = re_row.captures(line) else {
+                continue;
+            };
+            let inline = caps.name("desc").map(|m| m.as_str().trim()).unwrap_or("");
+            let desc = if inline.is_empty() {
+                wrapped_description(&lines, &is_row, index)
+            } else {
+                inline.to_string()
+            };
+            if is_excluded_row(&desc) || !has_enough_letters(&desc) {
+                continue;
             }
+            let (Some(transaction_date), Some(amount_minor)) = (
+                caps.name("date").and_then(|m| parse_date(m.as_str())),
+                caps.name("amount").and_then(|m| parse_amount_minor(m.as_str())),
+            ) else {
+                continue;
+            };
+
+            rows.push(StatementRow {
+                transaction_date,
+                merchant_raw: merchant_column(&desc),
+                amount_minor,
+                currency: "INR".to_string(),
+                direction: resolve_direction(
+                    caps.name("dir").map(|m| m.as_str()),
+                    caps.name("sign").map(|m| m.as_str()),
+                )
+                .to_string(),
+                reference_id: extract_reference_id(&desc),
+                row_index: rows.len(),
+                llm_extracted: false,
+            });
         }
     }
     rows
+}
+
+/// Recovers the description for a row that has none of its own.
+///
+/// HDFC and IDFC both wrap a long description *around* the line carrying the
+/// date and amount, leaving that line with nothing between the two:
+///
+/// ```text
+/// PAI INTERNATIONAL - Interest Amount
+/// 25 Oct 25                        82.48 DR
+/// Amortization - <3/3>
+/// ```
+///
+/// The existing `merge_broken_line_boundaries` handles the opposite artifact
+/// (a date alone, with everything else on the next line) and cannot see this
+/// one. Three of nine real statements are laid out this way, and without
+/// this every such row was dropped: the regex needs a description and there
+/// is none on the line.
+fn wrapped_description(lines: &[&str], is_row: &[bool], index: usize) -> String {
+    let usable = |i: usize| -> Option<&str> {
+        let candidate = lines.get(i)?;
+        // A neighbouring row belongs to its own transaction, and a line
+        // carrying its own amount is a total or a balance, not a
+        // continuation.
+        if *is_row.get(i)? || candidate.contains(char::is_numeric) && looks_like_a_total(candidate)
+        {
+            return None;
+        }
+        (candidate.chars().filter(|c| c.is_alphabetic()).count() >= 2).then_some(*candidate)
+    };
+
+    [index.checked_sub(1).and_then(usable), usable(index + 1)]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Whether a continuation candidate is really a figure of its own.
+fn looks_like_a_total(line: &str) -> bool {
+    Regex::new(r"\d[\d,]*\.\d{2}")
+        .map(|re| re.is_match(line))
+        .unwrap_or(false)
+}
+
+/// Which way the money went, from whichever marker the bank happened to use.
+/// Debit is the default: a purchase is what an unannotated row is on every
+/// statement observed, and treating an unknown row as income would overstate
+/// what the user earned.
+fn resolve_direction(marker: Option<&str>, sign: Option<&str>) -> &'static str {
+    match marker.map(|m| m.to_ascii_uppercase()).as_deref() {
+        Some("CR") | Some("C") => return "credit",
+        Some("DR") | Some("D") => return "debit",
+        _ => {}
+    }
+    match sign {
+        Some("+") => "credit",
+        _ => "debit",
+    }
+}
+
+/// Keeps only the description column, dropping whatever the bank prints
+/// beside it.
+///
+/// Now that `statements::layout` preserves column geometry, the wide run of
+/// spaces separating cells is real information. Real rows carry a merchant
+/// category or a city in the next column —
+/// `"ZEPTONOW 356 - Ref No: RT2617…          Retail Outlet Services"` and
+/// `"ASSPL         Bangalore   IN"` — and keeping it would make
+/// `merchant_display_name` the concatenation of the merchant and its
+/// category, which is exactly the kind of junk name issue #12's cleanup pass
+/// exists to repair. Better not to create it.
+///
+/// Falls back to the whole description when the first column is too thin to
+/// be a merchant name on its own, so a row is never made worse than before.
+fn merchant_column(description: &str) -> String {
+    let first = description
+        .split("   ")
+        .find(|segment| !segment.trim().is_empty())
+        .unwrap_or(description)
+        .trim();
+    if has_enough_letters(first) {
+        first.to_string()
+    } else {
+        description.trim().to_string()
+    }
+}
+
+/// Guards against matching a line that merely *looks* like a transaction.
+/// A real statement contains rows such as
+/// `15/06/2026 To 14/07/2026    Rs. 1,08,000.00` — a billing period beside a
+/// credit limit, which satisfies date-description-amount perfectly and would
+/// otherwise be imported as a ₹1,08,000 purchase from a merchant called "To".
+fn has_enough_letters(description: &str) -> bool {
+    description.chars().filter(|c| c.is_alphabetic()).count() >= 3
 }
 
 // ── Reference ID extraction ───────────────────────────────────────────────────
 
 /// Extracts a reference ID (UTR/RRN) from a description string.
 /// Heuristic: a 12-digit numeric sequence.
-fn extract_reference_id(description: &str) -> Option<String> {
+pub(crate) fn extract_reference_id(description: &str) -> Option<String> {
     let re = Regex::new(r"\b(\d{12})\b").ok()?;
     re.captures(description)
         .and_then(|c| c.get(1))
@@ -834,6 +1006,141 @@ mod tests {
         }
     }
 
+    // ── Issue #8: the row shapes real banks actually issue ────────────────
+    //
+    // Every case below is the literal line layout taken from a real
+    // statement (values changed), after `statements::layout` rebuilds the
+    // column geometry pdfium's `all()` destroys. Measured across nine real
+    // statements, the seven bank-specific parsers above match *none* of
+    // these and contribute zero rows; all of them come from
+    // `parse_universal`.
+
+    /// Axis and IDFC: a merchant-category column between the description and
+    /// the amount, direction as a trailing `Dr`/`Cr`. `parse_axis_credit`
+    /// expects a `+`/`-` prefixed amount and matches nothing here.
+    #[test]
+    fn real_axis_row_shape_is_parsed() {
+        let pages = vec![make_page(
+            "04/07/2026    AIRTEL PAYMENTS BANK L,GURGAON      UTILITIES     588.82 Dr\n\
+             05/07/2026    AMAZON REFUND MUMBAI                RETAIL      1,200.00 Cr\n\
+             01/07/2026    BBPS PAYMENT RECEIVED - PU016182HK9XJLQE9713    15,636.26 Cr\n",
+        )];
+        let rows = parse_universal(&pages);
+        // Two rows, not three: the third line is the card bill being paid
+        // via BBPS, which the exclusion list drops. Counting it would
+        // double the payment already captured from the paying account.
+        assert_eq!(rows.len(), 2, "got {rows:?}");
+        assert_eq!(rows[0].transaction_date, "2026-07-04");
+        assert_eq!(rows[0].amount_minor, 58_882);
+        assert_eq!(rows[0].direction, "debit");
+        // The category column is dropped — keeping it would make the
+        // merchant name "AIRTEL PAYMENTS BANK L,GURGAON UTILITIES".
+        assert_eq!(rows[0].merchant_raw, "AIRTEL PAYMENTS BANK L,GURGAON");
+        assert_eq!(rows[1].direction, "credit");
+        assert_eq!(rows[1].amount_minor, 120_000);
+    }
+
+    /// SBI: a two-digit year and a single-letter direction marker.
+    #[test]
+    fn real_sbi_row_shape_is_parsed() {
+        let pages = vec![make_page(
+            "12 Jun 26   ASSPL         Bangalore   IN            304.00  D\n\
+             09 Jun 26   CARD CASHBACK CREDIT                    250.00  C\n",
+        )];
+        let rows = parse_universal(&pages);
+        assert_eq!(rows.len(), 2, "got {rows:?}");
+        // "12 Jun 26" must be 2026, not the year 26 — chrono's `%Y` accepts a
+        // bare "26" and silently produced "0026-06-12" until the two-digit
+        // formats were tried first.
+        assert_eq!(rows[0].transaction_date, "2026-06-12");
+        assert_eq!(rows[0].direction, "debit");
+        assert_eq!(rows[1].direction, "credit");
+    }
+
+    /// HDFC: a `| HH:MM` time after the date, a rupee glyph that decodes as
+    /// `C`, credits marked by a leading `+` with no direction column at all,
+    /// and a trailing bullet glyph.
+    #[test]
+    fn real_hdfc_row_shape_is_parsed() {
+        let pages = vec![make_page(
+            "14/04/2026| 00:00    10% Swiggy Cashback_Reversal        C 21.50   l\n\
+             14/04/2026| 00:00    10% Swiggy Cashback              +  C 30.30   l\n",
+        )];
+        let rows = parse_universal(&pages);
+        assert_eq!(rows.len(), 2, "got {rows:?}");
+        assert_eq!(rows[0].transaction_date, "2026-04-14");
+        assert_eq!(rows[0].amount_minor, 2_150);
+        assert_eq!(rows[0].direction, "debit");
+        assert_eq!(rows[1].amount_minor, 3_030);
+        assert_eq!(rows[1].direction, "credit", "a leading '+' means credit");
+    }
+
+    /// HDFC and IDFC wrap a long description around the date/amount line,
+    /// leaving nothing between the two. Three of nine real statements are
+    /// laid out this way and every such row was dropped before.
+    #[test]
+    fn a_description_wrapped_around_the_row_is_recovered() {
+        let pages = vec![make_page(
+            "Purchases, EMIs & Other Debits\n\
+             PAI INTERNATIONAL - Interest Amount\n\
+             25 Oct 25                        82.48 DR\n\
+             Amortization - <3/3>\n",
+        )];
+        let rows = parse_universal(&pages);
+        assert_eq!(rows.len(), 1, "got {rows:?}");
+        assert_eq!(
+            rows[0].merchant_raw,
+            "PAI INTERNATIONAL - Interest Amount Amortization - <3/3>"
+        );
+        assert_eq!(rows[0].amount_minor, 8_248);
+    }
+
+    /// The guard against a line that merely looks like a transaction. Real
+    /// statements print a billing period beside a credit limit, which
+    /// satisfies date-description-amount perfectly and would import as a
+    /// ₹1,08,000 purchase from a merchant called "To".
+    #[test]
+    fn a_billing_period_line_is_not_a_transaction() {
+        let pages = vec![make_page(
+            "15/06/2026 To 14/07/2026                        Rs. 1,08,000.00\n",
+        )];
+        assert!(parse_universal(&pages).is_empty());
+    }
+
+    /// The fallback must not displace a bank parser that does recognise its
+    /// format — it only runs when nothing was found.
+    #[test]
+    fn the_universal_parser_only_runs_when_the_bank_parser_finds_nothing() {
+        let recognised = "01/12/2023  SWIGGY ORDER BANGALORE     1,250.00  DR\n";
+        let rows = extract_rows(&[make_page(recognised)], BankParser::HdfcCreditCard).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(
+            !rows[0].llm_extracted,
+            "a bank-parser row must not be tagged as fallback-extracted"
+        );
+
+        // The same page routed through a parser that cannot read it still
+        // yields the row, via the fallback.
+        let rows = extract_rows(&[make_page(recognised)], BankParser::Unknown).unwrap();
+        assert_eq!(rows.len(), 1);
+    }
+
+    /// Two-digit and four-digit years must both round-trip, in every
+    /// separator style the statements use.
+    #[test]
+    fn real_date_formats_all_parse() {
+        for (input, want) in [
+            ("27/06/2026", "2026-06-27"),
+            ("12 Jun 26", "2026-06-12"),
+            ("25 Oct 25", "2025-10-25"),
+            ("13 May, 2026", "2026-05-13"),
+            ("21/Oct/2025", "2025-10-21"),
+            ("13-05-2026", "2026-05-13"),
+        ] {
+            assert_eq!(parse_date(input).as_deref(), Some(want), "for {input}");
+        }
+    }
+
     #[test]
     fn test_statement_row_json_round_trip() {
         let row = StatementRow {
@@ -864,11 +1171,18 @@ mod tests {
         let pages = vec![make_page(text)];
         let rows = parse_hdfc_credit(&pages);
 
-        // "Opening Balance" and "Total Transactions" must be excluded
+        // "Opening Balance" and "Total Transactions" are excluded as headers
+        // and totals — and so is "PAYMENT - THANK YOU", which is the card
+        // being paid off rather than a transaction. This test previously
+        // expected three rows: `is_excluded_row` matched on raw substrings,
+        // so the sibling AMEX case ("PAYMENT RECEIVED - THANK YOU") was
+        // excluded while HDFC's punctuated wording of the same line was not.
+        // Counting it would double the payment against the debit already
+        // captured from the paying account's own statement.
         assert_eq!(
             rows.len(),
-            3,
-            "Must extract exactly 3 rows (excluding headers and totals)"
+            2,
+            "Must extract exactly 2 rows (excluding headers, totals and the card payment)"
         );
 
         let swiggy = &rows[0];
@@ -878,11 +1192,7 @@ mod tests {
         assert_eq!(swiggy.direction, "debit");
         assert_eq!(swiggy.currency, "INR");
 
-        let payment = &rows[1];
-        assert_eq!(payment.direction, "credit");
-        assert_eq!(payment.amount_minor, 2_000_000);
-
-        let amazon = &rows[2];
+        let amazon = &rows[1];
         assert_eq!(amazon.reference_id, Some("123456789012".to_string()));
         assert_eq!(amazon.direction, "debit");
     }
@@ -943,7 +1253,7 @@ mod tests {
         let text = "HDFC Bank Credit Card Statement\n\
                     01/12/2023\n\
                     SWIGGY ORDER BANGALORE                    1,250.00  DR\n\
-                    15/12/2023  PAYMENT - THANK YOU                       20,000.00  CR\n";
+                    15/12/2023  BIGBASKET BANGALORE                       2,000.00  DR\n";
         let pages = vec![make_page(text)];
         let rows = extract_rows(&pages, BankParser::HdfcCreditCard).unwrap();
 
@@ -972,6 +1282,13 @@ mod tests {
             "Sub Total",
             "Total Amount",
             "Reward Points Redeemed",
+            // Issue #8: the same phrases as the banks actually punctuate
+            // them. Matching on raw substrings let "PAYMENT - THANK YOU"
+            // through while "PAYMENT RECEIVED - THANK YOU" was caught.
+            "PAYMENT - THANK YOU",
+            "PAYMENT RECEIVED - THANK YOU",
+            "Sub-total",
+            "Opening  Balance",
         ];
         for desc in &excluded_descs {
             assert!(

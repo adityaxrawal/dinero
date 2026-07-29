@@ -30,6 +30,17 @@ pub enum AppEvent {
     /// treating a cancellation as a completion would misrepresent it to the
     /// UI (100% progress bar, "Sync Now" re-enabled as if nothing is pending).
     ScanCancelled,
+    /// Issue #12: progress of the user-triggered LLM merchant/category
+    /// cleanup pass. Distinct from `BackgroundTaskProgress` because the
+    /// Settings panel needs the run's identity to offer "undo this run",
+    /// which a generic progress payload cannot carry.
+    MerchantCleanupProgress,
+    /// Issue #7: progress of the user-triggered "Re-parse All" pass over the
+    /// Action Needed queue. Distinct from `BackgroundTaskProgress` because
+    /// the queue panel needs the per-outcome tally (parsed / still locked /
+    /// expired) to tell the user what actually changed, which a generic
+    /// progress payload cannot carry.
+    StatementReparseProgress,
     /// TASK-DESK-001: native macOS menu items that need React (AppShell) to
     /// act on them -- navigation, sidebar toggle, and the upload-statement
     /// flow -- rather than a direct backend command invocation.
@@ -65,6 +76,8 @@ impl AppEvent {
             Self::SystemWarning => "system_warning",
             Self::SystemWarningCleared => "system_warning_cleared",
             Self::ScanCancelled => "scan_cancelled",
+            Self::MerchantCleanupProgress => "merchant_cleanup_progress",
+            Self::StatementReparseProgress => "statement_reparse_progress",
             Self::MenuNavigate => "menu_navigate",
             Self::MenuToggleSidebar => "menu_toggle_sidebar",
             Self::MenuUploadStatementRequested => "menu_upload_statement_requested",

@@ -59,31 +59,49 @@ pub fn extract_metadata(pages: &[ParsedPage]) -> Result<StatementMetadata> {
     // ── Billing period ───────────────────────────────────────────────────────
     // Patterns cover common Indian bank header terminology (Doc 10 §9.1).
     // Dates in bank statements: dd/MM/YYYY, dd-MM-YYYY, dd MMM YYYY, DD-MON-YYYY
+    // Issue #8: the wordings below are the ones real statements use —
+    // "Billing Period  14 Apr, 2026 - 13 May, 2026" (HDFC),
+    // "for Statement Period: 10 Jun 26 to 09 Jul 26" (SBI),
+    // "21/Oct/2025 - 20/Nov/2025" (IDFC). The previous patterns accepted only
+    // `dd/MM/YYYY` and only the word "to" as the separator, so none of them
+    // matched any real statement and the billing period was always absent —
+    // which in turn disabled the billing-cycle duplicate check entirely,
+    // since it only runs when both ends of the period are known.
+    let period_labels = r"(?:billing|statement)\s+period";
     meta.billing_period_start = extract_date_pattern(
         header_text,
         &[
-            // HDFC: "Statement Period: 01/12/2023 to 31/12/2023"
-            r"(?i)statement\s+period[:\s]+(\d{2}[/\-]\d{2}[/\-]\d{4})",
-            r"(?i)billing\s+from[:\s]+(\d{2}[/\-]\d{2}[/\-]\d{4})",
-            r"(?i)from\s+date[:\s]+(\d{2}[/\-]\d{2}[/\-]\d{4})",
-            // SBI: "01 Dec 2023 to 31 Dec 2023"
-            r"(?i)(\d{2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4})\s+to\s+",
-            // Generic YYYY-MM-DD start
-            r"(?i)period\s+from[:\s]+(\d{4}-\d{2}-\d{2})",
+            format!(r"(?i){period_labels}\s*:?\s+({DATE})"),
+            r"(?i)billing\s+from[:\s]+(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})".to_string(),
+            r"(?i)from\s+date[:\s]+(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})".to_string(),
+            r"(?i)period\s+from[:\s]+(\d{4}-\d{2}-\d{2})".to_string(),
         ],
-    );
+    )
+    .or_else(|| value_below_label(header_text, period_labels, DATE));
     meta.billing_period_end = extract_date_pattern(
         header_text,
         &[
-            // HDFC: "... to 31/12/2023"
-            r"(?i)statement\s+period[:\s]+\d{2}[/\-]\d{2}[/\-]\d{4}\s+to\s+(\d{2}[/\-]\d{2}[/\-]\d{4})",
-            r"(?i)billing\s+to[:\s]+(\d{2}[/\-]\d{2}[/\-]\d{4})",
-            r"(?i)to\s+date[:\s]+(\d{2}[/\-]\d{2}[/\-]\d{4})",
-            // SBI: "01 Dec 2023 to 31 Dec 2023" — capture second date
-            r"(?i)\d{2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}\s+to\s+(\d{2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4})",
-            r"(?i)period\s+to[:\s]+(\d{4}-\d{2}-\d{2})",
+            // The second date of the pair, whichever separator joins them.
+            format!(r"(?i){period_labels}\s*:?\s+(?:{DATE})\s*(?:-|–|—|to)\s*({DATE})"),
+            r"(?i)billing\s+to[:\s]+(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})".to_string(),
+            r"(?i)to\s+date[:\s]+(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})".to_string(),
+            r"(?i)period\s+to[:\s]+(\d{4}-\d{2}-\d{2})".to_string(),
         ],
     );
+
+    // The date printed on the statement itself. No pattern populated this
+    // before, so it was documented as "routinely blank and filled in by the
+    // user during draft review" — every real statement in fact prints it.
+    meta.statement_date = extract_date_pattern(
+        header_text,
+        &[format!(
+            r"(?i)statement\s+(?:date|generation\s+date)\s*:?\s+({DATE})"
+        )],
+    )
+    .or_else(|| {
+        value_below_label(header_text, r"statement\s+(?:generation\s+)?date", DATE)
+    })
+    .and_then(|d| normalize_date_string(&d));
 
     // Normalize extracted dates to YYYY-MM-DD
     if let Some(ref d) = meta.billing_period_start.clone() {
@@ -94,53 +112,70 @@ pub fn extract_metadata(pages: &[ParsedPage]) -> Result<StatementMetadata> {
     }
 
     // ── Due date ─────────────────────────────────────────────────────────────
+    let due_labels = r"(?:payment\s+due\s+date|due\s+date|pay\s+by|amount\s+due\s+date)";
     meta.due_date = extract_date_pattern(
         header_text,
-        &[
-            r"(?i)payment\s+due\s+date[:\s]+(\d{2}[/\-]\d{2}[/\-]\d{4})",
-            r"(?i)due\s+date[:\s]+(\d{2}[/\-]\d{2}[/\-]\d{4})",
-            r"(?i)pay\s+by[:\s]+(\d{2}[/\-]\d{2}[/\-]\d{4})",
-            r"(?i)pay\s+by[:\s]+(\d{2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4})",
-            r"(?i)amount\s+due\s+date[:\s]+(\d{2}[/\-]\d{2}[/\-]\d{4})",
-        ],
-    );
+        &[format!(r"(?i){due_labels}\s*:?\s+({DATE})")],
+    )
+    .or_else(|| value_below_label(header_text, due_labels, DATE));
     if let Some(ref d) = meta.due_date.clone() {
         meta.due_date = normalize_date_string(d);
     }
 
     // ── Monetary fields (search full document, not just header) ──────────────
+    // Issue #8: `( \` )` in SBI's "**Minimum Amount Due ( ` )" is the rupee
+    // symbol as pdfium decodes it, so the label and its value are separated
+    // by a currency annotation the old `[:\s]+` could not cross. And on Axis
+    // the figure sits on the line *below* its label, which no same-line
+    // pattern can reach — hence the `value_below_label` fallback.
+    // Decimals are required. A bare digit run matches far too much — SBI's
+    // header carries a statement reference number ("A26070900725") and a
+    // GSTIN beside its amounts, and an unanchored `[\d,]{2,}` picked one of
+    // those up as a minimum due of ₹26,07,09,00,725.
+    const AMOUNT: &str = r"\d[\d,]*\.\d{2}";
+    let currency = r"(?:\(\s*[`\x{20B9}]?\s*\)|INR|Rs\.?|[`\x{20B9}])?";
+    let min_labels = r"\*{0,2}min(?:imum)?\s+(?:amount\s+|payment\s+)?due";
     meta.minimum_due = extract_amount_minor(
         header_text,
-        &[
-            r"(?i)minimum\s+(?:amount\s+)?due[:\s]+(?:INR|Rs\.?|₹)?\s*([\d,]+(?:\.\d{1,2})?)",
-            r"(?i)min(?:imum)?\s+due[:\s]+(?:INR|Rs\.?|₹)?\s*([\d,]+(?:\.\d{1,2})?)",
-            r"(?i)minimum\s+payment\s+due[:\s]+(?:INR|Rs\.?|₹)?\s*([\d,]+(?:\.\d{1,2})?)",
-        ],
-    );
+        &[format!(r"(?i){min_labels}\s*{currency}\s*:?\s*{currency}\s*({AMOUNT})")],
+    )
+    .or_else(|| {
+        value_below_label(header_text, min_labels, AMOUNT).and_then(|v| parse_amount(&v))
+    });
+
+    let total_labels = r"\*{0,2}(?:total\s+(?:amount|payment)\s+due|outstanding\s+balance|current\s+balance|closing\s+balance|amount\s+payable)";
     meta.current_balance = extract_amount_minor(
         header_text,
-        &[
-            r"(?i)total\s+amount\s+due[:\s]+(?:INR|Rs\.?|₹)?\s*([\d,]+(?:\.\d{1,2})?)",
-            r"(?i)outstanding\s+balance[:\s]+(?:INR|Rs\.?|₹)?\s*([\d,]+(?:\.\d{1,2})?)",
-            r"(?i)current\s+balance[:\s]+(?:INR|Rs\.?|₹)?\s*([\d,]+(?:\.\d{1,2})?)",
-            r"(?i)closing\s+balance[:\s]+(?:INR|Rs\.?|₹)?\s*([\d,]+(?:\.\d{1,2})?)",
-            r"(?i)amount\s+payable[:\s]+(?:INR|Rs\.?|₹)?\s*([\d,]+(?:\.\d{1,2})?)",
-        ],
-    );
+        &[format!(r"(?i){total_labels}\s*{currency}\s*:?\s*{currency}\s*({AMOUNT})")],
+    )
+    .or_else(|| {
+        value_below_label(header_text, total_labels, AMOUNT).and_then(|v| parse_amount(&v))
+    });
 
     // ── Card / account identity ───────────────────────────────────────────────
     // Masked card number patterns: XXXX XXXX XXXX 1234, **** **** **** 1234, ending 1234
+    // Issue #8: these capture the *whole* masked token and hand it to
+    // `clean_masked_identifier`, rather than capturing the first two-to-four
+    // digits after the label themselves.
+    //
+    // HDFC prints `Credit Card No.   526873XXXXXX0364`. The previous
+    // `card\s+no\.?[:\s]*[Xx*\s\-]*(\d{2,4})` matched the *leading* digits and
+    // returned "5268" — the BIN, identical across every HDFC card of that
+    // product, and not the tail at all. That value became the instrument's
+    // `masked_identifier`, so separate cards collapsed onto one instrument
+    // and the number shown to the user was one no card ends with.
     meta.masked_identifier = extract_text_pattern(
         header_text,
         &[
-            r"(?i)card\s+(?:ending|number|no\.?)[:\s]*[Xx*\s\-]*(\d{2,4})",
-            r"(?i)a/c\s+(?:no\.?|number|ending)[:\s]*[Xx*\s\-]*(\d{2,4})",
-            r"(?i)account\s+(?:no\.?|number|ending)[:\s]*[Xx*\s\-]*(\d{2,4})",
-            // Inline masked card: XX-1234 or XXXX1234 or XXXX 1234
-            r"(?i)[Xx*]{2,}[\s\-]*(\d{2,4})\b",
+            r"(?i)card\s+(?:ending|number|no\.?)\s*:?\s*([\dXx*][\dXx*\s\-]{3,24}\d)",
+            r"(?i)a/c\s+(?:no\.?|number|ending)\s*:?\s*([\dXx*][\dXx*\s\-]{3,24}\d)",
+            r"(?i)account\s+(?:no\.?|number|ending)\s*:?\s*([\dXx*][\dXx*\s\-]{3,24}\d)",
+            // Inline masked card with no label: XXXX XXXX XXXX 1234, XX-1234.
+            r"(?i)([Xx*]{2,}[\dXx*\s\-]*\d{2,4})\b",
         ],
     )
-    .map(|s| clean_masked_identifier(&s));
+    .map(|s| clean_masked_identifier(&s))
+    .filter(|s| !s.is_empty());
 
     // Network: VISA, MASTERCARD, RUPAY, AMEX
     meta.network = extract_text_pattern(
@@ -196,37 +231,26 @@ fn detect_issuer(text: &str) -> Option<String> {
 ///   dd/MM/YYYY, dd-MM-YYYY  → e.g. 31/01/2024, 31-01-2024
 ///   dd MMM YYYY             → e.g. 31 Jan 2024
 ///   YYYY-MM-DD              → already correct, passed through
+/// Issue #8: delegates to `row_extractor::parse_date`, which knows every date
+/// form observed across the real statements — including the two-digit years
+/// SBI uses ("10 Jun 26"), the comma form HDFC uses ("13 May, 2026") and the
+/// slashed month IDFC uses ("21/Oct/2025"). This function previously
+/// recognised five formats, none of which covered those three, so the header
+/// dates of most real statements normalised to `None` even when the regex
+/// above had captured them correctly.
 fn normalize_date_string(date: &str) -> Option<String> {
-    use chrono::NaiveDate;
-    let date = date.trim();
-
-    // YYYY-MM-DD (pass through)
-    if let Ok(d) = NaiveDate::parse_from_str(date, "%Y-%m-%d") {
-        return Some(d.format("%Y-%m-%d").to_string());
-    }
-    // dd/MM/YYYY
-    if let Ok(d) = NaiveDate::parse_from_str(date, "%d/%m/%Y") {
-        return Some(d.format("%Y-%m-%d").to_string());
-    }
-    // dd-MM-YYYY
-    if let Ok(d) = NaiveDate::parse_from_str(date, "%d-%m-%Y") {
-        return Some(d.format("%Y-%m-%d").to_string());
-    }
-    // dd MMM YYYY (e.g. "31 Jan 2024")
-    if let Ok(d) = NaiveDate::parse_from_str(date, "%d %b %Y") {
-        return Some(d.format("%Y-%m-%d").to_string());
-    }
-    // DD-MON-YYYY (e.g. "31-JAN-2024") — uppercase month
-    let upper = date.to_uppercase();
-    if let Ok(d) = NaiveDate::parse_from_str(&upper, "%d-%b-%Y") {
-        return Some(d.format("%Y-%m-%d").to_string());
-    }
-    None
+    crate::statements::row_extractor::parse_date(date)
 }
 
-fn extract_date_pattern(text: &str, patterns: &[&str]) -> Option<String> {
+/// A date as the banks write it in a header. Shared by every pattern below so
+/// the accepted forms cannot drift apart from `normalize_date_string`'s.
+const DATE: &str = r"\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}|\d{1,2}[\s\-/][A-Za-z]{3}[\s\-/]?,?\s?\d{2,4}";
+
+/// Generic over the pattern type so a call site can mix literals with
+/// patterns built from the shared `DATE` fragment, which are `String`.
+fn extract_date_pattern<S: AsRef<str>>(text: &str, patterns: &[S]) -> Option<String> {
     for pat in patterns {
-        if let Ok(re) = Regex::new(pat) {
+        if let Ok(re) = Regex::new(pat.as_ref()) {
             if let Some(caps) = re.captures(text) {
                 if let Some(m) = caps.get(1) {
                     return Some(m.as_str().to_string());
@@ -237,9 +261,17 @@ fn extract_date_pattern(text: &str, patterns: &[&str]) -> Option<String> {
     None
 }
 
-fn extract_amount_minor(text: &str, patterns: &[&str]) -> Option<i64> {
+/// Parses a rupee figure as printed in a header into minor units.
+fn parse_amount(raw: &str) -> Option<i64> {
+    let cleaned = raw.replace(',', "");
+    cleaned.parse::<f64>().ok().map(|v| (v * 100.0).round() as i64)
+}
+
+/// Generic over the pattern type so a call site can mix literals with
+/// patterns built from the shared `DATE` fragment, which are `String`.
+fn extract_amount_minor<S: AsRef<str>>(text: &str, patterns: &[S]) -> Option<i64> {
     for pat in patterns {
-        if let Ok(re) = Regex::new(pat) {
+        if let Ok(re) = Regex::new(pat.as_ref()) {
             if let Some(caps) = re.captures(text) {
                 if let Some(m) = caps.get(1) {
                     let cleaned = m.as_str().replace(',', "");
@@ -253,9 +285,66 @@ fn extract_amount_minor(text: &str, patterns: &[&str]) -> Option<i64> {
     None
 }
 
-fn extract_text_pattern(text: &str, patterns: &[&str]) -> Option<String> {
+/// Issue #8: finds the value printed *underneath* a label rather than beside
+/// it.
+///
+/// Half the real statements lay their header out as a row of labels with a
+/// row of values below, column-aligned:
+///
+/// ```text
+/// Total Payment Due    Minimum Payment Due    Statement Period    Payment Due Date
+/// 15,636.26            782.00                 10 Jun - 09 Jul     03/08/2026
+/// ```
+///
+/// Every `label: value` regex misses this entirely, which is why total due,
+/// minimum due and the statement period came back empty for most statements.
+/// Now that `statements::layout` rebuilds column geometry, the value for a
+/// label is simply the token on a following line that starts nearest to the
+/// label's own column — so the alignment the bank drew is what resolves it.
+///
+/// Searches the next two lines: a label row is sometimes two lines tall
+/// ("Credit Limit ( ` )" wrapping above its value).
+fn value_below_label(text: &str, label: &str, value: &str) -> Option<String> {
+    let label_re = Regex::new(&format!(r"(?i){label}")).ok()?;
+    let value_re = Regex::new(&format!(r"(?i){value}")).ok()?;
+    let lines: Vec<&str> = text.lines().collect();
+
+    for (index, line) in lines.iter().enumerate() {
+        let Some(found) = label_re.find(line) else {
+            continue;
+        };
+        // A line that already carries its own value is handled by the
+        // same-line patterns; taking the line below would read a
+        // *different* row's figure.
+        if value_re.find_at(line, found.end()).is_some() {
+            continue;
+        }
+        let label_column = line[..found.start()].chars().count();
+
+        for below in lines.iter().skip(index + 1).take(2) {
+            let best = value_re
+                .find_iter(below)
+                .map(|m| {
+                    let column = below[..m.start()].chars().count();
+                    (column.abs_diff(label_column), m.as_str().to_string())
+                })
+                // Guard against picking a far-away column's value: a match
+                // must begin within roughly one column of the label.
+                .filter(|(distance, _)| *distance <= 24)
+                .min_by_key(|(distance, _)| *distance);
+            if let Some((_, matched)) = best {
+                return Some(matched);
+            }
+        }
+    }
+    None
+}
+
+/// Generic over the pattern type so a call site can mix literals with
+/// patterns built from the shared `DATE` fragment, which are `String`.
+fn extract_text_pattern<S: AsRef<str>>(text: &str, patterns: &[S]) -> Option<String> {
     for pat in patterns {
-        if let Ok(re) = Regex::new(pat) {
+        if let Ok(re) = Regex::new(pat.as_ref()) {
             if let Some(caps) = re.captures(text) {
                 if let Some(m) = caps.get(1) {
                     return Some(m.as_str().to_string());
@@ -425,6 +514,119 @@ pub async fn resolve_or_create_instrument(
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod real_statement_headers {
+    use super::*;
+
+    fn meta_of(text: &str) -> StatementMetadata {
+        extract_metadata(&[ParsedPage {
+            page_number: 1,
+            text: text.to_string(),
+            ocr_used: false,
+        }])
+        .unwrap()
+    }
+
+    /// Issue #8, and the most damaging metadata bug found: banks mask the
+    /// *middle* of a card number, leaving a leading BIN. Capturing
+    /// `(\d{2,4})` right after the label took that BIN — "5268" for
+    /// `526873XXXXXX0364` — which is identical across every card of the same
+    /// product. Five of nine real statements were affected, so distinct cards
+    /// collapsed onto one instrument and the user was shown a number no card
+    /// of theirs ends with.
+    #[test]
+    fn a_masked_card_yields_its_tail_not_its_bin() {
+        for (header, want) in [
+            ("Credit Card No.       526873XXXXXX0364", "0364"),
+            ("Card No:    533467******9740     Name  ADITYA RAWAL", "9740"),
+            ("Credit Card No. 4147XXXXXXXX7480)", "7480"),
+            ("Statement for YES BANK Card Number 3561XXXXXXXX2982", "2982"),
+            ("Credit Card Number\nXXXX XXXX XXXX XX03", "03"),
+            ("Card Number: XXXX 3620", "3620"),
+        ] {
+            assert_eq!(
+                meta_of(header).masked_identifier.as_deref(),
+                Some(want),
+                "for {header:?}"
+            );
+        }
+    }
+
+    /// HDFC's real header wording and date style. The previous patterns
+    /// required the literal word "to" between the dates and accepted only
+    /// `dd/MM/YYYY`, so the period was absent for every real statement —
+    /// which silently disabled the billing-cycle duplicate check, since that
+    /// check only runs when both ends are known.
+    #[test]
+    fn hdfc_billing_period_and_statement_date() {
+        let meta = meta_of(
+            "ADITYA RAWAL          Credit Card No.        526873XXXXXX0364\n\
+             Statement Date                        13 May, 2026\n\
+             ALLAHABAD 211011 UP       Billing Period      14 Apr, 2026 - 13 May, 2026\n",
+        );
+        assert_eq!(meta.billing_period_start.as_deref(), Some("2026-04-14"));
+        assert_eq!(meta.billing_period_end.as_deref(), Some("2026-05-13"));
+        assert_eq!(meta.statement_date.as_deref(), Some("2026-05-13"));
+    }
+
+    /// SBI writes a two-digit year, and annotates each label with the rupee
+    /// symbol — which pdfium decodes as a backtick — between the label and
+    /// the value, so `label[:\s]+value` cannot reach across it.
+    #[test]
+    fn sbi_period_and_amounts_across_a_currency_annotation() {
+        let meta = meta_of(
+            "for Statement Period: 10 Jun 26 to 09 Jul 26\n\
+             *Total Amount Due ( ` )\n\
+             3,567.00\n\
+             **Minimum Amount Due ( ` )\n\
+             200.00\n",
+        );
+        assert_eq!(meta.billing_period_start.as_deref(), Some("2026-06-10"));
+        assert_eq!(meta.billing_period_end.as_deref(), Some("2026-07-09"));
+        assert_eq!(meta.current_balance, Some(356_700));
+        assert_eq!(meta.minimum_due, Some(20_000));
+    }
+
+    /// Axis prints a row of labels with the figures column-aligned beneath,
+    /// which no same-line pattern can read. Resolved by column position, now
+    /// that `statements::layout` preserves the alignment the bank drew.
+    #[test]
+    fn axis_values_are_read_from_the_column_below_their_label() {
+        let meta = meta_of(
+            "Total Payment Due      Minimum Payment Due      Payment Due Date\n\
+             16,188.72              15,612.00                01/08/2026\n",
+        );
+        assert_eq!(meta.current_balance, Some(1_618_872));
+        assert_eq!(meta.minimum_due, Some(1_561_200));
+        assert_eq!(meta.due_date.as_deref(), Some("2026-08-01"));
+    }
+
+    /// An amount must carry decimals. SBI's header prints a statement
+    /// reference ("A26070900725") and a GSTIN alongside its figures, and a
+    /// pattern accepting a bare digit run reported a minimum due of
+    /// ₹26,07,09,00,725.
+    #[test]
+    fn a_reference_number_is_not_read_as_an_amount() {
+        let meta = meta_of(
+            "STMT No.        : A26070900725\n\
+             **Minimum Amount Due ( ` )\n\
+             STMT No.        : A26070900725\n",
+        );
+        assert_eq!(meta.minimum_due, None);
+    }
+
+    /// A label that already carries its own value must not also pull the
+    /// figure from the line below — that belongs to a different row.
+    #[test]
+    fn a_same_line_value_is_not_overridden_by_the_line_below() {
+        let meta = meta_of(
+            "Payment Due Date: 03/08/2026          YES ONLINE\n\
+             Statement Date : 14/07/2026\n",
+        );
+        assert_eq!(meta.due_date.as_deref(), Some("2026-08-03"));
+    }
+}
 
 #[cfg(test)]
 mod tests {

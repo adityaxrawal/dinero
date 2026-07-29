@@ -9,6 +9,7 @@ use tauri::{Emitter, Manager};
 pub mod data;
 pub mod debug;
 pub mod llm;
+pub mod merchant_cleanup;
 pub mod release_readiness;
 
 #[cfg(test)]
@@ -486,6 +487,64 @@ async fn upload_one_statement(
     })
 }
 
+/// Issue #8: runs the statement-row LLM fallback, if this machine can.
+///
+/// Returns an empty vector rather than an error whenever the model is not
+/// available — an ineligible machine, no downloaded model, or an app data
+/// directory that will not resolve. The fallback is an enhancement to
+/// extraction, never a precondition for it: a statement that parsed fine
+/// deterministically must not fail to import because inference could not run.
+async fn llm_rows_for_unparsed_pages<R: tauri::Runtime>(
+    pages: &[crate::statements::parser::ParsedPage],
+    parser: crate::statements::row_extractor::BankParser,
+    issuer: &str,
+    pool: &deadpool_sqlite::Pool,
+    app: &tauri::AppHandle<R>,
+    start_index: usize,
+) -> Vec<crate::statements::row_extractor::StatementRow> {
+    // The same RAM-eligibility gate Layer 6 respects. On a machine below it,
+    // loading the model would push the app into a Jetsam kill.
+    let eligible = app
+        .try_state::<crate::startup::LlmEligibility>()
+        .map(|e| e.eligible)
+        .unwrap_or(false);
+    if !eligible {
+        return Vec::new();
+    }
+    let Ok(app_dir) = app.path().app_data_dir() else {
+        return Vec::new();
+    };
+
+    let stored = match pool.get().await {
+        Ok(conn) => conn
+            .interact(|c| crate::db::local_profile::get_llm_model(c))
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .flatten(),
+        Err(_) => None,
+    };
+    let downloaded: Vec<String> = crate::llm_manager::get_available_models()
+        .into_iter()
+        .filter(|m| crate::llm_manager::get_model_path(&app_dir, &m.id).is_some())
+        .map(|m| m.id)
+        .collect();
+    let Some(model_id) = crate::llm_manager::resolve_active_model(&downloaded, stored.as_deref())
+    else {
+        return Vec::new();
+    };
+
+    crate::statements::row_llm::extract_unparsed_pages(
+        pages,
+        parser,
+        issuer,
+        &app_dir,
+        &model_id,
+        start_index,
+    )
+    .await
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub enum PipelineOutcome {
     Staged(String),
@@ -709,12 +768,30 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
 
     // ── Step 10: Extract statement rows ───────────────────────────────────────
     let bank_parser = BankParser::detect(&issuer, &instrument_type);
-    let rows = extract_rows(&parse_result.pages, bank_parser)?;
+    let mut rows = extract_rows(&parse_result.pages, bank_parser)?;
     tracing::info!(
         "Extracted {} statement rows via parser={:?}",
         rows.len(),
         bank_parser
     );
+
+    // Issue #8: pages the bank parser made nothing of go to the local model.
+    // `row_extractor` has parsers for five issuers; a statement from any of
+    // the two hundred others in the sender registry reaches
+    // `parse_generic_fallback` and frequently yields nothing at all.
+    let llm_rows = llm_rows_for_unparsed_pages(
+        &parse_result.pages,
+        bank_parser,
+        &issuer,
+        pool,
+        app,
+        rows.len(),
+    )
+    .await;
+    if !llm_rows.is_empty() {
+        tracing::info!("LLM assist recovered {} additional rows", llm_rows.len());
+        rows.extend(llm_rows);
+    }
     emit_processing_progress(app, stmt_id.as_deref(), &instrument_id, "extracting_rows", 65);
 
     // ── Step 11: Write the staged draft (nothing committed yet) ──────────────
@@ -1604,16 +1681,78 @@ pub async fn statements_retry_unprocessed(
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
 ) -> Result<serde_json::Value, crate::error::AppError> {
     crate::ipc::validation::validate_uuid("statement_id", &statement_id)?;
-
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
-    use crate::statements::{events, password::try_all_stored_passwords};
+    let outcome = retry_one_unprocessed(&statement_id, &app, pool.inner()).await?;
+
+    // Only the single-statement path re-prompts. Issue #7's bulk re-parse
+    // deliberately does not: a run over a queue of thirty locked PDFs would
+    // otherwise fire thirty password modals at a user who pressed one button.
+    if let RetryOutcome::StillLocked { ref filename } = outcome {
+        app.emit(
+            crate::statements::events::PASSWORD_REQUIRED,
+            serde_json::json!({ "statement_id": statement_id, "filename": filename }),
+        )
+        .ok();
+    }
+
+    Ok(outcome.into_response(&statement_id))
+}
+
+/// What one attempt at an unprocessed statement resulted in. Issue #7:
+/// `statements_retry_unprocessed` and `statements_reparse_all` must behave
+/// identically per PDF — the bulk button exists to save the user thirty
+/// clicks, not to run a second, subtly different pipeline — so both drive
+/// `retry_one_unprocessed` and differ only in what they do with the result.
+enum RetryOutcome {
+    Unlocked { draft_id: String },
+    AwaitingInstrument { statement_id: String },
+    /// No stored password opened it; the row stays in the queue untouched.
+    StillLocked { filename: String },
+    /// The retained PDF is gone from disk, so there is nothing to re-parse.
+    BytesExpired { filename: String },
+}
+
+impl RetryOutcome {
+    fn into_response(self, statement_id: &str) -> serde_json::Value {
+        match self {
+            Self::Unlocked { draft_id } => {
+                serde_json::json!({ "status": "unlocked", "draft_id": draft_id })
+            }
+            Self::AwaitingInstrument { statement_id } => serde_json::json!({
+                "status": "awaiting_instrument_confirmation",
+                "statement_id": statement_id
+            }),
+            Self::StillLocked { .. } => {
+                serde_json::json!({ "status": "retry_queued", "statement_id": statement_id })
+            }
+            Self::BytesExpired { filename } => serde_json::json!({
+                "status": "bytes_expired",
+                "statement_id": statement_id,
+                "filename": filename,
+                "message": "This statement's PDF file could not be found. \
+                            Please re-upload the file to continue."
+            }),
+        }
+    }
+}
+
+/// One attempt at one unprocessed statement: read its retained PDF, try every
+/// stored password against it, and resume the staging pipeline if one opens
+/// it. Emits nothing and prompts for nothing — the caller decides how to
+/// surface the outcome.
+async fn retry_one_unprocessed(
+    statement_id: &str,
+    app: &tauri::AppHandle,
+    pool: &deadpool_sqlite::Pool,
+) -> Result<RetryOutcome, crate::error::AppError> {
+    use crate::statements::password::try_all_stored_passwords;
 
     let conn = pool
         .get()
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-    let stmt_id_clone = statement_id.clone();
+    let stmt_id_clone = statement_id.to_string();
     let row = conn
         .interact(move |c| crate::db::unprocessed_statements::select_by_id(c, &stmt_id_clone))
         .await
@@ -1626,107 +1765,197 @@ pub async fn statements_retry_unprocessed(
             ))
         })?;
 
-    let filename = serde_json::from_str::<serde_json::Value>(&row.statement_source_json)
-        .ok()
-        .and_then(|v| v["filename"].as_str().map(|s| s.to_string()))
-        .unwrap_or_default();
+    let source = serde_json::from_str::<serde_json::Value>(&row.statement_source_json).ok();
+    let field = |key: &str| {
+        source
+            .as_ref()
+            .and_then(|v| v[key].as_str().map(|s| s.to_string()))
+            .unwrap_or_default()
+    };
+    let filename = field("filename");
 
     // ROOT CAUSE FIX: for `awaiting_password` rows that survive an app restart,
     // we now use `pdf_storage` to read the PDF bytes from disk. If the file is missing,
     // it returns a structured `bytes_expired` status so the UI can
     // display a clear "please re-upload this file" message instead.
-    let app_data_dir = app.path().app_data_dir().unwrap();
-    let pdf_bytes = match crate::statements::pdf_storage::read_pdf(&app_data_dir, &statement_id) {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| crate::error::AppError::Io(e.to_string()))?;
+    let pdf_bytes = match crate::statements::pdf_storage::read_pdf(&app_data_dir, statement_id) {
         Ok(Some(bytes)) => bytes,
         Ok(None) | Err(_) => {
             tracing::warn!(
-                "statements_retry_unprocessed: bytes not found on disk for statement_id='{}' \
+                "retry_one_unprocessed: bytes not found on disk for statement_id='{}' \
                  (file deleted or missing) — returning bytes_expired",
                 statement_id
             );
-            return Ok(serde_json::json!({
-                "status": "bytes_expired",
-                "statement_id": statement_id,
-                "filename": filename,
-                "message": "This statement's PDF file could not be found. \
-                            Please re-upload the file to continue."
-            }));
+            return Ok(RetryOutcome::BytesExpired { filename });
         }
     };
 
-    let stored_result = try_all_stored_passwords(&pdf_bytes, pool.inner())
+    let stored_result = try_all_stored_passwords(&pdf_bytes, pool)
         .await
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
 
-    match stored_result {
-        crate::statements::password::PasswordResolutionResult::UnlockedWithStored(password) => {
-            tracing::info!(
-                "Retry found a matching stored password for statement_id='{}' — resuming pipeline",
-                statement_id
-            );
-            let file_hash = serde_json::from_str::<serde_json::Value>(&row.statement_source_json)
-                .ok()
-                .and_then(|v| v["file_hash"].as_str().map(|s| s.to_string()))
-                .unwrap_or_default();
+    let crate::statements::password::PasswordResolutionResult::UnlockedWithStored(password) =
+        stored_result
+    else {
+        return Ok(RetryOutcome::StillLocked { filename });
+    };
 
-            let pipeline_result = stage_parse_pipeline(
-                &pdf_bytes,
-                &filename,
-                &file_hash,
-                pool.inner(),
-                &app,
-                None,
-                Some(&password),
-                "password_unlock",
-                Some(statement_id.clone()),
-            )
-            .await;
+    tracing::info!(
+        "Retry found a matching stored password for statement_id='{}' — resuming pipeline",
+        statement_id
+    );
 
-            match pipeline_result {
-                Ok(PipelineOutcome::Staged(draft_id)) => {
-                    Ok(serde_json::json!({ "status": "unlocked", "draft_id": draft_id }))
-                }
-                Ok(PipelineOutcome::BlockedAwaitingInstrument(unprocessed_id)) => {
-                    // Password unlocked it, but blocked by the Instrument Gate.
-                    // The old pending_retry row should be deleted.
-                    let conn = pool
-                        .get()
-                        .await
-                        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-                    let orig_id = statement_id.clone();
-                    conn.interact(move |c| {
-                        let _ = crate::db::unprocessed_statements::delete(c, &orig_id);
-                    })
-                    .await
-                    .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let pipeline_result = stage_parse_pipeline(
+        &pdf_bytes,
+        &filename,
+        &field("file_hash"),
+        pool,
+        app,
+        None,
+        Some(&password),
+        "password_unlock",
+        Some(statement_id.to_string()),
+    )
+    .await;
 
-                    Ok(serde_json::json!({
-                        "status": "awaiting_instrument_confirmation",
-                        "statement_id": unprocessed_id
-                    }))
-                }
-                Err(e) => {
-                    tracing::error!(
-                        "statements_retry_unprocessed: pipeline failed for statement_id='{}': {}",
-                        statement_id,
-                        e
-                    );
-                    Err(crate::error::AppError::Unknown(e.to_string()))
-                }
-            }
+    match pipeline_result {
+        Ok(PipelineOutcome::Staged(draft_id)) => Ok(RetryOutcome::Unlocked { draft_id }),
+        Ok(PipelineOutcome::BlockedAwaitingInstrument(unprocessed_id)) => {
+            // Password unlocked it, but blocked by the Instrument Gate.
+            // The old pending_retry row should be deleted.
+            let conn = pool
+                .get()
+                .await
+                .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+            let orig_id = statement_id.to_string();
+            conn.interact(move |c| {
+                let _ = crate::db::unprocessed_statements::delete(c, &orig_id);
+            })
+            .await
+            .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+
+            Ok(RetryOutcome::AwaitingInstrument {
+                statement_id: unprocessed_id,
+            })
         }
-        _ => {
-            // No stored password unlocked it — fall back to the original
-            // behavior: re-prompt the user, preserving all in-progress context.
-            app.emit(
-                events::PASSWORD_REQUIRED,
-                serde_json::json!({ "statement_id": statement_id, "filename": filename }),
-            )
-            .ok();
-
-            Ok(serde_json::json!({ "status": "retry_queued", "statement_id": statement_id }))
+        Err(e) => {
+            tracing::error!(
+                "retry_one_unprocessed: pipeline failed for statement_id='{}': {}",
+                statement_id,
+                e
+            );
+            Err(crate::error::AppError::Unknown(e.to_string()))
         }
     }
+}
+
+/// Issue #7: re-runs the statement pipeline over every statement currently in
+/// the Action Needed queue, using the passwords already stored in Settings.
+/// Anything no stored password opens simply stays in the queue.
+///
+/// Runs the queue one statement at a time. Each item spawns a `pdf_sidecar`
+/// process and, on success, a full parse — work that is already CPU-bound and
+/// already shares the machine with whatever else the app is doing. Widening
+/// this to a worker pool would multiply peak memory by the pool size for no
+/// wall-clock gain on the common queue of a handful of PDFs.
+#[tauri::command]
+pub async fn statements_reparse_all(
+    app: tauri::AppHandle,
+    pool: tauri::State<'_, deadpool_sqlite::Pool>,
+) -> Result<serde_json::Value, crate::error::AppError> {
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+
+    // A second concurrent run would race the first over the same rows: both
+    // would read the same PDF, both would stage a draft, and the queue would
+    // end up with duplicate drafts for one statement.
+    static REPARSE_RUNNING: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    if REPARSE_RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return Err(crate::error::AppError::Validation(
+            "A re-parse is already running.".to_string(),
+        ));
+    }
+    // Released however this function exits, including on an early `?`.
+    struct RunningGuard;
+    impl Drop for RunningGuard {
+        fn drop(&mut self) {
+            REPARSE_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let _guard = RunningGuard;
+
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let rows = conn
+        .interact(|c| crate::db::unprocessed_statements::select_actionable(c))
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+
+    let total = rows.len();
+    let (mut parsed, mut still_locked, mut expired, mut failed) = (0usize, 0usize, 0usize, 0usize);
+
+    for (index, row) in rows.iter().enumerate() {
+        let _ = crate::ipc::events::emit_event(
+            &app,
+            crate::ipc::events::AppEvent::StatementReparseProgress,
+            serde_json::json!({
+                "processed": index,
+                "total": total,
+                "current": row.id,
+                "done": false,
+            }),
+        );
+
+        // One statement failing must not abandon the rest of the queue —
+        // a single corrupt PDF is exactly the case this button exists for.
+        match retry_one_unprocessed(&row.id, &app, pool.inner()).await {
+            Ok(RetryOutcome::Unlocked { .. }) | Ok(RetryOutcome::AwaitingInstrument { .. }) => {
+                parsed += 1
+            }
+            Ok(RetryOutcome::StillLocked { .. }) => still_locked += 1,
+            Ok(RetryOutcome::BytesExpired { .. }) => expired += 1,
+            Err(e) => {
+                tracing::warn!(
+                    "statements_reparse_all: statement_id='{}' failed: {}",
+                    row.id,
+                    e
+                );
+                failed += 1;
+            }
+        }
+    }
+
+    let summary = serde_json::json!({
+        "processed": total,
+        "total": total,
+        "parsed": parsed,
+        "still_locked": still_locked,
+        "bytes_expired": expired,
+        "failed": failed,
+        "done": true,
+    });
+    let _ = crate::ipc::events::emit_event(
+        &app,
+        crate::ipc::events::AppEvent::StatementReparseProgress,
+        summary.clone(),
+    );
+
+    tracing::info!(
+        "statements_reparse_all: {} queued, {} parsed, {} still locked, {} expired, {} failed",
+        total,
+        parsed,
+        still_locked,
+        expired,
+        failed
+    );
+    Ok(summary)
 }
 
 /// Doc 30 TASK-STMT-010 `statements_list_unprocessed()`: statements grouped
@@ -1798,9 +2027,25 @@ fn group_unprocessed_by_status(
         let snippet = source_json.as_ref().and_then(|v| v["snippet"].as_str().map(|s| s.to_string()));
         let html = source_json.as_ref().and_then(|v| v["html"].as_str().map(|s| s.to_string()));
 
+        // Issue #9: the consistent `<BANK>BANKXXXX<LAST4><MON><YYYY>` label.
+        // Derived here, on read, rather than stored at row-creation time, so
+        // rows already sitting in the queue get named too without a migration
+        // — and so a manual upload, which has no email context at all, runs
+        // through the identical code path.
+        let display_name = crate::statements::display_name::derive_display_name(
+            &crate::statements::display_name::StatementNameSource {
+                filename: &filename,
+                sender: sender.as_deref(),
+                subject: subject.as_deref(),
+                snippet: snippet.as_deref(),
+                date: date.as_deref(),
+            },
+        );
+
         let entry = serde_json::json!({
             "statement_id": row.id,
             "filename": filename,
+            "display_name": display_name,
             "failure_type": row.failure_type,
             "failure_reason": row.failure_reason,
             "sender": sender,
@@ -3138,14 +3383,31 @@ pub async fn ipc_trigger_patch_sync(
 }
 
 #[tauri::command]
-pub fn log_frontend_event(level: String, message: String, data: Option<String>) {
-    let data_str = data.map(|d| format!("| Data: {}", d)).unwrap_or_default();
-    match level.to_lowercase().as_str() {
-        "error" => tracing::error!("FRONTEND: {} {}", message, data_str),
-        "warn" => tracing::warn!("FRONTEND: {} {}", message, data_str),
-        "debug" => tracing::debug!("FRONTEND: {} {}", message, data_str),
-        "trace" => tracing::trace!("FRONTEND: {} {}", message, data_str),
-        _ => tracing::info!("FRONTEND: {} {}", message, data_str),
+pub fn log_frontend_event(target: Option<String>, level: String, message: String, data: Option<String>) {
+    let t = target.as_deref().unwrap_or("frontend");
+    let data_str = data.map(|d| format!(" | data: {}", d)).unwrap_or_default();
+    match t {
+        "api_calls" => match level.to_lowercase().as_str() {
+            "error" => tracing::error!(target: "api_calls", "{}{}", message, data_str),
+            "warn" => tracing::warn!(target: "api_calls", "{}{}", message, data_str),
+            "debug" => tracing::debug!(target: "api_calls", "{}{}", message, data_str),
+            "trace" => tracing::trace!(target: "api_calls", "{}{}", message, data_str),
+            _ => tracing::info!(target: "api_calls", "{}{}", message, data_str),
+        },
+        "network" => match level.to_lowercase().as_str() {
+            "error" => tracing::error!(target: "network", "{}{}", message, data_str),
+            "warn" => tracing::warn!(target: "network", "{}{}", message, data_str),
+            "debug" => tracing::debug!(target: "network", "{}{}", message, data_str),
+            "trace" => tracing::trace!(target: "network", "{}{}", message, data_str),
+            _ => tracing::info!(target: "network", "{}{}", message, data_str),
+        },
+        _ => match level.to_lowercase().as_str() {
+            "error" => tracing::error!(target: "frontend", "{}{}", message, data_str),
+            "warn" => tracing::warn!(target: "frontend", "{}{}", message, data_str),
+            "debug" => tracing::debug!(target: "frontend", "{}{}", message, data_str),
+            "trace" => tracing::trace!(target: "frontend", "{}{}", message, data_str),
+            _ => tracing::info!(target: "frontend", "{}{}", message, data_str),
+        },
     }
 }
 
@@ -3187,6 +3449,7 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         statements_upload,
         statements_submit_password,
         statements_retry_unprocessed,
+        statements_reparse_all,
         statements_list_unprocessed,
         statements_discard,
         statements_commit_draft,
@@ -3241,6 +3504,10 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         llm::llm_set_active_model,
         llm::llm_get_hardware_info,
         llm::llm_set_parallel_slots,
+        merchant_cleanup::merchant_cleanup_preview,
+        merchant_cleanup::merchant_cleanup_start,
+        merchant_cleanup::merchant_cleanup_cancel,
+        merchant_cleanup::merchant_cleanup_revert,
         data::instruments_list,
         data::instruments_get,
         data::instruments_create,
@@ -3275,6 +3542,7 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         debug::debug_get_pipeline_state,
         debug::debug_set_gmail_poll_paused,
         debug::debug_set_scan_queue_paused,
+        debug::debug_audit_scan_coverage,
         release_readiness::release_readiness_capture_snapshot,
         release_readiness::release_readiness_list_snapshots,
         crate::feedback::submit_user_feedback,

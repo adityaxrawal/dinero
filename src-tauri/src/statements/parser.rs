@@ -79,23 +79,51 @@ pub async fn parse_in_memory_with_password(
     match pdfium_result {
         Ok(mut pages) => {
             let total_pages = pages.len();
-            let mut ocr_page_count = 0usize;
 
-            // For each page that has < OCR_TEXT_THRESHOLD chars, attempt OCR fallback
-            for page in pages.iter_mut() {
-                let char_count = page.text.chars().filter(|c| !c.is_whitespace()).count();
-                if char_count < OCR_TEXT_THRESHOLD {
-                    tracing::info!(
-                        "Page {} has only {} non-whitespace chars — attempting OCR fallback",
-                        page.page_number,
-                        char_count
-                    );
-                    match try_ocr_page(pdf_bytes, page.page_number, password) {
+            // OCR is fully synchronous and CPU/process-bound: `try_ocr_page`
+            // renders the page through in-process pdfium and then shells out to
+            // `tesseract` twice with blocking `std::process::Command` calls.
+            // Running that inline on an async task pins a tokio worker thread
+            // for the whole document -- the same way a historical scan's
+            // statement work could stall unrelated Gmail fetches and IPC. Hand
+            // the whole loop to the blocking pool once (rather than per page,
+            // which would clone the PDF bytes repeatedly).
+            let ocr_pages: Vec<usize> = pages
+                .iter()
+                .filter(|p| p.text.chars().filter(|c| !c.is_whitespace()).count() < OCR_TEXT_THRESHOLD)
+                .map(|p| p.page_number)
+                .collect();
+
+            let mut ocr_page_count = 0usize;
+            if !ocr_pages.is_empty() {
+                let owned_bytes = pdf_bytes.to_vec();
+                let owned_password = password.map(|p| p.to_string());
+                let results = tokio::task::spawn_blocking(move || {
+                    ocr_pages
+                        .into_iter()
+                        .map(|page_number| {
+                            let text = try_ocr_page(
+                                &owned_bytes,
+                                page_number,
+                                owned_password.as_deref(),
+                            );
+                            (page_number, text)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .await
+                .unwrap_or_default();
+
+                for (page_number, result) in results {
+                    let Some(page) = pages.iter_mut().find(|p| p.page_number == page_number) else {
+                        continue;
+                    };
+                    match result {
                         Ok(Some(ocr_text)) => {
                             tracing::info!(
                                 "OCR fallback produced {} chars for page {}",
                                 ocr_text.len(),
-                                page.page_number
+                                page_number
                             );
                             page.text = ocr_text;
                             page.ocr_used = true;
@@ -104,13 +132,13 @@ pub async fn parse_in_memory_with_password(
                         Ok(None) => {
                             tracing::warn!(
                                 "OCR fallback returned no text for page {} — page will be empty",
-                                page.page_number
+                                page_number
                             );
                         }
                         Err(e) => {
                             tracing::warn!(
                                 "OCR fallback error for page {}: {} — continuing with empty text",
-                                page.page_number,
+                                page_number,
                                 e
                             );
                         }
@@ -143,8 +171,16 @@ pub async fn parse_in_memory_with_password(
                 "pdfium parse failed: {} — falling back to OCR for all pages",
                 e
             );
-            // pdfium completely failed — try OCR on the whole document
-            match try_ocr_full_document(pdf_bytes, password) {
+            // pdfium completely failed — try OCR on the whole document.
+            // Same blocking-pool offload as the per-page path above.
+            let owned_bytes = pdf_bytes.to_vec();
+            let owned_password = password.map(|p| p.to_string());
+            let full_doc_ocr = tokio::task::spawn_blocking(move || {
+                try_ocr_full_document(&owned_bytes, owned_password.as_deref())
+            })
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!("OCR task panicked: {}", e)));
+            match full_doc_ocr {
                 Ok(pages) => {
                     let total = pages.len();
                     Ok(ParseResult {

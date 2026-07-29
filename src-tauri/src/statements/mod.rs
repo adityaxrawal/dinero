@@ -1,11 +1,14 @@
 pub mod bill_classifier;
+pub mod display_name;
 pub mod duplicate_check;
 pub mod events;
+pub mod layout;
 pub mod metadata_extractor;
 pub mod observation_builder;
 pub mod parser;
 pub mod password;
 pub mod pdf_storage;
 pub mod row_extractor;
+pub mod row_llm;
 pub mod sidecar;
 pub mod validator;

@@ -2,26 +2,32 @@
 import { invoke } from '@tauri-apps/api/core';
 import { readFile } from '@tauri-apps/plugin-fs';
 import type { AppError } from '@/types/ipc';
+import { logger } from './logger';
 
-/**
- * A typed wrapper around Tauri's invoke function.
- * Ensures strict typing of arguments and correctly throws structured AppErrors.
- *
- * Exported (TASK-SETUP-013) so `useIpcInvoke` can reuse the same
- * normalization logic instead of duplicating it.
- */
 async function invokeCommand<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  const start = performance.now();
   try {
-    return await invoke<T>(command, args);
-  } catch (error) {
-    if (typeof error === 'object' && error !== null && 'code' in error && 'message' in error) {
-      throw error as AppError;
+    const res = await invoke<T>(command, args);
+    const duration = performance.now() - start;
+    if (command !== 'log_frontend_event') {
+      logger.apiCall(command, args, duration, true);
     }
-    throw {
-      code: 'UNKNOWN_ERROR',
-      message: typeof error === 'string' ? error : 'An unknown error occurred.',
-      details: { original: error },
-    } as AppError;
+    return res;
+  } catch (error) {
+    const duration = performance.now() - start;
+    const structuredErr =
+      typeof error === 'object' && error !== null && 'code' in error && 'message' in error
+        ? (error as AppError)
+        : ({
+            code: 'UNKNOWN_ERROR',
+            message: typeof error === 'string' ? error : 'An unknown error occurred.',
+            details: { original: error },
+          } as AppError);
+
+    if (command !== 'log_frontend_event') {
+      logger.apiCall(command, args, duration, false, structuredErr);
+    }
+    throw structuredErr;
   }
 }
 
@@ -178,6 +184,14 @@ interface EmiGroupSummary {
 export interface UnprocessedStatementEntry {
   statement_id: string;
   filename: string;
+  /**
+   * Issue #9: the consistent `<BANK>BANKXXXX<LAST4><MON><YYYY>` label
+   * (e.g. `HDFCBANKXXXX1234JUN2026`), derived on the Rust side from the
+   * attachment filename and the source email. `null` when the issuer could
+   * not be identified — render `filename` in that case, since the name the
+   * bank chose beats a label with nothing in it.
+   */
+  display_name: string | null;
   failure_type: string | null;
   failure_reason: string | null;
   sender?: string;
@@ -194,6 +208,23 @@ interface AwaitingReviewEntry {
   masked_identifier: string | null;
   origin: string;
   created_at: string | null;
+}
+
+/**
+ * Issue #7: payload of the `statement_reparse_progress` event, and the return
+ * value of `statements_reparse_all`. While a run is in flight only
+ * `processed`/`total`/`current` are meaningful; the tallies are filled in on
+ * the final emission, where `done` is true.
+ */
+export interface StatementReparseProgress {
+  processed: number;
+  total: number;
+  current?: string;
+  parsed?: number;
+  still_locked?: number;
+  bytes_expired?: number;
+  failed?: number;
+  done: boolean;
 }
 
 interface UnprocessedStatementGroups {
@@ -478,6 +509,36 @@ export interface LlmHardwareInfo {
   recommended_model_id: string | null;
 }
 
+// Issue #12: shapes returned by `commands::merchant_cleanup`.
+export interface MerchantCleanupSample {
+  transaction_id: string;
+  merchant: string;
+  bank_name: string;
+  /// Heuristic merchant-extraction confidence, 0-1. Below 0.6 qualifies.
+  confidence: number;
+  /// Whether the source email is still retained — without it the LLM has
+  /// nothing to read and the transaction is skipped.
+  has_evidence: boolean;
+}
+
+export interface MerchantCleanupPreview {
+  candidate_count: number;
+  samples: MerchantCleanupSample[];
+  llm_eligible: boolean;
+  total_ram_gb: number;
+  running: boolean;
+}
+
+/// Payload of the `merchant_cleanup_progress` event.
+export interface MerchantCleanupProgress {
+  run_id: string;
+  processed: number;
+  total: number;
+  applied: number;
+  current_merchant: string | null;
+  status: 'running' | 'completed' | 'cancelled' | 'failed';
+}
+
 export interface SpendingLimits {
   global_limit: number;
   thresholds: {
@@ -675,6 +736,10 @@ export const API = {
       invokeCommand<{ status: string; statement_id: string }>('statements_retry_unprocessed', {
         statementId,
       }),
+    // Issue #7: re-runs the pipeline over the whole Action Needed queue using
+    // stored passwords. Reports progress via the `statement_reparse_progress`
+    // event as it goes; anything no stored password opens stays in the queue.
+    reparseAll: () => invokeCommand<StatementReparseProgress>('statements_reparse_all'),
     discard: (statementId: string) =>
       invokeCommand<{ status: string }>('statements_discard', { statementId }),
     // Doc 30 TASK-API-004: `statements_list` now returns a real paginated
@@ -933,6 +998,13 @@ export const API = {
     getHardwareInfo: () => invokeCommand<LlmHardwareInfo>('llm_get_hardware_info'),
     setParallelSlots: (slots: number) =>
       invokeCommand<number>('llm_set_parallel_slots', { slots }),
+  },
+  // Issue #12: user-triggered LLM merchant-name + category cleanup.
+  merchantCleanup: {
+    preview: () => invokeCommand<MerchantCleanupPreview>('merchant_cleanup_preview'),
+    start: () => invokeCommand<string>('merchant_cleanup_start'),
+    cancel: () => invokeCommand<void>('merchant_cleanup_cancel'),
+    revert: (runId: string) => invokeCommand<number>('merchant_cleanup_revert', { runId }),
   },
   debug: {
     fetchParseErrors: () => invokeCommand<any[]>('debug_fetch_parse_errors'),
