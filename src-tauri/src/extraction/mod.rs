@@ -10,6 +10,8 @@ pub mod lexicon;
 mod lexicon_tests;
 pub mod llm;
 pub mod mandate_extractor;
+pub mod merchant_confidence;
+pub mod merchant_llm;
 pub mod merchant_normalizer;
 pub mod normalization;
 pub mod pdf_parser;

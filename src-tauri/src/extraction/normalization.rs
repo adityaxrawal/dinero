@@ -132,6 +132,7 @@ pub fn normalize_observation(
 /// - "XXXX XXXX 1234" -> "1234"
 /// - "**** **** **** 1234" -> "1234"
 /// - "XX-1234" -> "1234"
+/// - "5268XXXXXXXXXX64" -> "64"
 /// - "user@upi" -> "user@upi"
 pub fn clean_masked_identifier(raw: &str) -> String {
     let trimmed = raw.trim();
@@ -140,6 +141,22 @@ pub fn clean_masked_identifier(raw: &str) -> String {
     }
     if trimmed.contains('@') {
         return trimmed.to_string();
+    }
+
+    // Issue #8: when the input carries a mask, the identifier is whatever
+    // follows the *last* mask character — not the last four digits overall.
+    // HDFC prints its card number as `5268XXXXXXXXXX64`, masking all but a
+    // leading BIN and a two-digit tail; taking the last four digits of
+    // "526864" yields "6864", a number that appears on no card. That value
+    // then flows into `metadata_extractor`'s `masked_identifier` and
+    // `resolve_or_create_instrument`, so every statement from such a card
+    // resolved to a fabricated instrument identity.
+    let after_mask: String = trimmed
+        .rfind(['X', 'x', '*'])
+        .map(|i| trimmed[i + 1..].chars().filter(|c| c.is_ascii_digit()).collect())
+        .unwrap_or_default();
+    if !after_mask.is_empty() {
+        return after_mask;
     }
 
     let digits: String = trimmed.chars().filter(|c| c.is_ascii_digit()).collect();
@@ -173,6 +190,14 @@ mod tests {
         assert_eq!(clean_masked_identifier("user@upi"), "user@upi");
         assert_eq!(clean_masked_identifier("  XXXX 5678  "), "5678");
         assert_eq!(clean_masked_identifier(""), "");
+        // Issue #8: HDFC masks all but a leading BIN and a two-digit tail.
+        // Concatenating every digit and taking the last four gave "6864" —
+        // two digits of the BIN welded to the real tail.
+        assert_eq!(clean_masked_identifier("5268XXXXXXXXXX64"), "64");
+        assert_eq!(clean_masked_identifier("6529XXXXXXXXXX56"), "56");
+        // Mask present but no trailing digits — fall back to the last four
+        // rather than returning nothing.
+        assert_eq!(clean_masked_identifier("1234XXXX"), "1234");
     }
 
     /// Doc 30 TASK-TXN-008: fingerprint computation moved out of this

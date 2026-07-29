@@ -37,7 +37,7 @@ static WHITESPACE_RE: OnceLock<Regex> = OnceLock::new();
 pub fn strip_noise_tokens(merchant_raw: &str) -> String {
     let upper = merchant_raw.to_uppercase();
 
-    let before_star = upper.split('*').next().unwrap_or(&upper);
+    let before_star = split_on_aggregator_star(&upper);
 
     let trailing_digits_re =
         TRAILING_DIGITS_RE.get_or_init(|| Regex::new(r"\s*\d{4,}\s*$").unwrap());
@@ -60,26 +60,87 @@ pub fn strip_noise_tokens(merchant_raw: &str) -> String {
 /// English function words, so reject any candidate where half or more of
 /// its tokens are such stopwords.
 ///
-/// ponytail: naive stopword-fraction heuristic, not real NLP/NER -- it
-/// catches boilerplate sentence fragments but not a garbage fragment that
-/// happens to consist entirely of non-stopword tokens (e.g. a mis-scoped
-/// "VPA RAWALAD" capture). Upgrade to a proper shape/NER classifier if more
-/// of those slip through.
+/// ponytail: naive stopword-fraction heuristic, not real NLP/NER. It now
+/// shares one vocabulary with the extraction-time gate (see below), but it
+/// still can't tell a truncated real brand ("RAZ", "CAS", "ING") from a real
+/// three-letter one. Issue #12's user-triggered LLM merchant pass is the
+/// intended upgrade path for that residue.
+///
+/// The word list lives in [`crate::extraction::lexicon::MERCHANT_STOPWORDS`],
+/// shared with [`is_stopword_only_merchant`]. These two predicates apply
+/// deliberately different *thresholds* to the same vocabulary -- the
+/// extraction-time gate rejects only an all-stopword candidate (it runs
+/// before better layers get their turn, so it must be conservative), while
+/// this one rejects at half, because it guards the far more damaging
+/// "auto-create a permanent merchants row" step. Previously each kept its own
+/// hardcoded copy of the list, and they had drifted: this one lacked
+/// "block"/"call"/"customer", that one lacked "spent"/"debited"/"credited",
+/// and neither had any banking nouns at all.
 pub fn is_plausible_merchant_name(cleaned: &str) -> bool {
-    const STOPWORDS: &[&str] = &[
-        "A", "AN", "THE", "IS", "ARE", "TO", "OF", "FOR", "ON", "AT", "AND", "OR", "THAT",
-        "THIS", "YOU", "YOUR", "WE", "US", "PLEASE", "KINDLY", "DEAR", "INFORM", "NOTE",
-        "REPORT", "CONTACT", "AVAILABLE", "BALANCE", "ACCOUNT", "ENDING", "SPENT", "DEBITED",
-        "CREDITED", "TOWARD", "TOWARDS", "FROM", "HAS", "HAVE", "WILL", "WOULD", "MAY", "CAN",
-        "DO", "DOES", "DID", "NOT", "NO", "YES", "IF", "IT", "BE", "AS", "BY", "WITH", "I",
-    ];
-
     let tokens: Vec<&str> = cleaned.split_whitespace().collect();
     if tokens.is_empty() {
         return false;
     }
-    let stopword_count = tokens.iter().filter(|t| STOPWORDS.contains(t)).count();
+
+    // Shape rule, not vocabulary -- see `MIN_MERCHANT_NAME_LEN`.
+    if cleaned.trim().chars().filter(|c| c.is_alphanumeric()).count()
+        < crate::extraction::lexicon::MIN_MERCHANT_NAME_LEN
+    {
+        return false;
+    }
+
+    let stopword_count = tokens
+        .iter()
+        .filter(|t| {
+            let cleaned_tok = t.trim_matches(|c: char| !c.is_alphanumeric());
+            crate::extraction::lexicon::MERCHANT_STOPWORDS
+                .contains(&cleaned_tok.to_lowercase().as_str())
+        })
+        .count();
     stopword_count * 2 < tokens.len()
+}
+
+/// Payment gateways/aggregators that prefix, rather than follow, the real
+/// merchant in a card descriptor. Uppercase; matched against the token
+/// immediately before the first `*`.
+///
+/// `RAZ` is deliberately present alongside `RAZORPAY`: banks truncate the
+/// descriptor to a fixed width, so the same Razorpay charge arrives as
+/// `RAZ*YULU`, `RAZORPAY*SWIGGY LIMITE`, or `RAZORPAY*SW` depending on how
+/// much room was left.
+const PAYMENT_AGGREGATORS: &[&str] = &[
+    "PAYU", "PAYTM", "PPSL", "RAZ", "RAZORPAY", "CASHFREE", "BILLDESK", "CCAVENUE", "ICCL",
+    "EASEBUZZ", "INFIBEAM", "ATOM", "WORLDLINE", "PINELABS", "JUSPAY", "PHONEPE", "GPAY",
+    "BHARATPE", "MOBIKWIK", "INSTAMOJO", "STRIPE", "SQ", "SQUARE", "SP", "WWW",
+];
+
+/// Splits a `*`-separated descriptor and returns the side that holds the real
+/// merchant name.
+///
+/// The default is the left side, which is right for the common shape where a
+/// merchant appends its own noise: `AMAZON PAY*ORDER4821`, `SWIGGY*BANGALORE`.
+/// But payment gateways invert it -- `PPSL*SWIGGY`, `RAZ*YULU`,
+/// `PAYU*SWIGGY LIMITED` -- and blindly keeping the left side there discards
+/// the actual merchant and keeps the processor. In the real corpus that
+/// collapsed ~164 transactions onto six meaningless names: every Swiggy order
+/// placed through Paytm's gateway became "PPSL", every Yulu ride "RAZ".
+fn split_on_aggregator_star(upper: &str) -> &str {
+    let Some((head, tail)) = upper.split_once('*') else {
+        return upper;
+    };
+    let head_trimmed = head.trim();
+    let tail_trimmed = tail.trim();
+
+    // Only override when the prefix is a *known* gateway and there is an
+    // actual name after it -- an unrecognised prefix keeps the original
+    // left-side behaviour rather than guessing.
+    let head_last_token = head_trimmed.split_whitespace().last().unwrap_or(head_trimmed);
+    if PAYMENT_AGGREGATORS.contains(&head_last_token) && !tail_trimmed.is_empty() {
+        // The tail may carry its own trailing noise (`SWIGGY*BANGALORE` after
+        // `PAYU*`), so keep only up to the next `*`.
+        return tail_trimmed.split('*').next().unwrap_or(tail_trimmed);
+    }
+    head_trimmed
 }
 
 /// Runs the full pipeline: clean -> exact alias match -> fuzzy match ->
@@ -362,6 +423,85 @@ mod tests {
         assert!(is_plausible_merchant_name("DREAMPLUGTECHNOLOGI"));
         assert!(is_plausible_merchant_name("AMAZON PAY INDIA"));
         assert!(is_plausible_merchant_name("BRAND NEW CAFE"));
+    }
+
+    /// The anti-merchant list, checked against the actual garbage the real
+    /// corpus produced (counts are occurrences across 38,269 emails).
+    #[test]
+    fn test_generic_fragments_from_real_corpus_are_rejected() {
+        for (name, count) in [
+            ("YOUR HDFC BANK RUPAY CREDIT", 334),
+            ("YOUR REFERENCE BILLER NAME HDFC CREDIT", 27),
+            ("USING YOUR HDFC BANK CREDIT", 1),
+            ("USING YOUR", 52),
+            ("YOUR POT", 139),
+            ("BANKING", 18),
+            ("TRANSACTION OF INR 202", 1),
+            ("YOUTUBE TRANSACTION AMOUNT INR 129", 1),
+            ("VPA 8127696200@PZ", 12),
+            ("ZERO PROCESSING FEE", 1),
+            ("EDGE CSB BANK CREDIT CARD", 22),
+            // Too short to be a name -- the shape rule, not the word list.
+            ("X", 1),
+            ("YS", 1),
+            ("NK", 12),
+            ("BL", 11),
+            ("IS", 42),
+        ] {
+            assert!(
+                !is_plausible_merchant_name(name),
+                "{name:?} ({count} occurrences in the real corpus) must not become a merchant"
+            );
+        }
+    }
+
+    /// The other half of the contract: expanding the blocklist with banking
+    /// nouns must not start rejecting real merchants that merely *contain*
+    /// one. Every string here was a genuine merchant in the same corpus.
+    #[test]
+    fn test_real_merchants_still_accepted() {
+        for name in [
+            "RELIANCE RETAIL LIMITE",
+            "UBER INDIA SYSTEMS PRI",
+            "UTTAR PRADESH STATE ROAD TRANSPORT CORPORATION",
+            "TRUFFLES HOSPITALITY PVT",
+            "ZEPTO MARKETPLACE PRIVATE",
+            "SWIGGY FOOD BANGALORE KAIN",
+            "AIRTEL PAYM",
+            "WWW OLACABS COM",
+            "ZOMATOLIMITED",
+            "VIDYARTHI BHAVAN COUNTER 2",
+            "ADITYA RAWAL", // a person is a valid counterparty for P2P
+            // Contains blocklisted nouns but is not predominantly them.
+            "STANDARD CHARTERED BANK",
+            "AMAZON PAY INDIA",
+            "PAYTM SERVICES PRIVATE LIMITED",
+        ] {
+            assert!(
+                is_plausible_merchant_name(name),
+                "{name:?} is a real merchant and must not be blocked"
+            );
+        }
+    }
+
+    /// Payment-gateway descriptors put the real merchant *after* the `*`.
+    #[test]
+    fn test_aggregator_prefix_keeps_the_real_merchant() {
+        assert_eq!(strip_noise_tokens("PPSL*SWIGGY"), "SWIGGY");
+        assert_eq!(strip_noise_tokens("RAZ*YULU"), "YULU");
+        assert_eq!(strip_noise_tokens("Payu*Swiggy Limited"), "SWIGGY LIMITED");
+        assert_eq!(strip_noise_tokens("Razorpay*Swiggy Limite"), "SWIGGY LIMITE");
+        assert_eq!(strip_noise_tokens("Cashfree*SW"), "SW");
+        // Real bodies carry the gateway inline: "at Payu*Swiggy Food on ..."
+        assert_eq!(strip_noise_tokens("Payu*Swiggy Food"), "SWIGGY FOOD");
+
+        // The ordinary merchant-then-noise shape must be untouched.
+        assert_eq!(strip_noise_tokens("AMAZON PAY*ORDER4821"), "AMAZON PAY");
+        assert_eq!(strip_noise_tokens("SWIGGY*BANGALORE"), "SWIGGY");
+        assert_eq!(strip_noise_tokens("UBER *TRIP HELP.UBER.COM"), "UBER");
+        // An unrecognised prefix keeps the previous left-side behaviour
+        // rather than guessing which side is the merchant.
+        assert_eq!(strip_noise_tokens("NETFLIX*SUBSCRIPTION"), "NETFLIX");
     }
 
     #[tokio::test]

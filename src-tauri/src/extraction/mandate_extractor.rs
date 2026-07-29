@@ -98,6 +98,70 @@ pub fn extract_mandate_fields(bank_name: &str, body: &str) -> Option<MandateExtr
     })
 }
 
+/// Bank-specific mandate extraction, from the same
+/// `assets/bank_templates/*.json` files Layer 2 uses -- the patterns whose
+/// `txn_type` is `"mandate"`.
+///
+/// Mandate emails never reach the extraction ladder (`message_processor`
+/// routes `MandateRegistration`/`MandateCancellation` here directly), so
+/// without this the per-bank templates would have no effect on them at all
+/// and every bank would share the one global regex set in
+/// [`extract_mandate_fields`]. Callers try this first and fall back to that
+/// global path, so a bank with no mandate pattern behaves exactly as before.
+///
+/// Same "reject rather than guess" posture as [`extract_mandate_fields`]:
+/// `merchant` is mandatory, so a pattern that matches without producing one
+/// yields `None` and lets the fallback try.
+pub fn bank_mandate_template(bank_name: &str, body: &str) -> Option<MandateExtraction> {
+    let patterns = crate::extraction::ladder::bank_templates().get(bank_name)?;
+
+    for p in patterns {
+        if p.txn_type.as_deref() != Some("mandate") {
+            continue;
+        }
+        let Some(caps) = p.regex.captures(body) else {
+            continue;
+        };
+        let group = |g: Option<usize>| {
+            g.and_then(|g| caps.get(g))
+                .map(|m| m.as_str().trim().to_string())
+                .filter(|s| !s.is_empty())
+        };
+
+        let Some(merchant) = group(p.merchant_group) else {
+            continue;
+        };
+
+        return Some(MandateExtraction {
+            merchant: Some(merchant),
+            cadence: group(p.cadence_group).map(|c| c.to_lowercase()),
+            // `amount_group` is the mandate's *limit*, not a settled amount --
+            // this is why `BankTemplateLayer` skips `mandate` patterns rather
+            // than booking one as a transaction.
+            max_limit_amount: caps
+                .get(p.amount_group)
+                .and_then(|m| m.as_str().replace(',', "").parse::<f64>().ok())
+                .map(|f| (f * 100.0).round() as i64),
+            external_mandate_id: group(p.reference_group),
+            // Both values are from the `instruments.type` CHECK enum in
+            // migrations/20260101000001_initial_core_schema.sql -- never a
+            // free-form label.
+            instrument_type: Some(
+                if body.to_lowercase().contains("credit card") {
+                    "credit_card"
+                } else {
+                    "bank_account"
+                }
+                .to_string(),
+            ),
+            issuer_name: Some(bank_name.to_string()),
+            masked_identifier: group(p.last4_group).map(|d| clean_masked_identifier(&d)),
+        });
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

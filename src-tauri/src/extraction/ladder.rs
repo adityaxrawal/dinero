@@ -544,6 +544,30 @@ pub fn extract_instrument_signals(bank_name: &str, body: &str) -> InstrumentSign
     signals
 }
 
+/// Fills an extraction's instrument fields from the body-wide
+/// [`extract_instrument_signals`] heuristics, **without overwriting anything
+/// the producing layer already resolved**.
+///
+/// Every caller used to assign these unconditionally, which was harmless only
+/// while no layer populated them itself. Now that a Layer 2 template can
+/// capture the last-4, VPA, and instrument type from its own regex — the
+/// authoritative, bank-format-aware reading — an unconditional assignment
+/// would discard the precise value in favour of the generic guess (e.g. HDFC's
+/// UPI alert names both the payee's VPA and the account's last-4; the body-wide
+/// card regex picks whichever appears first). Fill-if-absent keeps the generic
+/// path as the fallback it was meant to be.
+///
+/// `issuer_name` is exempt: it is derived from `bank_name`, not from the body,
+/// so it is the same value either way.
+fn apply_instrument_signals(obs: &mut ExtractionResult, bank_name: &str, body: &str) {
+    let signals = extract_instrument_signals(bank_name, body);
+    obs.issuer_name = signals.issuer_name;
+    obs.instrument_type = obs.instrument_type.take().or(signals.instrument_type);
+    obs.masked_identifier = obs.masked_identifier.take().or(signals.masked_identifier);
+    obs.network = obs.network.take().or(signals.network);
+    obs.upi_vpa = obs.upi_vpa.take().or(signals.upi_vpa);
+}
+
 fn parse_amount(s: &str) -> Option<i64> {
     let clean: String = s
         .chars()
@@ -555,27 +579,14 @@ fn parse_amount(s: &str) -> Option<i64> {
         .map(|v| (v * 100.0).round() as i64)
 }
 
-/// Returns `None` on an unparseable date string -- NEVER a fabricated
-/// fallback timestamp. A silently-invented date here would corrupt
-/// `best_event_time` downstream, and specifically Layer 5's ±3-day
-/// statement crossref window and reconciliation's time-proximity scoring;
-/// callers must let a `None` here fail `ExtractionResult::is_valid()`
-/// (or fall through to an explicit, intentional fallback like
-/// `BankPatternTemplate::date_fallback_epoch`) rather than treat this as
-/// always succeeding.
-fn parse_date(s: &str) -> Option<i64> {
-    if let Ok(naive_date) = chrono::NaiveDate::parse_from_str(s, "%d-%b-%y") {
-        if let Some(naive_datetime) = naive_date.and_hms_opt(0, 0, 0) {
-            return Some(naive_datetime.and_utc().timestamp());
-        }
-    }
-    if let Ok(naive_date) = chrono::NaiveDate::parse_from_str(s, "%d-%b-%Y") {
-        if let Some(naive_datetime) = naive_date.and_hms_opt(0, 0, 0) {
-            return Some(naive_datetime.and_utc().timestamp());
-        }
-    }
-    None
-}
+// Layer 2 date parsing intentionally shares `parse_date_generic` with Layer 3
+// rather than keeping its own narrower list. The old Layer-2-only `parse_date`
+// accepted just `%d-%b-%y`/`%d-%b-%Y`, so a template that matched a body whose
+// date was printed any other way (`23-12-25` HDFC UPI, `10/01/26` SBI Card,
+// `05 AUG 2025` IDFC, `Jan 08, 2026` Jupiter, `17-08-2025` Axis) produced
+// `event_time: None`, failed `ExtractionResult::is_valid()`, and had its
+// otherwise-correct match silently discarded. One shared parser also means a
+// newly supported format benefits both layers instead of drifting between them.
 
 /// Doc 30 TASK-TXN-003: "Each template stored as versioned JSON under
 /// `bank_templates/<bank>_<version>.json` so templates can ship via app
@@ -592,14 +603,43 @@ fn default_pattern_direction() -> String {
     "debit".to_string()
 }
 
+/// Layer 2 used to hardcode `currency: Some("INR")` for every match, which is
+/// correct for the Indian banks that had the only 6 bundled templates and
+/// silently wrong for every non-Indian registry bank (HSBC, Barclays, Chase,
+/// …). Per-pattern, defaulting to INR so existing templates are unchanged.
+fn default_pattern_currency() -> String {
+    "INR".to_string()
+}
+
+/// Every `txn_type` a template may declare. Enforced by
+/// `bank_template_integrity` rather than by serde, so a typo in one of ~139
+/// data files fails a test with a readable message instead of making the whole
+/// bundle fail to deserialize at first use.
+pub const TEMPLATE_TXN_TYPES: &[&str] = &[
+    "credit_card",
+    "debit_card",
+    "upi",
+    "account_balance",
+    "mandate",
+    "emi",
+    "atm",
+    "net_banking",
+    "wallet",
+];
+
 #[derive(Debug, serde::Deserialize)]
 struct BankPatternTemplate {
     #[allow(dead_code)]
     name: String,
     regex: String,
     amount_group: usize,
-    merchant_group: usize,
-    date_group: usize,
+    /// Optional because not every transaction shape has a counterparty: an
+    /// `account_balance` alert prints a balance and nothing else, and
+    /// `ExtractionResult::is_valid()` already accepts a balance-only result.
+    #[serde(default)]
+    merchant_group: Option<usize>,
+    #[serde(default)]
+    date_group: Option<usize>,
     #[serde(default)]
     date_fallback_epoch: Option<i64>,
     /// Fixed direction this pattern implies ("debit" or "credit") --
@@ -611,6 +651,32 @@ struct BankPatternTemplate {
     /// pattern should set this explicitly rather than rely on the default.
     #[serde(default = "default_pattern_direction")]
     direction: String,
+    /// Which transaction shape this pattern recognises (`TEMPLATE_TXN_TYPES`).
+    /// Seeds `instrument_type` when the pattern implies one, and is the
+    /// per-pattern label downstream categorisation keys off.
+    #[serde(default)]
+    txn_type: Option<String>,
+    /// Available/closing balance printed alongside the transaction, or the
+    /// only figure in an `account_balance` alert.
+    #[serde(default)]
+    balance_group: Option<usize>,
+    /// UPI RRN, authorization code, or the bank's own transaction reference.
+    #[serde(default)]
+    reference_group: Option<usize>,
+    /// Card/account last-4 as printed. Passed through
+    /// `normalization::clean_masked_identifier`, so `XXXX1234`, `**4691`,
+    /// and `1234` all normalise the same way.
+    #[serde(default)]
+    last4_group: Option<usize>,
+    #[serde(default)]
+    upi_vpa_group: Option<usize>,
+    /// Mandate cadence ("monthly"/"weekly"/…) for `txn_type: "mandate"`
+    /// patterns; ignored by `BankTemplateLayer`, read by
+    /// `mandate_extractor::bank_mandate_template`.
+    #[serde(default)]
+    cadence_group: Option<usize>,
+    #[serde(default = "default_pattern_currency")]
+    currency: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -621,62 +687,115 @@ struct BankTemplateFile {
     patterns: Vec<BankPatternTemplate>,
 }
 
-struct CompiledBankPattern {
-    regex: Regex,
-    amount_group: usize,
-    merchant_group: usize,
-    date_group: usize,
-    date_fallback_epoch: Option<i64>,
-    direction: String,
+pub(crate) struct CompiledBankPattern {
+    /// Only read by `test_bank_template_integrity`, which needs it to name the
+    /// offending pattern across ~144 generated files -- an assertion failure
+    /// saying "some pattern in some file" would be useless.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) name: String,
+    pub(crate) regex: Regex,
+    pub(crate) amount_group: usize,
+    pub(crate) merchant_group: Option<usize>,
+    pub(crate) date_group: Option<usize>,
+    pub(crate) date_fallback_epoch: Option<i64>,
+    pub(crate) direction: String,
+    pub(crate) txn_type: Option<String>,
+    pub(crate) balance_group: Option<usize>,
+    pub(crate) reference_group: Option<usize>,
+    pub(crate) last4_group: Option<usize>,
+    pub(crate) upi_vpa_group: Option<usize>,
+    pub(crate) cadence_group: Option<usize>,
+    pub(crate) currency: String,
 }
 
-/// The full set of `assets/bank_templates/*.json` files, embedded at
-/// compile time. Adding a bank means adding a JSON file here plus one
-/// `include_str!` line -- no changes to `BankTemplateLayer::extract` below.
-const BANK_TEMPLATE_FILES: &[&str] = &[
-    include_str!("../../assets/bank_templates/hdfc_v1.json"),
-    include_str!("../../assets/bank_templates/icici_v1.json"),
-    include_str!("../../assets/bank_templates/sbi_v1.json"),
-    include_str!("../../assets/bank_templates/sbicard_v1.json"),
-    include_str!("../../assets/bank_templates/axis_v1.json"),
-    include_str!("../../assets/bank_templates/kotak_v1.json"),
-    include_str!("../../assets/bank_templates/yes_bank_v1.json"),
-];
+// `BANK_TEMPLATE_FILES`: every `assets/bank_templates/*.json` file, embedded
+// at compile time as `(filename, contents)` pairs. Generated by `build.rs`
+// from a directory glob rather than hand-maintained here: with one file per
+// verified-sender registry bank there are ~139 of them, and a hand-written
+// `include_str!` list makes "added the JSON, forgot the line" a silent
+// whole-bank coverage gap. Adding a bank is now purely a data-file change.
+// The filename rides along so integrity failures name the file to fix.
+include!(concat!(env!("OUT_DIR"), "/bank_template_files.rs"));
 
 /// Whether `bank_name` has a compiled Layer 2 template at all -- distinct
-/// from "had a template but the regex didn't match this body." Only 6 of
-/// the verified-senders registry's ~139 banks currently have one
-/// (`BANK_TEMPLATE_FILES` above), so Layer 2 missing for the other ~96% is
-/// an expected coverage gap, not a failure worth info-level log noise.
+/// from "had a template but the regex didn't match this body." Callers use
+/// this to keep an expected coverage gap at debug level instead of logging
+/// it as a failure.
 pub fn bank_has_template(bank_name: &str) -> bool {
     bank_templates().contains_key(bank_name)
 }
 
-fn bank_templates() -> &'static std::collections::HashMap<String, Vec<CompiledBankPattern>> {
+pub(crate) fn bank_templates(
+) -> &'static std::collections::HashMap<String, Vec<CompiledBankPattern>> {
     static TEMPLATES: OnceLock<std::collections::HashMap<String, Vec<CompiledBankPattern>>> =
         OnceLock::new();
     TEMPLATES.get_or_init(|| {
         let mut map = std::collections::HashMap::new();
-        for raw in BANK_TEMPLATE_FILES {
-            let file: BankTemplateFile = serde_json::from_str(raw)
-                .expect("bundled bank_templates/*.json must parse as valid BankTemplateFile");
+        for (filename, raw) in BANK_TEMPLATE_FILES {
+            let file: BankTemplateFile = serde_json::from_str(raw).unwrap_or_else(|e| {
+                panic!("bank_templates/{filename} must parse as a BankTemplateFile: {e}")
+            });
             let compiled: Vec<CompiledBankPattern> = file
                 .patterns
                 .into_iter()
                 .map(|p| CompiledBankPattern {
-                    regex: Regex::new(&p.regex)
-                        .expect("bundled bank_templates/*.json regex must compile"),
+                    regex: Regex::new(&p.regex).unwrap_or_else(|e| {
+                        panic!(
+                            "bank_templates/{filename} pattern {:?} has an uncompilable regex: {e}",
+                            p.name
+                        )
+                    }),
+                    name: p.name,
                     amount_group: p.amount_group,
                     merchant_group: p.merchant_group,
                     date_group: p.date_group,
                     date_fallback_epoch: p.date_fallback_epoch,
                     direction: p.direction,
+                    txn_type: p.txn_type,
+                    balance_group: p.balance_group,
+                    reference_group: p.reference_group,
+                    last4_group: p.last4_group,
+                    upi_vpa_group: p.upi_vpa_group,
+                    cadence_group: p.cadence_group,
+                    currency: p.currency,
                 })
                 .collect();
             map.insert(file.bank_name, compiled);
         }
         map
     })
+}
+
+/// Maps a template's `txn_type` onto the `instruments.type` enum.
+///
+/// These are two different vocabularies and must not be conflated: `txn_type`
+/// describes *what kind of transaction this pattern recognises* (so it can be
+/// as granular as `net_banking` or `emi`), while `instruments.type` is a
+/// closed enum enforced by a SQL `CHECK` constraint in
+/// `migrations/20260101000001_initial_core_schema.sql`. Passing a `txn_type`
+/// straight through produces a constraint violation deep inside reconciliation,
+/// surfacing as an opaque "Query returned no rows" rather than anything that
+/// names the real problem.
+///
+/// `None` means "this pattern implies no particular instrument" -- the
+/// body-wide heuristics in [`apply_instrument_signals`] then get their say.
+fn instrument_type_for_txn_type(txn_type: &str) -> Option<String> {
+    let mapped = match txn_type {
+        "credit_card" => "credit_card",
+        "debit_card" => "debit_card",
+        "upi" => "UPI",
+        "atm" => "ATM",
+        "wallet" => "wallet",
+        // A balance alert and a net-banking transfer are both statements about
+        // the account itself, not about a card.
+        "account_balance" | "net_banking" => "bank_account",
+        // An EMI installment is billed to the card that financed it.
+        "emi" => "credit_card",
+        // A mandate is a standing authorisation, not an instrument, and never
+        // reaches here anyway (`BankTemplateLayer` skips mandate patterns).
+        _ => return None,
+    };
+    Some(mapped.to_string())
 }
 
 // Layer 2: Bank-specific template regex
@@ -691,7 +810,6 @@ impl ExtractionLayer for BankTemplateLayer {
         Box::pin(async move {
             let mut result = ExtractionResult {
                 extraction_method: "bank_templates".to_string(),
-                currency: Some("INR".to_string()),
                 ..Default::default()
             };
 
@@ -701,6 +819,14 @@ impl ExtractionLayer for BankTemplateLayer {
             let matched: Option<ExtractionResult> = 'm: {
                 if let Some(patterns) = bank_templates().get(bank_name) {
                     for p in patterns {
+                        // A `mandate` pattern describes a mandate-lifecycle
+                        // email, which is routed to
+                        // `mandate_extractor::bank_mandate_template`, not
+                        // here -- letting one match as a transaction would
+                        // book a mandate's *limit* as a settled amount.
+                        if p.txn_type.as_deref() == Some("mandate") {
+                            continue;
+                        }
                         if let Some(caps) = p.regex.captures(body) {
                             // Fixed per-pattern direction (see
                             // `BankPatternTemplate::direction`'s doc comment)
@@ -709,12 +835,15 @@ impl ExtractionLayer for BankTemplateLayer {
                             // actually fired, which previously mislabeled
                             // any credit/refund-shaped template as a debit.
                             result.direction = Some(p.direction.clone());
+                            result.currency = Some(p.currency.clone());
                             result.amount_minor = caps
                                 .get(p.amount_group)
                                 .and_then(|m| parse_amount(m.as_str()));
-                            result.merchant_raw = caps
-                                .get(p.merchant_group)
-                                .map(|m| m.as_str().trim().to_string());
+                            result.merchant_raw = p
+                                .merchant_group
+                                .and_then(|g| caps.get(g))
+                                .map(|m| m.as_str().trim().to_string())
+                                .filter(|m| !m.is_empty());
                             // `date_fallback_epoch` is an explicit,
                             // template-authored fallback (Doc 30
                             // TASK-TXN-003) for banks whose alert doesn't
@@ -722,10 +851,42 @@ impl ExtractionLayer for BankTemplateLayer {
                             // which means the capture group genuinely
                             // didn't parse and must fail validation, not
                             // silently default to any date at all.
-                            result.event_time = caps
-                                .get(p.date_group)
-                                .and_then(|m| parse_date(m.as_str()))
+                            let parsed_date = p
+                                .date_group
+                                .and_then(|g| caps.get(g))
+                                .and_then(|m| parse_date_generic(m.as_str()));
+                            // A bare-numeric date like SBI Card's "10/01/26"
+                            // or HDFC's "23-12-25" is as genuinely DD/MM as
+                            // it is MM/DD; propagating that lets
+                            // `apply_date_cross_check` arbitrate it against
+                            // Gmail's internalDate instead of Layer 2
+                            // silently committing to one reading.
+                            result.event_time_ambiguous =
+                                parsed_date.as_ref().is_some_and(|d| d.ambiguous);
+                            result.event_time = parsed_date
+                                .map(|d| d.timestamp)
                                 .or(p.date_fallback_epoch);
+                            result.balance_after = p
+                                .balance_group
+                                .and_then(|g| caps.get(g))
+                                .and_then(|m| parse_amount(m.as_str()));
+                            result.reference_id = p
+                                .reference_group
+                                .and_then(|g| caps.get(g))
+                                .map(|m| m.as_str().trim().to_string())
+                                .filter(|r| !r.is_empty());
+                            result.masked_identifier = p
+                                .last4_group
+                                .and_then(|g| caps.get(g))
+                                .map(|m| clean_masked_identifier(m.as_str()))
+                                .filter(|d| !d.is_empty());
+                            result.upi_vpa = p
+                                .upi_vpa_group
+                                .and_then(|g| caps.get(g))
+                                .map(|m| m.as_str().trim().to_lowercase())
+                                .filter(|v| !v.is_empty());
+                            result.instrument_type =
+                                p.txn_type.as_deref().and_then(instrument_type_for_txn_type);
                             break 'm Some(result);
                         }
                     }
@@ -1069,25 +1230,49 @@ struct DateParseResult {
     ambiguous: bool,
 }
 
-/// The 3 bare-numeric formats where a DD/MM-vs-MM/DD swap is a genuinely
+/// The bare-numeric formats where a DD/MM-vs-MM/DD swap is a genuinely
 /// different, equally well-formed date whenever both components are <=12.
 /// Every other format below (month-name) is inherently unambiguous.
-const NUMERIC_AMBIGUOUS_FORMATS: &[&str] = &["%d/%m/%Y", "%d-%m-%Y", "%m-%d-%Y"];
+const NUMERIC_AMBIGUOUS_FORMATS: &[&str] = &[
+    "%d/%m/%Y",
+    "%d-%m-%Y",
+    "%m-%d-%Y",
+    "%d/%m/%y",
+    "%d-%m-%y",
+];
 
 /// Returns `None` on an unparseable date string -- see `parse_date`'s doc
 /// comment for why this must never fabricate a fallback timestamp.
 fn parse_date_generic(s: &str) -> Option<DateParseResult> {
+    // ORDER IS LOAD-BEARING: each 2-digit-year format must precede its
+    // 4-digit twin. chrono's `%Y` accepts a *variable-width* year, so
+    // "23-12-25" fed to "%d-%m-%Y" parses as 23 December of year 25 AD --
+    // silently, with no error. `%y` by contrast consumes exactly two digits,
+    // and `parse_from_str` requires the whole input, so "17-08-2025" fails
+    // "%d-%m-%y" (trailing "25") and correctly falls through to "%d-%m-%Y".
+    // Trying the narrow format first is therefore what makes both widths
+    // resolve correctly; the reverse order mis-dates every 2-digit-year email
+    // by ~2000 years.
     let formats = [
-        "%d-%b-%Y",
         "%d-%b-%y",
+        "%d-%b-%Y",
+        "%d/%m/%y",
         "%d/%m/%Y",
+        "%d-%m-%y",
         "%d-%m-%Y",
         "%m-%d-%Y",
-        "%d %b %Y",
         "%d %b %y",
-        "%d %b, %Y",
+        "%d %b %Y",
         "%d %b, %y",
+        "%d %b, %Y",
         "%b %d, %Y",
+        // Jupiter Pots ("Mon, Dec 01, 2025") and banks that spell the month
+        // out in full.
+        "%a, %b %d, %Y",
+        "%a, %B %d, %Y",
+        "%d %B %Y",
+        "%d %B, %Y",
+        "%B %d, %Y",
     ];
 
     for fmt in formats {
@@ -1842,6 +2027,79 @@ fn apply_date_cross_check(obs: &mut ExtractionResult, internal_date: Option<i64>
     }
 }
 
+/// Applies a merchant rule learned from an LLM correction (issue #12) on top
+/// of whichever layer actually won.
+///
+/// Scoped to this bank *and* this email's template hash, so a rule taught by
+/// one alert shape can never rewrite the merchant on a differently-shaped
+/// email from the same bank. Silently does nothing when no such rule exists,
+/// which is the overwhelmingly common case.
+///
+/// ponytail: one indexed lookup per successful extraction. Measured against
+/// the scan budget this is noise next to the Gmail fetch it sits behind, and
+/// folding it into `LearnedPatternLayer`'s existing query would mean
+/// restructuring that layer's contract for no measurable gain.
+async fn apply_learned_merchant_override(
+    pool: &Pool,
+    bank_name: &str,
+    body: &str,
+    obs: &mut ExtractionResult,
+) {
+    let template_hash = compute_template_hash(body);
+    let bank = bank_name.to_string();
+
+    let Ok(conn) = pool.get().await else { return };
+    let patterns: Vec<String> = match conn
+        .interact(move |c| -> Vec<String> {
+            let Ok(mut stmt) = c.prepare(
+                "SELECT v.rule_payload_json FROM pattern_rule_variants v
+                 JOIN pattern_rules p ON p.id = v.pattern_rule_id
+                 WHERE p.bank_name = ?1 AND p.field_name = 'merchant'
+                   AND v.template_hash = ?2
+                   AND v.status IN ('active', 'trusted')",
+            ) else {
+                return Vec::new();
+            };
+            let Ok(rows) = stmt.query_map(rusqlite::params![bank, template_hash], |r| {
+                r.get::<_, String>(0)
+            }) else {
+                return Vec::new();
+            };
+            rows.filter_map(|r| r.ok())
+                .filter_map(|s| {
+                    serde_json::from_str::<serde_json::Value>(&s)
+                        .ok()?
+                        .get("regex")?
+                        .as_str()
+                        .map(|x| x.to_string())
+                })
+                .collect()
+        })
+        .await
+    {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+
+    for pattern in patterns {
+        let Ok(re) = Regex::new(&pattern) else { continue };
+        if let Some(m) = re.captures(body).and_then(|c| c.get(1)) {
+            let captured = m.as_str().trim();
+            if captured.is_empty() {
+                continue;
+            }
+            tracing::debug!(
+                bank = bank_name,
+                merchant = %captured,
+                previous = ?obs.merchant_raw,
+                "Applied learned merchant rule from an LLM correction"
+            );
+            obs.merchant_raw = Some(captured.to_string());
+            return;
+        }
+    }
+}
+
 pub async fn run_extraction_ladder(
     pool: &Pool,
     bank_name: &str,
@@ -1862,13 +2120,18 @@ pub async fn run_extraction_ladder(
         let layer_name = layer.layer_name();
         if let Some(mut obs) = layer.extract(pool, bank_name, body).await {
             if obs.is_valid() {
+                // Issue #12: a merchant rule learned from an LLM correction
+                // has to be applied here rather than inside
+                // `LearnedPatternLayer`, because Layer 1 discards any result
+                // failing `is_valid()` -- and a merchant-only rule never
+                // carries an amount, currency, direction or date, so Layer 1
+                // would throw it away every time and the correction would
+                // never reach a real extraction. Overriding the winning
+                // layer's merchant instead is what makes "teach the template"
+                // actually change the next scan's output.
+                apply_learned_merchant_override(pool, bank_name, body, &mut obs).await;
                 // Augment with instrument signals from the body.
-                let signals = extract_instrument_signals(bank_name, body);
-                obs.instrument_type = signals.instrument_type;
-                obs.issuer_name = signals.issuer_name;
-                obs.masked_identifier = signals.masked_identifier;
-                obs.network = signals.network;
-                obs.upi_vpa = signals.upi_vpa;
+                apply_instrument_signals(&mut obs, bank_name, body);
                 // Doc 30 TASK-TXN-012: "During extraction (Layers 2/3),
                 // detect EMI language" -- applied uniformly regardless of
                 // which layer produced the core fields, since EMI phrasing
@@ -1983,12 +2246,7 @@ pub async fn run_extraction_ladder(
         let mut llm_result = *boxed_llm_result;
         if llm_result.is_valid() {
             // Augment with instrument signals.
-            let signals = extract_instrument_signals(bank_name, body);
-            llm_result.instrument_type = signals.instrument_type;
-            llm_result.issuer_name = signals.issuer_name;
-            llm_result.masked_identifier = signals.masked_identifier;
-            llm_result.network = signals.network;
-            llm_result.upi_vpa = signals.upi_vpa;
+            apply_instrument_signals(&mut llm_result, bank_name, body);
             apply_amount_cross_check(&mut llm_result, body);
 
             // ── Best-effort: synthesise a pending pattern-rule candidate ─────
@@ -2101,6 +2359,391 @@ fn synthesize_pending_rule(
 mod tests {
     use super::*;
 
+    /// Structural integrity of every bundled `assets/bank_templates/*.json`.
+    ///
+    /// There is one file per verified-sender registry bank (~144), the bulk of
+    /// them mechanically generated. Hand-reviewing that many regexes is not a
+    /// control that scales, so the mechanical failure modes are asserted here
+    /// instead: a capture-group index pointing past the end of its own regex
+    /// silently yields `None` for that field rather than erroring, which is
+    /// exactly the kind of bug that would degrade extraction quietly.
+    ///
+    /// `bank_templates()` itself panics on an unparseable file or an
+    /// uncompilable regex, naming the file -- so simply building the map is
+    /// half the assertion.
+    #[test]
+    fn test_bank_template_integrity() {
+        let templates = bank_templates();
+        assert!(
+            !templates.is_empty(),
+            "no bank templates compiled -- build.rs glob produced an empty set"
+        );
+
+        for (bank, patterns) in templates {
+            assert!(
+                !patterns.is_empty(),
+                "{bank}: template file has zero patterns"
+            );
+            for p in patterns {
+                let groups = p.regex.captures_len();
+                let named = [
+                    ("amount_group", Some(p.amount_group)),
+                    ("merchant_group", p.merchant_group),
+                    ("date_group", p.date_group),
+                    ("balance_group", p.balance_group),
+                    ("reference_group", p.reference_group),
+                    ("last4_group", p.last4_group),
+                    ("upi_vpa_group", p.upi_vpa_group),
+                    ("cadence_group", p.cadence_group),
+                ];
+                for (field, group) in named {
+                    if let Some(g) = group {
+                        assert!(
+                            g > 0 && g < groups,
+                            "{bank}/{}: {field}={g} but the regex has {} capture groups \
+                             (valid indices 1..{}) -- this field would silently never populate",
+                            p.name,
+                            groups - 1,
+                            groups - 1
+                        );
+                    }
+                }
+                assert!(
+                    p.direction == "debit" || p.direction == "credit",
+                    "{bank}/{}: direction {:?} must be \"debit\" or \"credit\"",
+                    p.name,
+                    p.direction
+                );
+                if let Some(t) = p.txn_type.as_deref() {
+                    assert!(
+                        TEMPLATE_TXN_TYPES.contains(&t),
+                        "{bank}/{}: txn_type {t:?} is not one of {TEMPLATE_TXN_TYPES:?}",
+                        p.name
+                    );
+                }
+                assert!(
+                    p.currency.len() == 3 && p.currency.chars().all(|c| c.is_ascii_uppercase()),
+                    "{bank}/{}: currency {:?} must be a 3-letter uppercase ISO code",
+                    p.name,
+                    p.currency
+                );
+                // A `mandate` pattern is read by `bank_mandate_template`,
+                // which rejects anything without a merchant -- so one that
+                // can't produce a merchant is dead weight, never a match.
+                if p.txn_type.as_deref() == Some("mandate") {
+                    assert!(
+                        p.merchant_group.is_some(),
+                        "{bank}/{}: a mandate pattern needs a merchant_group",
+                        p.name
+                    );
+                }
+                // Balance-only patterns are the one shape allowed to omit a
+                // merchant (`is_valid()` accepts amount-less balance updates);
+                // every other shape needs a merchant or it can never pass.
+                if p.txn_type.as_deref() != Some("account_balance")
+                    && p.txn_type.as_deref() != Some("mandate")
+                {
+                    assert!(
+                        p.merchant_group.is_some() || p.balance_group.is_some(),
+                        "{bank}/{}: no merchant_group and no balance_group -- \
+                         `ExtractionResult::is_valid()` can never pass for this pattern",
+                        p.name
+                    );
+                }
+            }
+        }
+    }
+
+    /// Field-level regression for the corpus-derived (tier-1) templates.
+    ///
+    /// Every body here is a real email from the user's mailbox, so this is
+    /// what actually catches template drift: an over-eager merchant
+    /// terminator, a date format silently falling back, a balance captured as
+    /// the transaction amount. Asserting on `BankTemplateLayer` directly
+    /// (rather than through the whole pipeline) keeps a failure pointing at
+    /// the template that broke.
+    #[tokio::test]
+    async fn test_tier1_templates_extract_real_bodies() {
+        struct Case {
+            bank: &'static str,
+            body: &'static str,
+            amount_minor: i64,
+            direction: &'static str,
+            merchant: Option<&'static str>,
+            last4: Option<&'static str>,
+            date: Option<(i32, u32, u32)>,
+            balance_minor: Option<i64>,
+        }
+
+        let cases = [
+            // Guards the 2-digit-year date path (23-12-25) that Layer 2's old
+            // `parse_date` rejected outright, discarding the whole match.
+            Case {
+                bank: "HDFC Bank",
+                body: "Dear Customer, Rs.200.00 has been debited from account 4691 to VPA \
+                       shreesomnathtrustvas.76061863@hdfcbank SHREE SOMNATH TRUST VAS on \
+                       23-12-25. Your UPI transaction reference number is 533264925852.",
+                amount_minor: 20000,
+                direction: "debit",
+                merchant: Some("SHREE SOMNATH TRUST VAS"),
+                last4: Some("4691"),
+                date: Some((2025, 12, 23)),
+                balance_minor: None,
+            },
+            Case {
+                bank: "HDFC Bank",
+                body: "Dear Card Member, Thank you for using your HDFC Bank Credit Card ending \
+                       0364 for Rs 706.00 at Payu*Swiggy Food on 07-08-2025 19:25:29. \
+                       Authorization code:- 002587",
+                amount_minor: 70600,
+                direction: "debit",
+                merchant: Some("Payu*Swiggy Food"),
+                last4: Some("0364"),
+                date: Some((2025, 8, 7)),
+                balance_minor: None,
+            },
+            // Balance-only: no merchant anywhere in the body. Unexpressible
+            // before the template schema gained `balance_group`.
+            Case {
+                bank: "HDFC Bank",
+                body: "Dear Customer, Here is the update on your account balance: As of \
+                       yesterday, 04-SEP-25 available balance is INR 10050.00 in your A/c XX4691",
+                amount_minor: 1005000,
+                direction: "credit",
+                merchant: None,
+                last4: Some("4691"),
+                date: Some((2025, 9, 4)),
+                balance_minor: Some(1005000),
+            },
+            // Guards the dd/mm/yy date path (10/01/26).
+            Case {
+                bank: "SBI Card",
+                body: "SBI Card TRANSACTION ALERT! Dear Cardholder, This is to inform you that, \
+                       Rs.480.20 spent on your SBI Credit Card ending 7603 at \
+                       INNOVATIVERETAILCONCEPT on 10/01/26.",
+                amount_minor: 48020,
+                direction: "debit",
+                merchant: Some("INNOVATIVERETAILCONCEPT"),
+                last4: Some("7603"),
+                date: Some((2026, 1, 10)),
+                balance_minor: None,
+            },
+            // Uppercase month name, and an available-limit balance that must
+            // land in `balance_after` rather than overwrite the amount.
+            Case {
+                bank: "IDFC FIRST Bank",
+                body: "Dear Cardmember, Delicious Purchase! INR 725.00 spent on your IDFC FIRST \
+                       BANK Credit Card ending XX3620 at TRUFFLES HOSPITALITY PVT on 05 AUG \
+                       2025. Available Limit: INR 38666.18 .",
+                amount_minor: 72500,
+                direction: "debit",
+                merchant: Some("TRUFFLES HOSPITALITY PVT"),
+                last4: Some("3620"),
+                date: Some((2025, 8, 5)),
+                balance_minor: Some(3866618),
+            },
+            // Credit-direction card payment: guards against a credit-shaped
+            // template being mislabeled a debit.
+            Case {
+                bank: "IDFC FIRST Bank",
+                body: "Dear Customer, Payment of Rs. 6,283.37 was received on your FIRST \
+                       Millennia Credit Card ending with XX3620 on 29 Nov 2025.",
+                amount_minor: 628337,
+                direction: "credit",
+                merchant: Some("FIRST Millennia"),
+                last4: Some("3620"),
+                date: Some((2025, 11, 29)),
+                balance_minor: None,
+            },
+            // Amount with no decimal part.
+            Case {
+                bank: "Axis Bank",
+                body: "17-08-2025 Dear Aditya Rawal, Thank you for using your credit card no. \
+                       XX3825 for INR 379 at AIRTEL PAYM on 17-08-2025 00:41:37 IST.",
+                amount_minor: 37900,
+                direction: "debit",
+                merchant: Some("AIRTEL PAYM"),
+                last4: Some("3825"),
+                date: Some((2025, 8, 17)),
+                balance_minor: None,
+            },
+            Case {
+                bank: "Yes Bank",
+                body: "Dear Cardmember, INR 2441.98 has been spent on your YES BANK Credit Card \
+                       ending with 2982 at UPI_RELIANCE BP MOBILI on 26-10-2025 at 01:47:41 pm. \
+                       Avl Bal INR 95138.98.",
+                amount_minor: 244198,
+                direction: "debit",
+                merchant: Some("UPI_RELIANCE BP MOBILI"),
+                last4: Some("2982"),
+                date: Some((2025, 10, 26)),
+                balance_minor: Some(9513898),
+            },
+            // Jupiter prints both the payee's VPA and the user's own; only
+            // the user's ("From ...") may be stored as `upi_vpa`.
+            Case {
+                bank: "Jupiter",
+                body: "Hey, Aditya Your UPI payment was successful You paid ₹543 Paid to \
+                       HONGKONG NOODLES Vyapar.169687998887@hdfcbank Date Jan 01, 2026 From \
+                       Aditya 8127696200@jupiteraxis Transaction ID 1321767280821724605",
+                amount_minor: 54300,
+                direction: "debit",
+                merchant: Some("HONGKONG NOODLES"),
+                last4: None,
+                date: Some((2026, 1, 1)),
+                balance_minor: None,
+            },
+        ];
+
+        let pool = dummy_pool();
+        for c in cases {
+            let got = BankTemplateLayer
+                .extract(&pool, c.bank, c.body)
+                .await
+                .unwrap_or_else(|| panic!("{}: no template matched a real body", c.bank));
+
+            assert_eq!(got.amount_minor, Some(c.amount_minor), "{} amount", c.bank);
+            assert_eq!(
+                got.direction.as_deref(),
+                Some(c.direction),
+                "{} direction",
+                c.bank
+            );
+            assert_eq!(got.merchant_raw.as_deref(), c.merchant, "{} merchant", c.bank);
+            assert_eq!(
+                got.masked_identifier.as_deref(),
+                c.last4,
+                "{} last4",
+                c.bank
+            );
+            assert_eq!(
+                got.balance_after,
+                c.balance_minor,
+                "{} balance_after",
+                c.bank
+            );
+            if let Some((y, m, d)) = c.date {
+                assert_eq!(got.event_time, Some(ymd_ts(y, m, d)), "{} event_time", c.bank);
+            }
+            assert!(
+                got.is_valid(),
+                "{}: template matched but the result fails is_valid(), so the ladder \
+                 would discard it and fall through to Layer 3",
+                c.bank
+            );
+        }
+    }
+
+    /// The bank-specific mandate path: a `txn_type: "mandate"` pattern must be
+    /// picked up by `bank_mandate_template` and must NOT be booked as a
+    /// transaction by `BankTemplateLayer` (its amount is a standing *limit*,
+    /// not a settled charge).
+    #[tokio::test]
+    async fn test_mandate_pattern_routes_to_mandate_extractor_only() {
+        let body = "Dear Cardholder, Thank you for registering for a recurring e-Mandate at \
+                    merchant platform using your SBI Credit Card. Your e-Mandate set at merchant \
+                    with SBI Credit Card ending 7603 has been registered. Merchant: ScribdInc \
+                    Description: PremiumMonthlyMembership e-Mandate Limit Amount (INR): 1000.00 \
+                    Frequency: monthly Start date: 21/04/2026 SiHub ID: YPCojLhIn2";
+
+        let m = crate::extraction::mandate_extractor::bank_mandate_template("SBI Card", body)
+            .expect("SBI Card mandate template must match a real registration body");
+        assert_eq!(m.merchant.as_deref(), Some("ScribdInc"));
+        assert_eq!(m.cadence.as_deref(), Some("monthly"));
+        assert_eq!(m.max_limit_amount, Some(100_000));
+        assert_eq!(m.external_mandate_id.as_deref(), Some("YPCojLhIn2"));
+        assert_eq!(m.masked_identifier.as_deref(), Some("7603"));
+        assert_eq!(m.instrument_type.as_deref(), Some("credit_card"));
+
+        // The ₹1000.00 limit must never surface as a settled transaction.
+        let as_txn = BankTemplateLayer.extract(&dummy_pool(), "SBI Card", body).await;
+        assert!(
+            as_txn.is_none_or(|r| r.amount_minor != Some(100_000)),
+            "a mandate limit must not be booked as a transaction amount"
+        );
+    }
+
+    /// Every `txn_type` a template may declare must map onto a value the
+    /// `instruments.type` CHECK constraint accepts. Getting this wrong does
+    /// not fail loudly: the bad value flows all the way into reconciliation
+    /// and surfaces as "Query returned no rows" from a completely unrelated
+    /// query, which is what it did before `instrument_type_for_txn_type`
+    /// existed.
+    #[test]
+    fn test_txn_types_map_to_valid_instrument_enum() {
+        // Verbatim from migrations/20260101000001_initial_core_schema.sql.
+        const SCHEMA_INSTRUMENT_TYPES: &[&str] = &[
+            "credit_card",
+            "debit_card",
+            "bank_account",
+            "UPI",
+            "NEFT",
+            "RTGS",
+            "SWIFT",
+            "upi_vpa",
+            "wallet",
+            "POS",
+            "ATM",
+            "cheque",
+        ];
+        for t in TEMPLATE_TXN_TYPES {
+            if let Some(mapped) = instrument_type_for_txn_type(t) {
+                assert!(
+                    SCHEMA_INSTRUMENT_TYPES.contains(&mapped.as_str()),
+                    "txn_type {t:?} maps to instrument_type {mapped:?}, which the \
+                     instruments.type CHECK constraint would reject"
+                );
+            }
+        }
+        assert_eq!(
+            instrument_type_for_txn_type("mandate"),
+            None,
+            "a mandate is an authorisation, not an instrument"
+        );
+    }
+
+    /// Every bank in the verified-sender registry must have exactly one
+    /// template, and every template must belong to a registry bank. Without
+    /// this, a registry rename silently drops that bank to Layer 3 and a
+    /// stale template file lingers forever, both invisibly.
+    #[test]
+    fn test_every_registry_bank_has_a_template() {
+        let registry: crate::ingestion::verified_senders::VerifiedSenderRegistry =
+            serde_json::from_str(include_str!(
+                "../ingestion/verified_senders_registry.json"
+            ))
+            .expect("registry must parse");
+
+        let templates = bank_templates();
+        for sender in &registry.senders {
+            // "noise" senders are classified out at Gate 1 and never reach
+            // extraction, so they intentionally have no template.
+            if sender.classification == "noise" {
+                continue;
+            }
+            assert!(
+                templates.contains_key(&sender.bank_name),
+                "registry bank {:?} (domain {}) has no bank_templates/*.json -- \
+                 it would silently skip Layer 2 entirely",
+                sender.bank_name,
+                sender.domain
+            );
+        }
+
+        let registry_banks: std::collections::HashSet<&str> = registry
+            .senders
+            .iter()
+            .map(|s| s.bank_name.as_str())
+            .collect();
+        for bank in templates.keys() {
+            assert!(
+                registry_banks.contains(bank.as_str()),
+                "bank_templates has {bank:?} but no registry sender maps to it -- \
+                 stale file, or the registry renamed the bank"
+            );
+        }
+    }
+
     // Helper to create a dummy pool for tests
     fn dummy_pool() -> Pool {
         let mgr = deadpool_sqlite::Manager::from_config(
@@ -2188,6 +2831,130 @@ mod tests {
 
         assert!(result.is_some());
         assert_eq!(result.unwrap().extraction_method, "learned_patterns");
+    }
+
+    /// Issue #12 end-to-end: the point of teaching a rule is that the *next*
+    /// scan gets the merchant right without the LLM.
+    ///
+    /// This is the claim `LearnedPatternLayer` alone cannot satisfy — a
+    /// merchant-only rule carries no amount/currency/direction/date, so
+    /// `is_valid()` rejects it and Layer 1 returns `None`. Without
+    /// `apply_learned_merchant_override` the rule would be stored, look
+    /// correct in the database, and change nothing at all.
+    #[tokio::test]
+    async fn test_learned_merchant_rule_overrides_a_later_layers_merchant() {
+        let body = "Rs 500.00 debited at RAZ*SWIGGY on 25-May-23 towards purchase";
+        let pool = dummy_migrated_pool().await;
+
+        // Baseline: whatever the ladder produces with no learned rule.
+        let mut timed_out = false;
+        let before = run_extraction_ladder(&pool, "HDFC Bank", body, None, false, None, &mut timed_out)
+            .await
+            .unwrap()
+            .expect("fixture must extract");
+        let baseline_merchant = before.merchant_raw.clone();
+
+        // Teach a merchant rule for exactly this email shape.
+        let conn = pool.get().await.unwrap();
+        let body_owned = body.to_string();
+        conn.interact(move |c| {
+            let template_hash = compute_template_hash(&body_owned);
+            let pattern = crate::extraction::merchant_llm::synthesize_merchant_regex(
+                &body_owned,
+                "RAZ*SWIGGY",
+            )
+            .expect("must synthesize a pattern");
+            crate::db::pattern_rules::insert(
+                c,
+                &crate::db::pattern_rules::PatternRulesRow {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    bank_name: "HDFC Bank".to_string(),
+                    template_hash,
+                    field_name: "merchant".to_string(),
+                    rule_payload_json: serde_json::json!({ "regex": pattern }),
+                    status: "active".to_string(),
+                    success_count: 1,
+                    failure_count: 0,
+                    confidence: 0.95,
+                    created_at: Some(chrono::Utc::now().naive_utc()),
+                    updated_at: Some(chrono::Utc::now().naive_utc()),
+                },
+            )
+            .unwrap();
+        })
+        .await
+        .unwrap();
+        drop(conn);
+
+        let after = run_extraction_ladder(&pool, "HDFC Bank", body, None, false, None, &mut timed_out)
+            .await
+            .unwrap()
+            .expect("fixture must still extract");
+
+        assert_eq!(
+            after.merchant_raw.as_deref(),
+            Some("RAZ*SWIGGY"),
+            "the learned rule must decide the merchant (baseline was {baseline_merchant:?})"
+        );
+    }
+
+    /// The override is scoped to one email shape. A differently-shaped email
+    /// from the same bank must be untouched, or a single correction would
+    /// rewrite merchants across unrelated alerts.
+    #[tokio::test]
+    async fn test_learned_merchant_rule_does_not_leak_to_other_email_shapes() {
+        let taught_body = "Rs 500.00 debited at RAZ*SWIGGY on 25-May-23 towards purchase";
+        let other_body = "INR 250.00 spent using your card at BIG BAZAAR on 26-May-23 towards purchase";
+        let pool = dummy_migrated_pool().await;
+
+        let conn = pool.get().await.unwrap();
+        let taught = taught_body.to_string();
+        conn.interact(move |c| {
+            let template_hash = compute_template_hash(&taught);
+            let pattern =
+                crate::extraction::merchant_llm::synthesize_merchant_regex(&taught, "RAZ*SWIGGY")
+                    .unwrap();
+            crate::db::pattern_rules::insert(
+                c,
+                &crate::db::pattern_rules::PatternRulesRow {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    bank_name: "HDFC Bank".to_string(),
+                    template_hash,
+                    field_name: "merchant".to_string(),
+                    rule_payload_json: serde_json::json!({ "regex": pattern }),
+                    status: "active".to_string(),
+                    success_count: 1,
+                    failure_count: 0,
+                    confidence: 0.95,
+                    created_at: Some(chrono::Utc::now().naive_utc()),
+                    updated_at: Some(chrono::Utc::now().naive_utc()),
+                },
+            )
+            .unwrap();
+        })
+        .await
+        .unwrap();
+        drop(conn);
+
+        let mut timed_out = false;
+        let other = run_extraction_ladder(
+            &pool,
+            "HDFC Bank",
+            other_body,
+            None,
+            false,
+            None,
+            &mut timed_out,
+        )
+        .await
+        .unwrap()
+        .expect("the unrelated email must still extract");
+
+        assert_ne!(
+            other.merchant_raw.as_deref(),
+            Some("RAZ*SWIGGY"),
+            "a rule taught on one email shape must not rewrite a different one"
+        );
     }
 
     /// Ensemble-lite regression test: a Layer 1 learned rule whose "amount"
@@ -2548,7 +3315,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result_4.amount_minor, Some(150000));
-        assert_eq!(result_4.event_time, parse_date("25-May-2023"));
+        assert_eq!(result_4.event_time, Some(ymd_ts(2023, 5, 25)));
     }
 
     /// Regression test for the date-sentinel bug (BankTemplateLayer path): a
@@ -2776,13 +3543,44 @@ mod tests {
         );
     }
 
-    /// Direct unit test on the two date parsers themselves: `None` on
-    /// failure, never the old hardcoded `1704067200` (2024-01-01) sentinel.
+    /// Direct unit test on the date parser itself: `None` on failure, never
+    /// the old hardcoded `1704067200` (2024-01-01) sentinel.
     #[test]
     fn test_date_parsers_return_none_not_fake_sentinel_on_failure() {
-        assert_eq!(parse_date("not a date"), None);
         assert_eq!(parse_date_generic("not a date"), None);
-        assert_eq!(parse_date("35-May-23"), None);
+        assert_eq!(parse_date_generic("35-May-23"), None);
+        assert_eq!(parse_date_generic("32/13/26"), None);
+    }
+
+    /// Every date format that appears in a bundled Layer 2 template must
+    /// actually parse -- the shape that used to break Layer 2 silently, since
+    /// its old private `parse_date` accepted only `%d-%b-%y`/`%d-%b-%Y` and
+    /// every other real bank format returned `None`, failing `is_valid()` and
+    /// discarding an otherwise-correct match. Each string here is copied from
+    /// a real email body in the corpus.
+    #[test]
+    fn test_real_bank_date_formats_parse() {
+        for (input, y, m, d) in [
+            ("23-12-25", 2025, 12, 23),   // HDFC UPI alert
+            ("10/01/26", 2026, 1, 10),    // SBI Card transaction alert
+            ("08-JAN-26", 2026, 1, 8),    // HDFC balance notification
+            ("30-JUL-2025", 2025, 7, 30), // HDFC deposit alert
+            ("05 AUG 2025", 2025, 8, 5),  // IDFC FIRST debit alert
+            ("29 Nov 2025", 2025, 11, 29),// IDFC FIRST payment received
+            ("17-08-2025", 2025, 8, 17),  // Axis Bank credit card
+            ("07 Jan, 2026", 2026, 1, 7), // HDFC credit card
+            ("Jan 08, 2026", 2026, 1, 8), // Jupiter UPI
+            ("Mon, Dec 01, 2025", 2025, 12, 1), // Jupiter Pots
+            ("29-Dec-25", 2025, 12, 29),  // Slice UPI credit
+        ] {
+            let parsed = parse_date_generic(input)
+                .unwrap_or_else(|| panic!("real bank date {input:?} must parse"));
+            assert_eq!(
+                parsed.timestamp,
+                ymd_ts(y, m, d),
+                "{input:?} parsed to the wrong day"
+            );
+        }
     }
 
     fn ymd_ts(year: i32, month: u32, day: u32) -> i64 {

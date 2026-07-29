@@ -75,7 +75,41 @@ pub const MERCHANT_STOPWORDS: &[&str] = &[
     // above, just at the start of the email instead of the end.
     "inform", "informing", "advise", "advised", "wish", "notice", "note", "would", "like",
     "hereby", "bring",
+    // ---- Anti-merchant additions, derived by replaying the real 38k-email
+    // corpus and ranking every merchant the ladder actually produced.
+    //
+    // Before these, the single most common "merchant" in the whole corpus was
+    // "YOUR HDFC BANK RUPAY CREDIT" (334 occurrences): only "your" was a
+    // stopword, so 1-of-5 cleared the half-of-tokens bar in
+    // `is_plausible_merchant_name` and the fragment became a permanent
+    // merchants row. The gap was never the *rule*, it was the vocabulary --
+    // banking's own domain nouns were missing from a list built out of
+    // English function words. Others this class covers: "USING YOUR HDFC BANK
+    // CREDIT", "YOUR REFERENCE BILLER NAME HDFC CREDIT", "BANKING",
+    // "TRANSACTION OF INR 202", "YOUR POT", "VPA 8127696200@PZ".
+    //
+    // Safe to blocklist because a genuine merchant is never composed
+    // *predominantly* of these: "RELIANCE RETAIL LIMITE", "UBER INDIA SYSTEMS
+    // PRI" and "UTTAR PRADESH STATE ROAD TRANSPORT CORPORATION" all still
+    // pass, since neither predicate rejects a name that merely *contains* one.
+    "bank", "banking", "card", "cards", "credit", "debit", "rupay", "visa", "mastercard",
+    "amex", "upi", "vpa", "neft", "imps", "rtgs", "ach", "nach", "emi", "atm", "pos",
+    "transaction", "transactions", "txn", "trxn", "amount", "inr", "rs", "usd", "payment",
+    "paid", "pay", "spent", "debited", "credited", "purchase", "transfer", "balance",
+    "available", "avl", "limit", "ref", "reference", "biller", "name", "pot", "superpot",
+    "using", "ending", "ends", "xx", "xxxx", "processing", "fee", "charges", "towards",
+    "successful", "successfully", "update", "alert", "details", "detail", "info", "using",
 ];
+
+/// Shortest string still treated as a possible merchant name.
+///
+/// The corpus produces 1-2 character captures ("X", "YS", "NK", "BL", "IS")
+/// where a terminator fired early or an initial was mistaken for a name. No
+/// word list can express this -- a blocklist would have to enumerate every
+/// two-letter string -- so it is a shape rule rather than vocabulary. Set at 3
+/// because real two-letter brands are vanishingly rare in this data while
+/// two-letter garbage is common.
+pub const MIN_MERCHANT_NAME_LEN: usize = 3;
 
 /// `true` when `candidate` is nothing but [`MERCHANT_STOPWORDS`] -- e.g. "to
 /// **block your** card" matching the ambiguous "to" label and capturing
