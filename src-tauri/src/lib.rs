@@ -4,7 +4,6 @@ pub mod billing;
 pub mod commands;
 pub mod crash_reporter;
 pub mod db;
-pub mod dev_review;
 pub mod diagnostics;
 pub mod error;
 pub mod extraction;
@@ -41,32 +40,20 @@ pub fn run() {
             .unwrap_or(std::path::Path::new("."))
             .to_path_buf();
     }
-    // J4 fix (Doc 28 §4.2): the debug log previously never rotated or
-    // expired at all (`rolling::never` into one ever-growing file). Rotates
-    // daily and prunes files older than the configurable retention window
-    // (15 days by default, matching the documented default).
-    let file_appender = tracing_appender::rolling::daily(&log_dir, "app-logs.log");
-    // TASK-OPS-007: redact at write time, not only lazily when a diagnostic
-    // bundle is later exported -- `app-logs.log` itself must never hold
-    // unredacted PII on disk in the interim. The console/stdout layer below
-    // is deliberately left unredacted for local-dev ergonomics; only the
-    // persisted file is wrapped.
-    let redacting_appender = crate::logging::RedactingWriter::new(file_appender);
-    let (non_blocking, _guard) = tracing_appender::non_blocking(redacting_appender);
-    Box::leak(Box::new(_guard));
-    crate::logging::prune_old_logs(&log_dir);
+    let (categorized_writers, guards) = crate::logging::CategorizedLogWriters::init(&log_dir);
+    Box::leak(Box::new(guards));
 
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,dinero_app_lib=trace,dinero_app=trace"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,dinero_app_lib=trace,dinero_app=trace,frontend=trace,api_calls=trace,network=trace"));
 
     tracing_subscriber::registry()
         .with(env_filter)
         .with(tracing_subscriber::fmt::layer().with_ansi(true))
         .with(
             tracing_subscriber::fmt::layer()
-                .with_writer(non_blocking)
+                .with_writer(categorized_writers)
                 .with_ansi(false),
         )
         .init();

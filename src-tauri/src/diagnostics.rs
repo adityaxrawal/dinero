@@ -60,10 +60,12 @@ fn scan_for_pii(sections: &[(&str, &str)]) -> Result<()> {
 /// data flows through info/debug-level pipeline logs, not error logs), each
 /// additionally passed through `redact`.
 fn collect_error_lines(log_dir: &Path, max_lines: usize) -> String {
-    // J4 fix: the log now rotates daily as `app-logs.log.YYYY-MM-DD` rather
-    // than a single fixed `app-logs.log` file, so the most recent rotated
-    // file must be found rather than assumed by name.
-    let Ok(entries) = std::fs::read_dir(log_dir) else {
+    let target_dir = if log_dir.join("logs").is_dir() {
+        log_dir.join("logs")
+    } else {
+        log_dir.to_path_buf()
+    };
+    let Ok(entries) = std::fs::read_dir(&target_dir) else {
         return String::new();
     };
     let latest = entries
@@ -71,7 +73,11 @@ fn collect_error_lines(log_dir: &Path, max_lines: usize) -> String {
         .filter(|e| {
             e.file_name()
                 .to_str()
-                .map(|n| n.starts_with("app-logs.log"))
+                .map(|n| {
+                    n.starts_with("combined.log")
+                        || n.starts_with("backend.log")
+                        || n.starts_with("app-logs.log")
+                })
                 .unwrap_or(false)
         })
         .max_by_key(|e| {

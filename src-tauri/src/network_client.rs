@@ -54,26 +54,26 @@ impl NetworkClient {
                 .http2_keep_alive_interval(Duration::from_secs(10))
                 .http2_keep_alive_timeout(Duration::from_secs(5))
                 .http2_keep_alive_while_idle(true)
-                // Doc 2026-07-28 mail scan performance (root cause of the
-                // 35-minute scan): HTTP/2 multiplexes every concurrent
-                // request over ONE physical connection. A historical scan
-                // fires `MAX_CONCURRENT_FETCHES` requests at once -- under
-                // h2 they all rode that single connection, so one hiccup
-                // (Google rotating the connection, a Wi-Fi/VPN blip) killed
-                // every in-flight request simultaneously and all of them
-                // re-contended to re-establish the same one connection --
-                // observed in logs as ~19 lockstep ~100s stalls (dozens of
-                // "Spawning fetch" lines go silent, then everything finishes
-                // in one burst) accounting for ~88% of total scan time. The
-                // keepalive settings above stop *idle* connections going
-                // stale but can't stop a *live* connection's hiccup from
-                // taking every concurrent request down with it. Forcing
-                // HTTP/1.1 makes reqwest open one connection per concurrent
-                // request instead, so a dead connection only costs the one
-                // request riding it (bounded by REQUEST_TIMEOUT + retry
-                // below), not all of them. Do not remove this without
-                // re-confirming the thundering-herd behavior is gone.
-                .http1_only()
+                // A previous revision forced `.http1_only()` here, believing
+                // HTTP/2 multiplexing was collapsing every concurrent scan
+                // fetch onto one fragile connection -- the evidence was
+                // "~19 lockstep ~100s stalls (dozens of 'Spawning fetch' lines
+                // go silent, then everything finishes in one burst)".
+                //
+                // That read the symptom of a different bug. Those stalls were
+                // the *whole process* freezing, not the connection: during the
+                // same windows, purely local SQLite IPC commands
+                // (`settings_get_connected_accounts`) also took 17-99s and
+                // completed in the same instant, and stalled Gmail requests
+                // came back with `status=200` -- the server had answered and
+                // nothing was polling the socket. The cause was
+                // `dev_review::record` holding a global `std::sync::Mutex`
+                // across an O(n^2) multi-hundred-MB JSON rewrite from inside
+                // async tasks, pinning every tokio worker (since removed).
+                //
+                // With that gone, h1-only is a straight loss: it opens a fresh
+                // TCP+TLS connection per concurrent request instead of
+                // multiplexing a scan's thousand-plus small fetches over one.
                 .build()
                 .expect("reqwest::Client::builder() with only a timeout set must always succeed"),
             db_pool,
@@ -148,6 +148,35 @@ impl NetworkClient {
             secret_fields_masked: Some("Authorization,Cookie".into()),
             channel: Some(channel.to_string()),
         };
+
+        let latency_ms = (Utc::now().naive_utc() - start_time).num_milliseconds();
+        match &response_result {
+            Ok(res) => {
+                tracing::info!(
+                    target: "network",
+                    method = %log_row.method,
+                    domain = %log_row.domain,
+                    url = %log_row.url_redacted,
+                    status = res.status().as_u16(),
+                    latency_ms = latency_ms,
+                    bytes_sent = bytes_sent,
+                    channel = channel,
+                    "Network request succeeded"
+                );
+            }
+            Err(e) => {
+                tracing::error!(
+                    target: "network",
+                    method = %log_row.method,
+                    domain = %log_row.domain,
+                    url = %log_row.url_redacted,
+                    error = %e,
+                    latency_ms = latency_ms,
+                    channel = channel,
+                    "Network request failed"
+                );
+            }
+        }
 
         let pool = self.db_pool.clone();
         tokio::spawn(async move {
