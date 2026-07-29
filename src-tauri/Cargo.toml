@@ -85,3 +85,17 @@ mockito = "1.0"
 # (which otherwise sleeps for real, summing to ~3 minutes across 8 retries)
 # without weakening or duplicating that logic. Dev-only -- never ships.
 tokio = { version = "1", features = ["test-util"] }
+
+# `tauri dev` runs an unoptimized build, and the scan's hot path is almost
+# entirely dependency code -- regex matching in the extraction ladder,
+# serde_json over Gmail payloads, html5ever/ammonia sanitizing email bodies,
+# SQLCipher key derivation. Unoptimized, those run roughly an order of
+# magnitude slower than in release, which is why a dev-mode scan felt so much
+# worse than the shipped one. Optimizing dependencies while leaving our own
+# crate at opt-level 1 keeps breakpoints and backtraces usable; dependencies
+# are rebuilt rarely, so this costs a one-time build, not iteration speed.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

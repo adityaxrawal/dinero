@@ -25,6 +25,16 @@
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
+// Issue #8: layout reconstruction is shared verbatim with the library
+// (`statements::layout`) via a path include rather than a crate dependency —
+// this binary deliberately does not link `dinero_app_lib` (see the module
+// doc above), and the alternative, shipping raw per-character geometry over
+// the pipe for the parent to reassemble, would mean megabytes of JSON per
+// statement to arrive at the identical string. The module is pure std logic
+// with no DB, Tauri or Keychain reach, so sharing it costs nothing.
+#[path = "../statements/layout.rs"]
+mod layout;
+
 #[derive(Deserialize)]
 struct Request {
     operation: String,
@@ -166,7 +176,52 @@ fn extract_text(pdf_bytes: &[u8], password: Option<&str>) -> ExtractTextResponse
 
     let mut pages = Vec::new();
     for (idx, page) in doc.pages().iter().enumerate() {
-        let text = page.text().map(|t| t.all()).unwrap_or_default();
+        let text = page
+            .text()
+            .map(|t| {
+                // Issue #8: `t.all()` collapses every run of horizontal space
+                // to a single ' ', destroying the column structure that both
+                // `row_extractor`'s row regexes and `metadata_extractor`'s
+                // `label: value` patterns depend on. Rebuild the visual layout
+                // from per-character geometry instead — see `layout`'s module
+                // doc for the full failure it fixes.
+                let page_height = page.height().value;
+                let chars: Vec<layout::PositionedChar> = t
+                    .chars()
+                    .iter()
+                    .filter_map(|ch| {
+                        // The *loose* box on both axes — it spans the glyph's
+                        // full advance, so consecutive letters in a word
+                        // abut at a gap of zero while a real space leaves a
+                        // clearly positive one. Tight ink extents look
+                        // tempting but measure the same 1.8pt gap after a
+                        // comma as between two words, which splits "1,250.00"
+                        // into "1, 250.00". See `layout::SPACE_GAP_RATIO`.
+                        let bounds = ch.loose_bounds().ok()?;
+                        Some(layout::PositionedChar {
+                            text: ch.unicode_string()?,
+                            x0: bounds.left().value,
+                            x1: bounds.right().value,
+                            // pdfium's origin is bottom-left; `layout` works
+                            // top-down, matching reading order.
+                            y0: page_height - bounds.top().value,
+                            y1: page_height - bounds.bottom().value,
+                        })
+                    })
+                    .collect();
+                let rebuilt = layout::reconstruct_page(&chars);
+                // A PDF whose glyphs carry no usable bounding boxes (some
+                // generators, and some OCR-produced text layers) yields
+                // nothing here. Falling back to `all()` keeps such a
+                // document parsing exactly as well as it did before, rather
+                // than regressing it to empty.
+                if rebuilt.trim().is_empty() {
+                    t.all()
+                } else {
+                    rebuilt
+                }
+            })
+            .unwrap_or_default();
         pages.push(PageOut {
             page_number: idx + 1,
             text,
