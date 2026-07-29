@@ -20,6 +20,9 @@ pub mod maintenance;
 pub mod match_decisions;
 #[cfg(test)]
 mod match_decisions_tests;
+pub mod merchant_cleanup;
+#[cfg(test)]
+mod merchant_cleanup_tests;
 pub mod merchants;
 pub mod migrations;
 pub mod network_activity_log;

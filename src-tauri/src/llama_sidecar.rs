@@ -546,12 +546,27 @@ pub async fn complete_with_calibrated_timeout(
     model_id: &str,
     prompt: &str,
 ) -> Result<String> {
+    complete_with_schema(app_dir, model_id, prompt, layer6_json_schema()).await
+}
+
+/// Same calibrated-timeout, semaphore-gated path as
+/// [`complete_with_calibrated_timeout`], but for callers that constrain the
+/// output to their own shape rather than Layer 6's extraction schema (issue
+/// #12's merchant/category pass). Grammar sampling is what makes the closed
+/// category list enforceable at the decoder rather than by rejecting bad
+/// answers after the fact.
+pub async fn complete_with_schema(
+    app_dir: &Path,
+    model_id: &str,
+    prompt: &str,
+    schema: serde_json::Value,
+) -> Result<String> {
     let (port, semaphore, calibrated_timeout) = ensure_server_ready(app_dir, model_id).await?;
     let _permit = semaphore
         .acquire()
         .await
         .context("llama-server semaphore closed")?;
-    raw_complete(port, prompt, calibrated_timeout, Some(layer6_json_schema())).await
+    raw_complete(port, prompt, calibrated_timeout, Some(schema)).await
 }
 
 #[cfg(test)]
