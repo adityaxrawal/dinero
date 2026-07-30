@@ -279,6 +279,44 @@ describe('LocalLlmSettings', () => {
     expect(localStorage.getItem('llm_parallel_slots')).toBe('10');
   });
 
+  it('shows an above-recommended-tier warning when the selected model is heavier than recommended', async () => {
+    (API.llm.getAvailableModels as any).mockResolvedValue(MODELS);
+    (API.llm.getDownloadedModels as any).mockResolvedValue(['gemma4_e4b', 'gemma4_12b']);
+    (API.llm.getActiveModel as any).mockResolvedValue('gemma4_12b');
+    (API.llm.getHardwareInfo as any).mockResolvedValue({
+      ram_gb: 8,
+      cpu_cores: 4,
+      recommended_slots: 1,
+      recommended_model_id: 'gemma4_e4b',
+    });
+    (API.llm.setParallelSlots as any).mockResolvedValue(1);
+
+    render(<LocalLlmSettings />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/heavier than recommended/i)).toBeInTheDocument();
+    });
+    expect(screen.getAllByText(/Gemma 4 12B/).length).toBeGreaterThan(0);
+  });
+
+  it('shows no warning when the selected model is at or below the recommended tier', async () => {
+    (API.llm.getAvailableModels as any).mockResolvedValue(MODELS);
+    (API.llm.getDownloadedModels as any).mockResolvedValue(['gemma4_e4b']);
+    (API.llm.getActiveModel as any).mockResolvedValue('gemma4_e4b');
+    (API.llm.getHardwareInfo as any).mockResolvedValue({
+      ram_gb: 8,
+      cpu_cores: 4,
+      recommended_slots: 1,
+      recommended_model_id: 'gemma4_e4b',
+    });
+    (API.llm.setParallelSlots as any).mockResolvedValue(1);
+
+    render(<LocalLlmSettings />);
+
+    await waitFor(() => expect(screen.getByText('Gemma 4 E4B')).toBeInTheDocument());
+    expect(screen.queryByText(/heavier than recommended/i)).toBeNull();
+  });
+
   it('disables Save until the instance count is actually changed', async () => {
     (API.llm.getAvailableModels as any).mockResolvedValue(MODELS);
     (API.llm.getDownloadedModels as any).mockResolvedValue([]);
