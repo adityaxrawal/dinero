@@ -580,7 +580,7 @@ pub fn extract_instrument_signals(bank_name: &str, body: &str) -> InstrumentSign
 ///
 /// `issuer_name` is exempt: it is derived from `bank_name`, not from the body,
 /// so it is the same value either way.
-fn apply_instrument_signals(obs: &mut ExtractionResult, bank_name: &str, body: &str) {
+pub(crate) fn apply_instrument_signals(obs: &mut ExtractionResult, bank_name: &str, body: &str) {
     let signals = extract_instrument_signals(bank_name, body);
     obs.issuer_name = signals.issuer_name;
     obs.instrument_type = obs.instrument_type.take().or(signals.instrument_type);

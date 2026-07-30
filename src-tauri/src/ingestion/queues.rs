@@ -342,6 +342,15 @@ fn spawn_layer6_workers(
     }
 }
 
+/// Below this, a Layer 6 result stays in the Unassigned queue pre-filled
+/// for the user to confirm rather than auto-becoming a transaction — the
+/// needle-verification in `LlmEngine::validate_against_source` already
+/// rules out fabricated values before a result ever reaches here; this
+/// threshold is a *second*, independent signal (the model's own stated
+/// uncertainty) for genuinely ambiguous-but-real extractions, not a
+/// hallucination filter.
+const LAYER6_AUTO_RESOLVE_CONFIDENCE_THRESHOLD: f64 = 0.75;
+
 async fn process_layer6_job(
     job: Layer6Job,
     pool: &Pool,
@@ -353,7 +362,7 @@ async fn process_layer6_job(
     };
     let result = layer.extract(pool, &job.bank_name, &job.body_text).await;
     match result {
-        Some(enriched) => {
+        Some(mut enriched) => {
             // Drift self-healing. Since the 2026-07-26 scan-performance change,
             // Layer 6 no longer runs inside `run_extraction_ladder` on the scan
             // path -- it runs here. Doing the drift check only in the ladder
@@ -368,6 +377,17 @@ async fn process_layer6_job(
                 Some(job.app_dir.clone()),
             )
             .await;
+
+            // The LLM's JSON schema has no instrument fields (Doc 12 §6.3
+            // scope) -- reuse the same regex-based signal extraction the
+            // main ladder already applies to Layers 1-4's output, so a
+            // Layer-6-recovered merchant/amount can still clear the Gate 3
+            // instrument requirement.
+            crate::extraction::ladder::apply_instrument_signals(
+                &mut enriched,
+                &job.bank_name,
+                &job.body_text,
+            );
 
             if let Err(e) =
                 apply_layer6_success(pool, &job.observation_id, &job.unassigned_id, enriched).await
@@ -388,9 +408,15 @@ async fn process_layer6_job(
 }
 
 /// Upgrades the existing `pending_llm_enrichment` observation in place with
-/// the LLM's result and resolves the matching `unassigned_transactions` row
-/// — never inserts a new observation, since one already exists from the
-/// scan's fast path (`record_unassigned_transaction`).
+/// the LLM's result. Needle-verification (`LlmEngine::validate_against_source`)
+/// already ran before `enriched` was ever produced, so it cannot contain a
+/// merchant/amount/reference absent from the source body -- the only two
+/// things left to check here are the model's self-reported confidence and
+/// whether an instrument actually resolved. Both must clear before this
+/// promotes the observation to a real canonical transaction and marks the
+/// `unassigned_transactions` row resolved; short of that, the row is still
+/// updated with the LLM's best-guess fields (a pre-fill for the user) but
+/// stays `open` so it's still visible in the review queue via `select_open`.
 async fn apply_layer6_success(
     pool: &Pool,
     observation_id: &str,
@@ -418,8 +444,67 @@ async fn apply_layer6_success(
         }
         row.extraction_method = Some("llm_layer6".to_string());
         row.confidence_score = enriched.confidence_score;
+
+        let instrument_id = match (
+            &enriched.instrument_type,
+            &enriched.issuer_name,
+            &enriched.masked_identifier,
+        ) {
+            (Some(itype), Some(iname), Some(masked)) => {
+                crate::db::instruments::get_or_create_instrument(
+                    c,
+                    itype,
+                    iname,
+                    masked,
+                    enriched.network.as_deref(),
+                )
+                .ok()
+            }
+            _ => None,
+        };
+        row.instrument_id = instrument_id.clone();
+
+        let confident_enough = enriched
+            .confidence_score
+            .map(|s| s >= LAYER6_AUTO_RESOLVE_CONFIDENCE_THRESHOLD)
+            .unwrap_or(false);
+
         crate::db::transaction_observations::update_observation(c, &row)?;
-        crate::db::unassigned_transactions::update_status(c, &unassigned_id, "resolved")?;
+
+        if confident_enough
+            && instrument_id.is_some()
+            && row.amount_minor.is_some()
+            && row.merchant_raw.is_some()
+        {
+            let incoming_obs = crate::reconciliation::engine::IncomingObservation {
+                id: row.id.clone(),
+                instrument_id: instrument_id.unwrap(),
+                amount_minor: row.amount_minor.unwrap_or(0),
+                currency: row.currency.clone().unwrap_or_else(|| "INR".to_string()),
+                direction: row.direction.clone().unwrap_or_else(|| "debit".to_string()),
+                event_time: row
+                    .event_time
+                    .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                    .unwrap_or_default(),
+                reference_id: row.reference_id.clone(),
+                merchant_raw: row.merchant_raw.clone(),
+                source_pipeline: row
+                    .source_pipeline
+                    .clone()
+                    .unwrap_or_else(|| "gmail_transaction".to_string()),
+                source_record_id: row.source_record_id.clone().unwrap_or_default(),
+                emi_total_installments: row.emi_total_installments,
+                emi_original_amount_minor: row.emi_original_amount_minor,
+                fingerprint: row.fingerprint.clone(),
+                confidence_score: row.confidence_score,
+                event_time_confidence: row.event_time_confidence.clone(),
+            };
+            crate::reconciliation::engine::reconcile_transactionally(c, &incoming_obs)?;
+            crate::db::unassigned_transactions::update_status(c, &unassigned_id, "resolved")?;
+        }
+        // else: row already updated above with the LLM's best-guess fields
+        // (pre-fill), unassigned_transactions.status stays "open" so it's
+        // still visible in the review queue via select_open.
         Ok(())
     })
     .await
@@ -975,16 +1060,19 @@ mod layer6_tests {
     use crate::db::init_db;
     use std::fs;
 
-    /// A Layer6Job whose LLM call succeeds must update the existing
-    /// observation in place (not insert a duplicate) and resolve the
-    /// matching unassigned_transactions row — proving the background
-    /// worker's success path wires the existing DB functions correctly,
-    /// without needing a real llama-server (this test constructs the
-    /// observation/unassigned rows directly and calls the worker's
-    /// extracted processing function with a fake "always succeeds"
-    /// outcome rather than spawning a real sidecar).
+    /// A Layer6Job whose LLM call succeeds but stays below the
+    /// auto-resolve confidence threshold (or can't resolve an instrument)
+    /// must still update the existing observation in place (not insert a
+    /// duplicate) with the LLM's best-guess fields, so the user sees a
+    /// pre-filled row instead of a blank one -- but the row must stay
+    /// `open` in the Unassigned queue, not silently vanish as `resolved`
+    /// without ever becoming a transaction (2026-07-30: this is the bug
+    /// that let "successful" Layer 6 runs disappear with no transaction
+    /// ever created). This test constructs the observation/unassigned rows
+    /// directly and calls the worker's success-processing function with a
+    /// fake outcome rather than spawning a real sidecar.
     #[tokio::test]
-    async fn successful_layer6_job_upgrades_observation_and_resolves_unassigned() {
+    async fn low_confidence_layer6_result_stays_open_and_prefilled() {
         let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
         let pool = init_db(temp_dir.join("test.db")).await.expect("DB init failed");
@@ -1082,6 +1170,136 @@ mod layer6_tests {
             .unwrap();
         assert_eq!(updated.amount_minor, Some(50000));
         assert_eq!(updated.merchant_raw.as_deref(), Some("Test Merchant"));
+        assert!(
+            updated.canonical_transaction_id.is_none(),
+            "a low-confidence, instrument-less result must not become a transaction"
+        );
+
+        let open = conn
+            .interact(|c| crate::db::unassigned_transactions::select_open(c))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            open.iter().any(|r| r.id == unassigned_id),
+            "a low-confidence result must stay visible in the review queue, pre-filled"
+        );
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    /// A Layer6Job whose result clears both the confidence threshold and
+    /// instrument resolution must be promoted all the way to a real
+    /// canonical transaction, and the unassigned row marked resolved.
+    /// Needle-verification (LlmEngine::validate_against_source) already ran
+    /// before this function ever sees the result -- confidence and
+    /// instrument are the only two things left to check here.
+    #[tokio::test]
+    async fn high_confidence_verified_layer6_result_promotes_to_transaction() {
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let pool = init_db(temp_dir.join("test.db")).await.expect("DB init failed");
+        let conn = pool.get().await.unwrap();
+
+        let observation_id = uuid::Uuid::new_v4().to_string();
+        let unassigned_id = uuid::Uuid::new_v4().to_string();
+
+        let base_row = crate::db::transaction_observations::TransactionObservationsRow {
+            id: observation_id.clone(),
+            canonical_transaction_id: None,
+            source_pipeline: Some("gmail_transaction".to_string()),
+            source_record_id: Some("msg_2".to_string()),
+            source_message_id: Some("msg_2".to_string()),
+            source_thread_id: None,
+            statement_id: None,
+            statement_entry_id: None,
+            instrument_id: None,
+            direction: None,
+            amount: None,
+            amount_minor: None,
+            currency: None,
+            event_time: None,
+            event_time_confidence: None,
+            posting_date: None,
+            merchant_raw: None,
+            merchant_normalized: None,
+            reference_id: None,
+            original_amount_minor: None,
+            original_currency: None,
+            exchange_rate: None,
+            balance_after_transaction: None,
+            timezone_at_ingestion: None,
+            fingerprint: Some(format!("pending_{}", observation_id)),
+            extraction_method: Some("pending_llm_enrichment".to_string()),
+            confidence_score: None,
+            raw_payload_json: None,
+            parser_version: None,
+            emi_total_installments: None,
+            emi_installment_number: None,
+            emi_original_amount_minor: None,
+            is_deleted: false,
+            created_at: Some(chrono::Utc::now().naive_utc()),
+            updated_at: Some(chrono::Utc::now().naive_utc()),
+        };
+        conn.interact({
+            let row = base_row.clone();
+            move |c| crate::db::transaction_observations::insert_observation(c, &row)
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        conn.interact({
+            let unassigned_id = unassigned_id.clone();
+            let observation_id = observation_id.clone();
+            move |c| {
+                crate::db::unassigned_transactions::insert(
+                    c,
+                    &crate::db::unassigned_transactions::UnassignedTransactionRow {
+                        id: unassigned_id,
+                        observation_id,
+                        reason: "gate3_failed:missing_instrument".to_string(),
+                        status: "open".to_string(),
+                        created_at: None,
+                    },
+                )
+            }
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+        let enriched = crate::extraction::ladder::ExtractionResult {
+            amount_minor: Some(50000),
+            currency: Some("INR".to_string()),
+            direction: Some("debit".to_string()),
+            merchant_raw: Some("Test Merchant".to_string()),
+            event_time: Some(1704412200),
+            extraction_method: "llm_layer6".to_string(),
+            confidence_score: Some(0.9),
+            instrument_type: Some("credit_card".to_string()),
+            issuer_name: Some("HDFC Bank".to_string()),
+            masked_identifier: Some("1234".to_string()),
+            ..Default::default()
+        };
+
+        apply_layer6_success(&pool, &observation_id, &unassigned_id, enriched)
+            .await
+            .unwrap();
+
+        let updated = conn
+            .interact({
+                let id = observation_id.clone();
+                move |c| crate::db::transaction_observations::get_observation(c, &id)
+            })
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(
+            updated.canonical_transaction_id.is_some(),
+            "a high-confidence, instrument-resolved result must be promoted to a transaction"
+        );
+        assert!(updated.instrument_id.is_some());
 
         let open = conn
             .interact(|c| crate::db::unassigned_transactions::select_open(c))
