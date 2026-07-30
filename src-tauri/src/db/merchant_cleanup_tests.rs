@@ -122,8 +122,9 @@ fn apply_correction_fixes_the_transaction_and_sets_a_category() {
 }
 
 /// The learning half: after a correction, a rule must exist that actually
-/// fires on the next email of the same shape. This is the thing
-/// `log_user_correction`'s placeholder regex never achieved.
+/// fires on the next email of the same shape. This is the thing the old
+/// placeholder regex (`"learned regex for <value>"`) never achieved, and the
+/// reason the cleanup pass now writes through the shared synthesis path.
 #[test]
 fn apply_correction_teaches_a_rule_that_really_matches() {
     let conn = setup();
@@ -132,11 +133,16 @@ fn apply_correction_teaches_a_rule_that_really_matches() {
     apply_correction(&conn, "run_1", &c, &resolution()).unwrap();
 
     let rules =
-        crate::db::pattern_rules::select_active_rules_by_bank(&conn, "SBI Card").unwrap();
+        crate::db::field_rules::select_live_by_bank(&conn, "SBI Card", "email").unwrap();
     let merchant_rule = rules
         .iter()
         .find(|r| r.field_name == "merchant")
         .expect("an active merchant rule must have been synthesized");
+    assert_eq!(
+        merchant_rule.learned_from, "batch_cleanup",
+        "provenance must record which trigger taught this rule"
+    );
+    assert_eq!(merchant_rule.authored_by, "llm");
 
     let pattern = merchant_rule.rule_payload_json["regex"].as_str().unwrap();
     let re = regex::Regex::new(pattern).unwrap();
@@ -235,7 +241,7 @@ fn revert_restores_the_previous_values_and_retires_the_rule() {
     assert_eq!(cat, None, "category must be restored to unset");
     assert_eq!(entity, None, "entity link must be restored");
 
-    let active = crate::db::pattern_rules::select_active_rules_by_bank(&conn, "SBI Card").unwrap();
+    let active = crate::db::field_rules::select_live_by_bank(&conn, "SBI Card", "email").unwrap();
     assert!(
         !active.iter().any(|r| r.field_name == "merchant"),
         "the rule the correction taught must no longer be active"

@@ -11,7 +11,7 @@
 //! 1. `merchants`/`merchant_aliases` -- so normalization resolves this raw
 //!    string without the LLM next time.
 //! 2. `transactions` -- the visible fix: display name, entity link, category.
-//! 3. `pattern_rules` -- so the *extraction* layer stops producing the bad
+//! 3. `field_rules` -- so the *extraction* layer stops producing the bad
 //!    string in the first place.
 //! 4. `merchant_llm_corrections` -- the undo log that makes 1-3 reversible.
 
@@ -279,61 +279,6 @@ fn resolve_canonical_merchant(conn: &Connection, name: &str) -> Result<(String, 
     Ok((id, normalized))
 }
 
-/// Stores the synthesized merchant regex as an **active** rule for this
-/// bank + email shape, replacing any existing rule for the same triple.
-///
-/// Activating immediately (rather than staging as `pending`) is safe here
-/// only because of the guards upstream: the model's span was verified to
-/// occur in the body, and `rule_synthesis::synthesize_span_regex` refuses to return a
-/// pattern that cannot re-extract that span from the very email it was built
-/// from.
-fn upsert_active_merchant_rule(
-    conn: &Connection,
-    bank_name: &str,
-    template_hash: &str,
-    pattern: &str,
-    confidence: f64,
-) -> Result<String> {
-    let payload = serde_json::json!({ "regex": pattern, "source": "llm_merchant_cleanup" });
-
-    let existing: Option<String> = conn
-        .query_row(
-            "SELECT v.id FROM pattern_rule_variants v
-             JOIN pattern_rules p ON p.id = v.pattern_rule_id
-             WHERE v.template_hash = ?1 AND p.field_name = 'merchant' AND p.bank_name = ?2",
-            params![template_hash, bank_name],
-            |r| r.get(0),
-        )
-        .ok();
-
-    if let Some(id) = existing {
-        conn.execute(
-            "UPDATE pattern_rule_variants
-             SET rule_payload_json = ?2, status = 'active', confidence = ?3,
-                 updated_at = CURRENT_TIMESTAMP
-             WHERE id = ?1",
-            params![id, serde_json::to_string(&payload)?, confidence],
-        )?;
-        return Ok(id);
-    }
-
-    let rule = crate::db::pattern_rules::PatternRulesRow {
-        id: Uuid::new_v4().to_string(),
-        bank_name: bank_name.to_string(),
-        template_hash: template_hash.to_string(),
-        field_name: "merchant".to_string(),
-        rule_payload_json: payload,
-        status: "active".to_string(),
-        success_count: 1,
-        failure_count: 0,
-        confidence,
-        created_at: Some(Utc::now().naive_utc()),
-        updated_at: Some(Utc::now().naive_utc()),
-    };
-    crate::db::pattern_rules::insert(conn, &rule)?;
-    Ok(rule.id)
-}
-
 /// Applies one validated LLM answer, recording everything needed to undo it.
 ///
 /// Caller supplies `run_id` so a whole pass can be reverted as a unit.
@@ -377,18 +322,41 @@ pub fn apply_correction(
     let new_category_id = category_id_for_name(conn, &resolution.category);
 
     // Teach the extraction layer, when there is still a body to learn from.
+    //
+    // Routed through the shared synthesis + storage path rather than this
+    // module's own writer: activating immediately is safe here for exactly the
+    // reason it is safe there -- the model's span was verified to occur in the
+    // body, and synthesis refuses to return a pattern that cannot re-extract it
+    // from the very email it was built from. Two implementations of that
+    // guarantee would be two places for it to quietly stop holding.
     let learned_rule_id = candidate.body.as_deref().and_then(|body| {
         let pattern = crate::extraction::rule_synthesis::synthesize_span_regex(
             body,
             &resolution.merchant_in_email,
         )?;
-        let template_hash = crate::extraction::ladder::compute_template_hash(body);
-        upsert_active_merchant_rule(
+        let now = Utc::now().naive_utc();
+        crate::db::field_rules::upsert_variant(
             conn,
-            &candidate.bank_name,
-            &template_hash,
-            &pattern,
-            resolution.confidence,
+            &crate::db::field_rules::FieldRuleVariant {
+                id: Uuid::new_v4().to_string(),
+                bank_name: candidate.bank_name.clone(),
+                field_name: "merchant".to_string(),
+                source_type: "email".to_string(),
+                template_hash: crate::extraction::ladder::compute_template_hash(body),
+                rule_payload_json: serde_json::json!({
+                    "regex": pattern,
+                    "capture_group": 1
+                }),
+                status: "active".to_string(),
+                success_count: 1,
+                failure_count: 0,
+                confidence: resolution.confidence,
+                authored_by: "llm".to_string(),
+                learned_from: "batch_cleanup".to_string(),
+                created_at: Some(now),
+                updated_at: Some(now),
+            },
+            None,
         )
         .ok()
     });
@@ -476,8 +444,8 @@ pub fn run_summary(conn: &Connection, run_id: &str) -> Result<RunSummary> {
 /// Restores one correction's previous values and retires the rule it taught.
 ///
 /// The learned rule is set `inactive` rather than deleted so the history of
-/// what was tried survives; `select_active_rules_by_bank` ignores it either
-/// way, which is what actually matters for extraction.
+/// what was tried survives; `select_live_by_bank` ignores it either way,
+/// which is what actually matters for extraction.
 pub fn revert_correction(conn: &Connection, correction_id: &str) -> Result<()> {
     struct Previous {
         tx_id: String,
@@ -524,11 +492,14 @@ pub fn revert_correction(conn: &Connection, correction_id: &str) -> Result<()> {
     )?;
 
     if let Some(rule_id) = prev.rule_id {
-        conn.execute(
-            "UPDATE pattern_rule_variants SET status = 'inactive', updated_at = CURRENT_TIMESTAMP
-             WHERE id = ?1",
-            params![rule_id],
-        )?;
+        // `revert` sets it inactive and logs the reversal, rather than
+        // deleting: the history of what was tried is what makes the whole
+        // no-approval design auditable.
+        let _ = crate::db::field_rules::revert(
+            conn,
+            &rule_id,
+            "merchant cleanup correction reverted",
+        );
     }
 
     conn.execute(
