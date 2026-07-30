@@ -127,10 +127,43 @@ fn test_metadata_gate_approved_pending_sender_verified() {
 use crate::extraction::ladder::ExtractionResult;
 
 #[test]
-fn test_gate3_passes_with_amount_and_merchant() {
+fn test_gate3_passes_with_amount_merchant_and_instrument() {
     let obs = ExtractionResult {
         amount_minor: Some(1000),
         merchant_raw: Some("Amazon".to_string()),
+        instrument_type: Some("credit_card".to_string()),
+        issuer_name: Some("HDFC Bank".to_string()),
+        masked_identifier: Some("1234".to_string()),
+        extraction_method: "test".to_string(),
+        ..Default::default()
+    };
+    assert!(MessageProcessor::evaluate_mandatory_field_gate(&obs));
+}
+
+#[test]
+fn test_gate3_fails_without_instrument_signals() {
+    let obs = ExtractionResult {
+        amount_minor: Some(1000),
+        merchant_raw: Some("Amazon".to_string()),
+        instrument_type: None,
+        issuer_name: None,
+        masked_identifier: None,
+        extraction_method: "test".to_string(),
+        ..Default::default()
+    };
+    assert!(!MessageProcessor::evaluate_mandatory_field_gate(&obs));
+    assert_eq!(
+        MessageProcessor::gate3_failure_reason(&obs),
+        "gate3_failed:missing_instrument"
+    );
+}
+
+#[test]
+fn test_gate3_balance_only_still_bypasses_instrument_requirement() {
+    // Matches existing has_balance-bypass behavior: a balance-only email is
+    // exempt from every other mandatory field, instrument included.
+    let obs = ExtractionResult {
+        balance_after: Some(677300),
         extraction_method: "test".to_string(),
         ..Default::default()
     };

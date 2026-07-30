@@ -530,15 +530,25 @@ impl MessageProcessor {
                             // fragment ("YOUR HDFC BANK RUPAY CREDIT") rather
                             // than the email genuinely naming nobody — the
                             // amount and date parsed fine, only the merchant
-                            // didn't. That is precisely what Layer 6 is good
-                            // at, so hand it off to the same background worker
-                            // the all-layers-failed path uses instead of
-                            // leaving a permanently merchant-less row for the
-                            // user to fix by hand. Enqueue-only: the scan slot
-                            // is never blocked on inference.
-                            let counterparty_missing =
-                                reason == "gate3_failed:missing_counterparty";
-                            if counterparty_missing && llm_eligible {
+                            // didn't. A miss on the instrument is the same
+                            // shape of problem: the body-wide regex heuristics
+                            // (`extract_instrument_signals`) didn't recognize
+                            // this bank's phrasing for its own last-4/issuer.
+                            // Both are exactly what Layer 6 is good at, so hand
+                            // off to the same background worker the
+                            // all-layers-failed path uses instead of leaving a
+                            // permanently incomplete row for the user to fix by
+                            // hand. `missing_amount` alone stays excluded — an
+                            // LLM has nothing more to find in the source text
+                            // than the regex layers already tried for a value
+                            // that plainly isn't there in any numeral form.
+                            // Enqueue-only: the scan slot is never blocked on
+                            // inference.
+                            let recoverable_by_llm = matches!(
+                                reason,
+                                "gate3_failed:missing_counterparty" | "gate3_failed:missing_instrument"
+                            );
+                            if recoverable_by_llm && llm_eligible {
                                 if let (Some((observation_id, unassigned_id)), Some(dir), Some(tx)) =
                                     (ids, app_dir.clone(), layer6_tx.as_ref())
                                 {
@@ -694,38 +704,44 @@ impl MessageProcessor {
     }
 
     /// Evaluates if the extracted observation passes Gate 3 (Mandatory Fields):
-    /// a parseable amount and at least one counterparty-identifying field
-    /// (merchant/payee/payor), per Doc 30 TASK-GMAIL-006.
+    /// a parseable amount, at least one counterparty-identifying field
+    /// (merchant/payee/payor), and a resolvable instrument (type + issuer +
+    /// masked identifier) -- per Doc 30 TASK-GMAIL-006, extended 2026-07-30
+    /// so a transaction can no longer be created with a NULL instrument_id.
+    /// A balance-only email stays exempt from every other mandatory field,
+    /// instrument included -- it was never going to become a transaction.
     pub(crate) fn evaluate_mandatory_field_gate(
         obs: &crate::extraction::ladder::ExtractionResult,
     ) -> bool {
         let has_amount = obs.amount_minor.is_some();
         let has_entity = obs.merchant_raw.is_some();
         let has_balance = obs.balance_after.is_some();
-        (has_amount && has_entity) || has_balance
+        let has_instrument = obs.instrument_type.is_some()
+            && obs.issuer_name.is_some()
+            && obs.masked_identifier.is_some();
+        (has_amount && has_entity && has_instrument) || has_balance
     }
 
-    /// Structured gate3_failed reason code (missing_amount / missing_counterparty,
-    /// Doc 30 TASK-GMAIL-006) for the audit trail — only meaningful to call
-    /// when `evaluate_mandatory_field_gate` has already returned `false`.
+    /// Structured gate3_failed reason code (missing_amount / missing_counterparty
+    /// / missing_instrument, Doc 30 TASK-GMAIL-006) for the audit trail — only
+    /// meaningful to call when `evaluate_mandatory_field_gate` has already
+    /// returned `false`.
     pub(crate) fn gate3_failure_reason(
         obs: &crate::extraction::ladder::ExtractionResult,
     ) -> &'static str {
         let has_amount = obs.amount_minor.is_some();
         let has_entity = obs.merchant_raw.is_some();
-        match (has_amount, has_entity) {
-            (false, _) => "gate3_failed:missing_amount",
-            (true, false) => "gate3_failed:missing_counterparty",
-            (true, true) => "gate3_failed",
+        let has_instrument = obs.instrument_type.is_some()
+            && obs.issuer_name.is_some()
+            && obs.masked_identifier.is_some();
+        match (has_amount, has_entity, has_instrument) {
+            (false, _, _) => "gate3_failed:missing_amount",
+            (true, false, _) => "gate3_failed:missing_counterparty",
+            (true, true, false) => "gate3_failed:missing_instrument",
+            (true, true, true) => "gate3_failed",
         }
     }
 
-    /// `domain_previously_seen`: whether this sender's domain has at least
-    /// one prior recorded sighting (see `db::sender_reputation`) -- gates the
-    /// subject-based "Unknown Bank" rescue below so a domain's very
-    /// first-ever message can't be auto-accepted purely off subject-line
-    /// wording, with no history yet to weigh against a spoofed subject.
-    ///
     /// `approved_senders`: user-confirmed domains that repeatedly failed
     /// string-based verification (see `db::sender_reputation::PendingSenderRow`,
     /// the runtime learning-loop layer alongside the compiled-in registry
