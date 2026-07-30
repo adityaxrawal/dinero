@@ -31,9 +31,6 @@ pub mod migrations;
 pub mod network_activity_log;
 #[cfg(test)]
 mod network_activity_log_tests;
-pub mod pattern_rules;
-#[cfg(test)]
-mod pattern_rules_tests;
 pub mod pdf_passwords;
 #[cfg(test)]
 mod pdf_passwords_tests;

@@ -22,7 +22,6 @@ import {
 import { ParseErrorViewer } from '../components/debug/ParseErrorViewer';
 import { UnprocessedStatementViewer } from '../components/debug/UnprocessedStatementViewer';
 import { ReconciliationClusterViewer } from '../components/debug/ReconciliationClusterViewer';
-import { PatternRuleHealthViewer } from '../components/debug/PatternRuleHealthViewer';
 import { AuditLogViewer } from '../components/debug/AuditLogViewer';
 import { ReleaseReadinessViewer } from '../components/debug/ReleaseReadinessViewer';
 
@@ -203,8 +202,6 @@ export default function Debug() {
 
           {activeTab === 'reconciliation' && (
             <div className="animate-in fade-in duration-300 flex flex-col gap-8">
-              <PatternRuleHealthViewer />
-              <div className="h-px w-full bg-[#064E3B]/10" />
               <ReconciliationClusterViewer />
             </div>
           )}

@@ -75,7 +75,7 @@ pub fn get_reputation(conn: &Connection, domain: &str) -> Result<Option<SenderRe
 /// A domain a user has manually confirmed as a legitimate sender despite
 /// repeatedly failing Gate 1's string-based verification -- the runtime
 /// learning-loop counterpart to the compiled-in `verified_senders_registry.json`,
-/// mirroring how `pattern_rules` layers on top of the compiled-in
+/// mirroring how `field_rules` layers on top of the compiled-in
 /// `bank_templates` for the extraction ladder.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingSenderRow {

@@ -1840,10 +1840,10 @@ impl ExtractionLayer for Layer6LlmLayer {
 /// the local LLM is RAM-eligible, TASK-SETUP-006") — this is a hardware
 /// eligibility gate, independent of whether this specific bank has drifted
 /// from a previously-learned template. [`detect_pattern_drift`] still runs
-/// after a successful Layer 5 extraction, but only to decide whether to
-/// synthesise a `pending` `pattern_rule` candidate for a human reviewer to
-/// promote (feeding Layer 1's learning loop) — it is a side effect, not a
-/// precondition, of Layer 5 running.
+/// after a successful Layer 5 extraction, but only to decide whether to queue
+/// a drift-replacement rule candidate through the learning worker (feeding
+/// Layer 1's learning loop) — it is a side effect, not a precondition, of
+/// Layer 5 running.
 /// Outcome of [`cross_check_amount`].
 #[derive(Debug, PartialEq)]
 enum AmountAgreement {

@@ -1011,7 +1011,6 @@ export const API = {
     fetchUnprocessedStatements: () => invokeCommand<any[]>('debug_fetch_unprocessed_statements'),
     fetchAuditLog: (resourceTypeFilter?: string, limit: number = 50, offset: number = 0) =>
       invokeCommand<any[]>('debug_fetch_audit_log', { resourceTypeFilter, limit, offset }),
-    fetchPatternRuleHealth: () => invokeCommand<any[]>('debug_fetch_pattern_rule_health'),
     fetchReconciliationClusters: () => invokeCommand<any[]>('debug_fetch_reconciliation_clusters'),
     getPipelineState: () => invokeCommand<any>('debug_get_pipeline_state'),
     setGmailPollPaused: (paused: boolean) =>
@@ -1026,31 +1025,6 @@ export const API = {
   network: {
     getActivityList: () =>
       invokeCommand<{ entries: any[] }>('settings_get_network_activity').then((r) => r.entries),
-  },
-  patternRules: {
-    // G14 fix: a real Settings-facing toggle, not just a Debug-only view.
-    // TASK-API-008: now backed by the real settings_pattern_rules_list
-    // command (previously borrowed the debug-only health view as a
-    // stopgap). Returns the raw row (real regex, real 5-state status) --
-    // no more lossy remap into the debug-only PatternRuleHealth shape.
-    list: () => invokeCommand<PatternRule[]>('settings_pattern_rules_list'),
-    setStatus: (ruleId: string, newStatus: PatternRuleStatus) =>
-      invokeCommand<void>('settings_pattern_rules_update', { ruleId, newStatus }),
-    delete: (ruleId: string) => invokeCommand<void>('settings_pattern_rules_delete', { ruleId }),
-    updatePayload: (ruleId: string, regex: string) =>
-      invokeCommand<PatternRule>('settings_pattern_rules_update_payload', { ruleId, regex }),
-    create: (bankName: string, fieldName: string, regex: string, sampleBody: string) =>
-      invokeCommand<PatternRule>('settings_pattern_rules_create', {
-        bankName,
-        fieldName,
-        regex,
-        sampleBody,
-      }),
-    test: (regex: string, sampleBody: string) =>
-      invokeCommand<PatternRuleTestResult>('settings_pattern_rules_test', {
-        regex,
-        sampleBody,
-      }),
   },
   pdfPasswords: {
     // G15 fix: management UI for stored PDF passwords (metadata only — the
@@ -1195,32 +1169,6 @@ interface LicenseDeactivateResponse {
 interface LicenseRefreshResponse {
   status: string;
   state: string;
-}
-
-export type PatternRuleStatus = 'pending' | 'active' | 'trusted' | 'inactive' | 'flagged';
-export type PatternRuleField = 'amount' | 'merchant' | 'currency' | 'direction' | 'event_time';
-
-// Mirrors src-tauri/src/db/pattern_rules.rs's PatternRulesRow verbatim --
-// the real row, not a remapped/lossy view.
-export interface PatternRule {
-  id: string;
-  bank_name: string;
-  template_hash: string;
-  field_name: string;
-  rule_payload_json: { regex: string; source?: string };
-  status: PatternRuleStatus;
-  success_count: number;
-  failure_count: number;
-  confidence: number;
-  created_at: string | null;
-  updated_at: string | null;
-}
-
-export interface PatternRuleTestResult {
-  compiles: boolean;
-  error: string | null;
-  matched: boolean;
-  captured_value: string | null;
 }
 
 export interface PdfPasswordSummary {

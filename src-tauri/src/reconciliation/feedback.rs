@@ -2,7 +2,8 @@ use crate::reconciliation::audit::DecisionType;
 use anyhow::Result;
 use rusqlite::Connection;
 
-/// Intercepts reconciliation decisions and provides feedback to the extraction pattern rules.
+/// Intercepts reconciliation decisions and feeds them back to the learned
+/// extraction rules (`db::field_rules`).
 /// As per Doc 11 §7, every reconciliation decision acts as a supervised feedback loop:
 /// - AutoMatchedExact / AutoMatchedScored -> Success for the LLM pattern
 /// - ManuallyConfirmed / ManuallyCorrected -> Updates or corrections
@@ -12,7 +13,7 @@ pub fn process_reconciliation_feedback(
     _observation_id: &str,
     rule_id_opt: Option<&str>,
 ) -> Result<()> {
-    // In a full implementation, we would look up the observation and find the pattern_rule_id
+    // In a full implementation, we would look up the observation and find the field_rule_variant id
     // that generated it (perhaps stored in raw_payload_json or a dedicated column).
     // For now, we take rule_id_opt as an explicit parameter if available.
 
@@ -21,10 +22,10 @@ pub fn process_reconciliation_feedback(
             DecisionType::AutoMatchedExact
             | DecisionType::AutoMatchedScored
             | DecisionType::ManuallyConfirmed => {
-                crate::db::pattern_rules::record_rule_success(conn, rule_id)?;
+                crate::db::field_rules::record_success(conn, rule_id)?;
             }
             DecisionType::ManuallyCorrected | DecisionType::RejectedMatch => {
-                crate::db::pattern_rules::record_rule_failure(conn, rule_id)?;
+                crate::db::field_rules::record_failure(conn, rule_id)?;
             }
             _ => {}
         }
