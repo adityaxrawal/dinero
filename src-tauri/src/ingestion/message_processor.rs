@@ -437,6 +437,12 @@ impl MessageProcessor {
                         false,
                         internal_date_seconds,
                         &mut _layer6_timed_out_unused,
+                        // Drift self-healing lives inside the Layer 6 success
+                        // path, and `llm_eligible` is hardcoded `false` above,
+                        // so no handle is needed here. Layer 6 now runs in the
+                        // background worker instead, which does its own drift
+                        // check (`queues::process_layer6_job`).
+                        None,
                     )
                     .await
                     .unwrap_or(None);

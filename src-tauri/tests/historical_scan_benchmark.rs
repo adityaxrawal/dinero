@@ -181,7 +181,11 @@ async fn test_1000_email_scan_p95_under_target() {
 
     let pool = migrated_pool("perf").await;
     let app = mock_app();
-    let handles = spawn_queues(app.clone(), pool.clone());
+    let handles = spawn_queues(
+        app.clone(),
+        pool.clone(),
+        dinero_app_lib::learning::spawn_learning_worker(pool.clone()),
+    );
     app.manage(handles);
 
     let (server, _hits) = mock_gmail_server().await;
@@ -285,7 +289,11 @@ async fn test_checkpoint_resume_after_interruption() {
 
     let pool = migrated_pool("resume").await;
     let app = mock_app();
-    let handles = spawn_queues(app.clone(), pool.clone());
+    let handles = spawn_queues(
+        app.clone(),
+        pool.clone(),
+        dinero_app_lib::learning::spawn_learning_worker(pool.clone()),
+    );
     app.manage(handles);
 
     let (server, hits) = mock_gmail_server().await;
@@ -353,7 +361,11 @@ async fn test_quota_pause_and_resume_behavior() {
 
     let pool = migrated_pool("quota_pause").await;
     let app = mock_app();
-    let handles = spawn_queues(app.clone(), pool.clone());
+    let handles = spawn_queues(
+        app.clone(),
+        pool.clone(),
+        dinero_app_lib::learning::spawn_learning_worker(pool.clone()),
+    );
     app.manage(handles);
 
     let (server, hits) = mock_gmail_server().await;
@@ -446,7 +458,11 @@ async fn test_cancel_mid_flight_stops_before_processing_all_messages() {
 
     let pool = migrated_pool("cancel_mid_flight").await;
     let app = mock_app();
-    let handles = spawn_queues(app.clone(), pool.clone());
+    let handles = spawn_queues(
+        app.clone(),
+        pool.clone(),
+        dinero_app_lib::learning::spawn_learning_worker(pool.clone()),
+    );
     app.manage(handles);
 
     let (server, hits) = mock_gmail_server().await;
@@ -549,7 +565,11 @@ async fn test_cancel_is_not_blocked_by_a_stuck_in_flight_fetch() {
 
     let pool = migrated_pool("cancel_stuck_fetch").await;
     let app = mock_app();
-    let handles = spawn_queues(app.clone(), pool.clone());
+    let handles = spawn_queues(
+        app.clone(),
+        pool.clone(),
+        dinero_app_lib::learning::spawn_learning_worker(pool.clone()),
+    );
     app.manage(handles);
 
     // A hand-rolled hanging mock rather than `mock_gmail_server()`: every

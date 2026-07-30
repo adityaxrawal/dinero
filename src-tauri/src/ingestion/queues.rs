@@ -282,6 +282,7 @@ pub async fn pipeline_status(
 pub fn spawn_queues<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     pool: Pool,
+    learning: crate::learning::LearningHandle,
 ) -> QueueHandles {
     let (transaction_tx, transaction_rx) =
         mpsc::channel::<TransactionJob>(TRANSACTION_QUEUE_CAPACITY);
@@ -292,7 +293,7 @@ pub fn spawn_queues<R: tauri::Runtime>(
     spawn_transaction_workers(transaction_rx, pool.clone(), app.clone());
     spawn_statement_dispatcher(statement_rx, pool.clone(), app);
     spawn_mandate_workers(mandate_rx, pool.clone(), transaction_tx.clone());
-    spawn_layer6_workers(layer6_rx, pool);
+    spawn_layer6_workers(layer6_rx, pool, learning);
 
     QueueHandles {
         transaction_tx,
@@ -316,7 +317,11 @@ pub fn spawn_queues<R: tauri::Runtime>(
 /// ponytail: fixed clamp to 6 rather than plumbing the runtime-calibrated
 /// `effective_slots` value out of `llama_sidecar`'s internal state — revisit
 /// if that's ever exposed as a cheap public getter.
-fn spawn_layer6_workers(rx: mpsc::Receiver<Layer6Job>, pool: Pool) {
+fn spawn_layer6_workers(
+    rx: mpsc::Receiver<Layer6Job>,
+    pool: Pool,
+    learning: crate::learning::LearningHandle,
+) {
     const LAYER6_WORKER_COUNT: usize = 6;
     let worker_count = crate::llama_sidecar::current_parallel_slots()
         .clamp(1, LAYER6_WORKER_COUNT);
@@ -324,11 +329,12 @@ fn spawn_layer6_workers(rx: mpsc::Receiver<Layer6Job>, pool: Pool) {
     for _ in 0..worker_count {
         let rx = Arc::clone(&rx);
         let pool = pool.clone();
+        let learning = learning.clone();
         tauri::async_runtime::spawn(async move {
             loop {
                 let job = { rx.lock().await.recv().await };
                 match job {
-                    Some(job) => process_layer6_job(job, &pool).await,
+                    Some(job) => process_layer6_job(job, &pool, &learning).await,
                     None => break,
                 }
             }
@@ -336,7 +342,11 @@ fn spawn_layer6_workers(rx: mpsc::Receiver<Layer6Job>, pool: Pool) {
     }
 }
 
-async fn process_layer6_job(job: Layer6Job, pool: &Pool) {
+async fn process_layer6_job(
+    job: Layer6Job,
+    pool: &Pool,
+    learning: &crate::learning::LearningHandle,
+) {
     use crate::extraction::ladder::ExtractionLayer;
     let layer = crate::extraction::ladder::Layer6LlmLayer {
         app_dir: Some(job.app_dir.clone()),
@@ -344,6 +354,21 @@ async fn process_layer6_job(job: Layer6Job, pool: &Pool) {
     let result = layer.extract(pool, &job.bank_name, &job.body_text).await;
     match result {
         Some(enriched) => {
+            // Drift self-healing. Since the 2026-07-26 scan-performance change,
+            // Layer 6 no longer runs inside `run_extraction_ladder` on the scan
+            // path -- it runs here. Doing the drift check only in the ladder
+            // would leave the whole self-healing loop unreachable in production,
+            // so it lives at the place Layer 6 actually succeeds.
+            crate::extraction::ladder::enqueue_drift_candidates_if_drifted(
+                pool,
+                learning,
+                &job.bank_name,
+                &job.body_text,
+                &enriched,
+                Some(job.app_dir.clone()),
+            )
+            .await;
+
             if let Err(e) =
                 apply_layer6_success(pool, &job.observation_id, &job.unassigned_id, enriched).await
             {

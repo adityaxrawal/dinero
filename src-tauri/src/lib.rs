@@ -479,20 +479,22 @@ pub fn run() {
             // In-memory-only holding area for PDF bytes blocked on Statement
             // Instrument Gate confirmation (C2 fix) — never written to disk.
 
+            // The feedback learning loop. Spawned before the ingest queues
+            // because the Layer 6 worker needs its handle to queue drift
+            // candidates, but kept a separate channel and separate managed
+            // state: it must never be able to apply backpressure to a scan.
+            let learning_handle = crate::learning::spawn_learning_worker(pool_clone.clone());
+            app.manage(learning_handle.clone());
+
             // Spawn the two isolated ingestion queues (Doc 15 §2 principle 7, §5;
             // Doc 12 §6.2a/§7.2) before any producer (polling/historical scan/manual
             // upload) can start pushing jobs onto them.
             let queue_handles = crate::ingestion::queues::spawn_queues(
                 app.handle().clone(),
                 pool_clone.clone(),
+                learning_handle,
             );
             app.manage(queue_handles);
-
-            // The feedback learning loop. Deliberately spawned after the
-            // ingest queues and managed separately: it must never be able to
-            // apply backpressure to a scan.
-            let learning_handle = crate::learning::spawn_learning_worker(pool_clone.clone());
-            app.manage(learning_handle);
 
             let pool_for_cleanup = pool_clone.clone();
             let app_data_dir = app_dir.clone();

@@ -7,7 +7,6 @@ use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::future::Future;
 use std::pin::Pin;
-use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ExtractionResult {
@@ -116,9 +115,117 @@ pub fn compute_template_hash(body: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-// Layer 1: Learned pattern rules (user-corrected)
-pub struct LearnedPatternLayer;
-impl ExtractionLayer for LearnedPatternLayer {
+/// Reads every live learned rule for `(bank_name, source_type)` and overlays
+/// the values they extract onto `result`.
+///
+/// Used at both points a learned rule matters, which is what lets one function
+/// replace the two the old design needed:
+/// * as ladder Layer 1, starting from an empty result;
+/// * as an overlay on whichever layer actually won, because a single-field rule
+///   (the overwhelmingly common shape a correction produces) can never satisfy
+///   `is_valid()` on its own, so Layer 1 would discard it every time and the
+///   user's correction would never reach a real extraction.
+///
+/// Span rules are bank-wide: a rule learned from one template shape simply does
+/// not match a differently-shaped body, so variants coexist without any
+/// matching-logic changes. Override rules have no regex to gate on, so they are
+/// scoped to their own template hash -- otherwise a "this template is actually a
+/// credit" correction would relabel every email from the bank.
+///
+/// Returns whether any rule fired.
+pub async fn apply_learned_fields(
+    pool: &Pool,
+    bank_name: &str,
+    body: &str,
+    source_type: &str,
+    result: &mut ExtractionResult,
+) -> bool {
+    let (bank, source) = (bank_name.to_string(), source_type.to_string());
+    let Ok(conn) = pool.get().await else {
+        return false;
+    };
+    let rules = match conn
+        .interact(move |c| crate::db::field_rules::select_live_by_bank(c, &bank, &source))
+        .await
+    {
+        Ok(Ok(r)) => r,
+        _ => return false,
+    };
+    if rules.is_empty() {
+        return false;
+    }
+
+    let body_hash = compute_template_hash(body);
+    let mut fired = false;
+
+    for rule in rules {
+        let is_override = rule.rule_payload_json.get("override_value").is_some();
+        if is_override && rule.template_hash != body_hash {
+            continue;
+        }
+        let Some(captured) =
+            crate::extraction::rule_synthesis::apply_payload(&rule.rule_payload_json, body)
+        else {
+            continue;
+        };
+        let captured = captured.trim();
+        if captured.is_empty() {
+            continue;
+        }
+
+        match rule.field_name.as_str() {
+            "merchant" => result.merchant_raw = Some(captured.to_string()),
+            "amount" => {
+                if let Some(v) = parse_amount(captured) {
+                    result.amount_minor = Some(v);
+                } else {
+                    continue;
+                }
+            }
+            "balance" => {
+                if let Some(v) = parse_amount(captured) {
+                    result.balance_after = Some(v);
+                } else {
+                    continue;
+                }
+            }
+            "reference_id" => result.reference_id = Some(captured.to_string()),
+            "last4" => result.masked_identifier = Some(clean_masked_identifier(captured)),
+            "direction" => result.direction = Some(captured.to_lowercase()),
+            "currency" => result.currency = Some(captured.to_uppercase()),
+            "event_time" => {
+                // A learned capture is either a literal epoch (rare,
+                // DB-authored) or a date string in whatever format the bank
+                // prints. Neither parsing leaves the field `None` rather than a
+                // fabricated date, which correctly fails `is_valid()`.
+                match captured.parse::<i64>().ok() {
+                    Some(ts) => result.event_time = Some(ts),
+                    None => match parse_date_generic(captured) {
+                        Some(parsed) => {
+                            result.event_time = Some(parsed.timestamp);
+                            result.event_time_ambiguous = parsed.ambiguous;
+                        }
+                        None => continue,
+                    },
+                }
+            }
+            _ => continue,
+        }
+        fired = true;
+        tracing::debug!(
+            bank = bank_name,
+            field = %rule.field_name,
+            value = %captured,
+            "applied a learned extraction rule"
+        );
+    }
+
+    fired
+}
+
+// Layer 1: learned field rules (synthesized from user corrections)
+pub struct LearnedFieldLayer;
+impl ExtractionLayer for LearnedFieldLayer {
     fn extract<'a>(
         &'a self,
         pool: &'a Pool,
@@ -126,98 +233,12 @@ impl ExtractionLayer for LearnedPatternLayer {
         body: &'a str,
     ) -> BoxFuture<'a, Option<ExtractionResult>> {
         Box::pin(async move {
-            let b_name = bank_name.to_string();
-
-            let conn_res = pool.get().await;
-            if conn_res.is_err() {
-                return None;
-            }
-            let conn = conn_res.unwrap();
-
-            let rules_res = conn
-                .interact(move |c| crate::db::pattern_rules::select_active_rules_by_bank(c, &b_name))
-                .await;
-
-            let rules = match rules_res {
-                Ok(Ok(r)) => r,
-                _ => return None,
-            };
-
-            if rules.is_empty() {
-                return None;
-            }
-
             let mut result = ExtractionResult {
                 extraction_method: self.layer_name().to_string(),
                 ..Default::default()
             };
-
-            // For simplicity, we apply the rules sequentially. If multiple rules define the same field, the last one wins.
-            // A more robust implementation might check for conflicts.
-            let mut matched_any = false;
-            for rule in rules {
-                if let Some(regex_val) = rule.rule_payload_json.get("regex") {
-                    if let Some(regex_str) = regex_val.as_str() {
-                        if let Ok(re) = Regex::new(regex_str) {
-                            if let Some(caps) = re.captures(body) {
-                                if let Some(m) = caps.get(1) {
-                                    let matched_str = m.as_str();
-                                    matched_any = true;
-                                    match rule.field_name.as_str() {
-                                        "amount" | "amount_minor" => {
-                                            // Quick parse logic for minor units. Assume it might contain decimals.
-                                            let clean: String = matched_str
-                                                .chars()
-                                                .filter(|c| c.is_ascii_digit() || *c == '.')
-                                                .collect();
-                                            if let Ok(val) = clean.parse::<f64>() {
-                                                result.amount_minor =
-                                                    Some((val * 100.0).round() as i64);
-                                            }
-                                        }
-                                        "merchant" | "merchant_raw" => {
-                                            result.merchant_raw = Some(matched_str.to_string());
-                                        }
-                                        "currency" => {
-                                            result.currency = Some(matched_str.to_string());
-                                        }
-                                        "direction" => {
-                                            result.direction = Some(matched_str.to_string());
-                                        }
-                                        "event_time" => {
-                                            // A learned rule's capture is either a literal
-                                            // epoch timestamp (rare, direct DB-authored
-                                            // rules) or a date string in the same shape
-                                            // Layer 2/LLM-synthesized rules hint at (see
-                                            // `synthesize_pending_rule`'s `event_time`
-                                            // regex, which captures "25-May-2023" style
-                                            // text, not a raw integer) -- try both parses.
-                                            // Neither succeeding leaves this field `None`
-                                            // (not a fabricated date), which correctly
-                                            // fails `ExtractionResult::is_valid()`.
-                                            match matched_str.parse::<i64>().ok() {
-                                                Some(ts) => result.event_time = Some(ts),
-                                                None => {
-                                                    if let Some(parsed) =
-                                                        parse_date_generic(matched_str)
-                                                    {
-                                                        result.event_time = Some(parsed.timestamp);
-                                                        result.event_time_ambiguous =
-                                                            parsed.ambiguous;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            if matched_any && result.is_valid() {
+            let fired = apply_learned_fields(pool, bank_name, body, "email", &mut result).await;
+            if fired && result.is_valid() {
                 Some(result)
             } else {
                 None
@@ -225,7 +246,7 @@ impl ExtractionLayer for LearnedPatternLayer {
         })
     }
     fn layer_name(&self) -> &'static str {
-        "learned_patterns"
+        "learned_fields"
     }
 }
 
@@ -813,9 +834,11 @@ impl ExtractionLayer for BankTemplateLayer {
                 ..Default::default()
             };
 
-            // Doc 30 TASK-TXN-003: a single exit point so a successful match
-            // (regardless of which bank/format branch produced it) can seed a
-            // `pending` pattern_rules candidate below before returning.
+            // A single exit point so every bank/format branch converges on
+            // one return. Layer 2 no longer seeds a learned-rule candidate on
+            // match: a template that already extracts correctly has nothing to
+            // teach, and the hint regexes that seeding wrote only existed to
+            // bootstrap Layer 1 under the old human-approval model.
             let matched: Option<ExtractionResult> = 'm: {
                 if let Some(patterns) = bank_templates().get(bank_name) {
                     for p in patterns {
@@ -896,28 +919,6 @@ impl ExtractionLayer for BankTemplateLayer {
             };
 
             let matched = matched?;
-
-            // Doc 30 TASK-TXN-003: "A successful Layer 2 match seeds a
-            // pending-status pattern_rules row, so repeated matches against
-            // the same template_hash can graduate to a Layer 1 learned
-            // rule." Best-effort: a DB error here must not fail an
-            // already-successful extraction.
-            let template_hash = compute_template_hash(body);
-            let b_name = bank_name.to_string();
-            let matched_clone = matched.clone();
-            if let Ok(conn) = pool.get().await {
-                let _ = conn
-                    .interact(move |c| {
-                        synthesize_pending_rule(
-                            c,
-                            &b_name,
-                            &template_hash,
-                            &matched_clone,
-                            "layer2_template",
-                        )
-                    })
-                    .await;
-            }
 
             Some(matched)
         })
@@ -1563,23 +1564,18 @@ impl ExtractionLayer for NlpLayer {
 
 /// The outcome of [`detect_pattern_drift`].
 ///
-/// Drift is declared when a bank's email template is **known** (active/trusted
-/// pattern rules exist for the computed template hash) yet all extraction layers
-/// 2–3 returned no valid result — indicating the template has changed.
+/// Drift is declared when a bank's template is **known** (live rules exist for
+/// this template hash) yet extraction produced nothing -- the shape the rules
+/// were learned from has changed underneath them.
 ///
-/// When drift is detected the caller may route the body to Layer 5 (LLM).  If
-/// the LLM succeeds a new `PatternRulesRow` candidate is synthesised in
-/// `pending` state and included in `synthesized_rule`.
+/// The struct used to carry a `synthesized_rule` field that was always `None`:
+/// the caller wrote the rule, this function never did. Authoring now belongs to
+/// `learning::worker` behind the validation gate, so the field is gone rather
+/// than left as a lie about where rules come from.
 #[derive(Debug, Clone)]
 pub struct DriftResult {
-    /// `true` when the template is known but extraction failed.
     pub drift_detected: bool,
-    /// The structural template hash computed from the email body.
     pub template_hash: String,
-    /// A synthesised `pending` pattern-rule candidate written to the database
-    /// when Layer 5 (LLM) extraction succeeds.  `None` when drift was not
-    /// detected or LLM extraction did not succeed.
-    pub synthesized_rule: Option<crate::db::pattern_rules::PatternRulesRow>,
 }
 
 /// Checks whether a template drift has occurred for a given email body.
@@ -1613,23 +1609,20 @@ pub fn detect_pattern_drift(
         return Ok(DriftResult {
             drift_detected: false,
             template_hash,
-            synthesized_rule: None,
         });
     }
 
     // Check whether we have existing active/trusted rules for this template.
-    let known_rule_count = crate::db::pattern_rules::count_active_rules_by_bank_and_hash(
+    let known_rule_count = crate::db::field_rules::count_live_by_bank_and_hash(
         conn,
         bank_name,
         &template_hash,
+        "email",
     )?;
 
-    let drift_detected = known_rule_count > 0;
-
     Ok(DriftResult {
-        drift_detected,
+        drift_detected: known_rule_count > 0,
         template_hash,
-        synthesized_rule: None,
     })
 }
 
@@ -2027,79 +2020,6 @@ fn apply_date_cross_check(obs: &mut ExtractionResult, internal_date: Option<i64>
     }
 }
 
-/// Applies a merchant rule learned from an LLM correction (issue #12) on top
-/// of whichever layer actually won.
-///
-/// Scoped to this bank *and* this email's template hash, so a rule taught by
-/// one alert shape can never rewrite the merchant on a differently-shaped
-/// email from the same bank. Silently does nothing when no such rule exists,
-/// which is the overwhelmingly common case.
-///
-/// ponytail: one indexed lookup per successful extraction. Measured against
-/// the scan budget this is noise next to the Gmail fetch it sits behind, and
-/// folding it into `LearnedPatternLayer`'s existing query would mean
-/// restructuring that layer's contract for no measurable gain.
-async fn apply_learned_merchant_override(
-    pool: &Pool,
-    bank_name: &str,
-    body: &str,
-    obs: &mut ExtractionResult,
-) {
-    let template_hash = compute_template_hash(body);
-    let bank = bank_name.to_string();
-
-    let Ok(conn) = pool.get().await else { return };
-    let patterns: Vec<String> = match conn
-        .interact(move |c| -> Vec<String> {
-            let Ok(mut stmt) = c.prepare(
-                "SELECT v.rule_payload_json FROM pattern_rule_variants v
-                 JOIN pattern_rules p ON p.id = v.pattern_rule_id
-                 WHERE p.bank_name = ?1 AND p.field_name = 'merchant'
-                   AND v.template_hash = ?2
-                   AND v.status IN ('active', 'trusted')",
-            ) else {
-                return Vec::new();
-            };
-            let Ok(rows) = stmt.query_map(rusqlite::params![bank, template_hash], |r| {
-                r.get::<_, String>(0)
-            }) else {
-                return Vec::new();
-            };
-            rows.filter_map(|r| r.ok())
-                .filter_map(|s| {
-                    serde_json::from_str::<serde_json::Value>(&s)
-                        .ok()?
-                        .get("regex")?
-                        .as_str()
-                        .map(|x| x.to_string())
-                })
-                .collect()
-        })
-        .await
-    {
-        Ok(p) => p,
-        Err(_) => return,
-    };
-
-    for pattern in patterns {
-        let Ok(re) = Regex::new(&pattern) else { continue };
-        if let Some(m) = re.captures(body).and_then(|c| c.get(1)) {
-            let captured = m.as_str().trim();
-            if captured.is_empty() {
-                continue;
-            }
-            tracing::debug!(
-                bank = bank_name,
-                merchant = %captured,
-                previous = ?obs.merchant_raw,
-                "Applied learned merchant rule from an LLM correction"
-            );
-            obs.merchant_raw = Some(captured.to_string());
-            return;
-        }
-    }
-}
-
 pub async fn run_extraction_ladder(
     pool: &Pool,
     bank_name: &str,
@@ -2108,9 +2028,10 @@ pub async fn run_extraction_ladder(
     llm_eligible: bool,
     internal_date: Option<i64>,
     layer6_timed_out: &mut bool,
+    learning: Option<&crate::learning::LearningHandle>,
 ) -> Result<Option<ExtractionResult>> {
     let layers: Vec<Box<dyn ExtractionLayer>> = vec![
-        Box::new(LearnedPatternLayer),
+        Box::new(LearnedFieldLayer),
         Box::new(BankTemplateLayer),
         Box::new(GenericRegexLayer),
         Box::new(NlpLayer),
@@ -2120,16 +2041,13 @@ pub async fn run_extraction_ladder(
         let layer_name = layer.layer_name();
         if let Some(mut obs) = layer.extract(pool, bank_name, body).await {
             if obs.is_valid() {
-                // Issue #12: a merchant rule learned from an LLM correction
-                // has to be applied here rather than inside
-                // `LearnedPatternLayer`, because Layer 1 discards any result
-                // failing `is_valid()` -- and a merchant-only rule never
-                // carries an amount, currency, direction or date, so Layer 1
-                // would throw it away every time and the correction would
-                // never reach a real extraction. Overriding the winning
-                // layer's merchant instead is what makes "teach the template"
-                // actually change the next scan's output.
-                apply_learned_merchant_override(pool, bank_name, body, &mut obs).await;
+                // A learned rule has to be applied here rather than only
+                // inside Layer 1, because Layer 1 discards any result failing
+                // `is_valid()` -- and a single-field rule (what a correction
+                // almost always produces) never carries a full record.
+                // Overriding the winning layer's fields is what makes "teach
+                // the template" actually change the next scan's output.
+                apply_learned_fields(pool, bank_name, body, "email", &mut obs).await;
                 // Augment with instrument signals from the body.
                 apply_instrument_signals(&mut obs, bank_name, body);
                 // Doc 30 TASK-TXN-012: "During extraction (Layers 2/3),
@@ -2164,12 +2082,11 @@ pub async fn run_extraction_ladder(
                 return Ok(Some(obs));
             }
         }
-        if layer_name == "learned_patterns" {
-            // Layer 1 is a feedback-loop cache seeded only by Layer 2/6
-            // successes (`synthesize_pending_rule`) — on a fresh bank +
-            // template-hash shape it has zero rules until the ladder has
-            // already succeeded once via a later layer. That's expected
-            // routine behaviour, not a failure worth info-level noise.
+        if layer_name == "learned_fields" {
+            // Layer 1 holds only rules learned from a correction or from
+            // drift — a bank nobody has ever corrected has zero of them, and
+            // that stays true no matter how many times extraction succeeds.
+            // Expected routine behaviour, not a failure worth info-level noise.
             tracing::debug!(
                 layer = layer_name,
                 status = "no_rules",
@@ -2249,42 +2166,21 @@ pub async fn run_extraction_ladder(
             apply_instrument_signals(&mut llm_result, bank_name, body);
             apply_amount_cross_check(&mut llm_result, body);
 
-            // ── Best-effort: synthesise a pending pattern-rule candidate ─────
-            // Only when this bank's known rules had drifted from the current
-            // body — a side effect that feeds Layer 1's learning loop, never
-            // a precondition for Layer 5 itself having run. A DB error here
-            // must not unwind an already-successful extraction.
-            let b_name = bank_name.to_string();
-            let body_owned = body.to_string();
-            if let Ok(conn) = pool.get().await {
-                let drift_result = conn
-                    .interact(move |c| detect_pattern_drift(c, &b_name, &body_owned, &None))
-                    .await;
-                if let Ok(Ok(drift)) = drift_result {
-                    if drift.drift_detected {
-                        tracing::warn!(
-                            bank_name = bank_name,
-                            template_hash = %drift.template_hash,
-                            "Template drift detected — synthesising pending pattern-rule candidate."
-                        );
-                        let template_hash_clone = drift.template_hash.clone();
-                        let bank_name_str = bank_name.to_string();
-                        let llm_result_clone = llm_result.clone();
-                        if let Ok(conn2) = pool.get().await {
-                            let _ = conn2
-                                .interact(move |c| {
-                                    synthesize_pending_rule(
-                                        c,
-                                        &bank_name_str,
-                                        &template_hash_clone,
-                                        &llm_result_clone,
-                                        "llm_synthesis",
-                                    )
-                                })
-                                .await;
-                        }
-                    }
-                }
+            // A correction the user already made must not be undone by a later
+            // LLM extraction of the same template.
+            apply_learned_fields(pool, bank_name, body, "email", &mut llm_result).await;
+
+            // ── Drift self-healing ───────────────────────────────────────
+            if let Some(handle) = learning {
+                enqueue_drift_candidates_if_drifted(
+                    pool,
+                    handle,
+                    bank_name,
+                    body,
+                    &llm_result,
+                    app_dir.clone(),
+                )
+                .await;
             }
 
             return Ok(Some(llm_result));
@@ -2294,65 +2190,97 @@ pub async fn run_extraction_ladder(
     Ok(None)
 }
 
-/// Synthesises a `pending` pattern-rule candidate from a successful LLM
-/// extraction result and persists it via [`insert_pending_candidate`].
+/// Queues replacement rules when this bank's known template has drifted.
 ///
-/// Each extracted field that is `Some(...)` becomes a separate rule row so the
-/// individual fields can be approved or rejected independently by a human
-/// reviewer.  The candidate is given `confidence = 0.0` to make it clearly
-/// distinguishable from user-validated rules.
-fn synthesize_pending_rule(
-    conn: &Connection,
+/// The LLM succeeded where the bank's own learned rules failed, so its answer
+/// is the training example for a replacement. Routed through the same worker
+/// and the same validation gate a user correction uses; it differs only in
+/// `learned_from`, which keeps it at `pending` until three auto-successes
+/// prove it.
+///
+/// Called from two places on purpose. `run_extraction_ladder` runs Layer 6
+/// inline, which is still how the replay harness and tests reach it; the real
+/// scan path enqueues Layer 6 to a background worker instead (Doc 2026-07-26
+/// scan performance), and that worker calls this directly. Checking drift in
+/// only one of them would leave self-healing dead in production.
+pub async fn enqueue_drift_candidates_if_drifted(
+    pool: &Pool,
+    learning: &crate::learning::LearningHandle,
     bank_name: &str,
-    template_hash: &str,
-    extraction: &ExtractionResult,
-    source: &str,
-) -> Result<()> {
-    let now = chrono::Utc::now().naive_utc();
+    body: &str,
+    result: &ExtractionResult,
+    app_dir: Option<std::path::PathBuf>,
+) {
+    let b_name = bank_name.to_string();
+    let body_owned = body.to_string();
+    let Ok(conn) = pool.get().await else { return };
+    let drift = conn
+        .interact(move |c| detect_pattern_drift(c, &b_name, &body_owned, &None))
+        .await;
+    let Ok(Ok(drift)) = drift else { return };
+    if !drift.drift_detected {
+        return;
+    }
+    tracing::warn!(
+        bank_name = bank_name,
+        template_hash = %drift.template_hash,
+        "Template drift detected — queueing replacement rules."
+    );
+    enqueue_drift_candidates(learning, bank_name, body, result, app_dir).await;
+}
 
-    // Helper to build and insert a single field rule.
-    let insert_field = |field_name: &str, regex_hint: &str| -> Result<()> {
-        let rule = crate::db::pattern_rules::PatternRulesRow {
-            id: Uuid::new_v4().to_string(),
-            bank_name: bank_name.to_string(),
-            template_hash: template_hash.to_string(),
-            field_name: field_name.to_string(),
-            // The regex is a placeholder hint derived from the extracted value;
-            // a human must verify and refine it before promoting to `active`.
-            rule_payload_json: serde_json::json!({ "regex": regex_hint, "source": source }),
-            status: "pending".to_string(),
-            success_count: 0,
-            failure_count: 0,
-            confidence: 0.0,
-            created_at: Some(now),
-            updated_at: Some(now),
-        };
-        crate::db::pattern_rules::insert_pending_candidate(conn, &rule)
-    };
+/// Turns a drift-rescuing LLM extraction into one learning job per field it
+/// recovered.
+///
+/// Each field is queued separately because each is validated separately: a
+/// bank that restructured its template may well have moved only two of five
+/// fields, and rejecting all five because one could not be anchored would throw
+/// away the working majority.
+async fn enqueue_drift_candidates(
+    handle: &crate::learning::LearningHandle,
+    bank_name: &str,
+    body: &str,
+    result: &ExtractionResult,
+    app_dir: Option<std::path::PathBuf>,
+) {
+    let fields: Vec<(&str, String)> = [
+        result.merchant_raw.clone().map(|v| ("merchant", v)),
+        result.amount_minor.map(|v| ("amount", v.to_string())),
+        result.reference_id.clone().map(|v| ("reference_id", v)),
+        result.balance_after.map(|v| ("balance", v.to_string())),
+        result.event_time.and_then(|ts| {
+            chrono::DateTime::from_timestamp(ts, 0).map(|dt| {
+                (
+                    "event_time",
+                    dt.naive_utc().format("%Y-%m-%d %H:%M:%S").to_string(),
+                )
+            })
+        }),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
 
-    if let Some(amt) = extraction.amount_minor {
-        // Hint regex: match the decimal representation of the amount.
-        let decimal = format!("{:.2}", amt as f64 / 100.0);
-        insert_field("amount", r"([\d,]+(?:\.\d+)?)\s*(?:INR|Rs)")?;
-        let _ = decimal; // used for documentation only
+    for (field_name, new_value) in fields {
+        crate::learning::enqueue(
+            handle,
+            crate::learning::FeedbackJob {
+                // Drift is not a user correction, so there is no feedback_log
+                // row to point at. The change log still records the attempt.
+                feedback_log_id: String::new(),
+                bank_name: bank_name.to_string(),
+                field_name: field_name.to_string(),
+                source_type: "email".to_string(),
+                source_text: body.to_string(),
+                old_value: None,
+                new_value,
+                observation_id: None,
+                learned_from: "drift_llm".to_string(),
+                app_dir: app_dir.clone(),
+            },
+        )
+        .await;
     }
-    if extraction.merchant_raw.is_some() {
-        insert_field(
-            "merchant",
-            r"(?:at|to|from)\s+([A-Za-z0-9\s]+?)(?:\s+on|,|\.|$)",
-        )?;
-    }
-    if extraction.currency.is_some() {
-        insert_field("currency", r"(INR|USD|EUR|GBP)")?;
-    }
-    if extraction.direction.is_some() {
-        insert_field("direction", r"(debited|credited|spent|received)")?;
-    }
-    if extraction.event_time.is_some() {
-        insert_field("event_time", r"(\d{2}-[A-Za-z]{3}-\d{2,4})")?;
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -2816,7 +2744,7 @@ mod tests {
     /// `run_extraction_ladder`, not a hand-copied loop over mock layers: an
     /// active Layer 1 (learned-rule) match must win even though it precedes
     /// nothing else viable in this fixture — the meaningful claim is that
-    /// the returned `extraction_method` is `"learned_patterns"` (Layer 1),
+    /// the returned `extraction_method` is `"learned_fields"` (Layer 1),
     /// proving the ladder actually reached and returned from the first
     /// layer rather than some other path.
     #[tokio::test]
@@ -2825,12 +2753,12 @@ mod tests {
         let body = "Your amount is 1500 INR at Amazon debit time 123";
 
         let mut layer6_timed_out = false;
-        let result = run_extraction_ladder(&pool, "Chase", body, None, false, None, &mut layer6_timed_out)
+        let result = run_extraction_ladder(&pool, "Chase", body, None, false, None, &mut layer6_timed_out, None)
             .await
             .unwrap();
 
         assert!(result.is_some());
-        assert_eq!(result.unwrap().extraction_method, "learned_patterns");
+        assert_eq!(result.unwrap().extraction_method, "learned_fields");
     }
 
     /// Issue #12 end-to-end: the point of teaching a rule is that the *next*
@@ -2848,7 +2776,7 @@ mod tests {
 
         // Baseline: whatever the ladder produces with no learned rule.
         let mut timed_out = false;
-        let before = run_extraction_ladder(&pool, "HDFC Bank", body, None, false, None, &mut timed_out)
+        let before = run_extraction_ladder(&pool, "HDFC Bank", body, None, false, None, &mut timed_out, None)
             .await
             .unwrap()
             .expect("fixture must extract");
@@ -2864,29 +2792,21 @@ mod tests {
                 "RAZ*SWIGGY",
             )
             .expect("must synthesize a pattern");
-            crate::db::pattern_rules::insert(
+            seed_rule(
                 c,
-                &crate::db::pattern_rules::PatternRulesRow {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    bank_name: "HDFC Bank".to_string(),
-                    template_hash,
-                    field_name: "merchant".to_string(),
-                    rule_payload_json: serde_json::json!({ "regex": pattern }),
-                    status: "active".to_string(),
-                    success_count: 1,
-                    failure_count: 0,
-                    confidence: 0.95,
-                    created_at: Some(chrono::Utc::now().naive_utc()),
-                    updated_at: Some(chrono::Utc::now().naive_utc()),
-                },
-            )
-            .unwrap();
+                "HDFC Bank",
+                "merchant",
+                &body_owned,
+                serde_json::json!({ "regex": pattern, "capture_group": 1 }),
+                "active",
+            );
+            let _ = template_hash;
         })
         .await
         .unwrap();
         drop(conn);
 
-        let after = run_extraction_ladder(&pool, "HDFC Bank", body, None, false, None, &mut timed_out)
+        let after = run_extraction_ladder(&pool, "HDFC Bank", body, None, false, None, &mut timed_out, None)
             .await
             .unwrap()
             .expect("fixture must still extract");
@@ -2914,23 +2834,15 @@ mod tests {
             let pattern =
                 crate::extraction::rule_synthesis::synthesize_span_regex(&taught, "RAZ*SWIGGY")
                     .unwrap();
-            crate::db::pattern_rules::insert(
+            seed_rule(
                 c,
-                &crate::db::pattern_rules::PatternRulesRow {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    bank_name: "HDFC Bank".to_string(),
-                    template_hash,
-                    field_name: "merchant".to_string(),
-                    rule_payload_json: serde_json::json!({ "regex": pattern }),
-                    status: "active".to_string(),
-                    success_count: 1,
-                    failure_count: 0,
-                    confidence: 0.95,
-                    created_at: Some(chrono::Utc::now().naive_utc()),
-                    updated_at: Some(chrono::Utc::now().naive_utc()),
-                },
-            )
-            .unwrap();
+                "HDFC Bank",
+                "merchant",
+                &taught,
+                serde_json::json!({ "regex": pattern, "capture_group": 1 }),
+                "active",
+            );
+            let _ = template_hash;
         })
         .await
         .unwrap();
@@ -2945,6 +2857,7 @@ mod tests {
             false,
             None,
             &mut timed_out,
+            None,
         )
         .await
         .unwrap()
@@ -2971,73 +2884,36 @@ mod tests {
         let body_owned = body.to_string();
         conn.interact(move |c| {
             let template_hash = compute_template_hash(&body_owned);
-            let base = crate::db::pattern_rules::PatternRulesRow {
-                id: "wr1".to_string(),
-                bank_name: "WrongRuleBank".to_string(),
-                template_hash: template_hash.clone(),
-                field_name: "amount".to_string(),
-                // Deliberately wrong: captures the transaction ID, not the
-                // real "Rs 500.00" amount elsewhere in the body.
-                rule_payload_json: serde_json::json!({"regex": "Txn ID (\\d+)"}),
-                status: "active".to_string(),
-                success_count: 0,
-                failure_count: 0,
-                confidence: 1.0,
-                created_at: Some(chrono::Utc::now().naive_utc()),
-                updated_at: Some(chrono::Utc::now().naive_utc()),
-            };
-            crate::db::pattern_rules::insert(c, &base).unwrap();
-            crate::db::pattern_rules::insert(
-                c,
-                &crate::db::pattern_rules::PatternRulesRow {
-                    id: "wr2".to_string(),
-                    field_name: "merchant".to_string(),
-                    rule_payload_json: serde_json::json!({"regex": "at ([A-Za-z]+)"}),
-                    ..base.clone()
-                },
-            )
-            .unwrap();
-            crate::db::pattern_rules::insert(
-                c,
-                &crate::db::pattern_rules::PatternRulesRow {
-                    id: "wr3".to_string(),
-                    field_name: "currency".to_string(),
-                    rule_payload_json: serde_json::json!({"regex": "([A-Z]{3})"}),
-                    ..base.clone()
-                },
-            )
-            .unwrap();
-            crate::db::pattern_rules::insert(
-                c,
-                &crate::db::pattern_rules::PatternRulesRow {
-                    id: "wr4".to_string(),
-                    field_name: "direction".to_string(),
-                    rule_payload_json: serde_json::json!({"regex": "(debited)"}),
-                    ..base.clone()
-                },
-            )
-            .unwrap();
-            crate::db::pattern_rules::insert(
-                c,
-                &crate::db::pattern_rules::PatternRulesRow {
-                    id: "wr5".to_string(),
-                    field_name: "event_time".to_string(),
-                    rule_payload_json: serde_json::json!({"regex": "on (\\d{2}-[A-Za-z]{3}-\\d{2})"}),
-                    ..base
-                },
-            )
-            .unwrap();
+            // Deliberately wrong: captures the transaction ID, not the real
+            // "Rs 500.00" amount elsewhere in the body.
+            for (field, regex) in [
+                ("amount", r"Txn ID (\d+)"),
+                ("merchant", "at ([A-Za-z]+)"),
+                ("currency", "([A-Z]{3})"),
+                ("direction", "(debited)"),
+                ("event_time", r"on (\d{2}-[A-Za-z]{3}-\d{2})"),
+            ] {
+                seed_rule(
+                    c,
+                    "WrongRuleBank",
+                    field,
+                    &body_owned,
+                    serde_json::json!({"regex": regex, "capture_group": 1}),
+                    "active",
+                );
+            }
+            let _ = template_hash;
         })
         .await
         .unwrap();
 
         let mut layer6_timed_out = false;
-        let result = run_extraction_ladder(&pool, "WrongRuleBank", body, None, false, None, &mut layer6_timed_out)
+        let result = run_extraction_ladder(&pool, "WrongRuleBank", body, None, false, None, &mut layer6_timed_out, None)
             .await
             .unwrap()
             .expect("the (wrong) learned rule is schema-valid and must still be returned");
 
-        assert_eq!(result.extraction_method, "learned_patterns");
+        assert_eq!(result.extraction_method, "learned_fields");
         assert_eq!(
             result.amount_minor,
             Some(99_990_000),
@@ -3075,7 +2951,7 @@ mod tests {
 
         let pool = dummy_pool();
         let mut layer6_timed_out = false;
-        let res = run_extraction_ladder(&pool, "Chase", "unparseable body", None, false, None, &mut layer6_timed_out)
+        let res = run_extraction_ladder(&pool, "Chase", "unparseable body", None, false, None, &mut layer6_timed_out, None)
             .await
             .unwrap();
         assert!(res.is_none());
@@ -3118,7 +2994,7 @@ mod tests {
 
         let pool = dummy_pool();
         let mut layer6_timed_out = false;
-        let res = run_extraction_ladder(&pool, "Chase", "unparseable body", None, false, None, &mut layer6_timed_out)
+        let res = run_extraction_ladder(&pool, "Chase", "unparseable body", None, false, None, &mut layer6_timed_out, None)
             .await
             .unwrap();
         assert!(res.is_none());
@@ -3144,82 +3020,375 @@ mod tests {
         assert_eq!(compute_template_hash(b1), compute_template_hash(b2));
     }
 
+    /// Seeds one learned rule. Test-only shim so the many rule-driven tests
+    /// below read the same as before the `field_rules` rewrite.
+    fn seed_rule(
+        conn: &rusqlite::Connection,
+        bank: &str,
+        field: &str,
+        source_body: &str,
+        payload: serde_json::Value,
+        status: &str,
+    ) {
+        let now = chrono::Utc::now().naive_utc();
+        crate::db::field_rules::upsert_variant(
+            conn,
+            &crate::db::field_rules::FieldRuleVariant {
+                id: uuid::Uuid::new_v4().to_string(),
+                bank_name: bank.to_string(),
+                field_name: field.to_string(),
+                source_type: "email".to_string(),
+                template_hash: compute_template_hash(source_body),
+                rule_payload_json: payload,
+                status: status.to_string(),
+                success_count: 5,
+                failure_count: 0,
+                confidence: 1.0,
+                authored_by: "deterministic".to_string(),
+                learned_from: "user_edit".to_string(),
+                created_at: Some(now),
+                updated_at: Some(now),
+            },
+            None,
+        )
+        .unwrap();
+    }
+
+    const LEARNED_RULE_BODY: &str = "Your amount is 1500 INR at Amazon debit time 123";
+
+    /// A full set of rules for `LEARNED_RULE_BODY` -- enough fields that Layer 1
+    /// can produce a result passing `is_valid()` on its own.
     async fn setup_db_with_rule(status: String) -> Pool {
         let pool = dummy_migrated_pool().await;
         let conn = pool.get().await.unwrap();
         conn.interact(move |c| {
-            let template_hash =
-                compute_template_hash("Your amount is 1500 INR at Amazon debit time 123");
-            let rule = crate::db::pattern_rules::PatternRulesRow {
-                id: "rule1".to_string(),
-                bank_name: "Chase".to_string(),
-                template_hash: template_hash.clone(),
-                field_name: "amount".to_string(),
-                rule_payload_json: serde_json::json!({"regex": "amount is ([0-9]+) INR"}),
-                status: status.to_string(),
-                success_count: 0,
-                failure_count: 0,
-                confidence: 1.0,
-                created_at: Some(chrono::Utc::now().naive_utc()),
-                updated_at: Some(chrono::Utc::now().naive_utc()),
-            };
-
-            crate::db::pattern_rules::insert(c, &rule).unwrap();
-
-            // Add other fields to make it valid
-            let rule_merchant = crate::db::pattern_rules::PatternRulesRow {
-                id: "rule2".to_string(),
-                bank_name: "Chase".to_string(),
-                template_hash: template_hash.clone(),
-                field_name: "merchant".to_string(),
-                rule_payload_json: serde_json::json!({"regex": "at ([A-Za-z]+)"}),
-                status: status.to_string(),
-                ..rule.clone()
-            };
-            crate::db::pattern_rules::insert(c, &rule_merchant).unwrap();
-
-            let rule_curr = crate::db::pattern_rules::PatternRulesRow {
-                id: "rule3".to_string(),
-                bank_name: "Chase".to_string(),
-                template_hash: template_hash.clone(),
-                field_name: "currency".to_string(),
-                rule_payload_json: serde_json::json!({"regex": "([A-Z]{3})"}),
-                status: status.to_string(),
-                ..rule.clone()
-            };
-            crate::db::pattern_rules::insert(c, &rule_curr).unwrap();
-
-            let rule_dir = crate::db::pattern_rules::PatternRulesRow {
-                id: "rule4".to_string(),
-                bank_name: "Chase".to_string(),
-                template_hash: template_hash.clone(),
-                field_name: "direction".to_string(),
-                rule_payload_json: serde_json::json!({"regex": "(debit)"}),
-                status: status.to_string(),
-                ..rule.clone()
-            };
-            crate::db::pattern_rules::insert(c, &rule_dir).unwrap();
-
-            let rule_time = crate::db::pattern_rules::PatternRulesRow {
-                id: "rule5".to_string(),
-                bank_name: "Chase".to_string(),
-                template_hash: template_hash.clone(),
-                field_name: "event_time".to_string(),
-                rule_payload_json: serde_json::json!({"regex": "time ([0-9]+)"}),
-                status: status.to_string(),
-                ..rule.clone()
-            };
-            crate::db::pattern_rules::insert(c, &rule_time).unwrap();
+            for (field, regex) in [
+                ("amount", "amount is ([0-9]+) INR"),
+                ("merchant", "at ([A-Za-z]+)"),
+                ("currency", "([A-Z]{3})"),
+                ("direction", "(debit)"),
+                ("event_time", "time ([0-9]+)"),
+            ] {
+                seed_rule(
+                    c,
+                    "Chase",
+                    field,
+                    LEARNED_RULE_BODY,
+                    serde_json::json!({"regex": regex, "capture_group": 1}),
+                    &status,
+                );
+            }
         })
         .await
         .unwrap();
         pool
     }
 
+    // ── apply_learned_fields: the single read path for learned rules ─────────
+
+    /// A merchant-only rule must reach the output. This is exactly what the old
+    /// Layer 1 could not do -- it discarded any result failing `is_valid()`, and
+    /// a merchant-only rule carries no amount, currency, direction or date, so
+    /// the correction was thrown away every time. That is why
+    /// `apply_learned_merchant_override` had to exist as a second, redundant
+    /// query; one function used at both call sites replaces both.
+    #[tokio::test]
+    async fn a_merchant_only_rule_overrides_the_winning_layer() {
+        let pool = dummy_migrated_pool().await;
+        let body = "Rs 500 spent at RAZ*SWIGGY LIMITE on 01/07/26 via card 1234";
+        {
+            let conn = pool.get().await.unwrap();
+            let b = body.to_string();
+            conn.interact(move |c| {
+                seed_rule(
+                    c,
+                    "HDFC Bank",
+                    "merchant",
+                    &b,
+                    serde_json::json!({"regex": r"at\s+(.{1,80}?)\s+on", "capture_group": 1}),
+                    "active",
+                )
+            })
+            .await
+            .unwrap();
+        }
+
+        let mut result = ExtractionResult {
+            merchant_raw: Some("WRONG".to_string()),
+            amount_minor: Some(50000),
+            currency: Some("INR".to_string()),
+            direction: Some("debit".to_string()),
+            event_time: Some(1_780_000_000),
+            ..Default::default()
+        };
+        let fired = apply_learned_fields(&pool, "HDFC Bank", body, "email", &mut result).await;
+
+        assert!(fired);
+        assert_eq!(result.merchant_raw.as_deref(), Some("RAZ*SWIGGY LIMITE"));
+        assert_eq!(result.amount_minor, Some(50000), "untaught fields must be left alone");
+    }
+
+    #[tokio::test]
+    async fn an_amount_rule_parses_into_minor_units() {
+        let pool = dummy_migrated_pool().await;
+        let body = "INR 1,020.00 debited from your account on 01/07/26";
+        {
+            let conn = pool.get().await.unwrap();
+            let b = body.to_string();
+            conn.interact(move |c| {
+                seed_rule(
+                    c,
+                    "HDFC Bank",
+                    "amount",
+                    &b,
+                    serde_json::json!({"regex": r"INR\s+([\d,.]+)\s", "capture_group": 1}),
+                    "active",
+                )
+            })
+            .await
+            .unwrap();
+        }
+        let mut result = ExtractionResult::default();
+        apply_learned_fields(&pool, "HDFC Bank", body, "email", &mut result).await;
+        assert_eq!(result.amount_minor, Some(102000));
+    }
+
+    /// A span rule is bank-wide and gated by its own regex not matching; an
+    /// override has no regex to gate on, so it must be template-exact or it
+    /// would relabel every email from the bank.
+    #[tokio::test]
+    async fn an_override_applies_only_to_its_own_template() {
+        let pool = dummy_migrated_pool().await;
+        let taught = "Rs 500 credited to your account on 01/07/26";
+        let other = "Your statement for June is ready. Total due Rs 900.";
+        {
+            let conn = pool.get().await.unwrap();
+            let b = taught.to_string();
+            conn.interact(move |c| {
+                seed_rule(
+                    c,
+                    "HDFC Bank",
+                    "direction",
+                    &b,
+                    serde_json::json!({"override_value": "credit"}),
+                    "active",
+                )
+            })
+            .await
+            .unwrap();
+        }
+
+        let mut on_template = ExtractionResult {
+            direction: Some("debit".to_string()),
+            ..Default::default()
+        };
+        apply_learned_fields(&pool, "HDFC Bank", taught, "email", &mut on_template).await;
+        assert_eq!(on_template.direction.as_deref(), Some("credit"));
+
+        let mut off_template = ExtractionResult {
+            direction: Some("debit".to_string()),
+            ..Default::default()
+        };
+        apply_learned_fields(&pool, "HDFC Bank", other, "email", &mut off_template).await;
+        assert_eq!(
+            off_template.direction.as_deref(),
+            Some("debit"),
+            "an override must never leak to a different template shape"
+        );
+    }
+
+    #[tokio::test]
+    async fn learned_rules_never_cross_banks() {
+        let pool = dummy_migrated_pool().await;
+        let body = "Rs 500 spent at SWIGGY on 01/07/26";
+        {
+            let conn = pool.get().await.unwrap();
+            let b = body.to_string();
+            conn.interact(move |c| {
+                seed_rule(
+                    c,
+                    "HDFC Bank",
+                    "merchant",
+                    &b,
+                    serde_json::json!({"regex": r"at\s+(.{1,80}?)\s+on", "capture_group": 1}),
+                    "active",
+                )
+            })
+            .await
+            .unwrap();
+        }
+        let mut result = ExtractionResult::default();
+        let fired = apply_learned_fields(&pool, "ICICI Bank", body, "email", &mut result).await;
+        assert!(!fired);
+        assert!(result.merchant_raw.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_rule_that_does_not_match_this_body_is_simply_skipped() {
+        let pool = dummy_migrated_pool().await;
+        let taught = "Rs 500 spent at SWIGGY on 01/07/26";
+        {
+            let conn = pool.get().await.unwrap();
+            let b = taught.to_string();
+            conn.interact(move |c| {
+                seed_rule(
+                    c,
+                    "HDFC Bank",
+                    "merchant",
+                    &b,
+                    serde_json::json!({"regex": r"at\s+(.{1,80}?)\s+on", "capture_group": 1}),
+                    "active",
+                )
+            })
+            .await
+            .unwrap();
+        }
+        let mut result = ExtractionResult::default();
+        let fired = apply_learned_fields(
+            &pool,
+            "HDFC Bank",
+            "A totally different message shape entirely.",
+            "email",
+            &mut result,
+        )
+        .await;
+        assert!(!fired, "coexistence across templates depends on this");
+    }
+
+    #[tokio::test]
+    async fn the_layer_returns_none_without_a_complete_result() {
+        let pool = dummy_migrated_pool().await;
+        let body = "Rs 500 spent at SWIGGY on 01/07/26";
+        {
+            let conn = pool.get().await.unwrap();
+            let b = body.to_string();
+            conn.interact(move |c| {
+                seed_rule(
+                    c,
+                    "HDFC Bank",
+                    "merchant",
+                    &b,
+                    serde_json::json!({"regex": r"at\s+(.{1,80}?)\s+on", "capture_group": 1}),
+                    "active",
+                )
+            })
+            .await
+            .unwrap();
+        }
+        // Merchant alone is not a valid extraction; Layer 1 must decline and
+        // let a later layer produce the full record.
+        assert!(LearnedFieldLayer.extract(&pool, "HDFC Bank", body).await.is_none());
+    }
+
+    // ── Drift detection, rebuilt on field_rules ──────────────────────────────
+
+    /// Drift is "the template is known but extraction failed". An unknown
+    /// template is a new bank shape, not a drift event.
+    #[tokio::test]
+    async fn drift_is_not_declared_for_an_unknown_template() {
+        let pool = dummy_migrated_pool().await;
+        let conn = pool.get().await.unwrap();
+        let drift = conn
+            .interact(|c| detect_pattern_drift(c, "HDFC Bank", "a body never seen before", &None))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!drift.drift_detected);
+    }
+
+    #[tokio::test]
+    async fn drift_is_declared_when_a_known_template_stops_extracting() {
+        let pool = dummy_migrated_pool().await;
+        let body = "Rs 500 spent at SWIGGY on 01/07/26";
+        let conn = pool.get().await.unwrap();
+        let b = body.to_string();
+        let drift = conn
+            .interact(move |c| {
+                seed_rule(
+                    c,
+                    "HDFC Bank",
+                    "merchant",
+                    &b,
+                    serde_json::json!({"regex": r"at\s+(.{1,80}?)\s+on", "capture_group": 1}),
+                    "active",
+                );
+                detect_pattern_drift(c, "HDFC Bank", &b, &None)
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(drift.drift_detected, "rules exist for this shape yet nothing extracted");
+    }
+
+    #[tokio::test]
+    async fn a_successful_extraction_is_never_drift() {
+        let pool = dummy_migrated_pool().await;
+        let body = "Rs 500 spent at SWIGGY on 01/07/26";
+        let conn = pool.get().await.unwrap();
+        let b = body.to_string();
+        let drift = conn
+            .interact(move |c| {
+                seed_rule(
+                    c,
+                    "HDFC Bank",
+                    "merchant",
+                    &b,
+                    serde_json::json!({"regex": r"at\s+(.{1,80}?)\s+on", "capture_group": 1}),
+                    "active",
+                );
+                detect_pattern_drift(c, "HDFC Bank", &b, &Some(ExtractionResult::default()))
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!drift.drift_detected);
+    }
+
+    /// Drift is scoped per source type, like everything else.
+    #[tokio::test]
+    async fn drift_does_not_see_a_statement_rule_as_a_known_email_template() {
+        let pool = dummy_migrated_pool().await;
+        let body = "Rs 500 spent at SWIGGY on 01/07/26";
+        let conn = pool.get().await.unwrap();
+        let b = body.to_string();
+        let drift = conn
+            .interact(move |c| {
+                let now = chrono::Utc::now().naive_utc();
+                crate::db::field_rules::upsert_variant(
+                    c,
+                    &crate::db::field_rules::FieldRuleVariant {
+                        id: "pdf_rule".to_string(),
+                        bank_name: "HDFC Bank".to_string(),
+                        field_name: "merchant".to_string(),
+                        source_type: "statement_pdf".to_string(),
+                        template_hash: compute_template_hash(&b),
+                        rule_payload_json: serde_json::json!({
+                            "regex": "(.+)", "capture_group": 1
+                        }),
+                        status: "active".to_string(),
+                        success_count: 5,
+                        failure_count: 0,
+                        confidence: 1.0,
+                        authored_by: "deterministic".to_string(),
+                        learned_from: "user_edit".to_string(),
+                        created_at: Some(now),
+                        updated_at: Some(now),
+                    },
+                    None,
+                )
+                .unwrap();
+                detect_pattern_drift(c, "HDFC Bank", &b, &None)
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!drift.drift_detected);
+    }
+
     #[tokio::test]
     async fn test_learned_rule_applied_when_active() {
         let pool = setup_db_with_rule("active".to_string()).await;
-        let layer = LearnedPatternLayer;
+        let layer = LearnedFieldLayer;
         let body = "Your amount is 1500 INR at Amazon debit time 123";
 
         let result = layer.extract(&pool, "Chase", body).await;
@@ -3230,12 +3399,12 @@ mod tests {
         assert_eq!(res.merchant_raw, Some("Amazon".to_string()));
         assert_eq!(res.currency, Some("INR".to_string()));
         assert_eq!(res.direction, Some("debit".to_string()));
-        assert_eq!(res.extraction_method, "learned_patterns");
+        assert_eq!(res.extraction_method, "learned_fields");
     }
 
     /// Core requirement, end to end: variants learned from one email
     /// template must still match a DIFFERENT template for the same bank
-    /// once select_active_rules_by_bank stops filtering by template_hash.
+    /// select_live_by_bank is bank-wide rather than hash-scoped.
     #[tokio::test]
     async fn test_learned_rule_matches_across_different_templates() {
         // setup_db_with_rule seeds all five field variants against this
@@ -3252,7 +3421,7 @@ mod tests {
             "the two bodies must hash differently to actually exercise cross-template matching"
         );
 
-        let layer = LearnedPatternLayer;
+        let layer = LearnedFieldLayer;
         let result = layer.extract(&pool, "Chase", new_body).await;
 
         assert!(
@@ -3268,7 +3437,7 @@ mod tests {
     #[tokio::test]
     async fn test_inactive_rule_skipped() {
         let pool = setup_db_with_rule("inactive".to_string()).await;
-        let layer = LearnedPatternLayer;
+        let layer = LearnedFieldLayer;
         let body = "Your amount is 1500 INR at Amazon debit time 123";
 
         let result = layer.extract(&pool, "Chase", body).await;
@@ -3279,13 +3448,13 @@ mod tests {
 
     /// Doc 30 TASK-TXN-002 acceptance test: a `pending` rule (not yet
     /// promoted to `active`/`trusted` via 3 confirmed successes,
-    /// `db/pattern_rules.rs::record_rule_success`) must never be
-    /// auto-applied, even if its regex would otherwise match — a candidate
-    /// rule is unproven until a human/feedback loop confirms it.
+    /// `db/field_rules.rs::record_success`) must never be auto-applied,
+    /// even if its regex would otherwise match -- a drift-detected candidate
+    /// is an unproven guess until the loop confirms it.
     #[tokio::test]
     async fn test_pending_rule_not_auto_applied() {
         let pool = setup_db_with_rule("pending".to_string()).await;
-        let layer = LearnedPatternLayer;
+        let layer = LearnedFieldLayer;
         let body = "Your amount is 1500 INR at Amazon debit time 123";
 
         let result = layer.extract(&pool, "Chase", body).await;
@@ -3342,57 +3511,6 @@ mod tests {
             "a result with no event_time must fail is_valid(), which is what makes the \
              orchestrator correctly skip past this layer instead of accepting a corrupted date"
         );
-    }
-
-    /// Doc 30 TASK-TXN-003: "A successful Layer 2 match seeds a
-    /// pending-status pattern_rules row, so repeated matches against the
-    /// same template_hash can graduate to a Layer 1 learned rule."
-    #[tokio::test]
-    async fn test_bank_template_match_seeds_pending_pattern_rule() {
-        let pool = dummy_migrated_pool().await;
-        let layer = BankTemplateLayer;
-        let body =
-            "Rs 1500.00 spent on your HDFC Bank CREDIT Card ending 1234 at Amazon on 25-May-23.";
-
-        let result = layer.extract(&pool, "HDFC Bank", body).await;
-        assert!(result.is_some());
-
-        let template_hash = compute_template_hash(body);
-        let conn = pool.get().await.unwrap();
-        let rules = conn
-            .interact(move |c| {
-                // No direct "select all for hash" helper exists; pending rows
-                // are deliberately excluded from select_active_rules_by_bank
-                // by design, so query the tables directly here instead.
-                c.prepare(
-                    "SELECT p.field_name, v.status FROM pattern_rule_variants v \
-                     JOIN pattern_rules p ON p.id = v.pattern_rule_id \
-                     WHERE p.bank_name = ?1 AND v.template_hash = ?2",
-                )
-                .unwrap()
-                .query_map(rusqlite::params!["HDFC Bank", template_hash], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })
-                .unwrap()
-                .collect::<Result<Vec<_>, _>>()
-                .unwrap()
-            })
-            .await
-            .unwrap();
-
-        assert!(
-            !rules.is_empty(),
-            "a successful Layer 2 match must seed at least one pending pattern_rules row"
-        );
-        assert!(
-            rules.iter().all(|(_, status)| status == "pending"),
-            "seeded rows must be pending, not auto-active: {:?}",
-            rules
-        );
-        let field_names: std::collections::HashSet<_> =
-            rules.iter().map(|(f, _)| f.as_str()).collect();
-        assert!(field_names.contains("amount"));
-        assert!(field_names.contains("merchant"));
     }
 
     #[tokio::test]
@@ -4229,7 +4347,7 @@ mod tests {
         let body =
             "Rs 1500.00 spent on your HDFC Bank CREDIT Card ending 1234 at Amazon on 25-May-23.";
         let mut layer6_timed_out = false;
-        let result = run_extraction_ladder(&pool, "HDFC Bank", body, None, false, None, &mut layer6_timed_out)
+        let result = run_extraction_ladder(&pool, "HDFC Bank", body, None, false, None, &mut layer6_timed_out, None)
             .await
             .unwrap();
         assert!(result.is_some());
@@ -4401,26 +4519,19 @@ mod tests {
     async fn setup_drift_db(bank_name: &str, body_to_register: &str) -> (Pool, String) {
         let pool = dummy_migrated_pool().await;
         let template_hash = compute_template_hash(body_to_register);
-        let hash_clone = template_hash.clone();
+        let registered_body = body_to_register.to_string();
         let bank_name_str = bank_name.to_string();
 
         let conn = pool.get().await.unwrap();
         conn.interact(move |c| {
-            let now = chrono::Utc::now().naive_utc();
-            let rule = crate::db::pattern_rules::PatternRulesRow {
-                id: uuid::Uuid::new_v4().to_string(),
-                bank_name: bank_name_str,
-                template_hash: hash_clone,
-                field_name: "amount".to_string(),
-                rule_payload_json: serde_json::json!({ "regex": r"Rs ([\d,]+) spent" }),
-                status: "active".to_string(),
-                success_count: 10,
-                failure_count: 0,
-                confidence: 0.95,
-                created_at: Some(now),
-                updated_at: Some(now),
-            };
-            crate::db::pattern_rules::insert(c, &rule).unwrap();
+            seed_rule(
+                c,
+                &bank_name_str,
+                "amount",
+                &registered_body,
+                serde_json::json!({ "regex": r"Rs ([\d,]+) spent", "capture_group": 1 }),
+                "active",
+            );
         })
         .await
         .unwrap();
@@ -4474,21 +4585,14 @@ mod tests {
         // hash) but now extraction returns None (the template has since changed
         // in a way that doesn't alter the structural hash, e.g. amount format).
         // We insert the rule directly into the sync conn.
-        let now = chrono::Utc::now().naive_utc();
-        let rule = crate::db::pattern_rules::PatternRulesRow {
-            id: uuid::Uuid::new_v4().to_string(),
-            bank_name: "HDFC Bank".to_string(),
-            template_hash: registered_hash.clone(),
-            field_name: "amount".to_string(),
-            rule_payload_json: serde_json::json!({ "regex": r"Rs ([\d,]+) spent" }),
-            status: "active".to_string(),
-            success_count: 5,
-            failure_count: 0,
-            confidence: 0.9,
-            created_at: Some(now),
-            updated_at: Some(now),
-        };
-        crate::db::pattern_rules::insert(&conn, &rule).unwrap();
+        seed_rule(
+            &conn,
+            "HDFC Bank",
+            "amount",
+            original_body,
+            serde_json::json!({ "regex": r"Rs ([\d,]+) spent", "capture_group": 1 }),
+            "active",
+        );
 
         // Ladder result is None (all layers failed for the original body).
         let drift_known_template =
@@ -4499,10 +4603,6 @@ mod tests {
              got drift_detected = false"
         );
         assert_eq!(drift_known_template.template_hash, registered_hash);
-        assert!(
-            drift_known_template.synthesized_rule.is_none(),
-            "synthesized_rule is None before Layer 5 is invoked"
-        );
 
         // ── Case 3: ladder already succeeded → never flag as drift. ──────────
         let successful_result = Some(ExtractionResult {
