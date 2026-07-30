@@ -37,7 +37,7 @@ fn test_metadata_gate_passes() {
     ]);
 
     assert_eq!(
-        MessageProcessor::evaluate_metadata_gate(&msg, false, &[], &[]),
+        MessageProcessor::evaluate_metadata_gate(&msg, &[], &[]),
         SenderVerificationResult::VerifiedTransactionCandidate("HDFC Bank".to_string())
     );
 }
@@ -46,7 +46,7 @@ fn test_metadata_gate_passes() {
 fn test_metadata_gate_fails_no_sender() {
     let msg = create_metadata_message(vec![("Subject", "Your Amazon.com order")]);
 
-    match MessageProcessor::evaluate_metadata_gate(&msg, false, &[], &[]) {
+    match MessageProcessor::evaluate_metadata_gate(&msg, &[], &[]) {
         SenderVerificationResult::UnverifiedReject(_) => {}
         _ => panic!("Expected UnverifiedReject"),
     }
@@ -56,7 +56,7 @@ fn test_metadata_gate_fails_no_sender() {
 fn test_metadata_gate_fails_empty_sender() {
     let msg = create_metadata_message(vec![("From", "   "), ("Subject", "Receipt")]);
 
-    match MessageProcessor::evaluate_metadata_gate(&msg, false, &[], &[]) {
+    match MessageProcessor::evaluate_metadata_gate(&msg, &[], &[]) {
         SenderVerificationResult::UnverifiedReject(_) => {}
         _ => panic!("Expected UnverifiedReject"),
     }
@@ -69,7 +69,7 @@ fn test_metadata_gate_spoof_detection() {
         ("Subject", "Urgent Action Required"),
     ]);
 
-    match MessageProcessor::evaluate_metadata_gate(&msg, false, &[], &[]) {
+    match MessageProcessor::evaluate_metadata_gate(&msg, &[], &[]) {
         SenderVerificationResult::SpoofReject(reason) => {
             assert!(reason.contains("Typo-squatted"));
         }
@@ -77,31 +77,24 @@ fn test_metadata_gate_spoof_detection() {
     }
 }
 
-/// The subject-based "Unknown Bank" rescue must not fire on a domain's
-/// very first-ever sighting (`domain_previously_seen = false`) even when
-/// the subject is transaction-shaped -- it should fall through to the
-/// original rejection instead.
+/// The subject-based "Unknown Bank" auto-promotion has been removed
+/// entirely (2026-07-30 gate hardening, following the
+/// notification_jiofibre@jio.com false-positive): an unregistered domain
+/// must be rejected by Gate 1 no matter how transaction-shaped its subject
+/// looks or how many times it's been seen before. Only the pending-senders
+/// manual-approval path (`test_metadata_gate_approved_pending_sender_verified`)
+/// can promote it.
 #[test]
-fn test_metadata_gate_unknown_bank_rescue_requires_prior_sighting() {
+fn test_metadata_gate_never_auto_promotes_unregistered_domain_by_subject() {
     let msg = create_metadata_message(vec![
-        ("From", "alerts@some-unregistered-bank.example"),
-        ("Subject", "You spent Rs. 500 today"),
+        ("From", "notification_jiofibre@jio.com"),
+        ("Subject", "Payment received for your Jio Fiber bill"),
     ]);
 
-    match MessageProcessor::evaluate_metadata_gate(&msg, false, &[], &[]) {
+    match MessageProcessor::evaluate_metadata_gate(&msg, &[], &[]) {
         SenderVerificationResult::UnverifiedReject(_) => {}
         other => panic!(
-            "Expected UnverifiedReject on first sighting, got {:?}",
-            other
-        ),
-    }
-
-    match MessageProcessor::evaluate_metadata_gate(&msg, true, &[], &[]) {
-        SenderVerificationResult::VerifiedTransactionCandidate(bank) => {
-            assert_eq!(bank, "Unknown Bank");
-        }
-        other => panic!(
-            "Expected the Unknown Bank rescue once previously seen, got {:?}",
+            "Expected UnverifiedReject for an unregistered domain regardless of subject wording, got {:?}",
             other
         ),
     }
@@ -126,7 +119,7 @@ fn test_metadata_gate_approved_pending_sender_verified() {
     }];
 
     assert_eq!(
-        MessageProcessor::evaluate_metadata_gate(&msg, false, &approved, &[]),
+        MessageProcessor::evaluate_metadata_gate(&msg, &approved, &[]),
         SenderVerificationResult::VerifiedTransactionCandidate("New Fintech".to_string())
     );
 }

@@ -101,35 +101,28 @@ impl MessageProcessor {
         let sender_domain = Self::extract_sender_domain(&metadata_msg);
 
         // Reputation/approved-senders lookups are best-effort: a DB error
-        // here must fall back to the conservative defaults (no prior
-        // history, no approved override) rather than fail the whole
-        // message -- Gate 1's string/auth checks still run either way.
-        let (domain_previously_seen, approved_senders, bank_overrides) = match &sender_domain {
-            Some(domain) => {
-                let domain_owned = domain.clone();
+        // here must fall back to the conservative defaults (no approved
+        // override) rather than fail the whole message -- Gate 1's
+        // string/auth checks still run either way.
+        let (approved_senders, bank_overrides) = match &sender_domain {
+            Some(_domain) => {
                 let conn = pool.get().await?;
                 conn.interact(move |c| {
-                    let seen = crate::db::sender_reputation::has_prior_sighting(c, &domain_owned)
-                        .unwrap_or(false);
                     let approved = crate::db::sender_reputation::select_approved_domains(c)
                         .unwrap_or_default();
                     // Same round trip -- this adds no pool acquisition.
                     let overrides =
                         crate::db::sender_bank_overrides::select_active(c).unwrap_or_default();
-                    (seen, approved, overrides)
+                    (approved, overrides)
                 })
                 .await
-                .unwrap_or((false, Vec::new(), Vec::new()))
+                .unwrap_or((Vec::new(), Vec::new()))
             }
-            None => (false, Vec::new(), Vec::new()),
+            None => (Vec::new(), Vec::new()),
         };
 
-        let gate_result = Self::evaluate_metadata_gate(
-            &metadata_msg,
-            domain_previously_seen,
-            &approved_senders,
-            &bank_overrides,
-        );
+        let gate_result =
+            Self::evaluate_metadata_gate(&metadata_msg, &approved_senders, &bank_overrides);
 
         // Best-effort history/learning-loop bookkeeping -- never blocks or
         // fails the gate decision itself, only records it for next time.
@@ -742,7 +735,6 @@ impl MessageProcessor {
     /// corrections. Relabel-only -- see [`Self::apply_bank_override`].
     pub(crate) fn evaluate_metadata_gate(
         msg: &Message,
-        domain_previously_seen: bool,
         approved_senders: &[crate::db::sender_reputation::PendingSenderRow],
         bank_overrides: &[crate::db::sender_bank_overrides::SenderBankOverride],
     ) -> SenderVerificationResult {
@@ -755,12 +747,9 @@ impl MessageProcessor {
         };
 
         let mut from_header = String::new();
-        let mut subject_header = String::new();
         for header in headers {
             if header.name.eq_ignore_ascii_case("from") {
                 from_header = header.value.clone();
-            } else if header.name.eq_ignore_ascii_case("subject") {
-                subject_header = header.value.clone();
             }
         }
 
@@ -786,33 +775,6 @@ impl MessageProcessor {
             }
         } else {
             get_sender_validator().verify_sender(&email, display_name.as_deref())
-        };
-
-        let verify_result = match verify_result {
-            SenderVerificationResult::UnverifiedReject(_)
-            | SenderVerificationResult::SpoofReject(_)
-                if domain_previously_seen =>
-            {
-                // Requirement 6 fallback: Check subject before outright
-                // rejection. Only reachable once this domain has at least
-                // one prior recorded sighting -- see `domain_previously_seen`
-                // doc comment above.
-                let classification =
-                    crate::ingestion::content_classifier::ContentClassifier::classify(
-                        &subject_header,
-                        "",
-                    );
-                match classification {
-                    crate::ingestion::content_classifier::ContentClass::TransactionAlert
-                    | crate::ingestion::content_classifier::ContentClass::BalanceUpdate => {
-                        SenderVerificationResult::VerifiedTransactionCandidate(
-                            "Unknown Bank".to_string(),
-                        )
-                    }
-                    _ => verify_result, // return original rejection
-                }
-            }
-            _ => verify_result,
         };
 
         // Cross-check against SPF/DKIM/DMARC (Doc 30 Gate 1 hardening): a
