@@ -3,6 +3,7 @@ pub mod display_name;
 pub mod duplicate_check;
 pub mod events;
 pub mod layout;
+pub mod learned_rows;
 pub mod metadata_extractor;
 pub mod observation_builder;
 pub mod parser;

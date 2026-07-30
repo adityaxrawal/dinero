@@ -775,6 +775,10 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
         bank_parser
     );
 
+    // Learned rules run before LLM assist: a row a learned rule fixes is not a
+    // row the model needs to be paid to read.
+    crate::statements::learned_rows::apply_learned_rules_to_rows(pool, &issuer, &mut rows).await;
+
     // Issue #8: pages the bank parser made nothing of go to the local model.
     // `row_extractor` has parsers for five issuers; a statement from any of
     // the two hundred others in the sender registry reaches

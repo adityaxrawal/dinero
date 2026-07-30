@@ -824,7 +824,9 @@ pub struct BankTemplateLayer;
 impl ExtractionLayer for BankTemplateLayer {
     fn extract<'a>(
         &'a self,
-        pool: &'a Pool,
+        // Unused since Layer 2 stopped seeding learned-rule candidates on
+        // match; the trait signature still requires the parameter.
+        _pool: &'a Pool,
         bank_name: &'a str,
         body: &'a str,
     ) -> BoxFuture<'a, Option<ExtractionResult>> {
