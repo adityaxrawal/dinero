@@ -2925,6 +2925,98 @@ pub async fn settings_pdf_passwords_delete(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))
 }
 
+/// Records a "this sender's bank is wrong" report.
+///
+/// Scoped to the sender domain, not to this one transaction: the mistake being
+/// corrected is that Gate 1 resolved the *sender* to the wrong bank, so fixing
+/// it per-transaction would leave every future email from that domain making
+/// the same mistake. The UI states that scope before confirming — it is the
+/// highest-blast-radius write in this pipeline.
+///
+/// Deliberately does **not** touch `instrument_id`. Reassigning a transaction
+/// to a different card is a separate operation with separate consequences
+/// (balances, statement matching); conflating the two would make one tap do
+/// both.
+fn apply_wrong_bank_report(
+    conn: &rusqlite::Connection,
+    transaction_id: &str,
+    domain: &str,
+    bank_name: &str,
+) -> Result<(), crate::error::AppError> {
+    let domain = domain.trim();
+    let bank_name = bank_name.trim();
+    if domain.is_empty() || bank_name.is_empty() {
+        return Err(crate::error::AppError::Validation(
+            "a wrong-bank report needs both a sender domain and a bank name".to_string(),
+        ));
+    }
+
+    let observation_id: Option<String> = conn
+        .query_row(
+            "SELECT id FROM transaction_observations
+             WHERE canonical_transaction_id = ?1 LIMIT 1",
+            rusqlite::params![transaction_id],
+            |r| r.get(0),
+        )
+        .ok();
+
+    // The audit row goes first so the override always has a trigger to point at.
+    let _ = crate::db::feedback_log::record_manual_correction(
+        conn,
+        transaction_id,
+        observation_id.as_deref(),
+        "sender_bank",
+        None,
+        bank_name,
+    );
+
+    let feedback_id: Option<String> = conn
+        .query_row(
+            "SELECT id FROM feedback_log
+             WHERE transaction_id = ?1 AND field_name = 'sender_bank'
+             ORDER BY created_at DESC LIMIT 1",
+            rusqlite::params![transaction_id],
+            |r| r.get(0),
+        )
+        .ok();
+
+    crate::db::sender_bank_overrides::upsert(
+        conn,
+        domain,
+        bank_name,
+        None,
+        feedback_id.as_deref(),
+    )
+    .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn feedback_report_wrong_bank(
+    transaction_id: String,
+    domain: String,
+    bank_name: String,
+    pool: tauri::State<'_, deadpool_sqlite::Pool>,
+) -> Result<(), crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("transaction_id", &transaction_id)?;
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(move |c| apply_wrong_bank_report(c, &transaction_id, &domain, &bank_name))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+}
+
+/// Every bank name the sender registry knows, for the wrong-bank picker. A
+/// closed list rather than a free-text field: a typo here would relabel a whole
+/// domain under a bank name nothing else in the app recognises.
+#[tauri::command]
+pub async fn settings_known_bank_names() -> Result<Vec<String>, crate::error::AppError> {
+    Ok(crate::ingestion::verified_senders::SenderValidator::new().all_display_names())
+}
+
 /// Every learned extraction rule, for the read-only Settings view.
 ///
 /// Read-only by design: there is no status setter and no payload editor,
@@ -3398,6 +3490,8 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         tags_create,
         tags_delete,
         fetch_transaction_tags,
+        feedback_report_wrong_bank,
+        settings_known_bank_names,
         settings_learned_rules_list,
         settings_learned_rules_revert,
         settings_sender_overrides_list,
@@ -3693,6 +3787,7 @@ mod tests {
             "auth_google_disconnect",
             "settings_pdf_passwords_delete",
             "settings_learned_rules_revert",
+            "feedback_report_wrong_bank",
             "settings_sender_overrides_revert",
             "settings_delete_account",
             "settings_profile_update",
@@ -3972,6 +4067,60 @@ mod tests {
             )
             .unwrap();
         assert_eq!(logged, 1, "but the audit trail must still record it");
+    }
+
+    /// The report writes the override and the audit row, and nothing else --
+    /// in particular it must not reassign the transaction's instrument, which
+    /// is a different operation with a different meaning.
+    #[test]
+    fn test_wrong_bank_report_writes_override_and_feedback() {
+        let conn = setup_tx_test_db();
+        apply_wrong_bank_report(&conn, "tx_1", "alerts.example.net", "Kotak Bank").unwrap();
+
+        let overrides = crate::db::sender_bank_overrides::select_active(&conn).unwrap();
+        assert_eq!(overrides.len(), 1);
+        assert_eq!(overrides[0].domain, "alerts.example.net");
+        assert_eq!(overrides[0].bank_name, "Kotak Bank");
+
+        let logged: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM feedback_log
+                 WHERE transaction_id = 'tx_1' AND field_name = 'sender_bank'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(logged, 1);
+
+        let instrument: Option<String> = conn
+            .query_row(
+                "SELECT instrument_id FROM transactions WHERE id = 'tx_1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            instrument.as_deref(),
+            Some("inst_1"),
+            "a wrong-bank report must not reassign the instrument"
+        );
+    }
+
+    #[test]
+    fn test_wrong_bank_report_rejects_an_empty_domain() {
+        let conn = setup_tx_test_db();
+        assert!(apply_wrong_bank_report(&conn, "tx_1", "   ", "Kotak Bank").is_err());
+    }
+
+    #[test]
+    fn test_wrong_bank_report_is_idempotent_per_domain() {
+        let conn = setup_tx_test_db();
+        apply_wrong_bank_report(&conn, "tx_1", "alerts.example.net", "Kotak Bank").unwrap();
+        apply_wrong_bank_report(&conn, "tx_1", "alerts.example.net", "Axis Bank").unwrap();
+
+        let overrides = crate::db::sender_bank_overrides::select_all(&conn).unwrap();
+        assert_eq!(overrides.len(), 1, "one domain, one override");
+        assert_eq!(overrides[0].bank_name, "Axis Bank", "the newer report wins");
     }
 
     /// Doc 30 TASK-API-004 acceptance test.

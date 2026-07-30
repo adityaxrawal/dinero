@@ -636,6 +636,8 @@ export const API = {
           instrument_id: updates.instrumentId,
         },
       }),
+    reportWrongBank: (transactionId: string, domain: string, bankName: string) =>
+      invokeCommand<void>('feedback_report_wrong_bank', { transactionId, domain, bankName }),
     get: (id: string) => invokeCommand<TransactionDetailResponse>('transactions_get', { id }),
     getObservations: (id: string) =>
       invokeCommand<TransactionObservation[]>('fetch_transaction_observations', {
@@ -1037,6 +1039,7 @@ export const API = {
   senderOverrides: {
     list: () => invokeCommand<SenderBankOverride[]>('settings_sender_overrides_list'),
     revert: (id: string) => invokeCommand<void>('settings_sender_overrides_revert', { id }),
+    knownBankNames: () => invokeCommand<string[]>('settings_known_bank_names'),
   },
   pdfPasswords: {
     // G15 fix: management UI for stored PDF passwords (metadata only — the

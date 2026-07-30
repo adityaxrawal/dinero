@@ -154,9 +154,7 @@ function RuleRow({
         onClick={() => setShowPattern((v) => !v)}
         className="mt-2 text-[11px] text-[#064E3B]/50 hover:text-[#064E3B]/80 flex items-center gap-1"
       >
-        <ChevronRight
-          className={cn('w-3 h-3 transition-transform', showPattern && 'rotate-90')}
-        />
+        <ChevronRight className={cn('w-3 h-3 transition-transform', showPattern && 'rotate-90')} />
         Technical detail
       </button>
       {showPattern && (

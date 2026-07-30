@@ -491,7 +491,11 @@ export default function TransactionDetail() {
           )}
         </Card>
 
-        <SourceEvidencePanel transactionId={id!} observations={detail.observations} />
+        <SourceEvidencePanel
+          transactionId={id!}
+          observations={detail.observations}
+          currentBank={instrument?.issuer_name ?? null}
+        />
 
         {tx.emi_group_id && <EmiInstallmentTimeline emiGroupId={tx.emi_group_id} />}
 

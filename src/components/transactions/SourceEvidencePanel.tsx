@@ -7,10 +7,13 @@ import { API } from '@/lib/ipc';
 import SourcePipelineIcon from './SourcePipelineIcon';
 import { evidenceDescription } from './evidenceDescription';
 import { GmailEmailViewer } from '@/components/common/GmailEmailViewer';
+import ReportWrongBankDialog from './ReportWrongBankDialog';
 
 interface SourceEvidencePanelProps {
   transactionId: string;
   observations: TransactionObservation[];
+  /** Issuer this transaction is currently filed under, for the wrong-bank picker. */
+  currentBank?: string | null;
 }
 
 /** `raw_payload_json`'s shape, written by `normalize_observation` (Rust). */
@@ -51,6 +54,7 @@ function OriginalEmailFrame({ payload }: { payload: RawPayload }) {
 export default function SourceEvidencePanel({
   transactionId,
   observations,
+  currentBank = null,
 }: SourceEvidencePanelProps) {
   const [sourceLog, setSourceLog] = useState<string | null>(null);
   const [isLoadingLog, setIsLoadingLog] = useState(false);
@@ -163,9 +167,16 @@ export default function SourceEvidencePanel({
               <MonitorSmartphone className="w-4 h-4" />
               Original Email (as received in Gmail)
             </CardTitle>
-            <CardDescription>
-              The bank's actual email layout and styling, rendered from the sanitized HTML Gmail
-              sent.
+            <CardDescription className="flex items-center justify-between gap-3 flex-wrap">
+              <span>
+                The bank's actual email layout and styling, rendered from the sanitized HTML Gmail
+                sent.
+              </span>
+              <ReportWrongBankDialog
+                transactionId={transactionId}
+                senderEmail={originalPayload.sender ?? null}
+                currentBank={currentBank}
+              />
             </CardDescription>
           </CardHeader>
           <CardContent>

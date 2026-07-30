@@ -633,6 +633,7 @@ export default function TransactionInspector({
                 <SourceEvidencePanel
                   transactionId={transactionId!}
                   observations={detail?.observations ?? []}
+                  currentBank={instrument?.issuer_name ?? null}
                 />
               </div>
             )}
