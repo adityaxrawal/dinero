@@ -48,6 +48,7 @@ import LifecycleSettings from '../components/settings/LifecycleSettings';
 import BudgetsSettings from '../components/settings/BudgetsSettings';
 import LocalLlmSettings from '../components/settings/LocalLlmSettings';
 import MerchantCleanupSettings from '../components/settings/MerchantCleanupSettings';
+import LearnedRulesSettings from '../components/settings/LearnedRulesSettings';
 
 type SettingsSection = 'budgets' | 'accounts' | 'privacy' | 'license' | 'advanced' | 'appearance';
 
@@ -816,6 +817,10 @@ export default function Settings() {
               <div className="h-px w-full bg-[#064E3B]/10" />
 
               <MerchantCleanupSettings />
+
+              <div className="h-px w-full bg-[#064E3B]/10" />
+
+              <LearnedRulesSettings />
 
               <div className="h-px w-full bg-[#064E3B]/10" />
 

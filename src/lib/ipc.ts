@@ -1026,6 +1026,18 @@ export const API = {
     getActivityList: () =>
       invokeCommand<{ entries: any[] }>('settings_get_network_activity').then((r) => r.entries),
   },
+  // The read-only successor to the old pattern-rule approval UI. There is no
+  // create, no edit and no status setter: a rule is only ever written after it
+  // has mechanically proved it reproduces a real correction, so the only
+  // judgment left for a person is "this one is misbehaving, retire it".
+  learnedRules: {
+    list: () => invokeCommand<LearnedRule[]>('settings_learned_rules_list'),
+    revert: (ruleId: string) => invokeCommand<void>('settings_learned_rules_revert', { ruleId }),
+  },
+  senderOverrides: {
+    list: () => invokeCommand<SenderBankOverride[]>('settings_sender_overrides_list'),
+    revert: (id: string) => invokeCommand<void>('settings_sender_overrides_revert', { id }),
+  },
   pdfPasswords: {
     // G15 fix: management UI for stored PDF passwords (metadata only — the
     // password itself is never sent to the frontend).
@@ -1169,6 +1181,35 @@ interface LicenseDeactivateResponse {
 interface LicenseRefreshResponse {
   status: string;
   state: string;
+}
+
+export type LearnedRuleStatus = 'pending' | 'active' | 'trusted' | 'inactive' | 'flagged';
+
+/** Mirrors src-tauri/src/db/field_rules.rs's FieldRuleVariant verbatim. */
+export interface LearnedRule {
+  id: string;
+  bank_name: string;
+  field_name: string;
+  source_type: 'email' | 'statement_pdf';
+  template_hash: string;
+  rule_payload_json: { regex?: string; capture_group?: number; override_value?: string };
+  status: LearnedRuleStatus;
+  success_count: number;
+  failure_count: number;
+  confidence: number;
+  authored_by: 'deterministic' | 'llm';
+  learned_from: 'user_edit' | 'drift_llm' | 'batch_cleanup';
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface SenderBankOverride {
+  id: string;
+  domain: string;
+  bank_name: string;
+  display_name: string | null;
+  status: 'active' | 'inactive';
+  created_at: string | null;
 }
 
 export interface PdfPasswordSummary {

@@ -2925,6 +2925,78 @@ pub async fn settings_pdf_passwords_delete(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))
 }
 
+/// Every learned extraction rule, for the read-only Settings view.
+///
+/// Read-only by design: there is no status setter and no payload editor,
+/// because a human reading a regex to decide whether it is correct is exactly
+/// the judgment this pipeline replaced with a mechanical proof. What a person
+/// can usefully do is notice a rule misbehaving and retire it, which is
+/// `settings_learned_rules_revert`.
+#[tauri::command]
+pub async fn settings_learned_rules_list(
+    pool: tauri::State<'_, deadpool_sqlite::Pool>,
+) -> Result<Vec<crate::db::field_rules::FieldRuleVariant>, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(|c| crate::db::field_rules::select_all(c))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))
+}
+
+/// Retires one rule. Soft — the row and its change-log history survive, so the
+/// revert itself stays auditable.
+#[tauri::command]
+pub async fn settings_learned_rules_revert(
+    rule_id: String,
+    pool: tauri::State<'_, deadpool_sqlite::Pool>,
+) -> Result<(), crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("rule_id", &rule_id)?;
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(move |c| crate::db::field_rules::revert(c, &rule_id, "reverted from Settings"))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))
+}
+
+/// Every sender bank relabel, active and retired.
+#[tauri::command]
+pub async fn settings_sender_overrides_list(
+    pool: tauri::State<'_, deadpool_sqlite::Pool>,
+) -> Result<Vec<crate::db::sender_bank_overrides::SenderBankOverride>, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(|c| crate::db::sender_bank_overrides::select_all(c))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn settings_sender_overrides_revert(
+    id: String,
+    pool: tauri::State<'_, deadpool_sqlite::Pool>,
+) -> Result<(), crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("id", &id)?;
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(move |c| crate::db::sender_bank_overrides::deactivate(c, &id))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))
+}
+
 /// G13 fix: the full reusable-tag catalog, for autocomplete when tagging a
 /// transaction — previously tags were pure free-text with nothing behind
 /// them to autocomplete against. Returns full rows (not just names) so the
@@ -3326,6 +3398,10 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         tags_create,
         tags_delete,
         fetch_transaction_tags,
+        settings_learned_rules_list,
+        settings_learned_rules_revert,
+        settings_sender_overrides_list,
+        settings_sender_overrides_revert,
         settings_pdf_passwords_list,
         settings_pdf_passwords_delete,
         correct_match,
@@ -3616,6 +3692,8 @@ mod tests {
             "auth_google_start",
             "auth_google_disconnect",
             "settings_pdf_passwords_delete",
+            "settings_learned_rules_revert",
+            "settings_sender_overrides_revert",
             "settings_delete_account",
             "settings_profile_update",
             "update_spending_limits",

@@ -35,6 +35,14 @@ export const queryKeys = {
     entries: (statementId: string) => ['statements', 'entries', statementId] as const,
     unprocessed: () => ['statements', 'unprocessed'] as const,
   },
+  learnedRules: {
+    all: () => ['learnedRules'] as const,
+    list: () => ['learnedRules', 'list'] as const,
+  },
+  senderOverrides: {
+    all: () => ['senderOverrides'] as const,
+    list: () => ['senderOverrides', 'list'] as const,
+  },
   pdfPasswords: {
     all: () => ['pdfPasswords'] as const,
     list: () => ['pdfPasswords', 'list'] as const,
