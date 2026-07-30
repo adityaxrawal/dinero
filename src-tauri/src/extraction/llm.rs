@@ -59,6 +59,7 @@ struct LlmJsonOutput {
     merchant: Option<String>,
     event_time: Option<i64>,
     reference_id: Option<String>,
+    confidence: Option<f64>,
 }
 
 impl LlmEngine {
@@ -86,7 +87,11 @@ impl LlmEngine {
              - direction: string (\"credit\" or \"debit\")\n\
              - merchant: string (e.g., \"Amazon\")\n\
              - event_time: integer (Unix timestamp, e.g., 1704067200)\n\
-             - reference_id: string (e.g., \"1234567890\")\n\n\
+             - reference_id: string (e.g., \"1234567890\")\n\
+             - confidence: number from 0.0 to 1.0, how sure you are that every field above is \
+             correct and genuinely present in the email (not inferred or guessed). Use a LOW \
+             value (below 0.3) if the email is unusually formatted, if any field required a \
+             judgment call, or if you are not fully certain.\n\n\
              Every field's value must come from the email body verbatim (or a straightforward \
              conversion of it, e.g. \"Rs. 1,500.50\" -> 1500.50) -- never invent a value that \
              doesn't appear in the text.\n\n\
@@ -95,17 +100,20 @@ impl LlmEngine {
              account ending 4521 on 05-Jan-24 towards purchase at Amazon. Available balance: \
              Rs 45,000.00. Ref No 987654321.\"\n\
              JSON Output: {{\"amount\": 1299.00, \"currency\": \"INR\", \"direction\": \"debit\", \
-             \"merchant\": \"Amazon\", \"event_time\": 1704412200, \"reference_id\": \"987654321\"}}\n\n\
+             \"merchant\": \"Amazon\", \"event_time\": 1704412200, \"reference_id\": \"987654321\", \
+             \"confidence\": 0.95}}\n\n\
              Example 2 (credit, no reference number stated):\n\
              Email Body: \"Your ICICI Bank account XX7890 has been credited with INR 5,000.00 \
              on 12-Mar-24 from NEFT transfer by RAVI KUMAR.\"\n\
              JSON Output: {{\"amount\": 5000.00, \"currency\": \"INR\", \"direction\": \"credit\", \
-             \"merchant\": \"RAVI KUMAR\", \"event_time\": 1710201000, \"reference_id\": null}}\n\n\
+             \"merchant\": \"RAVI KUMAR\", \"event_time\": 1710201000, \"reference_id\": null, \
+             \"confidence\": 0.9}}\n\n\
              Example 3 (UPI app confirmation, nested/cluttered layout):\n\
              Email Body: \"Payment Successful You paid \u{20B9}300.00 Paid to Swiggy UPI \
              Transaction ID: 302514789632 Order confirmed 22 Feb 2024, 8:45 PM\"\n\
              JSON Output: {{\"amount\": 300.00, \"currency\": \"INR\", \"direction\": \"debit\", \
-             \"merchant\": \"Swiggy\", \"event_time\": 1708613100, \"reference_id\": \"302514789632\"}}\n\n\
+             \"merchant\": \"Swiggy\", \"event_time\": 1708613100, \"reference_id\": \"302514789632\", \
+             \"confidence\": 0.9}}\n\n\
              Now extract from this email:\n\
              Email Body:\n\
              \"\"\"\n\
@@ -127,7 +135,8 @@ impl LlmEngine {
              Look at the email body again carefully and try again. Return ONLY valid JSON, no \
              markdown fences, no commentary.\n\
              Fields: amount (number), currency (string), direction (\"credit\" or \"debit\"), \
-             merchant (string), event_time (integer Unix timestamp), reference_id (string).\n\n\
+             merchant (string), event_time (integer Unix timestamp), reference_id (string), \
+             confidence (number 0.0-1.0, how sure you are).\n\n\
              Bank: {bank_name}\n\
              Email Body:\n\
              \"\"\"\n\
@@ -318,10 +327,12 @@ impl LlmEngine {
         // 3. Map to ExtractionResult
         let mut result = ExtractionResult {
             extraction_method: "llm_layer6".to_string(),
-            // Doc 12 §6.3: LLM-extracted observations carry a fixed 0.7
-            // confidence, which downstream canonical creation (TASK-TXN-010)
-            // uses to force a `pending_review` state.
-            confidence_score: Some(0.7),
+            // Self-reported by the model (Doc 12 §6.3 revision, 2026-07-30):
+            // a missing field is treated as zero confidence, not the old
+            // fixed 0.7 -- absence of a self-report is itself a signal the
+            // model didn't engage with the confidence instruction, which
+            // must not read as "fully sure."
+            confidence_score: Some(parsed.confidence.unwrap_or(0.0).clamp(0.0, 1.0)),
             amount_minor: parsed.amount.map(|v| (v * 100.0).round() as i64),
             currency: parsed.currency,
             direction: parsed.direction,
@@ -363,6 +374,35 @@ impl LlmEngine {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// Self-reported confidence (2026-07-30, replacing the fixed 0.7): the
+    /// model's own stated uncertainty must be carried through verbatim, not
+    /// discarded in favor of a constant.
+    #[test]
+    fn test_llm_output_parses_self_reported_confidence() {
+        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
+        let raw = r#"{"amount": 500.00, "currency": "INR", "direction": "debit",
+                      "merchant": "Amazon", "event_time": 1704412200, "reference_id": null,
+                      "confidence": 0.35}"#;
+        let result = engine
+            .parse_json_to_result(raw)
+            .expect("valid JSON with amount must parse");
+        assert_eq!(result.confidence_score, Some(0.35));
+    }
+
+    /// A model that omits the field entirely must not be treated as
+    /// confident by default -- absence of a self-report is itself a
+    /// low-confidence signal, not evidence of certainty.
+    #[test]
+    fn test_llm_output_missing_confidence_defaults_low() {
+        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
+        let raw = r#"{"amount": 500.00, "currency": "INR", "direction": "debit",
+                      "merchant": "Amazon", "event_time": 1704412200, "reference_id": null}"#;
+        let result = engine
+            .parse_json_to_result(raw)
+            .expect("valid JSON with amount must parse");
+        assert_eq!(result.confidence_score, Some(0.0));
+    }
 
     /// Doc 30 TASK-TXN-006 acceptance test.
     #[test]
