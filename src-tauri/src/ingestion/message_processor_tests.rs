@@ -37,7 +37,7 @@ fn test_metadata_gate_passes() {
     ]);
 
     assert_eq!(
-        MessageProcessor::evaluate_metadata_gate(&msg, false, &[]),
+        MessageProcessor::evaluate_metadata_gate(&msg, false, &[], &[]),
         SenderVerificationResult::VerifiedTransactionCandidate("HDFC Bank".to_string())
     );
 }
@@ -46,7 +46,7 @@ fn test_metadata_gate_passes() {
 fn test_metadata_gate_fails_no_sender() {
     let msg = create_metadata_message(vec![("Subject", "Your Amazon.com order")]);
 
-    match MessageProcessor::evaluate_metadata_gate(&msg, false, &[]) {
+    match MessageProcessor::evaluate_metadata_gate(&msg, false, &[], &[]) {
         SenderVerificationResult::UnverifiedReject(_) => {}
         _ => panic!("Expected UnverifiedReject"),
     }
@@ -56,7 +56,7 @@ fn test_metadata_gate_fails_no_sender() {
 fn test_metadata_gate_fails_empty_sender() {
     let msg = create_metadata_message(vec![("From", "   "), ("Subject", "Receipt")]);
 
-    match MessageProcessor::evaluate_metadata_gate(&msg, false, &[]) {
+    match MessageProcessor::evaluate_metadata_gate(&msg, false, &[], &[]) {
         SenderVerificationResult::UnverifiedReject(_) => {}
         _ => panic!("Expected UnverifiedReject"),
     }
@@ -69,7 +69,7 @@ fn test_metadata_gate_spoof_detection() {
         ("Subject", "Urgent Action Required"),
     ]);
 
-    match MessageProcessor::evaluate_metadata_gate(&msg, false, &[]) {
+    match MessageProcessor::evaluate_metadata_gate(&msg, false, &[], &[]) {
         SenderVerificationResult::SpoofReject(reason) => {
             assert!(reason.contains("Typo-squatted"));
         }
@@ -88,7 +88,7 @@ fn test_metadata_gate_unknown_bank_rescue_requires_prior_sighting() {
         ("Subject", "You spent Rs. 500 today"),
     ]);
 
-    match MessageProcessor::evaluate_metadata_gate(&msg, false, &[]) {
+    match MessageProcessor::evaluate_metadata_gate(&msg, false, &[], &[]) {
         SenderVerificationResult::UnverifiedReject(_) => {}
         other => panic!(
             "Expected UnverifiedReject on first sighting, got {:?}",
@@ -96,7 +96,7 @@ fn test_metadata_gate_unknown_bank_rescue_requires_prior_sighting() {
         ),
     }
 
-    match MessageProcessor::evaluate_metadata_gate(&msg, true, &[]) {
+    match MessageProcessor::evaluate_metadata_gate(&msg, true, &[], &[]) {
         SenderVerificationResult::VerifiedTransactionCandidate(bank) => {
             assert_eq!(bank, "Unknown Bank");
         }
@@ -126,7 +126,7 @@ fn test_metadata_gate_approved_pending_sender_verified() {
     }];
 
     assert_eq!(
-        MessageProcessor::evaluate_metadata_gate(&msg, false, &approved),
+        MessageProcessor::evaluate_metadata_gate(&msg, false, &approved, &[]),
         SenderVerificationResult::VerifiedTransactionCandidate("New Fintech".to_string())
     );
 }

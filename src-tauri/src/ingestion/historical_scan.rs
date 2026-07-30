@@ -320,7 +320,7 @@ pub async fn audit_scan_coverage(
 
         // Gate 1 reads reputation/approved state exactly this way.
         let domain = crate::ingestion::message_processor::MessageProcessor::extract_sender_domain(&msg);
-        let (seen, approved) = match (&domain, pool.get().await) {
+        let (seen, approved, overrides) = match (&domain, pool.get().await) {
             (Some(d), Ok(conn)) => {
                 let d = d.clone();
                 conn.interact(move |c| {
@@ -328,16 +328,17 @@ pub async fn audit_scan_coverage(
                         crate::db::sender_reputation::has_prior_sighting(c, &d).unwrap_or(false),
                         crate::db::sender_reputation::select_approved_domains(c)
                             .unwrap_or_default(),
+                        crate::db::sender_bank_overrides::select_active(c).unwrap_or_default(),
                     )
                 })
                 .await
-                .unwrap_or((false, Vec::new()))
+                .unwrap_or((false, Vec::new(), Vec::new()))
             }
-            _ => (false, Vec::new()),
+            _ => (false, Vec::new(), Vec::new()),
         };
 
         let verdict = crate::ingestion::message_processor::MessageProcessor::evaluate_metadata_gate(
-            &msg, seen, &approved,
+            &msg, seen, &approved, &overrides,
         );
         if matches!(
             verdict,

@@ -104,7 +104,7 @@ impl MessageProcessor {
         // here must fall back to the conservative defaults (no prior
         // history, no approved override) rather than fail the whole
         // message -- Gate 1's string/auth checks still run either way.
-        let (domain_previously_seen, approved_senders) = match &sender_domain {
+        let (domain_previously_seen, approved_senders, bank_overrides) = match &sender_domain {
             Some(domain) => {
                 let domain_owned = domain.clone();
                 let conn = pool.get().await?;
@@ -113,16 +113,23 @@ impl MessageProcessor {
                         .unwrap_or(false);
                     let approved = crate::db::sender_reputation::select_approved_domains(c)
                         .unwrap_or_default();
-                    (seen, approved)
+                    // Same round trip -- this adds no pool acquisition.
+                    let overrides =
+                        crate::db::sender_bank_overrides::select_active(c).unwrap_or_default();
+                    (seen, approved, overrides)
                 })
                 .await
-                .unwrap_or((false, Vec::new()))
+                .unwrap_or((false, Vec::new(), Vec::new()))
             }
-            None => (false, Vec::new()),
+            None => (false, Vec::new(), Vec::new()),
         };
 
-        let gate_result =
-            Self::evaluate_metadata_gate(&metadata_msg, domain_previously_seen, &approved_senders);
+        let gate_result = Self::evaluate_metadata_gate(
+            &metadata_msg,
+            domain_previously_seen,
+            &approved_senders,
+            &bank_overrides,
+        );
 
         // Best-effort history/learning-loop bookkeeping -- never blocks or
         // fails the gate decision itself, only records it for next time.
@@ -731,10 +738,13 @@ impl MessageProcessor {
     /// the runtime learning-loop layer alongside the compiled-in registry
     /// JSON) -- checked before the registry so a manually-approved sender
     /// isn't still rejected by the same heuristics that flagged it originally.
+    /// `bank_overrides`: user-reported "this sender's bank is wrong"
+    /// corrections. Relabel-only -- see [`Self::apply_bank_override`].
     pub(crate) fn evaluate_metadata_gate(
         msg: &Message,
         domain_previously_seen: bool,
         approved_senders: &[crate::db::sender_reputation::PendingSenderRow],
+        bank_overrides: &[crate::db::sender_bank_overrides::SenderBankOverride],
     ) -> SenderVerificationResult {
         let headers = match &msg.payload {
             Some(payload) => match &payload.headers {
@@ -811,7 +821,47 @@ impl MessageProcessor {
         // downgrades Verified* -> SpoofReject; see
         // `auth_results::apply_auth_results_check` for why it can't be used
         // to promote a rejection instead.
-        crate::ingestion::auth_results::apply_auth_results_check(verify_result, headers)
+        let verify_result =
+            crate::ingestion::auth_results::apply_auth_results_check(verify_result, headers);
+
+        // Applied last, on purpose: every spoof, typo-squat, homoglyph and
+        // SPF/DKIM/DMARC check has already run and reached a verdict. This only
+        // renames the bank on a verdict that was already an acceptance.
+        Self::apply_bank_override(verify_result, &domain, bank_overrides)
+    }
+
+    /// Applies a user-reported bank relabel to an already-decided verification
+    /// result.
+    ///
+    /// **Relabel only.** A rejected sender stays rejected and `VerifiedNoise`
+    /// stays noise -- the override changes the *name* on a decision, never the
+    /// decision. This matters because the user's report answers "which bank is
+    /// this?", and treating it as an answer to "is this sender trustworthy?"
+    /// would turn a one-tap naming fix into a domain whitelist.
+    /// `pending_senders` remains the only path that can promote an unverified
+    /// domain, and it asks that question explicitly.
+    ///
+    /// Nothing is lost by this restriction: a sender that never passes the gate
+    /// never produces a transaction, so there is no row for a user to report a
+    /// wrong bank on in the first place.
+    pub(crate) fn apply_bank_override(
+        result: SenderVerificationResult,
+        domain: &str,
+        overrides: &[crate::db::sender_bank_overrides::SenderBankOverride],
+    ) -> SenderVerificationResult {
+        let domain = domain.trim().to_lowercase();
+        let Some(o) = overrides.iter().find(|o| o.domain == domain) else {
+            return result;
+        };
+        match result {
+            SenderVerificationResult::VerifiedTransactionCandidate(_) => {
+                SenderVerificationResult::VerifiedTransactionCandidate(o.bank_name.clone())
+            }
+            SenderVerificationResult::VerifiedStatementCandidate(_) => {
+                SenderVerificationResult::VerifiedStatementCandidate(o.bank_name.clone())
+            }
+            other => other,
+        }
     }
 
     /// Pulls just the sender's domain out of a *metadata*-format message's

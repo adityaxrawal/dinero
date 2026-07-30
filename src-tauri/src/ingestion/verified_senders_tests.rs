@@ -222,3 +222,106 @@ fn test_invalid_email_format() {
         _ => panic!("Expected UnverifiedReject"),
     }
 }
+
+// ── sender_bank_overrides: Gate 1's relabel layer ────────────────────────────
+//
+// The security property under test is that an override can only ever change the
+// *name* on an acceptance, never turn a rejection into one. A "wrong bank"
+// report answers "which bank is this?"; treating it as an answer to "is this
+// sender safe?" would turn a one-tap naming fix into a domain whitelist.
+
+use crate::db::sender_bank_overrides::SenderBankOverride;
+use crate::ingestion::message_processor::MessageProcessor;
+
+fn override_for(domain: &str, bank: &str) -> SenderBankOverride {
+    SenderBankOverride {
+        id: "o1".to_string(),
+        domain: domain.to_string(),
+        bank_name: bank.to_string(),
+        display_name: None,
+        status: "active".to_string(),
+        created_at: None,
+    }
+}
+
+#[test]
+fn an_override_relabels_a_verified_transaction_sender() {
+    let result = MessageProcessor::apply_bank_override(
+        SenderVerificationResult::VerifiedTransactionCandidate("HDFC Bank".to_string()),
+        "alerts.example.net",
+        &[override_for("alerts.example.net", "Kotak Bank")],
+    );
+    assert_eq!(
+        result,
+        SenderVerificationResult::VerifiedTransactionCandidate("Kotak Bank".to_string())
+    );
+}
+
+#[test]
+fn an_override_relabels_a_verified_statement_sender_too() {
+    let result = MessageProcessor::apply_bank_override(
+        SenderVerificationResult::VerifiedStatementCandidate("HDFC Bank".to_string()),
+        "stmt.example.net",
+        &[override_for("stmt.example.net", "Axis Bank")],
+    );
+    assert_eq!(
+        result,
+        SenderVerificationResult::VerifiedStatementCandidate("Axis Bank".to_string())
+    );
+}
+
+/// The security boundary.
+#[test]
+fn an_override_never_turns_a_rejection_into_an_acceptance() {
+    let spoof = MessageProcessor::apply_bank_override(
+        SenderVerificationResult::SpoofReject("lookalike".to_string()),
+        "hdfcbank.net.evil.com",
+        &[override_for("hdfcbank.net.evil.com", "HDFC Bank")],
+    );
+    assert!(matches!(spoof, SenderVerificationResult::SpoofReject(_)));
+
+    let unverified = MessageProcessor::apply_bank_override(
+        SenderVerificationResult::UnverifiedReject("unknown".to_string()),
+        "random.com",
+        &[override_for("random.com", "HDFC Bank")],
+    );
+    assert!(matches!(
+        unverified,
+        SenderVerificationResult::UnverifiedReject(_)
+    ));
+}
+
+#[test]
+fn an_override_never_promotes_noise_to_a_transaction_candidate() {
+    let result = MessageProcessor::apply_bank_override(
+        SenderVerificationResult::VerifiedNoise,
+        "news.example.net",
+        &[override_for("news.example.net", "HDFC Bank")],
+    );
+    assert_eq!(result, SenderVerificationResult::VerifiedNoise);
+}
+
+#[test]
+fn a_domain_with_no_override_is_untouched() {
+    let original = SenderVerificationResult::VerifiedTransactionCandidate("HDFC Bank".to_string());
+    let result = MessageProcessor::apply_bank_override(
+        original.clone(),
+        "alerts.hdfcbank.net",
+        &[override_for("other.example.net", "Kotak Bank")],
+    );
+    assert_eq!(result, original);
+}
+
+/// The gate lowercases the domain before matching; the table stores lowercase.
+#[test]
+fn override_matching_is_case_insensitive() {
+    let result = MessageProcessor::apply_bank_override(
+        SenderVerificationResult::VerifiedTransactionCandidate("HDFC Bank".to_string()),
+        "Alerts.Example.NET",
+        &[override_for("alerts.example.net", "Kotak Bank")],
+    );
+    assert_eq!(
+        result,
+        SenderVerificationResult::VerifiedTransactionCandidate("Kotak Bank".to_string())
+    );
+}
