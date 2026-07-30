@@ -519,10 +519,26 @@ export interface MerchantCleanupSample {
   /// Whether the source email is still retained — without it the LLM has
   /// nothing to read and the transaction is skipped.
   has_evidence: boolean;
+  /// Enough of the transaction to recognise it; a mangled merchant string on
+  /// its own does not identify anything.
+  amount: number | null;
+  currency: string | null;
+  direction: string | null;
+  event_time: string | null;
+}
+
+/// Per-bank split of the *whole* queue. `samples` is capped at 20, so it can
+/// never answer "which banks is this actually about".
+export interface MerchantCleanupBankBucket {
+  bank_name: string;
+  count: number;
+  no_evidence: number;
 }
 
 export interface MerchantCleanupPreview {
   candidate_count: number;
+  no_evidence_count: number;
+  by_bank: MerchantCleanupBankBucket[];
   samples: MerchantCleanupSample[];
   llm_eligible: boolean;
   total_ram_gb: number;
@@ -535,8 +551,36 @@ export interface MerchantCleanupProgress {
   processed: number;
   total: number;
   applied: number;
+  skipped: number;
   current_merchant: string | null;
+  bank_name: string | null;
+  /// The model's answer for `current_merchant`, when it produced a usable one.
+  resolved_merchant: string | null;
+  resolved_category: string | null;
   status: 'running' | 'completed' | 'cancelled' | 'failed';
+}
+
+/// One merchant a past run rewrote.
+export interface MerchantCleanupChange {
+  correction_id: string;
+  transaction_id: string;
+  bank_name: string;
+  previous_merchant: string | null;
+  new_merchant: string | null;
+  category: string | null;
+  confidence: number;
+  reverted: boolean;
+}
+
+/// A past cleanup run. Read out of the undo log, so anything listed here is
+/// still something that can be put back.
+export interface MerchantCleanupRun {
+  run_id: string;
+  started_at: string | null;
+  applied: number;
+  reverted: number;
+  banks: string[];
+  changes: MerchantCleanupChange[];
 }
 
 export interface SpendingLimits {
@@ -1007,6 +1051,11 @@ export const API = {
     start: () => invokeCommand<string>('merchant_cleanup_start'),
     cancel: () => invokeCommand<void>('merchant_cleanup_cancel'),
     revert: (runId: string) => invokeCommand<number>('merchant_cleanup_revert', { runId }),
+    // The run history lives in the undo log rather than frontend state, so a
+    // window reload no longer loses the ability to undo a run.
+    runs: (limit = 20) => invokeCommand<MerchantCleanupRun[]>('merchant_cleanup_runs', { limit }),
+    revertCorrection: (correctionId: string) =>
+      invokeCommand<void>('merchant_cleanup_revert_correction', { correctionId }),
   },
   debug: {
     fetchParseErrors: () => invokeCommand<any[]>('debug_fetch_parse_errors'),

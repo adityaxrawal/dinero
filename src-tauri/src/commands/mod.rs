@@ -3561,6 +3561,8 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         merchant_cleanup::merchant_cleanup_start,
         merchant_cleanup::merchant_cleanup_cancel,
         merchant_cleanup::merchant_cleanup_revert,
+        merchant_cleanup::merchant_cleanup_runs,
+        merchant_cleanup::merchant_cleanup_revert_correction,
         data::instruments_list,
         data::instruments_get,
         data::instruments_create,

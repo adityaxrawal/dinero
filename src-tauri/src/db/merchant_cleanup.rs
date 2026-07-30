@@ -441,6 +441,109 @@ pub fn run_summary(conn: &Connection, run_id: &str) -> Result<RunSummary> {
     })
 }
 
+/// One merchant the run rewrote, as the Settings panel shows it: what the
+/// parser had, what the model replaced it with, and the category that came
+/// along. `reverted` rows are kept in the list rather than filtered out —
+/// "this was undone" is exactly what someone scanning their own history needs
+/// to see.
+#[derive(Debug, serde::Serialize)]
+pub struct RunChange {
+    pub correction_id: String,
+    pub transaction_id: String,
+    pub bank_name: String,
+    pub previous_merchant: Option<String>,
+    pub new_merchant: Option<String>,
+    pub category: Option<String>,
+    pub confidence: f64,
+    pub reverted: bool,
+}
+
+/// A past run, newest first, with the corrections it wrote.
+#[derive(Debug, serde::Serialize)]
+pub struct RunDetail {
+    pub run_id: String,
+    pub started_at: Option<String>,
+    pub applied: i64,
+    pub reverted: i64,
+    /// Distinct banks the run touched, for the collapsed one-line summary.
+    pub banks: Vec<String>,
+    pub changes: Vec<RunChange>,
+}
+
+/// Every cleanup run that still has correction rows, newest first.
+///
+/// Runs are not stored anywhere of their own — `merchant_llm_corrections` *is*
+/// the record, so a run exists exactly as long as its corrections do. That is
+/// also why `revert_run` can never be unreachable: the rows it needs are the
+/// same rows this reads.
+pub fn list_runs(conn: &Connection, limit: usize) -> Result<Vec<RunDetail>> {
+    let run_ids: Vec<(String, Option<String>)> = {
+        let mut stmt = conn.prepare(
+            "SELECT run_id, MIN(created_at) AS started_at
+             FROM merchant_llm_corrections
+             GROUP BY run_id
+             ORDER BY started_at DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    let mut stmt = conn.prepare(
+        "SELECT c.id,
+                c.transaction_id,
+                COALESCE(i.issuer_name, 'Unknown Bank') AS bank_name,
+                c.prev_merchant_display_name,
+                c.new_merchant_display_name,
+                cat.name,
+                c.llm_confidence,
+                c.status
+         FROM merchant_llm_corrections c
+         LEFT JOIN transactions t ON t.id = c.transaction_id
+         LEFT JOIN instruments  i ON i.id = t.instrument_id
+         LEFT JOIN categories cat ON cat.id = c.new_category_id
+         WHERE c.run_id = ?1
+         ORDER BY c.created_at",
+    )?;
+
+    let mut out = Vec::with_capacity(run_ids.len());
+    for (run_id, started_at) in run_ids {
+        let changes: Vec<RunChange> = stmt
+            .query_map(params![run_id], |r| {
+                let status: String = r.get(7)?;
+                Ok(RunChange {
+                    correction_id: r.get(0)?,
+                    transaction_id: r.get(1)?,
+                    bank_name: r.get(2)?,
+                    previous_merchant: r.get(3)?,
+                    new_merchant: r.get(4)?,
+                    category: r.get(5)?,
+                    confidence: r.get::<_, Option<f64>>(6)?.unwrap_or(0.0),
+                    reverted: status == "reverted",
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let applied = changes.iter().filter(|c| !c.reverted).count() as i64;
+        let reverted = changes.len() as i64 - applied;
+
+        let mut banks: Vec<String> = changes.iter().map(|c| c.bank_name.clone()).collect();
+        banks.sort();
+        banks.dedup();
+
+        out.push(RunDetail {
+            run_id,
+            started_at,
+            applied,
+            reverted,
+            banks,
+            changes,
+        });
+    }
+    Ok(out)
+}
+
 /// Restores one correction's previous values and retires the rule it taught.
 ///
 /// The learned rule is set `inactive` rather than deleted so the history of

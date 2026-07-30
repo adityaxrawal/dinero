@@ -322,6 +322,61 @@ fn run_summary_counts_applied_and_reverted() {
     assert_eq!(s.reverted, 2);
 }
 
+/// The undo log *is* the run record, so the panel's history must come out of it
+/// newest-first with the before/after pair intact — that pair is the only thing
+/// that tells a user whether a past run was any good.
+#[test]
+fn list_runs_reports_each_run_newest_first_with_its_changes() {
+    let conn = setup();
+    seed_txn(&conn, "tx_a", "USING YOUR", "nlp", Some(SBI_BODY), None);
+    seed_txn(&conn, "tx_b", "YOUR POT", "nlp", Some(SBI_BODY), None);
+
+    let candidates = select_candidates(&conn, 10).unwrap();
+    apply_correction(&conn, "run_old", &candidates[0], &resolution()).unwrap();
+    // MIN(created_at) orders the runs, and CURRENT_TIMESTAMP has one-second
+    // resolution — without this the two runs share a timestamp and the
+    // ordering assertion would be testing nothing.
+    conn.execute(
+        "UPDATE merchant_llm_corrections SET created_at = '2020-01-01 00:00:00'
+         WHERE run_id = 'run_old'",
+        [],
+    )
+    .unwrap();
+    apply_correction(&conn, "run_new", &candidates[1], &resolution()).unwrap();
+    // Worst-first ordering decides which of the two seeded rows this is, so
+    // read it off the candidate rather than hardcoding a name.
+    let newest_previous = candidates[1].current_merchant.clone();
+
+    let runs = list_runs(&conn, 10).unwrap();
+    assert_eq!(
+        runs.iter().map(|r| r.run_id.as_str()).collect::<Vec<_>>(),
+        vec!["run_new", "run_old"],
+        "newest run must come first"
+    );
+
+    let newest = &runs[0];
+    assert_eq!(newest.applied, 1);
+    assert_eq!(newest.reverted, 0);
+    assert_eq!(newest.changes.len(), 1);
+    assert_eq!(
+        newest.changes[0].previous_merchant.as_deref(),
+        Some(newest_previous.as_str())
+    );
+    assert_eq!(newest.changes[0].new_merchant.as_deref(), Some("Swiggy"));
+    assert_eq!(newest.changes[0].category.as_deref(), Some("Food & Dining"));
+    assert!(!newest.changes[0].reverted);
+    assert_eq!(newest.banks, vec!["SBI Card".to_string()]);
+
+    // A reverted correction stays listed — "this was undone" is information,
+    // not an absence.
+    revert_run(&conn, "run_new").unwrap();
+    let runs = list_runs(&conn, 10).unwrap();
+    let newest = runs.iter().find(|r| r.run_id == "run_new").unwrap();
+    assert_eq!(newest.applied, 0);
+    assert_eq!(newest.reverted, 1);
+    assert!(newest.changes[0].reverted);
+}
+
 /// Worst-first ordering means an interrupted run has still fixed the most
 /// damaged rows.
 #[test]
