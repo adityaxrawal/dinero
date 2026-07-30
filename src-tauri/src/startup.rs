@@ -13,11 +13,14 @@ use tauri::{AppHandle, Manager};
 /// is not offered at all below this line (Document 16 §12.3 tier 1 floor).
 const LOW_RAM_WARNING_THRESHOLD_GB: f64 = 8.0;
 
-/// RAM at or above this threshold auto-enables the local LLM fallback.
-/// Below it (but at/above the warning floor), the 8-16GB tier's smaller
-/// models remain available only via an explicit manual settings override
-/// (TASK-TXN-006 wires the override read; this flag is the RAM-only default).
-const LLM_AUTO_ELIGIBLE_THRESHOLD_GB: f64 = 16.0;
+/// RAM below this threshold rules out even the catalog's smallest tier
+/// (`gemma4_e4b`, `min_ram_gb: 8.0`) -- shares the same floor as the
+/// low-RAM `system_warning` on purpose. Below it, Layer 6 categorically
+/// cannot run regardless of which model the user picks; at or above it,
+/// whether a model has actually been downloaded and selected is checked
+/// where that information actually lives (`Layer6LlmLayer::run`), not
+/// re-approximated here from RAM alone.
+const LLM_AUTO_ELIGIBLE_THRESHOLD_GB: f64 = LOW_RAM_WARNING_THRESHOLD_GB;
 
 /// App-managed state read by the extraction pipeline (Layer 5) to decide
 /// whether the local Candle `.gguf` fallback may run at all.
@@ -134,28 +137,31 @@ mod tests {
     }
 
     #[test]
-    fn mid_tier_8_to_16gb_is_not_auto_eligible() {
-        // 8-16GB tier requires a manual override (TASK-TXN-006), not auto-enabled.
+    fn mid_tier_8gb_and_up_is_now_eligible() {
+        // 2026-07-30: the pipeline no longer gates on a separate 16GB tier
+        // -- Layer6LlmLayer::run already checks for a real downloaded/
+        // selected model itself. The pre-gate now only rules out hardware
+        // below the catalog's smallest tier's floor (8GB, gemma4_e4b).
         let e = compute_llm_eligibility(12.0);
-        assert!(!e.eligible);
+        assert!(e.eligible);
     }
 
     #[test]
-    fn sixteen_gb_is_eligible() {
-        let e = compute_llm_eligibility(16.0);
+    fn eight_gb_is_eligible() {
+        let e = compute_llm_eligibility(8.0);
         assert!(e.eligible);
+    }
+
+    #[test]
+    fn below_eight_gb_is_not_eligible() {
+        let e = compute_llm_eligibility(7.99);
+        assert!(!e.eligible);
     }
 
     #[test]
     fn high_ram_is_eligible() {
         let e = compute_llm_eligibility(64.0);
         assert!(e.eligible);
-    }
-
-    #[test]
-    fn boundary_just_below_sixteen_is_not_eligible() {
-        let e = compute_llm_eligibility(15.99);
-        assert!(!e.eligible);
     }
 
     #[test]
