@@ -14,7 +14,6 @@ pub mod merchant_confidence;
 pub mod merchant_llm;
 pub mod merchant_normalizer;
 pub mod normalization;
-pub mod pdf_parser;
 pub mod recurring_detector;
 pub mod rule_llm;
 pub mod rule_synthesis;
