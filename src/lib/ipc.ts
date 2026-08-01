@@ -1035,6 +1035,12 @@ export const API = {
     startHistoricalScan: (accountId: string, startDate: string, endDate: string) =>
       invokeCommand<string>('scans_historical', { accountId, startDate, endDate }),
     cancelScan: (accountId: string) => invokeCommand<string>('scans_cancel', { accountId }),
+    // audit_07 #7: scan progress arrives by event only, so a webview reload
+    // mid-scan left the UI blank until the next event. This reads the
+    // checkpoint the backend has been persisting all along, letting
+    // `useSyncStore` re-hydrate on mount.
+    getScanStatus: (accountId: string) =>
+      invokeCommand<ScanStatusResponse>('scans_status', { accountId }),
   },
   llm: {
     // Doc 16 §12.3: the single source of truth for the 5-tier model catalog —
@@ -1289,6 +1295,23 @@ export interface ConsentEventRecord {
 // Doc 19 §15.1 (v1.14): mirrors src-tauri's real `ScanProgressPayload`
 // (`ingestion/historical_scan.rs`) field-for-field -- this shape backs
 // scan_progress/scan_completed/scan_cancelled/scan_failed, all four events.
+// Mirrors src-tauri's `ScanStatusResponse` (`ingestion/historical_scan.rs`),
+// built from the persisted `processing_checkpoints` row rather than from a
+// live event. `status` is the checkpoint's own status column
+// ('not_started' | 'in_progress' | 'completed' | 'paused' | 'failed' |
+// 'cancelled'). Note it carries no `non_financial` count and no `account_id` —
+// the caller already knows which account it asked about.
+export interface ScanStatusResponse {
+  status: string;
+  processed: number;
+  total: number;
+  transactions_found: number;
+  statements_found: number;
+  mandate_events_found: number;
+  errors: number;
+  pending_enrichment: number;
+}
+
 export interface ScanProgressPayload {
   account_id: string;
   processed: number;

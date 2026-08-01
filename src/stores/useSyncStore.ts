@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { ScanProgressPayload } from '@/lib/ipc';
+import { API, ScanProgressPayload, ScanStatusResponse } from '@/lib/ipc';
 import { isTauriRuntime } from '@/lib/tauriRuntime';
 
 interface SystemWarning {
@@ -27,6 +27,7 @@ interface SyncStoreState {
   onSystemWarning: (warning: SystemWarning) => void;
   dismissWarning: (index: number) => void;
   resetScanState: () => void;
+  hydrateScanState: (accountId: string, status: ScanStatusResponse) => void;
 }
 
 export const useSyncStore = create<SyncStoreState>((set) => ({
@@ -42,6 +43,40 @@ export const useSyncStore = create<SyncStoreState>((set) => ({
   onSystemWarning: (warning) => set((s) => ({ warnings: [...s.warnings, warning] })),
   dismissWarning: (index) => set((s) => ({ warnings: s.warnings.filter((_, i) => i !== index) })),
   resetScanState: () => set({ scanStatus: 'idle', scanProgress: null, scanError: null }),
+
+  /**
+   * audit_07 #7: seeds scan state from the persisted checkpoint after a
+   * webview reload, when there is no live event to learn it from.
+   *
+   * Only applies while the store is still untouched (`scanStatus === 'idle'`
+   * and no progress yet). Hydration is async, so a live `scan_progress` event
+   * can easily land first — and that event is strictly newer than the
+   * checkpoint, which is only written every `CHECKPOINT_INTERVAL` messages.
+   * Yielding to it is what stops re-hydration from rewinding a running scan's
+   * counters.
+   */
+  hydrateScanState: (accountId, status) =>
+    set((s) => {
+      if (s.scanStatus !== 'idle' || s.scanProgress !== null) return s;
+      if (status.status !== 'in_progress') return s;
+      return {
+        scanStatus: 'running',
+        scanProgress: {
+          account_id: accountId,
+          processed: status.processed,
+          total: status.total,
+          transactions_found: status.transactions_found,
+          statements_found: status.statements_found,
+          mandate_events_found: status.mandate_events_found,
+          // Not carried by the checkpoint — the next live event fills it in.
+          non_financial: 0,
+          errors: status.errors,
+          pending_enrichment: status.pending_enrichment,
+          error_message: null,
+        },
+        scanError: null,
+      };
+    }),
 }));
 
 (async () => {
@@ -62,5 +97,29 @@ export const useSyncStore = create<SyncStoreState>((set) => ({
     });
   } catch (e) {
     console.error('Failed to subscribe to sync events', e);
+  }
+
+  // audit_07 #7: a scan runs in the backend regardless of the webview, so
+  // after a reload (Cmd+R, or a webview crash) the UI showed no scan at all
+  // until the next `scan_progress` event — which for a slow or nearly-finished
+  // scan can be a long time, or never. Subscribe first, then re-hydrate, so a
+  // live event is never missed while this is in flight.
+  try {
+    const accounts = await API.auth.listConnectedAccounts();
+    const statuses = await Promise.all(
+      accounts.map(async (a) => {
+        try {
+          return { accountId: a.account_id, status: await API.ingestion.getScanStatus(a.account_id) };
+        } catch {
+          // One unreadable account must not stop the others from hydrating.
+          return null;
+        }
+      })
+    );
+    for (const entry of statuses) {
+      if (entry) useSyncStore.getState().hydrateScanState(entry.accountId, entry.status);
+    }
+  } catch (e) {
+    console.error('Failed to re-hydrate scan state', e);
   }
 })();
