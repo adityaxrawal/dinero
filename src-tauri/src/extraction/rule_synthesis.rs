@@ -263,6 +263,44 @@ pub fn synthesize(field_name: &str, source: &str, new_value: &str) -> Option<ser
 ///
 /// One function for both payload shapes so extraction, the self-check and the
 /// regression check can never disagree about what a rule means.
+/// Compiled learned-rule patterns, keyed by the pattern string itself.
+///
+/// audit_02 #2: `apply_payload` compiled a fresh `Regex`
+/// on every call. It is called once per live rule per message from Layer 1's
+/// `apply_learned_fields`, so a 10k-message scan against 30 active rules paid
+/// 300,000 compilations — and the corpus-replay validation gate below calls it
+/// again for every historical sample × every candidate rule. `Regex::new` is
+/// NFA construction, not a lookup.
+///
+/// Keyed on the pattern rather than a rule id because the same pattern reaches
+/// here from three places (Layer 1, `self_check`, the replay gate) that do not
+/// all have a rule id, and because two rules with identical patterns should
+/// share one program.
+///
+/// ponytail: unbounded map, but the keys are `field_rules` rows — bounded by
+/// how many rules a user has taught (tens), not by message volume. Add an LRU
+/// only if a real deployment ever shows it growing.
+static COMPILED_RULE_REGEXES: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, regex::Regex>>,
+> = std::sync::OnceLock::new();
+
+/// Compiles `pattern` once and reuses it thereafter. `Regex` clones share the
+/// compiled program internally, so the clone is a refcount bump, not a rebuild.
+///
+/// An invalid pattern is not cached — it stays `None` and is retried. That is
+/// deliberate: caching failure would need a second map for a case the
+/// synthesis gate already prevents from ever being stored.
+fn compiled_rule_regex(pattern: &str) -> Option<regex::Regex> {
+    let cache = COMPILED_RULE_REGEXES.get_or_init(|| std::sync::Mutex::new(Default::default()));
+    let mut map = cache.lock().ok()?;
+    if let Some(re) = map.get(pattern) {
+        return Some(re.clone());
+    }
+    let re = regex::Regex::new(pattern).ok()?;
+    map.insert(pattern.to_string(), re.clone());
+    Some(re)
+}
+
 pub fn apply_payload(payload: &serde_json::Value, source: &str) -> Option<String> {
     if let Some(v) = payload.get("override_value").and_then(|v| v.as_str()) {
         return Some(v.to_string());
@@ -272,7 +310,7 @@ pub fn apply_payload(payload: &serde_json::Value, source: &str) -> Option<String
         .get("capture_group")
         .and_then(|g| g.as_u64())
         .unwrap_or(1) as usize;
-    let re = regex::Regex::new(pattern).ok()?;
+    let re = compiled_rule_regex(pattern)?;
     re.captures(source)?
         .get(group)
         .map(|m| m.as_str().to_string())
@@ -358,6 +396,39 @@ mod tests {
     const SBI_BODY: &str = "Dear Cardholder, Rs.245.43 spent on your SBI Credit Card \
                             ending 7603 at RAZ*SWIGGY LIMITE BANGALORE on 01/07/26. \
                             Not you? Call 18001234.";
+
+    /// audit_02 #2: `apply_payload` now serves its regexes from a process-wide
+    /// cache instead of recompiling per call. A cache that returned the wrong
+    /// program would silently mis-extract every learned field, so pin that
+    /// repeated calls agree, that two distinct patterns don't collide on one
+    /// entry, and that a pattern that fails to compile stays `None` rather
+    /// than poisoning the map.
+    #[test]
+    fn cached_rule_regexes_stay_distinct_and_repeatable() {
+        let merchant = serde_json::json!({ "regex": r"at\s+(\S+)", "capture_group": 1 });
+        let last4 = serde_json::json!({ "regex": r"ending\s+(\d+)", "capture_group": 1 });
+
+        let first = apply_payload(&merchant, SBI_BODY);
+        assert_eq!(first.as_deref(), Some("RAZ*SWIGGY"));
+        // Second call takes the cached path -- must produce the identical answer.
+        assert_eq!(apply_payload(&merchant, SBI_BODY), first);
+
+        // A different pattern must get its own program, not the cached one.
+        assert_eq!(apply_payload(&last4, SBI_BODY).as_deref(), Some("7603"));
+        assert_eq!(apply_payload(&merchant, SBI_BODY), first);
+
+        // Uncompilable pattern: `None`, and the cache still works afterwards.
+        let broken = serde_json::json!({ "regex": r"(unclosed", "capture_group": 1 });
+        assert_eq!(apply_payload(&broken, SBI_BODY), None);
+        assert_eq!(apply_payload(&merchant, SBI_BODY), first);
+
+        // `override_value` short-circuits before any regex is involved.
+        let override_rule = serde_json::json!({ "override_value": "Swiggy" });
+        assert_eq!(
+            apply_payload(&override_rule, SBI_BODY).as_deref(),
+            Some("Swiggy")
+        );
+    }
 
     // ── The relaxation that makes a learned rule survive the next email ──────
     #[test]
