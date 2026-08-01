@@ -37,6 +37,35 @@ fn clear_scan_cancellation(account_id: &str) {
     cancelled_scans().lock().unwrap().remove(account_id);
 }
 
+/// Blocks while the scan queue is paused. Returns `true` if a cancellation
+/// arrived for `account_id` while waiting.
+///
+/// audit_01 #4: this used to poll `SCAN_QUEUE_PAUSED` alone. The report
+/// called that a 5s "zombie window", but at the prefill call site it is
+/// unbounded — that loop runs *before* the main loop's 1s `cancel_poll`
+/// ticker exists, so pausing the queue and then cancelling left the scan
+/// spinning here forever, with Cancel doing nothing until someone
+/// un-paused. Returning on cancellation is what bounds it.
+///
+/// Deliberately does not call `clear_scan_cancellation` — it reports, and
+/// the caller's existing cancellation path does the clearing, emits the
+/// event, and sets `was_cancelled`. One place owns that sequence.
+async fn wait_while_paused(account_id: &str) -> bool {
+    loop {
+        let paused = crate::commands::debug::SCAN_QUEUE_PAUSED
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if !paused {
+            return false;
+        }
+        if is_scan_cancelled(account_id) {
+            return true;
+        }
+        // 1s, matching the main loop's `cancel_poll` ticker, so a paused scan
+        // cancels on the same bound as a running one.
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+}
+
 #[tauri::command]
 pub async fn scans_cancel(account_id: String) -> Result<String, crate::error::AppError> {
     crate::ipc::validation::validate_account_id("account_id", &account_id)?;
@@ -800,17 +829,6 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
         },
     );
 
-    async fn wait_while_paused() {
-        loop {
-            let paused = crate::commands::debug::SCAN_QUEUE_PAUSED
-                .load(std::sync::atomic::Ordering::Relaxed);
-            if !paused {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-        }
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn spawn_fetch(
         join_set: &mut JoinSet<(String, anyhow::Result<Option<ProcessResult>>)>,
@@ -848,7 +866,11 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
     // meant effective concurrency was always 1, regardless of the semaphore
     // that used to gate it.
     for _ in 0..MAX_CONCURRENT_FETCHES {
-        wait_while_paused().await;
+        // Cancelled while paused: stop prefilling and fall through to the main
+        // loop, whose `cancel_poll` arm owns the actual cancellation sequence.
+        if wait_while_paused(&account_id).await {
+            break;
+        }
         match ids_iter.next() {
             Some(msg_id) => spawn_fetch(
                 &mut join_set,
@@ -1221,7 +1243,9 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
             );
         }
 
-        wait_while_paused().await;
+        // Returns early on cancellation, so the check below fires immediately
+        // instead of after the pause poll's next wake-up.
+        wait_while_paused(&account_id).await;
 
         // Doc 19 §18 Scans group / Doc 30 TASK-API-009: `scans_cancel`.
         // Checked at the same checkpoint cadence as the pause check above
@@ -1386,6 +1410,43 @@ mod tests {
     use crate::db::init_db;
     use std::fs;
     use tauri::test::{mock_builder, mock_context};
+
+    /// audit_01 #4: a scan that is paused *and* cancelled must stop. Before
+    /// this, `wait_while_paused` polled only the pause flag, so the prefill
+    /// loop — which runs before the main loop's `cancel_poll` ticker exists —
+    /// spun here indefinitely and Cancel did nothing until someone un-paused.
+    #[tokio::test]
+    async fn paused_scan_still_observes_cancellation() {
+        use std::sync::atomic::Ordering;
+        let account_id = "acct_paused_cancel";
+        let paused = &crate::commands::debug::SCAN_QUEUE_PAUSED;
+
+        // Not paused: returns immediately, and does not report cancellation.
+        paused.store(false, Ordering::Relaxed);
+        assert!(!wait_while_paused(account_id).await);
+
+        // Paused with a cancellation pending: must return `true` rather than
+        // sleeping until the pause is lifted.
+        paused.store(true, Ordering::Relaxed);
+        cancelled_scans()
+            .lock()
+            .unwrap()
+            .insert(account_id.to_string());
+        let cancelled = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            wait_while_paused(account_id),
+        )
+        .await
+        .expect("a cancelled scan must not block on the pause flag");
+        assert!(cancelled);
+
+        // Reporting cancellation must not consume it -- the caller's own
+        // cancellation path is what clears the flag and emits the event.
+        assert!(is_scan_cancelled(account_id));
+
+        clear_scan_cancellation(account_id);
+        paused.store(false, Ordering::Relaxed);
+    }
 
     /// The sender-scoped query is what stops the scan paying Gmail quota for
     /// mail Gate 1 would reject anyway, so it has to cover every domain it was
