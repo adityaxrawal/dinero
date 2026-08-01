@@ -15,7 +15,9 @@
     "check:fix": "biome check --write .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "delete-my-data": "cargo run --manifest-path src-tauri/Cargo.toml --bin delete_my_data --",
+    "delete:data": "cargo run --manifest-path src-tauri/Cargo.toml --bin delete_my_data --"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.18",

@@ -1007,120 +1007,26 @@ pub async fn settings_import_encrypted_backup(
 /// G20/H10/J8 fix: renamed from `reset_database` to match Doc 19 §13/§18's
 /// documented `settings_delete_account` naming — this app has no login/
 /// account concept, but a full local wipe is the closest and only documented
+/// "Reset App Data" full local wipe (Doc 28 §4.4, §6.1, §6.3; Doc 25 §4.3, §10
+/// row 7; TASK-AUTH-013). Doc 28 §4.4 step 1's two-step typed-phrase UI
+/// confirmation lives in `Settings.tsx`'s reset modal (exact phrase
+/// `RESET_CONFIRM_PHRASE = "DELETE MY DATA"`, matching Document 30's own
+/// quoted text) — this command implements steps 2–7, the backend-owned
+/// destructive sequence, in the doc's own order.
+/// G20/H10/J8 fix: renamed from `reset_database` to match Doc 19 §13/§18's
+/// documented `settings_delete_account` naming — this app has no login/
+/// account concept, but a full local wipe is the closest and only documented
 /// equivalent operation.
 #[tauri::command]
 pub async fn settings_delete_account(
     app: tauri::AppHandle,
     pool: State<'_, deadpool_sqlite::Pool>,
 ) -> Result<String, crate::error::AppError> {
-    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
-
-    // Step 4: an audit_log entry is written *before* destructive operations
-    // start, so the intent to delete is captured even if the process is
-    // interrupted partway through the remaining steps.
-    {
-        let conn = pool
-            .get()
-            .await
-            .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-        conn.interact(|c| {
-            crate::db::audit_log::insert(
-                c,
-                &crate::db::audit_log::AuditLogRow {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    actor_type: Some("user".to_string()),
-                    actor_id: Some("local".to_string()),
-                    action: Some("account_deletion_requested".to_string()),
-                    resource_type: Some("database".to_string()),
-                    resource_id: Some("local_sqlite".to_string()),
-                    before_json: None,
-                    after_json: None,
-                    created_at: chrono::Utc::now(),
-                },
-            )
-        })
-        .await
-        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
-        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-    }
-
-    // Step 2: [MODIFIED] Gmail tokens are NO LONGER revoked to preserve the connection.
-    // crate::ingestion::oauth::revoke_gmail_access(pool.inner()).await;
-
-    // Step 3: Licensing Backend coordination. "Local Wipe Priority" (Doc 28
-    // §4.4, an explicit named design rule): the local wipe proceeds
-    // *regardless* of whether this call succeeds — a locked-out or offline
-    // user's local erasure must never be gated on network/backend availability.
-    if let Err(e) = crate::licensing::commands::deactivate_license_internal(pool.inner()).await {
-        tracing::warn!(
-            "License deactivation during reset failed (proceeding with local wipe anyway): {:?}",
-            e
-        );
-    }
-
-    // Step 6: every relevant Keychain entry is cleared. The Gmail entry was
-    // already cleared by revoke_gmail_access above.
-    crate::db::crypto::delete_base_key();
-    crate::statements::password::delete_aes_key();
-
-    // Step 5: the finance.db file itself and all .bak backup files (both the
-    // pre-migration series and the daily rolling backup) are deleted — not
-    // merely the rows within it. Deleting a file that's still open via this
-    // process's own connection pool is safe on macOS (POSIX unlink semantics:
-    // the directory entry is removed immediately; any lingering file handle
-    // is released automatically when this process exits during the restart
-    // in step 7 below).
     let app_dir = app.path().app_data_dir().map_err(|e| {
         crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e))
     })?;
 
-    // Extract connected_accounts before the database is destroyed so they can be restored
-    if let Ok(conn) = pool.get().await {
-        let _ = conn.interact({
-            let app_dir_clone = app_dir.clone();
-            move |c| {
-                if let Ok(mut stmt) = c.prepare("SELECT * FROM connected_accounts") {
-                    let rows: Result<Vec<crate::db::connected_accounts::ConnectedAccountsRow>, _> = stmt.query_map([], |row| {
-                        Ok(crate::db::connected_accounts::ConnectedAccountsRow {
-                            id: row.get(0)?,
-                            profile_id: row.get(1)?,
-                            email_address: row.get(2)?,
-                            account_status: row.get(3)?,
-                            last_history_id: row.get(4)?,
-                            created_at: row.get(5)?,
-                            updated_at: row.get(6)?,
-                        })
-                    }).and_then(|mapped| mapped.collect());
-                    
-                    if let Ok(accounts) = rows {
-                        if !accounts.is_empty() {
-                            let backup_path = app_dir_clone.join("gmail_accounts_backup.json");
-                            if let Ok(json) = serde_json::to_string(&accounts) {
-                                let _ = std::fs::write(backup_path, json);
-                            }
-                        }
-                    }
-                }
-            }
-        }).await;
-    }
-
-    delete_finance_db_and_all_backups(&app_dir);
-
-    // Document 30 TASK-AUTH-013: "write a final audit_log entry
-    // (account_deletion_completed) as the last write before the file is
-    // removed." Logged via `tracing`, not `db::audit_log::insert` —
-    // `audit_log` lives *inside* finance.db, which is deleted immediately
-    // after this point, so a row written there would be destroyed in the
-    // very next step and could never serve as an audit trail. `tracing`
-    // writes to `app-logs.log`, a separate file that survives the wipe and
-    // is what actually persists this event.
-    tracing::info!("account_deletion_completed: local wipe finished, restarting to onboarding");
-
-    // Close the SQLite pool so all file handles to the db are released.
-    pool.close();
-    // Shut down the sidecar process so its listening socket isn't orphaned across the restart.
-    crate::llama_sidecar::shutdown().await;
+    perform_account_deletion(&app_dir, Some(pool.inner())).await?;
 
     // Step 7: the app resets to first-run onboarding state. Restarting the
     // process is what makes this safe and correct — on relaunch, init_db()
@@ -1131,6 +1037,99 @@ pub async fn settings_delete_account(
     app.restart();
 }
 
+/// Core logic for "Reset App Data" / "DELETE MY DATA" full local wipe.
+/// Extracted so both Tauri command `settings_delete_account` and the local CLI command
+/// execute the exact same deletion sequence.
+pub async fn perform_account_deletion(
+    app_dir: &std::path::Path,
+    pool: Option<&deadpool_sqlite::Pool>,
+) -> Result<(), crate::error::AppError> {
+    if let Some(pool) = pool {
+        crate::licensing::gate::assert_write_allowed(pool).await?;
+
+        // Step 4: an audit_log entry is written *before* destructive operations
+        // start, so the intent to delete is captured even if the process is
+        // interrupted partway through the remaining steps.
+        if let Ok(conn) = pool.get().await {
+            let _ = conn.interact(|c| {
+                crate::db::audit_log::insert(
+                    c,
+                    &crate::db::audit_log::AuditLogRow {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        actor_type: Some("user".to_string()),
+                        actor_id: Some("local".to_string()),
+                        action: Some("account_deletion_requested".to_string()),
+                        resource_type: Some("database".to_string()),
+                        resource_id: Some("local_sqlite".to_string()),
+                        before_json: None,
+                        after_json: None,
+                        created_at: chrono::Utc::now(),
+                    },
+                )
+            })
+            .await;
+        }
+
+        // Step 3: Licensing Backend coordination. "Local Wipe Priority" (Doc 28
+        // §4.4, an explicit named design rule): the local wipe proceeds
+        // *regardless* of whether this call succeeds — a locked-out or offline
+        // user's local erasure must never be gated on network/backend availability.
+        if let Err(e) = crate::licensing::commands::deactivate_license_internal(pool).await {
+            tracing::warn!(
+                "License deactivation during reset failed (proceeding with local wipe anyway): {:?}",
+                e
+            );
+        }
+
+        // Extract connected_accounts before the database is destroyed so they can be restored
+        if let Ok(conn) = pool.get().await {
+            let _ = conn.interact({
+                let app_dir_clone = app_dir.to_path_buf();
+                move |c| {
+                    if let Ok(mut stmt) = c.prepare("SELECT * FROM connected_accounts") {
+                        let rows: Result<Vec<crate::db::connected_accounts::ConnectedAccountsRow>, _> = stmt.query_map([], |row| {
+                            Ok(crate::db::connected_accounts::ConnectedAccountsRow {
+                                id: row.get(0)?,
+                                profile_id: row.get(1)?,
+                                email_address: row.get(2)?,
+                                account_status: row.get(3)?,
+                                last_history_id: row.get(4)?,
+                                created_at: row.get(5)?,
+                                updated_at: row.get(6)?,
+                            })
+                        }).and_then(|mapped| mapped.collect());
+                        
+                        if let Ok(accounts) = rows {
+                            if !accounts.is_empty() {
+                                let backup_path = app_dir_clone.join("gmail_accounts_backup.json");
+                                if let Ok(json) = serde_json::to_string(&accounts) {
+                                    let _ = std::fs::write(backup_path, json);
+                                }
+                            }
+                        }
+                    }
+                }
+            }).await;
+        }
+    }
+
+    // Step 6: every relevant Keychain entry is cleared.
+    crate::db::crypto::delete_base_key();
+    crate::statements::password::delete_aes_key();
+
+    // Step 5: the finance.db file itself and all .bak backup files are deleted
+    delete_finance_db_and_all_backups(app_dir);
+
+    tracing::info!("account_deletion_completed: local wipe finished");
+
+    if let Some(pool) = pool {
+        pool.close();
+    }
+    crate::llama_sidecar::shutdown().await;
+
+    Ok(())
+}
+
 /// Deletes `finance.db` (and its `-wal`/`-shm` sidecars), everything in the
 /// daily-backup directory, and every pre-migration `finance.db.bak.*`
 /// snapshot — the last of which lives directly in `app_dir`
@@ -1139,7 +1138,7 @@ pub async fn settings_delete_account(
 /// uses), so it needs its own sweep separate from the `backups/` directory
 /// scan. Extracted from `settings_delete_account` so the file-deletion logic
 /// is directly testable without a real `AppHandle`.
-fn delete_finance_db_and_all_backups(app_dir: &std::path::Path) {
+pub fn delete_finance_db_and_all_backups(app_dir: &std::path::Path) {
     let db_path = app_dir.join("finance.db");
     for suffix in ["", "-wal", "-shm"] {
         let sidecar = std::path::PathBuf::from(format!("{}{}", db_path.display(), suffix));
@@ -1219,6 +1218,23 @@ mod delete_account_tests {
             "unrelated files must survive the sweep"
         );
 
+        let _ = std::fs::remove_dir_all(&app_dir);
+    }
+
+    #[tokio::test]
+    async fn test_perform_account_deletion_clears_files_and_keychain() {
+        use super::perform_account_deletion;
+        let app_dir =
+            std::env::temp_dir().join(format!("dinero_perform_wipe_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&app_dir).unwrap();
+
+        let db_path = app_dir.join("finance.db");
+        std::fs::write(&db_path, b"db_data").unwrap();
+
+        let result = perform_account_deletion(&app_dir, None).await;
+        assert!(result.is_ok());
+
+        assert!(!db_path.exists());
         let _ = std::fs::remove_dir_all(&app_dir);
     }
 }
