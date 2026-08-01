@@ -900,7 +900,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
             Ok((msg_id, result)) => {
                 tracing::info!("Finished processing msg_id='{}'", msg_id);
                 match result {
-                    Ok(Some(ProcessResult::TransactionAlert(extracted, boxed_obs, html))) => {
+                    Ok(Some(ProcessResult::TransactionAlert(extracted, boxed_obs, html, email_meta))) => {
                         tracing::info!("Classified msg_id='{}' as Transaction", msg_id);
                         // Doc 15 §2 principle 7 / Doc 12 §6.2a: route to the Transaction
                         // Queue rather than processing inline — no code path may write an
@@ -920,6 +920,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                             connected_account_id: account_id.clone(),
                             raw_body: extracted.text_body.clone(),
                             raw_html: html,
+                            email_meta: Some(email_meta),
                         };
                         let tx = app
                             .state::<crate::ingestion::queues::QueueHandles>()
@@ -1910,6 +1911,7 @@ mod tests {
             emi_total_installments: None,
             emi_installment_number: None,
             emi_original_amount_minor: None,
+            channel: None,
             is_deleted: false,
             created_at: Some(Utc::now().naive_utc()),
             updated_at: Some(Utc::now().naive_utc()),

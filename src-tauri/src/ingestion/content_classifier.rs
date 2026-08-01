@@ -146,6 +146,16 @@ impl ContentClassifier {
             return ContentClass::MandateRegistration;
         }
 
+        // 3c. Loan/credit-line ads unconditionally -- unlike a cashback line
+        // tacked onto a real transaction receipt, this subject phrasing is
+        // never used for an actual settled transaction, so it must not be
+        // overridden by the `settled_transaction` bypass below (loan-ad copy
+        // routinely uses transaction verbs like "credited" to describe
+        // disbursal speed, e.g. "Money credited in 2 minutes").
+        if subject_lower.contains("personal loan") || subject_lower.contains("loan offer") {
+            return ContentClass::Marketing;
+        }
+
         // A settled-transaction signal — computed once, used to keep a real
         // transaction from being swallowed by an incidental marketing/reminder
         // keyword (e.g. "Cashback Offer: You spent Rs. 499 today").
@@ -183,7 +193,19 @@ impl ContentClassifier {
             return ContentClass::TransactionAlert;
         }
 
-        // 6b. Balance Update (often missed as just 'account update' or 'upi payment' with no exact amount in subject)
+        // 6b. Balance Update (often missed as just 'account update' or 'upi payment' with no exact amount in subject).
+        //
+        // Deliberately NOT gated on `has_amount_pattern` -- these subject
+        // phrases double as `RESCUE_SUBJECT_TERMS`, matched against a bare
+        // subject with no body yet fetched (the historical scan's
+        // server-side `subject:` prefilter query), so the guard would also
+        // reject those and silently break discovery. This does mean some
+        // pure marketing/login notices reusing the same generic subject
+        // wording (e.g. HDFC's "Account update for your HDFC Bank A/c" sent
+        // for a T&Cs acceptance, not a real balance change) still get routed
+        // here -- Layer 6 finding nothing extractable and the
+        // `Layer6Outcome::Rejected` terminal state (`process_layer6_job`)
+        // are the backstop for that, not this classifier.
         if subject_lower.contains("account update")
             || subject_lower.contains("money credited")
             || subject_lower.contains("payment received")

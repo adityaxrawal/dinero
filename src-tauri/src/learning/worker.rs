@@ -268,11 +268,15 @@ async fn author_with_llm(job: &FeedbackJob, pool: &Pool) -> Authored {
         &existing,
     );
 
-    let raw = match crate::llama_sidecar::complete_with_schema(
+    let raw = match crate::llama_sidecar::complete_with_schema_and_context(
         app_dir,
         &model_id,
         &prompt,
         crate::extraction::rule_llm::authoring_schema(),
+        crate::logging::llm_logger::LlmCallContext::new(
+            crate::logging::llm_logger::LlmCallType::RuleAuthoring,
+            1,
+        ),
     )
     .await
     {

@@ -446,8 +446,9 @@ pub fn count_transactions(conn: &Connection) -> Result<i64, String> {
 pub fn do_transactions_search(
     conn: &Connection,
     query: &str,
+    filters: Option<&TransactionListFilters>,
 ) -> Result<Vec<TransactionRecord>, String> {
-    let rows = crate::db::transactions::search_transactions(conn, query, 50, 0)
+    let rows = crate::db::transactions::search_transactions_with_filters(conn, query, filters, 50, 0)
         .map_err(|e| e.to_string())?;
 
     Ok(rows
@@ -477,12 +478,13 @@ pub fn do_transactions_search(
 pub async fn transactions_search(
     pool: State<'_, deadpool_sqlite::Pool>,
     query: String,
+    filters: Option<TransactionListFilters>,
 ) -> Result<Vec<TransactionRecord>, crate::error::AppError> {
     let conn = pool
         .get()
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-    conn.interact(move |c| do_transactions_search(c, &query))
+    conn.interact(move |c| do_transactions_search(c, &query, filters.as_ref()))
         .await
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
         .map_err(crate::error::AppError::Db)
@@ -3906,7 +3908,7 @@ mod tests {
         )
         .unwrap();
 
-        let results = do_transactions_search(&conn, "amazon").unwrap();
+        let results = do_transactions_search(&conn, "amazon", None).unwrap();
         let ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
 
         assert!(ids.contains(&"tx_amazon"));

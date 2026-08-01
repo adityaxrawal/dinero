@@ -47,15 +47,24 @@ pub fn run() {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,dinero_app_lib=trace,dinero_app=trace,frontend=trace,api_calls=trace,network=trace"));
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,dinero_app_lib=trace,dinero_app=trace,frontend=trace,api_calls=trace,network=trace,llm_calls=info"));
 
     tracing_subscriber::registry()
         .with(env_filter)
+        // ── Stdout: compact, coloured, human-friendly for dev sessions ──────
         .with(tracing_subscriber::fmt::layer().with_ansi(true))
+        // ── File logs: richer format with source location + thread name ──────
+        // Each line is:
+        //   <timestamp>  <LEVEL> <target>  [<file>:<line>] (<thread>)  <message>  <fields…>
         .with(
             tracing_subscriber::fmt::layer()
                 .with_writer(categorized_writers)
-                .with_ansi(false),
+                .with_ansi(false)
+                .with_target(true)
+                .with_file(true)
+                .with_line_number(true)
+                .with_thread_names(true)
+                .with_level(true),
         )
         .init();
 
@@ -494,7 +503,22 @@ pub fn run() {
                 pool_clone.clone(),
                 learning_handle,
             );
+            let layer6_tx_for_replay = queue_handles.layer6_tx.clone();
             app.manage(queue_handles);
+
+            // Recover Layer 6 jobs that were persisted but never reached the
+            // background worker before the app last closed/crashed — see
+            // migration `20260101000057_layer6_pending_jobs`.
+            let pool_for_layer6_replay = pool_clone.clone();
+            let app_dir_for_layer6_replay = app_dir.clone();
+            tauri::async_runtime::spawn(async move {
+                crate::ingestion::queues::replay_pending_layer6_jobs(
+                    &pool_for_layer6_replay,
+                    &layer6_tx_for_replay,
+                    app_dir_for_layer6_replay,
+                )
+                .await;
+            });
 
             let pool_for_cleanup = pool_clone.clone();
             let app_data_dir = app_dir.clone();

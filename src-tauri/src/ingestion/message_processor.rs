@@ -7,6 +7,7 @@ use crate::ingestion::verified_senders::{SenderValidator, SenderVerificationResu
 use anyhow::Result;
 use chrono::Utc;
 use deadpool_sqlite::Pool;
+use regex::Regex;
 use serde_json::json;
 use std::sync::{Arc, OnceLock};
 use tokio::io::AsyncWriteExt;
@@ -32,11 +33,11 @@ pub struct EmailMetadata {
     pub subject: String,
     pub date: String,
     pub snippet: String,
-    /// Sanitized-for-display original HTML body (see
-    /// `mime_sanitization::sanitize_html_for_display`) -- `None` when the
-    /// message had no `text/html` part, in which case the caller falls back
-    /// to rendering `snippet` as plain text.
     pub html: Option<String>,
+    pub sender_email: Option<String>,
+    pub sender_domain: Option<String>,
+    pub recipient_email: Option<String>,
+    pub recipient_domain: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -44,13 +45,8 @@ pub enum ProcessResult {
     TransactionAlert(
         ExtractedMessage,
         Box<crate::extraction::ladder::ExtractionResult>,
-        /// Sanitized-for-display original HTML body (same value as
-        /// `EmailMetadata::html`) -- carried alongside the extraction result
-        /// so the Evidence tab can render the transaction email's real
-        /// layout/CSS as it appeared in Gmail, not just the plain-text body
-        /// `raw_payload_json` already stores. `None` when the message had
-        /// no `text/html` part.
         Option<String>,
+        EmailMetadata,
     ),
     StatementEmail(ExtractedMessage, Option<EmailMetadata>),
     MandateEvent(
@@ -288,6 +284,9 @@ impl MessageProcessor {
             .and_then(|ext| ext.html_body.as_deref())
             .map(crate::ingestion::mime_sanitization::sanitize_html_for_display);
 
+        let (sender_email, sender_domain) = Self::extract_email_and_domain(&sender);
+        let (recipient_email, recipient_domain) = Self::extract_email_and_domain(&recipient);
+
         let email_meta = EmailMetadata {
             sender,
             recipient,
@@ -295,6 +294,10 @@ impl MessageProcessor {
             date,
             snippet: snippet_text,
             html: html_for_display,
+            sender_email,
+            sender_domain,
+            recipient_email,
+            recipient_domain,
         };
 
         if let Some(extracted) = extracted_opt {
@@ -460,6 +463,24 @@ impl MessageProcessor {
 
                         Self::apply_balance_update_placeholder(&content_class, &mut obs);
 
+                        // A bank-template regex matching "debited from
+                        // account X to account Y" against a self-transfer
+                        // between the user's own accounts captures the
+                        // destination account number ("account 1527") into
+                        // `merchant_raw` -- not a merchant, there genuinely
+                        // isn't one. Recognized here (before the anti-merchant
+                        // gate below would otherwise just discard it as an
+                        // implausible name) and replaced with an explicit
+                        // placeholder, the same way `BalanceUpdate` already
+                        // gets a synthetic "Balance Update" merchant instead
+                        // of failing Gate 3's counterparty requirement.
+                        if let Some(dest_account) =
+                            Self::self_transfer_destination_account(obs.merchant_raw.as_deref())
+                        {
+                            obs.merchant_raw =
+                                Some(format!("Internal Transfer (A/c {dest_account})"));
+                        }
+
                         // Anti-merchant gate, applied *before* Gate 3 rather
                         // than at normalization time.
                         //
@@ -500,6 +521,7 @@ impl MessageProcessor {
                                 extracted,
                                 Box::new(obs),
                                 email_meta.html.clone(),
+                                email_meta.clone(),
                             )));
                         } else {
                             crate::ingestion::gmail_telemetry::gmail_telemetry()
@@ -521,7 +543,7 @@ impl MessageProcessor {
                                 message_id,
                                 obs.clone(),
                                 body_text,
-                                email_meta.html.as_deref(),
+                                Some(&email_meta),
                                 reason,
                             )
                             .await?;
@@ -558,13 +580,10 @@ impl MessageProcessor {
                                         bank_name: current_bank_name.clone(),
                                         body_text: body_text.to_string(),
                                         app_dir: dir,
+                                        internal_date_seconds,
                                     };
-                                    if tx.send(job).await.is_err() {
-                                        tracing::error!(
-                                            "Layer 6 Queue closed — dropping merchant-recovery job for msg_id='{}'",
-                                            message_id
-                                        );
-                                    }
+                                    crate::ingestion::queues::enqueue_layer6_job(pool, tx, job)
+                                        .await;
                                 }
                             }
                             Self::append_to_scan_log(
@@ -589,7 +608,7 @@ impl MessageProcessor {
                             message_id,
                             crate::extraction::ladder::ExtractionResult::default(),
                             body_text,
-                            email_meta.html.as_deref(),
+                            Some(&email_meta),
                             "pending_llm_enrichment",
                         )
                         .await?;
@@ -602,13 +621,9 @@ impl MessageProcessor {
                                 bank_name: current_bank_name.clone(),
                                 body_text: body_text.to_string(),
                                 app_dir: dir,
+                                internal_date_seconds,
                             };
-                            if tx.send(job).await.is_err() {
-                                tracing::error!(
-                                    "Layer 6 Queue closed — dropping enrichment job for msg_id='{}'",
-                                    message_id
-                                );
-                            }
+                            crate::ingestion::queues::enqueue_layer6_job(pool, tx, job).await;
                         }
                         Self::append_to_scan_log(
                             message_id,
@@ -626,7 +641,7 @@ impl MessageProcessor {
                             message_id,
                             crate::extraction::ladder::ExtractionResult::default(),
                             body_text,
-                            email_meta.html.as_deref(),
+                            Some(&email_meta),
                             "extraction_failed",
                         )
                         .await?;
@@ -665,6 +680,22 @@ impl MessageProcessor {
             .as_ref()
             .and_then(|s| s.parse::<i64>().ok())
             .map(|ts_millis| ts_millis / 1000)
+    }
+
+    /// Detects a raw merchant capture that's actually the destination
+    /// account of a self-transfer (e.g. HDFC's "debited from account 4691
+    /// to account 1527" template captures "account 1527" into the merchant
+    /// group since it has no dedicated self-transfer pattern). Returns the
+    /// destination account digits so the caller can build a placeholder.
+    pub(crate) fn self_transfer_destination_account(merchant_raw: Option<&str>) -> Option<String> {
+        static RE: OnceLock<Regex> = OnceLock::new();
+        let re = RE.get_or_init(|| {
+            Regex::new(r"(?i)^(?:account|a/c|acct)\s*(?:no\.?|number|#)?\s*[Xx*\s\-.]*(\d{2,})$")
+                .unwrap()
+        });
+        re.captures(merchant_raw?.trim())
+            .and_then(|caps| caps.get(1))
+            .map(|m| m.as_str().to_string())
     }
 
     /// A `BalanceUpdate` email is never a settled transaction, so whatever
@@ -862,6 +893,50 @@ impl MessageProcessor {
         }
     }
 
+    /// Extracts clean email address and domain from an email header (e.g. "From" or "To").
+    /// Handles display names ("Display Name" <email@domain.com>), multiple comma-separated addresses,
+    /// subdomains, bare email addresses, and invalid formats.
+    pub fn extract_email_and_domain(header_val: &str) -> (Option<String>, Option<String>) {
+        let mut trimmed = header_val.trim();
+        if trimmed.is_empty() {
+            return (None, None);
+        }
+        if let Some(rest) = trimmed
+            .strip_prefix("From:")
+            .or_else(|| trimmed.strip_prefix("from:"))
+            .or_else(|| trimmed.strip_prefix("To:"))
+            .or_else(|| trimmed.strip_prefix("to:"))
+        {
+            trimmed = rest.trim();
+        }
+
+        let first_addr = trimmed.split(',').next().unwrap_or(trimmed);
+        let raw_email = if let (Some(start), Some(end)) = (first_addr.find('<'), first_addr.rfind('>')) {
+            if start < end {
+                first_addr[start + 1..end].trim()
+            } else {
+                first_addr.trim()
+            }
+        } else {
+            first_addr.trim()
+        };
+
+        let email_clean = raw_email.trim_matches(|c| c == '"' || c == '\'' || c == ' ').to_lowercase();
+        if email_clean.is_empty() || !email_clean.contains('@') {
+            return (None, None);
+        }
+
+        let parts: Vec<&str> = email_clean.rsplitn(2, '@').collect();
+        if parts.len() == 2 {
+            let domain_raw = parts[0].trim_matches(|c| c == ']' || c == '[' || c == ' ').to_lowercase();
+            if !domain_raw.is_empty() {
+                return (Some(email_clean), Some(domain_raw));
+            }
+        }
+
+        (Some(email_clean), None)
+    }
+
     /// Short tag persisted to `sender_reputation.last_verification_result`
     /// (and used to decide `verified_pass_count`) -- see
     /// `db::sender_reputation::record_sighting`.
@@ -1028,7 +1103,7 @@ impl MessageProcessor {
         message_id: &str,
         obs: crate::extraction::ladder::ExtractionResult,
         body_text: &str,
-        raw_html: Option<&str>,
+        email_meta: Option<&EmailMetadata>,
         reason: &str,
     ) -> Result<Option<(String, String)>> {
         let obs_row = crate::extraction::normalization::normalize_observation(
@@ -1036,7 +1111,7 @@ impl MessageProcessor {
             "gmail_transaction",
             message_id,
             Some(body_text),
-            raw_html,
+            email_meta,
         );
         let observation_id = obs_row.id.clone();
         let unassigned_id = Uuid::new_v4().to_string();

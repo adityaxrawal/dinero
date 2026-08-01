@@ -1014,6 +1014,7 @@ pub async fn commit_staged_draft<R: tauri::Runtime>(
                     emi_total_installments: obs.emi_total_installments,
                     emi_installment_number: None,
                     emi_original_amount_minor: obs.emi_original_amount_minor,
+                    channel: None,
                     is_deleted: false,
                     created_at: None,
                     updated_at: None,
@@ -2442,6 +2443,7 @@ pub(crate) async fn create_manual_transaction<R: tauri::Runtime>(
         // Manual entries are ground truth, not extracted -- maximal confidence.
         confidence_score: Some(1.0),
         event_time_confidence: None,
+        channel: None,
     };
 
     let decision = conn
@@ -2481,6 +2483,7 @@ pub(crate) async fn create_manual_transaction<R: tauri::Runtime>(
                 emi_total_installments: None,
                 emi_installment_number: None,
                 emi_original_amount_minor: None,
+                channel: None,
                 is_deleted: false,
                 created_at: None,
                 updated_at: None,

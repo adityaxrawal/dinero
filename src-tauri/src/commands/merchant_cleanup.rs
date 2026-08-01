@@ -449,11 +449,15 @@ async fn process_one(
     };
     let prompt = merchant_llm::generate_prompt(&ctx, body, categories);
 
-    let raw = match crate::llama_sidecar::complete_with_schema(
+    let raw = match crate::llama_sidecar::complete_with_schema_and_context(
         app_dir,
         model_id,
         &prompt,
         schema.clone(),
+        crate::logging::llm_logger::LlmCallContext::new(
+            crate::logging::llm_logger::LlmCallType::MerchantCleanup,
+            1,
+        ),
     )
     .await
     {

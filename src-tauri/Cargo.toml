@@ -97,5 +97,4 @@ tokio = { version = "1", features = ["test-util"] }
 [profile.dev]
 opt-level = 1
 
-[profile.dev.package."*"]
-opt-level = 3
+

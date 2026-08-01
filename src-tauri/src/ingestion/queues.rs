@@ -35,6 +35,7 @@ pub struct TransactionJob {
     /// `text/html` part, or for jobs with no source email at all (mandate
     /// events synthesize a ₹0 transaction with no email to render).
     pub raw_html: Option<String>,
+    pub email_meta: Option<crate::ingestion::message_processor::EmailMetadata>,
 }
 
 /// Raw PDF bytes from either Statement Queue entry point (email-detected or
@@ -131,9 +132,88 @@ pub struct Layer6Job {
     pub bank_name: String,
     pub body_text: String,
     pub app_dir: std::path::PathBuf,
+    /// Gmail's `internalDate`, already resolved by `message_processor`.
+    /// Fallback for the LLM's self-reported `event_time`, which it omits
+    /// on essentially every call — see `LlmEngine::extract`'s doc comment.
+    pub internal_date_seconds: Option<i64>,
 }
 
 pub(crate) const LAYER6_QUEUE_CAPACITY: usize = 256;
+
+/// Persists `job` to `layer6_pending_jobs` before handing it to `tx` — the
+/// send alone isn't durable (see migration `20260101000057_layer6_pending_jobs`'s
+/// doc comment), so every enqueue site must go through this instead of
+/// calling `tx.send` directly.
+pub(crate) async fn enqueue_layer6_job(pool: &Pool, tx: &mpsc::Sender<Layer6Job>, job: Layer6Job) {
+    let pending = crate::db::layer6_jobs::PendingLayer6Job {
+        id: job.unassigned_id.clone(),
+        observation_id: job.observation_id.clone(),
+        bank_name: job.bank_name.clone(),
+        body_text: job.body_text.clone(),
+        internal_date_seconds: job.internal_date_seconds,
+    };
+    if let Ok(conn) = pool.get().await {
+        if let Err(e) = conn
+            .interact(move |c| crate::db::layer6_jobs::insert(c, &pending))
+            .await
+        {
+            tracing::error!(
+                "Failed to persist Layer 6 job for unassigned_id='{}': {:?}",
+                job.unassigned_id, e
+            );
+        }
+    }
+    if tx.send(job).await.is_err() {
+        tracing::error!("Layer 6 Queue closed — dropping job");
+    }
+}
+
+/// Replays anything left in `layer6_pending_jobs` at startup — the durable
+/// record of jobs that were persisted but never reached `process_layer6_job`
+/// (queue full at send time doesn't apply here since capacity is 256; the
+/// real case is an app restart while the job was still sitting in the
+/// in-memory channel). Called once, after `spawn_queues`.
+pub async fn replay_pending_layer6_jobs(
+    pool: &Pool,
+    tx: &mpsc::Sender<Layer6Job>,
+    app_dir: std::path::PathBuf,
+) {
+    let conn = match pool.get().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("Failed to get DB connection for Layer 6 job replay: {}", e);
+            return;
+        }
+    };
+    let pending = match conn.interact(|c| crate::db::layer6_jobs::select_all(c)).await {
+        Ok(Ok(jobs)) => jobs,
+        _ => {
+            tracing::error!("Failed to read persisted Layer 6 jobs");
+            return;
+        }
+    };
+    if pending.is_empty() {
+        return;
+    }
+    tracing::info!(
+        "Replaying {} Layer 6 job(s) persisted before the last restart",
+        pending.len()
+    );
+    for job in pending {
+        let layer6_job = Layer6Job {
+            observation_id: job.observation_id,
+            unassigned_id: job.id,
+            bank_name: job.bank_name,
+            body_text: job.body_text,
+            app_dir: app_dir.clone(),
+            internal_date_seconds: job.internal_date_seconds,
+        };
+        if tx.send(layer6_job).await.is_err() {
+            tracing::error!("Layer 6 Queue closed during startup replay");
+            break;
+        }
+    }
+}
 
 /// Senders for all four queues, stored as Tauri managed state so every
 /// entry point (Gmail polling, historical scan, manual upload) reaches the
@@ -356,13 +436,33 @@ async fn process_layer6_job(
     pool: &Pool,
     learning: &crate::learning::LearningHandle,
 ) {
-    use crate::extraction::ladder::ExtractionLayer;
+    use crate::extraction::llm::Layer6Outcome;
+
+    // Durability window closes here: the job has been dequeued and is about
+    // to run, so a restart from this point on re-enters the same
+    // stay-open-and-retry-later behavior a timeout/failure already has
+    // (see the `TimedOut | Failed` arm below), not a silent drop. Deleting
+    // eagerly (rather than only on success) also avoids replaying a
+    // poison-pill job forever on every startup.
+    {
+        let unassigned_id = job.unassigned_id.clone();
+        if let Ok(conn) = pool.get().await {
+            if let Err(e) = conn
+                .interact(move |c| crate::db::layer6_jobs::delete(c, &unassigned_id))
+                .await
+            {
+                tracing::error!("Failed to delete persisted Layer 6 job: {:?}", e);
+            }
+        }
+    }
     let layer = crate::extraction::ladder::Layer6LlmLayer {
         app_dir: Some(job.app_dir.clone()),
+        fallback_event_time: job.internal_date_seconds,
     };
-    let result = layer.extract(pool, &job.bank_name, &job.body_text).await;
+    let result = layer.run(pool, &job.bank_name, &job.body_text).await;
     match result {
-        Some(mut enriched) => {
+        Layer6Outcome::Extracted(enriched) => {
+            let mut enriched = *enriched;
             // Drift self-healing. Since the 2026-07-26 scan-performance change,
             // Layer 6 no longer runs inside `run_extraction_ladder` on the scan
             // path -- it runs here. Doing the drift check only in the ladder
@@ -388,6 +488,7 @@ async fn process_layer6_job(
                 &job.bank_name,
                 &job.body_text,
             );
+            enriched.channel = crate::extraction::ladder::detect_channel(&enriched, &job.body_text);
 
             if let Err(e) =
                 apply_layer6_success(pool, &job.observation_id, &job.unassigned_id, enriched).await
@@ -398,7 +499,37 @@ async fn process_layer6_job(
                 );
             }
         }
-        None => {
+        Layer6Outcome::Rejected => {
+            // The model produced (and self-corrected) a response for this
+            // email on both attempts and it still never validated -- Layer 6
+            // has genuinely looked and there's no extractable transaction
+            // here (most commonly a marketing/notification email the content
+            // classifier let through). Terminal: mark it out of the open
+            // review queue instead of leaving it stuck in
+            // `pending_llm_enrichment` forever.
+            let mark_result: anyhow::Result<()> = async {
+                let unassigned_id = job.unassigned_id.clone();
+                let conn = pool.get().await?;
+                conn.interact(move |c| {
+                    crate::db::unassigned_transactions::update_status(
+                        c,
+                        &unassigned_id,
+                        "no_transaction_found",
+                    )
+                })
+                .await
+                .map_err(|e| anyhow::anyhow!("Interact error: {}", e))??;
+                Ok(())
+            }
+            .await;
+            if let Err(e) = mark_result {
+                tracing::error!(
+                    "Layer 6 background worker: failed to mark unassigned_id='{}' as no_transaction_found: {}",
+                    job.unassigned_id, e
+                );
+            }
+        }
+        Layer6Outcome::TimedOut | Layer6Outcome::Failed => {
             tracing::info!(
                 "Layer 6 background worker: no extraction for observation_id='{}' — leaving as unassigned",
                 job.observation_id
@@ -434,6 +565,23 @@ async fn apply_layer6_success(
         row.direction = enriched.direction;
         row.merchant_raw = enriched.merchant_raw;
         row.reference_id = enriched.reference_id;
+
+        // Same relabeling `message_processor` already applies on the
+        // Layer 1-5 path (see `self_transfer_destination_account`'s doc
+        // comment) -- Layer 6's LLM extraction has no dedicated
+        // self-transfer handling of its own, so without this a self-transfer
+        // recovered here keeps whichever raw destination-account string the
+        // model captured as `merchant_raw` instead of the placeholder.
+        let is_self_transfer = enriched.channel.as_deref() == Some("internal_transfer");
+        if is_self_transfer {
+            if let Some(dest_account) =
+                crate::ingestion::message_processor::MessageProcessor::self_transfer_destination_account(
+                    row.merchant_raw.as_deref(),
+                )
+            {
+                row.merchant_raw = Some(format!("Internal Transfer (A/c {dest_account})"));
+            }
+        }
         // enriched.event_time is an i64 Unix timestamp (UTC), same shape
         // normalize_observation converts from — mirror that conversion here.
         if let Some(ts) = enriched.event_time {
@@ -460,14 +608,31 @@ async fn apply_layer6_success(
                 )
                 .ok()
             }
-            _ => None,
+            // No masked identifier in the source at all (e.g. Jupiter's
+            // card-payment confirmations never print card digits) -- if the
+            // issuer resolves to exactly one instrument on file, there's no
+            // ambiguity about which one this is.
+            _ => enriched
+                .issuer_name
+                .as_deref()
+                .and_then(|iname| {
+                    crate::db::instruments::resolve_single_instrument_by_issuer(c, iname).ok()
+                })
+                .flatten(),
         };
         row.instrument_id = instrument_id.clone();
 
-        let confident_enough = enriched
-            .confidence_score
-            .map(|s| s >= LAYER6_AUTO_RESOLVE_CONFIDENCE_THRESHOLD)
-            .unwrap_or(false);
+        // A detected self-transfer skips the confidence gate: needle-
+        // verification already confirmed every field came from the source
+        // text, `detect_channel`'s "internal_transfer" match is a
+        // deterministic regex on the same body (not a model guess), and
+        // there's no merchant-identification ambiguity for the model's
+        // stated uncertainty to be hedging about in the first place.
+        let confident_enough = is_self_transfer
+            || enriched
+                .confidence_score
+                .map(|s| s >= LAYER6_AUTO_RESOLVE_CONFIDENCE_THRESHOLD)
+                .unwrap_or(false);
 
         crate::db::transaction_observations::update_observation(c, &row)?;
 
@@ -498,13 +663,25 @@ async fn apply_layer6_success(
                 fingerprint: row.fingerprint.clone(),
                 confidence_score: row.confidence_score,
                 event_time_confidence: row.event_time_confidence.clone(),
+                channel: row.channel.clone(),
             };
             crate::reconciliation::engine::reconcile_transactionally(c, &incoming_obs)?;
             crate::db::unassigned_transactions::update_status(c, &unassigned_id, "resolved")?;
+        } else {
+            // Still open -- refresh `reason` to reflect what's actually
+            // still missing now that Layer 6 has filled in its best guess,
+            // rather than leaving it frozen at the pre-enrichment gate3
+            // evaluation (see `update_reason`'s doc comment).
+            let has_instrument = instrument_id.is_some();
+            let reason = if row.merchant_raw.is_none() {
+                "gate3_failed:missing_counterparty"
+            } else if !has_instrument {
+                "gate3_failed:missing_instrument"
+            } else {
+                "gate3_failed:low_confidence"
+            };
+            crate::db::unassigned_transactions::update_reason(c, &unassigned_id, reason)?;
         }
-        // else: row already updated above with the LLM's best-guess fields
-        // (pre-fill), unassigned_transactions.status stays "open" so it's
-        // still visible in the review queue via select_open.
         Ok(())
     })
     .await
@@ -642,6 +819,7 @@ async fn process_mandate_job(
         connected_account_id: job.connected_account_id,
         raw_body: job.raw_body,
         raw_html: None,
+        email_meta: None,
     };
     if transaction_tx.send(tx_job).await.is_err() {
         tracing::error!("Transaction Queue closed — dropping mandate-generated ₹0 transaction job");
@@ -776,7 +954,7 @@ async fn process_transaction_job<R: tauri::Runtime>(
         &job.source_pipeline,
         &job.source_record_id,
         job.raw_body.as_deref(),
-        job.raw_html.as_deref(),
+        job.email_meta.as_ref(),
     );
 
     let connected_account_id = job.connected_account_id;
@@ -884,6 +1062,7 @@ async fn process_transaction_job<R: tauri::Runtime>(
                                 // email-vs-email precedence comparison.
                                 confidence_score: row.confidence_score,
                                 event_time_confidence: row.event_time_confidence.clone(),
+                                channel: row.channel.clone(),
                             };
 
                             match crate::reconciliation::engine::reconcile_transactionally(
@@ -1114,6 +1293,7 @@ mod layer6_tests {
             emi_total_installments: None,
             emi_installment_number: None,
             emi_original_amount_minor: None,
+            channel: None,
             is_deleted: false,
             created_at: Some(chrono::Utc::now().naive_utc()),
             updated_at: Some(chrono::Utc::now().naive_utc()),
@@ -1237,6 +1417,7 @@ mod layer6_tests {
             emi_total_installments: None,
             emi_installment_number: None,
             emi_original_amount_minor: None,
+            channel: None,
             is_deleted: false,
             created_at: Some(chrono::Utc::now().naive_utc()),
             updated_at: Some(chrono::Utc::now().naive_utc()),
@@ -1310,6 +1491,212 @@ mod layer6_tests {
             open.iter().all(|r| r.id != unassigned_id),
             "resolved unassigned row must no longer appear in select_open"
         );
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    /// Root-cause regression test for the 2026-07-31 finding: a self-
+    /// transfer Layer 6 correctly extracted (amount/merchant/instrument all
+    /// resolved) stayed stuck in the Unassigned queue because its
+    /// self-reported confidence (0.70) landed under the 0.75 auto-resolve
+    /// threshold, and because the destination-account placeholder relabeling
+    /// `message_processor` applies on the Layer 1-5 path was never reused
+    /// here. Both must now be fixed: a detected `internal_transfer` channel
+    /// bypasses the confidence gate, and `merchant_raw` gets the same
+    /// "Internal Transfer (A/c X)" placeholder instead of a raw account
+    /// number.
+    #[tokio::test]
+    async fn low_confidence_self_transfer_still_promotes_with_placeholder_merchant() {
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let pool = init_db(temp_dir.join("test.db")).await.expect("DB init failed");
+        let conn = pool.get().await.unwrap();
+
+        let observation_id = uuid::Uuid::new_v4().to_string();
+        let unassigned_id = uuid::Uuid::new_v4().to_string();
+
+        let base_row = crate::db::transaction_observations::TransactionObservationsRow {
+            id: observation_id.clone(),
+            canonical_transaction_id: None,
+            source_pipeline: Some("gmail_transaction".to_string()),
+            source_record_id: Some("msg_3".to_string()),
+            source_message_id: Some("msg_3".to_string()),
+            source_thread_id: None,
+            statement_id: None,
+            statement_entry_id: None,
+            instrument_id: None,
+            direction: None,
+            amount: None,
+            amount_minor: None,
+            currency: None,
+            event_time: None,
+            event_time_confidence: None,
+            posting_date: None,
+            merchant_raw: None,
+            merchant_normalized: None,
+            reference_id: None,
+            original_amount_minor: None,
+            original_currency: None,
+            exchange_rate: None,
+            balance_after_transaction: None,
+            timezone_at_ingestion: None,
+            fingerprint: Some(format!("pending_{}", observation_id)),
+            extraction_method: Some("pending_llm_enrichment".to_string()),
+            confidence_score: None,
+            raw_payload_json: None,
+            parser_version: None,
+            emi_total_installments: None,
+            emi_installment_number: None,
+            emi_original_amount_minor: None,
+            channel: None,
+            is_deleted: false,
+            created_at: Some(chrono::Utc::now().naive_utc()),
+            updated_at: Some(chrono::Utc::now().naive_utc()),
+        };
+        conn.interact({
+            let row = base_row.clone();
+            move |c| crate::db::transaction_observations::insert_observation(c, &row)
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        conn.interact({
+            let unassigned_id = unassigned_id.clone();
+            let observation_id = observation_id.clone();
+            move |c| {
+                crate::db::unassigned_transactions::insert(
+                    c,
+                    &crate::db::unassigned_transactions::UnassignedTransactionRow {
+                        id: unassigned_id,
+                        observation_id,
+                        reason: "gate3_failed:low_confidence".to_string(),
+                        status: "open".to_string(),
+                        created_at: None,
+                    },
+                )
+            }
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+        let enriched = crate::extraction::ladder::ExtractionResult {
+            amount_minor: Some(8216400),
+            currency: Some("INR".to_string()),
+            direction: Some("debit".to_string()),
+            merchant_raw: Some("account 1527".to_string()),
+            extraction_method: "llm_layer6".to_string(),
+            confidence_score: Some(0.70),
+            instrument_type: Some("bank_account".to_string()),
+            issuer_name: Some("HDFC Bank".to_string()),
+            masked_identifier: Some("4691".to_string()),
+            channel: Some("internal_transfer".to_string()),
+            ..Default::default()
+        };
+
+        apply_layer6_success(&pool, &observation_id, &unassigned_id, enriched)
+            .await
+            .unwrap();
+
+        let updated = conn
+            .interact({
+                let id = observation_id.clone();
+                move |c| crate::db::transaction_observations::get_observation(c, &id)
+            })
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(
+            updated.canonical_transaction_id.is_some(),
+            "a detected self-transfer must promote despite sub-threshold confidence"
+        );
+        assert_eq!(
+            updated.merchant_raw.as_deref(),
+            Some("Internal Transfer (A/c 1527)"),
+            "merchant_raw must get the same placeholder as the Layer 1-5 path, not the raw account string"
+        );
+
+        let open = conn
+            .interact(|c| crate::db::unassigned_transactions::select_open(c))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(open.iter().all(|r| r.id != unassigned_id));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    /// Root-cause regression test for the 2026-07-31 finding: 54 of 74
+    /// unassigned transactions were never even attempted by Layer 6 because
+    /// the app restarted while their jobs were still sitting in the
+    /// in-memory `mpsc` channel, which has no persistence. Proves the fix's
+    /// full lifecycle without a real app restart: `enqueue_layer6_job`
+    /// leaves a durable row behind, `replay_pending_layer6_jobs` (the
+    /// startup-recovery path) finds and re-sends it, and dequeuing via
+    /// `process_layer6_job` deletes the durable row so it isn't replayed
+    /// again on a future restart.
+    #[tokio::test]
+    async fn persisted_layer6_job_survives_until_dequeued() {
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let pool = init_db(temp_dir.join("test.db")).await.expect("DB init failed");
+        let conn = pool.get().await.unwrap();
+
+        let (tx, mut rx) = mpsc::channel::<Layer6Job>(4);
+        let job = Layer6Job {
+            observation_id: "obs-durability".to_string(),
+            unassigned_id: "unassigned-durability".to_string(),
+            bank_name: "HDFC Bank".to_string(),
+            body_text: "Rs. 100 debited".to_string(),
+            app_dir: temp_dir.clone(),
+            internal_date_seconds: None,
+        };
+        enqueue_layer6_job(&pool, &tx, job).await;
+
+        // Simulate the restart: nothing dequeued `rx` yet, but the durable
+        // row must already be there -- this is exactly the state a crash
+        // between enqueue and dequeue would leave behind.
+        let pending = conn
+            .interact(|c| crate::db::layer6_jobs::select_all(c))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            pending.len(),
+            1,
+            "job must be durably persisted before it's ever dequeued"
+        );
+        assert_eq!(pending[0].id, "unassigned-durability");
+
+        // Startup recovery: replay into a fresh channel, as `lib.rs` does.
+        let (replay_tx, mut replay_rx) = mpsc::channel::<Layer6Job>(4);
+        replay_pending_layer6_jobs(&pool, &replay_tx, temp_dir.clone()).await;
+        let replayed = replay_rx.recv().await.expect("replayed job must arrive");
+        assert_eq!(replayed.unassigned_id, "unassigned-durability");
+
+        // Dequeuing (the start of process_layer6_job) must clear the durable
+        // row so a *second* restart doesn't replay it forever.
+        {
+            let unassigned_id = replayed.unassigned_id.clone();
+            conn.interact(move |c| crate::db::layer6_jobs::delete(c, &unassigned_id))
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        let pending = conn
+            .interact(|c| crate::db::layer6_jobs::select_all(c))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            pending.is_empty(),
+            "durable row must be gone once the job has been dequeued for processing"
+        );
+
+        // The original channel's job is still there too (send always
+        // succeeds independently of persistence).
+        assert!(rx.recv().await.is_some());
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
