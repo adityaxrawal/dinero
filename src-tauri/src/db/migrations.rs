@@ -28,6 +28,25 @@ pub fn create_pre_migration_backup(conn: &Connection, db_path: &Path) -> Result<
     )
     .map_err(|e| anyhow::anyhow!("Failed to create pre-migration backup: {}", e))?;
 
+    // audit_08 #10: `VACUUM INTO` from an encrypted connection does produce an
+    // encrypted, complete file — but nothing checked it, and this is the copy
+    // a failed migration rolls back to. `verify_backup_integrity` re-opens it
+    // with the derived key and runs `integrity_check`, so an unopenable,
+    // unencrypted or truncated backup is caught now rather than at the moment
+    // it is needed. Its doc comment already named `finance.db.bak.*` as its
+    // subject; it was simply never wired into this path.
+    //
+    // Verify before pruning: a bad new backup must not push a good older one
+    // out of the retention window.
+    if let Err(e) = crate::db::backup::verify_backup_integrity(&backup_path) {
+        let _ = std::fs::remove_file(&backup_path);
+        return Err(anyhow::anyhow!(
+            "Pre-migration backup was created but failed verification ({}). \
+             Refusing to migrate without a restorable backup.",
+            e
+        ));
+    }
+
     prune_old_pre_migration_backups(backup_dir);
     Ok(backup_path)
 }
