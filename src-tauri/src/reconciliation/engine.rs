@@ -192,6 +192,16 @@ pub fn reconcile_transactionally(
 /// Main reconciliation entry point: takes an observation and a set of candidate canonical
 /// transactions fetched from the DB for that instrument/amount/direction/window.
 /// Returns the decision type taken.
+/// audit_09 #3: every branch below logs its outcome at `debug!`, not `info!`.
+/// Exactly one fires per reconciliation, so at `info!` a 100k-message
+/// historical scan wrote 100k lines that drowned out every genuine warning in
+/// the same file — the finding's own example of a level policy that makes log
+/// filtering impractical.
+///
+/// Nothing is lost by dropping the level: `append_match_decision` writes the
+/// same observation id, canonical id, decision and score to `match_decisions`
+/// in this very function, authoritatively and queryably, and that table (not
+/// the log) is what `do_get_debug_metrics` and the support bundle read.
 pub fn reconcile(
     conn: &Connection,
     obs: &IncomingObservation,
@@ -226,7 +236,7 @@ pub fn reconcile(
                         DecisionType::AutoMatchedExact,
                         None,
                     )?;
-                    tracing::info!(
+                    tracing::debug!(
                         observation_id = obs.id,
                         canonical_id = candidate.id,
                         decision = "AutoMatchedExact",
@@ -255,7 +265,7 @@ pub fn reconcile(
         // No candidates at all → new canonical transaction
         create_canonical_transaction(conn, obs)?;
         append_match_decision(conn, &obs.id, None, 0.0, DecisionType::NewCanonical, None)?;
-        tracing::info!(
+        tracing::debug!(
             observation_id = obs.id,
             decision = "NewCanonical",
             reason = "no_candidates",
@@ -275,7 +285,7 @@ pub fn reconcile(
         // No viable match → new canonical
         create_canonical_transaction(conn, obs)?;
         append_match_decision(conn, &obs.id, None, 0.0, DecisionType::NewCanonical, None)?;
-        tracing::info!(
+        tracing::debug!(
             observation_id = obs.id,
             decision = "NewCanonical",
             reason = "no_viable_candidates",
@@ -306,7 +316,7 @@ pub fn reconcile(
             DecisionType::AutoMatchedScored,
             None,
         )?;
-        tracing::info!(
+        tracing::debug!(
             observation_id = obs.id,
             canonical_id = top.candidate_id,
             decision = "AutoMatchedScored",
@@ -340,7 +350,7 @@ pub fn reconcile(
             DecisionType::AutoMatchedScored,
             None,
         )?;
-        tracing::info!(
+        tracing::debug!(
             observation_id = obs.id,
             canonical_id = top.candidate_id,
             decision = "AutoMatchedScored",
@@ -371,7 +381,7 @@ pub fn reconcile(
         DecisionType::AmbiguousPending(cluster_id.clone()),
         None,
     )?;
-    tracing::info!(
+    tracing::debug!(
         observation_id = obs.id,
         cluster_id = cluster_id,
         decision = "AmbiguousPending",
