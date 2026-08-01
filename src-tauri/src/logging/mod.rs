@@ -5,7 +5,12 @@
 //! - `logs/frontend.log`: React UI, component states, navigation, renderer errors.
 //! - `logs/api_calls.log`: Frontend <-> Backend Tauri IPC commands.
 //! - `logs/network.log`: Outbound HTTP/HTTPS requests, OAuth, downloads.
+//! - `logs/llm_calls.log`: Every LLM sidecar request/response — model, call type, attempt,
+//!   prompt/output char counts, wall-clock duration, outcome. Full prompt and output
+//!   bodies are gated at TRACE (`RUST_LOG=llm_calls=trace`); metadata always at INFO.
 //! - `logs/combined.log`: Master chronological log stream.
+
+pub mod llm_logger;
 
 use regex::Regex;
 use std::fs;
@@ -44,6 +49,7 @@ pub fn prune_old_logs(log_dir: &Path) {
             || file_name.starts_with("frontend.log")
             || file_name.starts_with("api_calls.log")
             || file_name.starts_with("network.log")
+            || file_name.starts_with("llm_calls.log")
             || file_name.starts_with("combined.log")
             || file_name.starts_with("app-logs.log");
 
@@ -145,6 +151,7 @@ pub struct CategorizedLogWriters {
     frontend: NonBlocking,
     api_calls: NonBlocking,
     network: NonBlocking,
+    llm_calls: NonBlocking,
     combined: NonBlocking,
 }
 
@@ -169,7 +176,14 @@ impl CategorizedLogWriters {
         let (network_w, g4) = tracing_appender::non_blocking(RedactingWriter::new(
             tracing_appender::rolling::daily(&logs_folder, "network.log"),
         ));
-        let (combined_w, g5) = tracing_appender::non_blocking(RedactingWriter::new(
+        // Dedicated LLM call log: one entry per sidecar request/response,
+        // including model ID, call type, attempt, duration, outcome, and
+        // (at TRACE) full prompt/output bodies. Routed from the "llm_calls"
+        // tracing target in `logging::llm_logger`.
+        let (llm_calls_w, g5) = tracing_appender::non_blocking(RedactingWriter::new(
+            tracing_appender::rolling::daily(&logs_folder, "llm_calls.log"),
+        ));
+        let (combined_w, g6) = tracing_appender::non_blocking(RedactingWriter::new(
             tracing_appender::rolling::daily(&logs_folder, "combined.log"),
         ));
 
@@ -178,10 +192,27 @@ impl CategorizedLogWriters {
             frontend: frontend_w,
             api_calls: api_calls_w,
             network: network_w,
+            llm_calls: llm_calls_w,
             combined: combined_w,
         };
 
-        (writers, vec![g1, g2, g3, g4, g5])
+        // Seed the direct writer so llm_logger can write rich box-drawing blocks
+        // to llm_calls.log without going through the tracing event formatter
+        // (which would collapse them to a single machine-readable line).
+        // tracing_appender::rolling::daily names files "<prefix>.<YYYY-MM-DD>".
+        {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default();
+            let secs = now.as_secs();
+            let days = secs / 86400;
+            let (y, mo, d) = llm_logger::epoch_days_to_ymd(days);
+            let date_suffix = format!("{:04}-{:02}-{:02}", y, mo, d);
+            let llm_log_path = logs_folder.join(format!("llm_calls.log.{}", date_suffix));
+            crate::logging::llm_logger::init_direct_writer(llm_log_path);
+        }
+
+        (writers, vec![g1, g2, g3, g4, g5, g6])
     }
 }
 
@@ -201,6 +232,8 @@ impl<'a> MakeWriter<'a> for CategorizedLogWriters {
             "frontend" => self.frontend.clone(),
             "api_calls" => self.api_calls.clone(),
             "network" => self.network.clone(),
+            // LLM call logs go to their own file; they also appear in combined.
+            "llm_calls" => self.llm_calls.clone(),
             _ => self.backend.clone(),
         };
 
