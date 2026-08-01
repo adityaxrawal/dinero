@@ -1008,6 +1008,18 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                                         };
                                     match fetch_result {
                                         Ok(pdf_bytes) => {
+                                            // audit_04 #4: the real content hash, checked for
+                                            // a prior import before anything is created or the
+                                            // user is prompted for a password.
+                                            let file_hash = match crate::statements::duplicate_check::hash_email_attachment_if_new(
+                                                &pdf_bytes, filename, &msg_id, &pool,
+                                            )
+                                            .await
+                                            {
+                                                Some(h) => h,
+                                                None => continue,
+                                            };
+
                                             // Doc 18 §4.7: the `statements` row must exist in
                                             // `queued` state before parsing begins, regardless
                                             // of entry point — same invariant as manual upload.
@@ -1085,9 +1097,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
 
                                             let job = crate::ingestion::queues::StatementJob {
                                                 filename: filename.clone(),
-                                                // Use message_id as the source_record_id /
-                                                // file_hash proxy for email-sourced statements.
-                                                file_hash: msg_id.clone(),
+                                                file_hash,
                                                 stmt_id,
                                                 // Doc 30 TASK-STMT-009: batch progress is a
                                                 // manual-upload-batch concept only.

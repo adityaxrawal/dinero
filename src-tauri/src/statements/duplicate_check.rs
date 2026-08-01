@@ -61,6 +61,67 @@ pub async fn check_file_hash_duplicate(
     }
 }
 
+/// Validates an email-sourced PDF attachment and returns its SHA-256, or
+/// `None` if it is not a usable PDF or has already been imported.
+///
+/// audit_04 #4: both email paths used to set `StatementJob.file_hash` to the
+/// Gmail `message_id` as a "proxy". `file_hash` is a *content* hash — the
+/// column `check_file_hash_duplicate` above queries — so the proxy meant the
+/// same statement forwarded or re-sent produced two unrelated values and was
+/// imported twice, and no email-sourced statement could ever match a manual
+/// upload of the same file. The message-id dimension it was standing in for is
+/// already covered separately by `check_source_message_duplicate`.
+///
+/// Called before the `statements` row is created and before password
+/// resolution, matching both the manual-upload ordering and this module's own
+/// "must happen BEFORE password resolution to avoid wasting processing" rule —
+/// a PDF we already have should not cost the user a password prompt.
+///
+/// Fails open on a DB error: a transient failure should not silently drop a
+/// statement, and `check_billing_cycle_duplicate` still runs downstream.
+pub async fn hash_email_attachment_if_new(
+    bytes: &[u8],
+    filename: &str,
+    msg_id: &str,
+    pool: &deadpool_sqlite::Pool,
+) -> Option<String> {
+    let file_hash = match crate::statements::validator::validate_and_hash(bytes) {
+        Ok(h) => h,
+        Err(e) => {
+            tracing::warn!(
+                "Skipping attachment '{}' on msg_id='{}': {}",
+                filename,
+                msg_id,
+                e
+            );
+            return None;
+        }
+    };
+
+    match check_file_hash_duplicate(&file_hash, None, pool).await {
+        Ok(DuplicateCheckResult::NoDuplicate) => {}
+        Ok(_) => {
+            tracing::info!(
+                "Skipping attachment '{}' on msg_id='{}': statement already imported (sha256={})",
+                filename,
+                msg_id,
+                file_hash
+            );
+            return None;
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Duplicate check failed for attachment '{}' on msg_id='{}' ({}) — proceeding",
+                filename,
+                msg_id,
+                e
+            );
+        }
+    }
+
+    Some(file_hash)
+}
+
 /// Checks whether a statement for this instrument and billing period already exists.
 ///
 /// Duplicate := same `instrument_id` AND same `billing_period_start` AND same `billing_period_end`
@@ -403,6 +464,63 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(no_match, DuplicateCheckResult::NoDuplicate);
+    }
+
+    /// audit_04 #4: email-sourced statements used the Gmail `message_id` as a
+    /// `file_hash` "proxy", so the same PDF arriving twice (forwarded, re-sent,
+    /// or already manually uploaded) never matched and was imported again.
+    /// The hash must be of the bytes, and a known one must be skipped.
+    #[tokio::test]
+    async fn email_attachment_hash_is_content_derived_and_skips_reimports() {
+        let pool = setup_db().await;
+        let pdf = b"%PDF-1.4 statement bytes";
+
+        let first = hash_email_attachment_if_new(pdf, "stmt.pdf", "msg_a", &pool)
+            .await
+            .expect("a new attachment must be accepted");
+        assert_ne!(first, "msg_a", "file_hash must not be the message id");
+        assert_eq!(
+            first,
+            crate::statements::validator::validate_and_hash(pdf).unwrap(),
+            "must be the same sha256 the manual-upload path computes"
+        );
+
+        // Same bytes from a *different* message -- a forward or re-send. The
+        // message-id proxy produced a fresh value here and re-imported.
+        let same_bytes_other_message =
+            hash_email_attachment_if_new(pdf, "stmt.pdf", "msg_b", &pool).await;
+        assert_eq!(
+            same_bytes_other_message,
+            Some(first.clone()),
+            "hash depends on content, not on which message carried it"
+        );
+
+        // Once imported under that hash, it must be skipped.
+        let conn = pool.get().await.unwrap();
+        let hash = first.clone();
+        conn.interact(move |c| {
+            crate::db::statements::insert_queued(
+                c,
+                "stmt_email_dup",
+                "gmail_email",
+                Some("msg_a"),
+                Some(&hash),
+            )
+            .unwrap();
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            hash_email_attachment_if_new(pdf, "stmt.pdf", "msg_b", &pool).await,
+            None,
+            "an already-imported statement must not be enqueued again"
+        );
+
+        // Not a PDF at all -- skipped before a row or a password prompt.
+        assert_eq!(
+            hash_email_attachment_if_new(b"not a pdf", "notes.pdf", "msg_c", &pool).await,
+            None
+        );
     }
 
     // ── test_filename_billing_period_heuristic (Doc 30 TASK-STMT-001) ───────
