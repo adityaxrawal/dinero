@@ -16,12 +16,17 @@ interface SourceEvidencePanelProps {
   currentBank?: string | null;
 }
 
-/** `raw_payload_json`'s shape, written by `normalize_observation` (Rust). */
 interface RawPayload {
   body?: string;
   html?: string | null;
   subject?: string | null;
+  date?: string | null;
   sender?: string | null;
+  sender_email?: string | null;
+  sender_domain?: string | null;
+  recipient?: string | null;
+  recipient_email?: string | null;
+  recipient_domain?: string | null;
 }
 
 function parseRawPayload(raw: string | null): RawPayload | null {
@@ -44,7 +49,8 @@ function OriginalEmailFrame({ payload }: { payload: RawPayload }) {
         html={payload.html}
         text={payload.body}
         subject={payload.subject}
-        sender={payload.sender}
+        sender={payload.sender || payload.sender_email}
+        date={payload.date}
         maxHeight="460px"
       />
     </div>

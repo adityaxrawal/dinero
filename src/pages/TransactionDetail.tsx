@@ -10,6 +10,7 @@ import {
   CheckCircle2,
   ArrowDownLeft,
   ArrowUpRight,
+  ArrowLeftRight,
   Repeat,
   MapPin,
   Hash,
@@ -29,7 +30,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
-import { cn } from '@/lib/utils';
+import { cn, channelLabel } from '@/lib/utils';
 import { formatCustomDate } from '@/lib/formatCustomDate';
 import { getErrorToast } from '@/lib/errorMapping';
 import { API } from '@/lib/ipc';
@@ -223,6 +224,12 @@ export default function TransactionDetail() {
               <Badge variant="outline" className="flex items-center gap-1">
                 <Repeat className="w-3 h-3" />
                 {tx.transaction_subtype}
+              </Badge>
+            )}
+            {tx.channel && (
+              <Badge variant="outline" className="flex items-center gap-1">
+                <ArrowLeftRight className="w-3 h-3" />
+                {channelLabel(tx.channel)}
               </Badge>
             )}
             {tx.status && <Badge variant="outline">{tx.status}</Badge>}

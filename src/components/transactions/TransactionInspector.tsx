@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   ArrowDownLeft,
   ArrowUpRight,
+  ArrowLeftRight,
   Repeat,
   Landmark,
   MapPin,
@@ -25,7 +26,7 @@ import {
   Pencil,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { cn } from '@/lib/utils';
+import { cn, channelLabel } from '@/lib/utils';
 import { formatCustomDate } from '@/lib/formatCustomDate';
 import { formatMoney } from '@/lib/formatMoney';
 import { useTransactionForm } from './useTransactionForm';
@@ -321,6 +322,12 @@ export default function TransactionInspector({
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#064E3B]/5 border border-[#064E3B]/10">
                 <Repeat className="w-3 h-3 text-[#064E3B]/60" />
                 {tx.transaction_subtype}
+              </span>
+            )}
+            {tx.channel && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-[#064E3B]/5 border border-[#064E3B]/10">
+                <ArrowLeftRight className="w-3 h-3 text-[#064E3B]/60" />
+                {channelLabel(tx.channel)}
               </span>
             )}
             {isForeignCurrency && (

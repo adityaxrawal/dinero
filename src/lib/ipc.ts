@@ -106,6 +106,7 @@ interface CanonicalTransaction {
   transaction_subtype: string | null;
   emi_group_id: string | null;
   category_id: string | null;
+  channel: string | null;
   is_deleted: boolean;
   created_at: string | null;
   updated_at: string | null;
@@ -145,6 +146,7 @@ export interface TransactionObservation {
   emi_total_installments: number | null;
   emi_installment_number: number | null;
   emi_original_amount_minor: number | null;
+  channel: string | null;
   is_deleted: boolean;
   created_at: string | null;
   updated_at: string | null;
@@ -407,6 +409,8 @@ export interface UnassignedTransactionRecord {
   source_message_id: string | null;
   body_snippet: string | null;
   raw_payload_json: string | null;
+  extraction_method?: string | null;
+  confidence_score?: number | null;
 }
 
 export interface InstrumentRecord {
@@ -617,7 +621,8 @@ export const API = {
     // G20/H10/J8 fix: renamed to match Doc 19 §8.1's documented `transactions_list`.
     list: (page = 1, filters?: TransactionListFilters) =>
       invokeCommand<TransactionsPage>('transactions_list', { page, filters }),
-    search: (query: string) => invokeCommand<TransactionRecord[]>('transactions_search', { query }),
+    search: (query: string, filters?: TransactionListFilters) =>
+      invokeCommand<TransactionRecord[]>('transactions_search', { query, filters }),
     // G12 fix: transaction_create/transaction_delete existed on the backend
     // but had no ipc.ts wrapper or UI at all. G20/H10/J8 fix: both renamed to
     // the plural `transactions_*` form to match Doc 19 §8.4/§8.5.

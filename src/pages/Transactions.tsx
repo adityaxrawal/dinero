@@ -52,6 +52,7 @@ export default function Transactions() {
   });
   const [searchQuery, setSearchQuery] = useState('');
   const isSearching = searchQuery.trim().length > 0;
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   // Selected transaction for inspector panel
   const [selectedTxId, setSelectedTxId] = useState<string | null>(null);
@@ -60,7 +61,24 @@ export default function Transactions() {
   const { data: categories = [] } = useCategoriesList();
 
   const infinite = useTransactionsInfiniteList(filters);
-  const search = useTransactionSearch(searchQuery);
+  const search = useTransactionSearch(searchQuery, filters);
+
+  // Global shortcut to focus search input (Cmd+K / Ctrl+K)
+  useEffect(() => {
+    const handleCmdK = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', handleCmdK);
+    return () => window.removeEventListener('keydown', handleCmdK);
+  }, []);
+
+  const categoryNameById = useMemo(
+    () => new Map(categories.map((c) => [c.id, c.name])),
+    [categories]
+  );
 
   const listedTransactions = useMemo(
     () => infinite.data?.pages.flatMap((p) => p.records) ?? [],
@@ -274,8 +292,9 @@ export default function Transactions() {
               aria-hidden="true"
             />
             <input
+              ref={searchInputRef}
               type="text"
-              placeholder="Search merchant, category..."
+              placeholder="Search merchant, category, amount, account..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={(e) => e.key === 'Escape' && setSearchQuery('')}
@@ -300,73 +319,71 @@ export default function Transactions() {
         </div>
 
         {/* Filter chips row */}
-        {!isSearching && (
-          <div className="flex items-center gap-1.5 px-3.5 py-2 flex-shrink-0 border-b border-[#064E3B]/10 bg-[#064E3B]/[0.02]">
-            <SlidersHorizontal
-              className="w-3 h-3 flex-shrink-0 opacity-40 mx-0.5 text-[#064E3B]"
-              aria-hidden="true"
-            />
+        <div className="flex items-center gap-1.5 px-3.5 py-2 flex-shrink-0 border-b border-[#064E3B]/10 bg-[#064E3B]/[0.02]">
+          <SlidersHorizontal
+            className="w-3 h-3 flex-shrink-0 opacity-40 mx-0.5 text-[#064E3B]"
+            aria-hidden="true"
+          />
 
-            <Select
-              value={filters.instrument_id ?? ALL}
-              onValueChange={(val) => setFilter('instrument_id', val === ALL ? undefined : val)}
+          <Select
+            value={filters.instrument_id ?? ALL}
+            onValueChange={(val) => setFilter('instrument_id', val === ALL ? undefined : val)}
+          >
+            <SelectTrigger
+              className={cn(
+                'h-6 text-[11px] font-semibold border-0 rounded-full px-2.5 min-w-[85px] max-w-[125px] cursor-pointer shadow-2xs',
+                filters.instrument_id
+                  ? 'bg-[#064E3B] text-[#F8E7C9]'
+                  : 'bg-[#064E3B]/5 text-[#064E3B] hover:bg-[#064E3B]/10'
+              )}
             >
-              <SelectTrigger
-                className={cn(
-                  'h-6 text-[11px] font-semibold border-0 rounded-full px-2.5 min-w-[85px] max-w-[125px] cursor-pointer shadow-2xs',
-                  filters.instrument_id
-                    ? 'bg-[#064E3B] text-[#F8E7C9]'
-                    : 'bg-[#064E3B]/5 text-[#064E3B] hover:bg-[#064E3B]/10'
-                )}
-              >
-                <SelectValue placeholder="Accounts" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL}>All Accounts</SelectItem>
-                {instruments.map((inst) => (
-                  <SelectItem key={inst.id} value={inst.id}>
-                    {inst.issuer_name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+              <SelectValue placeholder="Accounts" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL}>All Accounts</SelectItem>
+              {instruments.map((inst) => (
+                <SelectItem key={inst.id} value={inst.id}>
+                  {inst.issuer_name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
 
-            <Select
-              value={filters.category_id ?? ALL}
-              onValueChange={(val) => setFilter('category_id', val === ALL ? undefined : val)}
+          <Select
+            value={filters.category_id ?? ALL}
+            onValueChange={(val) => setFilter('category_id', val === ALL ? undefined : val)}
+          >
+            <SelectTrigger
+              className={cn(
+                'h-6 text-[11px] font-semibold border-0 rounded-full px-2.5 min-w-[85px] max-w-[125px] cursor-pointer shadow-2xs',
+                filters.category_id
+                  ? 'bg-[#064E3B] text-[#F8E7C9]'
+                  : 'bg-[#064E3B]/5 text-[#064E3B] hover:bg-[#064E3B]/10'
+              )}
             >
-              <SelectTrigger
-                className={cn(
-                  'h-6 text-[11px] font-semibold border-0 rounded-full px-2.5 min-w-[85px] max-w-[125px] cursor-pointer shadow-2xs',
-                  filters.category_id
-                    ? 'bg-[#064E3B] text-[#F8E7C9]'
-                    : 'bg-[#064E3B]/5 text-[#064E3B] hover:bg-[#064E3B]/10'
-                )}
-              >
-                <SelectValue placeholder="Categories" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL}>All Categories</SelectItem>
-                {categories.map((c) => (
-                  <SelectItem key={c.id} value={c.id}>
-                    {c.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+              <SelectValue placeholder="Categories" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL}>All Categories</SelectItem>
+              {categories.map((c) => (
+                <SelectItem key={c.id} value={c.id}>
+                  {c.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
 
-            {activeFilterCount > 0 && (
-              <button
-                type="button"
-                className="filter-chip text-[10px] font-bold py-0.5 px-2 rounded-full border text-red-600 border-red-500/20 hover:bg-red-500/10 cursor-pointer ml-auto"
-                onClick={() => setFilters({})}
-                aria-label="Clear all filters"
-              >
-                Reset
-              </button>
-            )}
-          </div>
-        )}
+          {activeFilterCount > 0 && (
+            <button
+              type="button"
+              className="filter-chip text-[10px] font-bold py-0.5 px-2 rounded-full border text-red-600 border-red-500/20 hover:bg-red-500/10 cursor-pointer ml-auto"
+              onClick={() => setFilters({})}
+              aria-label="Clear all filters"
+            >
+              Reset
+            </button>
+          )}
+        </div>
 
         {/* List items */}
         <div className="flex-1 overflow-y-auto px-2 py-2 space-y-3">
@@ -446,7 +463,7 @@ export default function Transactions() {
 
                           <div className="flex items-center justify-between text-[11px] font-medium opacity-80 gap-1 mt-0.5">
                             <span className="truncate">
-                              {tx.category || 'Uncategorized'}
+                              {categoryNameById.get(tx.category) || tx.category || 'Uncategorized'}
                               {instrument ? ` • ${instrument.issuer_name}` : ''}
                             </span>
                             <span
