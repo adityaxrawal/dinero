@@ -30,10 +30,11 @@ fn seed_txn(
     entity_id: Option<&str>,
 ) {
     conn.execute(
+        // `amount` omitted: generated from `amount_minor` (audit_05 #4).
         "INSERT INTO transactions
-             (id, instrument_id, amount_minor, amount, currency, direction,
+             (id, instrument_id, amount_minor, currency, direction,
               merchant_display_name, merchant_normalized_name, merchant_entity_id, is_deleted)
-         VALUES (?1, 'inst_1', 24543, 245.43, 'INR', 'debit', ?2, ?2, ?3, 0)",
+         VALUES (?1, 'inst_1', 24543, 'INR', 'debit', ?2, ?2, ?3, 0)",
         params![tx_id, merchant, entity_id],
     )
     .unwrap();

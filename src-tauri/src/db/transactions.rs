@@ -10,6 +10,12 @@ pub struct TransactionsRow {
     pub instrument_id: Option<String>,
     pub instrument_type: Option<String>,
     pub direction: Option<String>,
+    /// Read-only. Since migration 058 (audit_05 #4) this is a VIRTUAL generated
+    /// column (`amount_minor / 100.0`) -- SQLite computes it, so it can never
+    /// diverge from `amount_minor`. Populate `amount_minor` on writes; anything
+    /// set here is ignored by `insert_transaction`/`update_transaction` and
+    /// overwritten by the database on the next read. Never use it for
+    /// arithmetic: `amount_minor` is the exact integer value.
     pub amount: Option<f64>,
     pub amount_minor: Option<i64>,
     pub currency: Option<String>,
@@ -51,8 +57,11 @@ pub struct TransactionsRow {
 
 pub fn insert_transaction(conn: &Connection, tx: &TransactionsRow) -> Result<()> {
     conn.execute(
+        // `amount` is omitted deliberately (audit_05 #4): it is a generated
+        // column as of migration 058, so SQLite derives it from `amount_minor`
+        // and rejects any attempt to write it.
         "INSERT INTO transactions (
-            id, unique_event_id, instrument_id, instrument_type, direction, amount, amount_minor,
+            id, unique_event_id, instrument_id, instrument_type, direction, amount_minor,
             currency, authorization_time, best_event_time, event_time_confidence, best_posting_date,
             posting_date_confidence, merchant_display_name, merchant_normalized_name, merchant_entity_id,
             reference_id, location, original_amount_minor, original_currency, exchange_rate,
@@ -61,10 +70,10 @@ pub fn insert_transaction(conn: &Connection, tx: &TransactionsRow) -> Result<()>
             created_at, updated_at, notes
          ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-            ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, COALESCE(?33, CURRENT_TIMESTAMP), COALESCE(?34, CURRENT_TIMESTAMP), ?35
+            ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, COALESCE(?32, CURRENT_TIMESTAMP), COALESCE(?33, CURRENT_TIMESTAMP), ?34
          )",
         params![
-            tx.id, tx.unique_event_id, tx.instrument_id, tx.instrument_type, tx.direction, tx.amount,
+            tx.id, tx.unique_event_id, tx.instrument_id, tx.instrument_type, tx.direction,
             tx.amount_minor, tx.currency, tx.authorization_time, tx.best_event_time, tx.event_time_confidence,
             tx.best_posting_date, tx.posting_date_confidence, tx.merchant_display_name, tx.merchant_normalized_name,
             tx.merchant_entity_id, tx.reference_id, tx.location, tx.original_amount_minor, tx.original_currency,
@@ -78,18 +87,20 @@ pub fn insert_transaction(conn: &Connection, tx: &TransactionsRow) -> Result<()>
 
 pub fn update_transaction(conn: &Connection, tx: &TransactionsRow) -> Result<()> {
     let count = conn.execute(
+        // `amount` is omitted deliberately (audit_05 #4) -- generated column,
+        // see `insert_transaction` above.
         "UPDATE transactions SET
-            unique_event_id = ?2, instrument_id = ?3, instrument_type = ?4, direction = ?5, amount = ?6,
-            amount_minor = ?7, currency = ?8, authorization_time = ?9, best_event_time = ?10,
-            event_time_confidence = ?11, best_posting_date = ?12, posting_date_confidence = ?13,
-            merchant_display_name = ?14, merchant_normalized_name = ?15, merchant_entity_id = ?16,
-            reference_id = ?17, location = ?18, original_amount_minor = ?19, original_currency = ?20,
-            exchange_rate = ?21, balance_after_transaction = ?22, status = ?23, match_confidence = ?24,
-            source_mix = ?25, alert_fired = ?26, parent_transaction_id = ?27, transaction_subtype = ?28,
-            emi_group_id = ?29, category_id = ?30, channel = ?31, is_deleted = ?32, notes = ?33
+            unique_event_id = ?2, instrument_id = ?3, instrument_type = ?4, direction = ?5,
+            amount_minor = ?6, currency = ?7, authorization_time = ?8, best_event_time = ?9,
+            event_time_confidence = ?10, best_posting_date = ?11, posting_date_confidence = ?12,
+            merchant_display_name = ?13, merchant_normalized_name = ?14, merchant_entity_id = ?15,
+            reference_id = ?16, location = ?17, original_amount_minor = ?18, original_currency = ?19,
+            exchange_rate = ?20, balance_after_transaction = ?21, status = ?22, match_confidence = ?23,
+            source_mix = ?24, alert_fired = ?25, parent_transaction_id = ?26, transaction_subtype = ?27,
+            emi_group_id = ?28, category_id = ?29, channel = ?30, is_deleted = ?31, notes = ?32
          WHERE id = ?1",
         params![
-            tx.id, tx.unique_event_id, tx.instrument_id, tx.instrument_type, tx.direction, tx.amount,
+            tx.id, tx.unique_event_id, tx.instrument_id, tx.instrument_type, tx.direction,
             tx.amount_minor, tx.currency, tx.authorization_time, tx.best_event_time, tx.event_time_confidence,
             tx.best_posting_date, tx.posting_date_confidence, tx.merchant_display_name, tx.merchant_normalized_name,
             tx.merchant_entity_id, tx.reference_id, tx.location, tx.original_amount_minor, tx.original_currency,

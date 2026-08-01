@@ -285,6 +285,87 @@ mod tests {
         assert_eq!(fetched.amount_minor.unwrap(), 10050);
     }
 
+    /// audit_05 #4: `amount` is a VIRTUAL generated column (migration 058), so
+    /// it is always exactly `amount_minor / 100.0` and cannot drift out of sync
+    /// no matter what a caller puts in the struct field. Fails if someone
+    /// re-adds `amount` to the INSERT/UPDATE column lists or drops the
+    /// GENERATED clause from the schema.
+    #[test]
+    fn test_transaction_amount_is_generated_from_amount_minor() {
+        let conn = setup_db();
+
+        let mut tx = TransactionsRow {
+            id: "tx_gen".into(),
+            unique_event_id: None,
+            instrument_id: None,
+            instrument_type: None,
+            direction: None,
+            // Deliberately wrong: a caller trying to write a diverging value.
+            // The generated column must ignore this entirely.
+            amount: Some(999_999.99),
+            amount_minor: Some(10050),
+            currency: Some("INR".into()),
+            authorization_time: None,
+            best_event_time: None,
+            event_time_confidence: None,
+            best_posting_date: None,
+            posting_date_confidence: None,
+            merchant_display_name: None,
+            merchant_normalized_name: None,
+            merchant_entity_id: None,
+            reference_id: None,
+            location: None,
+            original_amount_minor: None,
+            original_currency: None,
+            exchange_rate: None,
+            balance_after_transaction: None,
+            status: None,
+            match_confidence: None,
+            source_mix: None,
+            alert_fired: None,
+            parent_transaction_id: None,
+            transaction_subtype: None,
+            emi_group_id: None,
+            category_id: None,
+            channel: None,
+            notes: None,
+            is_deleted: false,
+            created_at: None,
+            updated_at: None,
+        };
+
+        transactions::insert_transaction(&conn, &tx).unwrap();
+        let fetched = transactions::get_transaction(&conn, "tx_gen")
+            .unwrap()
+            .unwrap();
+        assert_eq!(fetched.amount_minor.unwrap(), 10050);
+        assert_eq!(
+            fetched.amount.unwrap(),
+            100.50,
+            "amount must be derived from amount_minor, not the value the caller supplied"
+        );
+
+        // Same on the update path.
+        tx.amount_minor = Some(-45_050);
+        tx.amount = Some(0.0);
+        transactions::update_transaction(&conn, &tx).unwrap();
+        let updated = transactions::get_transaction(&conn, "tx_gen")
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.amount_minor.unwrap(), -45_050);
+        assert_eq!(updated.amount.unwrap(), -450.50);
+
+        // A NULL amount_minor must yield a NULL amount, not 0.0 -- otherwise an
+        // unknown amount would silently read as a real zero-rupee transaction.
+        tx.amount_minor = None;
+        transactions::update_transaction(&conn, &tx).unwrap();
+        let nulled = transactions::get_transaction(&conn, "tx_gen")
+            .unwrap()
+            .unwrap();
+        assert!(nulled.amount_minor.is_none());
+        assert!(nulled.amount.is_none());
+    }
+
     // Will skip writing detailed tests for all 16 to save space, but prove basic table ops
     #[test]
     fn test_other_tables_insert() {

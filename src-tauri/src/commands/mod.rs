@@ -2578,14 +2578,12 @@ fn apply_transaction_field_update(
     let mut new_notes = old_tx.notes.clone();
     let mut new_location = old_tx.location.clone();
     let mut new_amount_minor = old_tx.amount_minor;
-    let mut new_amount = old_tx.amount;
     let mut new_direction = old_tx.direction.clone();
     let mut new_event_time = old_tx.best_event_time;
     let mut new_instrument_id = old_tx.instrument_id.clone();
 
     if let Some(amt_minor) = amount_minor {
         new_amount_minor = Some(amt_minor);
-        new_amount = Some(amt_minor as f64 / 100.0);
     }
     if let Some(dir) = direction {
         new_direction = Some(dir);
@@ -2695,12 +2693,14 @@ fn apply_transaction_field_update(
     }
 
     conn.execute(
+        // `amount` is not written: it is a generated column derived from
+        // `amount_minor` (audit_05 #4, migration 058).
         "UPDATE transactions
          SET merchant_display_name = ?1, merchant_normalized_name = ?2, merchant_entity_id = ?3,
              category_id = ?4, notes = ?5, location = ?6,
-             amount_minor = ?7, amount = ?8, direction = ?9, best_event_time = ?10, instrument_id = ?11,
+             amount_minor = ?7, direction = ?8, best_event_time = ?9, instrument_id = ?10,
              updated_at = CURRENT_TIMESTAMP
-         WHERE id = ?12",
+         WHERE id = ?11",
         rusqlite::params![
             new_merchant,
             new_merchant_normalized,
@@ -2709,7 +2709,6 @@ fn apply_transaction_field_update(
             new_notes,
             new_location,
             new_amount_minor,
-            new_amount,
             new_direction,
             new_event_time,
             new_instrument_id,

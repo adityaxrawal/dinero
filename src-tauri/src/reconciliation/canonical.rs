@@ -64,7 +64,9 @@ pub fn create_canonical_transaction(conn: &Connection, obs: &IncomingObservation
         instrument_id: if obs.instrument_id == "unknown" { None } else { Some(obs.instrument_id.clone()) },
         instrument_type: None,
         direction: Some(obs.direction.clone()),
-        amount: Some((obs.amount_minor as f64) / 100.0),
+        // Generated column (audit_05 #4) -- SQLite derives it from
+        // `amount_minor`, so anything set here would be ignored.
+        amount: None,
         amount_minor: Some(obs.amount_minor),
         currency: Some(obs.currency.clone()),
         authorization_time: event_time_dt,
@@ -178,7 +180,10 @@ pub fn update_canonical_with_statement(
             best_posting_date = COALESCE(?3, best_posting_date),
             merchant_display_name = COALESCE(?4, merchant_display_name),
             amount_minor = COALESCE(?5, amount_minor),
-            amount = COALESCE(CAST(?5 AS REAL)/100.0, amount),
+            -- audit_05 #4: `amount` used to be hand-synced here as
+            -- `COALESCE(CAST(?5 AS REAL)/100.0, amount)`. It is a generated
+            -- column as of migration 058, so SQLite derives it from
+            -- `amount_minor` and writing it is now an error.
             -- Doc 18 §4.3: 'email_only' becomes 'merged' once statement
             -- evidence arrives too; an already-'statement_only'/'merged' row
             -- stays as-is (this is itself still statement evidence, not a
