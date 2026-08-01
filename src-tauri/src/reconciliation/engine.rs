@@ -88,11 +88,37 @@ pub fn fetch_candidates(
     obs: &IncomingObservation,
 ) -> Result<Vec<CanonicalCandidate>> {
     let fmt = "%Y-%m-%d %H:%M:%S";
+    // audit_02 #4: this used to be `.unwrap_or_default()`, which silently
+    // yielded `NaiveDateTime::default()` -- the Unix epoch. The candidate
+    // window below is +/-3 days around this value, so an unparseable
+    // `event_time` searched 1970 instead of the transaction's actual date,
+    // reliably found nothing, and let the caller create a *new* canonical
+    // transaction for an event that already had one. That is a silent
+    // duplicate in the user's financial history, produced by a date bug two
+    // layers upstream.
+    //
+    // The upstream producers (`ingestion::queues`, `reconciliation::cluster`)
+    // format a real `NaiveDateTime` -- always parseable -- but fall back to
+    // `unwrap_or_default()` (the empty string) when the stored `event_time`
+    // is NULL. So the realistic input here is `""`, not a malformed date.
+    // Failing closed surfaces that as a rolled-back reconciliation
+    // (`reconcile_transactionally` rolls back on `Err`) rather than a
+    // duplicate row nobody notices.
     let event_time_dt = chrono::NaiveDateTime::parse_from_str(&obs.event_time, fmt)
         .or_else(|_| {
             chrono::NaiveDateTime::parse_from_str(&format!("{} 00:00:00", obs.event_time), fmt)
         })
-        .unwrap_or_default();
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Observation {} has an unparseable event_time {:?} ({}). Refusing to \
+                 reconcile: searching a candidate window around the Unix epoch would \
+                 create a duplicate canonical transaction instead of matching the \
+                 existing one.",
+                obs.id,
+                obs.event_time,
+                e
+            )
+        })?;
 
     let rows = crate::db::transactions::find_candidates_within_window(
         conn,

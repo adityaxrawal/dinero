@@ -1480,6 +1480,68 @@ fn test_resolve_cluster_validates_action_enum() {
     assert_eq!(status, "open");
 }
 
+/// audit_02 #4: an unparseable `event_time` must fail closed rather than
+/// silently defaulting to the Unix epoch. The old `.unwrap_or_default()`
+/// searched a +/-3-day window around 1970, found nothing, and let the caller
+/// create a duplicate canonical transaction for an event that already had one.
+///
+/// The realistic bad input is the empty string: the upstream producers in
+/// `ingestion::queues` and `reconciliation::cluster` format a real
+/// `NaiveDateTime`, but fall back to `""` when the stored `event_time` is NULL.
+#[test]
+fn test_unparseable_event_time_is_rejected_not_defaulted_to_epoch() {
+    let conn = setup_test_db();
+
+    // A canonical row that the observation below *should* match on its real
+    // date, and must not silently duplicate.
+    conn.execute(
+        "INSERT INTO transactions (id, instrument_id, amount_minor, currency, direction, best_event_time, merchant_normalized_name)
+         VALUES ('cand_epoch', 'inst_1', 500, 'USD', 'debit', '2026-06-10 12:00:00', 'Starbucks')",
+        [],
+    ).unwrap();
+
+    let mut obs = crate::reconciliation::engine::IncomingObservation {
+        id: "obs_bad_date".to_string(),
+        instrument_id: "inst_1".to_string(),
+        amount_minor: 500,
+        currency: "USD".to_string(),
+        direction: "debit".to_string(),
+        event_time: String::new(),
+        reference_id: None,
+        merchant_raw: Some("Starbucks".to_string()),
+        source_pipeline: "manual".to_string(),
+        source_record_id: "manual_bad".to_string(),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
+        fingerprint: None,
+        confidence_score: None,
+        event_time_confidence: None,
+        channel: None,
+    };
+
+    // NULL event_time upstream -> empty string here.
+    let err = crate::reconciliation::engine::fetch_candidates(&conn, &obs)
+        .expect_err("an empty event_time must not silently reconcile against 1970");
+    assert!(
+        err.to_string().contains("unparseable event_time"),
+        "got: {err}"
+    );
+
+    // A genuinely malformed date is rejected the same way.
+    obs.event_time = "not-a-date".to_string();
+    assert!(crate::reconciliation::engine::fetch_candidates(&conn, &obs).is_err());
+
+    // The date-only form is still accepted (midnight), not collateral damage.
+    obs.event_time = "2026-06-10".to_string();
+    assert!(crate::reconciliation::engine::fetch_candidates(&conn, &obs).is_ok());
+
+    // And the normal full form still matches the real candidate.
+    obs.event_time = "2026-06-10 12:00:00".to_string();
+    let candidates = crate::reconciliation::engine::fetch_candidates(&conn, &obs).unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].id, "cand_epoch");
+}
+
 #[test]
 fn test_manual_entry_triggers_realtime_reconciliation() {
     let conn = setup_test_db();

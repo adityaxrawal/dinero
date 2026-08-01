@@ -490,8 +490,14 @@ async fn process_layer6_job(
             );
             enriched.channel = crate::extraction::ladder::detect_channel(&enriched, &job.body_text);
 
-            if let Err(e) =
-                apply_layer6_success(pool, &job.observation_id, &job.unassigned_id, enriched).await
+            if let Err(e) = apply_layer6_success(
+                pool,
+                &job.observation_id,
+                &job.unassigned_id,
+                enriched,
+                job.internal_date_seconds,
+            )
+            .await
             {
                 tracing::error!(
                     "Layer 6 background worker: failed to apply success for observation_id='{}': {}",
@@ -553,6 +559,7 @@ async fn apply_layer6_success(
     observation_id: &str,
     unassigned_id: &str,
     enriched: ExtractionResult,
+    internal_date_seconds: Option<i64>,
 ) -> anyhow::Result<()> {
     let observation_id = observation_id.to_string();
     let unassigned_id = unassigned_id.to_string();
@@ -584,7 +591,18 @@ async fn apply_layer6_success(
         }
         // enriched.event_time is an i64 Unix timestamp (UTC), same shape
         // normalize_observation converts from — mirror that conversion here.
-        if let Some(ts) = enriched.event_time {
+        //
+        // audit_02 #4: fall back to the email's Gmail `internalDate` when the
+        // model omits a date, which `Layer6Job::internal_date_seconds`'s own
+        // doc comment notes it does "on essentially every call". The
+        // placeholder observation this upgrades was created from
+        // `ExtractionResult::default()`, so its `event_time` is NULL until
+        // something sets it here. Leaving it NULL meant the promotion below
+        // reconciled against an empty `event_time` string, which
+        // `fetch_candidates` used to silently read as the Unix epoch — a
+        // ±3-day candidate window around 1970 that matched nothing and
+        // created a duplicate canonical transaction every time.
+        if let Some(ts) = enriched.event_time.or(internal_date_seconds) {
             use chrono::TimeZone;
             let dt_utc = chrono::Utc.timestamp_opt(ts, 0).unwrap();
             let ist_offset = chrono::FixedOffset::east_opt(5 * 3600 + 30 * 60).unwrap();
@@ -1335,9 +1353,19 @@ mod layer6_tests {
             ..Default::default()
         };
 
-        apply_layer6_success(&pool, &observation_id, &unassigned_id, enriched)
-            .await
-            .unwrap();
+        // Gmail's `internalDate` for the source email. Production always has
+        // one, and the placeholder observation's own `event_time` is NULL (it
+        // was built from `ExtractionResult::default()`), so this is the only
+        // date the promotion can use -- see audit_02 #4.
+        apply_layer6_success(
+            &pool,
+            &observation_id,
+            &unassigned_id,
+            enriched,
+            Some(1_780_000_000),
+        )
+        .await
+        .unwrap();
 
         let updated = conn
             .interact({
@@ -1463,9 +1491,19 @@ mod layer6_tests {
             ..Default::default()
         };
 
-        apply_layer6_success(&pool, &observation_id, &unassigned_id, enriched)
-            .await
-            .unwrap();
+        // Gmail's `internalDate` for the source email. Production always has
+        // one, and the placeholder observation's own `event_time` is NULL (it
+        // was built from `ExtractionResult::default()`), so this is the only
+        // date the promotion can use -- see audit_02 #4.
+        apply_layer6_success(
+            &pool,
+            &observation_id,
+            &unassigned_id,
+            enriched,
+            Some(1_780_000_000),
+        )
+        .await
+        .unwrap();
 
         let updated = conn
             .interact({
@@ -1594,9 +1632,19 @@ mod layer6_tests {
             ..Default::default()
         };
 
-        apply_layer6_success(&pool, &observation_id, &unassigned_id, enriched)
-            .await
-            .unwrap();
+        // Gmail's `internalDate` for the source email. Production always has
+        // one, and the placeholder observation's own `event_time` is NULL (it
+        // was built from `ExtractionResult::default()`), so this is the only
+        // date the promotion can use -- see audit_02 #4.
+        apply_layer6_success(
+            &pool,
+            &observation_id,
+            &unassigned_id,
+            enriched,
+            Some(1_780_000_000),
+        )
+        .await
+        .unwrap();
 
         let updated = conn
             .interact({
@@ -1610,6 +1658,14 @@ mod layer6_tests {
         assert!(
             updated.canonical_transaction_id.is_some(),
             "a detected self-transfer must promote despite sub-threshold confidence"
+        );
+        // audit_02 #4: the LLM returned no date, so the promotion must have
+        // taken the email's internalDate. A NULL here means reconciliation ran
+        // against a candidate window around the Unix epoch and the promotion
+        // produced a duplicate rather than a match.
+        assert!(
+            updated.event_time.is_some(),
+            "a promoted Layer 6 observation must carry a real event_time, not NULL"
         );
         assert_eq!(
             updated.merchant_raw.as_deref(),
