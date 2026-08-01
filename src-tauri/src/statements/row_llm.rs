@@ -208,11 +208,15 @@ pub async fn extract_unparsed_pages(
 
         sent += 1;
         let prompt = generate_prompt(issuer, &page.text);
-        let raw = match crate::llama_sidecar::complete_with_schema(
+        let raw = match crate::llama_sidecar::complete_with_schema_and_context(
             app_dir,
             model_id,
             &prompt,
             rows_schema(),
+            crate::logging::llm_logger::LlmCallContext::new(
+                crate::logging::llm_logger::LlmCallType::StatementRowExtraction,
+                1,
+            ),
         )
         .await
         {

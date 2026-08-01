@@ -222,6 +222,7 @@ mod tests {
                 transaction_subtype: None,
                 emi_group_id: None,
                 category_id: None,
+                channel: None,
                 notes: None,
                 is_deleted: false,
                 created_at: None,

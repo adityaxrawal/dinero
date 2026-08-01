@@ -1,4 +1,5 @@
 use super::ladder::ExtractionResult;
+use crate::logging::llm_logger::{LlmCallContext, LlmCallType};
 use serde::Deserialize;
 use std::path::Path;
 use tracing::{debug, error};
@@ -22,7 +23,18 @@ pub struct LlmEngine {
 pub enum Layer6Outcome {
     Extracted(Box<ExtractionResult>),
     TimedOut,
+    /// Infra-level failure (no model downloaded, sidecar unreachable) --
+    /// tells us nothing about whether the email is a real transaction, so
+    /// it must stay retriable rather than ever being treated as terminal.
     Failed,
+    /// The model produced a response on both attempts (including the
+    /// self-correction retry) but it never parsed/validated -- i.e. Layer 6
+    /// actually looked at this email and confirmed there's no extractable
+    /// transaction in it (a misclassified marketing/notification email, most
+    /// commonly). Distinct from `Failed` so the caller can treat this as a
+    /// terminal, non-retriable "not a transaction" result instead of leaving
+    /// the item stuck in the review queue forever.
+    Rejected,
 }
 
 /// Internal to `LlmEngine::run_completion` -- one sidecar call's raw outcome,
@@ -157,21 +169,40 @@ impl LlmEngine {
     /// yields to the Tokio runtime while waiting, so other concurrent
     /// fetches proceed while this one waits for `llama-server` or until its
     /// completion semaphore is free next time.
-    pub async fn extract(&self, bank_name: &str, body_text: &str) -> Layer6Outcome {
+    /// `fallback_event_time` (Gmail's `internalDate`, already resolved by the
+    /// caller) fills in for the model's self-reported `event_time` when it
+    /// omits that field -- which the JSON-schema grammar sent to `llama-server`
+    /// allows it to do (no `required` list) and which it does on essentially
+    /// every real call, since bank emails rarely state the transaction time as
+    /// a Unix timestamp the model could copy verbatim. Without a fallback here,
+    /// `ExtractionResult::is_valid()`'s unconditional `event_time.is_some()`
+    /// check rejects an otherwise-correct extraction as "unparseable JSON".
+    pub async fn extract(
+        &self,
+        bank_name: &str,
+        body_text: &str,
+        fallback_event_time: Option<i64>,
+    ) -> Layer6Outcome {
         let prompt = Self::generate_prompt(bank_name, body_text);
-        match self.run_completion(&prompt, body_text).await {
+        match self
+            .run_completion(&prompt, body_text, 1, fallback_event_time)
+            .await
+        {
             CompletionAttempt::Extracted(result) => Layer6Outcome::Extracted(result),
             CompletionAttempt::TimedOut => Layer6Outcome::TimedOut,
             CompletionAttempt::Rejected(raw_output) => {
                 debug!("Layer 6 LLM output rejected on first attempt, retrying with correction prompt");
                 let correction_prompt =
                     Self::generate_correction_prompt(bank_name, body_text, &raw_output);
-                match self.run_completion(&correction_prompt, body_text).await {
+                match self
+                    .run_completion(&correction_prompt, body_text, 2, fallback_event_time)
+                    .await
+                {
                     CompletionAttempt::Extracted(result) => Layer6Outcome::Extracted(result),
                     CompletionAttempt::TimedOut => Layer6Outcome::TimedOut,
                     CompletionAttempt::Rejected(_) => {
                         debug!("Layer 6 LLM output rejected again after self-correction retry");
-                        Layer6Outcome::Failed
+                        Layer6Outcome::Rejected
                     }
                     CompletionAttempt::InfraFailed => Layer6Outcome::Failed,
                 }
@@ -184,7 +215,18 @@ impl LlmEngine {
     /// of `extract` so the self-correction retry (spec optimization #3) can
     /// reuse the exact same timeout/backoff/parse/validate logic instead of
     /// duplicating it.
-    async fn run_completion(&self, prompt: &str, body_text: &str) -> CompletionAttempt {
+    ///
+    /// `attempt` is 1 for the first try and 2 for the self-correction retry.
+    /// It is stamped on every `llm_calls.log` entry so retry patterns are
+    /// distinguishable without post-processing.
+    async fn run_completion(
+        &self,
+        prompt: &str,
+        body_text: &str,
+        attempt: u8,
+        fallback_event_time: Option<i64>,
+    ) -> CompletionAttempt {
+        let ctx = LlmCallContext::new(LlmCallType::Layer6Extraction, attempt);
         let mut retry_delay = std::time::Duration::from_millis(1000);
         let max_delay = std::time::Duration::from_millis(2000);
         let max_total_wait = std::time::Duration::from_secs(120);
@@ -192,10 +234,12 @@ impl LlmEngine {
 
         let mut timed_out = false;
         let raw_output = loop {
-            let result = crate::llama_sidecar::complete_with_calibrated_timeout(
+            let result = crate::llama_sidecar::complete_with_schema_and_context(
                 &self.app_dir,
                 &self.model_id,
                 prompt,
+                crate::llama_sidecar::layer6_json_schema_pub(),
+                ctx,
             ).await;
 
             match result {
@@ -221,7 +265,7 @@ impl LlmEngine {
         };
 
         match raw_output {
-            Some(raw) => match self.classify_raw_output(&raw, body_text) {
+            Some(raw) => match self.classify_raw_output(&raw, body_text, fallback_event_time) {
                 RawOutputOutcome::Accepted(parsed) => CompletionAttempt::Extracted(parsed),
                 RawOutputOutcome::FailedValidation => {
                     debug!(
@@ -240,8 +284,13 @@ impl LlmEngine {
         }
     }
 
-    fn classify_raw_output(&self, raw: &str, body_text: &str) -> RawOutputOutcome {
-        match self.parse_json_to_result(raw) {
+    fn classify_raw_output(
+        &self,
+        raw: &str,
+        body_text: &str,
+        fallback_event_time: Option<i64>,
+    ) -> RawOutputOutcome {
+        match self.parse_json_to_result(raw, fallback_event_time) {
             Some(parsed) if Self::validate_against_source(&parsed, body_text) => {
                 RawOutputOutcome::Accepted(Box::new(parsed))
             }
@@ -310,8 +359,15 @@ impl LlmEngine {
         false
     }
 
-    /// Parses the raw text output from the LLM, extracting JSON and converting to ExtractionResult.
-    pub fn parse_json_to_result(&self, llm_output: &str) -> Option<ExtractionResult> {
+    /// Parses the raw text output from the LLM, extracting JSON and converting
+    /// to ExtractionResult. `fallback_event_time` fills in for the model's
+    /// `event_time` when it's absent from the JSON -- see `extract`'s doc
+    /// comment for why that's the normal case, not an edge case.
+    pub fn parse_json_to_result(
+        &self,
+        llm_output: &str,
+        fallback_event_time: Option<i64>,
+    ) -> Option<ExtractionResult> {
         // 1. Extract JSON block if it's wrapped in markdown
         let json_str = Self::extract_json_block(llm_output).unwrap_or(llm_output);
 
@@ -337,7 +393,7 @@ impl LlmEngine {
             currency: parsed.currency,
             direction: parsed.direction,
             merchant_raw: parsed.merchant,
-            event_time: parsed.event_time,
+            event_time: parsed.event_time.or(fallback_event_time),
             reference_id: parsed.reference_id,
             ..Default::default()
         };
@@ -385,7 +441,7 @@ mod tests {
                       "merchant": "Amazon", "event_time": 1704412200, "reference_id": null,
                       "confidence": 0.35}"#;
         let result = engine
-            .parse_json_to_result(raw)
+            .parse_json_to_result(raw, None)
             .expect("valid JSON with amount must parse");
         assert_eq!(result.confidence_score, Some(0.35));
     }
@@ -399,9 +455,34 @@ mod tests {
         let raw = r#"{"amount": 500.00, "currency": "INR", "direction": "debit",
                       "merchant": "Amazon", "event_time": 1704412200, "reference_id": null}"#;
         let result = engine
-            .parse_json_to_result(raw)
+            .parse_json_to_result(raw, None)
             .expect("valid JSON with amount must parse");
         assert_eq!(result.confidence_score, Some(0.0));
+    }
+
+    /// Regression test for a 100% Layer 6 failure rate observed in
+    /// production (2026-07-30 root-cause analysis of the Unassigned queue):
+    /// the model's JSON schema/grammar has no `required` list, so every
+    /// real call omits `event_time`, and `ExtractionResult::is_valid()`
+    /// unconditionally required it -- rejecting an otherwise-correct
+    /// extraction as "unparseable JSON" every single time. A caller-supplied
+    /// fallback (Gmail's `internalDate`) must fill the gap.
+    #[test]
+    fn test_llm_output_missing_event_time_uses_fallback() {
+        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
+        let raw = r#"{"amount": 5194.00, "currency": "INR", "direction": "debit",
+                      "merchant": "Edge CSB Bank Credit Card", "reference_id": "1321778584196999168"}"#;
+
+        assert!(
+            engine.parse_json_to_result(raw, None).is_none(),
+            "without a fallback, a missing event_time must still fail is_valid()"
+        );
+
+        let result = engine
+            .parse_json_to_result(raw, Some(1747026600))
+            .expect("a fallback event_time must let this parse and pass is_valid()");
+        assert_eq!(result.event_time, Some(1747026600));
+        assert_eq!(result.merchant_raw.as_deref(), Some("Edge CSB Bank Credit Card"));
     }
 
     /// Doc 30 TASK-TXN-006 acceptance test.
@@ -409,10 +490,10 @@ mod tests {
     fn test_llm_output_schema_validation_rejects_malformed_json() {
         let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
         let malformed = r#"{ "amount": 50.0, "currency": "USD" "merchant": "Netflix" "#;
-        assert!(engine.parse_json_to_result(malformed).is_none());
+        assert!(engine.parse_json_to_result(malformed, None).is_none());
 
         let not_json_at_all = "I'm sorry, I cannot help with that request.";
-        assert!(engine.parse_json_to_result(not_json_at_all).is_none());
+        assert!(engine.parse_json_to_result(not_json_at_all, None).is_none());
     }
 
     /// Doc 2026-07-28 dev-scan-log-issues: `run_completion` previously
@@ -430,19 +511,19 @@ mod tests {
 
         let malformed = r#"{ "amount": 50.0, "currency": "USD" "merchant": "Netflix" "#;
         assert!(matches!(
-            engine.classify_raw_output(malformed, source_body),
+            engine.classify_raw_output(malformed, source_body, None),
             RawOutputOutcome::UnparseableJson
         ));
 
         let well_formed_but_hallucinated = r#"{"amount": 1299.00, "currency": "INR", "direction": "debit", "merchant": "Totally Fake Store", "event_time": 1704412200, "reference_id": "987654321"}"#;
         assert!(matches!(
-            engine.classify_raw_output(well_formed_but_hallucinated, source_body),
+            engine.classify_raw_output(well_formed_but_hallucinated, source_body, None),
             RawOutputOutcome::FailedValidation
         ));
 
         let valid = r#"{"amount": 1299.00, "currency": "INR", "direction": "debit", "merchant": "Amazon", "event_time": 1704412200, "reference_id": "987654321"}"#;
         assert!(matches!(
-            engine.classify_raw_output(valid, source_body),
+            engine.classify_raw_output(valid, source_body, None),
             RawOutputOutcome::Accepted(_)
         ));
     }

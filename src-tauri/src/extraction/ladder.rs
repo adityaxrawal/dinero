@@ -76,6 +76,11 @@ pub struct ExtractionResult {
     /// (event_time corrected) or `"anchor_mismatch_needs_review"` (left
     /// alone, confidence downgraded instead). `None` otherwise.
     pub date_cross_check_flag: Option<String>,
+    /// Display-only transaction rail/channel (`"upi"`, `"imps"`, `"neft"`,
+    /// `"internal_transfer"`, etc. -- see `detect_channel`'s doc comment for
+    /// the full taxonomy). Set by `detect_channel`, consumed only for
+    /// display; never read by reconciliation/dedup matching.
+    pub channel: Option<String>,
 }
 
 impl ExtractionResult {
@@ -587,6 +592,83 @@ pub(crate) fn apply_instrument_signals(obs: &mut ExtractionResult, bank_name: &s
     obs.masked_identifier = obs.masked_identifier.take().or(signals.masked_identifier);
     obs.network = obs.network.take().or(signals.network);
     obs.upi_vpa = obs.upi_vpa.take().or(signals.upi_vpa);
+}
+
+static INTERNAL_TRANSFER_RE: OnceLock<Regex> = OnceLock::new();
+static POS_WORD_RE: OnceLock<Regex> = OnceLock::new();
+static ATM_WORD_RE: OnceLock<Regex> = OnceLock::new();
+
+/// Display-only transaction rail/channel, distinct from `instrument_type`
+/// (which models *what account/card* the money moved through). Never
+/// consumed by reconciliation/dedup -- purely a metadata label surfaced in
+/// the UI. Call after `apply_instrument_signals` and EMI detection have
+/// already populated `obs`, since the `upi_credit_card` and `emi` branches
+/// below depend on their output.
+///
+/// First match wins; order runs most-specific-and-useful first so e.g. a
+/// self-transfer that happens to mention "IMPS" still surfaces as
+/// `internal_transfer`, and a BNPL provider's "loan EMI" phrasing surfaces
+/// as `bnpl`/`loan` rather than the generic `emi` fallback.
+pub(crate) fn detect_channel(obs: &ExtractionResult, body: &str) -> Option<String> {
+    let internal_transfer_re = INTERNAL_TRANSFER_RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)credited\s+to\s+(?:the\s+)?account\s+(?:no\.?|number)?\s*(?:ending|no\.?)?\s*[Xx*\-.\s]*\d{2,}",
+        )
+        .unwrap()
+    });
+    if internal_transfer_re.is_match(body) {
+        return Some("internal_transfer".to_string());
+    }
+
+    let lower = body.to_lowercase();
+    let has = |w: &str| lower.contains(w);
+
+    // BNPL/loan detection is best-effort: no BNPL provider (LazyPay, Simpl,
+    // ICICI PayLater, ...) or loan-specific template exists in
+    // `assets/bank_templates` today, so this is a plain keyword match with
+    // no real corpus to validate precision against yet.
+    if has("bnpl") || has("buy now pay later") || has("pay later") {
+        return Some("bnpl".to_string());
+    }
+    if has("loan account") || has("loan disbursed") || has("loan emi") {
+        return Some("loan".to_string());
+    }
+    if has("ecs") || has("nach") {
+        return Some("ecs_nach".to_string());
+    }
+    if has("upi") && obs.instrument_type.as_deref() == Some("credit_card") {
+        return Some("upi_credit_card".to_string());
+    }
+    if has("imps") {
+        return Some("imps".to_string());
+    }
+    if has("neft") {
+        return Some("neft".to_string());
+    }
+    if has("rtgs") {
+        return Some("rtgs".to_string());
+    }
+    if has("upi") {
+        return Some("upi".to_string());
+    }
+    let pos_word_re = POS_WORD_RE.get_or_init(|| Regex::new(r"(?i)\bpos\b").unwrap());
+    if pos_word_re.is_match(body) {
+        return Some("pos".to_string());
+    }
+    let atm_word_re = ATM_WORD_RE.get_or_init(|| Regex::new(r"(?i)\batm\b").unwrap());
+    if atm_word_re.is_match(body) {
+        return Some("atm".to_string());
+    }
+    if has("wallet") {
+        return Some("wallet".to_string());
+    }
+    if has("cheque") || has("chq") {
+        return Some("cheque".to_string());
+    }
+    if obs.emi_total_installments.is_some() {
+        return Some("emi".to_string());
+    }
+    None
 }
 
 fn parse_amount(s: &str) -> Option<i64> {
@@ -1742,6 +1824,11 @@ impl Layer5CrossrefLayer {
 /// Layer 5 — LLM-based fallback extraction.
 pub struct Layer6LlmLayer {
     pub app_dir: Option<std::path::PathBuf>,
+    /// Gmail's `internalDate` (already resolved by the caller) -- fills in
+    /// for the model's `event_time` when it omits that field, which the
+    /// JSON-schema grammar allows and which happens on essentially every
+    /// real call. See `LlmEngine::extract`'s doc comment.
+    pub fallback_event_time: Option<i64>,
 }
 impl Layer6LlmLayer {
     /// The real Layer 6 logic, returning the full [`Layer6Outcome`] —
@@ -1750,8 +1837,11 @@ impl Layer6LlmLayer {
     /// directly by `run_extraction_ladder` (Layer 6 is called directly, not
     /// through the `Vec<Box<dyn ExtractionLayer>>`, same as `Layer5CrossrefLayer`
     /// above); the trait impl below just narrows this for anything that does
-    /// need the plain trait-object interface.
-    async fn run(&self, pool: &Pool, bank_name: &str, body: &str) -> Layer6Outcome {
+    /// need the plain trait-object interface. `pub(crate)` since
+    /// `ingestion::queues::process_layer6_job` also calls this directly, to
+    /// see the `Rejected` vs `Failed`/`TimedOut` distinction the trait
+    /// method below discards.
+    pub(crate) async fn run(&self, pool: &Pool, bank_name: &str, body: &str) -> Layer6Outcome {
         let app_dir = match &self.app_dir {
             Some(dir) => dir,
             None => {
@@ -1795,7 +1885,9 @@ impl Layer6LlmLayer {
         tracing::info!(bank_name = bank_name, "Layer 6 (LLM) extraction invoked");
 
         let engine = crate::extraction::llm::LlmEngine::new(app_dir, &model_id);
-        let result = engine.extract(bank_name, body).await;
+        let result = engine
+            .extract(bank_name, body, self.fallback_event_time)
+            .await;
 
         // Track Layer 5 usage rate in structured logs
         tracing::info!(
@@ -1818,7 +1910,7 @@ impl ExtractionLayer for Layer6LlmLayer {
         Box::pin(async move {
             match self.run(pool, bank_name, body).await {
                 Layer6Outcome::Extracted(result) => Some(*result),
-                Layer6Outcome::TimedOut | Layer6Outcome::Failed => None,
+                Layer6Outcome::TimedOut | Layer6Outcome::Failed | Layer6Outcome::Rejected => None,
             }
         })
     }
@@ -2074,6 +2166,7 @@ pub async fn run_extraction_ladder(
                 obs.original_amount_minor = fx.original_amount_minor;
                 obs.original_currency = fx.original_currency;
                 obs.exchange_rate = fx.exchange_rate;
+                obs.channel = detect_channel(&obs, body);
                 apply_amount_cross_check(&mut obs, body);
                 apply_date_cross_check(&mut obs, internal_date);
                 tracing::info!(
@@ -2156,6 +2249,7 @@ pub async fn run_extraction_ladder(
 
     let layer6 = Layer6LlmLayer {
         app_dir: app_dir.clone(),
+        fallback_event_time: internal_date,
     };
     let layer6_outcome = layer6.run(pool, bank_name, body).await;
     if matches!(layer6_outcome, Layer6Outcome::TimedOut) {
@@ -4672,5 +4766,224 @@ mod tests {
         if let Some(res) = result {
             assert_eq!(res.amount_minor, Some(50000));
         }
+    }
+
+    /// Regression test for the exact HDFC self-transfer email investigated
+    /// this session: no named payee, just two account numbers and "via
+    /// IMPS" -- `detect_channel` must recognize the "credited to the
+    /// account ending X" phrasing as an internal transfer, taking priority
+    /// over the plain "imps" keyword also present in the body.
+    #[test]
+    fn test_detect_channel_hdfc_imps_self_transfer() {
+        let body = "HDFC BANK\n\nDear Customer,\n\nGreetings from HDFC Bank!\n\n INR 1,04,721.00 has \
+             been debited from your account ending xxxxxxxxxx4691 on 30-06-26 and credited to the \
+             account ending xxxxxxxxxx1527 via IMPS.\n\nIMPS Reference No: 618139547133\nAvailable \
+             Balance: INR 10,000.00";
+        let obs = ExtractionResult::default();
+        assert_eq!(detect_channel(&obs, body), Some("internal_transfer".to_string()));
+    }
+
+    #[test]
+    fn test_detect_channel_upi_credit_card_requires_credit_card_instrument() {
+        let body = "Rs 500.00 spent using your Credit Card ending 1234 at Amazon via UPI on 25-May-23.";
+
+        let mut credit_card_obs = ExtractionResult::default();
+        credit_card_obs.instrument_type = Some("credit_card".to_string());
+        assert_eq!(
+            detect_channel(&credit_card_obs, body),
+            Some("upi_credit_card".to_string())
+        );
+
+        let bank_account_obs = ExtractionResult::default();
+        assert_eq!(detect_channel(&bank_account_obs, body), Some("upi".to_string()));
+    }
+
+    #[test]
+    fn test_detect_channel_keyword_branches() {
+        let obs = ExtractionResult::default();
+        let cases: &[(&str, &str)] = &[
+            ("Rs 500 debited towards NEFT transfer to XYZ.", "neft"),
+            ("Rs 50000 transferred via RTGS to account ending 1234.", "rtgs"),
+            ("Rs 200 spent at POS terminal, Big Bazaar.", "pos"),
+            ("Rs 2000 withdrawn from ATM at MG Road.", "atm"),
+            ("Rs 150 loaded to your Paytm wallet.", "wallet"),
+            ("Cheque no. 123456 cleared for Rs 10000.", "cheque"),
+            ("Your NACH mandate for Rs 999 was debited.", "ecs_nach"),
+            ("Your BNPL bill of Rs 500 is due.", "bnpl"),
+            ("Your loan account has been disbursed Rs 100000.", "loan"),
+        ];
+        for (body, expected) in cases {
+            assert_eq!(
+                detect_channel(&obs, body),
+                Some(expected.to_string()),
+                "body: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_detect_channel_emi_fallback_when_no_stronger_signal() {
+        let mut obs = ExtractionResult::default();
+        obs.emi_total_installments = Some(6);
+        let body = "Your purchase of Rs 6000 has been converted to EMI, 6 installments.";
+        assert_eq!(detect_channel(&obs, body), Some("emi".to_string()));
+    }
+
+    #[test]
+    fn test_detect_channel_none_when_no_signal_present() {
+        let obs = ExtractionResult::default();
+        let body = "Rs 500.00 credited to your account from a well-wisher.";
+        assert_eq!(detect_channel(&obs, body), None);
+    }
+
+    /// Root-cause regression test (2026-07-31 audit, category B): IndusInd's
+    /// card-approval confirmation ("... is Approved") didn't match any of
+    /// the bank's existing patterns, which all expect "spent/debited/charged
+    /// on|from|via Credit Card ... at MERCHANT on DATE" -- this template
+    /// puts the date *before* the merchant instead ("for AMOUNT on DATE at
+    /// MERCHANT is Approved").
+    #[tokio::test]
+    async fn test_indusind_credit_card_txn_approved() {
+        let pool = dummy_pool();
+        let layer = BankTemplateLayer;
+        let body = "The transaction on your IndusInd Bank Credit Card ending 7480 for INR \
+            134.00 on 15-02-2026 09:25:43 pm at Swiggy Limited is Approved. Available Limit: \
+            INR 49,866.00.";
+        let result = layer
+            .extract(&pool, "IndusInd Bank", body)
+            .await
+            .expect("credit_card_txn_approved pattern must match");
+        assert_eq!(result.amount_minor, Some(13400));
+        assert_eq!(result.merchant_raw, Some("Swiggy Limited".to_string()));
+        assert_eq!(result.direction, Some("debit".to_string()));
+    }
+
+    /// Root-cause regression test (2026-07-31 audit, category B): IndusInd's
+    /// credit-card bill-payment confirmation never prints the card's last 4
+    /// digits anywhere in the body (same shape as the Jupiter/CSB emails in
+    /// category A) -- the new `credit_card_bill_payment_thank_you` pattern
+    /// captures amount/date/a synthesized "IndusInd Bank Credit Card"
+    /// merchant from the surrounding fixed wording; instrument resolution
+    /// still depends on the single-instrument-by-issuer fallback since there
+    /// really is no masked identifier in the source to capture.
+    #[tokio::test]
+    async fn test_indusind_credit_card_bill_payment_thank_you() {
+        let pool = dummy_pool();
+        let layer = BankTemplateLayer;
+        let body = "Dear Customer,\n\nThank you for your Payment of INR 134.00 towards your \
+            IndusInd Bank Credit Card. Your payment is credited to your Credit Card account on \
+            15/03/2026.\n\n.";
+        let result = layer
+            .extract(&pool, "IndusInd Bank", body)
+            .await
+            .expect("credit_card_bill_payment_thank_you pattern must match");
+        assert_eq!(result.amount_minor, Some(13400));
+        assert_eq!(
+            result.merchant_raw,
+            Some("IndusInd Bank Credit Card".to_string())
+        );
+        assert_eq!(result.direction, Some("credit".to_string()));
+        assert!(
+            result.masked_identifier.is_none(),
+            "this narration genuinely has no card digits anywhere in the source"
+        );
+    }
+
+    /// Root-cause regression test (2026-07-31 audit, category C): HDFC's
+    /// "transfer to payee" NEFT debit confirmation names the payee directly
+    /// (no VPA, no account-number capture) but matched no existing pattern.
+    /// Also covers a literal "Self Transfer" payee name -- HDFC's own
+    /// wording for this case, which needs no placeholder rewriting since
+    /// it's already a meaningful label.
+    #[tokio::test]
+    async fn test_hdfc_neft_transfer_to_payee() {
+        let pool = dummy_pool();
+        let layer = BankTemplateLayer;
+        let body = "Thank you for banking with HDFC Bank.\n\nRs. 70000 has been deducted from \
+            your HDFC Bank account ending in XX4691 for a transfer to payee Rina Rawal SBI \
+            Account via NEFT using HDFC Bank Online Banking.";
+        let result = layer
+            .extract(&pool, "HDFC Bank", body)
+            .await
+            .expect("neft_transfer_to_payee pattern must match");
+        assert_eq!(result.amount_minor, Some(7_000_000));
+        assert_eq!(result.merchant_raw, Some("Rina Rawal SBI Account".to_string()));
+        assert_eq!(result.direction, Some("debit".to_string()));
+
+        let self_transfer_body = "Thank you for banking with HDFC Bank.\n\nRs. 82164 has been \
+            deducted from your HDFC Bank account ending in XX4691 for a transfer to payee Self \
+            Transfer via NEFT using HDFC Bank Online Banking.";
+        let self_result = layer
+            .extract(&pool, "HDFC Bank", self_transfer_body)
+            .await
+            .expect("neft_transfer_to_payee pattern must match the self-transfer wording too");
+        assert_eq!(self_result.merchant_raw, Some("Self Transfer".to_string()));
+    }
+
+    /// Root-cause regression test (2026-07-31 audit, category C): HDFC's
+    /// structured NEFT credit narration ("Cr-IFSC-NAME-...") never matched
+    /// any pattern expecting a plain merchant string. Also covers the
+    /// double-currency-prefix formatting quirk ("Rs.INR 10,000.00") seen in
+    /// this exact email.
+    #[tokio::test]
+    async fn test_hdfc_neft_credit_cr_ifsc_name() {
+        let pool = dummy_pool();
+        let layer = BankTemplateLayer;
+        let body = "Greetings from HDFC Bank!\n\nRs.INR 10,000.00 has been successfully added \
+            to your account ending XX4691 from NEFT Cr-SBIN0010341-RINA RAWAL-Aditya \
+            Rawal-SBIN426064133764 on 05-MAR-2026.";
+        let result = layer
+            .extract(&pool, "HDFC Bank", body)
+            .await
+            .expect("neft_credit_cr_ifsc_name pattern must match");
+        assert_eq!(result.amount_minor, Some(1_000_000));
+        assert_eq!(result.merchant_raw, Some("RINA RAWAL".to_string()));
+        assert_eq!(result.direction, Some("credit".to_string()));
+    }
+
+    /// Root-cause regression test (2026-07-31 audit, category C): the
+    /// "A2AINT01-COMPANY-Salary-Ref" structured-credit narration shape --
+    /// distinct from the "NEFT Cr-IFSC-NAME" shape above (one code segment
+    /// before the merchant instead of two), so it needs its own pattern
+    /// rather than a shared one.
+    #[tokio::test]
+    async fn test_hdfc_account_credit_ref_code_merchant() {
+        let pool = dummy_pool();
+        let layer = BankTemplateLayer;
+        let body = "Greetings from HDFC Bank!\n\nRs.INR 1,12,866.00 has been successfully added \
+            to your account ending XX4691 from A2AINT01-THEMATHCOMPANY PRIVATE \
+            LIMITED-Salary-SalaryMar26 on 30-MAR-2026.";
+        let result = layer
+            .extract(&pool, "HDFC Bank", body)
+            .await
+            .expect("account_credit_ref_code_merchant pattern must match");
+        assert_eq!(result.amount_minor, Some(11_286_600));
+        assert_eq!(
+            result.merchant_raw,
+            Some("THEMATHCOMPANY PRIVATE LIMITED".to_string())
+        );
+        assert_eq!(result.direction, Some("credit".to_string()));
+    }
+
+    /// Root-cause regression test (2026-07-31 audit, category C): a RuPay
+    /// credit card spend routed over UPI shows a VPA-like handle
+    /// ("paytm-81642725@ptys") immediately before the real merchant name --
+    /// no existing pattern separated the two, so the whole thing fell
+    /// through Gate 3 with no merchant at all.
+    #[tokio::test]
+    async fn test_hdfc_credit_card_debit_to_upi_handle() {
+        let pool = dummy_pool();
+        let layer = BankTemplateLayer;
+        let body = "Rs.400.00 has been debited from your HDFC Bank RuPay Credit Card XX8256 to \
+            paytm-81642725@ptys SUVIM CARE on 22-03-26. Your UPI transaction reference number \
+            is 644708657028.";
+        let result = layer
+            .extract(&pool, "HDFC Bank", body)
+            .await
+            .expect("credit_card_debit_to_upi_handle pattern must match");
+        assert_eq!(result.amount_minor, Some(40000));
+        assert_eq!(result.merchant_raw, Some("SUVIM CARE".to_string()));
+        assert_eq!(result.direction, Some("debit".to_string()));
+        assert_eq!(result.reference_id, Some("644708657028".to_string()));
     }
 }

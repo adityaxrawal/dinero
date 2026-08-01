@@ -356,15 +356,18 @@ async fn start_server_task(app_dir: PathBuf, model_id: String, slots: usize) {
     let calibration = if outcome.is_ok() {
         const CALIBRATION_PROMPT: &str = "Reply with exactly the single word: OK";
 
+        let calibration_ctx = crate::logging::llm_logger::LlmCallContext::unclassified();
         let solo_start = Instant::now();
-        let _ = raw_complete(port, CALIBRATION_PROMPT, Duration::from_secs(30), None).await;
+        let _ = raw_complete(port, &model_id, CALIBRATION_PROMPT, Duration::from_secs(30), None, calibration_ctx).await;
         let solo_latency = solo_start.elapsed();
 
         let burst_latency = if slots > 1 {
             let burst_start = Instant::now();
             let mut set = tokio::task::JoinSet::new();
             for _ in 0..slots {
-                set.spawn(raw_complete(port, CALIBRATION_PROMPT, Duration::from_secs(90), None));
+                let mid = model_id.clone();
+                let cal_ctx = crate::logging::llm_logger::LlmCallContext::unclassified();
+                set.spawn(raw_complete(port, mid, CALIBRATION_PROMPT, Duration::from_secs(90), None, cal_ctx));
             }
             while set.join_next().await.is_some() {}
             burst_start.elapsed()
@@ -484,6 +487,13 @@ struct CompletionResponse {
 /// this shape via grammar sampling, so the output is *always* syntactically
 /// valid JSON; `parse_json_to_result`'s field/source validation (the
 /// content-correctness check) still runs unchanged on top of it.
+/// The JSON schema used by Layer 6 extraction for grammar-constrained decoding.
+/// Exposed so `extraction/llm.rs` can pass it explicitly to
+/// `complete_with_schema_and_context` without duplicating the definition.
+pub fn layer6_json_schema_pub() -> serde_json::Value {
+    layer6_json_schema()
+}
+
 fn layer6_json_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -493,17 +503,40 @@ fn layer6_json_schema() -> serde_json::Value {
             "direction": {"type": ["string", "null"]},
             "merchant": {"type": ["string", "null"]},
             "event_time": {"type": ["integer", "null"]},
-            "reference_id": {"type": ["string", "null"]}
-        }
+            "reference_id": {"type": ["string", "null"]},
+            // Was missing entirely: the prompt asks the model for a
+            // self-reported `confidence`, but the grammar built from this
+            // schema constrains the model to *only* the listed properties,
+            // so it had no way to emit one -- `confidence` silently defaulted
+            // to 0.0 on every call (see `parse_json_to_result`), which meant
+            // Layer 6's auto-resolve threshold could never be reached.
+            //
+            // 2026-07-30: made `required` -- with it merely a listed
+            // property, the model omitted it on 80/80 sampled real calls
+            // (unlike `event_time`, a fabricated confidence number can't
+            // corrupt the transaction itself; the fields it gates on --
+            // merchant/amount/reference -- already passed
+            // `validate_against_source` before confidence is ever read).
+            "confidence": {"type": ["number", "null"]}
+        },
+        "required": ["confidence"]
     })
 }
 
 async fn raw_complete(
     port: u16,
-    prompt: &str,
+    model_id: impl AsRef<str>,
+    prompt: impl AsRef<str>,
     timeout: Duration,
     json_schema: Option<serde_json::Value>,
+    ctx: crate::logging::llm_logger::LlmCallContext,
 ) -> Result<String> {
+    let model_id = model_id.as_ref();
+    let prompt = prompt.as_ref();
+    // Log the outgoing request before touching the wire.
+    crate::logging::llm_logger::log_llm_request(model_id, &ctx, prompt);
+    let request_start = Instant::now();
+
     let mut body = serde_json::json!({
         "prompt": prompt,
         "n_predict": 256,
@@ -513,20 +546,63 @@ async fn raw_complete(
     if let Some(schema) = json_schema {
         body["json_schema"] = schema;
     }
-    let resp = http_client()
+    let result = http_client()
         .post(format!("http://127.0.0.1:{port}/completion"))
         .timeout(timeout)
         .json(&body)
         .send()
         .await
-        .context("llama-server /completion request failed")?
-        .error_for_status()
-        .context("llama-server /completion returned an error status")?;
-    let parsed: CompletionResponse = resp
-        .json()
-        .await
-        .context("llama-server /completion response was not the expected JSON shape")?;
-    Ok(parsed.content)
+        .context("llama-server /completion request failed")
+        .and_then(|r| r.error_for_status().context("llama-server /completion returned an error status"));
+
+    let duration_ms = request_start.elapsed().as_millis() as u64;
+
+    match result {
+        Ok(resp) => {
+            match resp.json::<CompletionResponse>().await
+                .context("llama-server /completion response was not the expected JSON shape")
+            {
+                Ok(parsed) => {
+                    crate::logging::llm_logger::log_llm_response(
+                        model_id,
+                        &ctx,
+                        duration_ms,
+                        // Outcome is classified at the extraction layer (run_completion);
+                        // at this level we only know the HTTP call succeeded.
+                        crate::logging::llm_logger::LlmOutcome::Accepted,
+                        Some(&parsed.content),
+                    );
+                    Ok(parsed.content)
+                }
+                Err(e) => {
+                    crate::logging::llm_logger::log_llm_response(
+                        model_id,
+                        &ctx,
+                        duration_ms,
+                        crate::logging::llm_logger::LlmOutcome::InfraFailed,
+                        None,
+                    );
+                    Err(e)
+                }
+            }
+        }
+        Err(e) => {
+            // Distinguish timeout from other infra failures in the log.
+            let outcome = if e.to_string().contains("timeout") || e.to_string().contains("timed out") {
+                crate::logging::llm_logger::LlmOutcome::TimedOut
+            } else {
+                crate::logging::llm_logger::LlmOutcome::InfraFailed
+            };
+            crate::logging::llm_logger::log_llm_response(
+                model_id,
+                &ctx,
+                duration_ms,
+                outcome,
+                None,
+            );
+            Err(e)
+        }
+    }
 }
 
 pub async fn complete(app_dir: &Path, model_id: &str, prompt: &str, timeout: Duration) -> Result<String> {
@@ -535,7 +611,8 @@ pub async fn complete(app_dir: &Path, model_id: &str, prompt: &str, timeout: Dur
         .acquire()
         .await
         .context("llama-server semaphore closed")?;
-    raw_complete(port, prompt, timeout, None).await
+    let ctx = crate::logging::llm_logger::LlmCallContext::unclassified();
+    raw_complete(port, model_id, prompt, timeout, None, ctx).await
 }
 
 /// Same as `complete`, but sources its timeout from this server's own
@@ -546,7 +623,8 @@ pub async fn complete_with_calibrated_timeout(
     model_id: &str,
     prompt: &str,
 ) -> Result<String> {
-    complete_with_schema(app_dir, model_id, prompt, layer6_json_schema()).await
+    let ctx = crate::logging::llm_logger::LlmCallContext::unclassified();
+    complete_with_schema_and_context(app_dir, model_id, prompt, layer6_json_schema(), ctx).await
 }
 
 /// Same calibrated-timeout, semaphore-gated path as
@@ -561,12 +639,27 @@ pub async fn complete_with_schema(
     prompt: &str,
     schema: serde_json::Value,
 ) -> Result<String> {
+    let ctx = crate::logging::llm_logger::LlmCallContext::unclassified();
+    complete_with_schema_and_context(app_dir, model_id, prompt, schema, ctx).await
+}
+
+/// Internal: complete with a JSON schema constraint and an explicit call
+/// context for the LLM call log. Called by `extraction/llm.rs` and
+/// `extraction/rule_llm.rs` (via the learning path) when they want attributed
+/// log entries.
+pub async fn complete_with_schema_and_context(
+    app_dir: &Path,
+    model_id: &str,
+    prompt: &str,
+    schema: serde_json::Value,
+    ctx: crate::logging::llm_logger::LlmCallContext,
+) -> Result<String> {
     let (port, semaphore, calibrated_timeout) = ensure_server_ready(app_dir, model_id).await?;
     let _permit = semaphore
         .acquire()
         .await
         .context("llama-server semaphore closed")?;
-    raw_complete(port, prompt, calibrated_timeout, Some(schema)).await
+    raw_complete(port, model_id, prompt, calibrated_timeout, Some(schema), ctx).await
 }
 
 #[cfg(test)]

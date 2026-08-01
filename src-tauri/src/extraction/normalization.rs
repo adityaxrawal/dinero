@@ -8,7 +8,7 @@ pub fn normalize_observation(
     source_pipeline: &str,
     source_message_id: &str,
     raw_body: Option<&str>,
-    raw_html: Option<&str>,
+    email_meta: Option<&crate::ingestion::message_processor::EmailMetadata>,
 ) -> TransactionObservationsRow {
     // 1. Amount Minor Normalization
     let amount_minor = raw.amount_minor;
@@ -53,6 +53,24 @@ pub fn normalize_observation(
     // (`ingestion::queues::process_transaction_job`), which is where
     // `extraction::fingerprint::compute_fingerprint` is actually called.
 
+    let raw_payload_json = raw_body.map(|b| {
+        let mut payload = serde_json::json!({
+            "body": b,
+            "html": email_meta.and_then(|m| m.html.as_deref()),
+        });
+        if let Some(meta) = email_meta {
+            payload["subject"] = serde_json::json!(meta.subject);
+            payload["date"] = serde_json::json!(meta.date);
+            payload["sender"] = serde_json::json!(meta.sender);
+            payload["sender_email"] = serde_json::json!(meta.sender_email);
+            payload["sender_domain"] = serde_json::json!(meta.sender_domain);
+            payload["recipient"] = serde_json::json!(meta.recipient);
+            payload["recipient_email"] = serde_json::json!(meta.recipient_email);
+            payload["recipient_domain"] = serde_json::json!(meta.recipient_domain);
+        }
+        payload.to_string()
+    });
+
     TransactionObservationsRow {
         id: Uuid::new_v4().to_string(),
         canonical_transaction_id: None,
@@ -93,13 +111,7 @@ pub fn normalize_observation(
         // with all fields" means it must actually flow through, not be
         // silently dropped here.
         confidence_score: raw.confidence_score,
-        // Doc 30 TASK-TXN-009: "raw_payload_json (the full sanitized body...
-        // for auditability/reprocessing)". `html` (strengthen-regex/
-        // redesign pass) carries the sanitized original HTML alongside the
-        // plain-text body -- `None` when the source had no `text/html` part
-        // (or no source email at all, e.g. a mandate-synthesized ₹0 row) --
-        // so the Evidence tab can render the email's real Gmail layout/CSS.
-        raw_payload_json: raw_body.map(|b| serde_json::json!({ "body": b, "html": raw_html }).to_string()),
+        raw_payload_json,
         // No document anywhere defines a versioning scheme for bank-template
         // parsers (flagged, not guessed, at TASK-TXN-001 and TASK-TXN-003
         // already) -- still true here, left unpopulated.
@@ -111,6 +123,9 @@ pub fn normalize_observation(
         emi_total_installments: raw.emi_total_installments,
         emi_installment_number: raw.emi_installment_number,
         emi_original_amount_minor: raw.emi_original_amount_minor,
+        // Display-only rail/channel (`detect_channel`, extraction::ladder) --
+        // metadata pass-through, same as the EMI fields above.
+        channel: raw.channel,
         is_deleted: false,
         created_at: Some(Utc::now().naive_utc()),
         updated_at: Some(Utc::now().naive_utc()),
@@ -248,6 +263,75 @@ mod tests {
         raw.currency = None;
         let obs2 = normalize_observation(raw, "test_pipeline", "msg_123", None, None);
         assert_eq!(obs2.currency.unwrap(), "INR");
+    }
+
+    #[test]
+    fn test_extract_email_and_domain_edge_cases() {
+        use crate::ingestion::message_processor::MessageProcessor;
+
+        let (e1, d1) = MessageProcessor::extract_email_and_domain("ASSPL Bangalore kaIN <assplbangalorekain@bank.com>");
+        assert_eq!(e1, Some("assplbangalorekain@bank.com".to_string()));
+        assert_eq!(d1, Some("bank.com".to_string()));
+
+        let (e2, d2) = MessageProcessor::extract_email_and_domain("\"User Name\" <user@sub.domain.co.in>");
+        assert_eq!(e2, Some("user@sub.domain.co.in".to_string()));
+        assert_eq!(d2, Some("sub.domain.co.in".to_string()));
+
+        let (e3, d3) = MessageProcessor::extract_email_and_domain("support@jupiter.money");
+        assert_eq!(e3, Some("support@jupiter.money".to_string()));
+        assert_eq!(d3, Some("jupiter.money".to_string()));
+
+        let (e4, d4) = MessageProcessor::extract_email_and_domain("To: user1@a.com, user2@b.com");
+        assert_eq!(e4, Some("user1@a.com".to_string()));
+        assert_eq!(d4, Some("a.com".to_string()));
+
+        let (e5, d5) = MessageProcessor::extract_email_and_domain("");
+        assert_eq!(e5, None);
+        assert_eq!(d5, None);
+
+        let (e6, d6) = MessageProcessor::extract_email_and_domain("Invalid Header String");
+        assert_eq!(e6, None);
+        assert_eq!(d6, None);
+    }
+
+    #[test]
+    fn test_normalize_observation_populates_payload_metadata() {
+        use crate::ingestion::message_processor::EmailMetadata;
+
+        let raw = ExtractionResult {
+            amount_minor: Some(55500),
+            currency: Some("INR".to_string()),
+            merchant_raw: Some("ASSPL".to_string()),
+            ..Default::default()
+        };
+
+        let email_meta = EmailMetadata {
+            sender: "ASSPL <asspl@bank.com>".to_string(),
+            recipient: "me <aditya@example.com>".to_string(),
+            subject: "Payment successful".to_string(),
+            date: "Jan 3, 2026".to_string(),
+            snippet: "Snippet text".to_string(),
+            html: Some("<p>HTML</p>".to_string()),
+            sender_email: Some("asspl@bank.com".to_string()),
+            sender_domain: Some("bank.com".to_string()),
+            recipient_email: Some("aditya@example.com".to_string()),
+            recipient_domain: Some("example.com".to_string()),
+        };
+
+        let obs = normalize_observation(raw, "gmail_transaction", "msg_123", Some("Plain text body"), Some(&email_meta));
+        assert!(obs.raw_payload_json.is_some());
+        let payload: serde_json::Value = serde_json::from_str(&obs.raw_payload_json.unwrap()).unwrap();
+
+        assert_eq!(payload["body"], "Plain text body");
+        assert_eq!(payload["html"], "<p>HTML</p>");
+        assert_eq!(payload["subject"], "Payment successful");
+        assert_eq!(payload["date"], "Jan 3, 2026");
+        assert_eq!(payload["sender"], "ASSPL <asspl@bank.com>");
+        assert_eq!(payload["sender_email"], "asspl@bank.com");
+        assert_eq!(payload["sender_domain"], "bank.com");
+        assert_eq!(payload["recipient"], "me <aditya@example.com>");
+        assert_eq!(payload["recipient_email"], "aditya@example.com");
+        assert_eq!(payload["recipient_domain"], "example.com");
     }
 
     #[test]
