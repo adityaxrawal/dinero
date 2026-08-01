@@ -7,7 +7,7 @@ use std::time::Instant;
 use tauri::{AppHandle, Emitter};
 use tokio_util::sync::CancellationToken;
 use tokio::fs::{self, File};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Emitted to the frontend while a catalog model's `.gguf` downloads, so
 /// Settings' model picker can show a real progress bar instead of an
@@ -193,13 +193,69 @@ pub(crate) async fn download_file_with_hash(
     const EMA_ALPHA: f64 = 0.3;
 
     let client = Client::new();
-    let mut res = client.get(url).send().await?.error_for_status()?;
-    let total_bytes = res.content_length();
 
-    let mut file = File::create(dest_path).await?;
+    // audit_06 #8: resume an interrupted download instead of restarting it.
+    // These files are 4–20 GB; on a metered or unstable connection, throwing
+    // away 18 GB because the last 2 failed is the difference between "usable"
+    // and "not". A partial is left on disk by design — a crash or network drop
+    // never reaches the `.verified` marker write below, so `get_model_path`
+    // already refuses to hand a partial to `llama-server`.
+    let resume_from: u64 = match fs::metadata(dest_path).await {
+        Ok(meta) if meta.len() > 0 => meta.len(),
+        _ => 0,
+    };
+
+    let mut request = client.get(url);
+    if resume_from > 0 {
+        request = request.header(reqwest::header::RANGE, format!("bytes={resume_from}-"));
+    }
+    let mut res = request.send().await?.error_for_status()?;
+
+    // A server that honours the range answers 206 with the remainder. One that
+    // ignores it answers 200 with the *whole* file — appending that to our
+    // partial would produce a corrupt file that only the final hash check
+    // would catch, after another multi-GB download. So trust the status, not
+    // the request.
+    let resuming = resume_from > 0 && res.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+    if resume_from > 0 && !resuming {
+        tracing::info!(
+            resume_from,
+            status = %res.status(),
+            "server did not honour Range — restarting the model download from zero"
+        );
+    }
+
+    // `content_length()` is the length of *this response*, so on a resume it
+    // is the remainder, not the file. Progress and ETA are reported against
+    // the whole file, so add back what we already have.
+    let total_bytes = res.content_length().map(|len| len + if resuming { resume_from } else { 0 });
+
     let mut hasher = Sha256::new();
     let mut downloaded: u64 = 0;
-    let mut last_emitted: u64 = 0;
+
+    let mut file = if resuming {
+        // Seed the hash with the bytes already on disk. The hasher is
+        // streaming, so a resumed download that skipped this would finish with
+        // a hash of only the tail and fail verification on a perfectly good
+        // file.
+        let mut existing = File::open(dest_path).await?;
+        let mut buf = vec![0u8; 1024 * 1024];
+        loop {
+            let n = existing.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+        drop(existing);
+        downloaded = resume_from;
+        tracing::info!(resume_from, "resuming model download");
+        fs::OpenOptions::new().append(true).open(dest_path).await?
+    } else {
+        File::create(dest_path).await?
+    };
+
+    let mut last_emitted: u64 = downloaded;
     let mut last_emit_instant = Instant::now();
     let mut ema_rate: f64 = 0.0;
     let mut cancelled = false;
@@ -536,5 +592,97 @@ mod tests {
             resolve_active_model(&downloaded, None),
             Some("gemma4_12b".to_string())
         );
+    }
+
+    /// audit_06 #8: models are 4-20 GB, so an interrupted download used to
+    /// throw away everything and start from zero. Resume is only safe if the
+    /// streaming hash is seeded from the bytes already on disk -- otherwise a
+    /// resumed download finishes with a hash of just the tail and fails
+    /// verification on a perfectly good file, which is worse than not
+    /// resuming at all.
+    #[tokio::test]
+    async fn interrupted_download_resumes_and_still_verifies() {
+        let body: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+        let expected_hash = format!("{:x}", Sha256::digest(&body));
+        let already_have = 1500usize;
+
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/model.gguf")
+            .match_header("range", format!("bytes={already_have}-").as_str())
+            .with_status(206)
+            .with_header(
+                "content-range",
+                &format!("bytes {}-{}/{}", already_have, body.len() - 1, body.len()),
+            )
+            .with_body(&body[already_have..])
+            .create_async()
+            .await;
+
+        let dir = std::env::temp_dir().join(format!("dinero_resume_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("model.gguf");
+        // The partial a crash or network drop leaves behind.
+        std::fs::write(&dest, &body[..already_have]).unwrap();
+
+        download_file_with_hash(
+            &format!("{}/model.gguf", server.url()),
+            &dest,
+            &expected_hash,
+            None,
+            None,
+        )
+        .await
+        .expect("a resumed download must verify");
+
+        mock.assert_async().await;
+        assert_eq!(std::fs::read(&dest).unwrap(), body, "file must be byte-identical");
+        assert!(
+            verified_marker_path(&dest).exists(),
+            "a verified resume must leave the marker get_model_path trusts"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A server that ignores `Range` answers 200 with the *whole* file.
+    /// Appending that to the partial would silently corrupt it, and only the
+    /// final hash would notice -- after another multi-GB transfer. The status
+    /// code, not the request, decides whether we append or start over.
+    #[tokio::test]
+    async fn server_ignoring_range_restarts_instead_of_appending() {
+        let body: Vec<u8> = (0..2048u32).map(|i| (i % 97) as u8).collect();
+        let expected_hash = format!("{:x}", Sha256::digest(&body));
+
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/model.gguf")
+            .with_status(200)
+            .with_body(&body)
+            .create_async()
+            .await;
+
+        let dir = std::env::temp_dir().join(format!("dinero_norange_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("model.gguf");
+        std::fs::write(&dest, &body[..700]).unwrap();
+
+        download_file_with_hash(
+            &format!("{}/model.gguf", server.url()),
+            &dest,
+            &expected_hash,
+            None,
+            None,
+        )
+        .await
+        .expect("a non-range server must still produce a correct file");
+
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            body,
+            "the partial must have been discarded, not appended to"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
