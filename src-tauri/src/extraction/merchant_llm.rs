@@ -72,20 +72,6 @@ pub struct TransactionContext<'a> {
     pub event_time: Option<&'a str>,
 }
 
-/// Bodies longer than this are truncated before being sent. Bank alert emails
-/// carry the transaction facts near the top and legal boilerplate at the
-/// bottom, so a head-truncation loses almost nothing while keeping the prompt
-/// inside the sidecar's context window.
-const MAX_BODY_CHARS: usize = 4000;
-
-fn truncate_body(body: &str) -> String {
-    if body.chars().count() <= MAX_BODY_CHARS {
-        return body.to_string();
-    }
-    let head: String = body.chars().take(MAX_BODY_CHARS).collect();
-    format!("{head}\n[...truncated...]")
-}
-
 pub fn generate_prompt(ctx: &TransactionContext, body: &str, categories: &[String]) -> String {
     let amount = ctx
         .amount
@@ -138,7 +124,7 @@ pub fn generate_prompt(ctx: &TransactionContext, body: &str, categories: &[Strin
         currency = ctx.currency.unwrap_or("INR"),
         direction = ctx.direction.unwrap_or("unknown"),
         date = ctx.event_time.unwrap_or("unknown"),
-        body = truncate_body(body),
+        body = body,
         category_list = category_list,
     )
 }
@@ -261,8 +247,18 @@ mod tests {
     }
 
     #[test]
-    fn long_bodies_are_truncated() {
-        let body = "x".repeat(MAX_BODY_CHARS * 2);
-        assert!(truncate_body(&body).chars().count() < MAX_BODY_CHARS + 40);
+    fn long_bodies_are_not_truncated() {
+        let body = "x".repeat(10_000);
+        let ctx = TransactionContext {
+            bank_name: "SBI",
+            current_merchant: "RAZ*",
+            amount: Some(100.0),
+            currency: None,
+            direction: None,
+            event_time: None,
+        };
+        let prompt = generate_prompt(&ctx, &body, &cats());
+        assert!(prompt.contains(&body));
+        assert!(!prompt.contains("[...truncated...]"));
     }
 }

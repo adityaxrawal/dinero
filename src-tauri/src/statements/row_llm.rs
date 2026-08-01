@@ -28,14 +28,7 @@
 use crate::statements::parser::ParsedPage;
 use crate::statements::row_extractor::{
     extract_reference_id, is_excluded_row, parse_amount_minor, parse_date, StatementRow,
-};
-
-/// Page text beyond this is truncated. A dense statement page runs about
-/// 3k characters; the ceiling exists so a pathological page cannot push the
-/// prompt past the model's context window.
-const MAX_PAGE_CHARS: usize = 8_000;
-
-/// Ceiling on pages sent for inference per statement. At roughly ten seconds
+};/// Ceiling on pages sent for inference per statement. At roughly ten seconds
 /// each, a 60-page statement would otherwise tie up the model for ten
 /// minutes during what the user experiences as a single import.
 const MAX_LLM_PAGES: usize = 12;
@@ -71,7 +64,6 @@ pub fn rows_schema() -> serde_json::Value {
 }
 
 pub fn generate_prompt(issuer: &str, page_text: &str) -> String {
-    let truncated: String = page_text.chars().take(MAX_PAGE_CHARS).collect();
     format!(
         "You are reading one page of a {issuer} bank statement. Extract every \
 transaction row from the table below.\n\n\
@@ -87,7 +79,7 @@ payment received is a credit.\n\
 lines. They are not transactions.\n\
 - If the page contains no transaction table, return an empty list.\n\
 - Never invent a row. Every row you return must be visible in the text below.\n\n\
-STATEMENT PAGE:\n{truncated}"
+STATEMENT PAGE:\n{page_text}"
     )
 }
 

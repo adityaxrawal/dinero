@@ -56,9 +56,8 @@
 use std::fmt::Write as FmtWrite;
 use std::io::Write as IoWrite;
 
-/// How many characters of the prompt / output to write into the block.
-/// Full content is captured since this is the dedicated LLM log file.
-const PROMPT_PREVIEW_CHARS: usize = 1000;
+/// How many characters of the output to write into the block.
+/// Full prompt content is captured since prompts must not be cropped or ellipsed.
 const OUTPUT_PREVIEW_CHARS: usize = 1000;
 const BOX_WIDTH: usize = 80;
 
@@ -332,7 +331,7 @@ fn write_request_block(
     buf.push('\n');
     buf.push_str(&row("  PROMPT:"));
     buf.push('\n');
-    buf.push_str(&body_rows(prompt, PROMPT_PREVIEW_CHARS));
+    buf.push_str(&body_rows(prompt, usize::MAX));
     buf.push('\n');
     buf.push_str(&bot_border());
     buf.push('\n');

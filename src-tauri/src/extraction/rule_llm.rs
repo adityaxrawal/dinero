@@ -13,13 +13,6 @@
 //! is what makes skipping human approval safe.
 
 use serde::Deserialize;
-
-/// Sources longer than this are head-truncated before being sent. Bank alerts
-/// carry the transaction facts near the top and legal boilerplate at the
-/// bottom, so this loses almost nothing while keeping the prompt inside the
-/// sidecar's context window. Matches `merchant_llm`'s own budget.
-pub(crate) const MAX_SOURCE_CHARS: usize = 4000;
-
 #[derive(Debug, Deserialize)]
 struct RuleLlmOutput {
     regex: Option<String>,
@@ -39,15 +32,6 @@ pub fn authoring_schema() -> serde_json::Value {
         "required": ["regex", "capture_group"]
     })
 }
-
-fn truncate(source: &str) -> String {
-    if source.chars().count() <= MAX_SOURCE_CHARS {
-        return source.to_string();
-    }
-    let head: String = source.chars().take(MAX_SOURCE_CHARS).collect();
-    format!("{head}\n[...truncated...]")
-}
-
 pub fn generate_prompt(
     field_name: &str,
     bank_name: &str,
@@ -102,7 +86,7 @@ pub fn generate_prompt(
         old = old_value.unwrap_or("(the parser found nothing)"),
         new = new_value,
         existing = existing,
-        source = truncate(source),
+        source = source,
     )
 }
 
@@ -238,10 +222,10 @@ mod tests {
     }
 
     #[test]
-    fn long_sources_are_truncated() {
-        let long = "x".repeat(MAX_SOURCE_CHARS * 2);
+    fn long_sources_are_not_truncated() {
+        let long = "x".repeat(10_000);
         let prompt = generate_prompt("merchant", "HDFC", &long, None, "X", &[]);
-        assert!(prompt.len() < MAX_SOURCE_CHARS * 2);
-        assert!(prompt.contains("[...truncated...]"));
+        assert!(prompt.contains(&long));
+        assert!(!prompt.contains("[...truncated...]"));
     }
 }
