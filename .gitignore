@@ -54,17 +54,32 @@ dinero-docs
 .fallow
 .vscode
 
-# Untracked development, testing, and documentation files
-/src-tauri/src/tests/
-/src-tauri/src/commands/data_tests.rs
-/src-tauri/src/commands/debug.rs
+# Local-only development files.
+#
+# NOTE (2026-08-01): this block used to also exclude everything the build and
+# the test suites actually need -- `/src-tauri/src/tests/`,
+# `commands/data_tests.rs`, `commands/debug.rs`, `/src/test/`, `/e2e/`,
+# `vitest.config.ts`, `playwright.config.ts`. The result was that the
+# repository did not compile from a clean checkout at all:
+# `commands/mod.rs` declares `pub mod debug;` unconditionally, and
+# `historical_scan.rs`/`polling.rs` read `SCAN_QUEUE_PAUSED`/`GMAIL_POLL_PAUSED`
+# from it on the live polling path, so `cargo build` failed with
+# "file not found for module `debug`". `cargo test` additionally lost the
+# phase8-11 suites and `data_tests.rs`; `npm test` lost its vitest config and
+# `src/test/setup.ts`.
+#
+# rust.yml has been running `cargo test --all-features` and react.yml
+# `pnpm test` on every push the whole time, so neither workflow can ever have
+# succeeded -- the same failure mode the /scripts/* note below already records
+# once, and the same one as the nightly benchmark job (audit_09 #8).
+#
+# Only genuinely dead or machine-local files remain excluded. `dev_review.rs`
+# and `bin.rs` are declared by no `mod` statement anywhere and are not
+# compiled; `test_shutdown.sh` and the Playwright report directory are local
+# scratch.
 /src-tauri/src/dev_review.rs
 /src-tauri/src/bin.rs
-/src/test/
-/e2e/
 /playwright-report/
-playwright.config.ts
-vitest.config.ts
 test_shutdown.sh
 /scripts/*
 # TASK-QA-010/OPS-001/OPS-008 finding: these three scripts are genuine CI
