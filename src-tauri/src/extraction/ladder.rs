@@ -108,9 +108,16 @@ pub trait ExtractionLayer: Send + Sync {
     fn layer_name(&self) -> &'static str;
 }
 
+/// audit_02 #5: both patterns are constants, but were compiled on every call.
+/// `compute_template_hash` runs on every Layer 2 attempt plus the learning,
+/// statement-row, and merchant-cleanup paths, so a historical scan paid two
+/// regex compilations per message for a value that never changes.
+static TEMPLATE_HASH_DIGITS_RE: OnceLock<Regex> = OnceLock::new();
+static TEMPLATE_HASH_WHITESPACE_RE: OnceLock<Regex> = OnceLock::new();
+
 pub fn compute_template_hash(body: &str) -> String {
-    let re_digits = Regex::new(r"\d+").unwrap();
-    let re_whitespace = Regex::new(r"\s+").unwrap();
+    let re_digits = TEMPLATE_HASH_DIGITS_RE.get_or_init(|| Regex::new(r"\d+").unwrap());
+    let re_whitespace = TEMPLATE_HASH_WHITESPACE_RE.get_or_init(|| Regex::new(r"\s+").unwrap());
     let body_lower = body.to_lowercase();
     let no_digits = re_digits.replace_all(&body_lower, "#");
     let normalized = re_whitespace.replace_all(&no_digits, " ");
@@ -3114,6 +3121,15 @@ mod tests {
         let b2 = "hello   789 world 000";
         // both should normalize to "hello # world #"
         assert_eq!(compute_template_hash(b1), compute_template_hash(b2));
+        // audit_02 #5 cached the two regexes behind a `OnceLock`. The hash is
+        // persisted (`learned_rules.template_hash`, `learned_extractions`), so
+        // a change in either pattern silently orphans every stored rule rather
+        // than failing loudly. Pin the actual value, not just the equality.
+        assert_eq!(
+            compute_template_hash(b1),
+            "89a6278bc760568ecab7942236a60ca7d96b7ebcf19b98302c4465d2d6485c0b",
+            "template hash changed -- every persisted template_hash is now orphaned"
+        );
     }
 
     /// Seeds one learned rule. Test-only shim so the many rule-driven tests
