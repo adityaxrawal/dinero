@@ -484,6 +484,24 @@ pub fn get_trailing_30_day_merchant_average(
     }
 }
 
+/// Doc 18 §4.6: a canonical transaction sitting in an *open* ambiguity cluster
+/// is not yet known to be a real distinct transaction, so it must not be
+/// counted in any dashboard aggregate — counting it would double-count the
+/// event it may turn out to be a duplicate of.
+///
+/// audit_05 #3: this predicate was written out four times, once in each
+/// `dashboard_summary` aggregate. The audit framed that as a cost (four
+/// independent joins per dashboard load) but the sharper problem is that four
+/// hand-copied definitions of "which transactions are provisional" can drift,
+/// and the one that drifts silently reports a wrong number. One definition now.
+/// Interpolated rather than parameterised because it is a fixed SQL fragment
+/// with no bound values — the surrounding queries keep their own `?n` params.
+const EXCLUDE_OPEN_CLUSTER_MEMBERS: &str = "AND id NOT IN (
+               SELECT m.canonical_transaction_id FROM reconciliation_cluster_members m
+               JOIN reconciliation_clusters c ON c.id = m.cluster_id
+               WHERE c.cluster_status = 'open' AND m.canonical_transaction_id IS NOT NULL
+           )";
+
 pub fn get_global_spend_current_month(
     conn: &Connection,
     current_date_utc: &NaiveDateTime,
@@ -496,17 +514,13 @@ pub fn get_global_spend_current_month(
     );
     let current_time_str = current_date_utc.format("%Y-%m-%d %H:%M:%S").to_string();
 
-    let mut stmt = conn.prepare(
-        "SELECT SUM(amount_minor) FROM transactions 
+    let mut stmt = conn.prepare(&format!(
+        "SELECT SUM(amount_minor) FROM transactions
          WHERE direction = 'debit' AND is_deleted = 0
            AND best_event_time >= ?1
            AND best_event_time <= ?2
-           AND id NOT IN (
-               SELECT m.canonical_transaction_id FROM reconciliation_cluster_members m
-               JOIN reconciliation_clusters c ON c.id = m.cluster_id
-               WHERE c.cluster_status = 'open' AND m.canonical_transaction_id IS NOT NULL
-           )",
-    )?;
+           {EXCLUDE_OPEN_CLUSTER_MEMBERS}"
+    ))?;
 
     let sum: rusqlite::Result<i64> =
         stmt.query_row(params![start_of_month, current_time_str], |row| row.get(0));
@@ -532,17 +546,13 @@ pub fn get_global_income_current_month(
     );
     let current_time_str = current_date_utc.format("%Y-%m-%d %H:%M:%S").to_string();
 
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare(&format!(
         "SELECT SUM(amount_minor) FROM transactions
          WHERE direction = 'credit' AND is_deleted = 0
            AND best_event_time >= ?1
            AND best_event_time <= ?2
-           AND id NOT IN (
-               SELECT m.canonical_transaction_id FROM reconciliation_cluster_members m
-               JOIN reconciliation_clusters c ON c.id = m.cluster_id
-               WHERE c.cluster_status = 'open' AND m.canonical_transaction_id IS NOT NULL
-           )",
-    )?;
+           {EXCLUDE_OPEN_CLUSTER_MEMBERS}"
+    ))?;
 
     let sum: rusqlite::Result<i64> =
         stmt.query_row(params![start_of_month, current_time_str], |row| row.get(0));
@@ -568,15 +578,13 @@ pub fn count_transactions_current_month(
     let current_time_str = current_date_utc.format("%Y-%m-%d %H:%M:%S").to_string();
 
     conn.query_row(
-        "SELECT COUNT(*) FROM transactions
-         WHERE is_deleted = 0
-           AND best_event_time >= ?1
-           AND best_event_time <= ?2
-           AND id NOT IN (
-               SELECT m.canonical_transaction_id FROM reconciliation_cluster_members m
-               JOIN reconciliation_clusters c ON c.id = m.cluster_id
-               WHERE c.cluster_status = 'open' AND m.canonical_transaction_id IS NOT NULL
-           )",
+        &format!(
+            "SELECT COUNT(*) FROM transactions
+             WHERE is_deleted = 0
+               AND best_event_time >= ?1
+               AND best_event_time <= ?2
+               {EXCLUDE_OPEN_CLUSTER_MEMBERS}"
+        ),
         params![start_of_month, current_time_str],
         |row| row.get(0),
     )
@@ -595,17 +603,13 @@ pub fn get_category_spend_current_month(
     );
     let current_time_str = current_date_utc.format("%Y-%m-%d %H:%M:%S").to_string();
 
-    let mut stmt = conn.prepare(
-        "SELECT SUM(amount_minor) FROM transactions 
+    let mut stmt = conn.prepare(&format!(
+        "SELECT SUM(amount_minor) FROM transactions
          WHERE category_id = ?1 AND direction = 'debit' AND is_deleted = 0
            AND best_event_time >= ?2
            AND best_event_time <= ?3
-           AND id NOT IN (
-               SELECT m.canonical_transaction_id FROM reconciliation_cluster_members m
-               JOIN reconciliation_clusters c ON c.id = m.cluster_id
-               WHERE c.cluster_status = 'open' AND m.canonical_transaction_id IS NOT NULL
-           )",
-    )?;
+           {EXCLUDE_OPEN_CLUSTER_MEMBERS}"
+    ))?;
 
     let sum: rusqlite::Result<i64> = stmt.query_row(
         params![category_id, start_of_month, current_time_str],

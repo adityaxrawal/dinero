@@ -1840,12 +1840,27 @@ mod tests {
             crate::db::transactions::get_global_spend_current_month(&conn, &event_time).unwrap();
         assert_eq!(total, 10.0);
 
+        // audit_05 #3: the same invariant has to hold for *every* dashboard
+        // aggregate, not just spend. The exclusion predicate used to be
+        // hand-copied into all four; it is now one shared constant, and this
+        // is what proves each of the four still interpolates it.
+        assert_eq!(
+            crate::db::transactions::count_transactions_current_month(&conn, &event_time).unwrap(),
+            1,
+            "an open-cluster member must not be counted"
+        );
+
         // Once the cluster is resolved, its member transaction re-joins totals.
         crate::db::reconciliation_clusters::update_status(&conn, "cluster_test_5", "resolved")
             .unwrap();
         let total_after_resolution =
             crate::db::transactions::get_global_spend_current_month(&conn, &event_time).unwrap();
         assert_eq!(total_after_resolution, 30.0);
+        assert_eq!(
+            crate::db::transactions::count_transactions_current_month(&conn, &event_time).unwrap(),
+            2,
+            "and must rejoin once the cluster is resolved"
+        );
     }
 
     #[test]
