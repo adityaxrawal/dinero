@@ -217,6 +217,7 @@ pub fn resolve_cluster(
                     fingerprint: None,
                     confidence_score: None,
                     event_time_confidence: obs_row.event_time_confidence,
+                    channel: obs_row.channel,
                 };
                 crate::reconciliation::canonical::create_canonical_transaction(
                     conn,

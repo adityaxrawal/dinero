@@ -104,6 +104,7 @@ pub fn create_canonical_transaction(conn: &Connection, obs: &IncomingObservation
         transaction_subtype: None,
         emi_group_id: None,
         category_id: None,
+        channel: obs.channel.clone(),
         notes: None,
         is_deleted: false,
         created_at: None,

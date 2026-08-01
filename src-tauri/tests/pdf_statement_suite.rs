@@ -266,6 +266,7 @@ async fn test_statement_overrides_email_where_both_exist() {
         fingerprint: None,
         confidence_score: None,
         event_time_confidence: None,
+        channel: None,
     };
     conn.interact(|c| {
         c.execute(

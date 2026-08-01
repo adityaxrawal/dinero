@@ -59,6 +59,11 @@ pub struct IncomingObservation {
     /// ambiguous-date observation must not silently look fully trusted.
     #[serde(default)]
     pub event_time_confidence: Option<String>,
+    /// Display-only transaction rail/channel (`extraction::ladder::detect_channel`).
+    /// Pure metadata pass-through to the canonical `transactions` row --
+    /// never read by matching/scoring in this module.
+    #[serde(default)]
+    pub channel: Option<String>,
 }
 
 /// Represents an existing canonical transaction for candidate matching.

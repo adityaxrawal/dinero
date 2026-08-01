@@ -78,6 +78,11 @@ pub fn build_observation(
         // matters for the email-vs-email comparison, irrelevant here.
         confidence_score: None,
         event_time_confidence: None,
+        // No equivalent of `detect_channel`'s body-text keyword matching
+        // exists for statement rows (Doc 30's statement pipeline scope is
+        // amount/date/merchant/reference only) -- left unpopulated, same
+        // reasoning as `emi_total_installments` above.
+        channel: None,
     })
 }
 

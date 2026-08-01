@@ -218,6 +218,7 @@ mod tests {
             fingerprint: None,
             confidence_score: None,
             event_time_confidence: None,
+            channel: None,
         }
     }
 

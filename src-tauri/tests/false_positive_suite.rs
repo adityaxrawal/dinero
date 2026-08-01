@@ -260,6 +260,7 @@ async fn process_record(pool: &deadpool_sqlite::Pool, rec: &GoldenRecord) -> Pip
                 fingerprint: row.fingerprint.clone(),
                 confidence_score: row.confidence_score,
                 event_time_confidence: row.event_time_confidence.clone(),
+                channel: None,
             };
 
             reconcile_transactionally(c, &incoming)
