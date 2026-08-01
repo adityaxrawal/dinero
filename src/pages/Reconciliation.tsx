@@ -6,7 +6,7 @@ import { useReconciliationClusters } from '@/hooks/queries/useReconciliationClus
 import { useUnassignedTransactions } from '@/hooks/queries/useUnassignedTransactions';
 import ReconciliationInspector from '@/components/reconciliation/ReconciliationInspector';
 import UnassignedInspector from '@/components/reconciliation/UnassignedInspector';
-import { cn } from '@/lib/utils';
+import { cn, formatRelativeDate, isOlderThanDays } from '@/lib/utils';
 import { cleanTextForReader } from '@/components/common/GmailEmailViewer';
 
 function getUnassignedDisplayInfo(item: any) {
@@ -179,9 +179,13 @@ export default function Reconciliation() {
                   <div className="flex flex-col gap-1.5">
                     {clusters.map((cluster) => {
                       const isSelected = selectedClusterId === cluster.id;
-                      const title = cluster.reason.startsWith('Ambiguous match')
-                        ? cluster.reason.substring(15).trim()
-                        : cluster.reason;
+                      const incoming = cluster.members.find((m) => m.member_role === 'incoming');
+                      const merchant = incoming?.merchant || 'Match requires review';
+                      const amountStr = incoming
+                        ? `${incoming.direction === 'debit' ? '-' : '+'} ₹${Math.abs(incoming.amount).toFixed(2)}`
+                        : null;
+                      const ageStr = cluster.created_at ? formatRelativeDate(cluster.created_at) : null;
+                      const isStale = cluster.created_at ? isOlderThanDays(cluster.created_at, 3) : false;
 
                       return (
                         <button
@@ -194,7 +198,7 @@ export default function Reconciliation() {
                               : 'bg-white/60 hover:bg-white text-[#064E3B] border-[#064E3B]/10 hover:border-[#064E3B]/20'
                           )}
                         >
-                          <div className="flex items-center justify-between gap-2 mb-1 w-full">
+                          <div className="flex items-center justify-between gap-2 mb-1.5 w-full">
                             <span
                               className={cn(
                                 'text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider',
@@ -205,8 +209,21 @@ export default function Reconciliation() {
                             >
                               Ambiguous
                             </span>
-                            <span className={cn('text-[10px] font-medium', isSelected ? 'text-[#F8E7C9]/70' : 'text-slate-400')}>
-                              {cluster.members_count} entries
+                            <span
+                              className={cn(
+                                'flex items-center gap-1.5 text-[10px] font-medium shrink-0',
+                                isSelected ? 'text-[#F8E7C9]/70' : 'text-slate-400'
+                              )}
+                            >
+                              {ageStr && (
+                                <span
+                                  className={cn(isStale && !isSelected && 'text-red-500 font-semibold')}
+                                  title={isStale ? 'Pending more than 3 days' : undefined}
+                                >
+                                  {ageStr}
+                                </span>
+                              )}
+                              <span>{cluster.members_count} entries</span>
                             </span>
                           </div>
                           <p
@@ -215,8 +232,22 @@ export default function Reconciliation() {
                               isSelected ? 'text-white' : 'text-[#064E3B]'
                             )}
                           >
-                            {title || 'Match requires review'}
+                            {merchant}
                           </p>
+                          {amountStr && (
+                            <p
+                              className={cn(
+                                'text-[12px] font-mono font-semibold',
+                                isSelected
+                                  ? 'text-[#F8E7C9]'
+                                  : incoming!.direction === 'debit'
+                                    ? 'text-red-700'
+                                    : 'text-emerald-700'
+                              )}
+                            >
+                              {amountStr}
+                            </p>
+                          )}
                         </button>
                       );
                     })}
@@ -326,6 +357,8 @@ export default function Reconciliation() {
               cluster={selectedCluster}
               onClose={() => setSelectedClusterId(null)}
               inline={true}
+              queueClusters={clusters}
+              onNavigate={setSelectedClusterId}
             />
           </div>
         ) : selectedUnassignedId && currentSection === 'unassigned' ? (

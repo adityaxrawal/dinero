@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { X, AlertTriangle, FileText, Ban, Save } from 'lucide-react';
+import { X, AlertTriangle, FileText, Ban, Save, CheckCircle2, XCircle } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 import type { UnassignedTransactionRecord } from '@/lib/ipc';
@@ -109,12 +109,17 @@ export default function UnassignedInspector({
     );
   }
 
-  const reasonMap: Record<string, string> = {
+  const reasonTitleMap: Record<string, string> = {
     extraction_failed: 'Failed to Extract Details',
-    issuer_name_not_found: 'Unknown Instrument',
+    issuer_name_not_found: 'Unknown Payment Instrument',
+    pending_llm_enrichment: 'Pending Background AI Enrichment',
+    'gate3_failed:missing_amount': 'Missing Transaction Amount',
+    'gate3_failed:missing_counterparty': 'Missing Counterparty / Merchant',
+    'gate3_failed:missing_instrument': 'Missing Instrument Details',
+    gate3_failed: 'Mandatory Field Gate Failed',
   };
 
-  const title = reasonMap[record.reason] || record.reason || 'Unresolved Issue';
+  const title = reasonTitleMap[record.reason] || record.reason || 'Unresolved Issue';
 
   let emailHtml = '';
   let emailText = '';
@@ -132,6 +137,112 @@ export default function UnassignedInspector({
     }
   } else if (record.body_snippet) {
     emailText = record.body_snippet;
+  }
+
+  // Diagnostic Checklist evaluations
+  const checks = [
+    {
+      id: 'gate1',
+      label: 'Sender Verification (Gate 1)',
+      passed: true,
+      value: 'Verified Bank Alert Domain',
+    },
+    {
+      id: 'gate2',
+      label: 'Content Classifier (Gate 2)',
+      passed: true,
+      value: 'Transaction Alert / Update',
+    },
+    {
+      id: 'amount',
+      label: 'Transaction Amount',
+      passed: record.amount_minor != null,
+      value: record.amount_minor != null ? `${record.currency ?? 'INR'} ${(record.amount_minor / 100).toFixed(2)}` : 'Missing / Unparsed',
+    },
+    {
+      id: 'merchant',
+      label: 'Merchant / Counterparty',
+      passed: !!record.merchant_raw,
+      value: record.merchant_raw || 'Missing / Non-plausible',
+    },
+    {
+      id: 'date',
+      label: 'Transaction Date',
+      passed: !!record.event_time,
+      value: record.event_time ? record.event_time.slice(0, 10) : 'Missing / Unparsed',
+    },
+    {
+      id: 'instrument',
+      label: 'Instrument Resolution (Gate 4)',
+      passed: record.reason !== 'issuer_name_not_found' && !record.reason.includes('missing_instrument'),
+      value:
+        record.reason === 'issuer_name_not_found'
+          ? 'Card/Account Unmatched in Settings'
+          : record.reason.includes('missing_instrument')
+            ? 'No Card/Account Identifier in Email'
+            : 'Instrument Signal Matched',
+    },
+  ];
+
+  // Failure Reason Details & Action Tips
+  let reasonDescription = 'An unexpected issue occurred while processing this message.';
+  let actionTip = 'Review the extracted data below and complete any missing fields before saving.';
+
+  if (record.reason === 'extraction_failed') {
+    reasonDescription = "Dinero's rule engine could not reliably parse the minimum required transaction details (amount, merchant, or date) from this message text.";
+    actionTip = "Fill in the missing fields manually using the extracted data form below or Quick-Fill buttons from the email evidence.";
+  } else if (record.reason === 'issuer_name_not_found') {
+    reasonDescription = 'Transaction details were parsed successfully, but Dinero could not match the bank or card mentioned in the email to any configured payment instrument in your settings.';
+    actionTip = 'Select an existing instrument from the dropdown below, or go to Settings → Payment Instruments to add this new card/account.';
+  } else if (record.reason === 'pending_llm_enrichment') {
+    reasonDescription = 'Rule-based parsers could not confidently extract all details. An AI LLM enrichment task has been enqueued to extract missing fields.';
+    actionTip = 'You can wait for the background AI worker to complete or manually input the fields below and save.';
+  } else if (record.reason === 'gate3_failed:missing_amount') {
+    reasonDescription = 'Merchant name and date were identified, but no valid transaction amount figure could be parsed from the email body.';
+    actionTip = 'Look at the email text in Source Email Evidence below and enter the amount in the form.';
+  } else if (record.reason === 'gate3_failed:missing_counterparty') {
+    reasonDescription = 'Transaction amount and date were found, but no counterparty or merchant name could be extracted, or candidate was rejected as generic boilerplate.';
+    actionTip = 'Type the merchant name into the Merchant field below or use Quick-Fill.';
+  } else if (record.reason === 'gate3_failed:missing_instrument') {
+    reasonDescription = 'Amount, merchant, and date were extracted, but no bank name, card last-4 digits, or UPI ID signal was present in the email.';
+    actionTip = 'Select the payment instrument used for this transaction from the Instrument dropdown below.';
+  }
+
+  // Confidence & Engine calculations
+  let confidenceLabel = '0% (Unextracted)';
+  let confidenceBadgeStyle = 'bg-red-500/10 text-red-700 border-red-200';
+  let engineLabel = 'Standard Ladder';
+
+  if (record.extraction_method?.startsWith('regex_')) {
+    confidenceLabel = '100% (Rule Match)';
+    confidenceBadgeStyle = 'bg-emerald-500/10 text-emerald-800 border-emerald-300';
+    engineLabel = `Deterministic (${record.extraction_method})`;
+  } else if (record.extraction_method === 'llm_layer6') {
+    engineLabel = 'AI Layer 6 LLM';
+    if (record.confidence_score != null) {
+      const pct = Math.round(record.confidence_score * 100);
+      confidenceLabel = `${pct}% Confidence`;
+      if (pct >= 80) {
+        confidenceBadgeStyle = 'bg-emerald-500/10 text-emerald-800 border-emerald-300';
+      } else if (pct >= 50) {
+        confidenceBadgeStyle = 'bg-amber-500/10 text-amber-800 border-amber-300';
+      }
+    } else {
+      confidenceLabel = 'AI Extracted (Medium)';
+      confidenceBadgeStyle = 'bg-amber-500/10 text-amber-800 border-amber-300';
+    }
+  } else if (record.reason === 'pending_llm_enrichment') {
+    engineLabel = 'AI Layer 6 LLM (Pending)';
+    confidenceLabel = 'Enqueued for AI';
+    confidenceBadgeStyle = 'bg-amber-500/10 text-amber-800 border-amber-300';
+  } else if (record.confidence_score != null) {
+    const pct = Math.round(record.confidence_score * 100);
+    confidenceLabel = `${pct}% Confidence`;
+    if (pct >= 80) {
+      confidenceBadgeStyle = 'bg-emerald-500/10 text-emerald-800 border-emerald-300';
+    } else {
+      confidenceBadgeStyle = 'bg-amber-500/10 text-amber-800 border-amber-300';
+    }
   }
 
   return (
@@ -172,23 +283,76 @@ export default function UnassignedInspector({
         )}
       >
         <div className="flex-1 space-y-6">
-          {/* Why it failed */}
-          <div className="bg-white/50 rounded-xl p-5 border border-red-200 shadow-sm">
-            <h3 className="text-sm font-semibold mb-2 text-red-800 flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4" /> Why did this fail?
-            </h3>
-            <p className="text-[13px] text-[#064E3B]/80 leading-relaxed mb-4">
-              {record.reason === 'extraction_failed'
-                ? "Dinero's parser could not reliably identify the required transaction details (like amount, merchant, or date) from this message. This often happens with new or non-standard bank alert formats."
-                : record.reason === 'issuer_name_not_found'
-                  ? 'The transaction details were extracted successfully, but Dinero could not match the bank or card (instrument) mentioned in the message to any of your configured instruments.'
-                  : 'An unexpected error occurred while processing this message.'}
+          {/* Why it failed & Diagnostic Breakdown */}
+          <div className="bg-white/70 rounded-xl p-5 border border-red-200/80 shadow-sm space-y-4">
+            <div className="flex items-center justify-between flex-wrap gap-2 pb-3 border-b border-red-100">
+              <h3 className="text-sm font-semibold text-red-900 flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-red-600" /> Why did this fail?
+              </h3>
+
+              {/* Confidence & Engine badges */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-[#064E3B]/10 text-[#064E3B]">
+                  {engineLabel}
+                </span>
+                <span
+                  className={cn(
+                    'text-[11px] font-bold px-2 py-0.5 rounded-full border',
+                    confidenceBadgeStyle
+                  )}
+                >
+                  {confidenceLabel}
+                </span>
+              </div>
+            </div>
+
+            <p className="text-[13px] text-[#064E3B]/90 leading-relaxed font-medium">
+              {reasonDescription}
             </p>
 
-            <div className="bg-red-50/50 rounded-lg p-3 text-xs text-red-900/80 font-medium">
-              <strong>Tip:</strong> If you see this frequently for a specific bank, try switching to
-              our Advanced LLM parser in Settings for better accuracy, or wait for an upcoming rules
-              engine update.
+            {/* Diagnostic Pass / Fail Checklist */}
+            <div className="bg-white/90 rounded-lg p-3 border border-[#064E3B]/10">
+              <h4 className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70 mb-2.5">
+                Ingestion Diagnostic Checklist
+              </h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
+                {checks.map((check) => (
+                  <div
+                    key={check.id}
+                    className={cn(
+                      'flex items-start gap-2 p-2 rounded-md border',
+                      check.passed
+                        ? 'bg-emerald-50/60 border-emerald-200/60 text-emerald-900'
+                        : 'bg-red-50/60 border-red-200/60 text-red-900'
+                    )}
+                  >
+                    {check.passed ? (
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0 mt-0.5" />
+                    ) : (
+                      <XCircle className="w-3.5 h-3.5 text-red-600 flex-shrink-0 mt-0.5" />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="font-semibold text-[11px] flex items-center justify-between gap-1">
+                        <span>{check.label}</span>
+                        <span
+                          className={cn(
+                            'text-[9px] font-extrabold uppercase px-1 rounded',
+                            check.passed ? 'bg-emerald-200/60 text-emerald-900' : 'bg-red-200/60 text-red-900'
+                          )}
+                        >
+                          {check.passed ? 'Passed' : 'Failed'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] opacity-80 truncate">{check.value}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Context Actionable Tip */}
+            <div className="bg-red-50/60 rounded-lg p-3 text-xs text-red-900/90 font-medium border border-red-100">
+              <strong>Tip:</strong> {actionTip}
             </div>
           </div>
 

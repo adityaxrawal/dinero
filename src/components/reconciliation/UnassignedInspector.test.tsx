@@ -39,4 +39,22 @@ describe('UnassignedInspector resolve actions', () => {
     expect(screen.getByDisplayValue('Google Cloud')).toBeInTheDocument();
     expect(screen.getByDisplayValue('31.52')).toBeInTheDocument();
   });
+
+  it('renders ingestion diagnostic checklist and confidence level metrics', () => {
+    const recordWithConfidence: UnassignedTransactionRecord = {
+      ...baseRecord,
+      reason: 'issuer_name_not_found',
+      extraction_method: 'llm_layer6',
+      confidence_score: 0.75,
+      event_time: '2026-07-30T10:00:00Z',
+    };
+
+    renderWithQuery(<UnassignedInspector record={recordWithConfidence} onClose={() => {}} />);
+
+    expect(screen.getByText('Unknown Payment Instrument')).toBeInTheDocument();
+    expect(screen.getByText('75% Confidence')).toBeInTheDocument();
+    expect(screen.getByText('AI Layer 6 LLM')).toBeInTheDocument();
+    expect(screen.getByText('Ingestion Diagnostic Checklist')).toBeInTheDocument();
+    expect(screen.getByText('Card/Account Unmatched in Settings')).toBeInTheDocument();
+  });
 });
