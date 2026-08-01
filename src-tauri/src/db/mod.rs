@@ -53,6 +53,7 @@ mod sender_reputation_tests;
 pub mod sessions;
 #[cfg(test)]
 mod sessions_tests;
+pub mod dismissed_warnings;
 pub mod statement_drafts;
 pub mod statement_entries;
 pub mod statements;

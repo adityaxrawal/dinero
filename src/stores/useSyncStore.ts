@@ -41,7 +41,26 @@ export const useSyncStore = create<SyncStoreState>((set) => ({
   onScanCompleted: () => set({ scanStatus: 'done' }),
   onScanFailed: (message) => set({ scanStatus: 'error', scanError: message }),
   onSystemWarning: (warning) => set((s) => ({ warnings: [...s.warnings, warning] })),
-  dismissWarning: (index) => set((s) => ({ warnings: s.warnings.filter((_, i) => i !== index) })),
+  /**
+   * audit_07 #10: also tells the backend, so a structural condition (a
+   * machine permanently under the RAM threshold) stops re-prompting on every
+   * launch. The local filter happens either way — a failed persist should
+   * cost the user a re-prompt next launch, not an undismissable banner now.
+   *
+   * The backend refuses to persist `critical` warnings and returns an error;
+   * that is deliberate (they report blocked functionality), and swallowing it
+   * here is what keeps the banner dismissed for this session only.
+   */
+  dismissWarning: (index) =>
+    set((s) => {
+      const warning = s.warnings[index];
+      if (warning && isTauriRuntime()) {
+        API.systemWarnings
+          .dismiss(warning.warning_type)
+          .catch((e) => console.warn('Could not persist warning dismissal', e));
+      }
+      return { warnings: s.warnings.filter((_, i) => i !== index) };
+    }),
   resetScanState: () => set({ scanStatus: 'idle', scanProgress: null, scanError: null }),
 
   /**

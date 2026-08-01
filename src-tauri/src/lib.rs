@@ -449,6 +449,21 @@ pub fn run() {
             // Per-model-id cancellation tokens for in-progress local LLM
             // downloads (Settings' model picker Cancel button).
             app.manage(crate::llm_manager::DownloadRegistry::default());
+            // audit_07 #10: seed the dismissed-warning cache before any
+            // condition check can emit. Blocking rather than spawned on
+            // purpose — a warning emitted in the gap would be shown despite
+            // having been dismissed, which is the exact behaviour being fixed.
+            {
+                let pool_for_dismissals = pool_clone.clone();
+                let loaded = tauri::async_runtime::block_on(async move {
+                    let conn = pool_for_dismissals.get().await.ok()?;
+                    conn.interact(|c| crate::db::dismissed_warnings::load_all(c))
+                        .await
+                        .ok()?
+                        .ok()
+                });
+                crate::ipc::system_warnings::load_dismissals(loaded.unwrap_or_default());
+            }
             {
                 let pool_for_session = pool_clone.clone();
                 let session_state_handle = app.handle().clone();

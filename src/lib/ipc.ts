@@ -1158,6 +1158,12 @@ export const API = {
     // with Gmail already rate-limited) queries this instead of only ever
     // reacting to the live `system_warning` event it missed.
     getActive: () => invokeCommand<SystemWarningPayload[]>('get_active_system_warnings'),
+    // audit_07 #10: persists the dismissal so a structural condition (a
+    // machine permanently under the RAM threshold) stops re-prompting on every
+    // launch. Rejects `critical` warnings — those report blocked
+    // functionality and are session-dismissable only.
+    dismiss: (warningType: string) =>
+      invokeCommand<void>('settings_dismiss_system_warning', { warningType }),
   },
   backgroundTasks: {
     // Doc 30 TASK-RT-004: same late-mount recovery rationale as
