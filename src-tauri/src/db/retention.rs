@@ -141,6 +141,74 @@ pub fn sweep_raw_payloads(conn: &Connection) -> Result<(usize, usize)> {
     Ok((observations_cleared, entries_cleared))
 }
 
+/// How long a *settled* reconciliation audit row is kept. Same horizon as
+/// [`RAW_PAYLOAD_RETENTION`] and for the same reason: past it, the raw payload
+/// these rows explain has already been nulled, so what remains is a score and
+/// a decision string with nothing left to check them against.
+const RECONCILIATION_AUDIT_RETENTION: &str = "-1 year";
+
+/// audit_05 #7 / audit_03 #5: neither `match_decisions` nor
+/// `reconciliation_clusters` was ever pruned — both grow with every
+/// observation, forever.
+///
+/// Deletes only settled rows. Specifically **not** deleted:
+/// * anything a human touched (`reviewed_by IS NOT NULL`) or still owes a
+///   decision on (`pending_review`, `open`, `deferred`) — that is the review
+///   backlog itself, not debris;
+/// * the original auto-match row behind a `manually_corrected` decision, which
+///   Doc 11 §9.1 requires be preserved for traceability. It is found via the
+///   `audit_log` entry `append_correction_decision` writes, the only pointer
+///   at it (there is no FK);
+/// * decisions for observations that never reconciled — the "why wasn't this
+///   matched" evidence `sweep_raw_payloads` deliberately keeps too.
+///
+/// audit_03 #5 also proposes auto-promoting a stale cluster to an auto-match
+/// after a TTL. That is not implemented and should not be: the engine routed
+/// those candidates to a cluster precisely because it could not tell them
+/// apart, so a timer would silently pick a winner among them — Doc 12 §8.2's
+/// "ambiguous matches must be kept unresolved rather than forced" exists to
+/// prevent exactly that. Growth is bounded here by clearing *settled* clusters
+/// instead; an open cluster is a real question for the user and stays put.
+///
+/// `reconciliation_cluster_members` needs no clause of its own — its FK is
+/// `ON DELETE CASCADE`.
+pub fn sweep_reconciliation_audit(conn: &Connection) -> Result<(usize, usize)> {
+    let decisions_deleted = conn.execute(
+        "DELETE FROM match_decisions
+         WHERE reviewed_by IS NULL
+           AND review_status <> 'pending_review'
+           AND created_at < datetime('now', ?1)
+           AND id NOT IN (
+             SELECT resource_id FROM audit_log
+             WHERE resource_type = 'match_decision' AND resource_id IS NOT NULL
+           )
+           AND observation_id IN (
+             SELECT id FROM transaction_observations
+             WHERE canonical_transaction_id IS NOT NULL
+           )",
+        [RECONCILIATION_AUDIT_RETENTION],
+    )?;
+
+    // COALESCE, not `created_at`: a cluster opened two years ago and resolved
+    // yesterday is a fresh resolution and keeps the full window.
+    let clusters_deleted = conn.execute(
+        "DELETE FROM reconciliation_clusters
+         WHERE cluster_status IN ('resolved', 'rejected')
+           AND COALESCE(resolved_at, created_at) < datetime('now', ?1)",
+        [RECONCILIATION_AUDIT_RETENTION],
+    )?;
+
+    if decisions_deleted > 0 || clusters_deleted > 0 {
+        tracing::info!(
+            "Retention sweep: deleted {} settled match_decisions, {} settled reconciliation_clusters",
+            decisions_deleted,
+            clusters_deleted
+        );
+    }
+
+    Ok((decisions_deleted, clusters_deleted))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,6 +284,125 @@ mod tests {
         assert_eq!(get_payload("obs_old_matched"), None);
         assert!(get_payload("obs_old_unmatched").is_some());
         assert!(get_payload("obs_recent_matched").is_some());
+    }
+
+    /// audit_05 #7 / audit_03 #5: settled reconciliation audit rows must age
+    /// out, but every category the sweep is supposed to protect must survive —
+    /// the human decisions, the open review backlog, and the original
+    /// auto-match row behind a correction (Doc 11 §9.1).
+    #[test]
+    fn reconciliation_sweep_clears_settled_rows_and_keeps_the_review_trail() {
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO transactions (id, instrument_id, amount_minor, currency, direction, is_deleted) \
+             VALUES ('txn_1', 'inst_1', 1000, 'INR', 'debit', 0)",
+            [],
+        )
+        .unwrap();
+        // Matched, so its decisions are eligible.
+        conn.execute(
+            "INSERT INTO transaction_observations (id, canonical_transaction_id, created_at) \
+             VALUES ('obs_m', 'txn_1', datetime('now', '-400 days'))",
+            [],
+        )
+        .unwrap();
+        // Never reconciled — its decision is the "why wasn't this matched"
+        // evidence `sweep_raw_payloads` keeps too.
+        conn.execute(
+            "INSERT INTO transaction_observations (id, canonical_transaction_id, created_at) \
+             VALUES ('obs_u', NULL, datetime('now', '-400 days'))",
+            [],
+        )
+        .unwrap();
+
+        let decision = |id: &str, obs: &str, status: &str, by: Option<&str>, age: &str| {
+            conn.execute(
+                "INSERT INTO match_decisions (id, observation_id, decision, score, review_status, reviewed_by, created_at) \
+                 VALUES (?1, ?2, 'auto_matched_scored', 0.9, ?3, ?4, datetime('now', ?5))",
+                rusqlite::params![id, obs, status, by, age],
+            )
+            .unwrap();
+        };
+
+        decision("d_old_auto", "obs_m", "not_required", None, "-400 days");
+        decision("d_recent_auto", "obs_m", "not_required", None, "-1 days");
+        decision("d_old_pending", "obs_m", "pending_review", None, "-400 days");
+        decision("d_old_human", "obs_m", "reviewed", Some("user"), "-400 days");
+        decision("d_old_unmatched", "obs_u", "not_required", None, "-400 days");
+        // The row a `manually_corrected` decision points back at. Only the
+        // audit_log entry links them, so that is what has to protect it.
+        decision("d_old_corrected", "obs_m", "not_required", None, "-400 days");
+        conn.execute(
+            "INSERT INTO audit_log (id, actor_type, action, resource_type, resource_id) \
+             VALUES ('al_1', 'user', 'manual_correction', 'match_decision', 'd_old_corrected')",
+            [],
+        )
+        .unwrap();
+
+        let cluster = |id: &str, status: &str, age: &str| {
+            conn.execute(
+                "INSERT INTO reconciliation_clusters (id, cluster_status, created_at, resolved_at) \
+                 VALUES (?1, ?2, datetime('now', '-400 days'), datetime('now', ?3))",
+                rusqlite::params![id, status, age],
+            )
+            .unwrap();
+        };
+        cluster("c_old_resolved", "resolved", "-400 days");
+        cluster("c_recent_resolved", "resolved", "-1 days");
+        cluster("c_old_rejected", "rejected", "-400 days");
+        // Open and deferred are the user's backlog, never swept regardless of age.
+        conn.execute(
+            "INSERT INTO reconciliation_clusters (id, cluster_status, created_at) \
+             VALUES ('c_old_open', 'open', datetime('now', '-400 days'))",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reconciliation_clusters (id, cluster_status, created_at) \
+             VALUES ('c_old_deferred', 'deferred', datetime('now', '-400 days'))",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reconciliation_cluster_members (id, cluster_id, member_role) \
+             VALUES ('m_1', 'c_old_resolved', 'incoming')",
+            [],
+        )
+        .unwrap();
+
+        let (decisions, clusters) = sweep_reconciliation_audit(&conn).unwrap();
+        assert_eq!(decisions, 1, "only the settled aged auto-decision");
+        assert_eq!(clusters, 2, "the aged resolved and rejected clusters");
+
+        let survives = |table: &str, id: &str| -> bool {
+            conn.query_row(
+                &format!("SELECT COUNT(*) FROM {} WHERE id = ?1", table),
+                [id],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+                > 0
+        };
+
+        assert!(!survives("match_decisions", "d_old_auto"));
+        assert!(survives("match_decisions", "d_recent_auto"));
+        assert!(survives("match_decisions", "d_old_pending"));
+        assert!(survives("match_decisions", "d_old_human"));
+        assert!(survives("match_decisions", "d_old_unmatched"));
+        assert!(
+            survives("match_decisions", "d_old_corrected"),
+            "Doc 11 §9.1: the original row behind a correction is preserved"
+        );
+
+        assert!(!survives("reconciliation_clusters", "c_old_resolved"));
+        assert!(!survives("reconciliation_clusters", "c_old_rejected"));
+        assert!(survives("reconciliation_clusters", "c_recent_resolved"));
+        assert!(survives("reconciliation_clusters", "c_old_open"));
+        assert!(survives("reconciliation_clusters", "c_old_deferred"));
+        assert!(
+            !survives("reconciliation_cluster_members", "m_1"),
+            "members must go with their cluster via ON DELETE CASCADE"
+        );
     }
 
     #[test]

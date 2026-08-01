@@ -737,6 +737,17 @@ pub fn run() {
                             .await;
                     }
 
+                    // audit_05 #7 / audit_03 #5: deletes settled match_decisions
+                    // and settled reconciliation_clusters, neither of which was
+                    // pruned before. Same daily cadence and same horizon as the
+                    // raw-payload sweep above — the rows it clears are the ones
+                    // explaining payloads that sweep has already nulled.
+                    if let Ok(conn) = pool_for_backup.get().await {
+                        let _ = conn
+                            .interact(|c| crate::db::retention::sweep_reconciliation_audit(c))
+                            .await;
+                    }
+
                     // Doc-30-style optimization #5: purges `ignored_messages`
                     // rows past their 30-day TTL. Runs on the same daily
                     // cadence as the raw-payload sweep above — no dedicated
