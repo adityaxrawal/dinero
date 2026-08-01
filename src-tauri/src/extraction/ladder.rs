@@ -235,6 +235,26 @@ pub async fn apply_learned_fields(
     fired
 }
 
+/// audit_02 #6: Doc 30 TASK-TXN-004 puts Layers 1/2 at "typically 0.9+", the
+/// same sentence that gives Layer 3 its documented 0.5–0.7 band. Only Layer 3
+/// ever implemented its half, so a bank-template or learned-rule extraction
+/// left `confidence_score` NULL and was treated as having *no* signal:
+/// `canonical.rs`'s `maybe_overwrite_from_higher_confidence_email` returns
+/// early on `None`, so a template match — the most reliable extraction there
+/// is — could never correct fields a weaker generic-regex observation had
+/// already written.
+///
+/// One value for both layers rather than a ranking between them: nothing reads
+/// such a distinction, and inventing one would be a number with no source.
+///
+/// Layer 4 (`nlp`) is deliberately left `None`. Doc 30 gives it no band, it
+/// only runs once Layer 3 has already failed, and `None` already produces the
+/// right precedence outcome (never overwrites). Giving it a number below
+/// `LAYER3_BASE_CONFIDENCE` would also silently enrol it in
+/// `alert_worker`'s `confidence_score < 0.5` "SMS Offline" query — a
+/// behaviour change nothing in the audit asked for.
+const LAYER12_CONFIDENCE: f64 = 0.95;
+
 // Layer 1: learned field rules (synthesized from user corrections)
 pub struct LearnedFieldLayer;
 impl ExtractionLayer for LearnedFieldLayer {
@@ -247,6 +267,7 @@ impl ExtractionLayer for LearnedFieldLayer {
         Box::pin(async move {
             let mut result = ExtractionResult {
                 extraction_method: self.layer_name().to_string(),
+                confidence_score: Some(LAYER12_CONFIDENCE),
                 ..Default::default()
             };
             let fired = apply_learned_fields(pool, bank_name, body, "email", &mut result).await;
@@ -1009,7 +1030,8 @@ impl ExtractionLayer for BankTemplateLayer {
                 None
             };
 
-            let matched = matched?;
+            let mut matched = matched?;
+            matched.confidence_score = Some(LAYER12_CONFIDENCE);
 
             Some(matched)
         })
@@ -1985,13 +2007,16 @@ fn cross_check_amount(body: &str, claimed_amount_minor: i64) -> AmountAgreement 
     }
 }
 
-/// Confidence assigned on disagreement when the winning layer had no
-/// confidence score of its own (Layers 1/2/5 don't set one today) -- below
-/// Layer 3's documented 0.5 floor, since "schema-valid but an independent
-/// check disagrees" is a weaker signal than even Layer 3's weakest result.
+/// The ceiling a result may hold once an independent check has disagreed with
+/// it -- below Layer 3's documented 0.5 floor, since "schema-valid but an
+/// independent check disagrees" is a weaker signal than even Layer 3's weakest
+/// result. Also the value assigned outright when the winning layer had no
+/// confidence score of its own (Layer 4 today).
 const CROSS_CHECK_DISAGREEMENT_CONFIDENCE: f64 = 0.4;
 /// Multiplicative penalty applied to an existing confidence score on
-/// disagreement (Layer 3/6 already set one).
+/// disagreement, before the ceiling above is applied. Keeps disagreements
+/// ordered among results that were already weak (an LLM's 0.35 stays worse
+/// than a Layer 3 0.5), where the ceiling alone would flatten them.
 const CROSS_CHECK_DISAGREEMENT_PENALTY_FACTOR: f64 = 0.8;
 
 /// Applies [`cross_check_amount`] to a layer's about-to-be-returned result.
@@ -2006,8 +2031,14 @@ fn apply_amount_cross_check(obs: &mut ExtractionResult, body: &str) {
         return;
     };
     if cross_check_amount(body, claimed) == AmountAgreement::Disagrees {
+        // audit_02 #6: the penalty used to be purely multiplicative, which was
+        // safe only while every layer that set a confidence started at <= 0.7.
+        // Now that Layers 1/2 declare 0.95, `0.95 * 0.8 = 0.76` would leave a
+        // *contradicted* template match outranking a clean generic-regex
+        // result. The ceiling is the actual invariant this const documents.
         let downgraded = match obs.confidence_score {
-            Some(existing) => (existing * CROSS_CHECK_DISAGREEMENT_PENALTY_FACTOR).max(0.0),
+            Some(existing) => (existing * CROSS_CHECK_DISAGREEMENT_PENALTY_FACTOR)
+                .clamp(0.0, CROSS_CHECK_DISAGREEMENT_CONFIDENCE),
             None => CROSS_CHECK_DISAGREEMENT_CONFIDENCE,
         };
         tracing::warn!(
@@ -2483,6 +2514,37 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// audit_02 #6: a bank-template match must carry a confidence score, and
+    /// it must sit above Layer 3's ceiling. Before this it was NULL, which
+    /// `maybe_overwrite_from_higher_confidence_email` reads as "no signal" and
+    /// returns early on — so the most reliable extraction in the ladder could
+    /// never correct fields a weaker generic-regex observation had written.
+    #[tokio::test]
+    async fn bank_template_confidence_outranks_generic_regex() {
+        let pool = dummy_pool();
+        let got = BankTemplateLayer
+            .extract(
+                &pool,
+                "Jupiter",
+                "Hey, Aditya Your UPI payment was successful You paid ₹543 Paid to \
+                 HONGKONG NOODLES Vyapar.169687998887@hdfcbank Date Jan 01, 2026 From \
+                 Aditya 8127696200@jupiteraxis Transaction ID 1321767280821724605",
+            )
+            .await
+            .expect("template must still match");
+
+        let confidence = got
+            .confidence_score
+            .expect("Doc 30 TASK-TXN-004 gives Layers 1/2 a band; NULL is not it");
+        assert!(
+            confidence > LAYER3_MAX_CONFIDENCE,
+            "a template match ({confidence}) must outrank the best possible \
+             generic-regex result ({LAYER3_MAX_CONFIDENCE}), or precedence \
+             cannot prefer it"
+        );
+        assert!(confidence >= 0.9, "Doc 30 says Layer 1/2 is typically 0.9+");
     }
 
     /// Field-level regression for the corpus-derived (tier-1) templates.
