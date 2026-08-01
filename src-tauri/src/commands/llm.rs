@@ -239,12 +239,75 @@ pub async fn llm_get_hardware_info(
     })
 }
 
-/// Clamped 1-10 both here and in the frontend's own input — defense in
-/// depth, not redundancy: this command is the one place a bad value could
-/// actually reach `llama-server`'s `--parallel` flag.
+/// Clamped both here and in the frontend's own input — defense in depth, not
+/// redundancy: this command is the one place a bad value could actually reach
+/// `llama-server`'s `--parallel` flag.
+///
+/// audit_06 #4: the ceiling used to be a flat 10 on every machine, while the
+/// slot count multiplies into `--context-size` (2048 each) *and* costs a KV
+/// cache per slot. A 16 GB machine running a 12B model could be set to 10 by
+/// hand and OOM the server at startup, with `compute_recommended_slots`'
+/// hardware-aware answer of 4 shown in the UI and then ignored. The ceiling is
+/// now what this machine's RAM can actually hold for the active model.
+///
+/// Deliberately clamps to the RAM ceiling, not to the full recommendation: the
+/// recommendation also caps on CPU cores, which is a throughput opinion the
+/// user is entitled to overrule. Running out of memory is not an opinion.
+///
+/// Async now (it reads the active model to size the ceiling) where it used to
+/// be sync — the frontend already awaits it.
 #[tauri::command]
-pub fn llm_set_parallel_slots(slots: usize) -> Result<usize, crate::error::AppError> {
-    let clamped = slots.clamp(1, 10);
+pub async fn llm_set_parallel_slots(
+    slots: usize,
+    app: tauri::AppHandle,
+    pool: tauri::State<'_, deadpool_sqlite::Pool>,
+) -> Result<usize, crate::error::AppError> {
+    let model_size_gb = active_model_size_gb(&app, pool.inner()).await;
+    let hw = crate::startup::read_hardware_info();
+    let ceiling = crate::startup::max_safe_slots(hw.total_ram_gb, model_size_gb);
+
+    let clamped = slots.clamp(1, ceiling);
+    if clamped < slots {
+        tracing::warn!(
+            requested = slots,
+            granted = clamped,
+            ram_gb = hw.total_ram_gb,
+            model_size_gb,
+            "parallel slot request exceeds what this machine's RAM can hold — clamped"
+        );
+    }
     crate::llama_sidecar::set_parallel_slots(clamped);
     Ok(clamped)
+}
+
+/// Size of the model that would actually be loaded, for slot-ceiling maths.
+/// Falls back to the same 5.0 GB default `llm_hardware_recommendation` uses
+/// when no model is resolvable, so both paths size against the same
+/// assumption rather than disagreeing.
+async fn active_model_size_gb(
+    app: &tauri::AppHandle,
+    pool: &deadpool_sqlite::Pool,
+) -> f64 {
+    use tauri::Manager as _;
+    let Ok(app_dir) = app.path().app_data_dir() else {
+        return 5.0;
+    };
+    let downloaded = downloaded_model_ids(&app_dir);
+    let stored = match pool.get().await {
+        Ok(conn) => conn
+            .interact(|c| crate::db::local_profile::get_llm_model(c))
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .flatten(),
+        Err(_) => None,
+    };
+    llm_manager::resolve_active_model(&downloaded, stored.as_deref())
+        .and_then(|id| {
+            llm_manager::get_available_models()
+                .into_iter()
+                .find(|m| m.id == id)
+        })
+        .map(|m| m.approx_size_gb)
+        .unwrap_or(5.0)
 }

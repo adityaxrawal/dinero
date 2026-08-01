@@ -103,14 +103,33 @@ const PER_SLOT_KV_GB: f64 = 1.0;
 const CORES_PER_SLOT: usize = 2;
 const MAX_RECOMMENDED_SLOTS: usize = 10;
 
+/// The most slots this machine's RAM can hold for `model_size_gb`, ignoring
+/// CPU entirely.
+///
+/// audit_06 #4: `llm_set_parallel_slots` clamped the user's override to a
+/// fixed `1..=10` — the same 10 regardless of hardware — while
+/// `llama_sidecar::context_size_for` multiplies the slot count into
+/// `--context-size` (2048 per slot) and every slot also costs its own KV
+/// cache. So a 16 GB machine running a 12B model, whose recommendation is 4,
+/// could be set to 10 by hand and OOM `llama-server` at startup.
+///
+/// Split out from [`compute_recommended_slots`] rather than reusing it whole
+/// because the two answer different questions: the CPU term is a throughput
+/// *recommendation* (more slots than cores just thrashes), while the RAM term
+/// is a hard *ceiling* (more slots than memory crashes). Clamping a manual
+/// override to the CPU term would take away an override the user is entitled
+/// to make; clamping it to the RAM term stops a crash.
+pub fn max_safe_slots(ram_gb: f64, model_size_gb: f64) -> usize {
+    let ram_budget = ((ram_gb - model_size_gb - OS_RESERVE_GB) / PER_SLOT_KV_GB).floor();
+    (ram_budget.max(1.0) as usize).min(MAX_RECOMMENDED_SLOTS)
+}
+
 /// Recommended parallel `llama-server` slot count for a given machine and
 /// the model it would run. Never returns 0 (a machine that can run the
 /// model at all can run it at 1 slot) or more than `MAX_RECOMMENDED_SLOTS`.
 pub fn compute_recommended_slots(ram_gb: f64, cpu_cores: usize, model_size_gb: f64) -> usize {
-    let ram_budget = ((ram_gb - model_size_gb - OS_RESERVE_GB) / PER_SLOT_KV_GB).floor();
-    let cpu_budget = (cpu_cores / CORES_PER_SLOT) as f64;
-    let recommended = ram_budget.min(cpu_budget).max(1.0);
-    (recommended as usize).min(MAX_RECOMMENDED_SLOTS)
+    let cpu_budget = (cpu_cores / CORES_PER_SLOT).max(1);
+    max_safe_slots(ram_gb, model_size_gb).min(cpu_budget)
 }
 
 /// Highest-tier catalog model whose `min_ram_gb` fits within the machine's
@@ -162,6 +181,30 @@ mod tests {
     fn high_ram_is_eligible() {
         let e = compute_llm_eligibility(64.0);
         assert!(e.eligible);
+    }
+
+    /// audit_06 #4: the manual-override ceiling has to come from RAM, not from
+    /// a flat 10. It must stay *above* the recommendation (a user overruling
+    /// the CPU-based advice is legitimate) while still refusing a slot count
+    /// the machine cannot hold — each slot costs a KV cache plus 2048 tokens
+    /// of `--context-size`.
+    #[test]
+    fn max_safe_slots_bounds_the_override_by_ram_not_by_cores() {
+        // 16GB, 8GB model: (16 - 8 - 4) / 1 = 4 slots of headroom. The flat
+        // ceiling this replaced would have allowed 10 and OOM'd the server.
+        assert_eq!(max_safe_slots(16.0, 8.0), 4);
+
+        // Same machine, few cores: the *recommendation* drops to 1, but the
+        // override ceiling stays at 4 — cores are a throughput opinion.
+        assert_eq!(compute_recommended_slots(16.0, 2, 8.0), 1);
+        assert!(max_safe_slots(16.0, 8.0) >= compute_recommended_slots(16.0, 2, 8.0));
+
+        // Never 0, even when the model barely fits at all.
+        assert_eq!(max_safe_slots(9.5, 5.0), 1);
+        assert_eq!(max_safe_slots(8.0, 5.0), 1);
+
+        // Still capped at the hard maximum on a huge machine.
+        assert_eq!(max_safe_slots(256.0, 5.0), MAX_RECOMMENDED_SLOTS);
     }
 
     #[test]
