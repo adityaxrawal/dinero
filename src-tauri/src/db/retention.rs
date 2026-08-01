@@ -141,11 +141,40 @@ pub fn sweep_raw_payloads(conn: &Connection) -> Result<(usize, usize)> {
     Ok((observations_cleared, entries_cleared))
 }
 
-/// How long a *settled* reconciliation audit row is kept. Same horizon as
+/// How long a row that has reached a terminal state is kept. Same horizon as
 /// [`RAW_PAYLOAD_RETENTION`] and for the same reason: past it, the raw payload
 /// these rows explain has already been nulled, so what remains is a score and
 /// a decision string with nothing left to check them against.
-const RECONCILIATION_AUDIT_RETENTION: &str = "-1 year";
+///
+/// One constant rather than one per table — every caller means the same thing
+/// by it, and a second knob with the same value is a knob nobody will keep in
+/// sync.
+const SETTLED_ROW_RETENTION: &str = "-1 year";
+
+/// audit_04 #7: `statement_drafts` rows were never deleted. A draft holds
+/// `rows_json` — the full parsed row set of a statement — so a `committed`
+/// draft is a verbatim second copy of data already in `statement_entries`,
+/// and a `discarded` one is a copy of data the user explicitly rejected.
+/// Neither has a reader after it leaves `pending_review`.
+///
+/// `pending_review` drafts are never swept at any age: that is the user's
+/// review queue, and an email-scan draft they have not noticed yet is exactly
+/// the case the audit worried about — deleting it would silently discard a
+/// parsed statement rather than relieve a backlog.
+pub fn sweep_settled_statement_drafts(conn: &Connection) -> Result<usize> {
+    let deleted = conn.execute(
+        "DELETE FROM statement_drafts
+         WHERE status IN ('committed', 'discarded')
+           AND updated_at < datetime('now', ?1)",
+        [SETTLED_ROW_RETENTION],
+    )?;
+
+    if deleted > 0 {
+        tracing::info!("Retention sweep: deleted {} settled statement drafts", deleted);
+    }
+
+    Ok(deleted)
+}
 
 /// audit_05 #7 / audit_03 #5: neither `match_decisions` nor
 /// `reconciliation_clusters` was ever pruned — both grow with every
@@ -186,7 +215,7 @@ pub fn sweep_reconciliation_audit(conn: &Connection) -> Result<(usize, usize)> {
              SELECT id FROM transaction_observations
              WHERE canonical_transaction_id IS NOT NULL
            )",
-        [RECONCILIATION_AUDIT_RETENTION],
+        [SETTLED_ROW_RETENTION],
     )?;
 
     // COALESCE, not `created_at`: a cluster opened two years ago and resolved
@@ -195,7 +224,7 @@ pub fn sweep_reconciliation_audit(conn: &Connection) -> Result<(usize, usize)> {
         "DELETE FROM reconciliation_clusters
          WHERE cluster_status IN ('resolved', 'rejected')
            AND COALESCE(resolved_at, created_at) < datetime('now', ?1)",
-        [RECONCILIATION_AUDIT_RETENTION],
+        [SETTLED_ROW_RETENTION],
     )?;
 
     if decisions_deleted > 0 || clusters_deleted > 0 {
@@ -402,6 +431,49 @@ mod tests {
         assert!(
             !survives("reconciliation_cluster_members", "m_1"),
             "members must go with their cluster via ON DELETE CASCADE"
+        );
+    }
+
+    /// audit_04 #7: settled drafts must age out, but a `pending_review` draft
+    /// is the user's queue — sweeping one would silently discard a parsed
+    /// statement, which is worse than the accumulation the finding describes.
+    #[test]
+    fn draft_sweep_clears_settled_drafts_but_never_the_review_queue() {
+        let conn = setup_db();
+
+        let draft = |id: &str, status: &str, age: &str| {
+            conn.execute(
+                "INSERT INTO statement_drafts (id, origin, file_hash, rows_json, status, created_at, updated_at) \
+                 VALUES (?1, 'manual_upload', ?1, '[]', ?2, datetime('now', '-500 days'), datetime('now', ?3))",
+                rusqlite::params![id, status, age],
+            )
+            .unwrap();
+        };
+
+        draft("d_old_committed", "committed", "-400 days");
+        draft("d_old_discarded", "discarded", "-400 days");
+        draft("d_recent_committed", "committed", "-1 days");
+        // Created long ago and still unreviewed -- the email-scan draft the
+        // user never noticed. Must survive.
+        draft("d_old_pending", "pending_review", "-400 days");
+
+        assert_eq!(sweep_settled_statement_drafts(&conn).unwrap(), 2);
+
+        let survives = |id: &str| -> bool {
+            conn.query_row(
+                "SELECT COUNT(*) FROM statement_drafts WHERE id = ?1",
+                [id],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+                > 0
+        };
+        assert!(!survives("d_old_committed"));
+        assert!(!survives("d_old_discarded"));
+        assert!(survives("d_recent_committed"));
+        assert!(
+            survives("d_old_pending"),
+            "an unreviewed draft is the review queue, not debris"
         );
     }
 

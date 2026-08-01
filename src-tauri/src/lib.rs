@@ -748,6 +748,16 @@ pub fn run() {
                             .await;
                     }
 
+                    // audit_04 #7: deletes committed/discarded statement drafts,
+                    // whose `rows_json` duplicates `statement_entries` (or holds
+                    // rows the user rejected). `pending_review` drafts are never
+                    // touched — that's the review queue itself.
+                    if let Ok(conn) = pool_for_backup.get().await {
+                        let _ = conn
+                            .interact(|c| crate::db::retention::sweep_settled_statement_drafts(c))
+                            .await;
+                    }
+
                     // Doc-30-style optimization #5: purges `ignored_messages`
                     // rows past their 30-day TTL. Runs on the same daily
                     // cadence as the raw-payload sweep above — no dedicated
