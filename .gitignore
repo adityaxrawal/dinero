@@ -73,14 +73,11 @@ dinero-docs
 # succeeded -- the same failure mode the /scripts/* note below already records
 # once, and the same one as the nightly benchmark job (audit_09 #8).
 #
-# Only genuinely dead or machine-local files remain excluded. `dev_review.rs`
-# and `bin.rs` are declared by no `mod` statement anywhere and are not
-# compiled; `test_shutdown.sh` and the Playwright report directory are local
-# scratch.
-/src-tauri/src/dev_review.rs
-/src-tauri/src/bin.rs
+# Only machine-local scratch remains excluded. The former entries for
+# `dev_review.rs`, `bin.rs` and `test_shutdown.sh` are gone because those
+# files are gone -- an ignore rule for a file that no longer exists is a
+# rule nobody can evaluate.
 /playwright-report/
-test_shutdown.sh
 /scripts/*
 # TASK-QA-010/OPS-001/OPS-008 finding: these three scripts are genuine CI
 # dependencies -- release.yml runs security_hardening_check.sh and
