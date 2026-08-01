@@ -3801,10 +3801,32 @@ mod tests {
             "sync_force_poll_now",
         ];
 
+        // Commands whose entire mutating sequence is delegated to a shared
+        // helper that performs the `assert_write_allowed` check itself. The
+        // scan below reads only the command's own body, so it has to follow
+        // that one hop -- otherwise extracting a command's body into a helper
+        // (as `settings_delete_account` did when the `delete_my_data` CLI
+        // started sharing its deletion sequence) reads as a missing gate.
+        //
+        // This is not a suppression list: each entry is verified below by
+        // actually reading the delegate's body and confirming the call is
+        // there, so a helper that stops gating still fails this test.
+        const GATE_ENFORCING_DELEGATES: [&str; 1] = ["perform_account_deletion"];
+
+        let delegates_to_gated_helper = |body: &str| {
+            GATE_ENFORCING_DELEGATES.iter().any(|delegate| {
+                body.contains(delegate)
+                    && find_function_body(delegate)
+                        .is_some_and(|d| d.contains("assert_write_allowed"))
+            })
+        };
+
         let mut missing = Vec::new();
         for name in write_commands {
             match find_function_body(name) {
-                Some(body) if body.contains("assert_write_allowed") => {}
+                Some(body)
+                    if body.contains("assert_write_allowed")
+                        || delegates_to_gated_helper(&body) => {}
                 Some(_) => {
                     missing.push(format!("{name} (found, but no assert_write_allowed call)"))
                 }
