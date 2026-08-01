@@ -1,28 +1,23 @@
-// Source-scan test (see Settings.billing.test.ts precedent): AppLayout
-// pulls in license state, reconciliation queries, and several IPC calls on
-// mount, all unrelated to this placement change -- a full render test would
-// need to mock all of it for no extra signal on this specific claim.
+// Source-scan test: AppLayout mounts SidebarNotificationCenter in the main sidebar
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const source = readFileSync(join(__dirname, 'AppLayout.tsx'), 'utf-8');
 
-describe('AppLayout scan status placement', () => {
-  it('mounts ScanStatusSidebarItem in the main sidebar', () => {
+describe('AppLayout notification center placement', () => {
+  it('mounts SidebarNotificationCenter in the main sidebar', () => {
     expect(source).toMatch(
-      /import ScanStatusSidebarItem from '@\/components\/layout\/ScanStatusSidebarItem'/
+      /import SidebarNotificationCenter from '@\/components\/layout\/SidebarNotificationCenter'/
     );
-    expect(source).toMatch(/<ScanStatusSidebarItem \/>/);
+    expect(source).toMatch(/<SidebarNotificationCenter \/>/);
   });
 
-  it('places it inside the sidebar bottom "System & Status" block, before the floating overlay div', () => {
+  it('places it inside the sidebar bottom "System & Status" block', () => {
     const sidebarBlockIndex = source.indexOf('Bottom area (System & Status)');
-    const scanStatusUsageIndex = source.indexOf('<ScanStatusSidebarItem />');
-    const floatingOverlayIndex = source.indexOf('Background task indicator');
+    const notificationCenterIndex = source.indexOf('<SidebarNotificationCenter />');
 
     expect(sidebarBlockIndex).toBeGreaterThan(-1);
-    expect(scanStatusUsageIndex).toBeGreaterThan(sidebarBlockIndex);
-    expect(scanStatusUsageIndex).toBeLessThan(floatingOverlayIndex);
+    expect(notificationCenterIndex).toBeGreaterThan(sidebarBlockIndex);
   });
 });

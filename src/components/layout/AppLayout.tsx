@@ -22,6 +22,7 @@ import GracePeriodBanner from '@/components/licensing/GracePeriodBanner';
 import StatementOnlyModeBanner from '@/components/shell/StatementOnlyModeBanner';
 import BackgroundTaskIndicator from '@/components/shell/BackgroundTaskIndicator';
 import ScanStatusSidebarItem from '@/components/layout/ScanStatusSidebarItem';
+import SidebarNotificationCenter from '@/components/layout/SidebarNotificationCenter';
 import PermissionDeniedOverlay from '@/components/shell/PermissionDeniedOverlay';
 import ConnectionStatusBanner from '@/components/notifications/ConnectionStatusBanner';
 import AlertBanner from '@/components/notifications/AlertBanner';
@@ -398,7 +399,7 @@ export default function AppLayout() {
 
         {/* Bottom area (System & Status) */}
         <div className="mt-auto flex flex-col">
-          <ScanStatusSidebarItem />
+          <SidebarNotificationCenter />
 
           <div className="pb-4 pt-4 flex flex-col gap-1 border-t border-[#F8E7C9]/10">
             {systemItems.map((item) => {
@@ -430,11 +431,6 @@ export default function AppLayout() {
         <ErrorBoundary>
           <Outlet />
         </ErrorBoundary>
-
-        {/* Background task indicator */}
-        <div className="absolute bottom-4 right-4 z-30">
-          <BackgroundTaskIndicator />
-        </div>
 
         {/* OS permission denied overlay */}
         <PermissionDeniedOverlay />

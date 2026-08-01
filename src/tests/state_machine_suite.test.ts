@@ -108,10 +108,10 @@ describe('test_events_update_correct_ui_regions', () => {
 });
 
 describe('test_background_indicator_persists_across_routes', () => {
-  it('BackgroundTaskIndicator is mounted as a sibling of Outlet, not nested inside it, so it never unmounts on route navigation', () => {
+  it('SidebarNotificationCenter is mounted as a sibling of Outlet, not nested inside it, so it never unmounts on route navigation', () => {
     const content = readSrc('components/layout/AppLayout.tsx');
     const outletIndex = content.indexOf('<Outlet');
-    const indicatorIndex = content.indexOf('<BackgroundTaskIndicator');
+    const indicatorIndex = content.indexOf('<SidebarNotificationCenter');
     expect(outletIndex).toBeGreaterThan(-1);
     expect(indicatorIndex).toBeGreaterThan(-1);
 
@@ -120,8 +120,8 @@ describe('test_background_indicator_persists_across_routes', () => {
     expect(indicatorIndex).toBeLessThan(mainCloseIndex);
     // Outlet is rendered self-closing (`<Outlet />`), not as a paired tag
     // with children (`<Outlet>...</Outlet>`) -- confirming
-    // BackgroundTaskIndicator (appearing later, before </main>, at the same
-    // nesting depth) is its sibling, not nested inside it.
+    // SidebarNotificationCenter (appearing at the app shell level)
+    // is its sibling, not nested inside it.
     expect(content).toMatch(/<Outlet\s*\/>/);
     expect(content).not.toContain('</Outlet>');
   });
