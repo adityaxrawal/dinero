@@ -2,7 +2,9 @@
 //!
 //! On a fingerprint pre-filter hit (TASK-DEDUP-001), verify a strict
 //! condition before auto-merging: identical `instrument_id`, `direction`,
-//! `amount_minor` (to the paisa), and `event_time` within +/-2 minutes
+//! `amount_minor` (to the paisa), `currency` (audit_03 #3 — the fingerprint
+//! does not hash it, so same-amount different-currency alerts collide), and
+//! `event_time` within +/-2 minutes
 //! (accounting for email delivery lag vs. actual authorization time). All
 //! conditions hold -> the caller writes
 //! `match_decisions(decision = 'auto_matched_exact', score = 1.0)`. A rare
@@ -18,10 +20,19 @@ const EXACT_MATCH_TIME_TOLERANCE_SECONDS: i64 = 120;
 
 /// Verifies the strict exact-match condition between an incoming observation
 /// and the canonical candidate a fingerprint pre-filter hit pointed at.
+///
+/// audit_03 #3: `currency` is part of the condition. `compute_fingerprint`
+/// deliberately does not hash it, so a ₹500.00 and a $500.00 debit on the same
+/// instrument in the same minute bucket produce the *same* fingerprint — this
+/// check is what stops that hash collision from auto-merging two unrelated
+/// transactions. Treating it as a collision (rather than widening the
+/// fingerprint) is the designed behaviour: a failed strict check falls through
+/// to full scoring, and no already-stored fingerprint is invalidated.
 pub fn verify_exact_match(obs: &IncomingObservation, candidate: &CanonicalCandidate) -> bool {
     obs.instrument_id == candidate.instrument_id
         && obs.direction == candidate.direction
         && obs.amount_minor == candidate.amount_minor
+        && obs.currency == candidate.currency
         && time_within_tolerance(
             &obs.event_time,
             &candidate.event_time,
@@ -90,6 +101,28 @@ mod tests {
             merchant_normalized_name: None,
             source_mix: None,
         }
+    }
+
+    /// audit_03 #3: `compute_fingerprint` deliberately omits currency, so a
+    /// ₹500.00 and a $500.00 debit on the same instrument in the same minute
+    /// bucket hash identically. This strict check is the only thing standing
+    /// between that hash collision and an auto-merge of two unrelated
+    /// transactions, so it must compare currency.
+    #[test]
+    fn test_exact_match_rejects_currency_mismatch() {
+        let o = obs("inst_1", "debit", 50000, "2026-06-10 14:00:00");
+        let mut c = candidate("inst_1", "debit", 50000, "2026-06-10 14:00:30");
+        // Identical on every other axis the fingerprint hashes.
+        assert!(
+            verify_exact_match(&o, &c),
+            "sanity: same-currency case must still match"
+        );
+
+        c.currency = "USD".to_string();
+        assert!(
+            !verify_exact_match(&o, &c),
+            "a fingerprint collision across currencies must not auto-merge"
+        );
     }
 
     /// Doc 30 TASK-DEDUP-002 acceptance test: all conditions hold.

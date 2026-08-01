@@ -124,6 +124,7 @@ pub fn fetch_candidates(
         conn,
         &obs.instrument_id,
         obs.amount_minor,
+        &obs.currency,
         &obs.direction,
         &event_time_dt,
         3,

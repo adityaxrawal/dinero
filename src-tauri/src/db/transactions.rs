@@ -352,10 +352,24 @@ pub fn find_exact_match(
     }
 }
 
+/// audit_03 #3: `currency` is part of the predicate, matching its sibling
+/// `find_exact_match` above. Without it, `amount_minor` alone decided
+/// equality, so a ₹500.00 and a $500.00 debit on the same instrument within
+/// the window were indistinguishable candidates and could be auto-merged into
+/// one transaction. `amount_minor` is a bare integer — it carries no unit, so
+/// comparing it across currencies is meaningless.
+///
+/// This also aligns the query with the index that already exists for it:
+/// `idx_transactions_instrument_event` is
+/// `(instrument_id, amount_minor, currency, direction, best_event_time)`, and
+/// migration 022's own comment says it was created because this function
+/// "quer[ies] exactly on (instrument_id, amount_minor, currency, direction,
+/// ...)" — which it did not, until now.
 pub fn find_candidates_within_window(
     conn: &Connection,
     instrument_id: &str,
     amount_minor: i64,
+    currency: &str,
     direction: &str,
     event_time_utc: &NaiveDateTime,
     days_window: i64,
@@ -363,10 +377,11 @@ pub fn find_candidates_within_window(
     let window_seconds = days_window * 24 * 60 * 60;
 
     let mut stmt = conn.prepare(
-        "SELECT * FROM transactions 
-         WHERE instrument_id = ?1 AND amount_minor = ?2 AND direction = ?3 AND is_deleted = 0
-           AND best_event_time >= datetime(?4, '-' || ?5 || ' seconds')
-           AND best_event_time <= datetime(?4, '+' || ?5 || ' seconds')",
+        "SELECT * FROM transactions
+         WHERE instrument_id = ?1 AND amount_minor = ?2 AND currency = ?3
+           AND direction = ?4 AND is_deleted = 0
+           AND best_event_time >= datetime(?5, '-' || ?6 || ' seconds')
+           AND best_event_time <= datetime(?5, '+' || ?6 || ' seconds')",
     )?;
 
     let event_time_str = event_time_utc.format("%Y-%m-%d %H:%M:%S").to_string();
@@ -374,6 +389,7 @@ pub fn find_candidates_within_window(
         params![
             instrument_id,
             amount_minor,
+            currency,
             direction,
             event_time_str,
             window_seconds
@@ -670,10 +686,58 @@ mod candidate_search_tests {
         let anchor =
             NaiveDateTime::parse_from_str("2026-06-10 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
         let results =
-            find_candidates_within_window(&conn, "inst_1", 1000, "debit", &anchor, 3).unwrap();
+            find_candidates_within_window(&conn, "inst_1", 1000, "INR", "debit", &anchor, 3).unwrap();
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "match");
+    }
+
+    /// audit_03 #3: `amount_minor` is a bare integer with no unit attached, so
+    /// a ₹500.00 debit and a $500.00 debit on the same instrument are both
+    /// `50000` and were previously indistinguishable candidates — the window
+    /// query filtered instrument/amount/direction/time but never currency, so
+    /// reconciliation could auto-merge two genuinely unrelated transactions.
+    #[test]
+    fn test_candidate_search_filters_by_currency() {
+        let conn = setup_test_db();
+        seed_transaction(
+            &conn,
+            "inr_match",
+            "inst_1",
+            50000,
+            "debit",
+            "2026-06-10 12:00:00",
+        );
+        // Same instrument, same amount_minor, same direction, same minute --
+        // differing only in currency.
+        conn.execute(
+            "INSERT INTO transactions (id, instrument_id, amount_minor, currency, direction, best_event_time, is_deleted) \
+             VALUES ('usd_decoy', 'inst_1', 50000, 'USD', 'debit', '2026-06-10 12:00:00', 0)",
+            [],
+        )
+        .unwrap();
+
+        let anchor =
+            NaiveDateTime::parse_from_str("2026-06-10 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
+
+        let inr =
+            find_candidates_within_window(&conn, "inst_1", 50000, "INR", "debit", &anchor, 3)
+                .unwrap();
+        assert_eq!(inr.len(), 1, "a ₹500 debit must not match a $500 debit");
+        assert_eq!(inr[0].id, "inr_match");
+
+        // Symmetric: searching in USD must find only the USD row.
+        let usd =
+            find_candidates_within_window(&conn, "inst_1", 50000, "USD", "debit", &anchor, 3)
+                .unwrap();
+        assert_eq!(usd.len(), 1);
+        assert_eq!(usd[0].id, "usd_decoy");
+
+        // A currency present on neither row matches nothing.
+        let eur =
+            find_candidates_within_window(&conn, "inst_1", 50000, "EUR", "debit", &anchor, 3)
+                .unwrap();
+        assert!(eur.is_empty());
     }
 
     /// Doc 30 TASK-DEDUP-003 acceptance test: the +/-3-day window boundary —
@@ -702,7 +766,7 @@ mod candidate_search_tests {
         let anchor =
             NaiveDateTime::parse_from_str("2026-06-10 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
         let results =
-            find_candidates_within_window(&conn, "inst_1", 1000, "debit", &anchor, 3).unwrap();
+            find_candidates_within_window(&conn, "inst_1", 1000, "INR", "debit", &anchor, 3).unwrap();
 
         let ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
         assert!(ids.contains(&"within_window"));
@@ -727,7 +791,7 @@ mod candidate_search_tests {
         let anchor =
             NaiveDateTime::parse_from_str("2026-06-10 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
         let results =
-            find_candidates_within_window(&conn, "inst_1", 1000, "debit", &anchor, 3).unwrap();
+            find_candidates_within_window(&conn, "inst_1", 1000, "INR", "debit", &anchor, 3).unwrap();
 
         assert!(results.is_empty());
     }
