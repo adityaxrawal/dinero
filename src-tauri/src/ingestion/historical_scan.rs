@@ -1035,8 +1035,33 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                                                     })
                                                     .await;
                                             }
+                                            // audit_04 #1: stage the PDF into
+                                            // encrypted on-disk storage instead
+                                            // of carrying it in the job; the
+                                            // worker reads it back under a
+                                            // concurrency permit.
+                                            if let Ok(dir) = app.path().app_data_dir() {
+                                                if let Err(e) =
+                                                    crate::statements::pdf_storage::store_pdf(
+                                                        &dir, &stmt_id, &pdf_bytes,
+                                                    )
+                                                {
+                                                    tracing::warn!(
+                                                        "Failed to stage statement PDF for stmt_id='{}': {} — skipping",
+                                                        stmt_id, e
+                                                    );
+                                                    continue;
+                                                }
+                                            } else {
+                                                tracing::warn!(
+                                                    "Could not resolve app data dir to stage statement PDF for stmt_id='{}' — skipping",
+                                                    stmt_id
+                                                );
+                                                continue;
+                                            }
+                                            drop(pdf_bytes);
+
                                             let job = crate::ingestion::queues::StatementJob {
-                                                bytes: pdf_bytes,
                                                 filename: filename.clone(),
                                                 // Use message_id as the source_record_id /
                                                 // file_hash proxy for email-sourced statements.

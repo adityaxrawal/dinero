@@ -6,21 +6,41 @@ use anyhow::{Context, Result};
 use aes_gcm::aead::rand_core::RngCore;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use crate::db::crypto::derive_database_key;
 
 const STATEMENTS_DIR: &str = "statements";
 
+/// Process-lifetime cache for `derive_storage_key`.
+///
+/// The key is deterministic — `derive_database_key` combines the
+/// Keychain-held base key (itself cached) with the machine's hardware UUID,
+/// neither of which changes while the process is running — so caching cannot
+/// return a different key than a fresh derivation would.
+///
+/// Worth caching because the derivation runs Argon2id, which is deliberately
+/// expensive (~tens of ms). Since audit_04 #1 the Statement Queue does a
+/// `store_pdf` at intake plus a `read_pdf` in the worker for *every*
+/// statement, so a 64-file batch would otherwise pay ~128 Argon2 derivations
+/// for a value that never varies.
+static STORAGE_KEY: OnceLock<[u8; 32]> = OnceLock::new();
+
 /// Derives a 32-byte AES key from the Argon2id SQLCipher database key.
 /// By hashing the Argon2 output with SHA-256, we get exactly 32 bytes for AES-256-GCM.
 fn derive_storage_key() -> Result<[u8; 32]> {
+    if let Some(key) = STORAGE_KEY.get() {
+        return Ok(*key);
+    }
     let db_key = derive_database_key().context("Failed to derive database key for PDF storage")?;
     let mut hasher = Sha256::new();
     hasher.update(db_key.as_bytes());
     let result = hasher.finalize();
     let mut key = [0u8; 32];
     key.copy_from_slice(&result);
-    Ok(key)
+    // A concurrent caller may have won the race; defer to whichever landed
+    // first so every caller in this process uses the identical key.
+    Ok(*STORAGE_KEY.get_or_init(|| key))
 }
 
 fn statement_path(app_data_dir: &Path, statement_id: &str) -> PathBuf {
@@ -123,4 +143,48 @@ pub async fn cleanup_expired_pdfs(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// audit_04 #1 introduced `STORAGE_KEY`, a process-lifetime cache in front
+    /// of the Argon2id derivation, because the Statement Queue now does a
+    /// `store_pdf` at intake and a `read_pdf` in the worker for every
+    /// statement. A cache that returned a different key than the derivation it
+    /// replaces would make every previously-stored PDF undecryptable, so pin
+    /// both halves: the key is stable across calls, and a payload encrypted
+    /// under it still round-trips.
+    #[test]
+    fn storage_key_is_stable_and_pdfs_round_trip() {
+        let first = derive_storage_key().unwrap();
+        let second = derive_storage_key().unwrap();
+        assert_eq!(first, second, "storage key must be stable across calls");
+
+        let dir = std::env::temp_dir().join(format!("dinero_pdf_storage_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let payload = b"%PDF-1.4 statement bytes";
+        store_pdf(&dir, "stmt_round_trip", payload).unwrap();
+
+        // The stored file must not contain the plaintext -- these are bank
+        // statements, and the whole reason this path isn't a plain temp file.
+        let on_disk = std::fs::read(dir.join("statements/stmt_round_trip.pdf.enc")).unwrap();
+        assert!(
+            on_disk.windows(payload.len()).all(|w| w != payload),
+            "the statement PDF must not be readable on disk"
+        );
+
+        let recovered = read_pdf(&dir, "stmt_round_trip").unwrap().unwrap();
+        assert_eq!(recovered, payload);
+
+        delete_pdf(&dir, "stmt_round_trip").unwrap();
+        assert!(read_pdf(&dir, "stmt_round_trip").unwrap().is_none());
+        // Deleting an already-deleted PDF is not an error -- the Statement
+        // Queue worker deletes unconditionally after parsing.
+        delete_pdf(&dir, "stmt_round_trip").unwrap();
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

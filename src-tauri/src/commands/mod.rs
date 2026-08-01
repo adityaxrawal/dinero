@@ -459,8 +459,20 @@ async fn upload_one_statement(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     }
 
+    // audit_04 #1: hand the PDF to the queue via encrypted on-disk storage
+    // rather than carrying it in the job. Fail the upload if it can't be
+    // staged — enqueueing a job whose bytes aren't there would surface later
+    // as a confusing mid-pipeline failure.
+    {
+        let app_data_dir = app.path().app_data_dir().map_err(|e| {
+            crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e))
+        })?;
+        crate::statements::pdf_storage::store_pdf(&app_data_dir, &stmt_id, &bytes)
+            .map_err(|e| crate::error::AppError::Io(e.to_string()))?;
+    }
+    drop(bytes);
+
     let job = crate::ingestion::queues::StatementJob {
-        bytes,
         filename: filename.clone(),
         file_hash: file_hash.clone(),
         stmt_id: stmt_id.clone(),

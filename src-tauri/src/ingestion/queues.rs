@@ -54,7 +54,18 @@ pub struct TransactionJob {
 /// `None` for single-file uploads and the Gmail-attachment path, neither of
 /// which is a "batch" in the sense this task means.
 pub struct StatementJob {
-    pub bytes: Vec<u8>,
+    // audit_04 #1: this used to be `bytes: Vec<u8>`, the whole PDF. With
+    // `STATEMENT_QUEUE_CAPACITY` = 64, a manual batch could hold 64 complete
+    // statements on the heap at once (plus 5 being parsed) before any
+    // extraction started — hundreds of MB for a large batch.
+    //
+    // The bytes now live in the same AES-256-GCM `pdf_storage` file the
+    // pipeline was already going to write anyway, keyed by `stmt_id`, and the
+    // worker reads them back only once it holds a concurrency permit — so
+    // peak memory is bounded by `STATEMENT_QUEUE_MAX_CONCURRENT`, not by queue
+    // depth. Deliberately not a plaintext temp file (the audit's suggestion):
+    // these are bank statements, and every other at-rest copy in this app is
+    // encrypted.
     pub filename: String,
     pub file_hash: String,
     pub stmt_id: String,
@@ -888,8 +899,45 @@ fn spawn_statement_dispatcher<R: tauri::Runtime>(
             tauri::async_runtime::spawn(async move {
                 let _permit = permit;
                 let start = std::time::Instant::now();
+
+                // audit_04 #1: read the PDF back only now that this task holds
+                // a concurrency permit, so at most
+                // `STATEMENT_QUEUE_MAX_CONCURRENT` statements are resident at
+                // once regardless of how deep the queue is.
+                use tauri::Manager as _;
+                let app_data_dir = match app.path().app_data_dir() {
+                    Ok(dir) => dir,
+                    Err(e) => {
+                        tracing::error!(
+                            "Statement Queue job failed (file='{}'): could not resolve app data dir: {}",
+                            job.filename, e
+                        );
+                        return;
+                    }
+                };
+                let bytes = match crate::statements::pdf_storage::read_pdf(
+                    &app_data_dir,
+                    &job.stmt_id,
+                ) {
+                    Ok(Some(b)) => b,
+                    Ok(None) => {
+                        tracing::error!(
+                            "Statement Queue job failed (file='{}'): staged PDF for stmt_id='{}' is missing",
+                            job.filename, job.stmt_id
+                        );
+                        return;
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Statement Queue job failed (file='{}'): could not read staged PDF: {}",
+                            job.filename, e
+                        );
+                        return;
+                    }
+                };
+
                 let result = crate::commands::stage_parse_pipeline(
-                    &job.bytes,
+                    &bytes,
                     &job.filename,
                     &job.file_hash,
                     &pool,
@@ -897,9 +945,16 @@ fn spawn_statement_dispatcher<R: tauri::Runtime>(
                     None,
                     job.password.as_deref(),
                     &job.origin,
-                    Some(job.stmt_id),
+                    Some(job.stmt_id.clone()),
                 )
                 .await;
+                drop(bytes);
+
+                // The pipeline re-stores the PDF under its own draft /
+                // unprocessed id when it needs to retain it, so this intake
+                // copy has served its purpose either way. Best-effort: a
+                // leftover file is swept by `cleanup_expired_pdfs`.
+                let _ = crate::statements::pdf_storage::delete_pdf(&app_data_dir, &job.stmt_id);
 
                 // Doc 30 TASK-STMT-009: batches over 10 statements get
                 // periodic parsed/total/eta_seconds progress — permit release
