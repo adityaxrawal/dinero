@@ -164,27 +164,37 @@ impl CategorizedLogWriters {
 
         prune_old_logs(&logs_folder);
 
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let secs = now.as_secs() + 19800; // IST (UTC+5:30)
+        let days = secs / 86400;
+        let (y, mo, d) = llm_logger::epoch_days_to_ymd(days);
+        let h = (secs / 3600) % 24;
+        let m = (secs / 60) % 60;
+        let s = secs % 60;
+        let ts_prefix = format!("{:04}-{:02}-{:02}_{:02}-{:02}-{:02}", y, mo, d, h, m, s);
+
         let (backend_w, g1) = tracing_appender::non_blocking(RedactingWriter::new(
-            tracing_appender::rolling::daily(&logs_folder, "backend.log"),
+            tracing_appender::rolling::never(&logs_folder, format!("{}_backend.md", ts_prefix)),
         ));
         let (frontend_w, g2) = tracing_appender::non_blocking(RedactingWriter::new(
-            tracing_appender::rolling::daily(&logs_folder, "frontend.log"),
+            tracing_appender::rolling::never(&logs_folder, format!("{}_frontend.md", ts_prefix)),
         ));
         let (api_calls_w, g3) = tracing_appender::non_blocking(RedactingWriter::new(
-            tracing_appender::rolling::daily(&logs_folder, "api_calls.log"),
+            tracing_appender::rolling::never(&logs_folder, format!("{}_api_calls.md", ts_prefix)),
         ));
         let (network_w, g4) = tracing_appender::non_blocking(RedactingWriter::new(
-            tracing_appender::rolling::daily(&logs_folder, "network.log"),
+            tracing_appender::rolling::never(&logs_folder, format!("{}_network.md", ts_prefix)),
         ));
         // Dedicated LLM call log: one entry per sidecar request/response,
         // including model ID, call type, attempt, duration, outcome, and
-        // (at TRACE) full prompt/output bodies. Routed from the "llm_calls"
-        // tracing target in `logging::llm_logger`.
+        // full prompt/output bodies in structured Markdown format.
         let (llm_calls_w, g5) = tracing_appender::non_blocking(RedactingWriter::new(
-            tracing_appender::rolling::daily(&logs_folder, "llm_calls.log"),
+            tracing_appender::rolling::never(&logs_folder, format!("{}_llm_calls.md", ts_prefix)),
         ));
         let (combined_w, g6) = tracing_appender::non_blocking(RedactingWriter::new(
-            tracing_appender::rolling::daily(&logs_folder, "combined.log"),
+            tracing_appender::rolling::never(&logs_folder, format!("{}_combined.md", ts_prefix)),
         ));
 
         let writers = Self {
@@ -196,21 +206,9 @@ impl CategorizedLogWriters {
             combined: combined_w,
         };
 
-        // Seed the direct writer so llm_logger can write rich box-drawing blocks
-        // to llm_calls.log without going through the tracing event formatter
-        // (which would collapse them to a single machine-readable line).
-        // tracing_appender::rolling::daily names files "<prefix>.<YYYY-MM-DD>".
-        {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default();
-            let secs = now.as_secs();
-            let days = secs / 86400;
-            let (y, mo, d) = llm_logger::epoch_days_to_ymd(days);
-            let date_suffix = format!("{:04}-{:02}-{:02}", y, mo, d);
-            let llm_log_path = logs_folder.join(format!("llm_calls.log.{}", date_suffix));
-            crate::logging::llm_logger::init_direct_writer(llm_log_path);
-        }
+        // Seed the direct writer for rich Markdown LLM call blocks
+        let llm_log_path = logs_folder.join(format!("{}_llm_calls.md", ts_prefix));
+        crate::logging::llm_logger::init_direct_writer(llm_log_path);
 
         (writers, vec![g1, g2, g3, g4, g5, g6])
     }

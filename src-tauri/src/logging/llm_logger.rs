@@ -56,11 +56,6 @@
 use std::fmt::Write as FmtWrite;
 use std::io::Write as IoWrite;
 
-/// How many characters of the output to write into the block.
-/// Full prompt content is captured since prompts must not be cropped or ellipsed.
-const OUTPUT_PREVIEW_CHARS: usize = 1000;
-const BOX_WIDTH: usize = 80;
-
 // ─── Public types ─────────────────────────────────────────────────────────────
 
 /// Identifies which subsystem triggered the LLM call, stamped on every log
@@ -153,116 +148,35 @@ impl LlmCallContext {
             LlmCallType::Layer6Extraction => 2,
             _ => 1,
         };
-        Self { call_type, attempt, max_attempts }
+        Self {
+            call_type,
+            attempt,
+            max_attempts,
+        }
     }
 
     /// Default context for calibration / unclassified callers.
     pub fn unclassified() -> Self {
-        Self { call_type: LlmCallType::Sidecar, attempt: 1, max_attempts: 1 }
-    }
-}
-
-// ─── Box-drawing helpers ───────────────────────────────────────────────────────
-
-fn top_border() -> String {
-    format!("┌{}┐", "─".repeat(BOX_WIDTH - 2))
-}
-fn mid_border() -> String {
-    format!("├{}┤", "─".repeat(BOX_WIDTH - 2))
-}
-fn bot_border() -> String {
-    format!("└{}┘", "─".repeat(BOX_WIDTH - 2))
-}
-
-/// Render a single box row: `│  <content padded to BOX_WIDTH-4>  │`
-fn row(content: &str) -> String {
-    // Strip any embedded newlines from structured field content
-    let content = content.replace('\n', " ").replace('\r', "");
-    let inner_width = BOX_WIDTH - 4; // 2 for "│ " on each side
-    if content.len() <= inner_width {
-        format!("│  {:<width$}  │", content, width = inner_width)
-    } else {
-        // Wrap long content across multiple rows
-        let mut out = String::new();
-        let mut remaining = content.as_str();
-        while !remaining.is_empty() {
-            let (chunk, rest) = if remaining.len() <= inner_width {
-                (remaining, "")
-            } else {
-                // Try to break on a space
-                let cut = remaining[..inner_width]
-                    .rfind(' ')
-                    .map(|p| p + 1)
-                    .unwrap_or(inner_width);
-                (&remaining[..cut], remaining[cut..].trim_start())
-            };
-            let _ = writeln!(out, "│  {:<width$}  │", chunk, width = inner_width);
-            remaining = rest;
-        }
-        out.trim_end_matches('\n').to_string()
-    }
-}
-
-/// Render a key-value row: `│  Key           : value …  │`
-fn kv(key: &str, value: &str) -> String {
-    let label = format!("{:<14}: {}", key, value);
-    row(&label)
-}
-
-/// Render a multi-line body section (prompt or output), wrapping at BOX_WIDTH.
-fn body_rows(text: &str, max_chars: usize) -> String {
-    let truncated = if text.len() > max_chars {
-        let s = &text[..max_chars];
-        // Find a safe char boundary
-        let safe = s
-            .char_indices()
-            .rev()
-            .find(|(_, c)| *c == ' ' || *c == '\n')
-            .map(|(i, _)| i)
-            .unwrap_or(max_chars.min(s.len()));
-        format!("{} …[{} more chars]", &s[..safe].trim_end(), text.len() - safe)
-    } else {
-        text.to_string()
-    };
-
-    let inner_width = BOX_WIDTH - 4;
-    let mut out = String::new();
-    for raw_line in truncated.split('\n') {
-        if raw_line.is_empty() {
-            let _ = writeln!(out, "│  {:<width$}  │", "", width = inner_width);
-            continue;
-        }
-        let mut remaining = raw_line;
-        while !remaining.is_empty() {
-            let (chunk, rest) = if remaining.len() <= inner_width {
-                (remaining, "")
-            } else {
-                let cut = remaining[..inner_width]
-                    .rfind(' ')
-                    .map(|p| p + 1)
-                    .unwrap_or(inner_width);
-                (&remaining[..cut], remaining[cut..].trim_start())
-            };
-            let _ = writeln!(out, "│  {:<width$}  │", chunk, width = inner_width);
-            remaining = rest;
+        Self {
+            call_type: LlmCallType::Sidecar,
+            attempt: 1,
+            max_attempts: 1,
         }
     }
-    out.trim_end_matches('\n').to_string()
 }
 
-fn now_utc() -> String {
-    // Use std time formatted as YYYY-MM-DD HH:MM:SS UTC
+fn now_ist() -> String {
+    // Use std time formatted as YYYY-MM-DD HH:MM:SS IST (UTC+5:30)
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    let secs = now.as_secs();
+    let secs = now.as_secs() + 19800;
     let s = secs % 60;
     let m = (secs / 60) % 60;
     let h = (secs / 3600) % 24;
     let days = secs / 86400;
-    // Simple Gregorian date from epoch
     let (y, mo, d) = epoch_days_to_ymd(days);
-    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC", y, mo, d, h, m, s)
+    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02} IST", y, mo, d, h, m, s)
 }
 
 pub(crate) fn epoch_days_to_ymd(days: u64) -> (u64, u64, u64) {
@@ -270,7 +184,15 @@ pub(crate) fn epoch_days_to_ymd(days: u64) -> (u64, u64, u64) {
     let mut y = 1970u64;
     let mut remaining = days;
     loop {
-        let leap = if y % 400 == 0 { 1 } else if y % 100 == 0 { 0 } else if y % 4 == 0 { 1 } else { 0 };
+        let leap = if y % 400 == 0 {
+            1
+        } else if y % 100 == 0 {
+            0
+        } else if y % 4 == 0 {
+            1
+        } else {
+            0
+        };
         let days_in_year = 365 + leap;
         if remaining < days_in_year {
             break;
@@ -278,7 +200,15 @@ pub(crate) fn epoch_days_to_ymd(days: u64) -> (u64, u64, u64) {
         remaining -= days_in_year;
         y += 1;
     }
-    let leap = if y % 400 == 0 { 1 } else if y % 100 == 0 { 0 } else if y % 4 == 0 { 1 } else { 0 };
+    let leap = if y % 400 == 0 {
+        1
+    } else if y % 100 == 0 {
+        0
+    } else if y % 4 == 0 {
+        1
+    } else {
+        0
+    };
     let month_days = [31u64, 28 + leap, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     let mut mo = 1u64;
     for &md in &month_days {
@@ -292,49 +222,34 @@ pub(crate) fn epoch_days_to_ymd(days: u64) -> (u64, u64, u64) {
 }
 
 /// Write a rich multi-line block directly to a byte sink (the non-blocking writer).
-fn write_request_block(
-    sink: &mut dyn IoWrite,
-    model_id: &str,
-    ctx: &LlmCallContext,
-    prompt: &str,
-) {
-    let ts = now_utc();
+fn write_request_block(sink: &mut dyn IoWrite, model_id: &str, ctx: &LlmCallContext, prompt: &str) {
+    let ts = now_ist();
     let call_type_str = ctx.call_type.as_str();
     let attempt_str = if ctx.max_attempts > 1 {
         format!("attempt {}/{}", ctx.attempt, ctx.max_attempts)
     } else {
         format!("attempt {}", ctx.attempt)
     };
-    let header = format!(
-        "  ▶ LLM REQUEST  [{}]  {}  {}",
-        call_type_str, attempt_str, ts
-    );
     let prompt_chars = prompt.len();
 
-    let mut buf = String::with_capacity(512);
-    buf.push('\n');
-    buf.push_str(&top_border());
-    buf.push('\n');
-    buf.push_str(&row(&header));
-    buf.push('\n');
-    buf.push_str(&mid_border());
-    buf.push('\n');
-    buf.push_str(&kv("Model", model_id));
-    buf.push('\n');
-    buf.push_str(&kv("Type", ctx.call_type.label()));
-    buf.push('\n');
-    buf.push_str(&kv("Attempt", &attempt_str));
-    buf.push('\n');
-    buf.push_str(&kv("Prompt size", &format!("{} chars", fmt_num(prompt_chars))));
-    buf.push('\n');
-    buf.push_str(&mid_border());
-    buf.push('\n');
-    buf.push_str(&row("  PROMPT:"));
-    buf.push('\n');
-    buf.push_str(&body_rows(prompt, usize::MAX));
-    buf.push('\n');
-    buf.push_str(&bot_border());
-    buf.push('\n');
+    let mut buf = String::with_capacity(1024);
+    let _ = writeln!(
+        buf,
+        "\n## ▶ LLM REQUEST [`{}`]  `{}`  {}",
+        call_type_str, attempt_str, ts
+    );
+    buf.push_str("\n| Property | Value |\n");
+    buf.push_str("| :--- | :--- |\n");
+    let _ = writeln!(buf, "| **Model** | `{}` |", model_id);
+    let _ = writeln!(buf, "| **Type** | `{}` |", ctx.call_type.label());
+    let _ = writeln!(buf, "| **Attempt** | `{}` |", attempt_str);
+    let _ = writeln!(buf, "| **Prompt Size** | {} chars |", fmt_num(prompt_chars));
+    buf.push_str("\n### Prompt\n```text\n");
+    buf.push_str(prompt);
+    if !prompt.ends_with('\n') {
+        buf.push('\n');
+    }
+    buf.push_str("```\n\n---\n");
 
     let _ = sink.write_all(buf.as_bytes());
 }
@@ -347,53 +262,45 @@ fn write_response_block(
     outcome: LlmOutcome,
     raw_output: Option<&str>,
 ) {
-    let ts = now_utc();
+    let ts = now_ist();
     let call_type_str = ctx.call_type.as_str();
     let attempt_str = if ctx.max_attempts > 1 {
         format!("attempt {}/{}", ctx.attempt, ctx.max_attempts)
     } else {
         format!("attempt {}", ctx.attempt)
     };
-    let header = format!(
-        "  ◀ LLM RESPONSE [{}]  {}  {}",
-        call_type_str, attempt_str, ts
-    );
     let output_chars = raw_output.map(|o| o.len()).unwrap_or(0);
 
-    let mut buf = String::with_capacity(512);
-    buf.push('\n');
-    buf.push_str(&top_border());
-    buf.push('\n');
-    buf.push_str(&row(&header));
-    buf.push('\n');
-    buf.push_str(&mid_border());
-    buf.push('\n');
-    buf.push_str(&kv("Model", model_id));
-    buf.push('\n');
-    buf.push_str(&kv("Type", ctx.call_type.label()));
-    buf.push('\n');
-    buf.push_str(&kv("Attempt", &attempt_str));
-    buf.push('\n');
-    buf.push_str(&kv("Duration", &format!("{} ms", fmt_num(duration_ms as usize))));
-    buf.push('\n');
-    buf.push_str(&kv("Outcome", outcome.display_label()));
-    buf.push('\n');
-    buf.push_str(&kv("Output size", &format!("{} chars", fmt_num(output_chars))));
-    buf.push('\n');
+    let mut buf = String::with_capacity(1024);
+    let _ = writeln!(
+        buf,
+        "\n## ◀ LLM RESPONSE [`{}`]  `{}`  {}",
+        call_type_str, attempt_str, ts
+    );
+    buf.push_str("\n| Property | Value |\n");
+    buf.push_str("| :--- | :--- |\n");
+    let _ = writeln!(buf, "| **Model** | `{}` |", model_id);
+    let _ = writeln!(buf, "| **Type** | `{}` |", ctx.call_type.label());
+    let _ = writeln!(buf, "| **Attempt** | `{}` |", attempt_str);
+    let _ = writeln!(
+        buf,
+        "| **Duration** | {} ms |",
+        fmt_num(duration_ms as usize)
+    );
+    let _ = writeln!(buf, "| **Outcome** | `{}` |", outcome.display_label());
+    let _ = writeln!(buf, "| **Output Size** | {} chars |", fmt_num(output_chars));
 
     if let Some(raw) = raw_output {
         if !raw.trim().is_empty() {
-            buf.push_str(&mid_border());
-            buf.push('\n');
-            buf.push_str(&row("  RAW OUTPUT:"));
-            buf.push('\n');
-            buf.push_str(&body_rows(raw, OUTPUT_PREVIEW_CHARS));
-            buf.push('\n');
+            buf.push_str("\n### Raw Output\n```json\n");
+            buf.push_str(raw);
+            if !raw.ends_with('\n') {
+                buf.push('\n');
+            }
+            buf.push_str("```\n");
         }
     }
-
-    buf.push_str(&bot_border());
-    buf.push('\n');
+    buf.push_str("\n---\n");
 
     let _ = sink.write_all(buf.as_bytes());
 }
@@ -475,8 +382,8 @@ pub fn log_llm_response(
 // We hold a global `Mutex<Option<File>>` that `CategorizedLogWriters::init`
 // seeds once. Callers that fire before init (tests) silently drop the write.
 
-use std::sync::{Mutex, OnceLock};
 use std::fs::OpenOptions;
+use std::sync::{Mutex, OnceLock};
 
 static LLM_LOG_PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
 static LLM_LOG_WRITER: OnceLock<Mutex<std::fs::File>> = OnceLock::new();
@@ -509,14 +416,18 @@ mod tests {
     fn request_block_renders_without_panicking() {
         let ctx = LlmCallContext::new(LlmCallType::Layer6Extraction, 1);
         let mut buf: Vec<u8> = Vec::new();
-        write_request_block(&mut buf, "gemma4_e4b", &ctx, "Extract the following fields from a bank transaction alert…");
+        write_request_block(
+            &mut buf,
+            "gemma4_e4b",
+            &ctx,
+            "Extract the following fields from a bank transaction alert…",
+        );
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains("▶ LLM REQUEST"));
         assert!(s.contains("layer6_extraction"));
         assert!(s.contains("gemma4_e4b"));
-        assert!(s.contains("PROMPT:"));
+        assert!(s.contains("Prompt"));
         assert!(s.contains("Extract the following fields"));
-        assert!(s.contains("┌") && s.contains("┘"));
     }
 
     #[test]
@@ -535,7 +446,7 @@ mod tests {
         assert!(s.contains("◀ LLM RESPONSE"));
         assert!(s.contains("✓ ACCEPTED"));
         assert!(s.contains("4,764 ms"));
-        assert!(s.contains("RAW OUTPUT:"));
+        assert!(s.contains("Raw Output"));
         assert!(s.contains("1299.00"));
     }
 
@@ -543,17 +454,31 @@ mod tests {
     fn response_block_renders_timeout_without_output() {
         let ctx = LlmCallContext::new(LlmCallType::Layer6Extraction, 2);
         let mut buf: Vec<u8> = Vec::new();
-        write_response_block(&mut buf, "gemma4_e4b", &ctx, 10001, LlmOutcome::TimedOut, None);
+        write_response_block(
+            &mut buf,
+            "gemma4_e4b",
+            &ctx,
+            10001,
+            LlmOutcome::TimedOut,
+            None,
+        );
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains("⚠ TIMED OUT"));
-        assert!(!s.contains("RAW OUTPUT:"));
+        assert!(!s.contains("Raw Output"));
     }
 
     #[test]
     fn response_block_renders_infra_failed() {
         let ctx = LlmCallContext::unclassified();
         let mut buf: Vec<u8> = Vec::new();
-        write_response_block(&mut buf, "gemma4_e4b", &ctx, 11, LlmOutcome::InfraFailed, None);
+        write_response_block(
+            &mut buf,
+            "gemma4_e4b",
+            &ctx,
+            11,
+            LlmOutcome::InfraFailed,
+            None,
+        );
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains("✗ INFRA FAILED"));
     }
@@ -562,7 +487,10 @@ mod tests {
     fn outcome_as_str_roundtrips() {
         assert_eq!(LlmOutcome::Accepted.as_str(), "accepted");
         assert_eq!(LlmOutcome::RejectedJson.as_str(), "rejected_json");
-        assert_eq!(LlmOutcome::RejectedValidation.as_str(), "rejected_validation");
+        assert_eq!(
+            LlmOutcome::RejectedValidation.as_str(),
+            "rejected_validation"
+        );
         assert_eq!(LlmOutcome::TimedOut.as_str(), "timed_out");
         assert_eq!(LlmOutcome::InfraFailed.as_str(), "infra_failed");
     }
@@ -572,7 +500,10 @@ mod tests {
         assert_eq!(LlmCallType::Layer6Extraction.as_str(), "layer6_extraction");
         assert_eq!(LlmCallType::RuleAuthoring.as_str(), "rule_authoring");
         assert_eq!(LlmCallType::MerchantCleanup.as_str(), "merchant_cleanup");
-        assert_eq!(LlmCallType::StatementRowExtraction.as_str(), "statement_row_extraction");
+        assert_eq!(
+            LlmCallType::StatementRowExtraction.as_str(),
+            "statement_row_extraction"
+        );
         assert_eq!(LlmCallType::Sidecar.as_str(), "sidecar");
     }
 
