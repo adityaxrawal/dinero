@@ -42,10 +42,17 @@ pub struct EmailMetadata {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProcessResult {
+    /// audit_03 #7: this used to carry a third `Option<String>` holding the
+    /// sanitized HTML body — a verbatim `email_meta.html.clone()`, i.e. a
+    /// second copy of a string the `EmailMetadata` in the fourth slot already
+    /// owns. Nothing ever read it: `raw_payload_json`'s `"html"` key is built
+    /// from `email_meta.html` in `normalize_observation`. Removed, which drops
+    /// one full copy of every email's HTML (200–500 KB for a complex bank
+    /// template) from both this value and the 256-deep Transaction Queue it
+    /// was carried into.
     TransactionAlert(
         ExtractedMessage,
         Box<crate::extraction::ladder::ExtractionResult>,
-        Option<String>,
         EmailMetadata,
     ),
     StatementEmail(ExtractedMessage, Option<EmailMetadata>),
@@ -520,7 +527,6 @@ impl MessageProcessor {
                             return Ok(Some(ProcessResult::TransactionAlert(
                                 extracted,
                                 Box::new(obs),
-                                email_meta.html.clone(),
                                 email_meta.clone(),
                             )));
                         } else {

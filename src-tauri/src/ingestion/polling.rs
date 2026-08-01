@@ -408,7 +408,7 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                             Some(layer6_tx.clone()),
                             None,
                         ).await {
-                            Ok(Some(crate::ingestion::message_processor::ProcessResult::TransactionAlert(extracted, boxed_obs, html, email_meta))) => {
+                            Ok(Some(crate::ingestion::message_processor::ProcessResult::TransactionAlert(extracted, boxed_obs, email_meta))) => {
                                 // Doc 15 §2 principle 7 / Doc 12 §6.2a: route to the Transaction
                                 // Queue rather than processing inline — same shared worker logic
                                 // as the historical-scan entry point.
@@ -427,7 +427,6 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                     source_record_id: msg_id.clone(),
                                     connected_account_id: account.id.clone(),
                                     raw_body: extracted.text_body.clone(),
-                                    raw_html: html,
                                     email_meta: Some(email_meta),
                                 };
                                 let tx = app

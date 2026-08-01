@@ -27,14 +27,14 @@ pub struct TransactionJob {
     /// `transaction_observations.raw_payload_json` for auditability/
     /// reprocessing. `None` when the message had no text body at all.
     pub raw_body: Option<String>,
-    /// Sanitized-for-display original HTML body (see
-    /// `message_processor::ProcessResult::TransactionAlert`'s doc comment)
-    /// -- folded into `raw_payload_json` alongside `raw_body` so the
-    /// Evidence tab can show the email as it actually rendered in Gmail,
-    /// not just its plain-text body. `None` when the message had no
-    /// `text/html` part, or for jobs with no source email at all (mandate
-    /// events synthesize a ₹0 transaction with no email to render).
-    pub raw_html: Option<String>,
+    /// audit_03 #7: a `raw_html: Option<String>` field used to sit here,
+    /// documented as being "folded into `raw_payload_json` so the Evidence tab
+    /// can show the email as it rendered". It never was — `normalize_observation`
+    /// builds that payload's `"html"` key from `email_meta.html`, which is the
+    /// same string, carried right below. So every job held a second full copy
+    /// of the sanitized HTML (200–500 KB for a complex bank template) that
+    /// nothing read, up to `TRANSACTION_QUEUE_CAPACITY` (256) deep. Removed;
+    /// the Evidence tab is unaffected because it was never the source.
     pub email_meta: Option<crate::ingestion::message_processor::EmailMetadata>,
 }
 
@@ -847,7 +847,6 @@ async fn process_mandate_job(
         source_record_id: job.source_record_id,
         connected_account_id: job.connected_account_id,
         raw_body: job.raw_body,
-        raw_html: None,
         email_meta: None,
     };
     if transaction_tx.send(tx_job).await.is_err() {

@@ -323,6 +323,10 @@ mod tests {
         let payload: serde_json::Value = serde_json::from_str(&obs.raw_payload_json.unwrap()).unwrap();
 
         assert_eq!(payload["body"], "Plain text body");
+        // audit_03 #7: this assertion is what proves the Evidence tab's HTML
+        // comes from `email_meta.html`. `TransactionJob` used to carry a
+        // second copy in its own `raw_html` field, claiming to be the source;
+        // it never was, and removing it changes nothing here.
         assert_eq!(payload["html"], "<p>HTML</p>");
         assert_eq!(payload["subject"], "Payment successful");
         assert_eq!(payload["date"], "Jan 3, 2026");
