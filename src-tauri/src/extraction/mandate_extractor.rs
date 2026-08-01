@@ -25,7 +25,7 @@ static CARD_LAST4_RE: OnceLock<Regex> = OnceLock::new();
 /// precision-over-recall discipline, Doc 12 §6.2) -- returns `None` entirely
 /// if it can't be found, same "reject rather than guess" posture as every
 /// other gate in this pipeline
-/// (docs/superpowers/specs/2026-07-18-mandate-tracking-design.md §4.3).
+/// (dinero-docs/design-archive/specs/2026-07-18-mandate-tracking-design.md §4.3).
 pub fn extract_mandate_fields(bank_name: &str, body: &str) -> Option<MandateExtraction> {
     // Reuses GenericRegexLayer's merchant-keyword convention
     // (ladder.rs GENERIC_MERCHANT_RE_STRICT), but with the colon *required*

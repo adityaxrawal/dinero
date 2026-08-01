@@ -120,7 +120,7 @@ impl BatchProgressTracker {
 
 /// One classified, Gate-3-equivalent mandate registration/cancellation
 /// event, ready for recurring_payments upsert/cancellation-matching
-/// (docs/superpowers/specs/2026-07-18-mandate-tracking-design.md §4.2-§4.4).
+/// (dinero-docs/design-archive/specs/2026-07-18-mandate-tracking-design.md §4.2-§4.4).
 pub struct MandateJob {
     pub extraction: crate::extraction::mandate_extractor::MandateExtraction,
     pub event_type: crate::ingestion::message_processor::MandateEventType,
@@ -739,7 +739,7 @@ fn spawn_mandate_workers(
 /// *existing* Transaction Queue for the ₹0.00 transaction side effect --
 /// reusing process_transaction_job unmodified rather than calling
 /// reconciliation internals directly
-/// (docs/superpowers/specs/2026-07-18-mandate-tracking-design.md §4.4: the
+/// (dinero-docs/design-archive/specs/2026-07-18-mandate-tracking-design.md §4.4: the
 /// real single entry point is reconcile_transactionally via
 /// process_transaction_job, not create_canonical_transaction alone).
 async fn process_mandate_job(

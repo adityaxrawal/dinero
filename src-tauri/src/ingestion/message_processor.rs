@@ -372,7 +372,7 @@ impl MessageProcessor {
                 }
                 ContentClass::MandateRegistration | ContentClass::MandateCancellation => {
                     // Mandate Queue routing
-                    // (docs/superpowers/specs/2026-07-18-mandate-tracking-design.md §4.1/§4.3).
+                    // (dinero-docs/design-archive/specs/2026-07-18-mandate-tracking-design.md §4.1/§4.3).
                     let event_type = if content_class == ContentClass::MandateRegistration {
                         MandateEventType::Registration
                     } else {

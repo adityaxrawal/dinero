@@ -5,7 +5,7 @@ use rusqlite::{params, Connection};
 /// §4.16-4.21): a mandate cancellation email that couldn't be matched to
 /// exactly one active recurring_payments row (zero or multiple candidates)
 /// is never guessed at -- logged here instead
-/// (docs/superpowers/specs/2026-07-18-mandate-tracking-design.md §5).
+/// (dinero-docs/design-archive/specs/2026-07-18-mandate-tracking-design.md §5).
 pub fn insert_unresolved(
     conn: &Connection,
     raw_signal: &str,

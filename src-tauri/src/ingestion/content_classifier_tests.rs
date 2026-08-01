@@ -85,7 +85,7 @@ fn test_reminder_keyword_with_completed_verb_still_classified_as_transaction() {
 #[test]
 fn test_autopay_activation_classified_as_mandate_registration() {
     // Supersedes Cluster D's original "captured as TransactionAlert"
-    // decision -- docs/superpowers/specs/2026-07-18-mandate-tracking-design.md
+    // decision -- dinero-docs/design-archive/specs/2026-07-18-mandate-tracking-design.md
     // §6 migrates this to the Mandate Queue instead.
     assert_eq!(
         ContentClassifier::classify(

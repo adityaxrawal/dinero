@@ -76,7 +76,7 @@ fn has_transaction_verb(content: &str) -> bool {
         || content.contains("you paid")
 }
 
-/// docs/superpowers/specs/2026-07-18-mandate-tracking-design.md §4.1.
+/// dinero-docs/design-archive/specs/2026-07-18-mandate-tracking-design.md §4.1.
 /// Checked before any transaction-verb logic (see `classify()`) since
 /// mandate emails legitimately contain debit-shaped language ("authorised
 /// debit of INR 0.00") that must not fall through to TransactionAlert.
@@ -89,7 +89,7 @@ fn is_mandate_cancellation(content: &str) -> bool {
         || content.contains("autopay cancelled")
 }
 
-/// docs/superpowers/specs/2026-07-18-mandate-tracking-design.md §4.1.
+/// dinero-docs/design-archive/specs/2026-07-18-mandate-tracking-design.md §4.1.
 /// Supersedes Cluster D's original `has_transaction_verb` addition for
 /// "successful autopay transaction" -- that phrase now routes here instead,
 /// before transaction-verb logic ever runs.
@@ -134,7 +134,7 @@ impl ContentClassifier {
         }
 
         // 3b. Mandate lifecycle events -- checked before any transaction-verb
-        // logic (docs/superpowers/specs/2026-07-18-mandate-tracking-design.md
+        // logic (dinero-docs/design-archive/specs/2026-07-18-mandate-tracking-design.md
         // §4.1). Cancellation checked before registration since some
         // wording could plausibly overlap ("mandate ... cancelled" contains
         // no registration phrase, but keeping cancellation first is the

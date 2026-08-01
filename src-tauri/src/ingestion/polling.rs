@@ -588,7 +588,7 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                 }
                             }
                             Ok(Some(crate::ingestion::message_processor::ProcessResult::MandateEvent(extracted, mandate_extraction, event_type))) => {
-                                // docs/superpowers/specs/2026-07-18-mandate-tracking-design.md
+                                // dinero-docs/design-archive/specs/2026-07-18-mandate-tracking-design.md
                                 // §4.2: route to the Mandate Queue, same shared worker logic
                                 // as the historical-scan entry point.
                                 let job = crate::ingestion::queues::MandateJob {

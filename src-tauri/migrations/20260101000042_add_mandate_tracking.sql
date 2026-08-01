@@ -1,4 +1,4 @@
--- Explicit mandate tracking (docs/superpowers/specs/2026-07-18-mandate-tracking-design.md).
+-- Explicit mandate tracking (dinero-docs/design-archive/specs/2026-07-18-mandate-tracking-design.md).
 -- `source` distinguishes rows written by recurring_detector.rs's statistical
 -- inference (existing rows backfill 'inferred', the default) from rows
 -- written directly from an explicit bank mandate-registration email

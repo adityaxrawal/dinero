@@ -1135,7 +1135,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                         event_type,
                     ))) => {
                         tracing::info!("Classified msg_id='{}' as Mandate", msg_id);
-                        // docs/superpowers/specs/2026-07-18-mandate-tracking-design.md
+                        // dinero-docs/design-archive/specs/2026-07-18-mandate-tracking-design.md
                         // §4.2: route to the Mandate Queue, same shared worker logic
                         // as the live-poll entry point.
                         state.mandate_events_found += 1;
