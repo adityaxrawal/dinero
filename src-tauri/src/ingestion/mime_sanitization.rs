@@ -250,25 +250,30 @@ pub fn sanitize_html(html: &str) -> String {
 /// markup (tables, inline `style`, headings, etc.) so the rendered result
 /// still looks like the source email instead of being reflowed prose.
 ///
-/// Two deliberate restrictions beyond ammonia's own script/event-handler/
-/// dangerous-URL-scheme stripping:
-/// - `<img>` is dropped entirely -- a remote `src` in a fetched marketing/
-///   transactional email is a tracking-pixel vector, and this is an
-///   offline-first app that shouldn't make surprise network calls just to
-///   render a password prompt.
-/// - `<a>` is dropped too (link text is kept, just not clickable) -- this
-///   view is a read-only "here's the email that asked for a password"
-///   preview, not a place a user needs to click through to the bank's site,
-///   and a sandboxed iframe with no `allow-popups` still lets a link
-///   navigate *itself* in place, which is confusing UX for no benefit.
+/// Beyond ammonia's own script/event-handler/dangerous-URL-scheme stripping,
+/// one deliberate restriction:
 /// - Any CSS `url(...)` reference (inline `style="background:url(...)"` or
 ///   a `<style>` block) is neutralized first, since ammonia passes an
-///   allowed attribute's *value* through unparsed and a background-image
-///   is the same tracking-pixel vector as `<img src>`.
+///   allowed attribute's *value* through unparsed, making a background-image
+///   a tracking-pixel vector.
 ///
-/// Caller renders the result inside a sandboxed `<iframe srcDoc>` with no
-/// `allow-scripts` -- this sanitizer is a second, independent layer, not
-/// the only one.
+/// **`<img>` and `<a href>` are allowed through** (`09d0351`, "improve MIME
+/// sanitization for complex HTML structures" — pinned by
+/// `test_sanitize_html_for_display_preserves_img_and_links`), which is what
+/// makes a bank email render like it does in Gmail. The cost is that a remote
+/// `<img src>` *does* load when the viewer opens the email, so a tracking
+/// pixel fires — the one network call this otherwise offline-first app makes
+/// on a render. Blocking it again is a one-line `.rm_tags(["img"])`, at the
+/// price of logo-less, layout-broken emails.
+///
+/// This comment used to claim both tags were dropped, describing the
+/// `rm_tags(["img", "a"])` that `09d0351` replaced. audit_08 #9 flagged the
+/// wrong half of this: inline `data:` URIs are inert (they cannot phone
+/// home); remote `src` is the actual egress.
+///
+/// Caller renders the result inside `<iframe srcDoc sandbox="allow-same-origin
+/// allow-popups">` — no `allow-scripts` — so this sanitizer is a second,
+/// independent layer, not the only one.
 pub fn sanitize_html_for_display(html: &str) -> String {
     let css_url_re = Regex::new(r"(?i)url\s*\([^)]*\)").unwrap();
     let defanged = css_url_re.replace_all(html, "none").to_string();
