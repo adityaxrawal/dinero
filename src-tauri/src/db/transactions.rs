@@ -800,3 +800,66 @@ mod candidate_search_tests {
         assert!(results.is_empty());
     }
 }
+
+#[cfg(test)]
+mod merchant_index_tests {
+    //! audit_03 #8: post-processing's per-transaction merchant lookups.
+
+    /// An index that the planner declines to use is the same as no index, and
+    /// nothing else in the suite would notice — these queries return correct
+    /// results either way, just slowly, and only on a database large enough
+    /// that no test fixture would reproduce it.
+    ///
+    /// So assert on the plan, not the timing: both merchant-scoped queries in
+    /// the post-processing path must resolve through
+    /// `idx_transactions_merchant_entity_event` rather than scanning
+    /// `transactions`.
+    #[test]
+    fn merchant_scoped_post_processing_queries_use_the_index() {
+        let conn = crate::db::test_helpers::setup_test_db();
+
+        let plan_for = |sql: &str| -> String {
+            let mut stmt = conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .expect("query must parse");
+            let rows = stmt
+                .query_map([], |row| row.get::<_, String>(3))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect::<Vec<_>>();
+            rows.join(" | ")
+        };
+
+        // `get_trailing_30_day_merchant_average` — the worse of the two: it
+        // filters on merchant_entity_id alone, so before this index it was a
+        // full scan of `transactions` on every spend-anomaly evaluation.
+        let avg_plan = plan_for(
+            "SELECT AVG(amount_minor) FROM transactions
+             WHERE merchant_entity_id = 'm1' AND direction = 'debit' AND is_deleted = 0
+               AND best_event_time < '2026-06-01 00:00:00'
+               AND best_event_time >= datetime('2026-06-01 00:00:00', '-30 days')",
+        );
+        assert!(
+            avg_plan.contains("idx_transactions_merchant_entity_event"),
+            "trailing-30-day average must not scan transactions; plan was: {avg_plan}"
+        );
+
+        // `find_prior_occurrences_for_merchant` — recurring-payment interval
+        // detection, run after every canonical write.
+        let priors_plan = plan_for(
+            "SELECT * FROM transactions
+             WHERE instrument_id = 'i1' AND merchant_entity_id = 'm1' AND direction = 'debit'
+               AND is_deleted = 0 AND id != 'x' AND best_event_time IS NOT NULL
+             ORDER BY best_event_time ASC",
+        );
+        assert!(
+            priors_plan.contains("idx_transactions_merchant_entity_event")
+                || priors_plan.contains("idx_transactions_instrument_event"),
+            "prior-occurrence lookup must use an index; plan was: {priors_plan}"
+        );
+        assert!(
+            !priors_plan.contains("SCAN transactions"),
+            "prior-occurrence lookup must not full-scan; plan was: {priors_plan}"
+        );
+    }
+}

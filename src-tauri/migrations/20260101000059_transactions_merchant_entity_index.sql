@@ -1,0 +1,26 @@
+-- audit_03 #8: post-processing runs inline after every canonical write, and
+-- two of its queries filter `transactions` by `merchant_entity_id` with no
+-- index to serve them:
+--
+--   * `find_prior_occurrences_for_merchant` (recurring-payment interval
+--     detection, TASK-TXN-011) — `instrument_id` narrows via
+--     `idx_transactions_instrument_event`, then scans that instrument's whole
+--     history on every ingested transaction.
+--   * `get_trailing_30_day_merchant_average` (spend-anomaly alerting) — filters
+--     on `merchant_entity_id` *alone*, with no leading indexed column, so it is
+--     a full scan of `transactions` per alert evaluation.
+--
+-- The audit predicted the first; the second is the worse one. Both grow with
+-- the user's total history, which is exactly the direction a personal-finance
+-- app accumulates in.
+--
+-- Column order matches how both queries filter: the entity first (the most
+-- selective term and the only one the average query has), then `direction`
+-- (both pin it to 'debit'), then `best_event_time` — which lets the average
+-- query's 30-day range and the prior-occurrence query's ORDER BY both be
+-- served by the index rather than a sort.
+--
+-- `is_deleted` is deliberately left out: it is low-cardinality, and adding it
+-- would not let SQLite skip the row fetch these queries need anyway.
+CREATE INDEX IF NOT EXISTS idx_transactions_merchant_entity_event
+    ON transactions(merchant_entity_id, direction, best_event_time);
