@@ -22,6 +22,21 @@ use tracing_subscriber::fmt::writer::MakeWriter;
 /// Default retention window for log files (15 days), overridable via `DINERO_LOG_RETENTION_DAYS`.
 pub const DEFAULT_LOG_RETENTION_DAYS: u64 = 15;
 
+/// The log categories `CategorizedLogWriters::init` opens one file per, per
+/// app launch. Single source of truth for both the writers and
+/// `prune_old_logs` -- these drifting apart is exactly what made retention a
+/// silent no-op (audit_09 #4). `app-logs` is legacy-only, kept so old installs
+/// still get swept.
+const LOG_CATEGORY_BASENAMES: [&str; 7] = [
+    "backend",
+    "frontend",
+    "api_calls",
+    "network",
+    "llm_calls",
+    "combined",
+    "app-logs",
+];
+
 /// Deletes rotated log files older than the retention window.
 pub fn prune_old_logs(log_dir: &Path) {
     let retention_days = std::env::var("DINERO_LOG_RETENTION_DAYS")
@@ -45,13 +60,20 @@ pub fn prune_old_logs(log_dir: &Path) {
             .and_then(|n| n.to_str())
             .unwrap_or("");
 
-        let is_target_log = file_name.starts_with("backend.log")
-            || file_name.starts_with("frontend.log")
-            || file_name.starts_with("api_calls.log")
-            || file_name.starts_with("network.log")
-            || file_name.starts_with("llm_calls.log")
-            || file_name.starts_with("combined.log")
-            || file_name.starts_with("app-logs.log");
+        // audit_09 #4: these patterns used to be `starts_with("backend.log")`
+        // and friends -- the *old* naming scheme. `CategorizedLogWriters::init`
+        // writes `<IST timestamp>_<category>.md` (e.g.
+        // `2026-08-01_09-15-42_backend.md`), so nothing the app actually
+        // produces ever matched and pruning was a no-op in production: six new
+        // files per launch, never deleted. The unit test passed because it
+        // constructed files under the legacy names.
+        //
+        // Both schemes are matched so existing installs get their old files
+        // cleaned up too.
+        let is_target_log = LOG_CATEGORY_BASENAMES.iter().any(|base| {
+            file_name.ends_with(&format!("_{base}.md"))
+                || file_name.starts_with(&format!("{base}.log"))
+        });
 
         if !is_target_log {
             continue;
@@ -284,15 +306,43 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("dinero_log_retention_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
 
-        let old_file = dir.join("backend.log.2020-01-01");
-        let recent_file = dir.join("backend.log.2026-07-22");
+        // audit_09 #4: the names here must be the ones
+        // `CategorizedLogWriters::init` actually writes
+        // (`<IST timestamp>_<category>.md`). This test previously used only
+        // the legacy `backend.log.<date>` scheme, so it kept passing while
+        // pruning silently matched nothing in production.
+        let old_file = dir.join("2020-01-01_08-00-00_backend.md");
+        let recent_file = dir.join("2026-07-22_08-00-00_backend.md");
+        // Every other category must be swept too, not just `backend`.
+        let old_llm_file = dir.join("2020-01-01_08-00-00_llm_calls.md");
+        let old_combined_file = dir.join("2020-01-01_08-00-00_combined.md");
+        // Legacy naming still has to be cleaned up on upgraded installs.
+        let old_legacy_file = dir.join("backend.log.2020-01-01");
         let unrelated_file = dir.join("not-a-log-file.txt");
-        fs::write(&old_file, "old").unwrap();
-        fs::write(&recent_file, "recent").unwrap();
-        fs::write(&unrelated_file, "unrelated").unwrap();
+        // A Markdown file that is not one of ours must survive.
+        let unrelated_md = dir.join("README.md");
+
+        for f in [
+            &old_file,
+            &recent_file,
+            &old_llm_file,
+            &old_combined_file,
+            &old_legacy_file,
+            &unrelated_file,
+            &unrelated_md,
+        ] {
+            fs::write(f, "x").unwrap();
+        }
 
         let far_past = std::time::SystemTime::now() - std::time::Duration::from_secs(400 * 24 * 60 * 60);
-        fs::File::open(&old_file).unwrap().set_modified(far_past).unwrap();
+        for f in [&old_file, &old_llm_file, &old_combined_file, &old_legacy_file] {
+            fs::File::open(f).unwrap().set_modified(far_past).unwrap();
+        }
+        // Age the non-log files too, so surviving proves the name filter is
+        // doing the work rather than the age check.
+        for f in [&unrelated_file, &unrelated_md] {
+            fs::File::open(f).unwrap().set_modified(far_past).unwrap();
+        }
         let three_days_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 24 * 60 * 60);
         fs::File::open(&recent_file).unwrap().set_modified(three_days_ago).unwrap();
 
@@ -301,8 +351,12 @@ mod tests {
         std::env::remove_var("DINERO_LOG_RETENTION_DAYS");
 
         assert!(!old_file.exists(), "a log file older than the retention window must be pruned");
+        assert!(!old_llm_file.exists(), "every log category must be pruned, not just backend");
+        assert!(!old_combined_file.exists(), "every log category must be pruned, not just backend");
+        assert!(!old_legacy_file.exists(), "legacy-named log files must still be pruned on upgraded installs");
         assert!(recent_file.exists(), "a 3-day-old file must survive the 15-day default window");
         assert!(unrelated_file.exists(), "pruning must never touch a non-log file in the same directory");
+        assert!(unrelated_md.exists(), "pruning must not delete unrelated .md files");
 
         std::env::set_var("DINERO_LOG_RETENTION_DAYS", "1");
         prune_old_logs(&dir);
@@ -310,6 +364,7 @@ mod tests {
 
         assert!(!recent_file.exists(), "a custom shorter retention window must be honored");
         assert!(unrelated_file.exists(), "pruning must still never touch a non-log file");
+        assert!(unrelated_md.exists(), "pruning must still not delete unrelated .md files");
 
         let _ = fs::remove_dir_all(&dir);
     }
