@@ -398,13 +398,23 @@ impl LlmEngine {
             ..Default::default()
         };
 
-        // Normalize direction
-        if let Some(dir) = &result.direction {
-            if dir.to_lowercase() == "credit" {
-                result.direction = Some("credit".to_string());
-            } else {
-                result.direction = Some("debit".to_string());
+        // audit_06 #10: this used to read `if dir == "credit" { credit } else
+        // { debit }` — so *anything* the model returned that wasn't the exact
+        // word "credit" became a confident debit. "unknown", "", "transfer",
+        // a hallucinated sentence: all silently booked as money leaving the
+        // user's account. Direction has no safe default; an unrecognised one
+        // is a rejected extraction.
+        match result.direction.as_deref().map(str::to_lowercase).as_deref() {
+            Some("credit") => result.direction = Some("credit".to_string()),
+            Some("debit") => result.direction = Some("debit".to_string()),
+            other => {
+                debug!("LLM returned an unusable direction {:?} — rejecting", other);
+                return None;
             }
+        }
+
+        if !Self::passes_sanity_checks(&result) {
+            return None;
         }
 
         if result.is_valid() {
@@ -412,6 +422,46 @@ impl LlmEngine {
         } else {
             None
         }
+    }
+
+    /// The furthest ahead of "now" an extracted `event_time` may sit before it
+    /// is treated as fabricated. Not a tuning knob: a bank alerts you *after*
+    /// a transaction, so the only legitimate future offsets are timezone
+    /// spread (max ~26h) and clock skew. Two days covers both with room over.
+    const MAX_FUTURE_EVENT_TIME_SECONDS: i64 = 2 * 24 * 60 * 60;
+
+    /// audit_06 #10: `validate_against_source` only asks whether each value
+    /// *appears somewhere* in the email. That catches invention but not
+    /// nonsense — an amount of zero, a currency of `"Rs."`, or a date in 2087
+    /// can all be grounded in the source text and still be wrong.
+    ///
+    /// These are schema and range facts, not thresholds: each one rejects a
+    /// value that could not be correct under any reading of the email.
+    fn passes_sanity_checks(result: &ExtractionResult) -> bool {
+        if let Some(amount_minor) = result.amount_minor {
+            if amount_minor <= 0 {
+                debug!("LLM returned a non-positive amount {amount_minor} — rejecting");
+                return false;
+            }
+        }
+
+        if let Some(currency) = &result.currency {
+            let ok = currency.len() == 3 && currency.chars().all(|c| c.is_ascii_alphabetic());
+            if !ok {
+                debug!("LLM returned a non-ISO-4217 currency {currency:?} — rejecting");
+                return false;
+            }
+        }
+
+        if let Some(event_time) = result.event_time {
+            let now = chrono::Utc::now().timestamp();
+            if event_time > now + Self::MAX_FUTURE_EVENT_TIME_SECONDS {
+                debug!("LLM returned a future event_time {event_time} — rejecting");
+                return false;
+            }
+        }
+
+        true
     }
 
     /// Helper to find the first '{' and last '}' to extract JSON from potentially chatty LLMs
@@ -694,5 +744,64 @@ mod tests {
              takes, got {:?}",
             elapsed
         );
+    }
+
+    /// audit_06 #10: `validate_against_source` only asks whether a value
+    /// appears somewhere in the email, which catches invention but not
+    /// nonsense. Each case here is a value that is grounded in the source (or
+    /// needs no grounding) and still cannot be correct.
+    #[test]
+    fn llm_output_rejects_values_that_are_grounded_but_impossible() {
+        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
+
+        // The bug this replaced: anything that wasn't the literal word
+        // "credit" became a confident *debit*. A model that says it doesn't
+        // know must not have that read as money leaving the account.
+        for bogus in ["unknown", "", "transfer", "DEBIT or CREDIT"] {
+            let raw = format!(
+                r#"{{"amount": 500.00, "currency": "INR", "direction": "{bogus}", "merchant": "Swiggy", "event_time": 1780000000, "confidence": 0.9}}"#
+            );
+            assert!(
+                engine.parse_json_to_result(&raw, None).is_none(),
+                "direction {bogus:?} must be rejected, not defaulted to debit"
+            );
+        }
+
+        // Both real directions still parse.
+        for good in ["debit", "credit", "CREDIT"] {
+            let raw = format!(
+                r#"{{"amount": 500.00, "currency": "INR", "direction": "{good}", "merchant": "Swiggy", "event_time": 1780000000, "confidence": 0.9}}"#
+            );
+            assert!(
+                engine.parse_json_to_result(&raw, None).is_some(),
+                "direction {good:?} must still parse"
+            );
+        }
+
+        let case = |json: &str| engine.parse_json_to_result(json, None);
+
+        // Zero and negative amounts are not transactions.
+        assert!(case(r#"{"amount": 0, "currency": "INR", "direction": "debit", "merchant": "Swiggy", "event_time": 1780000000}"#).is_none());
+        assert!(case(r#"{"amount": -20.00, "currency": "INR", "direction": "debit", "merchant": "Swiggy", "event_time": 1780000000}"#).is_none());
+
+        // A currency has to be an ISO-4217-shaped code -- "Rs." is printed in
+        // the email, so a substring check would happily accept it.
+        assert!(case(r#"{"amount": 500.00, "currency": "Rs.", "direction": "debit", "merchant": "Swiggy", "event_time": 1780000000}"#).is_none());
+        assert!(case(r#"{"amount": 500.00, "currency": "", "direction": "debit", "merchant": "Swiggy", "event_time": 1780000000}"#).is_none());
+
+        // A bank alerts you after the fact; it cannot report next decade.
+        let far_future = chrono::Utc::now().timestamp() + 365 * 24 * 60 * 60;
+        assert!(case(&format!(
+            r#"{{"amount": 500.00, "currency": "INR", "direction": "debit", "merchant": "Swiggy", "event_time": {far_future}}}"#
+        ))
+        .is_none());
+
+        // ...but a transaction dated a few hours ahead (timezone spread,
+        // clock skew) is ordinary and must survive.
+        let slightly_ahead = chrono::Utc::now().timestamp() + 6 * 60 * 60;
+        assert!(case(&format!(
+            r#"{{"amount": 500.00, "currency": "INR", "direction": "debit", "merchant": "Swiggy", "event_time": {slightly_ahead}}}"#
+        ))
+        .is_some());
     }
 }
