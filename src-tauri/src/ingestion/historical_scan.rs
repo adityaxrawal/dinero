@@ -1203,18 +1203,29 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
         if should_checkpoint(batch_count) {
             state.processed_count = processed_count;
 
-            let cp = ProcessingCheckpointRow {
-                id: Uuid::new_v4().to_string(),
-                job_type: "historical_scan".to_string(),
-                job_key: account_id.clone(),
-                checkpoint_state_json: serde_json::to_string(&state).unwrap_or_default(),
-                last_processed_token: None,
-                status: "in_progress".to_string(),
-                updated_at: Some(Utc::now().naive_utc()),
-            };
-
+            // audit_01 #2: patch the counters in place instead of
+            // re-serializing the whole state — `all_message_ids` is in there
+            // and never changes after the search phase, so rebuilding it
+            // every 5 messages was pure write amplification. See
+            // `patch_scan_progress`.
+            let key = account_id.clone();
+            let (p, t, s, m, n, e, pe) = (
+                processed_count,
+                state.transactions_found,
+                state.statements_found,
+                state.mandate_events_found,
+                state.non_financial,
+                state.errors,
+                state.pending_enrichment,
+            );
             if let Ok(conn) = pool.get().await {
-                let _ = conn.interact(move |c| upsert_checkpoint(c, &cp)).await;
+                let _ = conn
+                    .interact(move |c| {
+                        crate::db::processing_checkpoints::patch_scan_progress(
+                            c, &key, p, t, s, m, n, e, pe,
+                        )
+                    })
+                    .await;
             }
 
             // Flush the batched pre-filter bookkeeping (sightings,
@@ -1685,6 +1696,71 @@ mod tests {
         assert!(matches!(third, ClaimOutcome::Claimed(Some(_))));
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    /// audit_01 #2: the incremental checkpoint stopped re-serializing the
+    /// whole `ScanCheckpointState` — which carries every message id in the
+    /// scan — just to bump some integers. The patched row has to stay
+    /// byte-compatible with what `ScanCheckpointState` deserializes, and the
+    /// id list has to survive untouched, or a resumed scan loses its work
+    /// queue.
+    #[test]
+    fn patching_scan_progress_updates_counters_without_touching_the_id_list() {
+        let conn = crate::db::test_helpers::setup_test_db();
+
+        let ids: Vec<String> = (0..500).map(|i| format!("msg_{i}")).collect();
+        let state = ScanCheckpointState {
+            start_date: "2023-01-01".into(),
+            end_date: "2023-01-31".into(),
+            all_message_ids: ids.clone(),
+            processed_count: 0,
+            ..Default::default()
+        };
+        crate::db::processing_checkpoints::upsert_checkpoint(
+            &conn,
+            &ProcessingCheckpointRow {
+                id: "cp_1".into(),
+                job_type: "historical_scan".into(),
+                job_key: "acct_1".into(),
+                checkpoint_state_json: serde_json::to_string(&state).unwrap(),
+                last_processed_token: None,
+                status: "in_progress".into(),
+                updated_at: None,
+            },
+        )
+        .unwrap();
+
+        crate::db::processing_checkpoints::patch_scan_progress(
+            &conn, "acct_1", 42, 7, 3, 2, 11, 1, 5,
+        )
+        .unwrap();
+
+        let cp = crate::db::processing_checkpoints::get_checkpoint(
+            &conn,
+            "historical_scan",
+            "acct_1",
+        )
+        .unwrap()
+        .unwrap();
+        let patched: ScanCheckpointState =
+            serde_json::from_str(&cp.checkpoint_state_json).expect("must still deserialize");
+
+        assert_eq!(patched.all_message_ids, ids, "the work queue must survive");
+        assert_eq!(patched.start_date, "2023-01-01");
+        assert_eq!(patched.processed_count, 42);
+        assert_eq!(patched.transactions_found, 7);
+        assert_eq!(patched.statements_found, 3);
+        assert_eq!(patched.mandate_events_found, 2);
+        assert_eq!(patched.non_financial, 11);
+        assert_eq!(patched.errors, 1);
+        assert_eq!(patched.pending_enrichment, 5);
+
+        // No row yet (e.g. a job key that never ran) must not error -- the
+        // initial upsert at scan start is what creates it.
+        crate::db::processing_checkpoints::patch_scan_progress(
+            &conn, "acct_missing", 1, 0, 0, 0, 0, 0, 0,
+        )
+        .unwrap();
     }
 
     #[tokio::test]

@@ -37,6 +37,62 @@ pub fn upsert_checkpoint(conn: &Connection, checkpoint: &ProcessingCheckpointRow
     Ok(())
 }
 
+/// Patches only the mutable counters inside a historical scan's checkpoint,
+/// leaving the rest of `checkpoint_state_json` untouched.
+///
+/// audit_01 #2: `ScanCheckpointState` carries `all_message_ids`, the full
+/// Gmail id list for the scan (100k+ entries on a large mailbox). The
+/// incremental checkpoint fired every `CHECKPOINT_INTERVAL` messages went
+/// through [`upsert_checkpoint`], which meant `serde_json::to_string` rebuilt
+/// that entire array — and shipped it back across the binding layer — 20,000
+/// times over a 100k-message scan, to change a handful of integers. The audit
+/// led with the ~6 MB of RAM; the write amplification is the part that
+/// actually hurts.
+///
+/// The id list never changes once the search phase has written it, so patching
+/// in place removes the cost without touching resume semantics: the stored
+/// JSON has exactly the shape `ScanCheckpointState` deserializes today.
+/// A no-op if the row does not exist yet — the initial `upsert_checkpoint` at
+/// scan start is what creates it.
+pub fn patch_scan_progress(
+    conn: &Connection,
+    job_key: &str,
+    processed_count: usize,
+    transactions_found: usize,
+    statements_found: usize,
+    mandate_events_found: usize,
+    non_financial: usize,
+    errors: usize,
+    pending_enrichment: usize,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE processing_checkpoints
+         SET checkpoint_state_json = json_set(
+                 checkpoint_state_json,
+                 '$.processed_count', ?2,
+                 '$.transactions_found', ?3,
+                 '$.statements_found', ?4,
+                 '$.mandate_events_found', ?5,
+                 '$.non_financial', ?6,
+                 '$.errors', ?7,
+                 '$.pending_enrichment', ?8
+             ),
+             status = 'in_progress'
+         WHERE job_type = 'historical_scan' AND job_key = ?1",
+        params![
+            job_key,
+            processed_count as i64,
+            transactions_found as i64,
+            statements_found as i64,
+            mandate_events_found as i64,
+            non_financial as i64,
+            errors as i64,
+            pending_enrichment as i64,
+        ],
+    )?;
+    Ok(())
+}
+
 /// Outcome of [`claim_checkpoint_in_progress`].
 #[derive(Debug, Clone)]
 pub enum ClaimOutcome {
