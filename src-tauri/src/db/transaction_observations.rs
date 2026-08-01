@@ -37,6 +37,10 @@ pub struct TransactionObservationsRow {
     pub emi_total_installments: Option<i32>,
     pub emi_installment_number: Option<i32>,
     pub emi_original_amount_minor: Option<i64>,
+    /// Display-only transaction rail/channel (`"upi"`, `"imps"`, ...) --
+    /// see `extraction::ladder::detect_channel`. Never consumed by
+    /// reconciliation/dedup matching.
+    pub channel: Option<String>,
     pub is_deleted: bool,
     pub created_at: Option<NaiveDateTime>,
     pub updated_at: Option<NaiveDateTime>,
@@ -50,10 +54,10 @@ pub fn insert_observation(conn: &Connection, obs: &TransactionObservationsRow) -
             event_time, event_time_confidence, posting_date, merchant_raw, merchant_normalized, reference_id,
             original_amount_minor, original_currency, exchange_rate, balance_after_transaction, timezone_at_ingestion,
             fingerprint, extraction_method, confidence_score, raw_payload_json, parser_version,
-            emi_total_installments, emi_installment_number, emi_original_amount_minor, is_deleted, created_at, updated_at
+            emi_total_installments, emi_installment_number, emi_original_amount_minor, channel, is_deleted, created_at, updated_at
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-            ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35
+            ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36
         )",
         params![
             obs.id, obs.canonical_transaction_id, obs.source_pipeline, obs.source_record_id, obs.source_message_id, obs.source_thread_id,
@@ -61,7 +65,7 @@ pub fn insert_observation(conn: &Connection, obs: &TransactionObservationsRow) -
             obs.event_time, obs.event_time_confidence, obs.posting_date, obs.merchant_raw, obs.merchant_normalized, obs.reference_id,
             obs.original_amount_minor, obs.original_currency, obs.exchange_rate, obs.balance_after_transaction, obs.timezone_at_ingestion,
             obs.fingerprint, obs.extraction_method, obs.confidence_score, obs.raw_payload_json, obs.parser_version,
-            obs.emi_total_installments, obs.emi_installment_number, obs.emi_original_amount_minor, obs.is_deleted, obs.created_at, obs.updated_at,
+            obs.emi_total_installments, obs.emi_installment_number, obs.emi_original_amount_minor, obs.channel, obs.is_deleted, obs.created_at, obs.updated_at,
         ],
     )?;
     Ok(())
@@ -161,7 +165,7 @@ pub fn update_observation(conn: &Connection, obs: &TransactionObservationsRow) -
             event_time = ?14, event_time_confidence = ?15, posting_date = ?16, merchant_raw = ?17, merchant_normalized = ?18, reference_id = ?19,
             original_amount_minor = ?20, original_currency = ?21, exchange_rate = ?22, balance_after_transaction = ?23, timezone_at_ingestion = ?24,
             fingerprint = ?25, extraction_method = ?26, confidence_score = ?27, raw_payload_json = ?28, parser_version = ?29,
-            emi_total_installments = ?30, emi_installment_number = ?31, emi_original_amount_minor = ?32, is_deleted = ?33
+            emi_total_installments = ?30, emi_installment_number = ?31, emi_original_amount_minor = ?32, channel = ?33, is_deleted = ?34
         WHERE id = ?1 AND is_deleted = 0",
         params![
             obs.id, obs.canonical_transaction_id, obs.source_pipeline, obs.source_record_id, obs.source_message_id, obs.source_thread_id,
@@ -169,7 +173,7 @@ pub fn update_observation(conn: &Connection, obs: &TransactionObservationsRow) -
             obs.event_time, obs.event_time_confidence, obs.posting_date, obs.merchant_raw, obs.merchant_normalized, obs.reference_id,
             obs.original_amount_minor, obs.original_currency, obs.exchange_rate, obs.balance_after_transaction, obs.timezone_at_ingestion,
             obs.fingerprint, obs.extraction_method, obs.confidence_score, obs.raw_payload_json, obs.parser_version,
-            obs.emi_total_installments, obs.emi_installment_number, obs.emi_original_amount_minor, obs.is_deleted,
+            obs.emi_total_installments, obs.emi_installment_number, obs.emi_original_amount_minor, obs.channel, obs.is_deleted,
         ],
     )?;
 
@@ -231,6 +235,7 @@ pub fn row_to_observation(row: &Row) -> rusqlite::Result<TransactionObservations
         emi_total_installments: row.get("emi_total_installments")?,
         emi_installment_number: row.get("emi_installment_number")?,
         emi_original_amount_minor: row.get("emi_original_amount_minor")?,
+        channel: row.get("channel")?,
         is_deleted: row.get("is_deleted")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
@@ -299,6 +304,7 @@ mod tests {
             emi_total_installments: None,
             emi_installment_number: None,
             emi_original_amount_minor: None,
+            channel: None,
             is_deleted: false,
             created_at: None,
             updated_at: None,

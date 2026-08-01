@@ -39,6 +39,21 @@ pub fn update_status(conn: &Connection, id: &str, new_status: &str) -> Result<()
     Ok(())
 }
 
+/// Keeps the audit-trail `reason` in sync with reality when Layer 6
+/// enriches an observation without clearing enough of Gate 3 to promote it
+/// (see `apply_layer6_success`). Without this, `reason` is frozen at
+/// whatever the *original*, pre-enrichment gate3 evaluation found -- e.g.
+/// still reading `missing_counterparty` after Layer 6 has since filled in
+/// `merchant_raw`, hiding the item's actual current blocker from anyone
+/// triaging the review queue by reason.
+pub fn update_reason(conn: &Connection, id: &str, new_reason: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE unassigned_transactions SET reason = ?1 WHERE id = ?2",
+        params![new_reason, id],
+    )?;
+    Ok(())
+}
+
 /// Doc 30 TASK-API-005: `reconciliation_get_unassigned_transactions` -- "a
 /// distinct queue from ambiguous clusters: extraction failures vs. matching
 /// ambiguity are surfaced separately in the UI." Did not exist at all
@@ -92,13 +107,16 @@ pub struct UnassignedTransactionDetail {
     pub source_message_id: Option<String>,
     pub body_snippet: Option<String>,
     pub raw_payload_json: Option<String>,
+    pub extraction_method: Option<String>,
+    pub confidence_score: Option<f64>,
 }
 
 pub fn select_open_with_context(conn: &Connection) -> Result<Vec<UnassignedTransactionDetail>> {
     let mut stmt = conn.prepare(
         "SELECT u.id, u.observation_id, u.reason, u.status, u.created_at, \
                 o.merchant_raw, o.amount_minor, o.currency, o.direction, o.event_time, \
-                o.source_message_id, o.raw_payload_json \
+                o.source_message_id, o.raw_payload_json, \
+                o.extraction_method, o.confidence_score \
          FROM unassigned_transactions u \
          JOIN transaction_observations o ON o.id = u.observation_id \
          WHERE u.status = 'open' \
@@ -121,6 +139,8 @@ pub fn select_open_with_context(conn: &Connection) -> Result<Vec<UnassignedTrans
             source_message_id: row.get(10)?,
             body_snippet,
             raw_payload_json,
+            extraction_method: row.get(12)?,
+            confidence_score: row.get(13)?,
         })
     })?;
     let mut results = Vec::new();

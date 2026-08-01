@@ -313,6 +313,33 @@ pub fn get_or_create_instrument(
     Ok(id)
 }
 
+/// Fallback instrument resolution for a sender whose transaction emails
+/// never print a masked card/account number in the body at all (e.g.
+/// Jupiter's "Your RuPay Credit Card payment was successful" template) --
+/// `get_or_create_instrument` can never fire for these since it requires a
+/// `masked_identifier`. If the user has exactly one instrument on file for
+/// this `issuer_name`, resolving to it is safe (there's no other candidate
+/// it could be); with zero or multiple matches, the ambiguity means we
+/// genuinely don't know which instrument this is, so the caller must keep
+/// treating it as unresolved rather than guessing wrong.
+pub fn resolve_single_instrument_by_issuer(
+    conn: &Connection,
+    issuer_name: &str,
+) -> Result<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM instruments
+         WHERE issuer_name = ?1 COLLATE NOCASE AND is_deleted = 0",
+    )?;
+    let mut ids = stmt
+        .query_map(rusqlite::params![issuer_name], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    Ok(if ids.len() == 1 {
+        ids.pop()
+    } else {
+        None
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

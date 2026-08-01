@@ -271,6 +271,7 @@ mod tests {
             transaction_subtype: None,
             emi_group_id: None,
             category_id: None,
+            channel: None,
             notes: None,
             is_deleted: false,
             created_at: None,
@@ -426,6 +427,7 @@ mod tests {
             emi_total_installments: None,
             emi_installment_number: None,
             emi_original_amount_minor: None,
+            channel: None,
             is_deleted: false,
             created_at: None,
             updated_at: None,
@@ -478,6 +480,7 @@ mod tests {
             transaction_subtype: None,
             emi_group_id: None,
             category_id: None,
+            channel: None,
             notes: None,
             is_deleted: false,
             created_at: None,
@@ -683,6 +686,7 @@ mod tests {
             transaction_subtype: None,
             emi_group_id: None,
             category_id: None,
+            channel: None,
             notes: None,
             is_deleted: false,
             created_at: None,
@@ -849,6 +853,7 @@ mod tests {
             transaction_subtype: None,
             emi_group_id: None,
             category_id: None,
+            channel: None,
             notes: None,
             is_deleted: false,
             created_at: None,
@@ -893,6 +898,7 @@ mod tests {
             transaction_subtype: None,
             emi_group_id: None,
             category_id: None,
+            channel: None,
             notes: None,
             is_deleted: false,
             created_at: None,
@@ -942,6 +948,7 @@ mod tests {
             transaction_subtype: None,
             emi_group_id: None,
             category_id: None,
+            channel: None,
             notes: None,
             is_deleted: false,
             created_at: None,
@@ -999,6 +1006,7 @@ mod tests {
             transaction_subtype: None,
             emi_group_id: None,
             category_id: None,
+            channel: None,
             notes: None,
             is_deleted: false,
             created_at: None,
@@ -1060,6 +1068,7 @@ mod tests {
             transaction_subtype: None,
             emi_group_id: None,
             category_id: None,
+            channel: None,
             notes: None,
             is_deleted: false,
             created_at: None,
@@ -1107,6 +1116,7 @@ mod tests {
             transaction_subtype: None,
             emi_group_id: None,
             category_id: None,
+            channel: None,
             notes: None,
             is_deleted: false,
             created_at: None,
@@ -1143,6 +1153,7 @@ mod tests {
             transaction_subtype: None,
             emi_group_id: None,
             category_id: None,
+            channel: None,
             notes: None,
             is_deleted: false,
             created_at: None,
@@ -1179,6 +1190,7 @@ mod tests {
             transaction_subtype: None,
             emi_group_id: None,
             category_id: None,
+            channel: None,
             notes: None,
             is_deleted: false,
             created_at: None,
@@ -1245,6 +1257,7 @@ mod tests {
             emi_total_installments: None,
             emi_installment_number: None,
             emi_original_amount_minor: None,
+            channel: None,
             is_deleted: false,
             created_at: None,
             updated_at: None,
@@ -1477,6 +1490,7 @@ mod tests {
             emi_total_installments: None,
             emi_installment_number: None,
             emi_original_amount_minor: None,
+            channel: None,
             is_deleted: false,
             created_at: None,
             updated_at: None,
@@ -1514,6 +1528,7 @@ mod tests {
             transaction_subtype: None,
             emi_group_id: None,
             category_id: None,
+            channel: None,
             notes: None,
             is_deleted: false,
             created_at: None,
@@ -1634,6 +1649,7 @@ mod tests {
             transaction_subtype: None,
             emi_group_id: None,
             category_id: None,
+            channel: None,
             notes: None,
             is_deleted: false,
             created_at: None,
@@ -1892,6 +1908,7 @@ mod tests {
             transaction_subtype: None,
             emi_group_id: None,
             category_id: None,
+            channel: None,
             notes: None,
             is_deleted: false,
             created_at: None,
@@ -1958,5 +1975,96 @@ mod tests {
             members, 0,
             "reconciliation_cluster_members should be cascaded deleted"
         );
+    }
+
+    #[test]
+    fn test_comprehensive_multi_field_search() {
+        let conn = setup_db();
+
+        // 1. Insert category
+        conn.execute(
+            "INSERT OR IGNORE INTO categories (id, name) VALUES ('cat_food', 'Food & Dining')",
+            [],
+        )
+        .unwrap();
+
+        // 2. Insert instrument
+        conn.execute(
+            "INSERT INTO instruments (id, type, issuer_name, masked_identifier, nickname) \
+             VALUES ('inst_hdfc', 'bank_account', 'HDFC Bank', '9876', 'Primary Savings')",
+            [],
+        )
+        .unwrap();
+
+        // 3. Insert transaction
+        let tx = TransactionsRow {
+            id: "tx_multi_search_1".into(),
+            unique_event_id: None,
+            instrument_id: Some("inst_hdfc".into()),
+            instrument_type: Some("bank_account".into()),
+            direction: Some("debit".into()),
+            amount: Some(450.50),
+            amount_minor: Some(45050),
+            currency: Some("INR".into()),
+            authorization_time: Some(
+                chrono::NaiveDateTime::parse_from_str("2026-07-29 14:30:00", "%Y-%m-%d %H:%M:%S").unwrap(),
+            ),
+            best_event_time: None,
+            event_time_confidence: None,
+            best_posting_date: None,
+            posting_date_confidence: None,
+            merchant_display_name: Some("Starbucks Coffee".into()),
+            merchant_normalized_name: Some("STARBUCKS".into()),
+            merchant_entity_id: None,
+            reference_id: Some("REF123987".into()),
+            location: Some("Seattle".into()),
+            original_amount_minor: None,
+            original_currency: None,
+            exchange_rate: None,
+            balance_after_transaction: None,
+            status: Some("SETTLED".into()),
+            match_confidence: None,
+            source_mix: None,
+            alert_fired: None,
+            parent_transaction_id: None,
+            transaction_subtype: None,
+            emi_group_id: None,
+            category_id: Some("cat_food".into()),
+            channel: None,
+            is_deleted: false,
+            created_at: None,
+            updated_at: None,
+            notes: Some("Afternoon coffee break".into()),
+        };
+        transactions::insert_transaction(&conn, &tx).unwrap();
+
+        // Test amount search (numeric string, formatted currency)
+        let res_amt1 = transactions::search_transactions(&conn, "450.50", 10, 0).unwrap();
+        assert_eq!(res_amt1.len(), 1);
+        assert_eq!(res_amt1[0].id, "tx_multi_search_1");
+
+        let res_amt2 = transactions::search_transactions(&conn, "₹450", 10, 0).unwrap();
+        assert_eq!(res_amt2.len(), 1);
+
+        // Test category search
+        let res_cat = transactions::search_transactions(&conn, "Food & Dining", 10, 0).unwrap();
+        assert_eq!(res_cat.len(), 1);
+
+        // Test instrument search (issuer name, nickname, masked ID)
+        let res_inst1 = transactions::search_transactions(&conn, "HDFC", 10, 0).unwrap();
+        assert_eq!(res_inst1.len(), 1);
+
+        let res_inst2 = transactions::search_transactions(&conn, "Primary Savings", 10, 0).unwrap();
+        assert_eq!(res_inst2.len(), 1);
+
+        let res_inst3 = transactions::search_transactions(&conn, "9876", 10, 0).unwrap();
+        assert_eq!(res_inst3.len(), 1);
+
+        // Test notes and location
+        let res_notes = transactions::search_transactions(&conn, "coffee break", 10, 0).unwrap();
+        assert_eq!(res_notes.len(), 1);
+
+        let res_loc = transactions::search_transactions(&conn, "Seattle", 10, 0).unwrap();
+        assert_eq!(res_loc.len(), 1);
     }
 }

@@ -18,6 +18,7 @@ pub mod field_rules;
 mod field_rules_tests;
 pub mod ignored_messages;
 pub mod instruments;
+pub mod layer6_jobs;
 pub mod local_profile;
 pub mod maintenance;
 pub mod match_decisions;

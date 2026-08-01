@@ -35,6 +35,11 @@ pub struct TransactionsRow {
     pub transaction_subtype: Option<String>,
     pub emi_group_id: Option<String>,
     pub category_id: Option<String>,
+    /// Display-only transaction rail/channel (`"upi"`, `"imps"`, ...) --
+    /// see `extraction::ladder::detect_channel`. Distinct from
+    /// `transaction_subtype` (refund/emi_installment classification):
+    /// a refund can itself be UPI or IMPS, so the two are independent tags.
+    pub channel: Option<String>,
     pub is_deleted: bool,
     pub created_at: Option<NaiveDateTime>,
     pub updated_at: Option<NaiveDateTime>,
@@ -52,11 +57,11 @@ pub fn insert_transaction(conn: &Connection, tx: &TransactionsRow) -> Result<()>
             posting_date_confidence, merchant_display_name, merchant_normalized_name, merchant_entity_id,
             reference_id, location, original_amount_minor, original_currency, exchange_rate,
             balance_after_transaction, status, match_confidence, source_mix, alert_fired,
-            parent_transaction_id, transaction_subtype, emi_group_id, category_id, is_deleted,
+            parent_transaction_id, transaction_subtype, emi_group_id, category_id, channel, is_deleted,
             created_at, updated_at, notes
          ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-            ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, COALESCE(?32, CURRENT_TIMESTAMP), COALESCE(?33, CURRENT_TIMESTAMP), ?34
+            ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, COALESCE(?33, CURRENT_TIMESTAMP), COALESCE(?34, CURRENT_TIMESTAMP), ?35
          )",
         params![
             tx.id, tx.unique_event_id, tx.instrument_id, tx.instrument_type, tx.direction, tx.amount,
@@ -65,7 +70,7 @@ pub fn insert_transaction(conn: &Connection, tx: &TransactionsRow) -> Result<()>
             tx.merchant_entity_id, tx.reference_id, tx.location, tx.original_amount_minor, tx.original_currency,
             tx.exchange_rate, tx.balance_after_transaction, tx.status, tx.match_confidence, tx.source_mix,
             tx.alert_fired, tx.parent_transaction_id, tx.transaction_subtype, tx.emi_group_id, tx.category_id,
-            tx.is_deleted, tx.created_at, tx.updated_at, tx.notes
+            tx.channel, tx.is_deleted, tx.created_at, tx.updated_at, tx.notes
         ],
     )?;
     Ok(())
@@ -81,7 +86,7 @@ pub fn update_transaction(conn: &Connection, tx: &TransactionsRow) -> Result<()>
             reference_id = ?17, location = ?18, original_amount_minor = ?19, original_currency = ?20,
             exchange_rate = ?21, balance_after_transaction = ?22, status = ?23, match_confidence = ?24,
             source_mix = ?25, alert_fired = ?26, parent_transaction_id = ?27, transaction_subtype = ?28,
-            emi_group_id = ?29, category_id = ?30, is_deleted = ?31, notes = ?32
+            emi_group_id = ?29, category_id = ?30, channel = ?31, is_deleted = ?32, notes = ?33
          WHERE id = ?1",
         params![
             tx.id, tx.unique_event_id, tx.instrument_id, tx.instrument_type, tx.direction, tx.amount,
@@ -90,7 +95,7 @@ pub fn update_transaction(conn: &Connection, tx: &TransactionsRow) -> Result<()>
             tx.merchant_entity_id, tx.reference_id, tx.location, tx.original_amount_minor, tx.original_currency,
             tx.exchange_rate, tx.balance_after_transaction, tx.status, tx.match_confidence, tx.source_mix,
             tx.alert_fired, tx.parent_transaction_id, tx.transaction_subtype, tx.emi_group_id, tx.category_id,
-            tx.is_deleted, tx.notes
+            tx.channel, tx.is_deleted, tx.notes
         ],
     )?;
     if count == 0 {
@@ -142,16 +147,122 @@ pub fn search_transactions(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<TransactionsRow>> {
-    let mut stmt = conn.prepare(
-        "SELECT t.*
-         FROM transactions t
-         JOIN transactions_fts fts ON t.id = fts.id
-         WHERE transactions_fts MATCH ?1 AND t.is_deleted = 0
-         ORDER BY rank
-         LIMIT ?2 OFFSET ?3",
-    )?;
+    search_transactions_with_filters(conn, query, None, limit, offset)
+}
 
-    let rows = stmt.query_map(params![query, limit, offset], row_to_transaction)?;
+pub fn search_transactions_with_filters(
+    conn: &Connection,
+    query: &str,
+    filters: Option<&crate::commands::data::TransactionListFilters>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<TransactionsRow>> {
+    let trimmed = query.trim();
+    let like_pattern = format!("%{trimmed}%");
+
+    // Clean numeric extraction (remove currency symbols like ₹, $, commas, etc.)
+    let clean_num_str: String = trimmed
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
+        .collect();
+
+    let (has_num, num_val, minor_val) = match clean_num_str.parse::<f64>() {
+        Ok(val) if !clean_num_str.is_empty() && clean_num_str != "-" => {
+            let abs_val = val.abs();
+            let minor = (abs_val * 100.0).round() as i64;
+            (1i64, abs_val, minor)
+        }
+        _ => (0i64, 0.0f64, 0i64),
+    };
+
+    // Sanitize FTS5 query string to avoid syntax errors on special characters like &, /, :, ₹, $, etc.
+    let clean_fts: String = trimmed
+        .chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+        .collect();
+    let fts_query = if clean_fts.trim().is_empty() {
+        String::new()
+    } else {
+        format!("\"{}\"*", clean_fts.trim())
+    };
+
+    let mut sql = String::from(
+        "SELECT DISTINCT t.*
+         FROM transactions t
+         LEFT JOIN instruments i ON t.instrument_id = i.id
+         LEFT JOIN categories c ON t.category_id = c.id
+         LEFT JOIN transaction_tags tt ON t.id = tt.transaction_id
+         LEFT JOIN tags tag ON tt.tag_id = tag.id
+         WHERE t.is_deleted = 0
+           AND (
+             (?1 != '' AND t.id IN (SELECT id FROM transactions_fts WHERE transactions_fts MATCH ?1))
+             OR (t.merchant_display_name LIKE ?2)
+             OR (t.merchant_normalized_name LIKE ?2)
+             OR (t.reference_id LIKE ?2)
+             OR (t.location LIKE ?2)
+             OR (t.notes LIKE ?2)
+             OR (t.status LIKE ?2)
+             OR (t.transaction_subtype LIKE ?2)
+             OR (t.direction LIKE ?2)
+             OR (c.name LIKE ?2)
+             OR (c.id LIKE ?2)
+             OR (IFNULL(c.name, 'Uncategorized') LIKE ?2)
+             OR (i.issuer_name LIKE ?2)
+             OR (i.nickname LIKE ?2)
+             OR (i.masked_identifier LIKE ?2)
+             OR (i.type LIKE ?2)
+             OR (i.upi_vpa LIKE ?2)
+             OR (tag.name LIKE ?2)
+             OR (CAST(t.amount AS TEXT) LIKE ?2)
+             OR (?3 = 1 AND (ABS(t.amount) = ?4 OR ABS(t.amount_minor) = ?5 OR CAST(t.amount AS TEXT) LIKE ?6))
+           )"
+    );
+
+    let num_like_pattern = format!("%{clean_num_str}%");
+
+    let mut query_params: Vec<Box<dyn rusqlite::ToSql>> = vec![
+        Box::new(fts_query),
+        Box::new(like_pattern),
+        Box::new(has_num),
+        Box::new(num_val),
+        Box::new(minor_val),
+        Box::new(num_like_pattern),
+    ];
+
+    if let Some(f) = filters {
+        if let Some(from) = &f.from_date {
+            sql.push_str(" AND t.authorization_time >= ?");
+            query_params.push(Box::new(format!("{from} 00:00:00")));
+        }
+        if let Some(to) = &f.to_date {
+            sql.push_str(" AND t.authorization_time <= ?");
+            query_params.push(Box::new(format!("{to} 23:59:59")));
+        }
+        if let Some(instrument_id) = &f.instrument_id {
+            sql.push_str(" AND t.instrument_id = ?");
+            query_params.push(Box::new(instrument_id.clone()));
+        }
+        if let Some(direction) = &f.direction {
+            sql.push_str(" AND t.direction = ?");
+            query_params.push(Box::new(direction.clone()));
+        }
+        if let Some(category_id) = &f.category_id {
+            sql.push_str(" AND t.category_id = ?");
+            query_params.push(Box::new(category_id.clone()));
+        }
+        if let Some(status) = &f.status {
+            sql.push_str(" AND t.status = ?");
+            query_params.push(Box::new(status.clone()));
+        }
+    }
+
+    sql.push_str(" ORDER BY t.authorization_time DESC LIMIT ? OFFSET ?");
+    query_params.push(Box::new(limit));
+    query_params.push(Box::new(offset));
+
+    let mut stmt = conn.prepare(&sql)?;
+    let slice_params: Vec<&dyn rusqlite::ToSql> = query_params.iter().map(|b| b.as_ref()).collect();
+    let rows = stmt.query_map(slice_params.as_slice(), row_to_transaction)?;
 
     let mut transactions = Vec::new();
     for row in rows {
@@ -193,6 +304,7 @@ fn row_to_transaction(row: &Row) -> rusqlite::Result<TransactionsRow> {
         transaction_subtype: row.get("transaction_subtype")?,
         emi_group_id: row.get("emi_group_id")?,
         category_id: row.get("category_id")?,
+        channel: row.get("channel")?,
         is_deleted: row.get("is_deleted")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
