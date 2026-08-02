@@ -3,12 +3,12 @@ import { Eye, EyeOff, Copy, Check, CreditCard } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 
-export type CardNetwork = 'visa' | 'mastercard' | 'rupay' | 'amex' | 'generic';
+type CardNetwork = 'visa' | 'mastercard' | 'rupay' | 'amex' | 'generic';
 
 /**
  * Detects card network based on BIN prefixes.
  */
-export function getCardNetwork(cardNumber: string): { network: CardNetwork; label: string; badgeClass: string } {
+function getCardNetwork(cardNumber: string): { network: CardNetwork; label: string; badgeClass: string } {
   const digits = cardNumber.replace(/\D/g, '');
 
   if (/^4/.test(digits)) {
@@ -31,7 +31,7 @@ export function getCardNetwork(cardNumber: string): { network: CardNetwork; labe
  * Formats a raw numeric string into 4-digit space separated blocks.
  * e.g. "4532760319208841" -> "4532 7603 1920 8841"
  */
-export function formatCardNumber(value: string): string {
+function formatCardNumber(value: string): string {
   const clean = value.replace(/\D/g, '').slice(0, 19);
   return clean.replace(/(\d{4})(?=\d)/g, '$1 ').trim();
 }
@@ -40,7 +40,7 @@ export function formatCardNumber(value: string): string {
  * Converts a formatted card string into masked format.
  * e.g. "4532 7603 1920 8841" -> "•••• •••• •••• 8841"
  */
-export function maskCardNumber(formattedValue: string): string {
+function maskCardNumber(formattedValue: string): string {
   if (!formattedValue) return '';
   const parts = formattedValue.split(' ');
   if (parts.length <= 1) {

@@ -8,7 +8,7 @@ interface InstrumentCardHeroProps {
   instrument: InstrumentRecord;
 }
 
-export function getBankTheme(issuerName: string) {
+function getBankTheme(issuerName: string) {
   const name = issuerName.toLowerCase();
   if (name.includes('idfc')) {
     return {

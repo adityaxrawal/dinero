@@ -223,7 +223,7 @@ export const useNotificationStore = create<NotificationStoreState>((set, get) =>
 // Setup automatic Tauri IPC event listeners
 let listenersInitialized = false;
 
-export function initNotificationStoreListeners() {
+function initNotificationStoreListeners() {
   if (listenersInitialized || !isTauriRuntime()) return;
   listenersInitialized = true;
 
