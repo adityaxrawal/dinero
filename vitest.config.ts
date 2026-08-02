@@ -24,5 +24,13 @@ export default defineConfig({
     // fail to load. They were never meant to be collected, and a permanently
     // red suite is a suite nobody reads.
     exclude: ['**/node_modules/**', '**/e2e/**', '**/src-tauri/**', '**/dist/**'],
+    // `coverage-final.json` is what fallow reads for real CRAP scores
+    // (.fallowrc.json health.coverage). Without it fallow assumes 0% coverage
+    // and flags every function with cyclomatic >= 5.
+    coverage: {
+      provider: 'v8',
+      reporter: ['text-summary', 'json'],
+      exclude: ['**/node_modules/**', '**/e2e/**', '**/src-tauri/**', '**/dist/**', '**/*.config.*', '**/src/test/**'],
+    },
   },
 });
