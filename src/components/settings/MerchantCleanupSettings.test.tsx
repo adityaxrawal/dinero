@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, act } from '@testing-library/react';
+import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
 import type { MerchantCleanupProgress } from '@/lib/ipc';
 
 /**
@@ -13,6 +13,7 @@ import type { MerchantCleanupProgress } from '@/lib/ipc';
 /** Captured `useIpcListen` handler, so a test can drive progress events. */
 let emitProgress: ((p: MerchantCleanupProgress) => void) | null = null;
 
+vi.mock('@/hooks/use-toast', () => ({ toast: vi.fn() }));
 vi.mock('@/hooks/useIpcListen', () => ({
   useIpcListen: (_event: string, handler: (p: MerchantCleanupProgress) => void) => {
     emitProgress = handler;
@@ -158,5 +159,199 @@ describe('MerchantCleanupSettings, mid-run', () => {
     await mountAndRun(tick(), tick({ status: 'cancelled', current_merchant: null }));
     expect(screen.getByText(/Stopped early/)).toBeInTheDocument();
     expect(screen.getByText(/Fixed 11 of 13/)).toBeInTheDocument();
+  });
+});
+
+
+/**
+ * The idle panel: the candidate queue it offers to clean, the history of past
+ * runs, and the two write paths (start a run, undo one). None of this is
+ * reachable from the mid-run tests above, which never leave the running state.
+ */
+describe('MerchantCleanupSettings, idle', () => {
+  const change = (over = {}) => ({
+    correction_id: 'corr1',
+    transaction_id: 'tx1',
+    bank_name: 'Yes Bank',
+    previous_merchant: 'PYU*Swiggy Food',
+    new_merchant: 'Swiggy',
+    category: 'Food & Dining',
+    confidence: 0.94,
+    reverted: false,
+    ...over,
+  });
+
+  const run = (over = {}) => ({
+    run_id: 'run_1',
+    started_at: '2026-07-29 10:00:00',
+    applied: 3,
+    reverted: 0,
+    banks: ['Yes Bank'],
+    changes: [change()],
+    ...over,
+  });
+
+  let api: typeof import('@/lib/ipc').API;
+
+  const mount = async () => {
+    const { default: MerchantCleanupSettings } = await import('./MerchantCleanupSettings');
+    render(<MerchantCleanupSettings />);
+    await waitFor(() =>
+      expect(screen.getByText(/merchant names Dinero isn't sure about/)).toBeInTheDocument()
+    );
+  };
+
+  /** The sample list sits behind the "What is in the queue" disclosure. */
+  const expandQueue = async () => {
+    await act(async () => {
+      screen.getByText('What is in the queue').closest('button')!.click();
+    });
+  };
+
+  const withPreview = (over: Record<string, unknown>) =>
+    vi.mocked(api.merchantCleanup.preview).mockResolvedValue({ ...preview, ...over } as never);
+
+  beforeEach(async () => {
+    emitProgress = null;
+    vi.clearAllMocks();
+    ({ API: api } = await import('@/lib/ipc'));
+    vi.mocked(api.merchantCleanup.preview).mockResolvedValue(preview as never);
+    vi.mocked(api.merchantCleanup.runs).mockResolvedValue([] as never);
+    vi.mocked(api.merchantCleanup.start).mockResolvedValue('run_1' as never);
+    vi.mocked(api.merchantCleanup.revert).mockResolvedValue(3 as never);
+  });
+
+  describe('candidate queue', () => {
+    it('shows the worst-scoring merchant up front', async () => {
+      await mount();
+      expect(screen.getByText('Worst match')).toBeInTheDocument();
+      expect(screen.getAllByText('PYU*Swiggy Food').length).toBeGreaterThan(0);
+    });
+
+    it('lists a candidate with its formatted amount once expanded', async () => {
+      await mount();
+      await expandQueue();
+      expect(screen.getByText(/245\.43/)).toBeInTheDocument();
+    });
+
+    it('marks a credit with a leading plus', async () => {
+      withPreview({ samples: [{ ...preview.samples[0], direction: 'credit' }] });
+      await mount();
+      await expandQueue();
+      expect(screen.getByText(/\+.*245\.43/)).toBeInTheDocument();
+    });
+
+    it('omits the amount when none was extracted', async () => {
+      withPreview({ samples: [{ ...preview.samples[0], amount: null }] });
+      await mount();
+      await expandQueue();
+      expect(screen.queryByText(/245\.43/)).toBeNull();
+    });
+
+    it('warns when the original email is no longer stored', async () => {
+      withPreview({ samples: [{ ...preview.samples[0], has_evidence: false }] });
+      await mount();
+      await expandQueue();
+      expect(screen.getByText(/no email kept/)).toBeInTheDocument();
+    });
+
+    it('says how many more are queued beyond the shown sample', async () => {
+      await mount();
+      await expandQueue();
+      expect(screen.getByText(/and 383 more/)).toBeInTheDocument();
+    });
+  });
+
+  describe('starting a run', () => {
+    it('asks the backend to start and switches into the running state', async () => {
+      await mount();
+      await act(async () => {
+        screen.getByRole('button', { name: /Normalize with AI/ }).click();
+      });
+      expect(api.merchantCleanup.start).toHaveBeenCalled();
+      await waitFor(() => expect(screen.getByRole('button', { name: /Stop/ })).toBeInTheDocument());
+    });
+
+    it('surfaces a start failure instead of pretending the run began', async () => {
+      vi.mocked(api.merchantCleanup.start).mockRejectedValue(new Error('model not loaded'));
+      await mount();
+      await act(async () => {
+        screen.getByRole('button', { name: /Normalize with AI/ }).click();
+      });
+      expect(await screen.findByText('model not loaded')).toBeInTheDocument();
+    });
+  });
+
+  describe('run history', () => {
+    const mountWithRuns = async (...runs: ReturnType<typeof run>[]) => {
+      vi.mocked(api.merchantCleanup.runs).mockResolvedValue(runs as never);
+      await mount();
+    };
+
+    /**
+     * Undoing is two steps: the row button opens a confirmation dialog whose
+     * confirm button carries the same "Undo run" label, so the dialog's copy
+     * is the one that actually reverts.
+     */
+    const confirmUndo = async () => {
+      const rowButton = await screen.findByRole('button', { name: /Undo run/ });
+      await act(async () => { fireEvent.click(rowButton); });
+      const buttons = await screen.findAllByRole('button', { name: /Undo run/ });
+      await act(async () => { fireEvent.click(buttons[buttons.length - 1]); });
+    };
+
+    it('summarises a past run', async () => {
+      await mountWithRuns(run());
+      expect(await screen.findByText(/3 still applied/)).toBeInTheDocument();
+    });
+
+    it('mentions how many changes were already undone', async () => {
+      await mountWithRuns(run({ reverted: 2 }));
+      expect(await screen.findByText(/2 undone/)).toBeInTheDocument();
+    });
+
+    it('offers no undo for a fully reverted run', async () => {
+      await mountWithRuns(run({ applied: 0, reverted: 3 }));
+      expect(await screen.findByText('Already undone')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Undo run/ })).toBeNull();
+    });
+
+    it('reveals the individual changes when expanded', async () => {
+      await mountWithRuns(run());
+      const summary = await screen.findByText(/3 still applied/);
+      await act(async () => summary.closest('button')!.click());
+      expect(screen.getByText('Swiggy')).toBeInTheDocument();
+    });
+
+    it('undoes a whole run and confirms with a pluralised toast', async () => {
+      const { toast } = await import('@/hooks/use-toast');
+      await mountWithRuns(run());
+      await confirmUndo();
+      expect(api.merchantCleanup.revert).toHaveBeenCalledWith('run_1');
+      await waitFor(() =>
+        expect(vi.mocked(toast)).toHaveBeenCalledWith(
+          expect.objectContaining({ title: 'Undid 3 corrections' })
+        )
+      );
+    });
+
+    it('uses the singular form when a run undid one correction', async () => {
+      const { toast } = await import('@/hooks/use-toast');
+      vi.mocked(api.merchantCleanup.revert).mockResolvedValue(1 as never);
+      await mountWithRuns(run());
+      await confirmUndo();
+      await waitFor(() =>
+        expect(vi.mocked(toast)).toHaveBeenCalledWith(
+          expect.objectContaining({ title: 'Undid 1 correction' })
+        )
+      );
+    });
+
+    it('surfaces an undo failure', async () => {
+      vi.mocked(api.merchantCleanup.revert).mockRejectedValue(new Error('db locked'));
+      await mountWithRuns(run());
+      await confirmUndo();
+      expect(await screen.findByText('db locked')).toBeInTheDocument();
+    });
   });
 });
