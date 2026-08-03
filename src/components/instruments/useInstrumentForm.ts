@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { API, InstrumentRecord } from '@/lib/ipc';
 import { getErrorToast } from '@/lib/errorMapping';
 import { useToast } from '@/hooks/use-toast';
-import { confirmDelete } from '@/lib/confirmDialog';
+import { confirmAction } from '@/lib/confirmDialog';
 import { queryKeys } from '@/lib/queryKeys';
 import { useInstrumentDetail } from '@/hooks/queries/useInstrumentDetail';
 import { useTransactionsInfiniteList } from '@/hooks/queries/useTransactionsInfiniteList';
@@ -133,7 +133,7 @@ export function useInstrumentForm(
 
   const handleDelete = async () => {
     if (!inst) return;
-    const confirmed = await confirmDelete(
+    const confirmed = await confirmAction(
       `Delete ${inst.masked_identifier}? This cannot be undone.`,
       'Delete Instrument'
     );

@@ -27,7 +27,7 @@ import { API } from '@/lib/ipc';
 import { getErrorToast } from '@/lib/errorMapping';
 import { formatCustomDate } from '@/lib/formatCustomDate';
 import { useToast } from '@/hooks/use-toast';
-import { confirmDelete } from '@/lib/confirmDialog';
+import { confirmAction } from '@/lib/confirmDialog';
 import { queryKeys } from '@/lib/queryKeys';
 import { useInstrumentForm } from './useInstrumentForm';
 import { DatePicker } from '@/components/ui/date-picker';

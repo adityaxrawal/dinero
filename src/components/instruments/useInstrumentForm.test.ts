@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import { useInstrumentForm } from './useInstrumentForm';
 import { API, type InstrumentRecord } from '@/lib/ipc';
-import { confirmDelete } from '@/lib/confirmDialog';
+import { confirmAction } from '@/lib/confirmDialog';
 
 const toast = vi.fn();
 const invalidateQueries = vi.fn();
@@ -14,7 +14,7 @@ let pdfPasswords: Array<{ id: string; instrument_id: string }> = [];
 
 vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast }) }));
 vi.mock('@tanstack/react-query', () => ({ useQueryClient: () => ({ invalidateQueries }) }));
-vi.mock('@/lib/confirmDialog', () => ({ confirmDelete: vi.fn() }));
+vi.mock('@/lib/confirmDialog', () => ({ confirmAction: vi.fn() }));
 vi.mock('@/lib/ipc', () => ({
   API: { instruments: { update: vi.fn(), delete: vi.fn() } },
 }));
@@ -62,7 +62,7 @@ beforeEach(() => {
   txData = { pages: [{ records: [{ id: 'tx1' }], total: 12 }] };
   statements = [];
   pdfPasswords = [];
-  asMock(confirmDelete).mockResolvedValue(true);
+  asMock(confirmAction).mockResolvedValue(true);
   asMock(API.instruments.update).mockResolvedValue(undefined);
   asMock(API.instruments.delete).mockResolvedValue(undefined);
 });
@@ -239,20 +239,20 @@ describe('handleDelete', () => {
     detailInst = undefined;
     const { result } = renderHook(() => useInstrumentForm(undefined));
     await act(async () => result.current.handleDelete());
-    expect(confirmDelete).not.toHaveBeenCalled();
+    expect(confirmAction).not.toHaveBeenCalled();
   });
 
   it('names the instrument in the confirmation prompt', async () => {
     const { result } = setup();
     await act(async () => result.current.handleDelete());
-    expect(confirmDelete).toHaveBeenCalledWith(
+    expect(confirmAction).toHaveBeenCalledWith(
       expect.stringContaining('8841'),
       'Delete Instrument'
     );
   });
 
   it('aborts when the user declines', async () => {
-    asMock(confirmDelete).mockResolvedValue(false);
+    asMock(confirmAction).mockResolvedValue(false);
     const { result } = setup();
     await act(async () => result.current.handleDelete());
     expect(API.instruments.delete).not.toHaveBeenCalled();

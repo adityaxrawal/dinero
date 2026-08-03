@@ -4,6 +4,7 @@ import { useToast } from '@/hooks/use-toast';
 import { getErrorToast } from '@/lib/errorMapping';
 import { ToastAction } from '@/components/ui/toast';
 import { API } from '@/lib/ipc';
+import { confirmAction } from '@/lib/confirmDialog';
 import type { ClusterRecord } from '@/lib/ipc';
 
 interface UseResolveClusterActionsProps {
@@ -41,14 +42,7 @@ export function useResolveClusterActions({ cluster, onSuccess }: UseResolveClust
       return;
     }
 
-    let confirmed: boolean;
-    try {
-      const { ask } = await import('@tauri-apps/plugin-dialog');
-      confirmed = await ask(plainLanguageExplanation, { title, kind: 'warning' });
-    } catch {
-      confirmed = confirm(plainLanguageExplanation);
-    }
-    if (!confirmed) return;
+    if (!(await confirmAction(plainLanguageExplanation, title))) return;
 
     const clusterIdSnapshot = cluster.id;
 

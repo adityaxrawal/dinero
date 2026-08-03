@@ -22,6 +22,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { API, LlmModelInfo, LicenseStatusResponse } from '../lib/ipc';
+import { confirmAction } from '../lib/confirmDialog';
 import { getLicenseCta } from '../lib/licenseCta';
 import { useGlobalState } from '../lib/GlobalStateContext';
 import { cn } from '@/lib/utils';
@@ -114,16 +115,9 @@ export default function Settings() {
   const [isFetchingPhrase, setIsFetchingPhrase] = useState(false);
 
   const handleViewRecoveryPhrase = async () => {
-    let confirmed: boolean;
     const warning =
       "Only use this if you anticipate losing both your Mac and your Keychain. Anyone who has this 24-word phrase can decrypt your financial data on any computer — it bypasses this Mac's hardware-bound protection entirely. Keep it as secure as your data itself.";
-    try {
-      const { ask } = await import('@tauri-apps/plugin-dialog');
-      confirmed = await ask(warning, { title: 'Secure Backup Recovery Phrase', kind: 'warning' });
-    } catch {
-      confirmed = confirm(warning);
-    }
-    if (!confirmed) return;
+    if (!(await confirmAction(warning, 'Secure Backup Recovery Phrase'))) return;
 
     setIsFetchingPhrase(true);
     try {
@@ -180,16 +174,9 @@ export default function Settings() {
   };
 
   const handleDeactivateLicense = async () => {
-    let confirmed: boolean;
     const warning =
       "Deactivate this device's license? Paid features will be unavailable here until you reactivate.";
-    try {
-      const { ask } = await import('@tauri-apps/plugin-dialog');
-      confirmed = await ask(warning, { title: 'Deactivate License', kind: 'warning' });
-    } catch {
-      confirmed = confirm(warning);
-    }
-    if (!confirmed) return;
+    if (!(await confirmAction(warning, 'Deactivate License'))) return;
 
     setIsDeactivating(true);
     setLicenseActionError(null);
