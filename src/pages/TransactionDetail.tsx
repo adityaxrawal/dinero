@@ -12,15 +12,17 @@ import {
   ArrowUpRight,
   ArrowLeftRight,
   Repeat,
-  MapPin,
-  Hash,
-  ShieldCheck,
-  Link2,
   ChevronDown,
   ChevronUp,
   Pencil,
 } from 'lucide-react';
 import { TagDatalist } from '@/components/transactions/TagDatalist';
+import {
+  MerchantField,
+  TagsHeader,
+  EmptyTagsNotice,
+  TransactionAuditRows,
+} from '@/components/transactions/TransactionFields';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -37,7 +39,6 @@ import { API } from '@/lib/ipc';
 import { useToast } from '@/hooks/use-toast';
 import { useTransactionForm } from '@/components/transactions/useTransactionForm';
 import { TransactionAmountBalance } from '@/components/transactions/TransactionAmountBalance';
-import { InfoRow } from '@/components/ui/InfoRow';
 import { CategorySelect } from '@/components/transactions/CategorySelect';
 import { instrumentIcon, instrumentTypeLabel } from '@/components/instruments/instrumentTypes';
 import { InstrumentSelect } from '@/components/instruments/InstrumentSelect';
@@ -261,26 +262,12 @@ export default function TransactionDetail() {
                     </button>
                   )}
                 </div>
-                <div className="relative">
-                  <Input
-                    id="merchant-name"
-                    value={merchant}
-                    onChange={(e) => setMerchant(e.target.value)}
-                    placeholder="Merchant name…"
-                    className="h-9 text-[13px] font-semibold bg-[#F3EBDD]/70 border-[#064E3B]/15 text-[#064E3B] focus-visible:ring-1 focus-visible:ring-[#064E3B]/30 focus-visible:border-[#064E3B]/40 rounded-xl pr-8"
-                    onKeyDown={(e) => e.key === 'Enter' && handleSave()}
-                  />
-                  {merchant && (
-                    <button
-                      type="button"
-                      onClick={() => setMerchant('')}
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#064E3B]/40 hover:text-[#064E3B]"
-                      aria-label="Clear merchant name"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
+                <MerchantField
+                  id="merchant-name"
+                  merchant={merchant}
+                  onChange={setMerchant}
+                  onSubmit={handleSave}
+                />
               </div>
 
               {/* Category Selection */}
@@ -313,17 +300,10 @@ export default function TransactionDetail() {
             </div>
 
             <div className="space-y-2 pt-1 border-t border-[#064E3B]/10">
-              <div className="flex items-center justify-between">
-                <Label className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70">
-                  Tags
-                </Label>
-                <span className="text-[10px] text-[#064E3B]/50 font-mono">
-                  {tags.length} tag{tags.length !== 1 ? 's' : ''}
-                </span>
-              </div>
+              <TagsHeader count={tags.length} />
               <div className="flex flex-wrap gap-1.5 min-h-[30px] items-center">
                 {tags.length === 0 ? (
-                  <span className="text-[12px] italic text-[#064E3B]/40">No tags added yet.</span>
+                  <EmptyTagsNotice />
                 ) : (
                   tags.map((tag) => (
                     <Badge
@@ -439,61 +419,7 @@ export default function TransactionDetail() {
           </CardHeader>
           {isAuditOpen && (
             <CardContent className="p-0 animate-in fade-in duration-150">
-              <InfoRow label="Status">
-                <span
-                  className="px-2.5 py-0.5 text-[11px] font-bold rounded-full uppercase tracking-wider"
-                  style={{
-                    background:
-                      (tx.status ?? '').toLowerCase() === 'posted'
-                        ? 'rgba(16,185,129,0.15)'
-                        : 'rgba(107,138,127,0.15)',
-                    color: (tx.status ?? '').toLowerCase() === 'posted' ? '#059669' : '#064E3B',
-                  }}
-                >
-                  {tx.status ?? 'UNKNOWN'}
-                </span>
-              </InfoRow>
-
-              {tx.best_posting_date && <InfoRow label="Posting Date">{tx.best_posting_date}</InfoRow>}
-
-              {tx.reference_id && (
-                <InfoRow icon={<Hash className="w-3.5 h-3.5" />} label="Reference ID" copyValue={tx.reference_id}>
-                  <span className="font-mono text-xs">{tx.reference_id}</span>
-                </InfoRow>
-              )}
-
-              <InfoRow icon={<Hash className="w-3.5 h-3.5" />} label="Transaction ID" copyValue={tx.id}>
-                <span className="font-mono text-xs opacity-90">{tx.id}</span>
-              </InfoRow>
-
-              {tx.location && (
-                <InfoRow icon={<MapPin className="w-3.5 h-3.5" />} label="Location">
-                  {tx.location}
-                </InfoRow>
-              )}
-
-              {tx.source_mix && (
-                <InfoRow icon={<Link2 className="w-3.5 h-3.5" />} label="Source Pipeline">
-                  <span className="font-mono text-[11px] uppercase bg-[#064E3B]/5 px-2 py-0.5 rounded border border-[#064E3B]/10">
-                    {tx.source_mix}
-                  </span>
-                </InfoRow>
-              )}
-              {tx.match_confidence && (
-                <InfoRow icon={<ShieldCheck className="w-3.5 h-3.5" />} label="Match Confidence">
-                  <span className="capitalize">{tx.match_confidence}</span>
-                </InfoRow>
-              )}
-              {tx.event_time_confidence && (
-                <InfoRow label="Time Confidence">
-                  <span className="capitalize">{tx.event_time_confidence}</span>
-                </InfoRow>
-              )}
-              {tx.alert_fired !== null && (
-                <InfoRow label="Alert Sent">
-                  {tx.alert_fired ? 'Yes' : 'No'}
-                </InfoRow>
-              )}
+              <TransactionAuditRows tx={tx} />
             </CardContent>
           )}
         </Card>

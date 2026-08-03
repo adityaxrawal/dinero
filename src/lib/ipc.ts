@@ -75,7 +75,7 @@ interface PendingReviewMetric {
 // MatchDecisionsRow/TransactionDetail/EmiGroupSummary exactly (transactions_get
 // and transactions_get_emi_group's real response shapes — was typed `any`
 // before this task, with no frontend consumer to have caught a mismatch).
-interface CanonicalTransaction {
+export interface CanonicalTransaction {
   id: string;
   unique_event_id: string | null;
   instrument_id: string | null;
@@ -302,7 +302,7 @@ export interface CategoryRecord {
   icon: string | null;
 }
 
-interface TagRecord {
+export interface TagRecord {
   id: string;
   name: string;
   color_hex: string | null;
