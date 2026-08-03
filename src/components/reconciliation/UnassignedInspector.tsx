@@ -20,6 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { InstrumentPicker } from '@/components/instruments/InstrumentPicker';
 import { GmailEmailViewer } from '@/components/common/GmailEmailViewer';
 
 interface UnassignedInspectorProps {
@@ -438,18 +439,12 @@ export default function UnassignedInspector({
                     Instrument
                   </div>
                   <div className="px-4 py-2 flex items-center">
-                    <Select value={instrumentId} onValueChange={setInstrumentId}>
-                      <SelectTrigger aria-label="Instrument" className="h-8 bg-white/50 focus:bg-white text-[13px]">
-                        <SelectValue placeholder="Select instrument" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {instruments.map((inst) => (
-                          <SelectItem key={inst.id} value={inst.id}>
-                            {inst.issuer_name} •••• {inst.masked_identifier}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <InstrumentPicker
+                      value={instrumentId}
+                      onChange={setInstrumentId}
+                      instruments={instruments}
+                      triggerClassName="h-8 bg-white/50 focus:bg-white text-[13px]"
+                    />
                   </div>
                 </div>
               </div>

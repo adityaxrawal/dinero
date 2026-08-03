@@ -15,6 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { InstrumentPicker } from '@/components/instruments/InstrumentPicker';
 import {
   Dialog,
   DialogContent,
@@ -590,18 +591,11 @@ export default function Transactions() {
             </div>
             <div className="space-y-2">
               <Label>Instrument</Label>
-              <Select value={newTxnInstrumentId} onValueChange={setNewTxnInstrumentId}>
-                <SelectTrigger aria-label="Instrument">
-                  <SelectValue placeholder="Select instrument" />
-                </SelectTrigger>
-                <SelectContent>
-                  {instruments.map((inst) => (
-                    <SelectItem key={inst.id} value={inst.id}>
-                      {inst.issuer_name} •••• {inst.masked_identifier}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <InstrumentPicker
+                value={newTxnInstrumentId}
+                onChange={setNewTxnInstrumentId}
+                instruments={instruments}
+              />
             </div>
           </div>
           <DialogFooter>
