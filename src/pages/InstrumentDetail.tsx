@@ -35,12 +35,6 @@ export default function InstrumentDetail() {
     inst,
     isLoading,
     forgetPassword,
-    fullIdentifier,
-    setFullIdentifier,
-    billingCycleDay,
-    setBillingCycleDay,
-    bankIfsc,
-    setBankIfsc,
     isSaving,
     isDeleting,
     recentTransactions,
@@ -52,6 +46,8 @@ export default function InstrumentDetail() {
     instrumentPasswords,
     handleSave,
     handleDelete,
+    fields,
+    setField,
   } = useInstrumentForm(id, undefined, () => navigate('/instruments'));
 
   if (!id) return null;
@@ -108,18 +104,18 @@ export default function InstrumentDetail() {
 
           <div className="space-y-2">
             <Label htmlFor="fullId">Full Identifier</Label>
-            <Input id="fullId" value={fullIdentifier} onChange={(e) => setFullIdentifier(e.target.value)} />
+            <Input id="fullId" value={fields.fullIdentifier} onChange={(e) => setField('fullIdentifier', e.target.value)} />
           </div>
           {inst.instrument_type === 'credit_card' && (
             <div className="space-y-2">
               <Label htmlFor="billingCycle">Billing Cycle Day</Label>
-              <Input id="billingCycle" type="number" min="1" max="31" value={billingCycleDay} onChange={(e) => setBillingCycleDay(e.target.value)} />
+              <Input id="billingCycle" type="number" min="1" max="31" value={fields.billingCycleDay} onChange={(e) => setField('billingCycleDay', e.target.value)} />
             </div>
           )}
           {inst.instrument_type === 'bank_account' && (
             <div className="space-y-2">
               <Label htmlFor="ifsc">IFSC Code</Label>
-              <Input id="ifsc" value={bankIfsc} onChange={(e) => setBankIfsc(e.target.value)} />
+              <Input id="ifsc" value={fields.bankIfsc} onChange={(e) => setField('bankIfsc', e.target.value)} />
             </div>
           )}
 

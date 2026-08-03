@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { API, InstrumentRecord } from '@/lib/ipc';
 import { getErrorToast } from '@/lib/errorMapping';
@@ -10,6 +10,64 @@ import { useTransactionsInfiniteList } from '@/hooks/queries/useTransactionsInfi
 import { useStatementsList } from '@/hooks/queries/useStatementsList';
 import { usePdfPasswordsList } from '@/hooks/queries/usePdfPasswordsList';
 import { useForgetPdfPassword } from '@/hooks/mutations/useForgetPdfPassword';
+
+/** The editable half of an instrument, all held as strings while being typed. */
+interface InstrumentFormFields {
+  issuerName: string;
+  maskedIdentifier: string;
+  nickname: string;
+  fullIdentifier: string;
+  billingCycleDay: string;
+  bankIfsc: string;
+  instrumentType: string;
+  status: string;
+  creditLimit: string;
+  network: string;
+  accountType: string;
+  upiVpa: string;
+  rewardsSummary: string;
+  statementDueDate: string;
+  minimumDue: string;
+}
+
+const EMPTY_FIELDS: InstrumentFormFields = {
+  issuerName: '',
+  maskedIdentifier: '',
+  nickname: '',
+  fullIdentifier: '',
+  billingCycleDay: '',
+  bankIfsc: '',
+  instrumentType: 'credit_card',
+  status: 'active',
+  creditLimit: '',
+  network: '',
+  accountType: '',
+  upiVpa: '',
+  rewardsSummary: '',
+  statementDueDate: '',
+  minimumDue: '',
+};
+
+function fieldsFromInstrument(inst: InstrumentRecord): InstrumentFormFields {
+  return {
+    issuerName: inst.issuer_name ?? '',
+    maskedIdentifier: inst.masked_identifier ?? '',
+    nickname: inst.nickname ?? '',
+    fullIdentifier: inst.full_identifier ?? '',
+    billingCycleDay: inst.billing_cycle_day?.toString() ?? '',
+    bankIfsc: inst.bank_ifsc ?? '',
+    instrumentType: inst.instrument_type ?? 'credit_card',
+    status: inst.status ?? 'active',
+    creditLimit: inst.credit_limit?.toString() ?? '',
+    network: inst.network ?? '',
+    accountType: inst.account_type ?? '',
+    upiVpa: inst.upi_vpa ?? '',
+    rewardsSummary: inst.rewards_summary ?? '',
+    statementDueDate: inst.statement_due_date ?? '',
+    // Stored in minor units, edited in major.
+    minimumDue: inst.minimum_due != null ? (inst.minimum_due / 100.0).toString() : '',
+  };
+}
 
 export function useInstrumentForm(
   instrumentId: string | undefined,
@@ -32,21 +90,15 @@ export function useInstrumentForm(
   const { data: pdfPasswords = [] } = usePdfPasswordsList();
   const forgetPassword = useForgetPdfPassword();
 
-  const [issuerName, setIssuerName] = useState('');
-  const [maskedIdentifier, setMaskedIdentifier] = useState('');
-  const [nickname, setNickname] = useState('');
-  const [fullIdentifier, setFullIdentifier] = useState('');
-  const [billingCycleDay, setBillingCycleDay] = useState('');
-  const [bankIfsc, setBankIfsc] = useState('');
-  const [instrumentType, setInstrumentType] = useState('credit_card');
-  const [status, setStatus] = useState('active');
-  const [creditLimit, setCreditLimit] = useState('');
-  const [network, setNetwork] = useState('');
-  const [accountType, setAccountType] = useState('');
-  const [upiVpa, setUpiVpa] = useState('');
-  const [rewardsSummary, setRewardsSummary] = useState('');
-  const [statementDueDate, setStatementDueDate] = useState('');
-  const [minimumDue, setMinimumDue] = useState('');
+  // One record rather than 15 useState pairs: the flat version had to be
+  // named twice in the hook's return and a third time in every consumer's
+  // destructure, which is what fallow flagged as dup:900f8eb6.
+  const [fields, setFields] = useState<InstrumentFormFields>(EMPTY_FIELDS);
+  const setField = useCallback(
+    <K extends keyof InstrumentFormFields>(name: K, value: InstrumentFormFields[K]) =>
+      setFields((prev) => ({ ...prev, [name]: value })),
+    []
+  );
 
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -55,21 +107,7 @@ export function useInstrumentForm(
   useEffect(() => {
     const active = detailInst ?? initialInstrument;
     if (active) {
-      setIssuerName(active.issuer_name ?? '');
-      setMaskedIdentifier(active.masked_identifier ?? '');
-      setNickname(active.nickname ?? '');
-      setFullIdentifier(active.full_identifier ?? '');
-      setBillingCycleDay(active.billing_cycle_day?.toString() ?? '');
-      setBankIfsc(active.bank_ifsc ?? '');
-      setInstrumentType(active.instrument_type ?? 'credit_card');
-      setStatus(active.status ?? 'active');
-      setCreditLimit(active.credit_limit?.toString() ?? '');
-      setNetwork(active.network ?? '');
-      setAccountType(active.account_type ?? '');
-      setUpiVpa(active.upi_vpa ?? '');
-      setRewardsSummary(active.rewards_summary ?? '');
-      setStatementDueDate(active.statement_due_date ?? '');
-      setMinimumDue(active.minimum_due != null ? (active.minimum_due / 100.0).toString() : '');
+      setFields(fieldsFromInstrument(active));
       setShowSavedConfirm(false);
     }
   }, [detailInst, initialInstrument]);
@@ -100,24 +138,24 @@ export function useInstrumentForm(
         statement_due_date?: string;
         minimum_due?: number;
       } = {};
-      if (nickname) extra.nickname = nickname;
-      if (creditLimit) extra.credit_limit = parseFloat(creditLimit);
-      if (accountType) extra.account_type = accountType;
-      if (network) extra.network = network;
-      if (status) extra.status = status;
-      if (upiVpa) extra.upi_vpa = upiVpa;
-      if (rewardsSummary) extra.rewards_summary = rewardsSummary;
-      if (instrumentType) extra.instrument_type = instrumentType;
-      if (issuerName) extra.issuer_name = issuerName;
-      if (maskedIdentifier) extra.masked_identifier = maskedIdentifier;
-      if (statementDueDate) extra.statement_due_date = statementDueDate;
-      if (minimumDue) extra.minimum_due = parseFloat(minimumDue);
+      if (fields.nickname) extra.nickname = fields.nickname;
+      if (fields.creditLimit) extra.credit_limit = parseFloat(fields.creditLimit);
+      if (fields.accountType) extra.account_type = fields.accountType;
+      if (fields.network) extra.network = fields.network;
+      if (fields.status) extra.status = fields.status;
+      if (fields.upiVpa) extra.upi_vpa = fields.upiVpa;
+      if (fields.rewardsSummary) extra.rewards_summary = fields.rewardsSummary;
+      if (fields.instrumentType) extra.instrument_type = fields.instrumentType;
+      if (fields.issuerName) extra.issuer_name = fields.issuerName;
+      if (fields.maskedIdentifier) extra.masked_identifier = fields.maskedIdentifier;
+      if (fields.statementDueDate) extra.statement_due_date = fields.statementDueDate;
+      if (fields.minimumDue) extra.minimum_due = parseFloat(fields.minimumDue);
 
       await API.instruments.update(
         inst.id,
-        fullIdentifier || undefined,
-        billingCycleDay ? parseInt(billingCycleDay, 10) : undefined,
-        bankIfsc || undefined,
+        fields.fullIdentifier || undefined,
+        fields.billingCycleDay ? parseInt(fields.billingCycleDay, 10) : undefined,
+        fields.bankIfsc || undefined,
         extra
       );
       setShowSavedConfirm(true);
@@ -156,36 +194,8 @@ export function useInstrumentForm(
     isLoading,
     detailInst,
     forgetPassword,
-    issuerName,
-    setIssuerName,
-    maskedIdentifier,
-    setMaskedIdentifier,
-    nickname,
-    setNickname,
-    fullIdentifier,
-    setFullIdentifier,
-    billingCycleDay,
-    setBillingCycleDay,
-    bankIfsc,
-    setBankIfsc,
-    instrumentType,
-    setInstrumentType,
-    status,
-    setStatus,
-    creditLimit,
-    setCreditLimit,
-    network,
-    setNetwork,
-    accountType,
-    setAccountType,
-    upiVpa,
-    setUpiVpa,
-    rewardsSummary,
-    setRewardsSummary,
-    statementDueDate,
-    setStatementDueDate,
-    minimumDue,
-    setMinimumDue,
+    fields,
+    setField,
     isSaving,
     isDeleting,
     showSavedConfirm,

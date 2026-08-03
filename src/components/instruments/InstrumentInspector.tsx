@@ -73,36 +73,6 @@ export default function InstrumentInspector({
     isLoading,
     detailInst,
     forgetPassword,
-    issuerName,
-    setIssuerName,
-    maskedIdentifier,
-    setMaskedIdentifier,
-    nickname,
-    setNickname,
-    fullIdentifier,
-    setFullIdentifier,
-    billingCycleDay,
-    setBillingCycleDay,
-    bankIfsc,
-    setBankIfsc,
-    instrumentType,
-    setInstrumentType,
-    status,
-    setStatus,
-    creditLimit,
-    setCreditLimit,
-    network,
-    setNetwork,
-    accountType,
-    setAccountType,
-    upiVpa,
-    setUpiVpa,
-    rewardsSummary,
-    setRewardsSummary,
-    statementDueDate,
-    setStatementDueDate,
-    minimumDue,
-    setMinimumDue,
     isSaving,
     isDeleting,
     showSavedConfirm,
@@ -116,6 +86,8 @@ export default function InstrumentInspector({
     instrumentPasswords,
     handleSave,
     handleDelete,
+    fields,
+    setField,
   } = useInstrumentForm(instrument?.id, instrument, onClose);
 
   // Reset tab when instrument changes
@@ -283,8 +255,8 @@ export default function InstrumentInspector({
                         </Label>
                         <Input
                           id="insp-issuer-name"
-                          value={issuerName}
-                          onChange={(e) => setIssuerName(e.target.value)}
+                          value={fields.issuerName}
+                          onChange={(e) => setField('issuerName', e.target.value)}
                           placeholder="e.g. SBI Card, Axis Bank, HDFC Bank"
                           className="h-9 text-[13px] font-semibold bg-[#F3EBDD]/80 border-[#064E3B]/15 text-[#064E3B] focus-visible:ring-1 focus-visible:ring-[#064E3B]/30 rounded-xl"
                           onKeyDown={(e) => e.key === 'Enter' && handleSave()}
@@ -298,8 +270,8 @@ export default function InstrumentInspector({
                         </Label>
                         <Input
                           id="insp-nickname"
-                          value={nickname}
-                          onChange={(e) => setNickname(e.target.value)}
+                          value={fields.nickname}
+                          onChange={(e) => setField('nickname', e.target.value)}
                           placeholder="e.g. Primary Spender, Travel Card"
                           className="h-9 text-[13px] font-semibold bg-[#F3EBDD]/80 border-[#064E3B]/15 text-[#064E3B] focus-visible:ring-1 focus-visible:ring-[#064E3B]/30 rounded-xl"
                           onKeyDown={(e) => e.key === 'Enter' && handleSave()}
@@ -313,8 +285,8 @@ export default function InstrumentInspector({
                         </Label>
                         <Input
                           id="insp-masked-id"
-                          value={maskedIdentifier}
-                          onChange={(e) => setMaskedIdentifier(e.target.value)}
+                          value={fields.maskedIdentifier}
+                          onChange={(e) => setField('maskedIdentifier', e.target.value)}
                           placeholder="e.g. 7603, user@okaxis"
                           className="h-9 text-[13px] font-mono font-semibold bg-[#F3EBDD]/80 border-[#064E3B]/15 text-[#064E3B] focus-visible:ring-1 focus-visible:ring-[#064E3B]/30 rounded-xl"
                           onKeyDown={(e) => e.key === 'Enter' && handleSave()}
@@ -326,7 +298,7 @@ export default function InstrumentInspector({
                         <Label className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70">
                           Instrument Type
                         </Label>
-                        <Select value={instrumentType} onValueChange={setInstrumentType}>
+                        <Select value={fields.instrumentType} onValueChange={(v) => setField('instrumentType', v)}>
                           <SelectTrigger className="h-9 text-[13px] font-bold bg-[#F3EBDD]/80 border-[#064E3B]/15 text-[#064E3B] focus:ring-1 focus:ring-[#064E3B]/30 rounded-xl">
                             <SelectValue placeholder="Select type" />
                           </SelectTrigger>
@@ -345,7 +317,7 @@ export default function InstrumentInspector({
                         <Label className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70">
                           Status
                         </Label>
-                        <Select value={status} onValueChange={setStatus}>
+                        <Select value={fields.status} onValueChange={(v) => setField('status', v)}>
                           <SelectTrigger className="h-9 text-[13px] font-bold bg-[#F3EBDD]/80 border-[#064E3B]/15 text-[#064E3B] focus:ring-1 focus:ring-[#064E3B]/30 rounded-xl">
                             <SelectValue placeholder="Select status" />
                           </SelectTrigger>
@@ -397,20 +369,20 @@ export default function InstrumentInspector({
                         </Label>
                         <CardNumberInput
                           id="insp-inst-full-id"
-                          value={fullIdentifier}
-                          onChange={setFullIdentifier}
+                          value={fields.fullIdentifier}
+                          onChange={(v) => setField('fullIdentifier', v)}
                           onKeyDown={(e) => e.key === 'Enter' && handleSave()}
                           placeholder="4532 7603 1920 8841"
                         />
                       </div>
 
                       {/* Card Network (for credit/debit cards) */}
-                      {(instrumentType === 'credit_card' || instrumentType === 'debit_card') && (
+                      {(fields.instrumentType === 'credit_card' || fields.instrumentType === 'debit_card') && (
                         <div className="space-y-1">
                           <Label className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70">
                             Card Network
                           </Label>
-                          <Select value={network || 'Visa'} onValueChange={setNetwork}>
+                          <Select value={fields.network || 'Visa'} onValueChange={(v) => setField('network', v)}>
                             <SelectTrigger className="h-9 text-[13px] font-bold bg-[#F3EBDD]/80 border-[#064E3B]/15 text-[#064E3B] focus:ring-1 focus:ring-[#064E3B]/30 rounded-xl">
                               <SelectValue placeholder="Select network" />
                             </SelectTrigger>
@@ -426,12 +398,12 @@ export default function InstrumentInspector({
                       )}
 
                       {/* Account Subtype (for bank accounts) */}
-                      {instrumentType === 'bank_account' && (
+                      {fields.instrumentType === 'bank_account' && (
                         <div className="space-y-1">
                           <Label className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70">
                             Account Subtype
                           </Label>
-                          <Select value={accountType || 'Savings'} onValueChange={setAccountType}>
+                          <Select value={fields.accountType || 'Savings'} onValueChange={(v) => setField('accountType', v)}>
                             <SelectTrigger className="h-9 text-[13px] font-bold bg-[#F3EBDD]/80 border-[#064E3B]/15 text-[#064E3B] focus:ring-1 focus:ring-[#064E3B]/30 rounded-xl">
                               <SelectValue placeholder="Select account type" />
                             </SelectTrigger>
@@ -451,8 +423,8 @@ export default function InstrumentInspector({
                         </Label>
                         <Input
                           id="insp-vpa"
-                          value={upiVpa}
-                          onChange={(e) => setUpiVpa(e.target.value)}
+                          value={fields.upiVpa}
+                          onChange={(e) => setField('upiVpa', e.target.value)}
                           placeholder="e.g. user@okaxis, 9876543210@upi"
                           className="h-9 text-[13px] font-mono bg-[#F3EBDD]/80 border-[#064E3B]/15 text-[#064E3B] focus-visible:ring-1 focus-visible:ring-[#064E3B]/30 rounded-xl"
                           onKeyDown={(e) => e.key === 'Enter' && handleSave()}
@@ -474,7 +446,7 @@ export default function InstrumentInspector({
                     </h4>
 
                     <div className="space-y-3">
-                      {instrumentType === 'credit_card' && (
+                      {fields.instrumentType === 'credit_card' && (
                         <>
                           <div className="space-y-1">
                             <Label
@@ -488,15 +460,15 @@ export default function InstrumentInspector({
                               type="number"
                               min="1"
                               max="31"
-                              value={billingCycleDay}
-                              onChange={(e) => setBillingCycleDay(e.target.value)}
+                              value={fields.billingCycleDay}
+                              onChange={(e) => setField('billingCycleDay', e.target.value)}
                               placeholder="e.g. 15"
                               className="h-9 text-[13px] font-semibold bg-[#F3EBDD]/80 border-[#064E3B]/15 text-[#064E3B] focus-visible:ring-1 focus-visible:ring-[#064E3B]/30 rounded-xl"
                               onKeyDown={(e) => e.key === 'Enter' && handleSave()}
                             />
-                            {billingCycleDay && (
+                            {fields.billingCycleDay && (
                               <p className="text-[10px] text-[#064E3B]/70 italic pt-0.5">
-                                Statements generated on the {billingCycleDay}th of every month.
+                                Statements generated on the {fields.billingCycleDay}th of every month.
                               </p>
                             )}
                           </div>
@@ -511,25 +483,25 @@ export default function InstrumentInspector({
                             <Input
                               id="insp-inst-limit"
                               type="number"
-                              value={creditLimit}
-                              onChange={(e) => setCreditLimit(e.target.value)}
+                              value={fields.creditLimit}
+                              onChange={(e) => setField('creditLimit', e.target.value)}
                               placeholder="e.g. 150000"
                               className="h-9 text-[13px] font-semibold font-mono bg-[#F3EBDD]/80 border-[#064E3B]/15 text-[#064E3B] focus-visible:ring-1 focus-visible:ring-[#064E3B]/30 rounded-xl"
                               onKeyDown={(e) => e.key === 'Enter' && handleSave()}
                             />
-                            {creditLimit && parseFloat(creditLimit) > 0 && (
+                            {fields.creditLimit && parseFloat(fields.creditLimit) > 0 && (
                               <div className="space-y-1 pt-1">
                                 <div className="flex justify-between text-[10px] font-mono text-[#064E3B]/70">
                                   <span>Utilization</span>
                                   <span>
-                                    {Math.min(100, Math.max(0, (((inst.current_balance ?? 0) / parseFloat(creditLimit)) * 100))).toFixed(1)}% Used
+                                    {Math.min(100, Math.max(0, (((inst.current_balance ?? 0) / parseFloat(fields.creditLimit)) * 100))).toFixed(1)}% Used
                                   </span>
                                 </div>
                                 <div className="h-1.5 w-full bg-[#064E3B]/10 rounded-full overflow-hidden">
                                   <div
                                     className="h-full bg-[#064E3B] transition-all rounded-full"
                                     style={{
-                                      width: `${Math.min(100, Math.max(0, (((inst.current_balance ?? 0) / parseFloat(creditLimit)) * 100)))}%`,
+                                      width: `${Math.min(100, Math.max(0, (((inst.current_balance ?? 0) / parseFloat(fields.creditLimit)) * 100)))}%`,
                                     }}
                                   />
                                 </div>
@@ -539,7 +511,7 @@ export default function InstrumentInspector({
                         </>
                       )}
 
-                      {instrumentType === 'bank_account' && (
+                      {fields.instrumentType === 'bank_account' && (
                         <div className="space-y-1">
                           <Label
                             htmlFor="insp-inst-ifsc"
@@ -549,8 +521,8 @@ export default function InstrumentInspector({
                           </Label>
                           <Input
                             id="insp-inst-ifsc"
-                            value={bankIfsc}
-                            onChange={(e) => setBankIfsc(e.target.value)}
+                            value={fields.bankIfsc}
+                            onChange={(e) => setField('bankIfsc', e.target.value)}
                             placeholder="e.g. HDFC0000123"
                             className="h-9 text-[13px] uppercase font-mono font-semibold bg-[#F3EBDD]/80 border-[#064E3B]/15 text-[#064E3B] focus-visible:ring-1 focus-visible:ring-[#064E3B]/30 rounded-xl"
                             onKeyDown={(e) => e.key === 'Enter' && handleSave()}
@@ -578,8 +550,8 @@ export default function InstrumentInspector({
                           </Label>
                           <DatePicker
                             id="insp-due-date"
-                            value={statementDueDate}
-                            onChange={setStatementDueDate}
+                            value={fields.statementDueDate}
+                            onChange={(v) => setField('statementDueDate', v)}
                             placeholder="Select due date"
                             triggerClassName="h-9 text-[12px] font-mono font-semibold bg-[#F3EBDD]/80 border-[#064E3B]/15 text-[#064E3B] focus-visible:ring-1 focus-visible:ring-[#064E3B]/30 rounded-xl w-full"
                           />
@@ -592,8 +564,8 @@ export default function InstrumentInspector({
                             id="insp-min-due"
                             type="number"
                             step="0.01"
-                            value={minimumDue}
-                            onChange={(e) => setMinimumDue(e.target.value)}
+                            value={fields.minimumDue}
+                            onChange={(e) => setField('minimumDue', e.target.value)}
                             placeholder="e.g. 1200.00"
                             className="h-9 text-[12px] font-mono font-semibold bg-[#F3EBDD]/80 border-[#064E3B]/15 text-[#064E3B] focus-visible:ring-1 focus-visible:ring-[#064E3B]/30 rounded-xl"
                             onKeyDown={(e) => e.key === 'Enter' && handleSave()}
@@ -608,8 +580,8 @@ export default function InstrumentInspector({
                         </Label>
                         <Input
                           id="insp-rewards"
-                          value={rewardsSummary}
-                          onChange={(e) => setRewardsSummary(e.target.value)}
+                          value={fields.rewardsSummary}
+                          onChange={(e) => setField('rewardsSummary', e.target.value)}
                           placeholder="e.g. 1,250 EDGE Points • 1.5% Unlimited Cashback"
                           className="h-9 text-[13px] font-semibold bg-[#F3EBDD]/80 border-[#064E3B]/15 text-[#064E3B] focus-visible:ring-1 focus-visible:ring-[#064E3B]/30 rounded-xl"
                           onKeyDown={(e) => e.key === 'Enter' && handleSave()}

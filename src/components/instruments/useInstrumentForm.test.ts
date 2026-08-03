@@ -71,7 +71,7 @@ describe('hydration', () => {
   it('seeds the form from the fetched detail', () => {
     detailInst = instrument({ nickname: 'Daily card', credit_limit: 200000, bank_ifsc: 'HDFC0001' });
     const { result } = setup();
-    expect(result.current).toMatchObject({
+    expect(result.current.fields).toMatchObject({
       issuerName: 'HDFC Bank',
       maskedIdentifier: '8841',
       nickname: 'Daily card',
@@ -85,28 +85,28 @@ describe('hydration', () => {
   it('falls back to the passed-in instrument before the detail loads', () => {
     detailInst = undefined;
     const { result } = setup(instrument({ issuer_name: 'Axis Bank' }));
-    expect(result.current.issuerName).toBe('Axis Bank');
+    expect(result.current.fields.issuerName).toBe('Axis Bank');
   });
 
   it('prefers the fetched detail over the passed-in instrument', () => {
     detailInst = instrument({ issuer_name: 'Fresh from DB' });
     const { result } = setup(instrument({ issuer_name: 'Stale list copy' }));
-    expect(result.current.issuerName).toBe('Fresh from DB');
+    expect(result.current.fields.issuerName).toBe('Fresh from DB');
   });
 
   it('converts minimum_due from minor units for display', () => {
     detailInst = instrument({ minimum_due: 250050 });
-    expect(setup().result.current.minimumDue).toBe('2500.5');
+    expect(setup().result.current.fields.minimumDue).toBe('2500.5');
   });
 
   it('shows a zero minimum_due rather than treating it as absent', () => {
     detailInst = instrument({ minimum_due: 0 });
-    expect(setup().result.current.minimumDue).toBe('0');
+    expect(setup().result.current.fields.minimumDue).toBe('0');
   });
 
   it('blanks optional fields that are absent', () => {
     const { result } = setup();
-    expect(result.current).toMatchObject({
+    expect(result.current.fields).toMatchObject({
       nickname: '',
       fullIdentifier: '',
       billingCycleDay: '',
@@ -124,8 +124,8 @@ describe('hydration', () => {
       status: undefined as unknown as string,
     });
     const { result } = setup();
-    expect(result.current.instrumentType).toBe('credit_card');
-    expect(result.current.status).toBe('active');
+    expect(result.current.fields.instrumentType).toBe('credit_card');
+    expect(result.current.fields.status).toBe('active');
   });
 
   it('flags a negative balance', () => {
@@ -181,7 +181,7 @@ describe('handleSave', () => {
 
   it('sends only the fields that carry a value', async () => {
     const { result } = setup();
-    act(() => result.current.setNickname('Daily card'));
+    act(() => result.current.setField('nickname', 'Daily card'));
     await act(async () => result.current.handleSave());
     const extra = asMock(API.instruments.update).mock.calls[0][4];
     expect(extra.nickname).toBe('Daily card');
@@ -192,9 +192,9 @@ describe('handleSave', () => {
   it('parses numeric fields', async () => {
     const { result } = setup();
     act(() => {
-      result.current.setCreditLimit('200000');
-      result.current.setMinimumDue('2500.50');
-      result.current.setBillingCycleDay('15');
+      result.current.setField('creditLimit', '200000');
+      result.current.setField('minimumDue', '2500.50');
+      result.current.setField('billingCycleDay', '15');
     });
     await act(async () => result.current.handleSave());
     const call = asMock(API.instruments.update).mock.calls[0];
