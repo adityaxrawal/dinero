@@ -36,6 +36,7 @@ import { cn, channelLabel } from '@/lib/utils';
 import { formatCustomDate } from '@/lib/formatCustomDate';
 import { getErrorToast } from '@/lib/errorMapping';
 import { API } from '@/lib/ipc';
+import { JsonViewer } from '@/components/ui/JsonViewer';
 import { useToast } from '@/hooks/use-toast';
 import { useTransactionForm } from '@/components/transactions/useTransactionForm';
 import { TransactionAmountBalance } from '@/components/transactions/TransactionAmountBalance';
@@ -47,37 +48,6 @@ import EmiInstallmentTimeline from '@/components/transactions/EmiInstallmentTime
 
 import { formatMoney } from '@/lib/formatMoney';
 
-function JsonViewer({ data }: { data: unknown }) {
-  if (typeof data === 'string') return <span className="text-green-400 break-all">"{data}"</span>;
-  if (typeof data === 'number') return <span className="text-orange-400">{data}</span>;
-  if (typeof data === 'boolean') return <span className="text-purple-400">{data ? 'true' : 'false'}</span>;
-  if (data === null || data === undefined) return <span className="text-muted-foreground">null</span>;
-  if (Array.isArray(data)) {
-    if (data.length === 0) return <span className="text-muted-foreground">[]</span>;
-    return (
-      <div className="pl-2 border-l border-border/40 ml-2">
-        {data.map((item, index) => (
-          <div key={index} className="flex">
-            <JsonViewer data={item} />
-            {index < data.length - 1 && <span className="text-muted-foreground">,</span>}
-          </div>
-        ))}
-      </div>
-    );
-  }
-  const entries = Object.entries(data as Record<string, unknown>);
-  return (
-    <div className="pl-2 border-l border-border/40 ml-2">
-      {entries.map(([key, value], index) => (
-        <div key={key} className="flex flex-wrap items-start">
-          <span className="text-blue-400 font-medium mr-2">"{key}":</span>
-          <JsonViewer data={value} />
-          {index < entries.length - 1 && <span className="text-muted-foreground">,</span>}
-        </div>
-      ))}
-    </div>
-  );
-}
 
 /**
  * TASK-FE-010 (Doc 30): full editable field display (category, merchant
