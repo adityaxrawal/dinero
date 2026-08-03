@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractQuickCandidates, parseSenderInfo } from './gmailParsing';
+import { extractQuickCandidates, parseSenderInfo, prepareGmailHtml } from './gmailParsing';
 
 // Characterization tests: these pin down the behaviour of the two parsers that
 // read money, dates and sender identity out of bank alert emails. They were
@@ -106,5 +106,72 @@ describe('parseSenderInfo', () => {
 
   it('defaults to Bank Alert when nothing is available', () => {
     expect(parseSenderInfo(null, null, null).displayName).toBe('Bank Alert');
+  });
+});
+
+describe('prepareGmailHtml', () => {
+  it.each([
+    ['both inputs empty', undefined, undefined],
+    ['null inputs', null, null],
+    ['whitespace-only html', '   ', null],
+    ['plain text with no markup', '', 'Your account was debited by INR 450.'],
+  ])('returns nothing for %s', (_label, html, text) => {
+    expect(prepareGmailHtml(html, text)).toBe('');
+  });
+
+  it('wraps html in a standalone document', () => {
+    const out = prepareGmailHtml('<p>Hello</p>');
+    expect(out.startsWith('<!DOCTYPE html>')).toBe(true);
+    expect(out).toContain('<p>Hello</p>');
+    expect(out.trimEnd().endsWith('</html>')).toBe(true);
+  });
+
+  it('opens links in a new tab rather than inside the iframe', () => {
+    expect(prepareGmailHtml('<a href="https://bank.example">Pay</a>')).toContain(
+      '<base target="_blank">'
+    );
+  });
+
+  it('prefers the html part when both are supplied', () => {
+    const out = prepareGmailHtml('<p>from html</p>', '<p>from text</p>');
+    expect(out).toContain('from html');
+    expect(out).not.toContain('from text');
+  });
+
+  it('falls back to the text part when it actually contains markup', () => {
+    const out = prepareGmailHtml('', '<table><tr><td>₹450</td></tr></table>');
+    expect(out).toContain('<table>');
+  });
+
+  it.each(['table', 'div', 'p', 'span', 'strong', 'h1', 'ul', 'br', 'img', 'pre'])(
+    'recognises a <%s> in the text part as markup',
+    (tag) => {
+      expect(prepareGmailHtml('', `<${tag}>content</${tag}>`)).toContain('<!DOCTYPE html>');
+    }
+  );
+
+  it('rescues bare CSS rules by wrapping them in a style tag', () => {
+    const out = prepareGmailHtml('.amount { color: red; } <p class="amount">₹450</p>');
+    expect(out).toContain('<style>');
+    expect(out).toContain('.amount { color: red; }');
+    // The rule must not remain in the body as literal text.
+    expect(out).toMatch(/<style>[\s\S]*\.amount \{ color: red; \}[\s\S]*<\/style>/);
+  });
+
+  it('rescues bare @media blocks too', () => {
+    const out = prepareGmailHtml('@media (max-width: 600px) { .col { width: 100%; } } <p>Hi</p>');
+    expect(out).toContain('@media (max-width: 600px)');
+  });
+
+  it('leaves content that already has a style tag alone', () => {
+    const out = prepareGmailHtml('<style>.a{color:red}</style><p>Hi</p>');
+    expect(out).toContain('<style>.a{color:red}</style>');
+  });
+
+  it('does not treat a braces-only plain string as CSS to extract', () => {
+    // No HTML tags at all, so the CSS rescue must not fire.
+    const out = prepareGmailHtml('{ not really css }');
+    expect(out).toContain('{ not really css }');
+    expect(out).not.toMatch(/<style>\s*\{ not really css \}/);
   });
 });
