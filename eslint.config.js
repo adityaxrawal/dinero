@@ -5,7 +5,9 @@ import reactRefresh from 'eslint-plugin-react-refresh';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['dist'] },
+  // `**/dist/**`, not `dist`: the latter only matched the app's own build
+  // output, leaving `licensing-backend/dist` (compiled JS) to be linted as source.
+  { ignores: ['**/dist/**'] },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ['**/*.{ts,tsx}'],
