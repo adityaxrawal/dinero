@@ -11,11 +11,9 @@ import {
   ArrowUpRight,
   ArrowLeftRight,
   Repeat,
-  Landmark,
   ShieldCheck,
   Building2,
   Tag as TagIcon,
-  FileText,
   SlidersHorizontal,
   ChevronDown,
   ChevronUp,
@@ -28,7 +26,6 @@ import { formatMoney } from '@/lib/formatMoney';
 import { useTransactionForm } from './useTransactionForm';
 import { TransactionAmountBalance } from './TransactionAmountBalance';
 import { CategorySelect } from './CategorySelect';
-import { instrumentIcon, instrumentTypeLabel } from '@/components/instruments/instrumentTypes';
 import { InstrumentSelect } from '@/components/instruments/InstrumentSelect';
 import SourceEvidencePanel from './SourceEvidencePanel';
 import EmiInstallmentTimeline from './EmiInstallmentTimeline';
@@ -39,7 +36,6 @@ import {
   EmptyTagsNotice,
   TransactionAuditRows,
 } from '@/components/transactions/TransactionFields';
-import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import type {
@@ -47,7 +43,6 @@ import type {
   TagRecord,
   TransactionObservation,
   CanonicalTransaction,
-  InstrumentRecord,
 } from '@/lib/ipc';
 
 type Tab = 'details' | 'evidence' | 'emi';
@@ -386,52 +381,22 @@ function InspectorTagEditor({
   );
 }
 
+type TransactionForm = ReturnType<typeof useTransactionForm>;
+
 function DetailsPanel({
   show,
   tx,
-  merchant,
-  setMerchant,
-  categoryId,
-  setCategoryId,
+  form,
   categories,
-  notes,
-  setNotes,
-  tags,
-  availableTags,
-  newTag,
-  setNewTag,
-  instrumentId,
-  setInstrumentId,
-  instruments,
-  isForeignCurrency,
   isAuditOpen,
   setIsAuditOpen,
-  handleSave,
-  handleAddTag,
-  handleRemoveTag,
 }: {
   show: boolean;
   tx: CanonicalTransaction;
-  merchant: string;
-  setMerchant: (value: string) => void;
-  categoryId: string;
-  setCategoryId: (value: string) => void;
+  form: TransactionForm;
   categories: CategoryRecord[];
-  notes: string;
-  setNotes: (value: string) => void;
-  tags: string[];
-  availableTags: TagRecord[];
-  newTag: string;
-  setNewTag: (value: string) => void;
-  instrumentId: string;
-  setInstrumentId: (value: string) => void;
-  instruments: InstrumentRecord[];
-  isForeignCurrency: boolean;
   isAuditOpen: boolean;
   setIsAuditOpen: React.Dispatch<React.SetStateAction<boolean>>;
-  handleSave: () => void;
-  handleAddTag: () => void;
-  handleRemoveTag: (tag: string) => void;
 }) {
   if (!show) return null;
   return (
@@ -444,13 +409,13 @@ function DetailsPanel({
             {/* Merchant Name */}
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
-                <Label htmlFor="insp-merchant" className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70">
+                <Label htmlFor="insp-form.merchant" className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70">
                   Merchant Name
                 </Label>
-                {merchant !== (tx.merchant_display_name ?? '') && (
+                {form.merchant !== (tx.merchant_display_name ?? '') && (
                   <button
                     type="button"
-                    onClick={() => setMerchant(tx.merchant_display_name ?? '')}
+                    onClick={() => form.setMerchant(tx.merchant_display_name ?? '')}
                     className="text-[10px] font-semibold text-[#064E3B]/60 hover:text-[#064E3B] underline cursor-pointer"
                   >
                     Reset
@@ -459,9 +424,9 @@ function DetailsPanel({
               </div>
               <MerchantField
                 id="insp-merchant"
-                merchant={merchant}
-                onChange={setMerchant}
-                onSubmit={handleSave}
+                merchant={form.merchant}
+                onChange={form.setMerchant}
+                onSubmit={form.handleSave}
               />
             </div>
 
@@ -471,8 +436,8 @@ function DetailsPanel({
                 Category
               </Label>
               <CategorySelect
-                categoryId={categoryId}
-                onChange={setCategoryId}
+                categoryId={form.categoryId}
+                onChange={form.setCategoryId}
                 categories={categories}
                 id="insp-category"
                 triggerClassName="h-9 text-[13px] bg-[#F3EBDD]/70 border-[#064E3B]/15 text-[#064E3B] focus:ring-1 focus:ring-[#064E3B]/30 rounded-xl w-full"
@@ -487,8 +452,8 @@ function DetailsPanel({
             </Label>
             <Textarea
               id="insp-notes"
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
+              value={form.notes}
+              onChange={(e) => form.setNotes(e.target.value)}
               placeholder="Add private notes or annotations…"
               rows={2}
               className="text-[13px] bg-[#F3EBDD]/70 border-[#064E3B]/15 text-[#064E3B] focus-visible:ring-1 focus-visible:ring-[#064E3B]/30 focus-visible:border-[#064E3B]/40 rounded-xl resize-none min-h-[64px]"
@@ -496,12 +461,12 @@ function DetailsPanel({
           </div>
 
           <InspectorTagEditor
-            tags={tags}
-            availableTags={availableTags}
-            newTag={newTag}
-            setNewTag={setNewTag}
-            handleAddTag={handleAddTag}
-            handleRemoveTag={handleRemoveTag}
+            tags={form.tags}
+            availableTags={form.availableTags}
+            newTag={form.newTag}
+            setNewTag={form.setNewTag}
+            handleAddTag={form.handleAddTag}
+            handleRemoveTag={form.handleRemoveTag}
           />
         </div>
       </SectionCard>
@@ -509,13 +474,13 @@ function DetailsPanel({
       {/* 2. Payment Instrument & Balance */}
       <SectionCard title="Payment Instrument & Balance" icon={<Building2 className="w-3.5 h-3.5" />}>
         <InstrumentSelect
-          instrumentId={instrumentId}
-          onInstrumentChange={setInstrumentId}
-          instruments={instruments}
+          instrumentId={form.instrumentId}
+          onInstrumentChange={form.setInstrumentId}
+          instruments={form.instruments}
         />
 
-        {(tx.balance_after_transaction !== null || isForeignCurrency) && (
-          <TransactionAmountBalance tx={tx} isForeignCurrency={isForeignCurrency} />
+        {(tx.balance_after_transaction !== null || form.isForeignCurrency) && (
+          <TransactionAmountBalance tx={tx} isForeignCurrency={form.isForeignCurrency} />
         )}
       </SectionCard>
 
@@ -746,64 +711,33 @@ export default function TransactionInspector({
   const [activeTab, setActiveTab] = useState<Tab>('details');
   const [isAuditOpen, setIsAuditOpen] = useState(false);
 
+  const form = useTransactionForm(transactionId ?? undefined, onClose);
   const {
     detail,
     isLoading,
-    tags,
-    availableTags,
-    merchant,
-    setMerchant,
-    categoryId,
-    setCategoryId,
-    notes,
-    setNotes,
     amountStr,
     setAmountStr,
-    direction,
     setDirection,
-    eventTime,
-    setEventTime,
-    instrumentId,
-    setInstrumentId,
-    instruments,
-    newTag,
-    setNewTag,
     showSavedConfirm,
     isDirty,
     resetForm,
     updateFields,
     softDelete,
     tx,
-    amount,
     hasEmi,
     isDebit,
-    instrument,
     category,
     isForeignCurrency,
     handleSave,
-    handleAddTag,
-    handleRemoveTag,
     handleDelete,
-  } = useTransactionForm(transactionId ?? undefined, onClose);
+  } = form;
 
   // Reset tab when new transaction selected
   useEffect(() => {
     setActiveTab('details');
   }, [transactionId]);
 
-  // Keyboard shortcut: Cmd/Ctrl + S to save changes
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
-        e.preventDefault();
-        if (isDirty) {
-          handleSave();
-        }
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isDirty, handleSave]);
+  useSaveShortcut(isDirty, handleSave);
 
   if (!transactionId) return null;
 
@@ -843,47 +777,14 @@ export default function TransactionInspector({
       <InspectorTabs tabs={TABS} activeTab={activeTab} onSelect={setActiveTab} />
 
       {/* ── Main Tab Content Scroll Area ────────────────────── */}
-      <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
-        {isLoading || !tx ? (
-          <InspectorLoading />
-        ) : (
-          <>
-            <DetailsPanel
-              show={activeTab === 'details'}
-              tx={tx}
-                merchant={merchant}
-                setMerchant={setMerchant}
-                categoryId={categoryId}
-                setCategoryId={setCategoryId}
-                categories={categories}
-                notes={notes}
-                setNotes={setNotes}
-                tags={tags}
-                availableTags={availableTags}
-                newTag={newTag}
-                setNewTag={setNewTag}
-                instrumentId={instrumentId}
-                setInstrumentId={setInstrumentId}
-                instruments={instruments}
-                isForeignCurrency={isForeignCurrency}
-                isAuditOpen={isAuditOpen}
-                setIsAuditOpen={setIsAuditOpen}
-                handleSave={handleSave}
-              handleAddTag={handleAddTag}
-              handleRemoveTag={handleRemoveTag}
-            />
-
-            <EvidencePanel
-              show={activeTab === 'evidence'}
-              transactionId={transactionId}
-              observations={detail?.observations ?? []}
-              currentBank={instrument?.issuer_name ?? null}
-            />
-
-            <EmiPanel show={activeTab === 'emi' && hasEmi} emiGroupId={tx.emi_group_id} />
-          </>
-        )}
-      </div>
+      <InspectorBody
+        form={form}
+        transactionId={transactionId}
+        activeTab={activeTab}
+        categories={categories}
+        isAuditOpen={isAuditOpen}
+        setIsAuditOpen={setIsAuditOpen}
+      />
 
       {/* ── Sticky Action Footer ─────────────────────────────── */}
       <InspectorFooter
@@ -900,3 +801,64 @@ export default function TransactionInspector({
   );
 }
 
+
+/** Cmd/Ctrl + S saves, but only when there is something to save. */
+function useSaveShortcut(isDirty: boolean, handleSave: () => void) {
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+        e.preventDefault();
+        if (isDirty) handleSave();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isDirty, handleSave]);
+}
+
+/** The scrolling tab content: exactly one of the three panels is visible. */
+function InspectorBody({
+  form,
+  transactionId,
+  activeTab,
+  categories,
+  isAuditOpen,
+  setIsAuditOpen,
+}: {
+  form: ReturnType<typeof useTransactionForm>;
+  transactionId: string;
+  activeTab: Tab;
+  categories: CategoryRecord[];
+  isAuditOpen: boolean;
+  setIsAuditOpen: React.Dispatch<React.SetStateAction<boolean>>;
+}) {
+  const { detail, isLoading, tx, hasEmi, instrument } = form;
+
+  return (
+    <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+      {isLoading || !tx ? (
+        <InspectorLoading />
+      ) : (
+        <>
+          <DetailsPanel
+            show={activeTab === 'details'}
+            tx={tx}
+            form={form}
+            categories={categories}
+            isAuditOpen={isAuditOpen}
+            setIsAuditOpen={setIsAuditOpen}
+          />
+
+          <EvidencePanel
+            show={activeTab === 'evidence'}
+            transactionId={transactionId}
+            observations={detail?.observations ?? []}
+            currentBank={instrument?.issuer_name ?? null}
+          />
+
+          <EmiPanel show={activeTab === 'emi' && hasEmi} emiGroupId={tx.emi_group_id} />
+        </>
+      )}
+    </div>
+  );
+}
