@@ -173,64 +173,17 @@ export default function ClusterMemberComparison({
 
       {candidates.length > 0 && (
         <div className="flex flex-col gap-3">
-          {candidates.map((member) => {
-            const selectable = !!onSelectCandidate;
-            const isSelected = selectable && member.canonical_transaction_id === selectedCandidateId;
-            const diff = diffClusterMember(reference, member);
-
-            return (
-              <Card
-                key={member.id}
-                role={selectable ? 'button' : undefined}
-                tabIndex={selectable ? 0 : undefined}
-                onClick={selectable ? () => onSelectCandidate!(member) : undefined}
-                onKeyDown={
-                  selectable
-                    ? (e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          onSelectCandidate!(member);
-                        }
-                      }
-                    : undefined
-                }
-                className={cn(
-                  'w-full',
-                  selectable && 'cursor-pointer hover:border-primary/60',
-                  isSelected && 'border-emerald-500 ring-2 ring-emerald-500/30'
-                )}
-              >
-                <CardHeader className="py-3 px-4 bg-muted/30 border-b border-border/40">
-                  <CardTitle className="text-sm flex items-center justify-between gap-2">
-                    <span className="flex items-center gap-2">
-                      {ROLE_LABEL[member.member_role] ?? member.member_role}
-                      {isSelected && (
-                        <Check className="w-3.5 h-3.5 text-emerald-600" aria-label="Selected as match" />
-                      )}
-                    </span>
-                    <span className="flex items-center gap-3 text-muted-foreground font-normal">
-                      {member.match_score !== null && <ScoreBar score={member.match_score} />}
-                      <SourcePipelineIcon sourceMix={member.source_pipeline} />
-                    </span>
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="p-4 space-y-3">
-                  <MemberFields member={member} diff={diff} />
-                  {member.canonical_transaction_id && (
-                    <div className="pt-1">
-                      <Link
-                        to={`/transactions/${member.canonical_transaction_id}`}
-                        onClick={(e) => e.stopPropagation()}
-                        className="text-xs text-primary hover:underline"
-                      >
-                        View full transaction →
-                      </Link>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            );
-          })}
+          {candidates.map((member) => (
+            <CandidateCard
+              key={member.id}
+              member={member}
+              reference={reference}
+              isSelected={
+                !!onSelectCandidate && member.canonical_transaction_id === selectedCandidateId
+              }
+              onSelect={onSelectCandidate}
+            />
+          ))}
         </div>
       )}
     </div>
@@ -258,5 +211,72 @@ function SourceMessagePreview({ rawPayloadJson }: { rawPayloadJson: string }) {
     <div className="mt-2">
       <GmailEmailViewer html={html} text={text} subject={subject} sender={sender} maxHeight="320px" />
     </div>
+  );
+}
+
+function CandidateCard({
+  member,
+  reference,
+  isSelected,
+  onSelect,
+}: {
+  member: ClusterMember;
+  reference: ClusterMember | undefined;
+  isSelected: boolean;
+  onSelect: ((member: ClusterMember) => void) | undefined;
+}) {
+  const selectable = !!onSelect;
+  const diff = diffClusterMember(reference, member);
+
+  return (
+    <Card
+      role={selectable ? 'button' : undefined}
+      tabIndex={selectable ? 0 : undefined}
+      onClick={selectable ? () => onSelect(member) : undefined}
+      onKeyDown={
+        selectable
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onSelect(member);
+              }
+            }
+          : undefined
+      }
+      className={cn(
+        'w-full',
+        selectable && 'cursor-pointer hover:border-primary/60',
+        isSelected && 'border-emerald-500 ring-2 ring-emerald-500/30'
+      )}
+    >
+      <CardHeader className="py-3 px-4 bg-muted/30 border-b border-border/40">
+        <CardTitle className="text-sm flex items-center justify-between gap-2">
+          <span className="flex items-center gap-2">
+            {ROLE_LABEL[member.member_role] ?? member.member_role}
+            {isSelected && (
+              <Check className="w-3.5 h-3.5 text-emerald-600" aria-label="Selected as match" />
+            )}
+          </span>
+          <span className="flex items-center gap-3 text-muted-foreground font-normal">
+            {member.match_score !== null && <ScoreBar score={member.match_score} />}
+            <SourcePipelineIcon sourceMix={member.source_pipeline} />
+          </span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="p-4 space-y-3">
+        <MemberFields member={member} diff={diff} />
+        {member.canonical_transaction_id && (
+          <div className="pt-1">
+            <Link
+              to={`/transactions/${member.canonical_transaction_id}`}
+              onClick={(e) => e.stopPropagation()}
+              className="text-xs text-primary hover:underline"
+            >
+              View full transaction →
+            </Link>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
