@@ -172,8 +172,8 @@ struct SidecarState {
     child: Option<Child>,
     model_id: Option<String>,
     parallel_slots: usize,
-    effective_slots: usize,     // what calibration actually settled on
-    semaphore: Arc<Semaphore>,  // sized to effective_slots, not parallel_slots
+    effective_slots: usize,    // what calibration actually settled on
+    semaphore: Arc<Semaphore>, // sized to effective_slots, not parallel_slots
     calibrated_timeout: Duration,
 }
 
@@ -358,7 +358,15 @@ async fn start_server_task(app_dir: PathBuf, model_id: String, slots: usize) {
 
         let calibration_ctx = crate::logging::llm_logger::LlmCallContext::unclassified();
         let solo_start = Instant::now();
-        let _ = raw_complete(port, &model_id, CALIBRATION_PROMPT, Duration::from_secs(30), None, calibration_ctx).await;
+        let _ = raw_complete(
+            port,
+            &model_id,
+            CALIBRATION_PROMPT,
+            Duration::from_secs(30),
+            None,
+            calibration_ctx,
+        )
+        .await;
         let solo_latency = solo_start.elapsed();
 
         let burst_latency = if slots > 1 {
@@ -367,7 +375,14 @@ async fn start_server_task(app_dir: PathBuf, model_id: String, slots: usize) {
             for _ in 0..slots {
                 let mid = model_id.clone();
                 let cal_ctx = crate::logging::llm_logger::LlmCallContext::unclassified();
-                set.spawn(raw_complete(port, mid, CALIBRATION_PROMPT, Duration::from_secs(90), None, cal_ctx));
+                set.spawn(raw_complete(
+                    port,
+                    mid,
+                    CALIBRATION_PROMPT,
+                    Duration::from_secs(90),
+                    None,
+                    cal_ctx,
+                ));
             }
             while set.join_next().await.is_some() {}
             burst_start.elapsed()
@@ -434,7 +449,12 @@ async fn ensure_server_ready(
     let mut st = state().lock().await;
     match &st.state {
         ServerState::Ready { port }
-            if server_matches(st.model_id.as_deref(), st.parallel_slots, model_id, requested_slots) =>
+            if server_matches(
+                st.model_id.as_deref(),
+                st.parallel_slots,
+                model_id,
+                requested_slots,
+            ) =>
         {
             Ok((*port, Arc::clone(&st.semaphore), st.calibrated_timeout))
         }
@@ -553,13 +573,18 @@ async fn raw_complete(
         .send()
         .await
         .context("llama-server /completion request failed")
-        .and_then(|r| r.error_for_status().context("llama-server /completion returned an error status"));
+        .and_then(|r| {
+            r.error_for_status()
+                .context("llama-server /completion returned an error status")
+        });
 
     let duration_ms = request_start.elapsed().as_millis() as u64;
 
     match result {
         Ok(resp) => {
-            match resp.json::<CompletionResponse>().await
+            match resp
+                .json::<CompletionResponse>()
+                .await
                 .context("llama-server /completion response was not the expected JSON shape")
             {
                 Ok(parsed) => {
@@ -588,11 +613,12 @@ async fn raw_complete(
         }
         Err(e) => {
             // Distinguish timeout from other infra failures in the log.
-            let outcome = if e.to_string().contains("timeout") || e.to_string().contains("timed out") {
-                crate::logging::llm_logger::LlmOutcome::TimedOut
-            } else {
-                crate::logging::llm_logger::LlmOutcome::InfraFailed
-            };
+            let outcome =
+                if e.to_string().contains("timeout") || e.to_string().contains("timed out") {
+                    crate::logging::llm_logger::LlmOutcome::TimedOut
+                } else {
+                    crate::logging::llm_logger::LlmOutcome::InfraFailed
+                };
             crate::logging::llm_logger::log_llm_response(
                 model_id,
                 &ctx,
@@ -605,7 +631,12 @@ async fn raw_complete(
     }
 }
 
-pub async fn complete(app_dir: &Path, model_id: &str, prompt: &str, timeout: Duration) -> Result<String> {
+pub async fn complete(
+    app_dir: &Path,
+    model_id: &str,
+    prompt: &str,
+    timeout: Duration,
+) -> Result<String> {
     let (port, semaphore, _calibrated_timeout) = ensure_server_ready(app_dir, model_id).await?;
     let _permit = semaphore
         .acquire()
@@ -659,7 +690,15 @@ pub async fn complete_with_schema_and_context(
         .acquire()
         .await
         .context("llama-server semaphore closed")?;
-    raw_complete(port, model_id, prompt, calibrated_timeout, Some(schema), ctx).await
+    raw_complete(
+        port,
+        model_id,
+        prompt,
+        calibrated_timeout,
+        Some(schema),
+        ctx,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -721,7 +760,8 @@ mod tests {
 
     #[test]
     fn calibrate_effective_slots_never_goes_below_one() {
-        let result = calibrate_effective_slots(10, Duration::from_secs(1), Duration::from_secs(1000));
+        let result =
+            calibrate_effective_slots(10, Duration::from_secs(1), Duration::from_secs(1000));
         assert_eq!(result, 1);
     }
 

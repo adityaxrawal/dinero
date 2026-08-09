@@ -158,8 +158,19 @@ pub fn needle_candidates(field_name: &str, new_value: &str) -> Vec<String> {
             // already accepts, so anything the parser can read back is a
             // candidate here.
             [
-                "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%d/%m/%y", "%d-%m-%y", "%d.%m.%y", "%d-%b-%Y",
-                "%d-%b-%y", "%d %b %Y", "%d %b %y", "%d %b, %Y", "%d/%b/%Y", "%Y-%m-%d",
+                "%d/%m/%Y",
+                "%d-%m-%Y",
+                "%d.%m.%Y",
+                "%d/%m/%y",
+                "%d-%m-%y",
+                "%d.%m.%y",
+                "%d-%b-%Y",
+                "%d-%b-%y",
+                "%d %b %Y",
+                "%d %b %y",
+                "%d %b, %Y",
+                "%d/%b/%Y",
+                "%Y-%m-%d",
             ]
             .iter()
             .map(|f| d.format(f).to_string())
@@ -445,12 +456,14 @@ mod tests {
 
     #[test]
     fn synthesized_regex_generalises_to_the_next_email() {
-        let pattern =
-            synthesize_span_regex(SBI_BODY, "RAZ*SWIGGY LIMITE BANGALORE").expect("must synthesize");
+        let pattern = synthesize_span_regex(SBI_BODY, "RAZ*SWIGGY LIMITE BANGALORE")
+            .expect("must synthesize");
         let re = regex::Regex::new(&pattern).unwrap();
         let next = "Dear Cardholder, Rs.1,020.00 spent on your SBI Credit Card \
                     ending 4412 at RAZ*YULU BIKES on 14/07/26. Not you? Call 18009999.";
-        let caps = re.captures(next).expect("the learned rule must fire on the next email");
+        let caps = re
+            .captures(next)
+            .expect("the learned rule must fire on the next email");
         assert_eq!(caps.get(1).unwrap().as_str().trim(), "RAZ*YULU BIKES");
     }
 
@@ -466,7 +479,12 @@ mod tests {
         let pattern = synthesize_span_regex(SBI_BODY, "RAZ*SWIGGY LIMITE BANGALORE").unwrap();
         let re = regex::Regex::new(&pattern).unwrap();
         assert_eq!(
-            re.captures(SBI_BODY).unwrap().get(1).unwrap().as_str().trim(),
+            re.captures(SBI_BODY)
+                .unwrap()
+                .get(1)
+                .unwrap()
+                .as_str()
+                .trim(),
             "RAZ*SWIGGY LIMITE BANGALORE"
         );
     }
@@ -501,7 +519,10 @@ mod tests {
     fn synthesizes_a_reference_id_rule() {
         let body = "UPI txn of Rs 500 to Zomato. Ref 123456789012 on 02/07/26.";
         let payload = synthesize("reference_id", body, "123456789012").unwrap();
-        assert_eq!(apply_payload(&payload, body).unwrap().trim(), "123456789012");
+        assert_eq!(
+            apply_payload(&payload, body).unwrap().trim(),
+            "123456789012"
+        );
     }
 
     // ── Indian digit grouping is how banks actually print amounts ────────────
@@ -516,14 +537,26 @@ mod tests {
     #[test]
     fn amount_needles_handle_lakh_grouping() {
         let needles = needle_candidates("amount", "123456700");
-        assert!(needles.contains(&"12,34,567.00".to_string()), "got {needles:?}");
+        assert!(
+            needles.contains(&"12,34,567.00".to_string()),
+            "got {needles:?}"
+        );
     }
 
     #[test]
     fn date_needles_cover_the_formats_banks_print() {
         let needles = needle_candidates("event_time", "2026-07-01 13:45:00");
-        for expected in ["01/07/2026", "01/07/26", "01-07-2026", "01-Jul-2026", "01 Jul 2026"] {
-            assert!(needles.contains(&expected.to_string()), "missing {expected} in {needles:?}");
+        for expected in [
+            "01/07/2026",
+            "01/07/26",
+            "01-07-2026",
+            "01-Jul-2026",
+            "01 Jul 2026",
+        ] {
+            assert!(
+                needles.contains(&expected.to_string()),
+                "missing {expected} in {needles:?}"
+            );
         }
     }
 
@@ -533,7 +566,10 @@ mod tests {
         let payload = synthesize("direction", SBI_BODY, "credit").expect("must synthesize");
         assert_eq!(payload["override_value"], "credit");
         assert!(payload.get("regex").is_none());
-        assert_eq!(apply_payload(&payload, "any body at all").unwrap(), "credit");
+        assert_eq!(
+            apply_payload(&payload, "any body at all").unwrap(),
+            "credit"
+        );
     }
 
     #[test]
@@ -550,7 +586,11 @@ mod tests {
     fn self_check_rejects_a_pattern_that_recovers_the_wrong_span() {
         let payload = serde_json::json!({"regex": r"(?is)Rs\.(.{1,80}?)\s", "capture_group": 1});
         assert!(
-            !self_check(&payload, SBI_BODY, &["RAZ*SWIGGY LIMITE BANGALORE".to_string()]),
+            !self_check(
+                &payload,
+                SBI_BODY,
+                &["RAZ*SWIGGY LIMITE BANGALORE".to_string()]
+            ),
             "a pattern that captures something else must not pass"
         );
     }
@@ -591,8 +631,14 @@ mod tests {
     fn regression_check_passes_when_the_rule_agrees_with_history() {
         let payload = serde_json::json!({"regex": r"at (.+?) on", "capture_group": 1});
         let samples = vec![
-            ("Rs 100 at Amazon on 01/07/26".to_string(), Some("Amazon".to_string())),
-            ("Rs 200 at Swiggy on 02/07/26".to_string(), Some("Swiggy".to_string())),
+            (
+                "Rs 100 at Amazon on 01/07/26".to_string(),
+                Some("Amazon".to_string()),
+            ),
+            (
+                "Rs 200 at Swiggy on 02/07/26".to_string(),
+                Some("Swiggy".to_string()),
+            ),
         ];
         assert!(regression_check(&payload, &samples, "merchant").is_ok());
     }
@@ -607,7 +653,10 @@ mod tests {
         )];
         let err = regression_check(&payload, &samples, "merchant")
             .expect_err("a rule that changes an accepted answer must be rejected");
-        assert!(err.contains("Amazon"), "the rejection must name what it would have broken: {err}");
+        assert!(
+            err.contains("Amazon"),
+            "the rejection must name what it would have broken: {err}"
+        );
     }
 
     #[test]
@@ -637,7 +686,10 @@ mod tests {
         // History stores 24543 minor units; the rule captures the printed
         // "245.43". These agree, and a naive string compare would say otherwise.
         let payload = serde_json::json!({"regex": r"Rs\.([\d.]+) ", "capture_group": 1});
-        let samples = vec![("Rs.245.43 spent today".to_string(), Some("24543".to_string()))];
+        let samples = vec![(
+            "Rs.245.43 spent today".to_string(),
+            Some("24543".to_string()),
+        )];
         assert!(
             regression_check(&payload, &samples, "amount").is_ok(),
             "the comparison must normalise printed money to stored minor units"

@@ -83,7 +83,11 @@ pub fn is_plausible_merchant_name(cleaned: &str) -> bool {
     }
 
     // Shape rule, not vocabulary -- see `MIN_MERCHANT_NAME_LEN`.
-    if cleaned.trim().chars().filter(|c| c.is_alphanumeric()).count()
+    if cleaned
+        .trim()
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .count()
         < crate::extraction::lexicon::MIN_MERCHANT_NAME_LEN
     {
         return false;
@@ -109,9 +113,31 @@ pub fn is_plausible_merchant_name(cleaned: &str) -> bool {
 /// `RAZ*YULU`, `RAZORPAY*SWIGGY LIMITE`, or `RAZORPAY*SW` depending on how
 /// much room was left.
 const PAYMENT_AGGREGATORS: &[&str] = &[
-    "PAYU", "PAYTM", "PPSL", "RAZ", "RAZORPAY", "CASHFREE", "BILLDESK", "CCAVENUE", "ICCL",
-    "EASEBUZZ", "INFIBEAM", "ATOM", "WORLDLINE", "PINELABS", "JUSPAY", "PHONEPE", "GPAY",
-    "BHARATPE", "MOBIKWIK", "INSTAMOJO", "STRIPE", "SQ", "SQUARE", "SP", "WWW",
+    "PAYU",
+    "PAYTM",
+    "PPSL",
+    "RAZ",
+    "RAZORPAY",
+    "CASHFREE",
+    "BILLDESK",
+    "CCAVENUE",
+    "ICCL",
+    "EASEBUZZ",
+    "INFIBEAM",
+    "ATOM",
+    "WORLDLINE",
+    "PINELABS",
+    "JUSPAY",
+    "PHONEPE",
+    "GPAY",
+    "BHARATPE",
+    "MOBIKWIK",
+    "INSTAMOJO",
+    "STRIPE",
+    "SQ",
+    "SQUARE",
+    "SP",
+    "WWW",
 ];
 
 /// Splits a `*`-separated descriptor and returns the side that holds the real
@@ -134,7 +160,10 @@ fn split_on_aggregator_star(upper: &str) -> &str {
     // Only override when the prefix is a *known* gateway and there is an
     // actual name after it -- an unrecognised prefix keeps the original
     // left-side behaviour rather than guessing.
-    let head_last_token = head_trimmed.split_whitespace().last().unwrap_or(head_trimmed);
+    let head_last_token = head_trimmed
+        .split_whitespace()
+        .last()
+        .unwrap_or(head_trimmed);
     if PAYMENT_AGGREGATORS.contains(&head_last_token) && !tail_trimmed.is_empty() {
         // The tail may carry its own trailing noise (`SWIGGY*BANGALORE` after
         // `PAYU*`), so keep only up to the next `*`.
@@ -168,10 +197,9 @@ pub fn normalize_merchant_sync(conn: &Connection, merchant_raw: &str) -> Result<
     let mut best: Option<(f64, MerchantsRow)> = None;
     for m in all_merchants {
         let score = strsim::jaro_winkler(&cleaned, &m.normalized_name);
-        if score >= FUZZY_MATCH_THRESHOLD {
-            if best.as_ref().map(|(s, _)| score > *s).unwrap_or(true) {
-                best = Some((score, m));
-            }
+        if score >= FUZZY_MATCH_THRESHOLD && best.as_ref().map(|(s, _)| score > *s).unwrap_or(true)
+        {
+            best = Some((score, m));
         }
     }
 
@@ -490,7 +518,10 @@ mod tests {
         assert_eq!(strip_noise_tokens("PPSL*SWIGGY"), "SWIGGY");
         assert_eq!(strip_noise_tokens("RAZ*YULU"), "YULU");
         assert_eq!(strip_noise_tokens("Payu*Swiggy Limited"), "SWIGGY LIMITED");
-        assert_eq!(strip_noise_tokens("Razorpay*Swiggy Limite"), "SWIGGY LIMITE");
+        assert_eq!(
+            strip_noise_tokens("Razorpay*Swiggy Limite"),
+            "SWIGGY LIMITE"
+        );
         assert_eq!(strip_noise_tokens("Cashfree*SW"), "SW");
         // Real bodies carry the gateway inline: "at Payu*Swiggy Food on ..."
         assert_eq!(strip_noise_tokens("Payu*Swiggy Food"), "SWIGGY FOOD");

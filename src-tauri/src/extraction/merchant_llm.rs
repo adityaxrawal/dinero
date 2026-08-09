@@ -136,11 +136,7 @@ pub fn generate_prompt(ctx: &TransactionContext, body: &str, categories: &[Strin
 /// a `merchant_in_email` that does not actually occur in the body (the
 /// hallucination guard), or a category outside the list. A rejected answer
 /// leaves the transaction untouched rather than writing a guess.
-pub fn validate(
-    raw_output: &str,
-    body: &str,
-    categories: &[String],
-) -> Option<MerchantResolution> {
+pub fn validate(raw_output: &str, body: &str, categories: &[String]) -> Option<MerchantResolution> {
     let json_text = crate::extraction::llm::LlmEngine::extract_json_block(raw_output)?;
     let parsed: MerchantLlmOutput = serde_json::from_str(json_text).ok()?;
 
@@ -229,12 +225,6 @@ mod tests {
                       "category": "Others", "confidence": 0.0}"#;
         assert!(validate(raw, SBI_BODY, &cats()).is_none());
     }
-
-
-
-
-
-
 
     #[test]
     fn schema_pins_category_to_the_closed_list() {

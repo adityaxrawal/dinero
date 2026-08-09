@@ -512,10 +512,8 @@ pub fn extract_instrument_signals(bank_name: &str, body: &str) -> InstrumentSign
     let mut user_vpa_candidates: Vec<String> = Vec::new();
 
     let user_explicit_re = INSTR_USER_UPI_VPA_EXPLICIT_RE.get_or_init(|| {
-        Regex::new(
-            r"(?i)\b(?:your|user)\s+(?:UPI\s+VPA|VPA|UPI\s+ID)\s*:?\s*([\w.\-+]+@[\w.\-]+)",
-        )
-        .unwrap()
+        Regex::new(r"(?i)\b(?:your|user)\s+(?:UPI\s+VPA|VPA|UPI\s+ID)\s*:?\s*([\w.\-+]+@[\w.\-]+)")
+            .unwrap()
     });
     for caps in user_explicit_re.captures_iter(body) {
         if let Some(m) = caps.get(1) {
@@ -532,7 +530,8 @@ pub fn extract_instrument_signals(bank_name: &str, body: &str) -> InstrumentSign
         });
         for caps in user_credit_re.captures_iter(body) {
             if let Some(m) = caps.get(1) {
-                user_vpa_candidates.push(m.as_str().to_lowercase().trim_end_matches('.').to_string());
+                user_vpa_candidates
+                    .push(m.as_str().to_lowercase().trim_end_matches('.').to_string());
             }
         }
     } else {
@@ -544,7 +543,8 @@ pub fn extract_instrument_signals(bank_name: &str, body: &str) -> InstrumentSign
         });
         for caps in user_debit_re.captures_iter(body) {
             if let Some(m) = caps.get(1) {
-                user_vpa_candidates.push(m.as_str().to_lowercase().trim_end_matches('.').to_string());
+                user_vpa_candidates
+                    .push(m.as_str().to_lowercase().trim_end_matches('.').to_string());
             }
         }
     }
@@ -998,9 +998,8 @@ impl ExtractionLayer for BankTemplateLayer {
                             // silently committing to one reading.
                             result.event_time_ambiguous =
                                 parsed_date.as_ref().is_some_and(|d| d.ambiguous);
-                            result.event_time = parsed_date
-                                .map(|d| d.timestamp)
-                                .or(p.date_fallback_epoch);
+                            result.event_time =
+                                parsed_date.map(|d| d.timestamp).or(p.date_fallback_epoch);
                             result.balance_after = p
                                 .balance_group
                                 .and_then(|g| caps.get(g))
@@ -1347,13 +1346,8 @@ struct DateParseResult {
 /// The bare-numeric formats where a DD/MM-vs-MM/DD swap is a genuinely
 /// different, equally well-formed date whenever both components are <=12.
 /// Every other format below (month-name) is inherently unambiguous.
-const NUMERIC_AMBIGUOUS_FORMATS: &[&str] = &[
-    "%d/%m/%Y",
-    "%d-%m-%Y",
-    "%m-%d-%Y",
-    "%d/%m/%y",
-    "%d-%m-%y",
-];
+const NUMERIC_AMBIGUOUS_FORMATS: &[&str] =
+    &["%d/%m/%Y", "%d-%m-%Y", "%m-%d-%Y", "%d/%m/%y", "%d-%m-%y"];
 
 /// Returns `None` on an unparseable date string -- see `parse_date`'s doc
 /// comment for why this must never fabricate a fallback timestamp.
@@ -1905,7 +1899,8 @@ impl Layer6LlmLayer {
             .filter(|m| crate::llm_manager::get_model_path(app_dir, &m.id).is_some())
             .map(|m| m.id)
             .collect();
-        let Some(model_id) = crate::llm_manager::resolve_active_model(&downloaded, stored.as_deref())
+        let Some(model_id) =
+            crate::llm_manager::resolve_active_model(&downloaded, stored.as_deref())
         else {
             tracing::warn!("Layer 6: No downloaded LLM model available");
             return Layer6Outcome::Failed;
@@ -2102,7 +2097,8 @@ fn apply_date_cross_check(obs: &mut ExtractionResult, internal_date: Option<i64>
     else {
         return;
     };
-    let Some(anchor) = chrono::DateTime::from_timestamp(anchor_ts, 0).map(|dt| dt.naive_utc().date())
+    let Some(anchor) =
+        chrono::DateTime::from_timestamp(anchor_ts, 0).map(|dt| dt.naive_utc().date())
     else {
         return;
     };
@@ -2152,6 +2148,7 @@ fn apply_date_cross_check(obs: &mut ExtractionResult, internal_date: Option<i64>
     }
 }
 
+#[allow(clippy::too_many_arguments)] // wide-but-flat domain signature; a params struct would add indirection without removing a single field
 pub async fn run_extraction_ladder(
     pool: &Pool,
     bank_name: &str,
@@ -2702,7 +2699,12 @@ mod tests {
                 "{} direction",
                 c.bank
             );
-            assert_eq!(got.merchant_raw.as_deref(), c.merchant, "{} merchant", c.bank);
+            assert_eq!(
+                got.merchant_raw.as_deref(),
+                c.merchant,
+                "{} merchant",
+                c.bank
+            );
             assert_eq!(
                 got.masked_identifier.as_deref(),
                 c.last4,
@@ -2710,13 +2712,17 @@ mod tests {
                 c.bank
             );
             assert_eq!(
-                got.balance_after,
-                c.balance_minor,
+                got.balance_after, c.balance_minor,
                 "{} balance_after",
                 c.bank
             );
             if let Some((y, m, d)) = c.date {
-                assert_eq!(got.event_time, Some(ymd_ts(y, m, d)), "{} event_time", c.bank);
+                assert_eq!(
+                    got.event_time,
+                    Some(ymd_ts(y, m, d)),
+                    "{} event_time",
+                    c.bank
+                );
             }
             assert!(
                 got.is_valid(),
@@ -2749,7 +2755,9 @@ mod tests {
         assert_eq!(m.instrument_type.as_deref(), Some("credit_card"));
 
         // The ₹1000.00 limit must never surface as a settled transaction.
-        let as_txn = BankTemplateLayer.extract(&dummy_pool(), "SBI Card", body).await;
+        let as_txn = BankTemplateLayer
+            .extract(&dummy_pool(), "SBI Card", body)
+            .await;
         assert!(
             as_txn.is_none_or(|r| r.amount_minor != Some(100_000)),
             "a mandate limit must not be booked as a transaction amount"
@@ -2802,10 +2810,8 @@ mod tests {
     #[test]
     fn test_every_registry_bank_has_a_template() {
         let registry: crate::ingestion::verified_senders::VerifiedSenderRegistry =
-            serde_json::from_str(include_str!(
-                "../ingestion/verified_senders_registry.json"
-            ))
-            .expect("registry must parse");
+            serde_json::from_str(include_str!("../ingestion/verified_senders_registry.json"))
+                .expect("registry must parse");
 
         let templates = bank_templates();
         for sender in &registry.senders {
@@ -2918,9 +2924,18 @@ mod tests {
         let body = "Your amount is 1500 INR at Amazon debit time 123";
 
         let mut layer6_timed_out = false;
-        let result = run_extraction_ladder(&pool, "Chase", body, None, false, None, &mut layer6_timed_out, None)
-            .await
-            .unwrap();
+        let result = run_extraction_ladder(
+            &pool,
+            "Chase",
+            body,
+            None,
+            false,
+            None,
+            &mut layer6_timed_out,
+            None,
+        )
+        .await
+        .unwrap();
 
         assert!(result.is_some());
         assert_eq!(result.unwrap().extraction_method, "learned_fields");
@@ -2941,10 +2956,19 @@ mod tests {
 
         // Baseline: whatever the ladder produces with no learned rule.
         let mut timed_out = false;
-        let before = run_extraction_ladder(&pool, "HDFC Bank", body, None, false, None, &mut timed_out, None)
-            .await
-            .unwrap()
-            .expect("fixture must extract");
+        let before = run_extraction_ladder(
+            &pool,
+            "HDFC Bank",
+            body,
+            None,
+            false,
+            None,
+            &mut timed_out,
+            None,
+        )
+        .await
+        .unwrap()
+        .expect("fixture must extract");
         let baseline_merchant = before.merchant_raw.clone();
 
         // Teach a merchant rule for exactly this email shape.
@@ -2952,11 +2976,9 @@ mod tests {
         let body_owned = body.to_string();
         conn.interact(move |c| {
             let template_hash = compute_template_hash(&body_owned);
-            let pattern = crate::extraction::rule_synthesis::synthesize_span_regex(
-                &body_owned,
-                "RAZ*SWIGGY",
-            )
-            .expect("must synthesize a pattern");
+            let pattern =
+                crate::extraction::rule_synthesis::synthesize_span_regex(&body_owned, "RAZ*SWIGGY")
+                    .expect("must synthesize a pattern");
             seed_rule(
                 c,
                 "HDFC Bank",
@@ -2971,10 +2993,19 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let after = run_extraction_ladder(&pool, "HDFC Bank", body, None, false, None, &mut timed_out, None)
-            .await
-            .unwrap()
-            .expect("fixture must still extract");
+        let after = run_extraction_ladder(
+            &pool,
+            "HDFC Bank",
+            body,
+            None,
+            false,
+            None,
+            &mut timed_out,
+            None,
+        )
+        .await
+        .unwrap()
+        .expect("fixture must still extract");
 
         assert_eq!(
             after.merchant_raw.as_deref(),
@@ -2989,7 +3020,8 @@ mod tests {
     #[tokio::test]
     async fn test_learned_merchant_rule_does_not_leak_to_other_email_shapes() {
         let taught_body = "Rs 500.00 debited at RAZ*SWIGGY on 25-May-23 towards purchase";
-        let other_body = "INR 250.00 spent using your card at BIG BAZAAR on 26-May-23 towards purchase";
+        let other_body =
+            "INR 250.00 spent using your card at BIG BAZAAR on 26-May-23 towards purchase";
         let pool = dummy_migrated_pool().await;
 
         let conn = pool.get().await.unwrap();
@@ -3073,10 +3105,19 @@ mod tests {
         .unwrap();
 
         let mut layer6_timed_out = false;
-        let result = run_extraction_ladder(&pool, "WrongRuleBank", body, None, false, None, &mut layer6_timed_out, None)
-            .await
-            .unwrap()
-            .expect("the (wrong) learned rule is schema-valid and must still be returned");
+        let result = run_extraction_ladder(
+            &pool,
+            "WrongRuleBank",
+            body,
+            None,
+            false,
+            None,
+            &mut layer6_timed_out,
+            None,
+        )
+        .await
+        .unwrap()
+        .expect("the (wrong) learned rule is schema-valid and must still be returned");
 
         assert_eq!(result.extraction_method, "learned_fields");
         assert_eq!(
@@ -3116,9 +3157,18 @@ mod tests {
 
         let pool = dummy_pool();
         let mut layer6_timed_out = false;
-        let res = run_extraction_ladder(&pool, "Chase", "unparseable body", None, false, None, &mut layer6_timed_out, None)
-            .await
-            .unwrap();
+        let res = run_extraction_ladder(
+            &pool,
+            "Chase",
+            "unparseable body",
+            None,
+            false,
+            None,
+            &mut layer6_timed_out,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(res.is_none());
     }
 
@@ -3159,9 +3209,18 @@ mod tests {
 
         let pool = dummy_pool();
         let mut layer6_timed_out = false;
-        let res = run_extraction_ladder(&pool, "Chase", "unparseable body", None, false, None, &mut layer6_timed_out, None)
-            .await
-            .unwrap();
+        let res = run_extraction_ladder(
+            &pool,
+            "Chase",
+            "unparseable body",
+            None,
+            false,
+            None,
+            &mut layer6_timed_out,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(res.is_none());
 
         let captured = logs.lock().unwrap();
@@ -3299,7 +3358,11 @@ mod tests {
 
         assert!(fired);
         assert_eq!(result.merchant_raw.as_deref(), Some("RAZ*SWIGGY LIMITE"));
-        assert_eq!(result.amount_minor, Some(50000), "untaught fields must be left alone");
+        assert_eq!(
+            result.amount_minor,
+            Some(50000),
+            "untaught fields must be left alone"
+        );
     }
 
     #[tokio::test]
@@ -3451,7 +3514,10 @@ mod tests {
         }
         // Merchant alone is not a valid extraction; Layer 1 must decline and
         // let a later layer produce the full record.
-        assert!(LearnedFieldLayer.extract(&pool, "HDFC Bank", body).await.is_none());
+        assert!(LearnedFieldLayer
+            .extract(&pool, "HDFC Bank", body)
+            .await
+            .is_none());
     }
 
     // ── Drift detection, rebuilt on field_rules ──────────────────────────────
@@ -3491,7 +3557,10 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(drift.drift_detected, "rules exist for this shape yet nothing extracted");
+        assert!(
+            drift.drift_detected,
+            "rules exist for this shape yet nothing extracted"
+        );
     }
 
     #[tokio::test]
@@ -3853,17 +3922,17 @@ mod tests {
     #[test]
     fn test_real_bank_date_formats_parse() {
         for (input, y, m, d) in [
-            ("23-12-25", 2025, 12, 23),   // HDFC UPI alert
-            ("10/01/26", 2026, 1, 10),    // SBI Card transaction alert
-            ("08-JAN-26", 2026, 1, 8),    // HDFC balance notification
-            ("30-JUL-2025", 2025, 7, 30), // HDFC deposit alert
-            ("05 AUG 2025", 2025, 8, 5),  // IDFC FIRST debit alert
-            ("29 Nov 2025", 2025, 11, 29),// IDFC FIRST payment received
-            ("17-08-2025", 2025, 8, 17),  // Axis Bank credit card
-            ("07 Jan, 2026", 2026, 1, 7), // HDFC credit card
-            ("Jan 08, 2026", 2026, 1, 8), // Jupiter UPI
+            ("23-12-25", 2025, 12, 23),         // HDFC UPI alert
+            ("10/01/26", 2026, 1, 10),          // SBI Card transaction alert
+            ("08-JAN-26", 2026, 1, 8),          // HDFC balance notification
+            ("30-JUL-2025", 2025, 7, 30),       // HDFC deposit alert
+            ("05 AUG 2025", 2025, 8, 5),        // IDFC FIRST debit alert
+            ("29 Nov 2025", 2025, 11, 29),      // IDFC FIRST payment received
+            ("17-08-2025", 2025, 8, 17),        // Axis Bank credit card
+            ("07 Jan, 2026", 2026, 1, 7),       // HDFC credit card
+            ("Jan 08, 2026", 2026, 1, 8),       // Jupiter UPI
             ("Mon, Dec 01, 2025", 2025, 12, 1), // Jupiter Pots
-            ("29-Dec-25", 2025, 12, 29),  // Slice UPI credit
+            ("29-Dec-25", 2025, 12, 29),        // Slice UPI credit
         ] {
             let parsed = parse_date_generic(input)
                 .unwrap_or_else(|| panic!("real bank date {input:?} must parse"));
@@ -4235,7 +4304,10 @@ mod tests {
         let layer = GenericRegexLayer;
         let body = "Dear Customer, Greetings from YES BANK. INR 91.00 has been spent on your YES BANK Credit Card ending with 2982 at UPI_SRI SAI FRUITS AND on 10-07-2026 at 08:55:35 pm. Avl Bal INR 82434.42. In case, this transaction was not initiated by you, please block your card immediately by calling our 24x7 customer care or visiting the nearest branch.";
         let result = layer.extract(&pool, "Yes Bank", body).await.unwrap();
-        assert_eq!(result.merchant_raw, Some("UPI_SRI SAI FRUITS AND".to_string()));
+        assert_eq!(
+            result.merchant_raw,
+            Some("UPI_SRI SAI FRUITS AND".to_string())
+        );
         assert_eq!(result.direction, Some("debit".to_string()));
         assert_eq!(result.amount_minor, Some(9100));
     }
@@ -4250,7 +4322,8 @@ mod tests {
     async fn test_generic_merchant_rejects_stopword_only_disclaimer_capture() {
         let pool = dummy_pool();
         let layer = GenericRegexLayer;
-        let body = "INR 250.00 debited. To block your card, SMS BLOCK to 9876543210 or call our helpline.";
+        let body =
+            "INR 250.00 debited. To block your card, SMS BLOCK to 9876543210 or call our helpline.";
         let result = layer.extract(&pool, "Yes Bank", body).await;
         // No valid merchant anywhere in the body -- must not fabricate
         // "block your" as the merchant, even though `is_valid()` then fails
@@ -4501,7 +4574,10 @@ mod tests {
         let body = "Hey, Aditya\nYour UPI payment was successful\n\nYou paid ₹14000\n\nPaid to T Jyoshna\n7674036967@ybl\n\nDate Jul 05, 2026\n\nFrom Aditya\n8127696200@jupiteraxis\n\nTransaction ID 1321783237916267118\n\nBank reference Number 699841171866";
         let signals = extract_instrument_signals("Jupiter", body);
         assert_eq!(signals.upi_vpa, Some("8127696200@jupiteraxis".to_string()));
-        assert_eq!(signals.masked_identifier, Some("8127696200@jupiteraxis".to_string()));
+        assert_eq!(
+            signals.masked_identifier,
+            Some("8127696200@jupiteraxis".to_string())
+        );
         assert_eq!(signals.instrument_type, Some("upi_vpa".to_string()));
     }
 
@@ -4521,9 +4597,18 @@ mod tests {
         let body =
             "Rs 1500.00 spent on your HDFC Bank CREDIT Card ending 1234 at Amazon on 25-May-23.";
         let mut layer6_timed_out = false;
-        let result = run_extraction_ladder(&pool, "HDFC Bank", body, None, false, None, &mut layer6_timed_out, None)
-            .await
-            .unwrap();
+        let result = run_extraction_ladder(
+            &pool,
+            "HDFC Bank",
+            body,
+            None,
+            false,
+            None,
+            &mut layer6_timed_out,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(result.is_some());
         let obs = result.unwrap();
         // Extraction succeeded
@@ -4853,27 +4938,37 @@ mod tests {
     /// over the plain "imps" keyword also present in the body.
     #[test]
     fn test_detect_channel_hdfc_imps_self_transfer() {
-        let body = "HDFC BANK\n\nDear Customer,\n\nGreetings from HDFC Bank!\n\n INR 1,04,721.00 has \
+        let body =
+            "HDFC BANK\n\nDear Customer,\n\nGreetings from HDFC Bank!\n\n INR 1,04,721.00 has \
              been debited from your account ending xxxxxxxxxx4691 on 30-06-26 and credited to the \
              account ending xxxxxxxxxx1527 via IMPS.\n\nIMPS Reference No: 618139547133\nAvailable \
              Balance: INR 10,000.00";
         let obs = ExtractionResult::default();
-        assert_eq!(detect_channel(&obs, body), Some("internal_transfer".to_string()));
+        assert_eq!(
+            detect_channel(&obs, body),
+            Some("internal_transfer".to_string())
+        );
     }
 
     #[test]
     fn test_detect_channel_upi_credit_card_requires_credit_card_instrument() {
-        let body = "Rs 500.00 spent using your Credit Card ending 1234 at Amazon via UPI on 25-May-23.";
+        let body =
+            "Rs 500.00 spent using your Credit Card ending 1234 at Amazon via UPI on 25-May-23.";
 
-        let mut credit_card_obs = ExtractionResult::default();
-        credit_card_obs.instrument_type = Some("credit_card".to_string());
+        let credit_card_obs = ExtractionResult {
+            instrument_type: Some("credit_card".to_string()),
+            ..Default::default()
+        };
         assert_eq!(
             detect_channel(&credit_card_obs, body),
             Some("upi_credit_card".to_string())
         );
 
         let bank_account_obs = ExtractionResult::default();
-        assert_eq!(detect_channel(&bank_account_obs, body), Some("upi".to_string()));
+        assert_eq!(
+            detect_channel(&bank_account_obs, body),
+            Some("upi".to_string())
+        );
     }
 
     #[test]
@@ -4881,7 +4976,10 @@ mod tests {
         let obs = ExtractionResult::default();
         let cases: &[(&str, &str)] = &[
             ("Rs 500 debited towards NEFT transfer to XYZ.", "neft"),
-            ("Rs 50000 transferred via RTGS to account ending 1234.", "rtgs"),
+            (
+                "Rs 50000 transferred via RTGS to account ending 1234.",
+                "rtgs",
+            ),
             ("Rs 200 spent at POS terminal, Big Bazaar.", "pos"),
             ("Rs 2000 withdrawn from ATM at MG Road.", "atm"),
             ("Rs 150 loaded to your Paytm wallet.", "wallet"),
@@ -4901,8 +4999,10 @@ mod tests {
 
     #[test]
     fn test_detect_channel_emi_fallback_when_no_stronger_signal() {
-        let mut obs = ExtractionResult::default();
-        obs.emi_total_installments = Some(6);
+        let obs = ExtractionResult {
+            emi_total_installments: Some(6),
+            ..Default::default()
+        };
         let body = "Your purchase of Rs 6000 has been converted to EMI, 6 installments.";
         assert_eq!(detect_channel(&obs, body), Some("emi".to_string()));
     }
@@ -4985,7 +5085,10 @@ mod tests {
             .await
             .expect("neft_transfer_to_payee pattern must match");
         assert_eq!(result.amount_minor, Some(7_000_000));
-        assert_eq!(result.merchant_raw, Some("Rina Rawal SBI Account".to_string()));
+        assert_eq!(
+            result.merchant_raw,
+            Some("Rina Rawal SBI Account".to_string())
+        );
         assert_eq!(result.direction, Some("debit".to_string()));
 
         let self_transfer_body = "Thank you for banking with HDFC Bank.\n\nRs. 82164 has been \

@@ -184,11 +184,11 @@ pub(crate) fn epoch_days_to_ymd(days: u64) -> (u64, u64, u64) {
     let mut y = 1970u64;
     let mut remaining = days;
     loop {
-        let leap = if y % 400 == 0 {
+        let leap = if y.is_multiple_of(400) {
             1
-        } else if y % 100 == 0 {
+        } else if y.is_multiple_of(100) {
             0
-        } else if y % 4 == 0 {
+        } else if y.is_multiple_of(4) {
             1
         } else {
             0
@@ -200,11 +200,11 @@ pub(crate) fn epoch_days_to_ymd(days: u64) -> (u64, u64, u64) {
         remaining -= days_in_year;
         y += 1;
     }
-    let leap = if y % 400 == 0 {
+    let leap = if y.is_multiple_of(400) {
         1
-    } else if y % 100 == 0 {
+    } else if y.is_multiple_of(100) {
         0
-    } else if y % 4 == 0 {
+    } else if y.is_multiple_of(4) {
         1
     } else {
         0

@@ -150,9 +150,7 @@ impl BenchmarkReport {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let json = self
-            .to_json_pretty()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let json = self.to_json_pretty().map_err(std::io::Error::other)?;
         std::fs::write(path, json)
     }
 }

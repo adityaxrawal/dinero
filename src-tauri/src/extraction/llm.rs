@@ -138,7 +138,11 @@ impl LlmEngine {
     /// Spec optimization #3's self-correction loop: quotes the model's own
     /// rejected output back to it along with a concrete complaint, rather
     /// than re-asking the exact same zero-shot question a second time.
-    fn generate_correction_prompt(bank_name: &str, body_text: &str, previous_output: &str) -> String {
+    fn generate_correction_prompt(
+        bank_name: &str,
+        body_text: &str,
+        previous_output: &str,
+    ) -> String {
         format!(
             "Your previous answer was not accepted: either it was not valid JSON, or one of the \
              values (amount / merchant / reference_id) does not actually appear anywhere in the \
@@ -191,7 +195,9 @@ impl LlmEngine {
             CompletionAttempt::Extracted(result) => Layer6Outcome::Extracted(result),
             CompletionAttempt::TimedOut => Layer6Outcome::TimedOut,
             CompletionAttempt::Rejected(raw_output) => {
-                debug!("Layer 6 LLM output rejected on first attempt, retrying with correction prompt");
+                debug!(
+                    "Layer 6 LLM output rejected on first attempt, retrying with correction prompt"
+                );
                 let correction_prompt =
                     Self::generate_correction_prompt(bank_name, body_text, &raw_output);
                 match self
@@ -240,7 +246,8 @@ impl LlmEngine {
                 prompt,
                 crate::llama_sidecar::layer6_json_schema_pub(),
                 ctx,
-            ).await;
+            )
+            .await;
 
             match result {
                 Ok(output) => break Some(output),
@@ -404,7 +411,12 @@ impl LlmEngine {
         // a hallucinated sentence: all silently booked as money leaving the
         // user's account. Direction has no safe default; an unrecognised one
         // is a rejected extraction.
-        match result.direction.as_deref().map(str::to_lowercase).as_deref() {
+        match result
+            .direction
+            .as_deref()
+            .map(str::to_lowercase)
+            .as_deref()
+        {
             Some("credit") => result.direction = Some("credit".to_string()),
             Some("debit") => result.direction = Some("debit".to_string()),
             other => {
@@ -532,7 +544,10 @@ mod tests {
             .parse_json_to_result(raw, Some(1747026600))
             .expect("a fallback event_time must let this parse and pass is_valid()");
         assert_eq!(result.event_time, Some(1747026600));
-        assert_eq!(result.merchant_raw.as_deref(), Some("Edge CSB Bank Credit Card"));
+        assert_eq!(
+            result.merchant_raw.as_deref(),
+            Some("Edge CSB Bank Credit Card")
+        );
     }
 
     /// Doc 30 TASK-TXN-006 acceptance test.
@@ -698,7 +713,10 @@ mod tests {
             "prompt must include multiple worked examples, not just the trailing prompt: \
              found {json_output_count} \"JSON Output:\" occurrences in: {prompt}"
         );
-        assert!(prompt.contains("Example 1"), "prompt must include worked examples");
+        assert!(
+            prompt.contains("Example 1"),
+            "prompt must include worked examples"
+        );
     }
 
     /// Spec optimization #3's self-correction loop: the correction prompt

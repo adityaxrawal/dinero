@@ -5,9 +5,9 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tauri::{AppHandle, Emitter};
-use tokio_util::sync::CancellationToken;
 use tokio::fs::{self, File};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_util::sync::CancellationToken;
 
 /// Emitted to the frontend while a catalog model's `.gguf` downloads, so
 /// Settings' model picker can show a real progress bar instead of an
@@ -228,7 +228,9 @@ pub(crate) async fn download_file_with_hash(
     // `content_length()` is the length of *this response*, so on a resume it
     // is the remainder, not the file. Progress and ETA are reported against
     // the whole file, so add back what we already have.
-    let total_bytes = res.content_length().map(|len| len + if resuming { resume_from } else { 0 });
+    let total_bytes = res
+        .content_length()
+        .map(|len| len + if resuming { resume_from } else { 0 });
 
     let mut hasher = Sha256::new();
     let mut downloaded: u64 = 0;
@@ -335,7 +337,9 @@ pub(crate) async fn download_file_with_hash(
         // multi-GB file on every startup. A download interrupted by a
         // crash/network drop never reaches this line, so a corrupt partial
         // file is never marked verified even though it's left on disk.
-        fs::write(verified_marker_path(dest_path), &actual_hash).await.ok();
+        fs::write(verified_marker_path(dest_path), &actual_hash)
+            .await
+            .ok();
     }
 
     Ok(())
@@ -357,7 +361,10 @@ pub struct DownloadRegistry(std::sync::Mutex<std::collections::HashMap<String, C
 impl DownloadRegistry {
     pub fn register(&self, model_id: &str) -> CancellationToken {
         let token = CancellationToken::new();
-        self.0.lock().unwrap().insert(model_id.to_string(), token.clone());
+        self.0
+            .lock()
+            .unwrap()
+            .insert(model_id.to_string(), token.clone());
         token
     }
 
@@ -517,10 +524,7 @@ mod tests {
         std::fs::write(&model_path, vec![0u8; 1024]).unwrap();
         std::fs::write(verified_marker_path(&model_path), "somehash").unwrap();
 
-        assert_eq!(
-            get_model_path(&app_dir, "gemma4_12b"),
-            Some(model_path)
-        );
+        assert_eq!(get_model_path(&app_dir, "gemma4_12b"), Some(model_path));
     }
 
     /// Installs from before the `.verified` marker existed are real,
@@ -542,10 +546,7 @@ mod tests {
         let file = std::fs::File::create(&model_path).unwrap();
         file.set_len(approx_bytes).unwrap();
 
-        assert_eq!(
-            get_model_path(&app_dir, "gemma4_12b"),
-            Some(model_path)
-        );
+        assert_eq!(get_model_path(&app_dir, "gemma4_12b"), Some(model_path));
     }
 
     #[test]
@@ -636,7 +637,11 @@ mod tests {
         .expect("a resumed download must verify");
 
         mock.assert_async().await;
-        assert_eq!(std::fs::read(&dest).unwrap(), body, "file must be byte-identical");
+        assert_eq!(
+            std::fs::read(&dest).unwrap(),
+            body,
+            "file must be byte-identical"
+        );
         assert!(
             verified_marker_path(&dest).exists(),
             "a verified resume must leave the marker get_model_path trusts"

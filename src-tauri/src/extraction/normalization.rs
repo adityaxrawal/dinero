@@ -168,7 +168,12 @@ pub fn clean_masked_identifier(raw: &str) -> String {
     // resolved to a fabricated instrument identity.
     let after_mask: String = trimmed
         .rfind(['X', 'x', '*'])
-        .map(|i| trimmed[i + 1..].chars().filter(|c| c.is_ascii_digit()).collect())
+        .map(|i| {
+            trimmed[i + 1..]
+                .chars()
+                .filter(|c| c.is_ascii_digit())
+                .collect()
+        })
         .unwrap_or_default();
     if !after_mask.is_empty() {
         return after_mask;
@@ -269,11 +274,14 @@ mod tests {
     fn test_extract_email_and_domain_edge_cases() {
         use crate::ingestion::message_processor::MessageProcessor;
 
-        let (e1, d1) = MessageProcessor::extract_email_and_domain("ASSPL Bangalore kaIN <assplbangalorekain@bank.com>");
+        let (e1, d1) = MessageProcessor::extract_email_and_domain(
+            "ASSPL Bangalore kaIN <assplbangalorekain@bank.com>",
+        );
         assert_eq!(e1, Some("assplbangalorekain@bank.com".to_string()));
         assert_eq!(d1, Some("bank.com".to_string()));
 
-        let (e2, d2) = MessageProcessor::extract_email_and_domain("\"User Name\" <user@sub.domain.co.in>");
+        let (e2, d2) =
+            MessageProcessor::extract_email_and_domain("\"User Name\" <user@sub.domain.co.in>");
         assert_eq!(e2, Some("user@sub.domain.co.in".to_string()));
         assert_eq!(d2, Some("sub.domain.co.in".to_string()));
 
@@ -318,9 +326,16 @@ mod tests {
             recipient_domain: Some("example.com".to_string()),
         };
 
-        let obs = normalize_observation(raw, "gmail_transaction", "msg_123", Some("Plain text body"), Some(&email_meta));
+        let obs = normalize_observation(
+            raw,
+            "gmail_transaction",
+            "msg_123",
+            Some("Plain text body"),
+            Some(&email_meta),
+        );
         assert!(obs.raw_payload_json.is_some());
-        let payload: serde_json::Value = serde_json::from_str(&obs.raw_payload_json.unwrap()).unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_str(&obs.raw_payload_json.unwrap()).unwrap();
 
         assert_eq!(payload["body"], "Plain text body");
         // audit_03 #7: this assertion is what proves the Evidence tab's HTML

@@ -48,17 +48,18 @@ pub fn prune_old_logs(log_dir: &Path) {
     let entries = match fs::read_dir(log_dir) {
         Ok(e) => e,
         Err(e) => {
-            tracing::warn!("Failed to read log directory for pruning ({:?}): {}", log_dir, e);
+            tracing::warn!(
+                "Failed to read log directory for pruning ({:?}): {}",
+                log_dir,
+                e
+            );
             return;
         }
     };
 
     for entry in entries.flatten() {
         let path = entry.path();
-        let file_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
         // audit_09 #4: these patterns used to be `starts_with("backend.log")`
         // and friends -- the *old* naming scheme. `CategorizedLogWriters::init`
@@ -292,7 +293,11 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         {
             let mut writer = RedactingWriter::new(&mut buf);
-            write!(writer, "user email is realuser@example.com, card 4111-1111-1111-1111").unwrap();
+            write!(
+                writer,
+                "user email is realuser@example.com, card 4111-1111-1111-1111"
+            )
+            .unwrap();
         }
         let written = String::from_utf8(buf).unwrap();
         assert!(!written.contains("realuser@example.com"));
@@ -303,7 +308,8 @@ mod tests {
 
     #[test]
     fn prune_old_logs_applies_retention_window() {
-        let dir = std::env::temp_dir().join(format!("dinero_log_retention_{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("dinero_log_retention_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
 
         // audit_09 #4: the names here must be the ones
@@ -334,8 +340,14 @@ mod tests {
             fs::write(f, "x").unwrap();
         }
 
-        let far_past = std::time::SystemTime::now() - std::time::Duration::from_secs(400 * 24 * 60 * 60);
-        for f in [&old_file, &old_llm_file, &old_combined_file, &old_legacy_file] {
+        let far_past =
+            std::time::SystemTime::now() - std::time::Duration::from_secs(400 * 24 * 60 * 60);
+        for f in [
+            &old_file,
+            &old_llm_file,
+            &old_combined_file,
+            &old_legacy_file,
+        ] {
             fs::File::open(f).unwrap().set_modified(far_past).unwrap();
         }
         // Age the non-log files too, so surviving proves the name filter is
@@ -343,28 +355,62 @@ mod tests {
         for f in [&unrelated_file, &unrelated_md] {
             fs::File::open(f).unwrap().set_modified(far_past).unwrap();
         }
-        let three_days_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 24 * 60 * 60);
-        fs::File::open(&recent_file).unwrap().set_modified(three_days_ago).unwrap();
+        let three_days_ago =
+            std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 24 * 60 * 60);
+        fs::File::open(&recent_file)
+            .unwrap()
+            .set_modified(three_days_ago)
+            .unwrap();
 
         std::env::set_var("DINERO_LOG_RETENTION_DAYS", "15");
         prune_old_logs(&dir);
         std::env::remove_var("DINERO_LOG_RETENTION_DAYS");
 
-        assert!(!old_file.exists(), "a log file older than the retention window must be pruned");
-        assert!(!old_llm_file.exists(), "every log category must be pruned, not just backend");
-        assert!(!old_combined_file.exists(), "every log category must be pruned, not just backend");
-        assert!(!old_legacy_file.exists(), "legacy-named log files must still be pruned on upgraded installs");
-        assert!(recent_file.exists(), "a 3-day-old file must survive the 15-day default window");
-        assert!(unrelated_file.exists(), "pruning must never touch a non-log file in the same directory");
-        assert!(unrelated_md.exists(), "pruning must not delete unrelated .md files");
+        assert!(
+            !old_file.exists(),
+            "a log file older than the retention window must be pruned"
+        );
+        assert!(
+            !old_llm_file.exists(),
+            "every log category must be pruned, not just backend"
+        );
+        assert!(
+            !old_combined_file.exists(),
+            "every log category must be pruned, not just backend"
+        );
+        assert!(
+            !old_legacy_file.exists(),
+            "legacy-named log files must still be pruned on upgraded installs"
+        );
+        assert!(
+            recent_file.exists(),
+            "a 3-day-old file must survive the 15-day default window"
+        );
+        assert!(
+            unrelated_file.exists(),
+            "pruning must never touch a non-log file in the same directory"
+        );
+        assert!(
+            unrelated_md.exists(),
+            "pruning must not delete unrelated .md files"
+        );
 
         std::env::set_var("DINERO_LOG_RETENTION_DAYS", "1");
         prune_old_logs(&dir);
         std::env::remove_var("DINERO_LOG_RETENTION_DAYS");
 
-        assert!(!recent_file.exists(), "a custom shorter retention window must be honored");
-        assert!(unrelated_file.exists(), "pruning must still never touch a non-log file");
-        assert!(unrelated_md.exists(), "pruning must still not delete unrelated .md files");
+        assert!(
+            !recent_file.exists(),
+            "a custom shorter retention window must be honored"
+        );
+        assert!(
+            unrelated_file.exists(),
+            "pruning must still never touch a non-log file"
+        );
+        assert!(
+            unrelated_md.exists(),
+            "pruning must still not delete unrelated .md files"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

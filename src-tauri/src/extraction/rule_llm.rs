@@ -218,7 +218,10 @@ mod tests {
         assert!(prompt.contains("BLUE TOKAI COFFEE"));
         assert!(prompt.contains("HDFC Bank"));
         assert!(prompt.contains("merchant"));
-        assert!(prompt.contains(r"at (.+?) on"), "the current ruleset must be in the prompt");
+        assert!(
+            prompt.contains(r"at (.+?) on"),
+            "the current ruleset must be in the prompt"
+        );
     }
 
     #[test]
