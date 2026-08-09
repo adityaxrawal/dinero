@@ -85,7 +85,10 @@ pub fn decrypt_backup(blob: &[u8], password: &str) -> Result<Vec<u8>> {
 /// rather than a confusing new failure mode.
 pub fn verify_backup_integrity(backup_path: &std::path::Path) -> Result<()> {
     if !backup_path.exists() {
-        return Err(anyhow!("backup file does not exist: {}", backup_path.display()));
+        return Err(anyhow!(
+            "backup file does not exist: {}",
+            backup_path.display()
+        ));
     }
     let key = crate::db::crypto::derive_database_key()
         .map_err(|e| anyhow!("failed to derive database key for backup verification: {e}"))?;
@@ -135,20 +138,25 @@ mod tests {
     /// not be silently accepted as a valid restore source.
     #[test]
     fn test_backup_verification_detects_corruption() {
-        let dir = std::env::temp_dir().join(format!("dinero_backup_verify_{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("dinero_backup_verify_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let corrupt_path = dir.join("corrupt.bak");
         std::fs::write(&corrupt_path, b"this is not a sqlite database at all").unwrap();
 
         let result = verify_backup_integrity(&corrupt_path);
-        assert!(result.is_err(), "a non-database file must fail backup verification");
+        assert!(
+            result.is_err(),
+            "a non-database file must fail backup verification"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_backup_verification_fails_on_missing_file() {
-        let missing = std::env::temp_dir().join(format!("dinero_missing_{}.bak", uuid::Uuid::new_v4()));
+        let missing =
+            std::env::temp_dir().join(format!("dinero_missing_{}.bak", uuid::Uuid::new_v4()));
         assert!(verify_backup_integrity(&missing).is_err());
     }
 
@@ -158,7 +166,8 @@ mod tests {
     /// completely untouched -- never partially written.
     #[test]
     fn test_atomic_replace_leaves_dest_untouched_on_missing_source() {
-        let dir = std::env::temp_dir().join(format!("dinero_atomic_replace_{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("dinero_atomic_replace_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let dest = dir.join("finance.db");
         std::fs::write(&dest, b"original content").unwrap();
@@ -177,7 +186,8 @@ mod tests {
 
     #[test]
     fn test_atomic_replace_succeeds_with_valid_source() {
-        let dir = std::env::temp_dir().join(format!("dinero_atomic_replace_ok_{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("dinero_atomic_replace_ok_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let source = dir.join("backup.bak");
         let dest = dir.join("finance.db");

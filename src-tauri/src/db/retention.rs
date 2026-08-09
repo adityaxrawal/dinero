@@ -170,7 +170,10 @@ pub fn sweep_settled_statement_drafts(conn: &Connection) -> Result<usize> {
     )?;
 
     if deleted > 0 {
-        tracing::info!("Retention sweep: deleted {} settled statement drafts", deleted);
+        tracing::info!(
+            "Retention sweep: deleted {} settled statement drafts",
+            deleted
+        );
     }
 
     Ok(deleted)
@@ -355,12 +358,36 @@ mod tests {
 
         decision("d_old_auto", "obs_m", "not_required", None, "-400 days");
         decision("d_recent_auto", "obs_m", "not_required", None, "-1 days");
-        decision("d_old_pending", "obs_m", "pending_review", None, "-400 days");
-        decision("d_old_human", "obs_m", "reviewed", Some("user"), "-400 days");
-        decision("d_old_unmatched", "obs_u", "not_required", None, "-400 days");
+        decision(
+            "d_old_pending",
+            "obs_m",
+            "pending_review",
+            None,
+            "-400 days",
+        );
+        decision(
+            "d_old_human",
+            "obs_m",
+            "reviewed",
+            Some("user"),
+            "-400 days",
+        );
+        decision(
+            "d_old_unmatched",
+            "obs_u",
+            "not_required",
+            None,
+            "-400 days",
+        );
         // The row a `manually_corrected` decision points back at. Only the
         // audit_log entry links them, so that is what has to protect it.
-        decision("d_old_corrected", "obs_m", "not_required", None, "-400 days");
+        decision(
+            "d_old_corrected",
+            "obs_m",
+            "not_required",
+            None,
+            "-400 days",
+        );
         conn.execute(
             "INSERT INTO audit_log (id, actor_type, action, resource_type, resource_id) \
              VALUES ('al_1', 'user', 'manual_correction', 'match_decision', 'd_old_corrected')",

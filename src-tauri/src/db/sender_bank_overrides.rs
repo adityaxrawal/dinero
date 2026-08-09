@@ -123,9 +123,22 @@ mod tests {
     #[test]
     fn upsert_creates_then_replaces_by_domain() {
         let conn = setup_db();
-        let first =
-            upsert(&conn, "alerts.hdfcbank.net", "HDFC Bank", Some("HDFC"), Some("fb1")).unwrap();
-        let second = upsert(&conn, "alerts.hdfcbank.net", "ICICI Bank", None, Some("fb2")).unwrap();
+        let first = upsert(
+            &conn,
+            "alerts.hdfcbank.net",
+            "HDFC Bank",
+            Some("HDFC"),
+            Some("fb1"),
+        )
+        .unwrap();
+        let second = upsert(
+            &conn,
+            "alerts.hdfcbank.net",
+            "ICICI Bank",
+            None,
+            Some("fb2"),
+        )
+        .unwrap();
 
         assert_eq!(first, second, "a domain must have exactly one override row");
         let all = select_all(&conn).unwrap();

@@ -133,8 +133,7 @@ fn apply_correction_teaches_a_rule_that_really_matches() {
     let c = select_candidates(&conn, 10).unwrap().remove(0);
     apply_correction(&conn, "run_1", &c, &resolution()).unwrap();
 
-    let rules =
-        crate::db::field_rules::select_live_by_bank(&conn, "SBI Card", "email").unwrap();
+    let rules = crate::db::field_rules::select_live_by_bank(&conn, "SBI Card", "email").unwrap();
     let merchant_rule = rules
         .iter()
         .find(|r| r.field_name == "merchant")
@@ -217,7 +216,10 @@ fn a_corrected_transaction_leaves_the_queue() {
     assert!(
         second_pass.is_empty(),
         "a corrected transaction must not be re-queued, got {:?}",
-        second_pass.iter().map(|c| &c.transaction_id).collect::<Vec<_>>()
+        second_pass
+            .iter()
+            .map(|c| &c.transaction_id)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -383,7 +385,14 @@ fn list_runs_reports_each_run_newest_first_with_its_changes() {
 #[test]
 fn queue_is_ordered_worst_first() {
     let conn = setup();
-    seed_txn(&conn, "tx_mild", "SWIGGY LIMITE", "bank_templates", None, None);
+    seed_txn(
+        &conn,
+        "tx_mild",
+        "SWIGGY LIMITE",
+        "bank_templates",
+        None,
+        None,
+    );
     seed_txn(&conn, "tx_awful", "NK", "nlp", None, None);
 
     let queue = select_candidates(&conn, 10).unwrap();

@@ -42,8 +42,11 @@ pub fn clear_dismissal(conn: &Connection, warning_type: &str) -> Result<()> {
 }
 
 pub fn load_all(conn: &Connection) -> Result<HashMap<String, String>> {
-    let mut stmt = conn.prepare("SELECT warning_type, message_hash FROM dismissed_system_warnings")?;
-    let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+    let mut stmt =
+        conn.prepare("SELECT warning_type, message_hash FROM dismissed_system_warnings")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
     let mut out = HashMap::new();
     for row in rows {
         let (k, v) = row?;

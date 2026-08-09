@@ -22,7 +22,8 @@ pub struct StatementDraftRow {
     pub updated_at: Option<NaiveDateTime>,
 }
 
-const SELECT_COLUMNS: &str = "id, origin, file_hash, instrument_id, issuer_name, masked_identifier, \
+const SELECT_COLUMNS: &str =
+    "id, origin, file_hash, instrument_id, issuer_name, masked_identifier, \
      instrument_type, billing_period_start, billing_period_end, due_date, statement_date, \
      current_balance, minimum_due, rows_json, status, created_at, updated_at";
 
@@ -83,7 +84,13 @@ pub fn select_by_id(conn: &Connection, id: &str) -> Result<Option<StatementDraft
         row_from_sql,
     )
     .map(Some)
-    .or_else(|e| if e == rusqlite::Error::QueryReturnedNoRows { Ok(None) } else { Err(e) })
+    .or_else(|e| {
+        if e == rusqlite::Error::QueryReturnedNoRows {
+            Ok(None)
+        } else {
+            Err(e)
+        }
+    })
 }
 
 pub fn select_pending_review(conn: &Connection) -> Result<Vec<StatementDraftRow>> {
@@ -197,7 +204,11 @@ mod tests {
         .await
         .unwrap();
 
-        let rows = conn.interact(|c| select_pending_review(c)).await.unwrap().unwrap();
+        let rows = conn
+            .interact(|c| select_pending_review(c))
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "draft_1");
     }
@@ -239,7 +250,11 @@ mod tests {
             .unwrap();
         assert_eq!(fetched.status, "discarded");
 
-        let deleted = conn.interact(|c| delete(c, "draft_1")).await.unwrap().unwrap();
+        let deleted = conn
+            .interact(|c| delete(c, "draft_1"))
+            .await
+            .unwrap()
+            .unwrap();
         assert!(deleted);
         let gone = conn
             .interact(|c| select_by_id(c, "draft_1"))

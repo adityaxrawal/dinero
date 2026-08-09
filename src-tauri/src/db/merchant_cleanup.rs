@@ -598,11 +598,8 @@ pub fn revert_correction(conn: &Connection, correction_id: &str) -> Result<()> {
         // `revert` sets it inactive and logs the reversal, rather than
         // deleting: the history of what was tried is what makes the whole
         // no-approval design auditable.
-        let _ = crate::db::field_rules::revert(
-            conn,
-            &rule_id,
-            "merchant cleanup correction reverted",
-        );
+        let _ =
+            crate::db::field_rules::revert(conn, &rule_id, "merchant cleanup correction reverted");
     }
 
     conn.execute(

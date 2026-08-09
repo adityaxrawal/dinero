@@ -10,6 +10,7 @@ mod categories_tests;
 pub mod connected_accounts;
 mod connection_tests;
 pub mod crypto;
+pub mod dismissed_warnings;
 pub mod feedback_log;
 #[cfg(test)]
 mod feedback_log_tests;
@@ -53,7 +54,6 @@ mod sender_reputation_tests;
 pub mod sessions;
 #[cfg(test)]
 mod sessions_tests;
-pub mod dismissed_warnings;
 pub mod statement_drafts;
 pub mod statement_entries;
 pub mod statements;

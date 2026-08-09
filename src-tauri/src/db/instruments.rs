@@ -331,13 +331,11 @@ pub fn resolve_single_instrument_by_issuer(
          WHERE issuer_name = ?1 COLLATE NOCASE AND is_deleted = 0",
     )?;
     let mut ids = stmt
-        .query_map(rusqlite::params![issuer_name], |row| row.get::<_, String>(0))?
+        .query_map(rusqlite::params![issuer_name], |row| {
+            row.get::<_, String>(0)
+        })?
         .collect::<rusqlite::Result<Vec<String>>>()?;
-    Ok(if ids.len() == 1 {
-        ids.pop()
-    } else {
-        None
-    })
+    Ok(if ids.len() == 1 { ids.pop() } else { None })
 }
 
 #[cfg(test)]

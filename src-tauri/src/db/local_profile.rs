@@ -118,9 +118,6 @@ pub fn set_llm_model(conn: &Connection, model_id: &str) -> Result<()> {
 /// active model was deleted and no other downloaded model is available to
 /// take its place.
 pub fn clear_llm_model(conn: &Connection) -> Result<()> {
-    conn.execute(
-        "UPDATE local_profile SET llm_model = NULL WHERE id = 1",
-        [],
-    )?;
+    conn.execute("UPDATE local_profile SET llm_model = NULL WHERE id = 1", [])?;
     Ok(())
 }

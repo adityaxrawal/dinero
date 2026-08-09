@@ -330,7 +330,15 @@ pub fn revert(conn: &Connection, id: &str, reason: &str) -> Result<()> {
     )?;
     let parsed: serde_json::Value =
         serde_json::from_str(&payload).unwrap_or(serde_json::Value::Null);
-    insert_change_log(conn, Some(id), "reverted", Some(&parsed), None, None, reason)
+    insert_change_log(
+        conn,
+        Some(id),
+        "reverted",
+        Some(&parsed),
+        None,
+        None,
+        reason,
+    )
 }
 
 /// Records a candidate that failed the validation gate. Deliberately writes no
@@ -342,7 +350,15 @@ pub fn log_rejection(
     payload: Option<&serde_json::Value>,
     reason: &str,
 ) -> Result<()> {
-    insert_change_log(conn, None, "rejected", None, payload, feedback_log_id, reason)
+    insert_change_log(
+        conn,
+        None,
+        "rejected",
+        None,
+        payload,
+        feedback_log_id,
+        reason,
+    )
 }
 
 /// Retained source bodies for a bank, paired with the value currently accepted

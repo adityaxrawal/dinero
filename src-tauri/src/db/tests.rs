@@ -2103,7 +2103,8 @@ mod tests {
             amount_minor: Some(45050),
             currency: Some("INR".into()),
             authorization_time: Some(
-                chrono::NaiveDateTime::parse_from_str("2026-07-29 14:30:00", "%Y-%m-%d %H:%M:%S").unwrap(),
+                chrono::NaiveDateTime::parse_from_str("2026-07-29 14:30:00", "%Y-%m-%d %H:%M:%S")
+                    .unwrap(),
             ),
             best_event_time: None,
             event_time_confidence: None,

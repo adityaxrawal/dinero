@@ -54,6 +54,7 @@ pub fn upsert_checkpoint(conn: &Connection, checkpoint: &ProcessingCheckpointRow
 /// JSON has exactly the shape `ScanCheckpointState` deserializes today.
 /// A no-op if the row does not exist yet — the initial `upsert_checkpoint` at
 /// scan start is what creates it.
+#[allow(clippy::too_many_arguments)] // wide-but-flat domain signature; a params struct would add indirection without removing a single field
 pub fn patch_scan_progress(
     conn: &Connection,
     job_key: &str,

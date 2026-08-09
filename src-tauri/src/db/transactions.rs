@@ -690,7 +690,8 @@ mod candidate_search_tests {
         let anchor =
             NaiveDateTime::parse_from_str("2026-06-10 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
         let results =
-            find_candidates_within_window(&conn, "inst_1", 1000, "INR", "debit", &anchor, 3).unwrap();
+            find_candidates_within_window(&conn, "inst_1", 1000, "INR", "debit", &anchor, 3)
+                .unwrap();
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "match");
@@ -724,23 +725,20 @@ mod candidate_search_tests {
         let anchor =
             NaiveDateTime::parse_from_str("2026-06-10 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
 
-        let inr =
-            find_candidates_within_window(&conn, "inst_1", 50000, "INR", "debit", &anchor, 3)
-                .unwrap();
+        let inr = find_candidates_within_window(&conn, "inst_1", 50000, "INR", "debit", &anchor, 3)
+            .unwrap();
         assert_eq!(inr.len(), 1, "a ₹500 debit must not match a $500 debit");
         assert_eq!(inr[0].id, "inr_match");
 
         // Symmetric: searching in USD must find only the USD row.
-        let usd =
-            find_candidates_within_window(&conn, "inst_1", 50000, "USD", "debit", &anchor, 3)
-                .unwrap();
+        let usd = find_candidates_within_window(&conn, "inst_1", 50000, "USD", "debit", &anchor, 3)
+            .unwrap();
         assert_eq!(usd.len(), 1);
         assert_eq!(usd[0].id, "usd_decoy");
 
         // A currency present on neither row matches nothing.
-        let eur =
-            find_candidates_within_window(&conn, "inst_1", 50000, "EUR", "debit", &anchor, 3)
-                .unwrap();
+        let eur = find_candidates_within_window(&conn, "inst_1", 50000, "EUR", "debit", &anchor, 3)
+            .unwrap();
         assert!(eur.is_empty());
     }
 
@@ -770,7 +768,8 @@ mod candidate_search_tests {
         let anchor =
             NaiveDateTime::parse_from_str("2026-06-10 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
         let results =
-            find_candidates_within_window(&conn, "inst_1", 1000, "INR", "debit", &anchor, 3).unwrap();
+            find_candidates_within_window(&conn, "inst_1", 1000, "INR", "debit", &anchor, 3)
+                .unwrap();
 
         let ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
         assert!(ids.contains(&"within_window"));
@@ -795,7 +794,8 @@ mod candidate_search_tests {
         let anchor =
             NaiveDateTime::parse_from_str("2026-06-10 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
         let results =
-            find_candidates_within_window(&conn, "inst_1", 1000, "INR", "debit", &anchor, 3).unwrap();
+            find_candidates_within_window(&conn, "inst_1", 1000, "INR", "debit", &anchor, 3)
+                .unwrap();
 
         assert!(results.is_empty());
     }

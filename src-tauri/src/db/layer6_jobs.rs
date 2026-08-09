@@ -65,7 +65,9 @@ mod tests {
     async fn insert_select_delete_round_trip() {
         let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).unwrap();
-        let pool = init_db(temp_dir.join("test.db")).await.expect("DB init failed");
+        let pool = init_db(temp_dir.join("test.db"))
+            .await
+            .expect("DB init failed");
         let conn = pool.get().await.unwrap();
 
         conn.interact(|c| {
