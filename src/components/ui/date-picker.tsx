@@ -1,41 +1,10 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Calendar as CalendarIcon, ChevronLeft, ChevronRight, X } from 'lucide-react';
+import React from 'react';
 import { cn } from '@/lib/utils';
-
-// Helper to safely parse YYYY-MM-DD into a local Date without UTC shift
-export function parseISODate(dateStr?: string | null): Date | null {
-  if (!dateStr) return null;
-  const parts = dateStr.slice(0, 10).split('-').map(Number);
-  if (parts.length < 3 || parts.some(isNaN)) return null;
-  const [year, month, day] = parts;
-  return new Date(year, month - 1, day);
-}
-
-// Helper to format a Date into YYYY-MM-DD local string
-export function toISODate(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-}
-
-// Helper for human display format (e.g. 26 Jul 2026)
-export function formatDisplayDate(dateStr?: string | null): string {
-  const parsed = parseISODate(dateStr);
-  if (!parsed) return '';
-  return parsed.toLocaleDateString('en-GB', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-  });
-}
-
-const MONTH_NAMES = [
-  'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December'
-];
-
-const SHORT_DAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+import { parseISODate, toISODate } from './dateHelpers';
+import { usePopover } from './datePicker/usePopover';
+import { useCalendar } from './datePicker/useCalendar';
+import CalendarPopover from './datePicker/CalendarPopover';
+import DatePickerTrigger from './datePicker/DatePickerTrigger';
 
 export interface DatePickerProps {
   value?: string | null | undefined;
@@ -66,327 +35,44 @@ export const DatePicker: React.FC<DatePickerProps> = ({
   size = 'default',
   'aria-label': ariaLabel,
 }) => {
-  const [isOpen, setIsOpen] = useState(false);
-  const [openUpward, setOpenUpward] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLDivElement>(null);
+  const { isOpen, openUpward, containerRef, triggerRef, toggle, close } = usePopover(disabled);
+  const calendar = useCalendar(value ?? undefined, min, max);
 
-  const selectedDate = parseISODate(value);
-  const minDate = parseISODate(min);
-  const maxDate = parseISODate(max);
+  const handleSelectDay = (dayNum: number, offsetMonth: number) => {
+    const dateObj = new Date(calendar.year, calendar.month + offsetMonth, dayNum);
+    if (calendar.minDate && dateObj < calendar.minDate) return;
+    if (calendar.maxDate && dateObj > calendar.maxDate) return;
 
-  const today = new Date();
-  const [viewDate, setViewDate] = useState<Date>(() => selectedDate || today);
-
-  // Sync viewDate when popover opens or value changes
-  useEffect(() => {
-    if (selectedDate) {
-      setViewDate(selectedDate);
-    }
-  }, [value]);
-
-  // Handle click outside to close popover
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
-    }
-    if (isOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [isOpen]);
-
-  const year = viewDate.getFullYear();
-  const month = viewDate.getMonth();
-
-  // Generate calendar grid
-  const firstDayOfMonth = new Date(year, month, 1).getDay();
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const daysInPrevMonth = new Date(year, month, 0).getDate();
-
-  const handlePrevMonth = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setViewDate(new Date(year, month - 1, 1));
+    onChange(toISODate(dateObj));
+    close();
   };
-
-  const handleNextMonth = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setViewDate(new Date(year, month + 1, 1));
-  };
-
-  const handleYearChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const newYear = parseInt(e.target.value, 10);
-    setViewDate(new Date(newYear, month, 1));
-  };
-
-  const handleMonthChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const newMonth = parseInt(e.target.value, 10);
-    setViewDate(new Date(year, newMonth, 1));
-  };
-
-  const handleSelectDay = (dayNum: number, _isCurrentMonth: boolean, offsetMonth = 0) => {
-    const targetMonth = month + offsetMonth;
-    const dateObj = new Date(year, targetMonth, dayNum);
-    const iso = toISODate(dateObj);
-
-    if (minDate && dateObj < minDate) return;
-    if (maxDate && dateObj > maxDate) return;
-
-    onChange(iso);
-    setIsOpen(false);
-  };
-
-  const isToday = (dayNum: number) => {
-    return (
-      today.getFullYear() === year &&
-      today.getMonth() === month &&
-      today.getDate() === dayNum
-    );
-  };
-
-  const isSelected = (dayNum: number) => {
-    if (!selectedDate) return false;
-    return (
-      selectedDate.getFullYear() === year &&
-      selectedDate.getMonth() === month &&
-      selectedDate.getDate() === dayNum
-    );
-  };
-
-  const isDateDisabled = (dayNum: number, offsetMonth = 0) => {
-    const dateObj = new Date(year, month + offsetMonth, dayNum);
-    if (minDate) {
-      const minStart = new Date(minDate.getFullYear(), minDate.getMonth(), minDate.getDate());
-      if (dateObj < minStart) return true;
-    }
-    if (maxDate) {
-      const maxEnd = new Date(maxDate.getFullYear(), maxDate.getMonth(), maxDate.getDate());
-      if (dateObj > maxEnd) return true;
-    }
-    return false;
-  };
-
-  // Year range options for fast jumper
-  const minYear = minDate ? minDate.getFullYear() : Math.min(2010, year - 5);
-  const maxYear = maxDate ? maxDate.getFullYear() : Math.max(today.getFullYear() + 5, year + 5);
-  const years = Array.from({ length: maxYear - minYear + 1 }, (_, i) => minYear + i);
 
   return (
     <div ref={containerRef} className={cn('relative inline-block w-full', className)}>
-      {/* Input Trigger Button */}
-      <div
-        ref={triggerRef}
+      <DatePickerTrigger
+        triggerRef={triggerRef}
         id={id}
-        tabIndex={disabled ? -1 : 0}
-        role="button"
-        aria-label={ariaLabel || placeholder}
-        aria-expanded={isOpen}
-        onClick={() => {
-          if (disabled) return;
-          if (!isOpen) {
-            // Compute available space to decide direction
-            if (triggerRef.current) {
-              const rect = triggerRef.current.getBoundingClientRect();
-              const viewportHeight = window.innerHeight;
-              const spaceBelow = viewportHeight - rect.bottom;
-              const spaceAbove = rect.top;
-              // Calendar is ~320px tall; flip upward if not enough room below
-              setOpenUpward(spaceBelow < 330 && spaceAbove > spaceBelow);
-            }
-          }
-          setIsOpen(!isOpen);
-        }}
-        onKeyDown={(e) => {
-          if (!disabled && (e.key === 'Enter' || e.key === ' ')) {
-            e.preventDefault();
-            setIsOpen(!isOpen);
-          }
-        }}
-        className={cn(
-          'flex items-center justify-between gap-2 rounded-lg border transition-all cursor-pointer select-none outline-none',
-          'bg-[#F8E7C9]/40 hover:bg-[#F8E7C9]/70 border-[#064E3B]/20 text-[#064E3B]',
-          'focus-visible:ring-2 focus-visible:ring-[#064E3B] focus-visible:border-transparent',
-          disabled && 'opacity-50 cursor-not-allowed pointer-events-none bg-black/5',
-          isOpen && 'border-[#064E3B] ring-1 ring-[#064E3B] bg-[#F8E7C9]',
-          size === 'sm' ? 'px-2.5 py-1 text-xs h-8' : 'px-3 py-2 text-xs md:text-sm h-10',
-          triggerClassName
-        )}
-      >
-        <div className="flex items-center gap-2 overflow-hidden truncate">
-          <CalendarIcon className={cn('flex-shrink-0 text-[#064E3B]/70', size === 'sm' ? 'w-3.5 h-3.5' : 'w-4 h-4')} />
-          <span className={cn('truncate font-medium', !value && 'text-[#064E3B]/50 font-normal')}>
-            {value ? formatDisplayDate(value) : placeholder}
-          </span>
-        </div>
+        value={value}
+        placeholder={placeholder}
+        ariaLabel={ariaLabel}
+        disabled={disabled}
+        isOpen={isOpen}
+        size={size}
+        clearable={clearable}
+        triggerClassName={triggerClassName}
+        onToggle={toggle}
+        onClear={() => onChange('')}
+      />
 
-        <div className="flex items-center gap-1">
-          {clearable && value && !disabled && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onChange('');
-              }}
-              className="p-0.5 rounded-full hover:bg-[#064E3B]/10 text-[#064E3B]/60 hover:text-[#064E3B]"
-              aria-label="Clear date"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Calendar Popover */}
       {isOpen && (
-        <div
-          className={cn(
-            'absolute z-50 w-72 rounded-xl bg-[#F3EBDD] border border-[#d9c8a8] shadow-xl p-3.5 duration-150',
-            openUpward
-              ? 'bottom-full mb-1.5 animate-in fade-in slide-in-from-bottom-2'
-              : 'top-full mt-1.5 animate-in fade-in slide-in-from-top-2'
-          )}
-        >
-          {/* Header Controls (Month/Year dropdowns & Chevrons) */}
-          <div className="flex items-center justify-between mb-3 gap-1">
-            <button
-              type="button"
-              onClick={handlePrevMonth}
-              className="p-1.5 rounded-md hover:bg-[#064E3B]/10 text-[#064E3B] transition-colors"
-              aria-label="Previous month"
-            >
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-
-            <div className="flex items-center gap-1.5">
-              <select
-                value={month}
-                onChange={handleMonthChange}
-                className="bg-[#F8E7C9] text-[#064E3B] font-semibold text-xs rounded-md px-1.5 py-1 border border-[#064E3B]/20 cursor-pointer outline-none focus:ring-1 focus:ring-[#064E3B]"
-              >
-                {MONTH_NAMES.map((name, idx) => (
-                  <option key={name} value={idx}>
-                    {name}
-                  </option>
-                ))}
-              </select>
-
-              <select
-                value={year}
-                onChange={handleYearChange}
-                className="bg-[#F8E7C9] text-[#064E3B] font-semibold text-xs rounded-md px-1.5 py-1 border border-[#064E3B]/20 cursor-pointer outline-none focus:ring-1 focus:ring-[#064E3B]"
-              >
-                {years.map((y) => (
-                  <option key={y} value={y}>
-                    {y}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <button
-              type="button"
-              onClick={handleNextMonth}
-              className="p-1.5 rounded-md hover:bg-[#064E3B]/10 text-[#064E3B] transition-colors"
-              aria-label="Next month"
-            >
-              <ChevronRight className="w-4 h-4" />
-            </button>
-          </div>
-
-          {/* Days of Week Header */}
-          <div className="grid grid-cols-7 gap-1 text-center mb-1">
-            {SHORT_DAYS.map((d) => (
-              <span key={d} className="text-[11px] font-semibold text-[#064E3B]/60 py-1">
-                {d}
-              </span>
-            ))}
-          </div>
-
-          {/* Calendar Day Cells */}
-          <div className="grid grid-cols-7 gap-1 text-center">
-            {/* Previous Month Trail */}
-            {Array.from({ length: firstDayOfMonth }).map((_, i) => {
-              const dayNum = daysInPrevMonth - firstDayOfMonth + i + 1;
-              const disabled = isDateDisabled(dayNum, -1);
-              return (
-                <button
-                  key={`prev-${i}`}
-                  type="button"
-                  disabled={disabled}
-                  onClick={() => handleSelectDay(dayNum, false, -1)}
-                  className={cn(
-                    'h-8 w-8 rounded-lg text-xs flex items-center justify-center text-[#064E3B]/30 hover:bg-[#064E3B]/5 transition-colors mx-auto',
-                    disabled && 'opacity-20 cursor-not-allowed pointer-events-none'
-                  )}
-                >
-                  {dayNum}
-                </button>
-              );
-            })}
-
-            {/* Current Month Days */}
-            {Array.from({ length: daysInMonth }).map((_, i) => {
-              const dayNum = i + 1;
-              const selected = isSelected(dayNum);
-              const todayFlag = isToday(dayNum);
-              const disabled = isDateDisabled(dayNum, 0);
-
-              return (
-                <button
-                  key={`curr-${dayNum}`}
-                  type="button"
-                  disabled={disabled}
-                  onClick={() => handleSelectDay(dayNum, true, 0)}
-                  className={cn(
-                    'h-8 w-8 rounded-lg text-xs font-medium flex items-center justify-center transition-all mx-auto relative',
-                    selected
-                      ? 'bg-[#064E3B] text-[#F8E7C9] font-bold shadow-md scale-105'
-                      : 'hover:bg-[#064E3B]/10 text-[#064E3B]',
-                    todayFlag && !selected && 'border border-[#064E3B] text-[#064E3B] font-bold bg-[#F8E7C9]/60',
-                    disabled && 'opacity-30 cursor-not-allowed pointer-events-none'
-                  )}
-                >
-                  {dayNum}
-                  {todayFlag && !selected && (
-                    <span className="absolute bottom-1 w-1 h-1 rounded-full bg-[#064E3B]" />
-                  )}
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Bottom Quick Jump Action */}
-          <div className="mt-3 pt-2.5 border-t border-[#d9c8a8]/60 flex items-center justify-between text-xs">
-            <button
-              type="button"
-              onClick={() => {
-                const todayISO = toISODate(new Date());
-                onChange(todayISO);
-                setViewDate(new Date());
-                setIsOpen(false);
-              }}
-              className="text-[#064E3B] font-semibold hover:underline"
-            >
-              Today
-            </button>
-            {value && (
-              <button
-                type="button"
-                onClick={() => {
-                  onChange('');
-                  setIsOpen(false);
-                }}
-                className="text-red-700 hover:underline"
-              >
-                Clear
-              </button>
-            )}
-          </div>
-        </div>
+        <CalendarPopover
+          calendar={calendar}
+          openUpward={openUpward}
+          value={value}
+          onChange={onChange}
+          onSelectDay={handleSelectDay}
+          onClose={close}
+        />
       )}
     </div>
   );

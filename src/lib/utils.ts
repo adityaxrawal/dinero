@@ -5,6 +5,17 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+/** Display text for a caught value. Tauri `invoke` rejects with plain strings
+ *  and with bare `{ message }` objects as often as with real `Error`s, so a
+ *  catch block that only handles one of the three prints "[object Object]". */
+export function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'object' && err !== null && 'message' in err) {
+    return String((err as { message: unknown }).message);
+  }
+  return String(err);
+}
+
 const CHANNEL_ACRONYMS: Record<string, string> = {
   upi: 'UPI',
   upi_credit_card: 'UPI on Credit Card',

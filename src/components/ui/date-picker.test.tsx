@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { DatePicker, DateRangePicker, parseISODate, toISODate, formatDisplayDate } from './date-picker';
+import { DatePicker, DateRangePicker } from './date-picker';
+import { parseISODate, toISODate, formatDisplayDate } from './dateHelpers';
 
 describe('date-picker utilities', () => {
   it('parses ISO date string correctly without timezone shift', () => {
