@@ -127,6 +127,11 @@ export function RelativeDate({ iso, className }: { iso: string | null; className
   const parsed = new Date(/[TZ]/.test(iso) ? iso : `${iso.replace(' ', 'T')}Z`);
   if (Number.isNaN(parsed.getTime())) return <span className={className}>unknown date</span>;
 
+  // Reading the clock during render is the whole point of a relative date, and
+  // this is a leaf with no memoization — it re-reads on every render of its
+  // parent, which is exactly the intended behaviour. Hoisting "now" into state
+  // isn't possible here without restructuring the two early returns above.
+  // eslint-disable-next-line react-hooks/purity
   const diffMs = Date.now() - parsed.getTime();
   const label = formatRelative(diffMs, parsed);
 

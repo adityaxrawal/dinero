@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { ConfidenceMeter, RelativeDate } from './SettingsPrimitives';
-import { groupRules } from './LearnedRulesSettings';
+import { groupRules } from './groupRules';
 import type { LearnedRule } from '@/lib/ipc';
 
 /**

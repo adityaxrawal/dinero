@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import LocalLlmSettings from './LocalLlmSettings';
-import { API } from '@/lib/ipc';
+import { API, type LlmModelInfo } from '@/lib/ipc';
 
 vi.mock('@/lib/ipc', () => ({
   API: {
@@ -22,14 +22,14 @@ vi.mock('@/lib/ipc', () => ({
   },
 }));
 
-let ipcListenHandler: ((payload: any) => void) | null = null;
+let ipcListenHandler: ((payload: unknown) => void) | null = null;
 vi.mock('@/hooks/useIpcListen', () => ({
-  useIpcListen: (_event: string, handler: (payload: any) => void) => {
+  useIpcListen: (_event: string, handler: (payload: unknown) => void) => {
     ipcListenHandler = handler;
   },
 }));
 
-const MODELS = [
+const MODELS: LlmModelInfo[] = [
   {
     id: 'gemma4_e4b',
     name: 'Gemma 4 E4B',
@@ -40,6 +40,7 @@ const MODELS = [
     rationale: 'r1',
     gguf_url: 'u1',
     expected_sha256: 'h1',
+    tokenizer_url: null,
   },
   {
     id: 'gemma4_12b',
@@ -51,6 +52,7 @@ const MODELS = [
     rationale: 'r2',
     gguf_url: 'u2',
     expected_sha256: 'h2',
+    tokenizer_url: null,
   },
 ];
 
@@ -61,23 +63,22 @@ describe('LocalLlmSettings', () => {
     localStorage.clear();
     // Default hardware info for tests that don't care about it — the four
     // pre-existing tests below just need the load Promise.all to resolve.
-    (API.llm.getHardwareInfo as any).mockResolvedValue({
+    vi.mocked(API.llm.getHardwareInfo).mockResolvedValue({
       ram_gb: 64,
       cpu_cores: 8,
       recommended_slots: 4,
       recommended_model_id: null,
     });
-    (API.llm.setParallelSlots as any).mockResolvedValue(4);
+    vi.mocked(API.llm.setParallelSlots).mockResolvedValue(4);
   });
 
   it('reassigns the Active badge to the remaining downloaded model when the active model is deleted', async () => {
-    (API.llm.getAvailableModels as any).mockResolvedValue(MODELS);
-    (API.llm.getDownloadedModels as any)
-      .mockResolvedValueOnce(['gemma4_e4b', 'gemma4_12b']) // initial load
+    vi.mocked(API.llm.getAvailableModels).mockResolvedValue(MODELS);
+    vi.mocked(API.llm.getDownloadedModels).mockResolvedValueOnce(['gemma4_e4b', 'gemma4_12b']) // initial load
       .mockResolvedValueOnce(['gemma4_e4b']); // after delete
-    (API.llm.getActiveModel as any).mockResolvedValue('gemma4_12b');
+    vi.mocked(API.llm.getActiveModel).mockResolvedValue('gemma4_12b');
     // Backend self-heals and returns the new active model id directly.
-    (API.llm.deleteModel as any).mockResolvedValue('gemma4_e4b');
+    vi.mocked(API.llm.deleteModel).mockResolvedValue('gemma4_e4b');
     vi.spyOn(window, 'confirm').mockReturnValue(true);
 
     render(<LocalLlmSettings />);
@@ -110,12 +111,11 @@ describe('LocalLlmSettings', () => {
   });
 
   it('renders no Active badge when the only downloaded model is deleted', async () => {
-    (API.llm.getAvailableModels as any).mockResolvedValue(MODELS);
-    (API.llm.getDownloadedModels as any)
-      .mockResolvedValueOnce(['gemma4_12b'])
+    vi.mocked(API.llm.getAvailableModels).mockResolvedValue(MODELS);
+    vi.mocked(API.llm.getDownloadedModels).mockResolvedValueOnce(['gemma4_12b'])
       .mockResolvedValueOnce([]);
-    (API.llm.getActiveModel as any).mockResolvedValue('gemma4_12b');
-    (API.llm.deleteModel as any).mockResolvedValue('');
+    vi.mocked(API.llm.getActiveModel).mockResolvedValue('gemma4_12b');
+    vi.mocked(API.llm.deleteModel).mockResolvedValue('');
     vi.spyOn(window, 'confirm').mockReturnValue(true);
 
     render(<LocalLlmSettings />);
@@ -136,14 +136,14 @@ describe('LocalLlmSettings', () => {
   });
 
   it('shows live download speed and ETA from progress events', async () => {
-    (API.llm.getAvailableModels as any).mockResolvedValue(MODELS);
-    (API.llm.getDownloadedModels as any).mockResolvedValue([]);
-    (API.llm.getActiveModel as any).mockResolvedValue('');
+    vi.mocked(API.llm.getAvailableModels).mockResolvedValue(MODELS);
+    vi.mocked(API.llm.getDownloadedModels).mockResolvedValue([]);
+    vi.mocked(API.llm.getActiveModel).mockResolvedValue('');
     // Never resolves — mirrors the real command, which only resolves once
     // the whole multi-GB download finishes. Keeps the component in the
     // "downloading" state so the progress event we dispatch below is
     // actually rendered instead of the download flow completing first.
-    (API.llm.downloadModel as any).mockReturnValue(new Promise(() => {}));
+    vi.mocked(API.llm.downloadModel).mockReturnValue(new Promise(() => {}));
 
     render(<LocalLlmSettings />);
 
@@ -169,19 +169,18 @@ describe('LocalLlmSettings', () => {
   });
 
   it('cancels an in-progress download via the Cancel button', async () => {
-    (API.llm.getAvailableModels as any).mockResolvedValue(MODELS);
-    (API.llm.getDownloadedModels as any)
-      .mockResolvedValueOnce([]) // initial load
+    vi.mocked(API.llm.getAvailableModels).mockResolvedValue(MODELS);
+    vi.mocked(API.llm.getDownloadedModels).mockResolvedValueOnce([]) // initial load
       .mockResolvedValueOnce([]); // after the cancelled download's cleanup fetch
-    (API.llm.getActiveModel as any).mockResolvedValue('');
+    vi.mocked(API.llm.getActiveModel).mockResolvedValue('');
 
     let resolveDownload: (() => void) | undefined;
-    (API.llm.downloadModel as any).mockReturnValue(
+    vi.mocked(API.llm.downloadModel).mockReturnValue(
       new Promise<void>((resolve) => {
         resolveDownload = resolve;
       })
     );
-    (API.llm.cancelDownload as any).mockImplementation(async () => {
+    vi.mocked(API.llm.cancelDownload).mockImplementation(async () => {
       resolveDownload?.();
     });
 
@@ -204,16 +203,16 @@ describe('LocalLlmSettings', () => {
   });
 
   it('shows recommended parallel instances and a hardware-recommended model badge', async () => {
-    (API.llm.getAvailableModels as any).mockResolvedValue(MODELS);
-    (API.llm.getDownloadedModels as any).mockResolvedValue(['gemma4_e4b']);
-    (API.llm.getActiveModel as any).mockResolvedValue('gemma4_e4b');
-    (API.llm.getHardwareInfo as any).mockResolvedValue({
+    vi.mocked(API.llm.getAvailableModels).mockResolvedValue(MODELS);
+    vi.mocked(API.llm.getDownloadedModels).mockResolvedValue(['gemma4_e4b']);
+    vi.mocked(API.llm.getActiveModel).mockResolvedValue('gemma4_e4b');
+    vi.mocked(API.llm.getHardwareInfo).mockResolvedValue({
       ram_gb: 24,
       cpu_cores: 10,
       recommended_slots: 5,
       recommended_model_id: 'gemma4_12b',
     });
-    (API.llm.setParallelSlots as any).mockResolvedValue(5);
+    vi.mocked(API.llm.setParallelSlots).mockResolvedValue(5);
 
     render(<LocalLlmSettings />);
 
@@ -244,16 +243,16 @@ describe('LocalLlmSettings', () => {
   });
 
   it('clamps a user-entered instance count to 1-10 but waits for Save to persist it', async () => {
-    (API.llm.getAvailableModels as any).mockResolvedValue(MODELS);
-    (API.llm.getDownloadedModels as any).mockResolvedValue([]);
-    (API.llm.getActiveModel as any).mockResolvedValue('');
-    (API.llm.getHardwareInfo as any).mockResolvedValue({
+    vi.mocked(API.llm.getAvailableModels).mockResolvedValue(MODELS);
+    vi.mocked(API.llm.getDownloadedModels).mockResolvedValue([]);
+    vi.mocked(API.llm.getActiveModel).mockResolvedValue('');
+    vi.mocked(API.llm.getHardwareInfo).mockResolvedValue({
       ram_gb: 8,
       cpu_cores: 4,
       recommended_slots: 1,
       recommended_model_id: 'gemma4_e4b',
     });
-    (API.llm.setParallelSlots as any).mockResolvedValue(1);
+    vi.mocked(API.llm.setParallelSlots).mockResolvedValue(1);
 
     render(<LocalLlmSettings />);
 
@@ -280,16 +279,16 @@ describe('LocalLlmSettings', () => {
   });
 
   it('shows an above-recommended-tier warning when the selected model is heavier than recommended', async () => {
-    (API.llm.getAvailableModels as any).mockResolvedValue(MODELS);
-    (API.llm.getDownloadedModels as any).mockResolvedValue(['gemma4_e4b', 'gemma4_12b']);
-    (API.llm.getActiveModel as any).mockResolvedValue('gemma4_12b');
-    (API.llm.getHardwareInfo as any).mockResolvedValue({
+    vi.mocked(API.llm.getAvailableModels).mockResolvedValue(MODELS);
+    vi.mocked(API.llm.getDownloadedModels).mockResolvedValue(['gemma4_e4b', 'gemma4_12b']);
+    vi.mocked(API.llm.getActiveModel).mockResolvedValue('gemma4_12b');
+    vi.mocked(API.llm.getHardwareInfo).mockResolvedValue({
       ram_gb: 8,
       cpu_cores: 4,
       recommended_slots: 1,
       recommended_model_id: 'gemma4_e4b',
     });
-    (API.llm.setParallelSlots as any).mockResolvedValue(1);
+    vi.mocked(API.llm.setParallelSlots).mockResolvedValue(1);
 
     render(<LocalLlmSettings />);
 
@@ -300,16 +299,16 @@ describe('LocalLlmSettings', () => {
   });
 
   it('shows no warning when the selected model is at or below the recommended tier', async () => {
-    (API.llm.getAvailableModels as any).mockResolvedValue(MODELS);
-    (API.llm.getDownloadedModels as any).mockResolvedValue(['gemma4_e4b']);
-    (API.llm.getActiveModel as any).mockResolvedValue('gemma4_e4b');
-    (API.llm.getHardwareInfo as any).mockResolvedValue({
+    vi.mocked(API.llm.getAvailableModels).mockResolvedValue(MODELS);
+    vi.mocked(API.llm.getDownloadedModels).mockResolvedValue(['gemma4_e4b']);
+    vi.mocked(API.llm.getActiveModel).mockResolvedValue('gemma4_e4b');
+    vi.mocked(API.llm.getHardwareInfo).mockResolvedValue({
       ram_gb: 8,
       cpu_cores: 4,
       recommended_slots: 1,
       recommended_model_id: 'gemma4_e4b',
     });
-    (API.llm.setParallelSlots as any).mockResolvedValue(1);
+    vi.mocked(API.llm.setParallelSlots).mockResolvedValue(1);
 
     render(<LocalLlmSettings />);
 
@@ -318,16 +317,16 @@ describe('LocalLlmSettings', () => {
   });
 
   it('disables Save until the instance count is actually changed', async () => {
-    (API.llm.getAvailableModels as any).mockResolvedValue(MODELS);
-    (API.llm.getDownloadedModels as any).mockResolvedValue([]);
-    (API.llm.getActiveModel as any).mockResolvedValue('');
-    (API.llm.getHardwareInfo as any).mockResolvedValue({
+    vi.mocked(API.llm.getAvailableModels).mockResolvedValue(MODELS);
+    vi.mocked(API.llm.getDownloadedModels).mockResolvedValue([]);
+    vi.mocked(API.llm.getActiveModel).mockResolvedValue('');
+    vi.mocked(API.llm.getHardwareInfo).mockResolvedValue({
       ram_gb: 8,
       cpu_cores: 4,
       recommended_slots: 1,
       recommended_model_id: 'gemma4_e4b',
     });
-    (API.llm.setParallelSlots as any).mockResolvedValue(1);
+    vi.mocked(API.llm.setParallelSlots).mockResolvedValue(1);
 
     render(<LocalLlmSettings />);
     await screen.findByLabelText('Number of parallel LLM instances');

@@ -1,11 +1,19 @@
 // Source-scan test, matching Settings.billing.test.ts's precedent: a full
-// render of Settings.tsx requires mocking every tab's unrelated IPC calls
+// render of the Settings page requires mocking every tab's unrelated IPC calls
 // on mount for no extra signal on this feature's specific claims.
+//
+// Settings.tsx is now a thin section router; the mail-scan UI it used to hold
+// inline lives in src/pages/settings/. The scan is therefore read across that
+// whole directory rather than from the single old file.
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-const source = readFileSync(join(__dirname, 'Settings.tsx'), 'utf-8');
+const SETTINGS_DIR = join(__dirname, 'settings');
+const source = readdirSync(SETTINGS_DIR)
+  .filter((f) => /\.tsx?$/.test(f) && !f.includes('.test.'))
+  .map((f) => readFileSync(join(SETTINGS_DIR, f), 'utf-8'))
+  .join('\n');
 
 describe('Mail Scan: cancel button', () => {
   it('opens an in-app confirm dialog rather than a native OS dialog', () => {
@@ -14,16 +22,18 @@ describe('Mail Scan: cancel button', () => {
     // webview -- this codebase already has a real Dialog component
     // (see DeleteAccountSection.tsx) for exactly this kind of
     // confirm-before-destructive-action flow, so cancel reuses it instead.
-    // (Other, unrelated flows in this file -- license deactivation,
-    // recovery phrase -- still legitimately use the native dialog; this
-    // only asserts the cancel-scan handler itself doesn't.)
+    // (Other, unrelated flows -- license deactivation, recovery phrase --
+    // still legitimately use the native dialog; this only asserts the
+    // cancel-scan handler itself doesn't.)
     expect(source).toMatch(/onClick=\{handleCancelClick\}/);
     expect(source).toMatch(/const handleCancelClick = \(\) => setCancelDialogOpen\(true\)/);
-    expect(source).toMatch(/<Dialog open=\{cancelDialogOpen\} onOpenChange=\{setCancelDialogOpen\}>/);
+    // The confirm itself is CancelScanDialog, which is a React <Dialog>.
+    expect(source).toMatch(/<CancelScanDialog[\s\S]{0,80}open=\{cancelDialogOpen\}/);
+    expect(source).toMatch(/<Dialog open=\{open\} onOpenChange=\{onOpenChange\}>/);
   });
 
   it('only cancels after the dialog is confirmed, then calls handleCancelScan', () => {
-    expect(source).toMatch(/onClick=\{handleConfirmCancelScan\}/);
+    expect(source).toMatch(/onConfirm=\{handleConfirmCancelScan\}/);
     expect(source).toMatch(
       /const handleConfirmCancelScan = async \(\) => \{[\s\S]{0,120}await handleCancelScan\(\)/
     );
@@ -51,9 +61,8 @@ describe('Mail Scan: cancelled state', () => {
 
 describe('Mail Scan: elapsed time + ETA', () => {
   it('renders live elapsed time and ETA while running, using the shared helpers', () => {
-    expect(source).toMatch(
-      /import \{ formatDuration, estimateEtaSeconds \} from '@\/lib\/scanTiming'/
-    );
+    expect(source).toMatch(/import \{ formatDuration \} from '@\/lib\/scanTiming'/);
+    expect(source).toMatch(/import \{ estimateEtaSeconds \} from '@\/lib\/scanTiming'/);
     expect(source).toMatch(/import \{ useNowTicker \} from '@\/hooks\/useNowTicker'/);
     expect(source).toMatch(/estimateEtaSeconds\(/);
   });
