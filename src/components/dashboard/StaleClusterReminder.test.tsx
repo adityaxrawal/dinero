@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import StaleClusterReminder, { isClusterStale } from './StaleClusterReminder';
+import StaleClusterReminder from './StaleClusterReminder';
+import { isClusterStale } from './isClusterStale';
 import type { ClusterRecord } from '@/lib/ipc';
 
 function cluster(overrides: Partial<ClusterRecord> = {}): ClusterRecord {

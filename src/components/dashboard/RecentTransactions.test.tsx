@@ -1,7 +1,8 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {describe, it, expect, vi} from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import RecentTransactions, { formatLastSynced } from './RecentTransactions';
+import RecentTransactions from './RecentTransactions';
+import { formatLastSynced } from './formatLastSynced';
 import type { TransactionRecord } from '@/lib/ipc';
 
 function tx(overrides: Partial<TransactionRecord> = {}): TransactionRecord {
