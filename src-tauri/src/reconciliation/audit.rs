@@ -114,6 +114,17 @@ pub struct CorrectionContext {
     pub new_value: String,
 }
 
+/// The observation row backing a correction: `(id, source_pipeline,
+/// source_record_id, raw_payload_json, issuer_name, description_raw)`.
+type CorrectionObservationRow = (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
 /// Writes the `feedback_log` audit row for one corrected field, decays the rule
 /// that produced the wrong value, and returns the context needed to learn a
 /// better one.
@@ -135,14 +146,7 @@ pub fn log_user_correction(
     old_value: &str,
     new_value: &str,
 ) -> Result<Option<CorrectionContext>> {
-    let obs_info: rusqlite::Result<(
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    )> = conn.query_row(
+    let obs_info: rusqlite::Result<CorrectionObservationRow> = conn.query_row(
         "SELECT o.id, o.source_pipeline, o.source_record_id, o.raw_payload_json,
                 i.issuer_name, e.description_raw
          FROM transaction_observations o
@@ -192,7 +196,11 @@ pub fn log_user_correction(
     // A statement-sourced correction learns from the entry's own row text; an
     // email-sourced one from the persisted body.
     let is_statement = source_pipeline.as_deref() == Some("statement_pdf");
-    let source_type = if is_statement { "statement_pdf" } else { "email" };
+    let source_type = if is_statement {
+        "statement_pdf"
+    } else {
+        "email"
+    };
     let source_text = if is_statement {
         row_text
     } else {
@@ -325,7 +333,10 @@ mod tests {
         let rules: i64 = conn
             .query_row("SELECT COUNT(*) FROM field_rule_variants", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rules, 0, "authoring belongs to the learning worker, not to this hook");
+        assert_eq!(
+            rules, 0,
+            "authoring belongs to the learning worker, not to this hook"
+        );
     }
 
     /// A correction means whichever rule produced the wrong value was wrong.
@@ -360,8 +371,13 @@ mod tests {
 
         log_user_correction(&conn, "tx_d", "merchant", "Amzon", "Amazon").unwrap();
 
-        let after = crate::db::field_rules::select_by_id(&conn, &id).unwrap().unwrap();
-        assert_eq!(after.failure_count, 1, "the rule that fired and was wrong must decay");
+        let after = crate::db::field_rules::select_by_id(&conn, &id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after.failure_count, 1,
+            "the rule that fired and was wrong must decay"
+        );
     }
 
     /// The context the learning worker needs, captured at correction time --

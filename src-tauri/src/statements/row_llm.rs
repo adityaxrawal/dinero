@@ -28,7 +28,8 @@
 use crate::statements::parser::ParsedPage;
 use crate::statements::row_extractor::{
     extract_reference_id, is_excluded_row, parse_amount_minor, parse_date, StatementRow,
-};/// Ceiling on pages sent for inference per statement. At roughly ten seconds
+};
+/// Ceiling on pages sent for inference per statement. At roughly ten seconds
 /// each, a 60-page statement would otherwise tie up the model for ten
 /// minutes during what the user experiences as a single import.
 const MAX_LLM_PAGES: usize = 12;
@@ -189,11 +190,9 @@ pub async fn extract_unparsed_pages(
             break;
         }
         // Only pages the bank parser could make nothing of.
-        let already = crate::statements::row_extractor::extract_rows(
-            std::slice::from_ref(page),
-            parser,
-        )
-        .unwrap_or_default();
+        let already =
+            crate::statements::row_extractor::extract_rows(std::slice::from_ref(page), parser)
+                .unwrap_or_default();
         if !already.is_empty() || !looks_like_a_transaction_table(&page.text) {
             continue;
         }
@@ -214,7 +213,10 @@ pub async fn extract_unparsed_pages(
         {
             Ok(raw) => raw,
             Err(e) => {
-                tracing::warn!("row_llm: inference failed on page {}: {e}", page.page_number);
+                tracing::warn!(
+                    "row_llm: inference failed on page {}: {e}",
+                    page.page_number
+                );
                 continue;
             }
         };

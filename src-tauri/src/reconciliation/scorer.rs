@@ -190,7 +190,7 @@ mod tests {
     fn test_compute_time_proximity_score() {
         // Same day
         let score = compute_time_proximity_score("2026-06-10 14:32:00", "2026-06-10 20:15:00");
-        assert!(score >= 0.15 && score <= 0.25);
+        assert!((0.15..=0.25).contains(&score));
 
         // Within 3 days
         let score2 = compute_time_proximity_score("2026-06-10 14:32:00", "2026-06-12 14:32:00");

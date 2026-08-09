@@ -21,7 +21,10 @@ const GRACE_PERIOD: ChronoDuration = ChronoDuration::days(7);
 /// without ever having validated) is treated as expired -- there is no
 /// evidence the grace window's clock has ever started, so it cannot be
 /// trusted to still be running.
-fn is_grace_period_expired(last_validated: Option<chrono::DateTime<Utc>>, now: chrono::DateTime<Utc>) -> bool {
+fn is_grace_period_expired(
+    last_validated: Option<chrono::DateTime<Utc>>,
+    now: chrono::DateTime<Utc>,
+) -> bool {
     match last_validated {
         Some(last_validated) => now.signed_duration_since(last_validated) > GRACE_PERIOD,
         None => true,
@@ -170,7 +173,9 @@ pub async fn start_background_validation<R: tauri::Runtime>(
                                 // validate has failed 3 times in a row — a single
                                 // failure is routine on a flaky connection, and the
                                 // 7-day grace period already protects access.
-                                let monitor = app_handle.state::<crate::security::incident_response::IncidentMonitor>();
+                                let monitor = app_handle
+                                    .state::<crate::security::incident_response::IncidentMonitor>(
+                                );
                                 if crate::security::incident_response::record_trigger(
                                     &monitor,
                                     crate::security::incident_response::TriggerKind::RepeatedLicenseValidateFailure,
@@ -184,18 +189,32 @@ pub async fn start_background_validation<R: tauri::Runtime>(
                                 let now = Utc::now();
 
                                 // Apply Grace period logic (7 days — Doc 12 §7.4/§7.5, Doc 33 §4)
-                                let _ = conn.interact(move |c| {
-                                    if state.subscription_status_cached == LicenseStatus::Active {
-                                        tracing::warn!("Transitioning license to GRACE period.");
-                                        crate::licensing::state_machine::transition(c, LicenseStatus::Grace)?;
-                                    } else if state.subscription_status_cached == LicenseStatus::Grace
-                                        && is_grace_period_expired(state.last_server_validated_at, now)
-                                    {
-                                        tracing::warn!("Grace period expired. Locking license.");
-                                        transition_to_locked(c, false)?;
-                                    }
-                                    Ok::<_, anyhow::Error>(())
-                                }).await;
+                                let _ = conn
+                                    .interact(move |c| {
+                                        if state.subscription_status_cached == LicenseStatus::Active
+                                        {
+                                            tracing::warn!(
+                                                "Transitioning license to GRACE period."
+                                            );
+                                            crate::licensing::state_machine::transition(
+                                                c,
+                                                LicenseStatus::Grace,
+                                            )?;
+                                        } else if state.subscription_status_cached
+                                            == LicenseStatus::Grace
+                                            && is_grace_period_expired(
+                                                state.last_server_validated_at,
+                                                now,
+                                            )
+                                        {
+                                            tracing::warn!(
+                                                "Grace period expired. Locking license."
+                                            );
+                                            transition_to_locked(c, false)?;
+                                        }
+                                        Ok::<_, anyhow::Error>(())
+                                    })
+                                    .await;
                             }
                         }
                     }

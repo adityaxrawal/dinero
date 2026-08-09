@@ -98,9 +98,7 @@ pub fn extract_metadata(pages: &[ParsedPage]) -> Result<StatementMetadata> {
             r"(?i)statement\s+(?:date|generation\s+date)\s*:?\s+({DATE})"
         )],
     )
-    .or_else(|| {
-        value_below_label(header_text, r"statement\s+(?:generation\s+)?date", DATE)
-    })
+    .or_else(|| value_below_label(header_text, r"statement\s+(?:generation\s+)?date", DATE))
     .and_then(|d| normalize_date_string(&d));
 
     // Normalize extracted dates to YYYY-MM-DD
@@ -113,11 +111,9 @@ pub fn extract_metadata(pages: &[ParsedPage]) -> Result<StatementMetadata> {
 
     // ── Due date ─────────────────────────────────────────────────────────────
     let due_labels = r"(?:payment\s+due\s+date|due\s+date|pay\s+by|amount\s+due\s+date)";
-    meta.due_date = extract_date_pattern(
-        header_text,
-        &[format!(r"(?i){due_labels}\s*:?\s+({DATE})")],
-    )
-    .or_else(|| value_below_label(header_text, due_labels, DATE));
+    meta.due_date =
+        extract_date_pattern(header_text, &[format!(r"(?i){due_labels}\s*:?\s+({DATE})")])
+            .or_else(|| value_below_label(header_text, due_labels, DATE));
     if let Some(ref d) = meta.due_date.clone() {
         meta.due_date = normalize_date_string(d);
     }
@@ -137,16 +133,18 @@ pub fn extract_metadata(pages: &[ParsedPage]) -> Result<StatementMetadata> {
     let min_labels = r"\*{0,2}min(?:imum)?\s+(?:amount\s+|payment\s+)?due";
     meta.minimum_due = extract_amount_minor(
         header_text,
-        &[format!(r"(?i){min_labels}\s*{currency}\s*:?\s*{currency}\s*({AMOUNT})")],
+        &[format!(
+            r"(?i){min_labels}\s*{currency}\s*:?\s*{currency}\s*({AMOUNT})"
+        )],
     )
-    .or_else(|| {
-        value_below_label(header_text, min_labels, AMOUNT).and_then(|v| parse_amount(&v))
-    });
+    .or_else(|| value_below_label(header_text, min_labels, AMOUNT).and_then(|v| parse_amount(&v)));
 
     let total_labels = r"\*{0,2}(?:total\s+(?:amount|payment)\s+due|outstanding\s+balance|current\s+balance|closing\s+balance|amount\s+payable)";
     meta.current_balance = extract_amount_minor(
         header_text,
-        &[format!(r"(?i){total_labels}\s*{currency}\s*:?\s*{currency}\s*({AMOUNT})")],
+        &[format!(
+            r"(?i){total_labels}\s*{currency}\s*:?\s*{currency}\s*({AMOUNT})"
+        )],
     )
     .or_else(|| {
         value_below_label(header_text, total_labels, AMOUNT).and_then(|v| parse_amount(&v))
@@ -244,7 +242,8 @@ fn normalize_date_string(date: &str) -> Option<String> {
 
 /// A date as the banks write it in a header. Shared by every pattern below so
 /// the accepted forms cannot drift apart from `normalize_date_string`'s.
-const DATE: &str = r"\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}|\d{1,2}[\s\-/][A-Za-z]{3}[\s\-/]?,?\s?\d{2,4}";
+const DATE: &str =
+    r"\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}|\d{1,2}[\s\-/][A-Za-z]{3}[\s\-/]?,?\s?\d{2,4}";
 
 /// Generic over the pattern type so a call site can mix literals with
 /// patterns built from the shared `DATE` fragment, which are `String`.
@@ -264,7 +263,10 @@ fn extract_date_pattern<S: AsRef<str>>(text: &str, patterns: &[S]) -> Option<Str
 /// Parses a rupee figure as printed in a header into minor units.
 fn parse_amount(raw: &str) -> Option<i64> {
     let cleaned = raw.replace(',', "");
-    cleaned.parse::<f64>().ok().map(|v| (v * 100.0).round() as i64)
+    cleaned
+        .parse::<f64>()
+        .ok()
+        .map(|v| (v * 100.0).round() as i64)
 }
 
 /// Generic over the pattern type so a call site can mix literals with
@@ -539,9 +541,15 @@ mod real_statement_headers {
     fn a_masked_card_yields_its_tail_not_its_bin() {
         for (header, want) in [
             ("Credit Card No.       526873XXXXXX0364", "0364"),
-            ("Card No:    533467******9740     Name  ADITYA RAWAL", "9740"),
+            (
+                "Card No:    533467******9740     Name  ADITYA RAWAL",
+                "9740",
+            ),
             ("Credit Card No. 4147XXXXXXXX7480)", "7480"),
-            ("Statement for YES BANK Card Number 3561XXXXXXXX2982", "2982"),
+            (
+                "Statement for YES BANK Card Number 3561XXXXXXXX2982",
+                "2982",
+            ),
             ("Credit Card Number\nXXXX XXXX XXXX XX03", "03"),
             ("Card Number: XXXX 3620", "3620"),
         ] {

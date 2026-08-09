@@ -6,6 +6,7 @@ use rusqlite::Connection;
 /// Responsible for:
 /// 1. Category enrichment based on simple heuristics.
 /// 2. Spend anomaly detection (velocity checks).
+#[allow(clippy::too_many_arguments)] // wide-but-flat domain signature; a params struct would add indirection without removing a single field
 pub fn run_post_processing(
     conn: &Connection,
     transaction_id: &str,

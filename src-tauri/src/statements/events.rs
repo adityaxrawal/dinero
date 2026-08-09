@@ -4,7 +4,6 @@
 /// Emitted when all stored passwords fail — UI must present a password modal.
 pub const PASSWORD_REQUIRED: &str = "statement_password_required";
 
-
 /// Emitted when a PDF statement is successfully parsed
 pub const PARSED: &str = "statement_parsed";
 

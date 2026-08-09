@@ -24,7 +24,7 @@ use dinero_app_lib::extraction::merchant_normalizer::{
     is_plausible_merchant_name, strip_noise_tokens,
 };
 use dinero_app_lib::ingestion::mime_sanitization::sanitize_html;
-use dinero_app_lib::ingestion::verified_senders::{SenderVerificationResult, SenderValidator};
+use dinero_app_lib::ingestion::verified_senders::{SenderValidator, SenderVerificationResult};
 use std::collections::BTreeMap;
 
 const DEFAULT_CORPUS: &str = "../real-test-data/JSON-FETCHED-MAILS/all_emails.json";
@@ -70,11 +70,7 @@ fn sender_address(from: &str) -> String {
 fn body_of(e: &Email) -> String {
     let raw = e.body_text.clone().unwrap_or_default();
     let looks_html = raw.trim_start().starts_with('<') || raw.contains("<html");
-    let body = if looks_html {
-        sanitize_html(&raw)
-    } else {
-        raw
-    };
+    let body = if looks_html { sanitize_html(&raw) } else { raw };
     if body.trim().is_empty() {
         e.snippet.clone().unwrap_or_default()
     } else {
@@ -196,8 +192,8 @@ async fn main() {
         let mut rows: Vec<(&String, &(usize, String))> = merchants.iter().collect();
         rows.sort_by(|a, b| b.1 .0.cmp(&a.1 .0).then(a.0.cmp(b.0)));
         println!(
-            "\n{:<46} {:>6}  {:<7} {:<7} {:>5} {}",
-            "MERCHANT (post strip_noise_tokens)", "COUNT", "STOPONLY", "PLAUSIBL", "CONF", "SOURCE"
+            "\n{:<46} {:>6}  {:<7} {:<7} {:>5} SOURCE",
+            "MERCHANT (post strip_noise_tokens)", "COUNT", "STOPONLY", "PLAUSIBL", "CONF"
         );
         println!("{}", "-".repeat(108));
         for (name, (count, src)) in &rows {
@@ -246,7 +242,10 @@ async fn main() {
 
     let mut totals: BTreeMap<String, usize> = BTreeMap::new();
     let mut total_unextracted = 0usize;
-    println!("\n{:<44} {:>7} {:>7} {:>7} {:>7}", "BANK", "L2", "L3/4", "L5", "none");
+    println!(
+        "\n{:<44} {:>7} {:>7} {:>7} {:>7}",
+        "BANK", "L2", "L3/4", "L5", "none"
+    );
     println!("{}", "-".repeat(76));
     for (bank, s) in &per_bank {
         let l2 = *s.by_layer.get("bank_templates").unwrap_or(&0);

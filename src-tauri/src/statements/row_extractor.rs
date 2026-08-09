@@ -192,8 +192,20 @@ pub(crate) fn parse_date(s: &str) -> Option<String> {
     // "12 Jun 2026" leaves "26" unconsumed and is rejected, dropping through
     // to the four-digit forms below.
     let formats = [
-        "%d/%m/%y", "%d-%m-%y", "%d.%m.%y", "%d %b %y", "%d-%b-%y", "%d/%b/%y", "%d %b, %y",
-        "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%d %b %Y", "%d-%b-%Y", "%d/%b/%Y", "%Y-%m-%d",
+        "%d/%m/%y",
+        "%d-%m-%y",
+        "%d.%m.%y",
+        "%d %b %y",
+        "%d-%b-%y",
+        "%d/%b/%y",
+        "%d %b, %y",
+        "%d/%m/%Y",
+        "%d-%m-%Y",
+        "%d.%m.%Y",
+        "%d %b %Y",
+        "%d-%b-%Y",
+        "%d/%b/%Y",
+        "%Y-%m-%d",
         "%d %b, %Y",
     ];
     for fmt in &formats {
@@ -785,7 +797,8 @@ fn parse_universal(pages: &[ParsedPage]) -> Vec<StatementRow> {
             }
             let (Some(transaction_date), Some(amount_minor)) = (
                 caps.name("date").and_then(|m| parse_date(m.as_str())),
-                caps.name("amount").and_then(|m| parse_amount_minor(m.as_str())),
+                caps.name("amount")
+                    .and_then(|m| parse_amount_minor(m.as_str())),
             ) else {
                 continue;
             };

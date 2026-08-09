@@ -43,7 +43,9 @@ fn default_app_data_dir() -> PathBuf {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let auto_confirm = args.iter().any(|a| a == "--yes" || a == "--force" || a == "-y");
+    let auto_confirm = args
+        .iter()
+        .any(|a| a == "--yes" || a == "--force" || a == "-y");
 
     let app_dir = args
         .iter()
@@ -101,7 +103,9 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     } else {
-        println!("No finance.db found at target path. Proceeding with keychain and backup cleanup...");
+        println!(
+            "No finance.db found at target path. Proceeding with keychain and backup cleanup..."
+        );
         None
     };
 

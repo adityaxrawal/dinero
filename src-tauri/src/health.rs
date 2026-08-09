@@ -80,7 +80,12 @@ pub async fn compute_health_report(pool: &Pool) -> HealthReport {
                 .map(|row| format!("{:?}", row.subscription_status_cached))
                 .unwrap_or_else(|| "no_license_state".to_string());
 
-            (backend_ready, checkpoint_age_seconds, gmail_polling_status, license_status)
+            (
+                backend_ready,
+                checkpoint_age_seconds,
+                gmail_polling_status,
+                license_status,
+            )
         })
         .await;
 

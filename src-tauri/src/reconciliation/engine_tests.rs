@@ -2356,8 +2356,10 @@ fn test_threshold_fires_once_per_month() {
     )
     .unwrap();
 
-    for (i, obs_id, amount_minor) in [(0, "obs_dedup_a", 400_100_i64), (1, "obs_dedup_b", 10_000_i64)]
-    {
+    for (i, obs_id, amount_minor) in [
+        (0, "obs_dedup_a", 400_100_i64),
+        (1, "obs_dedup_b", 10_000_i64),
+    ] {
         conn.execute(
             &format!(
                 "INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint) VALUES ('{obs_id}', 'gmail_transaction', 'msg_dedup_{i}', 'fp_dedup_{i}')"
@@ -2475,9 +2477,18 @@ fn test_backfill_scan_fires_all_crossed_thresholds_in_sequence() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(fired_80, 1, "80% band must fire even though 90% was also crossed in the same batch");
-    assert_eq!(fired_90, 1, "90% band must also fire, not only the highest reached");
-    assert_eq!(fired_100, 0, "100% was never actually reached (95%), must not fire");
+    assert_eq!(
+        fired_80, 1,
+        "80% band must fire even though 90% was also crossed in the same batch"
+    );
+    assert_eq!(
+        fired_90, 1,
+        "90% band must also fire, not only the highest reached"
+    );
+    assert_eq!(
+        fired_100, 0,
+        "100% was never actually reached (95%), must not fire"
+    );
 
     let created_order: Vec<String> = {
         // `created_at`'s CURRENT_TIMESTAMP has only second resolution, so
@@ -2494,7 +2505,10 @@ fn test_backfill_scan_fires_all_crossed_thresholds_in_sequence() {
     };
     assert_eq!(
         created_order,
-        vec!["global_budget_80".to_string(), "global_budget_90".to_string()],
+        vec![
+            "global_budget_80".to_string(),
+            "global_budget_90".to_string()
+        ],
         "must fire in ascending order: 80% before 90%"
     );
 }
@@ -2562,7 +2576,10 @@ fn test_category_level_and_overall_limit_both_supported() {
         )
         .unwrap();
     assert_eq!(category_fired, 1, "category budget must fire independently");
-    assert_eq!(global_fired, 0, "global budget is nowhere near its own threshold and must not fire");
+    assert_eq!(
+        global_fired, 0,
+        "global budget is nowhere near its own threshold and must not fire"
+    );
 }
 
 /// Doc 30 TASK-RT-002 acceptance: `test_emi_counted_at_installment_amount`.

@@ -127,7 +127,7 @@ fn collect_crash_reports(crash_dir: &Path) -> String {
             reports.push((modified, redact(&content)));
         }
     }
-    reports.sort_by(|a, b| b.0.cmp(&a.0));
+    reports.sort_by_key(|r| std::cmp::Reverse(r.0));
     reports
         .into_iter()
         .take(20)
@@ -454,8 +454,14 @@ mod tests {
         let zip_path =
             generate_diagnostic_bundle(&temp_dir, &conn, Some("a note from the user")).unwrap();
 
-        assert!(zip_path.exists(), "the bundle must be written to a real local file");
-        assert!(zip_path.starts_with(&temp_dir), "the bundle must be written under the app data dir, never a network location");
+        assert!(
+            zip_path.exists(),
+            "the bundle must be written to a real local file"
+        );
+        assert!(
+            zip_path.starts_with(&temp_dir),
+            "the bundle must be written under the app data dir, never a network location"
+        );
 
         let file = std::fs::File::open(&zip_path).unwrap();
         let mut archive = zip::ZipArchive::new(file).unwrap();
@@ -474,10 +480,8 @@ mod tests {
     #[test]
     fn test_crash_bundle_excludes_sensitive_fields() {
         let conn = crate::db::test_helpers::setup_test_db();
-        let temp_dir = std::env::temp_dir().join(format!(
-            "dinero_crash_bundle_test_{}",
-            uuid::Uuid::new_v4()
-        ));
+        let temp_dir =
+            std::env::temp_dir().join(format!("dinero_crash_bundle_test_{}", uuid::Uuid::new_v4()));
         let crash_dir = temp_dir.join("audit_log").join("crash_reports");
         std::fs::create_dir_all(&crash_dir).unwrap();
 

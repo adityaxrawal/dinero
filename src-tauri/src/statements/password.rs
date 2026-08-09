@@ -398,8 +398,8 @@ pub async fn resolve_statement_password<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     email_meta: Option<crate::ingestion::message_processor::EmailMetadata>,
 ) -> Result<StatementPasswordResolution> {
-    use tauri::Manager;
     use tauri::Emitter;
+    use tauri::Manager;
 
     if is_pdf_unencrypted(bytes).await {
         return Ok(StatementPasswordResolution::Proceed(None));
@@ -412,7 +412,8 @@ pub async fn resolve_statement_password<R: tauri::Runtime>(
             Ok(StatementPasswordResolution::Proceed(Some(password)))
         }
         _ => {
-            create_awaiting_password_row(stmt_id, file_hash, filename, pool, email_meta.as_ref()).await?;
+            create_awaiting_password_row(stmt_id, file_hash, filename, pool, email_meta.as_ref())
+                .await?;
             if let Ok(app_data_dir) = app.path().app_data_dir() {
                 let _ = crate::statements::pdf_storage::store_pdf(&app_data_dir, stmt_id, bytes);
             }
@@ -453,7 +454,7 @@ async fn create_awaiting_password_row(
         "file_hash": file_hash,
         "filename": filename,
     });
-    
+
     if let Some(meta) = email_meta {
         if let Some(obj) = source_json_obj.as_object_mut() {
             obj.insert("sender".to_string(), serde_json::json!(meta.sender));
@@ -564,7 +565,7 @@ mod tests {
             .unwrap()
             .handle()
             .clone();
-        
+
         let resolution = resolve_statement_password(
             "stmt_resolve_test",
             unparseable_bytes,
@@ -598,7 +599,10 @@ mod tests {
 
         use tauri::Manager;
         let app_data_dir = app.path().app_data_dir().unwrap();
-        let persisted_bytes = crate::statements::pdf_storage::read_pdf(&app_data_dir, "stmt_resolve_test").unwrap().unwrap();
+        let persisted_bytes =
+            crate::statements::pdf_storage::read_pdf(&app_data_dir, "stmt_resolve_test")
+                .unwrap()
+                .unwrap();
         assert_eq!(persisted_bytes, unparseable_bytes.to_vec());
     }
 
@@ -720,7 +724,7 @@ mod tests {
         conn.interact(|c| {
             // Seed instrument
             c.execute(
-                "INSERT INTO instruments (id, type, issuer_name, network, masked_identifier, status) 
+                "INSERT INTO instruments (id, type, issuer_name, network, masked_identifier, status)
                  VALUES ('inst_rot', 'credit_card', 'HDFC Bank', 'VISA', '1234', 'active')",
                 [],
             ).unwrap();
@@ -734,10 +738,19 @@ mod tests {
                     password_ciphertext: "old_encrypted".to_string(),
                     success_count: 50,
                     last_used_at: None,
-                    created_at: Some(chrono::DateTime::from_timestamp(1000, 0).unwrap().naive_utc()),
-                    updated_at: Some(chrono::DateTime::from_timestamp(1000, 0).unwrap().naive_utc()),
+                    created_at: Some(
+                        chrono::DateTime::from_timestamp(1000, 0)
+                            .unwrap()
+                            .naive_utc(),
+                    ),
+                    updated_at: Some(
+                        chrono::DateTime::from_timestamp(1000, 0)
+                            .unwrap()
+                            .naive_utc(),
+                    ),
                 },
-            ).unwrap();
+            )
+            .unwrap();
 
             // Insert new password with low success count
             crate::db::pdf_passwords::insert(
@@ -748,11 +761,20 @@ mod tests {
                     password_ciphertext: "new_encrypted".to_string(),
                     success_count: 1,
                     last_used_at: None,
-                    created_at: Some(chrono::DateTime::from_timestamp(2000, 0).unwrap().naive_utc()),
-                    updated_at: Some(chrono::DateTime::from_timestamp(2000, 0).unwrap().naive_utc()),
+                    created_at: Some(
+                        chrono::DateTime::from_timestamp(2000, 0)
+                            .unwrap()
+                            .naive_utc(),
+                    ),
+                    updated_at: Some(
+                        chrono::DateTime::from_timestamp(2000, 0)
+                            .unwrap()
+                            .naive_utc(),
+                    ),
                 },
-            ).unwrap();
-            
+            )
+            .unwrap();
+
             // Verify ordering is DESC by success_count
             let rows = crate::db::pdf_passwords::select_by_instrument(c, "inst_rot").unwrap();
             assert_eq!(rows.len(), 2);

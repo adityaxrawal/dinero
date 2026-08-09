@@ -371,8 +371,9 @@ pub async fn billing_start_checkout(
         .await
         .map_err(|e| AppError::Network(e.to_string()))?;
 
-    let server = tiny_http::Server::http("127.0.0.1:0")
-        .map_err(|e| AppError::Unknown(format!("Failed to bind checkout loopback listener: {e}")))?;
+    let server = tiny_http::Server::http("127.0.0.1:0").map_err(|e| {
+        AppError::Unknown(format!("Failed to bind checkout loopback listener: {e}"))
+    })?;
     let redirect_port = server
         .server_addr()
         .to_ip()
@@ -385,7 +386,11 @@ pub async fn billing_start_checkout(
     }
 
     let result = tokio::task::spawn_blocking(move || {
-        crate::billing::checkout::serve_checkout_and_wait(&server, &order, crate::billing::checkout::CHECKOUT_CALLBACK_TIMEOUT)
+        crate::billing::checkout::serve_checkout_and_wait(
+            &server,
+            &order,
+            crate::billing::checkout::CHECKOUT_CALLBACK_TIMEOUT,
+        )
     })
     .await
     .map_err(|e| AppError::Unknown(e.to_string()))?

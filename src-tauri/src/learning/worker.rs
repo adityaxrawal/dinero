@@ -356,7 +356,9 @@ mod tests {
 
     async fn setup_pool() -> Pool {
         let path = crate::db::test_helpers::fresh_temp_db_path();
-        crate::db::migrations::run_migrations(&path, None).await.unwrap();
+        crate::db::migrations::run_migrations(&path, None)
+            .await
+            .unwrap();
         let mgr = deadpool_sqlite::Manager::from_config(
             &deadpool_sqlite::Config {
                 path: path.clone(),
@@ -397,7 +399,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0].status, "active", "a confirmed correction is ground truth");
+        assert_eq!(
+            rules[0].status, "active",
+            "a confirmed correction is ground truth"
+        );
         assert_eq!(rules[0].authored_by, "deterministic");
         assert_eq!(rules[0].learned_from, "user_edit");
         assert_eq!(rules[0].field_name, "merchant");
@@ -418,7 +423,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(all.len(), 1);
-        assert_eq!(all[0].status, "pending", "an auto-detected guess must earn activation");
+        assert_eq!(
+            all[0].status, "pending",
+            "an auto-detected guess must earn activation"
+        );
     }
 
     /// The edge case the design calls out: nothing written, nothing broken.
@@ -445,7 +453,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(variants, 0, "a rejected candidate must write no rule");
-        assert_eq!(rejections, 1, "but it must leave a trace of having been tried");
+        assert_eq!(
+            rejections, 1,
+            "but it must leave a trace of having been tried"
+        );
     }
 
     #[tokio::test]

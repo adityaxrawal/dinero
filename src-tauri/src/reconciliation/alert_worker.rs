@@ -97,7 +97,11 @@ fn threshold_already_fired_this_month(
         .is_some())
 }
 
-fn record_threshold_fired(conn: &rusqlite::Connection, alert_key: &str, message: &str) -> Result<()> {
+fn record_threshold_fired(
+    conn: &rusqlite::Connection,
+    alert_key: &str,
+    message: &str,
+) -> Result<()> {
     insert_alert(
         conn,
         &Alert {

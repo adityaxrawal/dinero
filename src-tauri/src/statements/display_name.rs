@@ -163,7 +163,10 @@ fn last_four_from_filename(filename: &str) -> Option<String> {
 fn longest_digit_run(token: &str) -> &str {
     let mut best = "";
     let mut start: Option<usize> = None;
-    for (i, c) in token.char_indices().chain(std::iter::once((token.len(), ' '))) {
+    for (i, c) in token
+        .char_indices()
+        .chain(std::iter::once((token.len(), ' ')))
+    {
         match (c.is_ascii_digit(), start) {
             (true, None) => start = Some(i),
             (false, Some(s)) => {
@@ -266,9 +269,7 @@ fn from_ddmmyyyy(digits: &str) -> Option<(String, u32)> {
 fn parse_email_date(raw: &str) -> Option<(String, u32)> {
     let parsed = chrono::DateTime::parse_from_rfc2822(raw.trim())
         .map(|d| d.naive_utc().date())
-        .or_else(|_| {
-            chrono::DateTime::parse_from_rfc3339(raw.trim()).map(|d| d.naive_utc().date())
-        })
+        .or_else(|_| chrono::DateTime::parse_from_rfc3339(raw.trim()).map(|d| d.naive_utc().date()))
         .ok()?;
     use chrono::Datelike;
     Some((
@@ -280,10 +281,11 @@ fn parse_email_date(raw: &str) -> Option<(String, u32)> {
 /// Splits a filename into the fields banks separate with `_`, dropping the
 /// extension. Hyphens are *not* separators — `13-05-2026` is one field.
 fn filename_tokens(filename: &str) -> Vec<&str> {
-    let stem = filename.rsplit_once('.').map(|(s, _)| s).unwrap_or(filename);
-    stem.split(['_', ' '])
-        .filter(|t| !t.is_empty())
-        .collect()
+    let stem = filename
+        .rsplit_once('.')
+        .map(|(s, _)| s)
+        .unwrap_or(filename);
+    stem.split(['_', ' ']).filter(|t| !t.is_empty()).collect()
 }
 
 #[cfg(test)]
@@ -421,13 +423,31 @@ mod tests {
         // so with no email context there is no month to report — declined
         // rather than guessed, and the caller shows the filename instead.
         let expected: [(&str, Option<&str>); 7] = [
-            ("20000007937556_21112025_211211204.pdf", Some("HDFCBANKXXXX7556NOV2025")),
-            ("5268XXXXXXXXXX64_13-05-2026_315.pdf", Some("HDFCBANKXXXX64MAY2026")),
-            ("5372XXXXXXXXXX83_14-04-2026_360.pdf", Some("HDFCBANKXXXX83APR2026")),
+            (
+                "20000007937556_21112025_211211204.pdf",
+                Some("HDFCBANKXXXX7556NOV2025"),
+            ),
+            (
+                "5268XXXXXXXXXX64_13-05-2026_315.pdf",
+                Some("HDFCBANKXXXX64MAY2026"),
+            ),
+            (
+                "5372XXXXXXXXXX83_14-04-2026_360.pdf",
+                Some("HDFCBANKXXXX83APR2026"),
+            ),
             ("560103_1005210000701522-246.pdf", None),
-            ("6529XXXXXXXXXX56_01-05-2026_616.pdf", Some("HDFCBANKXXXX56MAY2026")),
-            ("8798828479959148_09072026.pdf", Some("HDFCBANKXXXX9148JUL2026")),
-            ("CC_STMT_749341660_347480_2301202622022026.pdf", Some("HDFCBANKFEB2026")),
+            (
+                "6529XXXXXXXXXX56_01-05-2026_616.pdf",
+                Some("HDFCBANKXXXX56MAY2026"),
+            ),
+            (
+                "8798828479959148_09072026.pdf",
+                Some("HDFCBANKXXXX9148JUL2026"),
+            ),
+            (
+                "CC_STMT_749341660_347480_2301202622022026.pdf",
+                Some("HDFCBANKFEB2026"),
+            ),
         ];
         for (filename, want) in expected {
             let name = derive_display_name(&StatementNameSource {

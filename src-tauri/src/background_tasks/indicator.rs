@@ -307,7 +307,15 @@ mod tests {
         let app = mock_app();
         app.manage(BackgroundTaskRegistry::default());
         let registry = app.state::<BackgroundTaskRegistry>();
-        registry.register_or_update(&app, "scan_1", "historical_scan", "Scanning acct_1", 10, 100, "Scanning...");
+        registry.register_or_update(
+            &app,
+            "scan_1",
+            "historical_scan",
+            "Scanning acct_1",
+            10,
+            100,
+            "Scanning...",
+        );
 
         let recovered = get_active_background_tasks(registry);
         assert_eq!(recovered.len(), 1);

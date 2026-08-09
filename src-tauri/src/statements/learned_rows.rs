@@ -259,7 +259,10 @@ mod tests {
         }
 
         let mut rows = vec![row(desc)];
-        assert_eq!(apply_learned_rules_to_rows(&pool, "HDFC", &mut rows).await, 0);
+        assert_eq!(
+            apply_learned_rules_to_rows(&pool, "HDFC", &mut rows).await,
+            0
+        );
     }
 
     #[tokio::test]
@@ -283,7 +286,10 @@ mod tests {
     async fn a_bank_with_no_rules_costs_one_query_and_changes_nothing() {
         let pool = setup_pool().await;
         let mut rows = vec![row("ANY DESCRIPTION")];
-        assert_eq!(apply_learned_rules_to_rows(&pool, "Kotak", &mut rows).await, 0);
+        assert_eq!(
+            apply_learned_rules_to_rows(&pool, "Kotak", &mut rows).await,
+            0
+        );
         assert_eq!(rows[0].merchant_raw, "ANY DESCRIPTION");
     }
 
@@ -303,6 +309,9 @@ mod tests {
 
         let mut rows = vec![row(desc)];
         apply_learned_rules_to_rows(&pool, "HDFC", &mut rows).await;
-        assert_eq!(rows[0].amount_minor, 50000, "the original amount must survive");
+        assert_eq!(
+            rows[0].amount_minor, 50000,
+            "the original amount must survive"
+        );
     }
 }

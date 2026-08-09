@@ -63,7 +63,11 @@ pub struct CheckoutResult {
 /// waiting for either a successful-payment redirect or a dismissal,
 /// bounded by `timeout` -- structurally identical to
 /// `ingestion::oauth::wait_for_oauth_callback`.
-pub fn serve_checkout_and_wait(server: &Server, order: &CreateOrderResponse, timeout: std::time::Duration) -> Result<CheckoutResult> {
+pub fn serve_checkout_and_wait(
+    server: &Server,
+    order: &CreateOrderResponse,
+    timeout: std::time::Duration,
+) -> Result<CheckoutResult> {
     let redirect_port = server
         .server_addr()
         .to_ip()
@@ -102,11 +106,14 @@ pub fn serve_checkout_and_wait(server: &Server, order: &CreateOrderResponse, tim
                             signature = Some(v.into_owned());
                         }
                     }
-                    let response = Response::from_string(oauth_result_page(true, ""))
-                        .with_header(html_header);
+                    let response =
+                        Response::from_string(oauth_result_page(true, "")).with_header(html_header);
                     let _ = request.respond(response);
                     return match (payment_id, signature) {
-                        (Some(p), Some(s)) => Ok(CheckoutResult { razorpay_payment_id: p, razorpay_signature: s }),
+                        (Some(p), Some(s)) => Ok(CheckoutResult {
+                            razorpay_payment_id: p,
+                            razorpay_signature: s,
+                        }),
                         _ => anyhow::bail!("checkout_malformed_redirect"),
                     };
                 }
@@ -149,7 +156,11 @@ mod tests {
     #[test]
     fn test_checkout_timeout_after_5_minutes() {
         let server = Server::http("127.0.0.1:0").unwrap();
-        let result = serve_checkout_and_wait(&server, &fake_order(), std::time::Duration::from_millis(200));
+        let result = serve_checkout_and_wait(
+            &server,
+            &fake_order(),
+            std::time::Duration::from_millis(200),
+        );
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().to_string(), "checkout_timeout");
     }

@@ -90,7 +90,9 @@ pub async fn parse_in_memory_with_password(
             // which would clone the PDF bytes repeatedly).
             let ocr_pages: Vec<usize> = pages
                 .iter()
-                .filter(|p| p.text.chars().filter(|c| !c.is_whitespace()).count() < OCR_TEXT_THRESHOLD)
+                .filter(|p| {
+                    p.text.chars().filter(|c| !c.is_whitespace()).count() < OCR_TEXT_THRESHOLD
+                })
                 .map(|p| p.page_number)
                 .collect();
 
@@ -102,11 +104,8 @@ pub async fn parse_in_memory_with_password(
                     ocr_pages
                         .into_iter()
                         .map(|page_number| {
-                            let text = try_ocr_page(
-                                &owned_bytes,
-                                page_number,
-                                owned_password.as_deref(),
-                            );
+                            let text =
+                                try_ocr_page(&owned_bytes, page_number, owned_password.as_deref());
                             (page_number, text)
                         })
                         .collect::<Vec<_>>()

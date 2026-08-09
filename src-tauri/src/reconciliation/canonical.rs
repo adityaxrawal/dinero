@@ -10,6 +10,11 @@ use uuid::Uuid;
 /// `merged` / `manual` -- distinct from the raw `source_pipeline` values
 /// (`gmail_transaction` / `statement_pdf` / `manual`) an observation itself
 /// carries. Maps the latter to the former for a brand-new canonical row.
+/// The four `transactions` fields a precedence overwrite can change, snapshotted
+/// before the UPDATE in `update_canonical_with_statement` runs:
+/// `(reference_id, best_posting_date, merchant_display_name, amount_minor)`.
+type CanonicalAuditSnapshot = (Option<String>, Option<String>, Option<String>, Option<i64>);
+
 fn source_mix_for_new_canonical(source_pipeline: &str) -> &'static str {
     match source_pipeline {
         "gmail_transaction" => "email_only",
@@ -49,19 +54,25 @@ pub fn create_canonical_transaction(conn: &Connection, obs: &IncomingObservation
     // when the string clears the same plausibility gate step 3 of
     // `normalize_merchant_sync` applies to auto-created merchants.
     let (merchant_entity_id, merchant_normalized_name) = match &obs.merchant_raw {
-        Some(raw) => match crate::extraction::merchant_normalizer::normalize_merchant_sync(conn, raw) {
-            Ok((entity_id, normalized)) if !normalized.is_empty() => {
-                (Some(entity_id), Some(normalized))
+        Some(raw) => {
+            match crate::extraction::merchant_normalizer::normalize_merchant_sync(conn, raw) {
+                Ok((entity_id, normalized)) if !normalized.is_empty() => {
+                    (Some(entity_id), Some(normalized))
+                }
+                _ => (None, None),
             }
-            _ => (None, None),
-        },
+        }
         None => (None, None),
     };
 
     let new_tx = TransactionsRow {
         id: tx_id.clone(),
         unique_event_id: None,
-        instrument_id: if obs.instrument_id == "unknown" { None } else { Some(obs.instrument_id.clone()) },
+        instrument_id: if obs.instrument_id == "unknown" {
+            None
+        } else {
+            Some(obs.instrument_id.clone())
+        },
         instrument_type: None,
         direction: Some(obs.direction.clone()),
         // Generated column (audit_05 #4) -- SQLite derives it from
@@ -166,7 +177,7 @@ pub fn update_canonical_with_statement(
     // Doc 30 TASK-DEDUP-008: "every precedence-driven overwrite is logged to
     // audit_log... with before/after values for full auditability" --
     // snapshot the fields this UPDATE can change before it runs.
-    let before: Option<(Option<String>, Option<String>, Option<String>, Option<i64>)> = conn
+    let before: Option<CanonicalAuditSnapshot> = conn
         .query_row(
             "SELECT reference_id, best_posting_date, merchant_display_name, amount_minor FROM transactions WHERE id = ?1",
             params![canonical_id],

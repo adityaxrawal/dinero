@@ -710,12 +710,12 @@ mod tests {
         let conn = pool.get().await.unwrap();
         conn.interact(|c| {
             c.execute(
-                "INSERT INTO instruments (id, type, issuer_name, network, masked_identifier, status) 
+                "INSERT INTO instruments (id, type, issuer_name, network, masked_identifier, status)
                  VALUES ('inst_del', 'credit_card', 'HDFC', 'VISA', '1234', 'active')",
                 [],
             )
             .unwrap();
-            
+
             // Insert a statement for the billing period
             c.execute(
                 "INSERT INTO statements \
