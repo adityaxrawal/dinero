@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { DateRangePicker } from '@/components/ui/date-picker';
 import { Loader2 } from 'lucide-react';
 import { useGlobalState } from '@/lib/GlobalStateContext';
+import type { ScanProgressPayload } from '@/lib/ipc';
 import { scanProgressPercent } from './scanProgressPercent';
 
 interface HistoricalScanScreenProps {
@@ -26,6 +27,66 @@ function isoDate(d: Date): string {
  * duplicating the `scan_progress`/`scan_completed`/`scan_failed` listener
  * wiring a second time.
  */
+function ScanRunning({
+  progress,
+  onDone,
+}: {
+  progress: ScanProgressPayload | null;
+  onDone: () => void;
+}) {
+  const pct = scanProgressPercent(progress?.processed ?? 0, progress?.total ?? 0);
+  return (
+    <div className="space-y-4 text-center animate-in fade-in slide-in-from-bottom-4">
+      <Loader2 className="w-8 h-8 mx-auto animate-spin text-primary" aria-hidden="true" />
+      <p className="text-sm font-medium">Scanning your Gmail history…</p>
+      <div
+        className="w-full h-2 bg-secondary rounded-full overflow-hidden"
+        role="progressbar"
+        aria-valuenow={pct}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-label="Historical scan progress"
+      >
+        <div
+          className="h-full bg-[#064E3B] transition-all duration-300"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {progress?.processed ?? 0} of {progress?.total ?? '…'} messages processed
+      </p>
+      <Button
+        variant="outline"
+        onClick={onDone}
+        aria-label="Continue to the dashboard while the scan runs in the background"
+      >
+        Continue in Background
+      </Button>
+    </div>
+  );
+}
+
+function ScanComplete({
+  progress,
+  onDone,
+}: {
+  progress: ScanProgressPayload | null;
+  onDone: () => void;
+}) {
+  return (
+    <div className="space-y-4 text-center animate-in fade-in slide-in-from-bottom-4">
+      <p className="text-sm font-medium">Historical scan complete.</p>
+      <p className="text-xs text-muted-foreground">
+        Found {progress?.transactions_found ?? 0} transactions and{' '}
+        {progress?.statements_found ?? 0} statements.
+      </p>
+      <Button onClick={onDone} variant="accent" aria-label="Continue to the dashboard">
+        Continue
+      </Button>
+    </div>
+  );
+}
+
 export default function HistoricalScanScreen({ onDone }: HistoricalScanScreenProps) {
   const {
     scanStartDate,
@@ -61,51 +122,11 @@ export default function HistoricalScanScreen({ onDone }: HistoricalScanScreenPro
   const maxDate = isoDate(new Date());
 
   if (scanStatus === 'running') {
-    const pct = scanProgressPercent(scanProgress?.processed ?? 0, scanProgress?.total ?? 0);
-    return (
-      <div className="space-y-4 text-center animate-in fade-in slide-in-from-bottom-4">
-        <Loader2 className="w-8 h-8 mx-auto animate-spin text-primary" aria-hidden="true" />
-        <p className="text-sm font-medium">Scanning your Gmail history…</p>
-        <div
-          className="w-full h-2 bg-secondary rounded-full overflow-hidden"
-          role="progressbar"
-          aria-valuenow={pct}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-label="Historical scan progress"
-        >
-          <div
-            className="h-full bg-[#064E3B] transition-all duration-300"
-            style={{ width: `${pct}%` }}
-          />
-        </div>
-        <p className="text-xs text-muted-foreground">
-          {scanProgress?.processed ?? 0} of {scanProgress?.total ?? '…'} messages processed
-        </p>
-        <Button
-          variant="outline"
-          onClick={onDone}
-          aria-label="Continue to the dashboard while the scan runs in the background"
-        >
-          Continue in Background
-        </Button>
-      </div>
-    );
+    return <ScanRunning progress={scanProgress} onDone={onDone} />;
   }
 
   if (scanStatus === 'done') {
-    return (
-      <div className="space-y-4 text-center animate-in fade-in slide-in-from-bottom-4">
-        <p className="text-sm font-medium">Historical scan complete.</p>
-        <p className="text-xs text-muted-foreground">
-          Found {scanProgress?.transactions_found ?? 0} transactions and{' '}
-          {scanProgress?.statements_found ?? 0} statements.
-        </p>
-        <Button onClick={onDone} variant="accent" aria-label="Continue to the dashboard">
-          Continue
-        </Button>
-      </div>
-    );
+    return <ScanComplete progress={scanProgress} onDone={onDone} />;
   }
 
   return (
