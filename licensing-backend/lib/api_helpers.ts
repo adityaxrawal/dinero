@@ -1,5 +1,4 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import type { PrismaClient } from '@prisma/client';
 import { LicensingApiError, sendApiError } from './errors';
 
 /**
@@ -26,15 +25,21 @@ export function requirePostWithFields(
   return true;
 }
 
+/**
+ * The two Prisma delegate methods this helper calls, structurally typed so it
+ * accepts both the real client and the test doubles. `args`/result stay open —
+ * Prisma's own generated argument and payload types vary per call shape, and
+ * only `accountId` is read off the result here.
+ */
+interface FindDelegate {
+  findFirst(args: Record<string, unknown>): Promise<{ accountId: string } | null>;
+  findUnique?(args: Record<string, unknown>): Promise<{ accountId: string } | null>;
+}
+
 export async function getTokenAndSubscription(
   db: {
-    licenseToken: {
-      findFirst(args: any): Promise<any>;
-      findUnique?(args: any): Promise<any>;
-    };
-    subscription: {
-      findFirst(args: any): Promise<any>;
-    };
+    licenseToken: FindDelegate;
+    subscription: Pick<FindDelegate, 'findFirst'>;
   },
   deviceId: string,
   includeAccount: boolean = false

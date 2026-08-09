@@ -75,7 +75,9 @@ export async function refreshLicenseToken(
     );
   }
 
-  const { token, subscription } = await getTokenAndSubscription(db, input.device_id);
+  // Called for its validation side effect too: it throws LICENSE_INVALID when
+  // no token is bound to this device. Only the subscription is read here.
+  const { subscription } = await getTokenAndSubscription(db, input.device_id);
   if (!subscription || !['trialing', 'active', 'past_due'].includes(subscription.status)) {
     throw new LicensingApiError('LICENSE_INVALID', 'Subscription is no longer refreshable');
   }

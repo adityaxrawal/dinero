@@ -65,6 +65,65 @@ async function isDuplicateEvent(
   return count > 0;
 }
 
+/** Doc 30 TASK-BILL-003: a new subscription binds the Razorpay id to the
+ *  account and heals whatever local row already exists. */
+async function onSubscriptionCreated(db: WebhookDb, event: RazorpayWebhookEvent): Promise<void> {
+  const accountId = event.payload.subscription?.entity?.notes?.account_id;
+  const razorpaySubscriptionId = event.payload.subscription?.entity?.id;
+  if (!accountId) return;
+
+  const existing = await db.subscription.findFirst({
+    where: { accountId },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (existing) {
+    await db.subscription.update({ where: { id: existing.id }, data: { status: 'active' } });
+  }
+  await db.paymentProviderRecord.create({
+    data: { accountId, subscriptionId: existing?.id, razorpaySubscriptionId },
+  });
+}
+
+/** Doc 30 TASK-BILL-003: "extend current_period_end, heal past_due -> active." */
+async function onInvoicePaid(db: WebhookDb, event: RazorpayWebhookEvent): Promise<void> {
+  const razorpaySubscriptionId = event.payload.invoice?.entity?.subscription_id;
+  const billingEndUnix = event.payload.invoice?.entity?.billing_end;
+  if (!razorpaySubscriptionId || !billingEndUnix) return;
+
+  const subscription = await findSubscriptionByRazorpaySubscriptionId(db, razorpaySubscriptionId);
+  if (!subscription) return;
+
+  await db.subscription.update({
+    where: { id: subscription.id },
+    data: { currentPeriodEnd: new Date(billingEndUnix * 1000), status: 'active' },
+  });
+}
+
+/**
+ * Doc 30 TASK-BILL-003: transitions to past_due -- does NOT lock the desktop
+ * app immediately; the local 7-day offline grace (TASK-AUTH-009) handles
+ * user-facing degradation. This just reflects accurate status for the next
+ * validate/refresh call.
+ */
+async function onPaymentFailed(db: WebhookDb, event: RazorpayWebhookEvent): Promise<void> {
+  const razorpaySubscriptionId = event.payload.invoice?.entity?.subscription_id;
+  if (!razorpaySubscriptionId) return;
+
+  const subscription = await findSubscriptionByRazorpaySubscriptionId(db, razorpaySubscriptionId);
+  if (!subscription) return;
+
+  await db.subscription.update({ where: { id: subscription.id }, data: { status: 'past_due' } });
+}
+
+const EVENT_HANDLERS: Record<
+  string,
+  (db: WebhookDb, event: RazorpayWebhookEvent) => Promise<void>
+> = {
+  'subscription.created': onSubscriptionCreated,
+  'invoice.paid': onInvoicePaid,
+  'invoice.payment_failed': onPaymentFailed,
+};
+
 export async function processWebhookEvent(
   db: WebhookDb,
   event: RazorpayWebhookEvent
@@ -73,65 +132,9 @@ export async function processWebhookEvent(
     return { status: 'duplicate_ignored' };
   }
 
-  switch (event.event) {
-    case 'subscription.created': {
-      const accountId = event.payload.subscription?.entity?.notes?.account_id;
-      const razorpaySubscriptionId = event.payload.subscription?.entity?.id;
-      if (accountId) {
-        const existing = await db.subscription.findFirst({
-          where: { accountId },
-          orderBy: { createdAt: 'desc' },
-        });
-        if (existing) {
-          await db.subscription.update({ where: { id: existing.id }, data: { status: 'active' } });
-        }
-        await db.paymentProviderRecord.create({
-          data: { accountId, subscriptionId: existing?.id, razorpaySubscriptionId },
-        });
-      }
-      break;
-    }
-    case 'invoice.paid': {
-      const razorpaySubscriptionId = event.payload.invoice?.entity?.subscription_id;
-      const billingEndUnix = event.payload.invoice?.entity?.billing_end;
-      if (razorpaySubscriptionId && billingEndUnix) {
-        // Doc 30 TASK-BILL-003: "extend current_period_end, heal past_due -> active."
-        const subscription = await findSubscriptionByRazorpaySubscriptionId(
-          db,
-          razorpaySubscriptionId
-        );
-        if (subscription) {
-          await db.subscription.update({
-            where: { id: subscription.id },
-            data: { currentPeriodEnd: new Date(billingEndUnix * 1000), status: 'active' },
-          });
-        }
-      }
-      break;
-    }
-    case 'invoice.payment_failed': {
-      const razorpaySubscriptionId = event.payload.invoice?.entity?.subscription_id;
-      if (razorpaySubscriptionId) {
-        // Doc 30 TASK-BILL-003: transitions to past_due -- does NOT lock the
-        // desktop app immediately; the local 7-day offline grace (TASK-AUTH-009)
-        // handles user-facing degradation. This just reflects accurate
-        // status for the next validate/refresh call.
-        const subscription = await findSubscriptionByRazorpaySubscriptionId(
-          db,
-          razorpaySubscriptionId
-        );
-        if (subscription) {
-          await db.subscription.update({
-            where: { id: subscription.id },
-            data: { status: 'past_due' },
-          });
-        }
-      }
-      break;
-    }
-    default:
-      break;
-  }
+  // Unrecognised event types are acknowledged and audited, never rejected —
+  // Razorpay retries anything it does not get a 2xx for.
+  await EVENT_HANDLERS[event.event]?.(db, event);
 
   await logAuditEvent(db.licensingAuditLog, {
     eventType: 'webhook_processed',

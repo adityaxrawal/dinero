@@ -7,12 +7,12 @@ import { LicensingApiError } from '../lib/errors';
 import { verifyLicenseJwt } from '../lib/jwt';
 import { TEST_PRIVATE_KEY_PEM, TEST_PUBLIC_KEY_PEM } from './testKeys';
 import { verifyPaymentSignature } from '../lib/razorpay';
+import { createHmac } from 'node:crypto';
 
 const RAZORPAY_KEY_SECRET = 'test-razorpay-secret';
 const ORDER_ID = 'order_abc123';
 const PAYMENT_ID = 'pay_xyz789';
 const VALID_SIGNATURE = (() => {
-  const { createHmac } = require('node:crypto');
   return createHmac('sha256', RAZORPAY_KEY_SECRET)
     .update(`${ORDER_ID}|${PAYMENT_ID}`)
     .digest('hex');

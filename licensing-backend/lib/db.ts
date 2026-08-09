@@ -6,7 +6,6 @@ import type { PrismaClient, Account } from '@prisma/client';
 import { PrismaClient as PrismaClientCtor } from '@prisma/client';
 
 declare global {
-  // eslint-disable-next-line no-var
   var __dineroPrisma: PrismaClient | undefined;
 }
 

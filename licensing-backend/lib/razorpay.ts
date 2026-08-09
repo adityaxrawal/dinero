@@ -45,7 +45,7 @@ export interface RazorpayOrders {
 export function realRazorpayOrders(keyId: string, keySecret: string): RazorpayOrders {
   return {
     async create(params) {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const Razorpay = require('razorpay');
       const client = new Razorpay({ key_id: keyId, key_secret: keySecret });
       const order = await client.orders.create(params);
@@ -75,7 +75,7 @@ export interface RazorpayPayments {
 export function realRazorpayPayments(keySecret: string): RazorpayPayments {
   return {
     async fetch(paymentId) {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const Razorpay = require('razorpay');
       const client = new Razorpay({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: keySecret });
       const payment = await client.payments.fetch(paymentId);
@@ -93,7 +93,7 @@ export interface RazorpayRefunds {
 export function realRazorpayRefunds(keyId: string, keySecret: string): RazorpayRefunds {
   return {
     async create(paymentId) {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const Razorpay = require('razorpay');
       const client = new Razorpay({ key_id: keyId, key_secret: keySecret });
       const refund = await client.payments.refund(paymentId, {});
@@ -116,7 +116,7 @@ export interface RazorpaySubscriptions {
 export function realRazorpaySubscriptions(keyId: string, keySecret: string): RazorpaySubscriptions {
   return {
     async fetch(razorpaySubscriptionId) {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
       const Razorpay = require('razorpay');
       const client = new Razorpay({ key_id: keyId, key_secret: keySecret });
       const sub = await client.subscriptions.fetch(razorpaySubscriptionId);

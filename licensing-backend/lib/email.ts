@@ -13,7 +13,6 @@ export const consoleEmailSender: EmailSender = {
     // TASK-OPS-007: this placeholder previously logged the raw recipient
     // address -- masked here for the same reason every other log line in
     // this backend never carries a raw identifier (request_logging.ts).
-    // eslint-disable-next-line no-console
     console.log(`[email:placeholder] to=${maskEmail(params.to)} subject="${params.subject}"`);
   },
 };

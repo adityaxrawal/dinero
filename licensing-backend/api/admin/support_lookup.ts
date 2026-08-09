@@ -11,7 +11,7 @@ import { handleAdminSupportError } from '../../lib/api_helpers';
 import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
-import { LicensingApiError, sendApiError } from '../../lib/errors';
+import {LicensingApiError} from '../../lib/errors';
 import { assertAdminAuthorized } from '../../lib/admin_auth';
 import { maskEmail } from '../../lib/license_key';
 import { recommendRecovery, type SupportCaseType } from '../../lib/support_recovery';

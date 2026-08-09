@@ -26,13 +26,9 @@ function main() {
     privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
   });
 
-  // eslint-disable-next-line no-console
   console.log('--- PRIVATE KEY (set as Vercel env JWT_PRIVATE_KEY_PEM, never commit) ---');
-  // eslint-disable-next-line no-console
   console.log(privateKey);
-  // eslint-disable-next-line no-console
   console.log('--- PUBLIC KEY (paste into src-tauri/keys/license_public.pem) ---');
-  // eslint-disable-next-line no-console
   console.log(publicKey);
 }
 

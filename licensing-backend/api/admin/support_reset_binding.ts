@@ -10,7 +10,7 @@ import { withRequestLogging } from '../../lib/request_logging';
 import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
-import { LicensingApiError, sendApiError } from '../../lib/errors';
+import {LicensingApiError} from '../../lib/errors';
 import { requirePostWithFields, handleAdminSupportError } from '../../lib/api_helpers';
 import { assertAdminAuthorized } from '../../lib/admin_auth';
 import { logAuditEvent, type AuditWriter } from '../../lib/audit';
