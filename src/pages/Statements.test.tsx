@@ -5,6 +5,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import Statements from './Statements';
 import { useStatementsList } from '@/hooks/queries/useStatementsList';
 
+/**
+ * The page reads only `isLoading`/`data`, so the tests supply those and assert
+ * to the full `UseQueryResult` rather than hand-building all ~25 of its fields.
+ */
+type StatementsListResult = ReturnType<typeof useStatementsList>;
+
 vi.mock('@/hooks/queries/useStatementsList');
 
 vi.mock('@/lib/GlobalStateContext', () => ({
@@ -38,7 +44,7 @@ function renderStatements() {
 
 describe('Statements — Processing History', () => {
   it('shows View PDF and Delete PDF for a completed statement with a retained PDF', () => {
-    (useStatementsList as any).mockReturnValue({
+    vi.mocked(useStatementsList).mockReturnValue({
       isLoading: false,
       data: [
         {
@@ -56,7 +62,7 @@ describe('Statements — Processing History', () => {
           pdf_available: true,
         },
       ],
-    });
+    } as StatementsListResult);
 
     renderStatements();
 

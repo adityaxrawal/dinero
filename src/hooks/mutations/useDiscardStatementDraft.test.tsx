@@ -10,7 +10,7 @@ vi.mock('@/lib/ipc', () => ({
 
 describe('useDiscardStatementDraft', () => {
   it('calls API.statements.discardDraft with the draft id', async () => {
-    (API.statements.discardDraft as any).mockResolvedValue({ status: 'discarded' });
+    vi.mocked(API.statements.discardDraft).mockResolvedValue({ status: 'discarded' });
     const queryClient = new QueryClient();
     const wrapper = ({ children }: { children: React.ReactNode }) => (
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>

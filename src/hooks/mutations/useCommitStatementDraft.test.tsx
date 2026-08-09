@@ -10,7 +10,7 @@ vi.mock('@/lib/ipc', () => ({
 
 describe('useCommitStatementDraft', () => {
   it('calls API.statements.commitDraft with the draft id, metadata, and rows', async () => {
-    (API.statements.commitDraft as any).mockResolvedValue({
+    vi.mocked(API.statements.commitDraft).mockResolvedValue({
       status: 'committed',
       statement_id: 'stmt_1',
     });

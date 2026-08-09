@@ -1,27 +1,12 @@
-import { useCallback, useState } from 'react';
-import { open } from '@tauri-apps/plugin-dialog';
-import { readFile } from '@tauri-apps/plugin-fs';
+import { useState } from 'react';
 import { UploadCloud } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import { useToast } from '@/hooks/use-toast';
-import { getErrorMessage, getErrorToast } from '@/lib/errorMapping';
-import { API } from '@/lib/ipc';
-import { useGlobalState } from '@/lib/GlobalStateContext';
+import { useStatementUpload } from './upload/useStatementUpload';
 
 interface StatementUploadDropzoneProps {
   onUploaded: () => void;
-}
-
-// TASK-FE-012: no backend size limit exists on statements_upload -- this is
-// a client-side-only "immediate feedback before even attempting the round
-// trip" guard, not a server-enforced rule. 25MB comfortably exceeds any
-// real bank statement PDF (typically well under 5MB).
-const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024;
-
-function isPdf(name: string, type?: string): boolean {
-  return name.toLowerCase().endsWith('.pdf') || type === 'application/pdf';
 }
 
 /**
@@ -42,170 +27,14 @@ function isPdf(name: string, type?: string): boolean {
  * semaphore. Now shown via `GlobalStateContext`'s `batchProgress`.
  */
 export default function StatementUploadDropzone({ onUploaded }: StatementUploadDropzoneProps) {
-  const { toast } = useToast();
-  const { batchProgress, setBatchProgress, watchDraftOrigin } = useGlobalState();
+  const { isUploading, batchProgress, pickAndUpload, dropFiles } = useStatementUpload(onUploaded);
   const [isDragging, setIsDragging] = useState(false);
-  const [isUploading, setIsUploading] = useState(false);
 
-  const uploadPaths = useCallback(
-    async (paths: string[]) => {
-      setIsUploading(true);
-      setBatchProgress(null);
-      let accessDenied = false;
-      let succeeded = 0;
-      const duplicates: string[] = [];
-      const otherFailures: string[] = [];
-
-      try {
-        const results = await API.statements.upload(paths);
-        for (const result of results) {
-          // A 'queued' upload eventually stages under this same statement_id
-          // (stage_parse_pipeline reuses insert_queued()'s pre-minted id as
-          // the draft id) — watching it here is what lets the resulting
-          // statement_staged event auto-open the review modal, since this
-          // upload was directly user-initiated.
-          if (result.status === 'queued' && result.statement_id) {
-            watchDraftOrigin(result.statement_id);
-          }
-          if (result.status.startsWith('error')) {
-            const errMsg = result.status.replace(/^error:\s*/, '');
-            if (errMsg.includes('File access denied') || errMsg.includes('Permission denied')) {
-              accessDenied = true;
-            } else if (errMsg.includes('duplicate')) {
-              duplicates.push(result.filename || 'A file');
-            } else {
-              otherFailures.push(errMsg);
-            }
-          } else {
-            succeeded += 1;
-          }
-        }
-      } catch (err) {
-        otherFailures.push(getErrorMessage(err));
-      } finally {
-        setIsUploading(false);
-      }
-
-      // TASK-DESK-004 (Doc 30): a dismissable toast for this specific
-      // upload attempt, not a blocking modal -- macOS TCC file/folder
-      // access is a soft-fail, unlike the Keychain hard-fail case.
-      if (accessDenied) {
-        toast({
-          variant: 'destructive',
-          title: 'File Access Denied',
-          description:
-            'macOS blocked access to this file. Grant Dinero permission in System Settings > Privacy & Security > Files and Folders.',
-        });
-      }
-      if (succeeded > 0) {
-        toast({
-          title:
-            paths.length > 1 ? `${succeeded} of ${paths.length} Uploads Started` : 'Upload Started',
-          description: 'Statement(s) are being processed.',
-        });
-      }
-      if (duplicates.length > 0) {
-        toast({
-          variant: 'destructive',
-          title: 'Already Uploaded',
-          description: `${duplicates.slice(0, 3).join(', ')} — this statement was already imported.`,
-        });
-      }
-      if (otherFailures.length > 0) {
-        toast({
-          variant: 'destructive',
-          title: 'Some Uploads Failed',
-          description: otherFailures.slice(0, 3).join('; '),
-        });
-      }
-      onUploaded();
-    },
-    [onUploaded, toast, setBatchProgress, watchDraftOrigin]
-  );
-
-  const handleFileUpload = useCallback(async () => {
-    try {
-      const selected = await open({
-        multiple: true,
-        filters: [{ name: 'PDF', extensions: ['pdf'] }],
-      });
-      if (!selected) return;
-      const paths = Array.isArray(selected) ? selected : [selected];
-      if (paths.length === 0) return;
-
-      // Immediate client-side validation: non-PDF (belt-and-suspenders on
-      // top of the file picker's own filter, since a user can still type an
-      // arbitrary path) and too-large, before any upload attempt at all.
-      const tooLarge: string[] = [];
-      for (const path of paths) {
-        if (!isPdf(path)) {
-          toast({
-            variant: 'destructive',
-            title: 'Upload Error',
-            description: 'Only PDF files are allowed.',
-          });
-          return;
-        }
-        const bytes = await readFile(path);
-        if (bytes.byteLength > MAX_FILE_SIZE_BYTES) {
-          tooLarge.push(path.split(/[/\\]/).pop() || path);
-        }
-      }
-      if (tooLarge.length > 0) {
-        toast({
-          variant: 'destructive',
-          title: 'File Too Large',
-          description: `${tooLarge.join(', ')} exceeds the 25MB limit.`,
-        });
-        return;
-      }
-
-      await uploadPaths(paths);
-    } catch (err) {
-      toast({ variant: 'destructive', ...getErrorToast(err) });
-    }
-  }, [uploadPaths, toast]);
-
-  const onDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-  };
-  const onDragLeave = () => setIsDragging(false);
-
-  const onDrop = useCallback(
-    async (e: React.DragEvent) => {
-      e.preventDefault();
-      setIsDragging(false);
-
-      const files = Array.from(e.dataTransfer.files);
-      if (files.length > 0) {
-        const nonPdf = files.find((file) => !isPdf(file.name, file.type));
-        if (nonPdf) {
-          toast({
-            variant: 'destructive',
-            title: 'Upload Error',
-            description: 'Only PDF files are allowed.',
-          });
-          return;
-        }
-        const tooLarge = files.find((file) => file.size > MAX_FILE_SIZE_BYTES);
-        if (tooLarge) {
-          toast({
-            variant: 'destructive',
-            title: 'File Too Large',
-            description: `${tooLarge.name} exceeds the 25MB limit.`,
-          });
-          return;
-        }
-      }
-
-      // Browser drag-drop events don't carry absolute filesystem paths (needed
-      // for statements_upload's byte-read) -- fall back to the file picker,
-      // which does, once the immediate client-side checks above have passed.
-      handleFileUpload();
-    },
-    [handleFileUpload, toast]
-  );
+  const status = isUploading
+    ? 'Uploading…'
+    : batchProgress
+      ? `Parsing ${batchProgress.parsed} of ${batchProgress.total} statements (max 5 at a time)… ~${batchProgress.etaSeconds}s remaining`
+      : 'Drag and drop your PDF statements here, or click to browse.';
 
   return (
     <Card
@@ -215,15 +44,22 @@ export default function StatementUploadDropzone({ onUploaded }: StatementUploadD
           ? 'border-primary bg-primary/10'
           : 'border-border hover:border-primary/50 hover:bg-secondary/50'
       )}
-      onDragOver={onDragOver}
-      onDragLeave={onDragLeave}
-      onDrop={onDrop}
-      onClick={handleFileUpload}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setIsDragging(true);
+      }}
+      onDragLeave={() => setIsDragging(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setIsDragging(false);
+        dropFiles(Array.from(e.dataTransfer.files));
+      }}
+      onClick={pickAndUpload}
       role="button"
       data-testid="dropzone"
       tabIndex={0}
       aria-label="Upload a PDF statement. Click or drag and drop."
-      onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleFileUpload()}
+      onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && pickAndUpload()}
     >
       <CardContent className="flex flex-col items-center justify-center py-12 text-center">
         <div
@@ -234,11 +70,7 @@ export default function StatementUploadDropzone({ onUploaded }: StatementUploadD
         </div>
         <h2 className="text-lg font-semibold mb-1">Upload Statement</h2>
         <p className="text-sm text-muted-foreground mb-4" role="status">
-          {isUploading
-            ? 'Uploading…'
-            : batchProgress
-              ? `Parsing ${batchProgress.parsed} of ${batchProgress.total} statements (max 5 at a time)… ~${batchProgress.etaSeconds}s remaining`
-              : 'Drag and drop your PDF statements here, or click to browse.'}
+          {status}
         </p>
         <Button asChild variant="secondary" aria-hidden="true" tabIndex={-1}>
           <span>Browse Files</span>
