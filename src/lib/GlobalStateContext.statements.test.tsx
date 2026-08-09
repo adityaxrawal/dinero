@@ -2,7 +2,7 @@
 // test_batch_upload_aggregates_into_single_summary.
 // Doc 2026-07-26 mail scan performance: statement_password_required no
 // longer auto-opens the modal -- it's batched into one debounced toast.
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import {describe, it, expect, vi, beforeEach} from 'vitest';
 import { render, screen, waitFor, act } from '@testing-library/react';
 import { GlobalStateProvider, useGlobalState } from './GlobalStateContext';
 
@@ -19,9 +19,9 @@ vi.mock('@/hooks/use-toast', () => ({
   useToast: () => ({ toast: toastSpy }),
 }));
 
-const listenHandlers: Record<string, (event: { payload: any }) => void> = {};
+const listenHandlers: Record<string, (event: { payload: unknown }) => void> = {};
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: vi.fn((event: string, handler: (e: { payload: any }) => void) => {
+  listen: vi.fn((event: string, handler: (e: { payload: unknown }) => void) => {
     listenHandlers[event] = handler;
     return Promise.resolve(() => {
       delete listenHandlers[event];

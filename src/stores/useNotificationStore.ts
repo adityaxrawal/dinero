@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { isTauriRuntime } from '@/lib/tauriRuntime';
+import { mergeTask, type TaskUpdate } from './mergeTask';
 import { API, type BackgroundTaskProgressPayload, type ScanProgressPayload, type SystemWarningPayload } from '@/lib/ipc';
 
 export type NotificationCategory = 'ingestion' | 'statements' | 'normalization' | 'database' | 'system';
@@ -47,7 +48,7 @@ interface NotificationStoreState {
   setExpanded: (expanded: boolean) => void;
   toggleExpanded: () => void;
   
-  addOrUpdateTask: (task: Partial<UnifiedTask> & { id: string; title: string; category: NotificationCategory }) => void;
+  addOrUpdateTask: (task: TaskUpdate) => void;
   removeTask: (id: string) => void;
   cancelTask: (id: string) => Promise<void>;
   
@@ -77,35 +78,10 @@ export const useNotificationStore = create<NotificationStoreState>((set, get) =>
         return state;
       }
 
-      const current = incoming.current ?? existing?.current ?? 0;
-      const total = incoming.total ?? existing?.total ?? 0;
-      const progressPct =
-        incoming.progressPct ??
-        (total > 0 ? Math.min(100, Math.round((current / total) * 100)) : existing?.progressPct ?? 0);
-
-      const updatedTask: UnifiedTask = {
-        id: incoming.id,
-        domainKey: incoming.domainKey ?? existing?.domainKey ?? incoming.id,
-        category: incoming.category,
-        title: incoming.title,
-        description: incoming.description ?? existing?.description ?? '',
-        status: incoming.status ?? existing?.status ?? 'running',
-        current,
-        total,
-        progressPct,
-        etaSeconds: incoming.etaSeconds !== undefined ? incoming.etaSeconds : existing?.etaSeconds ?? null,
-        startedAt: existing?.startedAt ?? now,
-        updatedAt: now,
-        finishedAt: incoming.finishedAt ?? (incoming.status && incoming.status !== 'running' ? now : existing?.finishedAt),
-        errorMessage: incoming.errorMessage ?? existing?.errorMessage ?? null,
-        cancelable: incoming.cancelable ?? existing?.cancelable ?? false,
-        meta: { ...(existing?.meta ?? {}), ...(incoming.meta ?? {}) },
-      };
-
       return {
         tasks: {
           ...state.tasks,
-          [incoming.id]: updatedTask,
+          [incoming.id]: mergeTask(existing, incoming, now),
         },
       };
     });

@@ -5,14 +5,14 @@
 // here (each requires mocking its own React Query hooks/IPC calls) --
 // individual pages/components already have their own focused tests
 // (RecentTransactions.test.tsx, StaleClusterReminder.test.tsx,
-// Statements.test.tsx, AlertBanner.test.tsx, BackgroundTaskIndicator.test.tsx,
+// Statements.test.tsx, AlertBanner.test.tsx, SidebarNotificationCenter.test.tsx,
 // etc., built across this session's Area 13 work). This suite covers the
 // 4 named acceptance criteria specifically, using the same source-scanning
 // style already established on the Rust side (tenant_isolation.rs) for the
 // structural claims, and real assertions against already-exported pure
 // functions/data for the behavioral ones.
 import { describe, it, expect } from 'vitest';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { EVENT_INVALIDATIONS } from '@/hooks/useIpcQueryInvalidation';
 
@@ -21,6 +21,18 @@ const SRC_DIR = join(__dirname, '..');
 
 function readSrc(relativePath: string): string {
   return readFileSync(join(SRC_DIR, relativePath), 'utf-8');
+}
+
+/** A page's own source. Larger pages are split into a same-named subdirectory
+ *  of section/panel components (e.g. Settings.tsx + pages/settings/*), so the
+ *  structural claims below are checked against the page plus that directory. */
+function readPageSource(page: string): string {
+  const parts = [readFileSync(join(PAGES_DIR, page), 'utf-8')];
+  const sectionDir = join(PAGES_DIR, page.replace(/\.tsx$/, '').toLowerCase());
+  if (existsSync(sectionDir)) {
+    parts.push(...walkFiles(sectionDir).map((f) => readFileSync(f, 'utf-8')));
+  }
+  return parts.join('\n');
 }
 
 function walkFiles(dir: string, out: string[] = []): string[] {
@@ -49,14 +61,12 @@ describe('test_screen_states_cover_loading_empty_error_success', () => {
   ];
 
   it.each(criticalPages)('%s renders a loading state while data is in flight', (page) => {
-    const content = readFileSync(join(PAGES_DIR, page), 'utf-8');
-    expect(content).toMatch(/isLoading|isPending|Loader2/);
+    expect(readPageSource(page)).toMatch(/isLoading|isPending|Loader2/);
   });
 
   it('Dashboard, Transactions, and Instruments each render a real empty-state message', () => {
     for (const page of ['Dashboard.tsx', 'Transactions.tsx', 'Instruments.tsx']) {
-      const content = readFileSync(join(PAGES_DIR, page), 'utf-8');
-      expect(content.toLowerCase()).toMatch(
+      expect(readPageSource(page).toLowerCase()).toMatch(
         /no transactions|no instruments|nothing to show|no .*yet/
       );
     }
@@ -76,7 +86,7 @@ describe('test_events_update_correct_ui_regions', () => {
     const keyEvents = [
       { event: 'transaction_created', file: 'hooks/useIpcQueryInvalidation.ts' },
       { event: 'scan_progress', file: 'stores/useSyncStore.ts' },
-      { event: 'background_task_progress', file: 'components/shell/BackgroundTaskIndicator.tsx' },
+      { event: 'background_task_progress', file: 'stores/useNotificationStore.ts' },
       { event: 'alert_threshold_crossed', file: 'stores/useAlertStore.ts' },
       { event: 'system_warning', file: 'components/notifications/ConnectionStatusBanner.tsx' },
     ];

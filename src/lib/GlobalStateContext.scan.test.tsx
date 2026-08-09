@@ -26,9 +26,9 @@ vi.mock('@/hooks/use-toast', () => ({
   useToast: () => ({ toast: vi.fn() }),
 }));
 
-const listenHandlers: Record<string, (event: { payload: any }) => void> = {};
+const listenHandlers: Record<string, (event: { payload: unknown }) => void> = {};
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: vi.fn((event: string, handler: (e: { payload: any }) => void) => {
+  listen: vi.fn((event: string, handler: (e: { payload: unknown }) => void) => {
     listenHandlers[event] = handler;
     return Promise.resolve(() => {
       delete listenHandlers[event];

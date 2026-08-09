@@ -33,15 +33,3 @@ export interface AppError {
   message: string;
   details?: Record<string, unknown>;
 }
-
-/**
- * Mirrors the Rust-side `ipc::responses::Payload<T>` envelope. Most
- * commands in this codebase return `T` directly and signal failure via a
- * rejected promise (Tauri's own `Err` → JS rejection mechanism), so this
- * type mainly documents that shape for any command that explicitly opts
- * into the wrapped-envelope pattern instead.
- */
-interface IpcResponse<T> {
-  data: T | null;
-  error: string | null;
-}
