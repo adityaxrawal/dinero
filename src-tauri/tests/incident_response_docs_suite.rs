@@ -83,7 +83,8 @@ fn test_one_command_rollback_targets_previous_build() {
         "rollback_release.sh must re-designate a release as latest, not just delete the bad one"
     );
     assert!(
-        script_content.contains("exclude-drafts") && script_content.contains("exclude-pre-releases"),
+        script_content.contains("exclude-drafts")
+            && script_content.contains("exclude-pre-releases"),
         "rollback_release.sh must never restore an unpromoted draft/pre-release as latest"
     );
 

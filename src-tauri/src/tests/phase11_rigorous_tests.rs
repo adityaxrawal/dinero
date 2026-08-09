@@ -325,7 +325,9 @@ mod tests {
         }"#;
 
         assert!(
-            engine.parse_json_to_result(json_missing_currency, None).is_none(),
+            engine
+                .parse_json_to_result(json_missing_currency, None)
+                .is_none(),
             "Output missing currency must be rejected"
         );
 
@@ -337,7 +339,9 @@ mod tests {
         }"#;
 
         assert!(
-            engine.parse_json_to_result(json_missing_amount, None).is_none(),
+            engine
+                .parse_json_to_result(json_missing_amount, None)
+                .is_none(),
             "Output missing amount must be rejected"
         );
 

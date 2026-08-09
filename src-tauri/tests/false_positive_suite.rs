@@ -162,9 +162,8 @@ async fn process_record(pool: &deadpool_sqlite::Pool, rec: &GoldenRecord) -> Pip
             rec.sender_display_name.as_deref(),
         );
         return match result {
-            SenderVerificationResult::UnverifiedReject(_) | SenderVerificationResult::SpoofReject(_) => {
-                PipelineOutcome::Rejected("gate1_reject")
-            }
+            SenderVerificationResult::UnverifiedReject(_)
+            | SenderVerificationResult::SpoofReject(_) => PipelineOutcome::Rejected("gate1_reject"),
             other => panic!("{}: expected Gate 1 to reject, got {:?}", rec.id, other),
         };
     }
@@ -181,9 +180,18 @@ async fn process_record(pool: &deadpool_sqlite::Pool, rec: &GoldenRecord) -> Pip
 
     // Full extraction ladder (Layers 1-4).
     let mut layer6_timed_out = false;
-    let extracted = run_extraction_ladder(pool, bank_name, body, None, false, None, &mut layer6_timed_out, None)
-        .await
-        .expect("run_extraction_ladder returned an Err, not a rejection");
+    let extracted = run_extraction_ladder(
+        pool,
+        bank_name,
+        body,
+        None,
+        false,
+        None,
+        &mut layer6_timed_out,
+        None,
+    )
+    .await
+    .expect("run_extraction_ladder returned an Err, not a rejection");
     let Some(obs) = extracted else {
         return PipelineOutcome::Rejected("extraction_failed");
     };
@@ -203,7 +211,13 @@ async fn process_record(pool: &deadpool_sqlite::Pool, rec: &GoldenRecord) -> Pip
     let network = obs.network.clone();
 
     let source_record_id = format!("rec_{}", rec.id);
-    let mut row = normalize_observation(obs, "gmail_transaction", &source_record_id, Some(body), None);
+    let mut row = normalize_observation(
+        obs,
+        "gmail_transaction",
+        &source_record_id,
+        Some(body),
+        None,
+    );
 
     let connected_account_id = "acct_test".to_string();
     let conn = pool.get().await.expect("pool.get");
@@ -214,13 +228,16 @@ async fn process_record(pool: &deadpool_sqlite::Pool, rec: &GoldenRecord) -> Pip
                 issuer_name.as_deref(),
                 masked_identifier.as_deref(),
             ) {
-                let instr_id = get_or_create_instrument(c, itype, iname, masked, network.as_deref())?;
+                let instr_id =
+                    get_or_create_instrument(c, itype, iname, masked, network.as_deref())?;
                 row.instrument_id = Some(instr_id);
             }
 
-            if let (Some(instrument_id), Some(dir), Some(amt)) =
-                (row.instrument_id.clone(), row.direction.clone(), row.amount_minor)
-            {
+            if let (Some(instrument_id), Some(dir), Some(amt)) = (
+                row.instrument_id.clone(),
+                row.direction.clone(),
+                row.amount_minor,
+            ) {
                 let event_bucket = row
                     .event_time
                     .map(|dt| dt.format("%Y-%m-%dT%H:%M").to_string())
@@ -243,7 +260,10 @@ async fn process_record(pool: &deadpool_sqlite::Pool, rec: &GoldenRecord) -> Pip
 
             let incoming = IncomingObservation {
                 id: row.id.clone(),
-                instrument_id: row.instrument_id.clone().unwrap_or_else(|| "unknown".to_string()),
+                instrument_id: row
+                    .instrument_id
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
                 amount_minor: row.amount_minor.unwrap_or(0),
                 currency: row.currency.clone().unwrap_or_else(|| "INR".to_string()),
                 direction: row.direction.clone().unwrap_or_else(|| "debit".to_string()),
@@ -253,7 +273,10 @@ async fn process_record(pool: &deadpool_sqlite::Pool, rec: &GoldenRecord) -> Pip
                     .unwrap_or_default(),
                 reference_id: row.reference_id.clone(),
                 merchant_raw: row.merchant_raw.clone(),
-                source_pipeline: row.source_pipeline.clone().unwrap_or_else(|| "unknown".to_string()),
+                source_pipeline: row
+                    .source_pipeline
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
                 source_record_id: row.source_record_id.clone().unwrap_or_default(),
                 emi_total_installments: row.emi_total_installments,
                 emi_original_amount_minor: row.emi_original_amount_minor,
@@ -284,8 +307,14 @@ fn test_corpus_contains_positive_and_negative_examples() {
     let positives: Vec<&GoldenRecord> = corpus.iter().filter(|r| r.is_positive).collect();
     let negatives: Vec<&GoldenRecord> = corpus.iter().filter(|r| !r.is_positive).collect();
 
-    assert!(!positives.is_empty(), "corpus must contain positive examples");
-    assert!(!negatives.is_empty(), "corpus must contain negative examples");
+    assert!(
+        !positives.is_empty(),
+        "corpus must contain positive examples"
+    );
+    assert!(
+        !negatives.is_empty(),
+        "corpus must contain negative examples"
+    );
 
     for category in REQUIRED_POSITIVE_CATEGORIES {
         assert!(
@@ -303,7 +332,11 @@ fn test_corpus_contains_positive_and_negative_examples() {
     // Every record must be well-formed enough to actually drive the pipeline.
     for rec in &corpus {
         if rec.category == "spoofed_domain" {
-            assert!(rec.sender_email.is_some(), "{}: missing sender_email", rec.id);
+            assert!(
+                rec.sender_email.is_some(),
+                "{}: missing sender_email",
+                rec.id
+            );
         } else {
             assert!(rec.body.is_some(), "{}: missing body", rec.id);
         }
@@ -328,7 +361,14 @@ async fn test_zero_false_positive_integration_suite() {
     for rec in &corpus {
         let outcome = process_record(&pool, rec).await;
         match (rec.is_positive, &outcome) {
-            (true, PipelineOutcome::Reconciled { amount_minor, direction, .. }) => {
+            (
+                true,
+                PipelineOutcome::Reconciled {
+                    amount_minor,
+                    direction,
+                    ..
+                },
+            ) => {
                 positive_success_count += 1;
                 if let Some(expected) = rec.expect_amount_minor {
                     assert_eq!(
@@ -375,7 +415,10 @@ async fn test_zero_false_positive_integration_suite() {
     // per distinct real-world positive example -- no ingestion path may
     // create more (a duplicate) or fewer (a silently dropped) rows than that.
     let conn = pool.get().await.expect("pool.get");
-    let count = conn.interact(transactions_row_count).await.expect("interact");
+    let count = conn
+        .interact(transactions_row_count)
+        .await
+        .expect("interact");
     assert_eq!(
         count, positive_success_count as i64,
         "transactions table must contain exactly one row per positive example, no more, no fewer"
@@ -405,7 +448,10 @@ async fn test_no_canonical_row_created_for_rejected_examples() {
         );
 
         let conn = pool.get().await.expect("pool.get");
-        let count = conn.interact(transactions_row_count).await.expect("interact");
+        let count = conn
+            .interact(transactions_row_count)
+            .await
+            .expect("interact");
         assert_eq!(
             count, 0,
             "{}: no canonical row may ever be created for a rejected example",

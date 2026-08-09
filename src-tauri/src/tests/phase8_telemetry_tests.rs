@@ -22,11 +22,11 @@ async fn test_debug_pipeline_pause_resume() {
 
     debug_set_gmail_poll_paused(true).await.unwrap();
     let state = debug_get_pipeline_state().await.unwrap();
-    assert_eq!(state.gmail_poll_paused, true);
+    assert!(state.gmail_poll_paused);
 
     debug_set_scan_queue_paused(true).await.unwrap();
     let state2 = debug_get_pipeline_state().await.unwrap();
-    assert_eq!(state2.scan_queue_paused, true);
+    assert!(state2.scan_queue_paused);
 
     debug_set_gmail_poll_paused(initial_state.gmail_poll_paused)
         .await
@@ -48,7 +48,7 @@ async fn test_debug_fetch_parse_errors() {
 
     let errors = conn.interact(|c| {
         let mut stmt = c.prepare("SELECT * FROM transaction_observations WHERE extraction_method = 'failed' ORDER BY created_at DESC").unwrap();
-        let iter = stmt.query_map([], |row| db::transaction_observations::row_to_observation(row)).unwrap();
+        let iter = stmt.query_map([], db::transaction_observations::row_to_observation).unwrap();
         let mut res = Vec::new();
         for r in iter { res.push(r.unwrap()); }
         res

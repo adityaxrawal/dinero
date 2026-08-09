@@ -161,10 +161,8 @@ fn test_no_financial_data_leaves_device() {
 /// guarantee.
 #[test]
 fn test_no_disallowed_cloud_llm_dependencies() {
-    let cargo_toml = std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"),
-    )
-    .unwrap();
+    let cargo_toml =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")).unwrap();
     let disallowed_crates = [
         "async-openai",
         "openai-api",

@@ -106,7 +106,9 @@ fn test_llm_output_parsed_invalid_direction_normalized() {
         "event_time": 1704067200
     }"#;
 
-    let result = engine.parse_json_to_result(json, None).expect("Should parse");
+    let result = engine
+        .parse_json_to_result(json, None)
+        .expect("Should parse");
     assert_eq!(
         result.direction,
         Some("debit".to_string()),

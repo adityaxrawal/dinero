@@ -81,8 +81,14 @@ async fn test_local_health_reports_core_status() {
 
     let report = compute_health_report(&pool).await;
 
-    assert!(report.backend_ready, "a healthy pool must report backend_ready");
-    assert!(report.db_integrity_ok, "no integrity check has failed yet — must default to ok");
+    assert!(
+        report.backend_ready,
+        "a healthy pool must report backend_ready"
+    );
+    assert!(
+        report.db_integrity_ok,
+        "no integrity check has failed yet — must default to ok"
+    );
     assert!(
         report.checkpoint_age_seconds.is_some(),
         "a seeded checkpoint must produce a checkpoint age"

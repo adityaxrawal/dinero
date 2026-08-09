@@ -2,7 +2,7 @@
 mod tests {
     use std::env;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
 
     use deadpool_sqlite::{Manager, Pool, Runtime};
@@ -128,7 +128,7 @@ mod tests {
         expected: Option<ExpectedFields>,
     }
 
-    fn load_extraction_samples(root: &PathBuf) -> Vec<ExtractionSample> {
+    fn load_extraction_samples(root: &Path) -> Vec<ExtractionSample> {
         let dir = root.join("extraction");
         let mut samples = Vec::new();
         let entries = match fs::read_dir(&dir) {
@@ -184,7 +184,7 @@ mod tests {
         is_same_transaction: bool,
     }
 
-    fn load_reconciliation_pairs(root: &PathBuf) -> Vec<ReconciliationPair> {
+    fn load_reconciliation_pairs(root: &Path) -> Vec<ReconciliationPair> {
         let dir = root.join("reconciliation");
         let mut pairs = Vec::new();
         let entries = match fs::read_dir(&dir) {

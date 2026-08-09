@@ -56,7 +56,11 @@ struct SmokeRunArtifact {
     backend_health_check_ms: u128,
 }
 
-fn run_flow(flow: &'static str, coverage: FlowCoverage, f: impl FnOnce() -> anyhow::Result<String>) -> SmokeFlowResult {
+fn run_flow(
+    flow: &'static str,
+    coverage: FlowCoverage,
+    f: impl FnOnce() -> anyhow::Result<String>,
+) -> SmokeFlowResult {
     let start = Instant::now();
     let (passed, detail) = match f() {
         Ok(detail) => (true, detail),
@@ -120,7 +124,9 @@ async fn test_backend_healthy_within_five_seconds() {
     let db_path = dir.join("test.db");
 
     let start = Instant::now();
-    let pool = db::init_db(db_path).await.expect("cold-start DB init must succeed");
+    let pool = db::init_db(db_path)
+        .await
+        .expect("cold-start DB init must succeed");
     let conn = pool.get().await.unwrap();
     conn.interact(|c| c.query_row("SELECT 1", [], |r| r.get::<_, i64>(0)))
         .await
@@ -180,8 +186,15 @@ async fn test_smoke_run_writes_reviewable_artifact() {
             .map_err(|e| anyhow::anyhow!("interact error: {e}"))
             .and_then(|r| r.map_err(|e| anyhow::anyhow!("query error: {e}")));
         let (passed, detail) = match result {
-            Ok(None) => (true, "fresh install correctly has no primary_email yet".to_string()),
-            Ok(Some(_)) => (false, "a freshly cold-started install must not already have primary_email set".to_string()),
+            Ok(None) => (
+                true,
+                "fresh install correctly has no primary_email yet".to_string(),
+            ),
+            Ok(Some(_)) => (
+                false,
+                "a freshly cold-started install must not already have primary_email set"
+                    .to_string(),
+            ),
             Err(e) => (false, e.to_string()),
         };
         flows.push(SmokeFlowResult {
@@ -214,23 +227,27 @@ async fn test_smoke_run_writes_reviewable_artifact() {
         Ok(format!("valid PDF, {} bytes", bytes.len()))
     }));
 
-    flows.push(run_flow("reconciliation_resolution", FlowCoverage::ExercisedLocally, || {
-        let conn = rusqlite::Connection::open_in_memory()?;
-        conn.execute_batch(
-            "CREATE TABLE reconciliation_clusters (id TEXT PRIMARY KEY, cluster_status TEXT);
+    flows.push(run_flow(
+        "reconciliation_resolution",
+        FlowCoverage::ExercisedLocally,
+        || {
+            let conn = rusqlite::Connection::open_in_memory()?;
+            conn.execute_batch(
+                "CREATE TABLE reconciliation_clusters (id TEXT PRIMARY KEY, cluster_status TEXT);
              INSERT INTO reconciliation_clusters VALUES ('cl_smoke', 'open');
              UPDATE reconciliation_clusters SET cluster_status = 'resolved' WHERE id = 'cl_smoke';",
-        )?;
-        let status: String = conn.query_row(
-            "SELECT cluster_status FROM reconciliation_clusters WHERE id = 'cl_smoke'",
-            [],
-            |r| r.get(0),
-        )?;
-        if status != "resolved" {
-            anyhow::bail!("cluster resolution did not persist");
-        }
-        Ok("cluster resolve-transition round-trips".to_string())
-    }));
+            )?;
+            let status: String = conn.query_row(
+                "SELECT cluster_status FROM reconciliation_clusters WHERE id = 'cl_smoke'",
+                [],
+                |r| r.get(0),
+            )?;
+            if status != "resolved" {
+                anyhow::bail!("cluster resolution did not persist");
+            }
+            Ok("cluster resolve-transition round-trips".to_string())
+        },
+    ));
 
     flows.push(run_flow("spending_alert", FlowCoverage::ExercisedLocally, || {
         Ok("real alert engine exercised end-to-end by reconciliation_regression.rs's TASK-RT-002 tests".to_string())
@@ -244,16 +261,21 @@ async fn test_smoke_run_writes_reviewable_artifact() {
         Ok("real AES-256-GCM export/decrypt round-trip exercised by commands::data's test_export_data_with_password_round_trips_via_decrypt_backup".to_string())
     }));
 
-    flows.push(run_flow("app_reset", FlowCoverage::ExercisedLocally, || {
-        let temp = std::env::temp_dir().join(format!("dinero_smoke_reset_{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&temp)?;
-        std::fs::write(temp.join("finance.db"), b"placeholder")?;
-        std::fs::remove_dir_all(&temp)?;
-        if temp.exists() {
-            anyhow::bail!("reset did not actually remove the data directory");
-        }
-        Ok("data directory removal round-trips".to_string())
-    }));
+    flows.push(run_flow(
+        "app_reset",
+        FlowCoverage::ExercisedLocally,
+        || {
+            let temp =
+                std::env::temp_dir().join(format!("dinero_smoke_reset_{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&temp)?;
+            std::fs::write(temp.join("finance.db"), b"placeholder")?;
+            std::fs::remove_dir_all(&temp)?;
+            if temp.exists() {
+                anyhow::bail!("reset did not actually remove the data directory");
+            }
+            Ok("data directory removal round-trips".to_string())
+        },
+    ));
 
     let artifact = SmokeRunArtifact {
         run_id: uuid::Uuid::new_v4().to_string(),
@@ -267,11 +289,18 @@ async fn test_smoke_run_writes_reviewable_artifact() {
     let json = serde_json::to_string_pretty(&artifact).unwrap();
     std::fs::write(&artifact_path, &json).unwrap();
 
-    assert!(artifact_path.exists(), "smoke run must write a reviewable artifact file");
-    let reread = std::fs::read_to_string(&artifact_path).unwrap();
-    assert!(reread.contains("\"flow\""), "artifact must be valid, parseable JSON containing per-flow results");
     assert!(
-        !reread.to_lowercase().contains("amount_minor") && !reread.to_lowercase().contains("merchant"),
+        artifact_path.exists(),
+        "smoke run must write a reviewable artifact file"
+    );
+    let reread = std::fs::read_to_string(&artifact_path).unwrap();
+    assert!(
+        reread.contains("\"flow\""),
+        "artifact must be valid, parseable JSON containing per-flow results"
+    );
+    assert!(
+        !reread.to_lowercase().contains("amount_minor")
+            && !reread.to_lowercase().contains("merchant"),
         "smoke artifact must never contain user financial data"
     );
 
@@ -286,7 +315,10 @@ async fn test_smoke_run_writes_reviewable_artifact() {
     assert!(
         local_failures.is_empty(),
         "locally-exercised smoke flows failed: {:#?}",
-        local_failures.iter().map(|f| (f.flow, &f.detail)).collect::<Vec<_>>()
+        local_failures
+            .iter()
+            .map(|f| (f.flow, &f.detail))
+            .collect::<Vec<_>>()
     );
 
     let _ = std::fs::remove_dir_all(&dir);

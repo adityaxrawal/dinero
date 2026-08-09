@@ -22,7 +22,9 @@ use tauri::test::{mock_builder, mock_context, noop_assets};
 use tauri::{AppHandle, Manager};
 
 fn fixture(name: &str) -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/statements").join(name)
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/statements")
+        .join(name)
 }
 
 fn mock_app() -> AppHandle<tauri::test::MockRuntime> {
@@ -39,7 +41,9 @@ async fn migrated_pool(label: &str) -> deadpool_sqlite::Pool {
         uuid::Uuid::new_v4()
     ));
     std::fs::create_dir_all(&dir).unwrap();
-    db::init_db(dir.join("test.db")).await.expect("DB init failed")
+    db::init_db(dir.join("test.db"))
+        .await
+        .expect("DB init failed")
 }
 
 /// Ground truth for `tests/fixtures/statements/hdfc_plain.pdf` /
@@ -58,7 +62,12 @@ fn ground_truth_rows() -> Vec<(&'static str, &'static str, i64, &'static str)> {
         ("2025-12-04", "NETFLIX ENTERTAINMENT", 64900, "debit"),
         ("2025-12-05", "BIG BAZAAR RETAIL", 289900, "debit"),
         ("2025-12-06", "IRCTC RAIL TICKET", 156000, "debit"),
-        ("2025-12-07", "SALARY CREDIT FROM EMPLOYER", 500000, "credit"),
+        (
+            "2025-12-07",
+            "SALARY CREDIT FROM EMPLOYER",
+            500000,
+            "credit",
+        ),
         ("2025-12-08", "STARBUCKS COFFEE INDIA", 45000, "debit"),
         ("2025-12-09", "APOLLO PHARMACY", 89000, "debit"),
         ("2025-12-10", "REFUND FLIPKART INTERNET", 123450, "credit"),
@@ -92,7 +101,10 @@ fn row_level_accuracy(rows: &[StatementRow], truth: &[(&str, &str, i64, &str)]) 
     matched as f64 / truth.len() as f64
 }
 
-async fn draft_rows(pool: &deadpool_sqlite::Pool, draft_id: &str) -> (statement_drafts::StatementDraftRow, Vec<StatementRow>) {
+async fn draft_rows(
+    pool: &deadpool_sqlite::Pool,
+    draft_id: &str,
+) -> (statement_drafts::StatementDraftRow, Vec<StatementRow>) {
     let conn = pool.get().await.unwrap();
     let id = draft_id.to_string();
     let draft = conn
@@ -162,7 +174,10 @@ async fn test_statement_row_level_exact_match_accuracy_target() {
             None,
         )
         .await;
-        assert!(result.is_err(), "{bad} must fail to parse, not silently succeed");
+        assert!(
+            result.is_err(),
+            "{bad} must fail to parse, not silently succeed"
+        );
     }
 }
 
@@ -415,7 +430,9 @@ async fn test_raw_pdf_not_persisted_after_parse() {
     );
 
     if let Ok(app_data_dir) = app.path().app_data_dir() {
-        let path = app_data_dir.join("statements").join(format!("{draft_id}.pdf.enc"));
+        let path = app_data_dir
+            .join("statements")
+            .join(format!("{draft_id}.pdf.enc"));
         if path.exists() {
             let on_disk = std::fs::read(&path).unwrap();
             assert_ne!(

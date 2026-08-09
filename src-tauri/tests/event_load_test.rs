@@ -26,7 +26,10 @@ use tauri::{AppHandle, Listener};
 /// `db::test_helpers` is `#[cfg(test)]`-gated to the lib crate's own unit
 /// tests, invisible to this external integration test binary.
 fn migrated_conn(label: &str) -> Connection {
-    let dir = std::env::temp_dir().join(format!("dinero_event_load_{label}_{}", uuid::Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!(
+        "dinero_event_load_{label}_{}",
+        uuid::Uuid::new_v4()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let db_path = dir.join("test.db");
     tokio::runtime::Runtime::new()
@@ -124,13 +127,20 @@ fn test_1000_event_burst_no_drops() {
         .expect("processing a 1,200-observation burst must not error or panic");
 
     let alert_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM alerts WHERE type LIKE 'global_budget_%'", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM alerts WHERE type LIKE 'global_budget_%'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert!(
         alert_count <= 3,
         "burst-suppression dedup must collapse the burst to at most 3 threshold alerts (80/90/100%), got {alert_count}"
     );
-    assert!(alert_count >= 1, "the burst must have crossed at least one threshold");
+    assert!(
+        alert_count >= 1,
+        "the burst must have crossed at least one threshold"
+    );
 }
 
 /// Doc 30 TASK-RT-009 acceptance:
@@ -160,8 +170,24 @@ async fn test_background_foreground_chaos_no_duplicates_no_loss() {
             let task_id = format!("chaos_task_{i}");
             // "Backgrounded": registers/updates repeatedly with no live
             // listener ever attached for this event in this test.
-            registry.register_or_update(&app, &task_id, "historical_scan", "Chaos scan", 0, 10, "Starting");
-            registry.register_or_update(&app, &task_id, "historical_scan", "Chaos scan", 5, 10, "Halfway");
+            registry.register_or_update(
+                &app,
+                &task_id,
+                "historical_scan",
+                "Chaos scan",
+                0,
+                10,
+                "Starting",
+            );
+            registry.register_or_update(
+                &app,
+                &task_id,
+                "historical_scan",
+                "Chaos scan",
+                5,
+                10,
+                "Halfway",
+            );
 
             // "Foregrounded": a late-mounting caller recovers state via the
             // same registry query a real component would use.
@@ -172,7 +198,10 @@ async fn test_background_foreground_chaos_no_duplicates_no_loss() {
                 1,
                 "must never duplicate the same task_id across repeated register_or_update calls"
             );
-            assert_eq!(matches[0].current, 5, "must reflect the latest update, not a stale duplicate");
+            assert_eq!(
+                matches[0].current, 5,
+                "must reflect the latest update, not a stale duplicate"
+            );
 
             registry.deregister(&app, &task_id, TaskStatus::Completed, "Done");
         }));
@@ -204,7 +233,10 @@ async fn test_background_foreground_chaos_no_duplicates_no_loss() {
                 },
             );
             let recovered = active_system_warnings();
-            let count = recovered.iter().filter(|w| w.warning_type == warning_type).count();
+            let count = recovered
+                .iter()
+                .filter(|w| w.warning_type == warning_type)
+                .count();
             assert_eq!(count, 1, "must never duplicate the same warning_type");
             clear_system_warning(&app, &warning_type);
         }));

@@ -17,14 +17,15 @@
 use dinero_app_lib::db;
 use dinero_app_lib::licensing::client::{LicensingClient, ValidateRequest};
 use dinero_app_lib::licensing::gate::assert_write_allowed;
-use dinero_app_lib::licensing::state::{
-    upsert_license_state, LicenseStateRow, LicenseStatus,
-};
+use dinero_app_lib::licensing::state::{upsert_license_state, LicenseStateRow, LicenseStatus};
 use dinero_app_lib::licensing::state_machine::transition;
 use rusqlite::Connection;
 
 async fn migrated_pool(label: &str) -> (deadpool_sqlite::Pool, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("dinero_licensing_regression_{label}_{}", uuid::Uuid::new_v4()));
+    let dir = std::env::temp_dir().join(format!(
+        "dinero_licensing_regression_{label}_{}",
+        uuid::Uuid::new_v4()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let db_path = dir.join("test.db");
     let pool = db::init_db(db_path.clone()).await.expect("DB init failed");
@@ -95,7 +96,10 @@ async fn test_activation_validation_refresh_flow() {
         .mock("POST", "/api/license/activate")
         .with_status(409)
         .with_header("content-type", "application/json")
-        .with_body(serde_json::json!({ "code": "DEVICE_ALREADY_BOUND", "message": "already bound" }).to_string())
+        .with_body(
+            serde_json::json!({ "code": "DEVICE_ALREADY_BOUND", "message": "already bound" })
+                .to_string(),
+        )
         .create_async()
         .await;
     let client2 = LicensingClient::new(server2.url(), pool.clone());
@@ -116,15 +120,21 @@ async fn test_activation_validation_refresh_flow() {
     let mut server3 = mockito::Server::new_async().await;
     let validate_mock = server3
         .mock("POST", "/api/license/validate")
-        .match_body(mockito::Matcher::Json(serde_json::json!({ "device_id": "device-abc" })))
+        .match_body(mockito::Matcher::Json(
+            serde_json::json!({ "device_id": "device-abc" }),
+        ))
         .with_status(200)
         .with_header("content-type", "application/json")
-        .with_body(serde_json::json!({ "jwt": "refreshed.jwt.token", "status": "active" }).to_string())
+        .with_body(
+            serde_json::json!({ "jwt": "refreshed.jwt.token", "status": "active" }).to_string(),
+        )
         .create_async()
         .await;
     let client3 = LicensingClient::new(server3.url(), pool.clone());
     let refreshed = client3
-        .validate(ValidateRequest { device_id: "device-abc".to_string() })
+        .validate(ValidateRequest {
+            device_id: "device-abc".to_string(),
+        })
         .await
         .expect("validate must succeed against a mocked 200 response");
     assert_eq!(refreshed.status, "active");
@@ -218,7 +228,11 @@ fn test_clock_skew_error_surface_is_clear() {
         },
     );
 
-    let payload = captured.lock().unwrap().clone().expect("system_warning must have been emitted");
+    let payload = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("system_warning must have been emitted");
     assert!(
         payload.contains("system clock") && payload.contains("check your"),
         "clock-skew message must be plain-language and actionable, got: {payload}"

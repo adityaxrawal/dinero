@@ -5,6 +5,13 @@
 //! server, with the real Transaction Queue worker pool (`spawn_queues`)
 //! running behind it -- so extraction/dedup happen through the genuine
 //! production path, not a re-implemented shortcut.
+//!
+//! `clippy::await_holding_lock` is allowed file-wide on purpose: `test_lock()`
+//! (below) exists precisely to hold a guard across each test's `.await`s, so
+//! only one test at a time drives the process-wide `SCAN_QUEUE_PAUSED` static.
+//! Dropping the guard before awaiting would defeat the serialization it exists
+//! for. Nothing here contends the lock across threads except the test harness.
+#![allow(clippy::await_holding_lock)]
 
 use base64::{engine::general_purpose::URL_SAFE, Engine as _};
 use dinero_app_lib::commands::debug::SCAN_QUEUE_PAUSED;
@@ -39,12 +46,12 @@ fn mock_app() -> AppHandle<tauri::test::MockRuntime> {
 }
 
 async fn migrated_pool(label: &str) -> deadpool_sqlite::Pool {
-    let dir = std::env::temp_dir().join(format!(
-        "dinero_hs_bench_{label}_{}",
-        uuid::Uuid::new_v4()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("dinero_hs_bench_{label}_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
-    db::init_db(dir.join("test.db")).await.expect("DB init failed")
+    db::init_db(dir.join("test.db"))
+        .await
+        .expect("DB init failed")
 }
 
 fn b64(s: &str) -> String {
@@ -79,7 +86,11 @@ fn synthetic_message_json(idx: usize) -> serde_json::Value {
         });
     }
 
-    let effective_idx = if idx % 10 == 0 && idx != 0 { 0 } else { idx };
+    let effective_idx = if idx.is_multiple_of(10) && idx != 0 {
+        0
+    } else {
+        idx
+    };
     let amount = 100 + (effective_idx * 7 % 5000);
     let day = 1 + (effective_idx % 27);
     let body = format!(
@@ -112,7 +123,10 @@ fn synthetic_message_json(idx: usize) -> serde_json::Value {
 /// its own choosing, including mid-scan (the quota-pause test needs to
 /// check the count *while the scan is still paused*, before any final
 /// mock-side assertion would even run).
-async fn mock_gmail_server() -> (mockito::ServerGuard, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+async fn mock_gmail_server() -> (
+    mockito::ServerGuard,
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) {
     let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let hits_for_closure = hits.clone();
     let mut server = mockito::Server::new_async().await;
@@ -208,8 +222,12 @@ async fn test_1000_email_scan_p95_under_target() {
             ..Default::default()
         };
 
-        let client =
-            GmailClient::new_with_base_url("fake_token".to_string(), pool.clone(), server.url(), None);
+        let client = GmailClient::new_with_base_url(
+            "fake_token".to_string(),
+            pool.clone(),
+            server.url(),
+            None,
+        );
         let start = Instant::now();
         run_scan_batches(app.clone(), pool.clone(), account_id.clone(), state, client)
             .await
@@ -247,7 +265,9 @@ async fn test_1000_email_scan_p95_under_target() {
     let (observation_count, canonical_count): (i64, i64) = conn
         .interact(|c| {
             let obs: i64 = c
-                .query_row("SELECT COUNT(*) FROM transaction_observations", [], |r| r.get(0))
+                .query_row("SELECT COUNT(*) FROM transaction_observations", [], |r| {
+                    r.get(0)
+                })
                 .unwrap();
             let canon: i64 = c
                 .query_row("SELECT COUNT(*) FROM transactions", [], |r| r.get(0))
@@ -297,7 +317,8 @@ async fn test_checkpoint_resume_after_interruption() {
     app.manage(handles);
 
     let (server, hits) = mock_gmail_server().await;
-    let client = GmailClient::new_with_base_url("fake_token".to_string(), pool.clone(), server.url(), None);
+    let client =
+        GmailClient::new_with_base_url("fake_token".to_string(), pool.clone(), server.url(), None);
 
     const TOTAL: usize = 40;
     const ALREADY_PROCESSED: usize = 15;
@@ -325,8 +346,7 @@ async fn test_checkpoint_resume_after_interruption() {
         .expect("checkpoint must exist after a completed scan");
     assert_eq!(cp.status, "completed");
 
-    let final_state: ScanCheckpointState =
-        serde_json::from_str(&cp.checkpoint_state_json).unwrap();
+    let final_state: ScanCheckpointState = serde_json::from_str(&cp.checkpoint_state_json).unwrap();
     assert_eq!(
         final_state.processed_count, TOTAL,
         "a resumed scan must finish at the true total, not just re-report where it left off"
@@ -369,7 +389,8 @@ async fn test_quota_pause_and_resume_behavior() {
     app.manage(handles);
 
     let (server, hits) = mock_gmail_server().await;
-    let client = GmailClient::new_with_base_url("fake_token".to_string(), pool.clone(), server.url(), None);
+    let client =
+        GmailClient::new_with_base_url("fake_token".to_string(), pool.clone(), server.url(), None);
 
     const TOTAL: usize = 10;
     let ids: Vec<String> = (0..TOTAL).map(|i| format!("msg_{i}")).collect();
@@ -426,8 +447,7 @@ async fn test_quota_pause_and_resume_behavior() {
         .unwrap()
         .expect("checkpoint must exist after the scan resumes and completes");
     assert_eq!(cp.status, "completed");
-    let final_state: ScanCheckpointState =
-        serde_json::from_str(&cp.checkpoint_state_json).unwrap();
+    let final_state: ScanCheckpointState = serde_json::from_str(&cp.checkpoint_state_json).unwrap();
     assert_eq!(final_state.processed_count, TOTAL);
     // Each well-formed message is hit twice (metadata, then full) -- see the
     // resume test's identical note.
@@ -449,8 +469,8 @@ async fn test_quota_pause_and_resume_behavior() {
 /// in-flight fetches (up to `MAX_CONCURRENT_FETCHES` = 50 in production) --
 /// the actual scenario a user hits clicking Cancel mid-scan. This drives the
 /// real command against a large corpus and proves the scan halts well short
-/// of the full total, not just that the checkpoint eventually says
-/// "cancelled" after silently processing everything anyway.
+/// of the full total, not just that it eventually records a cancellation
+/// after silently processing everything anyway.
 #[tokio::test]
 async fn test_cancel_mid_flight_stops_before_processing_all_messages() {
     let _guard = test_lock().lock().unwrap_or_else(|e| e.into_inner());
@@ -522,11 +542,11 @@ async fn test_cancel_mid_flight_stops_before_processing_all_messages() {
         .interact(move |c| get_checkpoint(c, "historical_scan", &account_id))
         .await
         .unwrap()
-        .unwrap()
-        .expect("checkpoint must exist after a cancelled scan");
-    assert_eq!(
-        cp.status, "cancelled",
-        "a genuinely cancelled mid-flight scan must checkpoint as cancelled, not completed"
+        .unwrap();
+    assert!(
+        cp.is_none(),
+        "cancelling wipes progress so the next scan starts from scratch -- the \
+         checkpoint must be deleted, not left behind as resumable state"
     );
 
     // Every well-formed message is fetched twice (metadata, then full) --
@@ -651,10 +671,10 @@ async fn test_cancel_is_not_blocked_by_a_stuck_in_flight_fetch() {
         .interact(move |c| get_checkpoint(c, "historical_scan", &account_id))
         .await
         .unwrap()
-        .unwrap()
-        .expect("checkpoint must exist after a cancelled scan");
-    assert_eq!(
-        cp.status, "cancelled",
-        "a scan cancelled while every in-flight fetch was stuck must still checkpoint as cancelled"
+        .unwrap();
+    assert!(
+        cp.is_none(),
+        "a scan cancelled while every in-flight fetch was stuck must still wipe its \
+         checkpoint, same as the normal-pace cancellation path"
     );
 }

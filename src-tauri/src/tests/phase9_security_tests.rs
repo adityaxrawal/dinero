@@ -3,7 +3,6 @@ use crate::licensing::state::{
     get_license_state, transition_to_locked, upsert_license_state, LicenseStateRow, LicenseStatus,
 };
 use chrono::Utc;
-use mockito;
 use rusqlite::Connection;
 
 /// Superseded as the acceptance-criteria test by

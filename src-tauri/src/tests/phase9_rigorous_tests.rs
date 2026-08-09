@@ -107,7 +107,7 @@ fn test_sqlite_queries_use_parameterized_bindings() {
                 let path = entry.path();
                 if path.is_dir() {
                     check_dir(&path);
-                } else if path.extension().map_or(false, |ext| ext == "rs") {
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
                     if path.file_name().unwrap() == "phase9_rigorous_tests.rs" {
                         continue;
                     }
@@ -146,7 +146,7 @@ fn test_ipc_never_returns_tokens() {
                 let path = entry.path();
                 if path.is_dir() {
                     check_dir(&path);
-                } else if path.extension().map_or(false, |ext| ext == "rs") {
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
                     let content = std::fs::read_to_string(&path).unwrap();
                     assert!(
                         !content.contains("pub token: String"),
@@ -206,19 +206,17 @@ fn test_ipc_args_type_constraints() {
     if ipc_dir.exists() {
         for entry in std::fs::read_dir(ipc_dir).unwrap() {
             let path = entry.unwrap().path();
-            if path.extension().map_or(false, |ext| ext == "rs") {
+            if path.extension().is_some_and(|ext| ext == "rs") {
                 let content = std::fs::read_to_string(&path).unwrap();
                 let lines: Vec<&str> = content.lines().collect();
                 for (i, line) in lines.iter().enumerate() {
-                    if line.contains("#[tauri::command]") {
-                        if i + 1 < lines.len() {
-                            let next_line = lines[i + 1];
-                            assert!(
-                                !next_line.contains("serde_json::Value"),
-                                "IPC arguments must use strong Rust types, found Value in {}",
-                                path.display()
-                            );
-                        }
+                    if line.contains("#[tauri::command]") && i + 1 < lines.len() {
+                        let next_line = lines[i + 1];
+                        assert!(
+                            !next_line.contains("serde_json::Value"),
+                            "IPC arguments must use strong Rust types, found Value in {}",
+                            path.display()
+                        );
                     }
                 }
             }

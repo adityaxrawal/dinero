@@ -502,7 +502,10 @@ fn test_auto_match_rate_reaches_target() {
         b.reference_id = Some(ref_id);
         let candidates = fetch_candidates(&conn, &b).unwrap();
         let decision = reconcile(&conn, &b, candidates).unwrap();
-        if matches!(decision, DecisionType::AutoMatchedExact | DecisionType::AutoMatchedScored) {
+        if matches!(
+            decision,
+            DecisionType::AutoMatchedExact | DecisionType::AutoMatchedScored
+        ) {
             auto_matched += 1;
         }
     }
@@ -510,12 +513,22 @@ fn test_auto_match_rate_reaches_target() {
     for i in 0..SHOULD_STAY_AMBIGUOUS {
         let amount = 40000 + (i as i64 * 53);
         insert_observation_row(&conn, &format!("amb_a_{i}"), None);
-        let mut a = base_obs(&format!("amb_a_{i}"), amount, "debit", "2026-06-12 09:00:00");
+        let mut a = base_obs(
+            &format!("amb_a_{i}"),
+            amount,
+            "debit",
+            "2026-06-12 09:00:00",
+        );
         a.merchant_raw = Some("Uber".to_string());
         reconcile(&conn, &a, vec![]).unwrap();
 
         insert_observation_row(&conn, &format!("amb_b_{i}"), None);
-        let mut b = base_obs(&format!("amb_b_{i}"), amount, "debit", "2026-06-12 09:45:00");
+        let mut b = base_obs(
+            &format!("amb_b_{i}"),
+            amount,
+            "debit",
+            "2026-06-12 09:45:00",
+        );
         b.merchant_raw = Some("Completely Different Merchant Name".to_string());
         let candidates = fetch_candidates(&conn, &b).unwrap();
         // Deliberately not asserting the outcome here -- this half of the
@@ -526,7 +539,10 @@ fn test_auto_match_rate_reaches_target() {
 
     let total = SHOULD_MATCH + SHOULD_STAY_AMBIGUOUS;
     let auto_match_rate = auto_matched as f64 / total as f64;
-    println!("auto_match_rate={:.2}% ({auto_matched}/{total})", auto_match_rate * 100.0);
+    println!(
+        "auto_match_rate={:.2}% ({auto_matched}/{total})",
+        auto_match_rate * 100.0
+    );
     assert!(
         auto_match_rate >= 0.75,
         "auto-match rate {:.2}% must reach the 75% target ({auto_matched}/{total})",
@@ -568,15 +584,21 @@ fn test_ambiguous_clusters_excluded_from_analytics() {
     )
     .unwrap();
 
-    let now = chrono::NaiveDateTime::parse_from_str("2026-06-15 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
-    let top_merchants = dinero_app_lib::commands::data::do_fetch_top_merchants(&conn, &now).unwrap();
+    let now =
+        chrono::NaiveDateTime::parse_from_str("2026-06-15 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
+    let top_merchants =
+        dinero_app_lib::commands::data::do_fetch_top_merchants(&conn, &now).unwrap();
 
     assert!(
-        top_merchants.iter().all(|m| m.merchant_display_name != "Ambiguous Merchant"),
+        top_merchants
+            .iter()
+            .all(|m| m.merchant_display_name != "Ambiguous Merchant"),
         "a transaction in an open ambiguous cluster must never appear in top-merchants analytics"
     );
     assert!(
-        top_merchants.iter().any(|m| m.merchant_display_name == "Confirmed Merchant"),
+        top_merchants
+            .iter()
+            .any(|m| m.merchant_display_name == "Confirmed Merchant"),
         "a confirmed (non-clustered) transaction must still appear"
     );
 }
