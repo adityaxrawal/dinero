@@ -116,7 +116,10 @@ mod tests {
         // error_5xx_by_status is keyed on a real HTTP status code (a u16,
         // structurally incapable of holding a string).
         for status in snapshot.error_5xx_by_status.keys() {
-            assert!(*status >= 500 && *status < 600, "unexpected non-5xx status code key: {status}");
+            assert!(
+                *status >= 500 && *status < 600,
+                "unexpected non-5xx status code key: {status}"
+            );
         }
     }
 }

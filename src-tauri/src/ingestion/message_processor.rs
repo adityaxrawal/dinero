@@ -184,7 +184,10 @@ impl MessageProcessor {
                     None,
                 )
                 .await;
-                tracing::info!("msg_id='{}' rejected by Gate 1: gate1_verified_noise", message_id);
+                tracing::info!(
+                    "msg_id='{}' rejected by Gate 1: gate1_verified_noise",
+                    message_id
+                );
                 return Ok(None);
             }
             SenderVerificationResult::UnverifiedReject(reason)
@@ -233,14 +236,8 @@ impl MessageProcessor {
             } else {
                 Self::log_rejection(pool, scan_batcher, message_id, &reason).await?;
             }
-            Self::append_to_scan_log(
-                message_id,
-                "REJECTED",
-                &reason,
-                Some(&metadata_msg),
-                None,
-            )
-            .await;
+            Self::append_to_scan_log(message_id, "REJECTED", &reason, Some(&metadata_msg), None)
+                .await;
             tracing::info!("msg_id='{}' rejected by Gate 2a: {}", message_id, reason);
             return Ok(None);
         }
@@ -269,7 +266,7 @@ impl MessageProcessor {
                 }
             }
         }
-        
+
         // 4. Extract and sanitize
         let mut body_string = String::new();
         let extracted_opt = if let Some(payload) = &full_msg.payload {
@@ -368,7 +365,10 @@ impl MessageProcessor {
                         Some(body_text),
                     )
                     .await;
-                    return Ok(Some(ProcessResult::StatementEmail(extracted, Some(email_meta))));
+                    return Ok(Some(ProcessResult::StatementEmail(
+                        extracted,
+                        Some(email_meta),
+                    )));
                 }
                 ContentClass::MandateRegistration | ContentClass::MandateCancellation => {
                     // Mandate Queue routing
@@ -410,8 +410,13 @@ impl MessageProcessor {
                         None => {
                             crate::ingestion::gmail_telemetry::gmail_telemetry()
                                 .record_gate_rejection("gate3");
-                            Self::log_rejection(pool, scan_batcher, message_id, "mandate_missing_merchant")
-                                .await?;
+                            Self::log_rejection(
+                                pool,
+                                scan_batcher,
+                                message_id,
+                                "mandate_missing_merchant",
+                            )
+                            .await?;
                             Self::append_to_scan_log(
                                 message_id,
                                 "REJECTED",
@@ -574,11 +579,15 @@ impl MessageProcessor {
                             // inference.
                             let recoverable_by_llm = matches!(
                                 reason,
-                                "gate3_failed:missing_counterparty" | "gate3_failed:missing_instrument"
+                                "gate3_failed:missing_counterparty"
+                                    | "gate3_failed:missing_instrument"
                             );
                             if recoverable_by_llm && llm_eligible {
-                                if let (Some((observation_id, unassigned_id)), Some(dir), Some(tx)) =
-                                    (ids, app_dir.clone(), layer6_tx.as_ref())
+                                if let (
+                                    Some((observation_id, unassigned_id)),
+                                    Some(dir),
+                                    Some(tx),
+                                ) = (ids, app_dir.clone(), layer6_tx.as_ref())
                                 {
                                     let job = crate::ingestion::queues::Layer6Job {
                                         observation_id,
@@ -608,7 +617,13 @@ impl MessageProcessor {
                         // other unassigned path) and hand off to the
                         // background Layer 6 worker instead of blocking this
                         // scan slot on LLM inference.
-                        Self::log_rejection(pool, scan_batcher, message_id, "pending_llm_enrichment").await?;
+                        Self::log_rejection(
+                            pool,
+                            scan_batcher,
+                            message_id,
+                            "pending_llm_enrichment",
+                        )
+                        .await?;
                         let ids = Self::record_unassigned_transaction(
                             pool,
                             message_id,
@@ -641,7 +656,8 @@ impl MessageProcessor {
                         .await;
                         return Ok(Some(ProcessResult::EnqueuedForEnrichment));
                     } else {
-                        Self::log_rejection(pool, scan_batcher, message_id, "extraction_failed").await?;
+                        Self::log_rejection(pool, scan_batcher, message_id, "extraction_failed")
+                            .await?;
                         Self::record_unassigned_transaction(
                             pool,
                             message_id,
@@ -664,14 +680,8 @@ impl MessageProcessor {
                 }
             }
         } else {
-            Self::append_to_scan_log(
-                message_id,
-                "REJECTED",
-                "no_payload",
-                Some(&full_msg),
-                None,
-            )
-            .await;
+            Self::append_to_scan_log(message_id, "REJECTED", "no_payload", Some(&full_msg), None)
+                .await;
         }
 
         Ok(None)
@@ -917,24 +927,29 @@ impl MessageProcessor {
         }
 
         let first_addr = trimmed.split(',').next().unwrap_or(trimmed);
-        let raw_email = if let (Some(start), Some(end)) = (first_addr.find('<'), first_addr.rfind('>')) {
-            if start < end {
-                first_addr[start + 1..end].trim()
+        let raw_email =
+            if let (Some(start), Some(end)) = (first_addr.find('<'), first_addr.rfind('>')) {
+                if start < end {
+                    first_addr[start + 1..end].trim()
+                } else {
+                    first_addr.trim()
+                }
             } else {
                 first_addr.trim()
-            }
-        } else {
-            first_addr.trim()
-        };
+            };
 
-        let email_clean = raw_email.trim_matches(|c| c == '"' || c == '\'' || c == ' ').to_lowercase();
+        let email_clean = raw_email
+            .trim_matches(|c| c == '"' || c == '\'' || c == ' ')
+            .to_lowercase();
         if email_clean.is_empty() || !email_clean.contains('@') {
             return (None, None);
         }
 
         let parts: Vec<&str> = email_clean.rsplitn(2, '@').collect();
         if parts.len() == 2 {
-            let domain_raw = parts[0].trim_matches(|c| c == ']' || c == '[' || c == ' ').to_lowercase();
+            let domain_raw = parts[0]
+                .trim_matches(|c| c == ']' || c == '[' || c == ' ')
+                .to_lowercase();
             if !domain_raw.is_empty() {
                 return (Some(email_clean), Some(domain_raw));
             }
@@ -1130,9 +1145,10 @@ impl MessageProcessor {
                 let observation_id = observation_id.clone();
                 move |c| -> Result<bool> {
                     use crate::db::transaction_observations::InsertObservationOutcome;
-                    let outcome = crate::db::transaction_observations::insert_observation_idempotent(
-                        c, &obs_row,
-                    )?;
+                    let outcome =
+                        crate::db::transaction_observations::insert_observation_idempotent(
+                            c, &obs_row,
+                        )?;
                     if let InsertObservationOutcome::Inserted = outcome {
                         crate::db::unassigned_transactions::insert(
                             c,

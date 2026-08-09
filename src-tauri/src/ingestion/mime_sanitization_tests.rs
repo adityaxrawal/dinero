@@ -192,9 +192,18 @@ fn test_pdf_attachment_with_inline_data_is_not_dropped() {
 fn test_sanitize_html_for_display_strips_script_and_event_handlers() {
     let html = r#"<div onclick="alert(1)">hi<script>alert('xss')</script></div>"#;
     let out = sanitize_html_for_display(html);
-    assert!(!out.contains("<script"), "script tag must be removed: {out}");
-    assert!(!out.contains("alert"), "script contents must be removed: {out}");
-    assert!(!out.contains("onclick"), "event handler attribute must be stripped: {out}");
+    assert!(
+        !out.contains("<script"),
+        "script tag must be removed: {out}"
+    );
+    assert!(
+        !out.contains("alert"),
+        "script contents must be removed: {out}"
+    );
+    assert!(
+        !out.contains("onclick"),
+        "event handler attribute must be stripped: {out}"
+    );
     assert!(out.contains("hi"));
 }
 
@@ -204,15 +213,24 @@ fn test_sanitize_html_for_display_preserves_img_and_links() {
     let out = sanitize_html_for_display(html);
     assert!(out.contains("<img"), "img tag must be preserved: {out}");
     assert!(out.contains("<a"), "anchor tag must be preserved: {out}");
-    assert!(out.contains("Manage your account"), "link text should be visible: {out}");
+    assert!(
+        out.contains("Manage your account"),
+        "link text should be visible: {out}"
+    );
 }
 
 #[test]
 fn test_sanitize_html_for_display_preserves_style_block() {
     let html = r#"<style>body { margin: 0; padding: 0; } table { border-collapse: collapse; }</style><div>Hello</div>"#;
     let out = sanitize_html_for_display(html);
-    assert!(out.contains("<style>"), "<style> tag must be preserved: {out}");
-    assert!(out.contains("border-collapse"), "CSS rules inside <style> block must survive: {out}");
+    assert!(
+        out.contains("<style>"),
+        "<style> tag must be preserved: {out}"
+    );
+    assert!(
+        out.contains("border-collapse"),
+        "CSS rules inside <style> block must survive: {out}"
+    );
 }
 
 #[test]
@@ -233,8 +251,14 @@ fn test_sanitize_html_for_display_neutralizes_css_background_tracking() {
 fn test_sanitize_html_for_display_preserves_table_layout_and_inline_style() {
     let html = r#"<table><tr><td style="font-weight:bold;color:#c8102e">Total Due</td><td>Rs. 24,560.00</td></tr></table>"#;
     let out = sanitize_html_for_display(html);
-    assert!(out.contains("<table"), "table structure must survive: {out}");
+    assert!(
+        out.contains("<table"),
+        "table structure must survive: {out}"
+    );
     assert!(out.contains("<td"), "table cells must survive: {out}");
     assert!(out.contains("Total Due"));
-    assert!(out.contains("style="), "inline style must survive so the email still looks like the original: {out}");
+    assert!(
+        out.contains("style="),
+        "inline style must survive so the email still looks like the original: {out}"
+    );
 }

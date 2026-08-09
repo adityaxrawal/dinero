@@ -403,7 +403,11 @@ mod tests {
         std::fs::write(path, serde_json::to_string(&token).unwrap()).unwrap();
     }
 
-    async fn setup_account_for_poll(pool: &deadpool_sqlite::Pool, account_id: &str, last_history_id: Option<&str>) {
+    async fn setup_account_for_poll(
+        pool: &deadpool_sqlite::Pool,
+        account_id: &str,
+        last_history_id: Option<&str>,
+    ) {
         let conn = pool.get().await.unwrap();
         let account_id = account_id.to_string();
         let last_history_id = last_history_id.map(|s| s.to_string());
@@ -456,12 +460,17 @@ mod tests {
 
         let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
-        let pool = init_db(temp_dir.join("test.db")).await.expect("DB init failed");
+        let pool = init_db(temp_dir.join("test.db"))
+            .await
+            .expect("DB init failed");
         setup_account_for_poll(&pool, &account_id, Some("history_100")).await;
 
         let mock = server
             .mock("GET", "/gmail/v1/users/me/history")
-            .match_query(mockito::Matcher::UrlEncoded("startHistoryId".into(), "history_100".into()))
+            .match_query(mockito::Matcher::UrlEncoded(
+                "startHistoryId".into(),
+                "history_100".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(serde_json::json!({ "historyId": "history_200", "history": [] }).to_string())
@@ -469,39 +478,55 @@ mod tests {
             .create_async()
             .await;
 
-        let app = mock_builder().build(mock_context(tauri::test::noop_assets())).unwrap();
+        let app = mock_builder()
+            .build(mock_context(tauri::test::noop_assets()))
+            .unwrap();
         app.manage(crate::auth::session::SessionState::default());
         app.manage(crate::security::incident_response::IncidentMonitor::default());
         app.manage(test_queue_handles());
         let app_handle = app.handle().clone();
 
-        poll_all_accounts(&app_handle, &pool, &server.url()).await.unwrap();
+        poll_all_accounts(&app_handle, &pool, &server.url())
+            .await
+            .unwrap();
         let conn = pool.get().await.unwrap();
         let acc_id_clone = account_id.clone();
         let checkpoint_after_first = conn
-            .interact(move |c| processing_checkpoints::get_checkpoint(c, "gmail_history", &acc_id_clone))
+            .interact(move |c| {
+                processing_checkpoints::get_checkpoint(c, "gmail_history", &acc_id_clone)
+            })
             .await
             .unwrap()
             .unwrap()
             .unwrap();
-        assert_eq!(checkpoint_after_first.last_processed_token, Some("history_200".to_string()));
+        assert_eq!(
+            checkpoint_after_first.last_processed_token,
+            Some("history_200".to_string())
+        );
 
         // Second poll cycle re-reads the checkpoint (now "history_200") --
         // re-mock for the new startHistoryId so this call also succeeds and
         // genuinely exercises a second full poll, not a cached no-op.
         let mock2 = server
             .mock("GET", "/gmail/v1/users/me/history")
-            .match_query(mockito::Matcher::UrlEncoded("startHistoryId".into(), "history_200".into()))
+            .match_query(mockito::Matcher::UrlEncoded(
+                "startHistoryId".into(),
+                "history_200".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(serde_json::json!({ "historyId": "history_200", "history": [] }).to_string())
             .create_async()
             .await;
 
-        poll_all_accounts(&app_handle, &pool, &server.url()).await.unwrap();
+        poll_all_accounts(&app_handle, &pool, &server.url())
+            .await
+            .unwrap();
         let conn = pool.get().await.unwrap();
         let checkpoint_after_second = conn
-            .interact(move |c| processing_checkpoints::get_checkpoint(c, "gmail_history", &account_id))
+            .interact(move |c| {
+                processing_checkpoints::get_checkpoint(c, "gmail_history", &account_id)
+            })
             .await
             .unwrap()
             .unwrap()
@@ -532,7 +557,9 @@ mod tests {
 
         let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
-        let pool = init_db(temp_dir.join("test.db")).await.expect("DB init failed");
+        let pool = init_db(temp_dir.join("test.db"))
+            .await
+            .expect("DB init failed");
         setup_account_for_poll(&pool, &account_id, Some("stale_history_id")).await;
 
         let mock = server
@@ -544,13 +571,17 @@ mod tests {
             .create_async()
             .await;
 
-        let app = mock_builder().build(mock_context(tauri::test::noop_assets())).unwrap();
+        let app = mock_builder()
+            .build(mock_context(tauri::test::noop_assets()))
+            .unwrap();
         app.manage(crate::auth::session::SessionState::default());
         app.manage(crate::security::incident_response::IncidentMonitor::default());
         app.manage(test_queue_handles());
         let app_handle = app.handle().clone();
 
-        poll_all_accounts(&app_handle, &pool, &server.url()).await.unwrap();
+        poll_all_accounts(&app_handle, &pool, &server.url())
+            .await
+            .unwrap();
 
         let conn = pool.get().await.unwrap();
         let acc_id_clone = account_id.clone();
@@ -577,7 +608,10 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(reset_logged, 1, "the gap-recovery reset must be recorded in the audit log, not silent");
+        assert_eq!(
+            reset_logged, 1,
+            "the gap-recovery reset must be recorded in the audit log, not silent"
+        );
 
         mock.assert_async().await;
         let _ = fs::remove_dir_all(&temp_dir);
@@ -602,7 +636,9 @@ mod tests {
 
         let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
-        let pool = init_db(temp_dir.join("test.db")).await.expect("DB init failed");
+        let pool = init_db(temp_dir.join("test.db"))
+            .await
+            .expect("DB init failed");
         // A checkpoint from "long ago" -- the loop has no notion of wall-clock
         // staleness at all, it just resumes from whatever token is stored,
         // which is exactly the desired behavior after a real sleep/wake gap.
@@ -610,25 +646,36 @@ mod tests {
 
         let mock = server
             .mock("GET", "/gmail/v1/users/me/history")
-            .match_query(mockito::Matcher::UrlEncoded("startHistoryId".into(), "history_before_sleep".into()))
+            .match_query(mockito::Matcher::UrlEncoded(
+                "startHistoryId".into(),
+                "history_before_sleep".into(),
+            ))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(serde_json::json!({ "historyId": "history_after_wake", "history": [] }).to_string())
+            .with_body(
+                serde_json::json!({ "historyId": "history_after_wake", "history": [] }).to_string(),
+            )
             .expect(1)
             .create_async()
             .await;
 
-        let app = mock_builder().build(mock_context(tauri::test::noop_assets())).unwrap();
+        let app = mock_builder()
+            .build(mock_context(tauri::test::noop_assets()))
+            .unwrap();
         app.manage(crate::auth::session::SessionState::default());
         app.manage(crate::security::incident_response::IncidentMonitor::default());
         app.manage(test_queue_handles());
         let app_handle = app.handle().clone();
 
-        poll_all_accounts(&app_handle, &pool, &server.url()).await.unwrap();
+        poll_all_accounts(&app_handle, &pool, &server.url())
+            .await
+            .unwrap();
 
         let conn = pool.get().await.unwrap();
         let checkpoint = conn
-            .interact(move |c| processing_checkpoints::get_checkpoint(c, "gmail_history", &account_id))
+            .interact(move |c| {
+                processing_checkpoints::get_checkpoint(c, "gmail_history", &account_id)
+            })
             .await
             .unwrap()
             .unwrap()
@@ -669,7 +716,9 @@ mod tests {
 
         let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
-        let pool = init_db(temp_dir.join("test.db")).await.expect("DB init failed");
+        let pool = init_db(temp_dir.join("test.db"))
+            .await
+            .expect("DB init failed");
         setup_account_for_poll(&pool, &account_id, Some("history_quota")).await;
 
         let mock = server
@@ -682,7 +731,9 @@ mod tests {
             .create_async()
             .await;
 
-        let app = mock_builder().build(mock_context(tauri::test::noop_assets())).unwrap();
+        let app = mock_builder()
+            .build(mock_context(tauri::test::noop_assets()))
+            .unwrap();
         app.manage(crate::auth::session::SessionState::default());
         app.manage(crate::security::incident_response::IncidentMonitor::default());
         app.manage(test_queue_handles());
@@ -691,7 +742,10 @@ mod tests {
         let captured = Arc::new(Mutex::new(Vec::<String>::new()));
         let captured_clone = captured.clone();
         app_handle.listen_any("system_warning", move |event| {
-            captured_clone.lock().unwrap().push(event.payload().to_string());
+            captured_clone
+                .lock()
+                .unwrap()
+                .push(event.payload().to_string());
         });
 
         // The real 429 path exhausts retries and returns an error for this

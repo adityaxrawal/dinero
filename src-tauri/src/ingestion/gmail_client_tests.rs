@@ -50,7 +50,10 @@ async fn test_fetch_message_retries_on_malformed_json_body() {
 
     let client = client_with_temp_db(server.url()).await;
     let message = client
-        .fetch_message("msg1", crate::ingestion::gmail_client::FetchFormat::Metadata)
+        .fetch_message(
+            "msg1",
+            crate::ingestion::gmail_client::FetchFormat::Metadata,
+        )
         .await
         .expect("fetch_message should succeed after retrying the malformed body");
 

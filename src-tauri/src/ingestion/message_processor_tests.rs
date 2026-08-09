@@ -500,7 +500,8 @@ async fn test_gate2a_proceeds_to_full_fetch_for_transactional_subject() {
     let client =
         GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
 
-    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, false, None, None).await;
+    let result =
+        MessageProcessor::process_message(&pool, &client, "msg1", None, false, None, None).await;
     assert!(result.is_ok(), "must not error: {:?}", result.err());
 
     full_mock.assert_async().await;
@@ -517,7 +518,10 @@ async fn transaction_needing_layer6_enqueues_job_instead_of_blocking() {
 
     let _metadata_mock = server
         .mock("GET", "/gmail/v1/users/me/messages/msg1")
-        .match_query(mockito::Matcher::UrlEncoded("format".into(), "metadata".into()))
+        .match_query(mockito::Matcher::UrlEncoded(
+            "format".into(),
+            "metadata".into(),
+        ))
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(
@@ -565,7 +569,8 @@ async fn transaction_needing_layer6_enqueues_job_instead_of_blocking() {
     let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&temp_dir).unwrap();
     let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
-    let client = GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
+    let client =
+        GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
 
     let (layer6_tx, mut layer6_rx) = tokio::sync::mpsc::channel(4);
 
@@ -588,7 +593,9 @@ async fn transaction_needing_layer6_enqueues_job_instead_of_blocking() {
     assert!(start.elapsed() < std::time::Duration::from_secs(2));
     assert!(matches!(result, Some(ProcessResult::EnqueuedForEnrichment)));
 
-    let job = layer6_rx.try_recv().expect("a Layer6Job must have been enqueued");
+    let job = layer6_rx
+        .try_recv()
+        .expect("a Layer6Job must have been enqueued");
     assert_eq!(job.bank_name, "HDFC Bank");
     assert!(!job.observation_id.is_empty());
     assert!(!job.unassigned_id.is_empty());
@@ -616,7 +623,9 @@ async fn test_gate3_partial_extraction_salvaged_to_unassigned_queue() {
         // amount_minor deliberately left None -- this is the missing field.
         ..Default::default()
     };
-    assert!(!MessageProcessor::evaluate_mandatory_field_gate(&partial_obs));
+    assert!(!MessageProcessor::evaluate_mandatory_field_gate(
+        &partial_obs
+    ));
     let reason = MessageProcessor::gate3_failure_reason(&partial_obs);
     assert_eq!(reason, "gate3_failed:missing_amount");
 
@@ -669,16 +678,26 @@ async fn test_gate3_partial_extraction_salvaged_to_unassigned_queue() {
 async fn record_unassigned_transaction_returns_ids_on_fresh_insert() {
     let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&temp_dir).unwrap();
-    let pool = crate::db::init_db(temp_dir.join("test.db")).await.expect("DB init failed");
+    let pool = crate::db::init_db(temp_dir.join("test.db"))
+        .await
+        .expect("DB init failed");
 
     let obs = crate::extraction::ladder::ExtractionResult::default();
     let result = MessageProcessor::record_unassigned_transaction(
-        &pool, "msg_fresh", obs, "body text", None, "pending_llm_enrichment",
+        &pool,
+        "msg_fresh",
+        obs,
+        "body text",
+        None,
+        "pending_llm_enrichment",
     )
     .await
     .unwrap();
 
-    assert!(result.is_some(), "a fresh insert must return Some((observation_id, unassigned_id))");
+    assert!(
+        result.is_some(),
+        "a fresh insert must return Some((observation_id, unassigned_id))"
+    );
     let (observation_id, unassigned_id) = result.unwrap();
     assert!(!observation_id.is_empty());
     assert!(!unassigned_id.is_empty());
@@ -690,23 +709,38 @@ async fn record_unassigned_transaction_returns_ids_on_fresh_insert() {
 async fn record_unassigned_transaction_returns_none_on_duplicate() {
     let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&temp_dir).unwrap();
-    let pool = crate::db::init_db(temp_dir.join("test.db")).await.expect("DB init failed");
+    let pool = crate::db::init_db(temp_dir.join("test.db"))
+        .await
+        .expect("DB init failed");
 
     let obs = crate::extraction::ladder::ExtractionResult::default();
     MessageProcessor::record_unassigned_transaction(
-        &pool, "msg_dup", obs.clone(), "body text", None, "pending_llm_enrichment",
+        &pool,
+        "msg_dup",
+        obs.clone(),
+        "body text",
+        None,
+        "pending_llm_enrichment",
     )
     .await
     .unwrap();
 
     // Same message_id + same default obs => same fingerprint => duplicate.
     let second = MessageProcessor::record_unassigned_transaction(
-        &pool, "msg_dup", obs, "body text", None, "pending_llm_enrichment",
+        &pool,
+        "msg_dup",
+        obs,
+        "body text",
+        None,
+        "pending_llm_enrichment",
     )
     .await
     .unwrap();
 
-    assert!(second.is_none(), "a duplicate insert must return None, not a fresh id pair");
+    assert!(
+        second.is_none(),
+        "a duplicate insert must return None, not a fresh id pair"
+    );
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }

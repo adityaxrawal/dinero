@@ -196,7 +196,7 @@ impl SenderValidator {
         // just Cyrillic) -- this is what plain string equality and even
         // Levenshtein distance can miss once more than 2-3 characters are
         // substituted from a different script.
-        if domain.chars().any(|c| !c.is_ascii()) {
+        if !domain.is_ascii() {
             let candidate_skeleton: String = unicode_security::skeleton(&domain).collect();
             if let Some(config) = self.registry.senders.iter().find(|s| {
                 let registry_skeleton: String = unicode_security::skeleton(&s.domain).collect();

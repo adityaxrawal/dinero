@@ -352,10 +352,12 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                     app,
                                     crate::ipc::system_warnings::SystemWarningPayload {
                                         warning_type: "gmail_quota_exhausted".to_string(),
-                                        message: "Gmail is temporarily rate-limiting this account. \
+                                        message:
+                                            "Gmail is temporarily rate-limiting this account. \
                                         New email sync is paused and will resume automatically."
-                                            .to_string(),
-                                        severity: crate::ipc::system_warnings::WarningSeverity::Degraded,
+                                                .to_string(),
+                                        severity:
+                                            crate::ipc::system_warnings::WarningSeverity::Degraded,
                                         action_hint: None,
                                     },
                                 );
@@ -472,7 +474,7 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                                 // for a prior import before anything is created
                                                 // or the user is prompted for a password.
                                                 let file_hash = match crate::statements::duplicate_check::hash_email_attachment_if_new(
-                                                    &pdf_bytes, filename, &msg_id, &pool,
+                                                    &pdf_bytes, filename, &msg_id, pool,
                                                 )
                                                 .await
                                                 {
@@ -496,8 +498,8 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                                     &pdf_bytes,
                                                     filename,
                                                     &msg_id,
-                                                    &pool,
-                                                    &app,
+                                                    pool,
+                                                    app,
                                                     email_meta.clone(),
                                                 )
                                                 .await

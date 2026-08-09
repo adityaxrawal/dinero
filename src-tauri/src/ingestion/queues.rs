@@ -170,7 +170,8 @@ pub(crate) async fn enqueue_layer6_job(pool: &Pool, tx: &mpsc::Sender<Layer6Job>
         {
             tracing::error!(
                 "Failed to persist Layer 6 job for unassigned_id='{}': {:?}",
-                job.unassigned_id, e
+                job.unassigned_id,
+                e
             );
         }
     }
@@ -196,7 +197,10 @@ pub async fn replay_pending_layer6_jobs(
             return;
         }
     };
-    let pending = match conn.interact(|c| crate::db::layer6_jobs::select_all(c)).await {
+    let pending = match conn
+        .interact(|c| crate::db::layer6_jobs::select_all(c))
+        .await
+    {
         Ok(Ok(jobs)) => jobs,
         _ => {
             tracing::error!("Failed to read persisted Layer 6 jobs");
@@ -414,8 +418,7 @@ fn spawn_layer6_workers(
     learning: crate::learning::LearningHandle,
 ) {
     const LAYER6_WORKER_COUNT: usize = 6;
-    let worker_count = crate::llama_sidecar::current_parallel_slots()
-        .clamp(1, LAYER6_WORKER_COUNT);
+    let worker_count = crate::llama_sidecar::current_parallel_slots().clamp(1, LAYER6_WORKER_COUNT);
     let rx = Arc::new(Mutex::new(rx));
     for _ in 0..worker_count {
         let rx = Arc::clone(&rx);
@@ -665,14 +668,14 @@ async fn apply_layer6_success(
 
         crate::db::transaction_observations::update_observation(c, &row)?;
 
-        if confident_enough
-            && instrument_id.is_some()
-            && row.amount_minor.is_some()
-            && row.merchant_raw.is_some()
-        {
+        let has_instrument = instrument_id.is_some();
+        let ready_instrument_id = instrument_id.filter(|_| {
+            confident_enough && row.amount_minor.is_some() && row.merchant_raw.is_some()
+        });
+        if let Some(instrument_id) = ready_instrument_id {
             let incoming_obs = crate::reconciliation::engine::IncomingObservation {
                 id: row.id.clone(),
-                instrument_id: instrument_id.unwrap(),
+                instrument_id,
                 amount_minor: row.amount_minor.unwrap_or(0),
                 currency: row.currency.clone().unwrap_or_else(|| "INR".to_string()),
                 direction: row.direction.clone().unwrap_or_else(|| "debit".to_string()),
@@ -701,7 +704,6 @@ async fn apply_layer6_success(
             // still missing now that Layer 6 has filled in its best guess,
             // rather than leaving it frozen at the pre-enrichment gate3
             // evaluation (see `update_reason`'s doc comment).
-            let has_instrument = instrument_id.is_some();
             let reason = if row.merchant_raw.is_none() {
                 "gate3_failed:missing_counterparty"
             } else if !has_instrument {
@@ -929,7 +931,8 @@ fn spawn_statement_dispatcher<R: tauri::Runtime>(
                     Err(e) => {
                         tracing::error!(
                             "Statement Queue job failed (file='{}'): could not read staged PDF: {}",
-                            job.filename, e
+                            job.filename,
+                            e
                         );
                         return;
                     }
@@ -984,7 +987,9 @@ fn spawn_statement_dispatcher<R: tauri::Runtime>(
                     Ok(crate::commands::PipelineOutcome::Staged(_draft_id)) => {
                         // stage_parse_pipeline already emitted STAGED itself — nothing to do here.
                     }
-                    Ok(crate::commands::PipelineOutcome::BlockedAwaitingInstrument(_unprocessed_id)) => {
+                    Ok(crate::commands::PipelineOutcome::BlockedAwaitingInstrument(
+                        _unprocessed_id,
+                    )) => {
                         // The gate already emitted INSTRUMENT_CONFIRMATION_REQUIRED, we don't need to do anything here.
                     }
                     Err(e) => {
@@ -1326,7 +1331,9 @@ mod layer6_tests {
     async fn low_confidence_layer6_result_stays_open_and_prefilled() {
         let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
-        let pool = init_db(temp_dir.join("test.db")).await.expect("DB init failed");
+        let pool = init_db(temp_dir.join("test.db"))
+            .await
+            .expect("DB init failed");
         let conn = pool.get().await.unwrap();
 
         let observation_id = uuid::Uuid::new_v4().to_string();
@@ -1460,7 +1467,9 @@ mod layer6_tests {
     async fn high_confidence_verified_layer6_result_promotes_to_transaction() {
         let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
-        let pool = init_db(temp_dir.join("test.db")).await.expect("DB init failed");
+        let pool = init_db(temp_dir.join("test.db"))
+            .await
+            .expect("DB init failed");
         let conn = pool.get().await.unwrap();
 
         let observation_id = uuid::Uuid::new_v4().to_string();
@@ -1601,7 +1610,9 @@ mod layer6_tests {
     async fn low_confidence_self_transfer_still_promotes_with_placeholder_merchant() {
         let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
-        let pool = init_db(temp_dir.join("test.db")).await.expect("DB init failed");
+        let pool = init_db(temp_dir.join("test.db"))
+            .await
+            .expect("DB init failed");
         let conn = pool.get().await.unwrap();
 
         let observation_id = uuid::Uuid::new_v4().to_string();
@@ -1750,7 +1761,9 @@ mod layer6_tests {
     async fn persisted_layer6_job_survives_until_dequeued() {
         let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&temp_dir).unwrap();
-        let pool = init_db(temp_dir.join("test.db")).await.expect("DB init failed");
+        let pool = init_db(temp_dir.join("test.db"))
+            .await
+            .expect("DB init failed");
         let conn = pool.get().await.unwrap();
 
         let (tx, mut rx) = mpsc::channel::<Layer6Job>(4);

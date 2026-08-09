@@ -221,12 +221,6 @@ impl GmailClient {
         }
     }
 
-    /// Fetches full message payload by ID with specified format.
-    ///
-    /// Full-format fetches acquire a permit from the shared quota semaphore
-    /// (Doc 30 TASK-GMAIL-002) before hitting the network; metadata-only
-    /// fetches are cheap (1 quota unit) and skip the gate entirely.
-
     async fn execute_with_retry<F, Fut>(
         &self,
         operation: &str,

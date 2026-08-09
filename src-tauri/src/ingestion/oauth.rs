@@ -901,7 +901,8 @@ async fn mark_account_degraded_async<R: tauri::Runtime>(
         app,
         crate::ipc::system_warnings::SystemWarningPayload {
             warning_type: "gmail_token_degraded".to_string(),
-            message: "Gmail sync is paused -- your access token could not be refreshed.".to_string(),
+            message: "Gmail sync is paused -- your access token could not be refreshed."
+                .to_string(),
             severity: crate::ipc::system_warnings::WarningSeverity::Degraded,
             action_hint: Some("reconnect_gmail_account".to_string()),
         },
@@ -1089,6 +1090,22 @@ pub async fn handle_invalid_history_id(pool: &Pool, account_id: &str) -> Result<
     Ok(())
 }
 
+pub fn create_token_refresher<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    pool: &deadpool_sqlite::Pool,
+    account_id: &str,
+) -> Option<crate::ingestion::gmail_client::TokenRefresher> {
+    let app = app.clone();
+    let pool = pool.clone();
+    let account_id = account_id.to_string();
+    Some(std::sync::Arc::new(move || {
+        let app = app.clone();
+        let pool = pool.clone();
+        let account_id = account_id.clone();
+        Box::pin(async move { force_refresh_access_token(&app, &pool, &account_id).await })
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1243,20 +1260,4 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().to_string(), "oauth_timeout");
     }
-}
-
-pub fn create_token_refresher<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    pool: &deadpool_sqlite::Pool,
-    account_id: &str,
-) -> Option<crate::ingestion::gmail_client::TokenRefresher> {
-    let app = app.clone();
-    let pool = pool.clone();
-    let account_id = account_id.to_string();
-    Some(std::sync::Arc::new(move || {
-        let app = app.clone();
-        let pool = pool.clone();
-        let account_id = account_id.clone();
-        Box::pin(async move { force_refresh_access_token(&app, &pool, &account_id).await })
-    }))
 }

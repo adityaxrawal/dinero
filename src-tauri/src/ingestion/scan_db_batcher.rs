@@ -106,16 +106,14 @@ impl ScanDbBatcher {
 
         let conn = pool.get().await?;
         conn.interact(move |c| -> Result<()> {
-            let tx = c.transaction().map_err(|e| anyhow::anyhow!("TX start: {}", e))?;
+            let tx = c
+                .transaction()
+                .map_err(|e| anyhow::anyhow!("TX start: {}", e))?;
 
             // 1. Flush sightings — upsert so repeated scans over overlapping
             //    date ranges don't create duplicate rows.
             for s in &sightings {
-                let _ = crate::db::sender_reputation::record_sighting(
-                    &tx,
-                    &s.domain,
-                    &s.tag,
-                );
+                let _ = crate::db::sender_reputation::record_sighting(&tx, &s.domain, &s.tag);
                 if s.is_rejection_candidate {
                     let _ = crate::db::sender_reputation::record_rejection_candidate(
                         &tx,
@@ -155,7 +153,8 @@ impl ScanDbBatcher {
                 let _ = crate::db::ignored_messages::insert(&tx, &row);
             }
 
-            tx.commit().map_err(|e| anyhow::anyhow!("TX commit: {}", e))?;
+            tx.commit()
+                .map_err(|e| anyhow::anyhow!("TX commit: {}", e))?;
             Ok(())
         })
         .await
