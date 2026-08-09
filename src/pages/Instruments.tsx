@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
-import { Plus, Loader2, Landmark, Search, X, CreditCard, Wallet, Smartphone, ShieldAlert } from 'lucide-react';
+import {Plus, Loader2, Landmark, Search, X, CreditCard, Wallet, Smartphone} from 'lucide-react';
 import { useInstrumentsList } from '@/hooks/queries/useInstrumentsList';
 import { INSTRUMENT_TYPES, instrumentIcon } from '@/components/instruments/instrumentTypes';
 import AddInstrumentModal from '@/components/instruments/AddInstrumentModal';

@@ -1,6 +1,5 @@
 import { useMemo } from 'react';
-import { TrendingUp, TrendingDown, PieChart, ShoppingBag, ArrowUpRight, ArrowDownRight } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import {PieChart, ShoppingBag, ArrowUpRight, ArrowDownRight} from 'lucide-react';
 import type { TransactionRecord } from '@/lib/ipc';
 
 interface InstrumentAnalyticsTabProps {

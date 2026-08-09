@@ -2,7 +2,8 @@ import React, { useState, useMemo } from 'react';
 import { Pencil, Search, X, Check, CreditCard, Landmark, Zap } from 'lucide-react';
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectGroup, SelectLabel } from '@/components/ui/select';
 import { InfoRow } from '@/components/ui/InfoRow';
-import { instrumentIcon, instrumentTypeLabel } from './instrumentTypes';
+import { instrumentIcon } from './instrumentTypes';
+import { getInstrumentTitle, getInstrumentSubtitle } from './instrumentLabels';
 import { cn } from '@/lib/utils';
 
 interface InstrumentSelectProps {
@@ -14,40 +15,6 @@ interface InstrumentSelectProps {
     instrument_type: string;
     masked_identifier?: string | null;
   }>;
-}
-
-function getInstrumentTitle(inst?: {
-  issuer_name?: string | null;
-  instrument_type: string;
-  masked_identifier?: string | null;
-}): string {
-  if (!inst) return 'Select Instrument';
-  if (inst.issuer_name && inst.issuer_name.trim().length > 0) {
-    return inst.issuer_name;
-  }
-  if (inst.instrument_type === 'upi_vpa' && inst.masked_identifier) {
-    const handle = inst.masked_identifier.toLowerCase();
-    if (handle.includes('@jupiter')) return 'Jupiter UPI';
-    if (handle.includes('@okicici') || handle.includes('@icici')) return 'ICICI UPI';
-    if (handle.includes('@okaxis') || handle.includes('@axis')) return 'Axis UPI';
-    if (handle.includes('@oksbi') || handle.includes('@sbi')) return 'SBI UPI';
-    if (handle.includes('@paytm')) return 'Paytm UPI';
-    if (handle.includes('@hdfc')) return 'HDFC UPI';
-    return 'UPI Payment Handle';
-  }
-  return instrumentTypeLabel(inst.instrument_type);
-}
-
-function getInstrumentSubtitle(inst?: {
-  instrument_type: string;
-  masked_identifier?: string | null;
-}): string {
-  if (!inst) return 'Click to assign';
-  const typeLabel = instrumentTypeLabel(inst.instrument_type);
-  if (inst.masked_identifier) {
-    return `${typeLabel} · ${inst.masked_identifier}`;
-  }
-  return typeLabel;
 }
 
 export function InstrumentSelect({
