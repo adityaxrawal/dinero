@@ -117,7 +117,11 @@ pub fn read_go_no_go() -> GoNoGoStatus {
         .ok()
         .and_then(|m| m.modified().ok())
         .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
-    GoNoGoStatus { all_passed, available: true, checked_at }
+    GoNoGoStatus {
+        all_passed,
+        available: true,
+        checked_at,
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -139,7 +143,11 @@ fn row_to_snapshot(row: &rusqlite::Row) -> rusqlite::Result<ReleaseReadinessSnap
     })
 }
 
-pub fn insert_snapshot(conn: &Connection, metrics: &LocalMetrics, go_no_go: bool) -> Result<String> {
+pub fn insert_snapshot(
+    conn: &Connection,
+    metrics: &LocalMetrics,
+    go_no_go: bool,
+) -> Result<String> {
     let id = uuid::Uuid::new_v4().to_string();
     let metrics_json = serde_json::to_string(metrics)?;
     conn.execute(
@@ -149,7 +157,10 @@ pub fn insert_snapshot(conn: &Connection, metrics: &LocalMetrics, go_no_go: bool
     Ok(id)
 }
 
-pub fn list_snapshots(conn: &Connection, limit: i64) -> rusqlite::Result<Vec<ReleaseReadinessSnapshot>> {
+pub fn list_snapshots(
+    conn: &Connection,
+    limit: i64,
+) -> rusqlite::Result<Vec<ReleaseReadinessSnapshot>> {
     let mut stmt = conn.prepare(
         "SELECT id, captured_at, metrics_json, go_no_go FROM release_readiness_snapshots \
          ORDER BY captured_at DESC LIMIT ?1",
@@ -181,7 +192,10 @@ pub fn detect_regressions(previous: &LocalMetrics, current: &LocalMetrics) -> Ve
 pub async fn release_readiness_capture_snapshot(
     pool: State<'_, deadpool_sqlite::Pool>,
 ) -> Result<ReleaseReadinessSnapshot, crate::error::AppError> {
-    let conn = pool.get().await.map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     let go_no_go = read_go_no_go().all_passed;
     conn.interact(move |c| -> anyhow::Result<ReleaseReadinessSnapshot> {
         let metrics = compute_local_metrics(c)?;
@@ -191,7 +205,12 @@ pub async fn release_readiness_capture_snapshot(
             rusqlite::params![id.clone()],
             |r| r.get(0),
         )?;
-        Ok(ReleaseReadinessSnapshot { id, captured_at, metrics, go_no_go })
+        Ok(ReleaseReadinessSnapshot {
+            id,
+            captured_at,
+            metrics,
+            go_no_go,
+        })
     })
     .await
     .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
@@ -202,7 +221,10 @@ pub async fn release_readiness_capture_snapshot(
 pub async fn release_readiness_list_snapshots(
     pool: State<'_, deadpool_sqlite::Pool>,
 ) -> Result<Vec<ReleaseReadinessSnapshot>, crate::error::AppError> {
-    let conn = pool.get().await.map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(|c| list_snapshots(c, 20))
         .await
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?

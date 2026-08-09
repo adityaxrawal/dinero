@@ -100,10 +100,15 @@ pub fn remember_dismissal(warning_type: &str, message: &str) {
 /// A dismissed warning is still recorded as active — the condition is real and
 /// `active_system_warnings()` must keep reporting it, e.g. for the diagnostic
 /// bundle. Only the user-facing *event* is suppressed.
-pub fn emit_system_warning<R: tauri::Runtime>(app: &tauri::AppHandle<R>, warning: SystemWarningPayload) {
+pub fn emit_system_warning<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    warning: SystemWarningPayload,
+) {
     {
         let mut guard = ACTIVE_WARNINGS.lock().unwrap();
-        guard.get_or_insert_with(HashMap::new).insert(warning.warning_type.clone(), warning.clone());
+        guard
+            .get_or_insert_with(HashMap::new)
+            .insert(warning.warning_type.clone(), warning.clone());
     }
     if is_dismissed(&warning) {
         tracing::debug!(
@@ -112,7 +117,8 @@ pub fn emit_system_warning<R: tauri::Runtime>(app: &tauri::AppHandle<R>, warning
         );
         return;
     }
-    let _ = crate::ipc::events::emit_event(app, crate::ipc::events::AppEvent::SystemWarning, warning);
+    let _ =
+        crate::ipc::events::emit_event(app, crate::ipc::events::AppEvent::SystemWarning, warning);
 }
 
 /// Doc 30 TASK-RT-007: "Warnings auto-clear once their condition resolves."
@@ -153,7 +159,9 @@ pub fn active_system_warnings() -> Vec<SystemWarningPayload> {
 /// Doc 30 TASK-RT-007: "`ConnectionStatusBanner` prioritizes by severity when
 /// multiple warnings are simultaneously active." Ties broken by warning_type
 /// for deterministic ordering.
-pub fn highest_priority_warning(warnings: &[SystemWarningPayload]) -> Option<&SystemWarningPayload> {
+pub fn highest_priority_warning(
+    warnings: &[SystemWarningPayload],
+) -> Option<&SystemWarningPayload> {
     warnings.iter().max_by(|a, b| {
         a.severity
             .rank()
@@ -227,9 +235,24 @@ mod tests {
     #[test]
     fn test_banner_prioritizes_by_severity() {
         let warnings = vec![
-            SystemWarningPayload { warning_type: "gmail_quota".to_string(), message: "quota".to_string(), severity: WarningSeverity::Degraded, action_hint: None },
-            SystemWarningPayload { warning_type: "clock_skew".to_string(), message: "skew".to_string(), severity: WarningSeverity::Critical, action_hint: None },
-            SystemWarningPayload { warning_type: "low_ram".to_string(), message: "ram".to_string(), severity: WarningSeverity::Info, action_hint: None },
+            SystemWarningPayload {
+                warning_type: "gmail_quota".to_string(),
+                message: "quota".to_string(),
+                severity: WarningSeverity::Degraded,
+                action_hint: None,
+            },
+            SystemWarningPayload {
+                warning_type: "clock_skew".to_string(),
+                message: "skew".to_string(),
+                severity: WarningSeverity::Critical,
+                action_hint: None,
+            },
+            SystemWarningPayload {
+                warning_type: "low_ram".to_string(),
+                message: "ram".to_string(),
+                severity: WarningSeverity::Info,
+                action_hint: None,
+            },
         ];
         let top = highest_priority_warning(&warnings).unwrap();
         assert_eq!(top.warning_type, "clock_skew");
@@ -241,15 +264,22 @@ mod tests {
         // use a warning_type unique to this test.
         let app = tauri::test::mock_app();
         let handle = app.handle().clone();
-        emit_system_warning(&handle, SystemWarningPayload {
-            warning_type: "test_auto_clear_warning".to_string(),
-            message: "x".to_string(),
-            severity: WarningSeverity::Info,
-            action_hint: None,
-        });
-        assert!(active_system_warnings().iter().any(|w| w.warning_type == "test_auto_clear_warning"));
+        emit_system_warning(
+            &handle,
+            SystemWarningPayload {
+                warning_type: "test_auto_clear_warning".to_string(),
+                message: "x".to_string(),
+                severity: WarningSeverity::Info,
+                action_hint: None,
+            },
+        );
+        assert!(active_system_warnings()
+            .iter()
+            .any(|w| w.warning_type == "test_auto_clear_warning"));
         clear_system_warning(&handle, "test_auto_clear_warning");
-        assert!(!active_system_warnings().iter().any(|w| w.warning_type == "test_auto_clear_warning"));
+        assert!(!active_system_warnings()
+            .iter()
+            .any(|w| w.warning_type == "test_auto_clear_warning"));
     }
 
     /// audit_07 #10: a dismissed warning must stop firing, a *changed* one
@@ -268,22 +298,37 @@ mod tests {
             action_hint: None,
         };
 
-        let low_ram = warn("test_dismiss_low_ram", "Low RAM: 9 GB free", WarningSeverity::Info);
+        let low_ram = warn(
+            "test_dismiss_low_ram",
+            "Low RAM: 9 GB free",
+            WarningSeverity::Info,
+        );
         assert!(!is_dismissed(&low_ram), "nothing dismissed yet");
 
         remember_dismissal(&low_ram.warning_type, &low_ram.message);
-        assert!(is_dismissed(&low_ram), "the exact dismissed message stays quiet");
+        assert!(
+            is_dismissed(&low_ram),
+            "the exact dismissed message stays quiet"
+        );
 
         // Same type, materially different message -- the user has not seen
         // this one, and it is the more urgent of the two.
-        let worse = warn("test_dismiss_low_ram", "Low RAM: 1 GB free", WarningSeverity::Info);
+        let worse = warn(
+            "test_dismiss_low_ram",
+            "Low RAM: 1 GB free",
+            WarningSeverity::Info,
+        );
         assert!(
             !is_dismissed(&worse),
             "a changed message must not inherit a prior dismissal"
         );
 
         // Critical is never suppressible, even if something recorded one.
-        let critical = warn("test_dismiss_crit", "Clock skew — licensing locked", WarningSeverity::Critical);
+        let critical = warn(
+            "test_dismiss_crit",
+            "Clock skew — licensing locked",
+            WarningSeverity::Critical,
+        );
         remember_dismissal(&critical.warning_type, &critical.message);
         assert!(
             !is_dismissed(&critical),

@@ -143,7 +143,11 @@ pub async fn merchant_cleanup_preview(
             })
             .collect()
     };
-    buckets.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.bank_name.cmp(&b.bank_name)));
+    buckets.sort_by(|a, b| {
+        b.count
+            .cmp(&a.count)
+            .then_with(|| a.bank_name.cmp(&b.bank_name))
+    });
 
     Ok(CleanupPreview {
         candidate_count: candidates.len(),
@@ -289,11 +293,7 @@ pub async fn merchant_cleanup_revert(
 
 /// The run loop. Fans out across the same number of slots the sidecar
 /// calibrated for Layer 6, since it is the same server doing the work.
-async fn run_cleanup(
-    app: tauri::AppHandle,
-    pool: Pool,
-    run_id: String,
-) -> anyhow::Result<()> {
+async fn run_cleanup(app: tauri::AppHandle, pool: Pool, run_id: String) -> anyhow::Result<()> {
     let app_dir = app
         .path()
         .app_data_dir()

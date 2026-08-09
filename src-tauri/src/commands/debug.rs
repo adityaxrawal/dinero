@@ -4,7 +4,6 @@ use deadpool_sqlite::Pool;
 use serde::Serialize;
 use tauri::State;
 
-
 #[derive(Serialize)]
 pub struct DebugDashboardState {
     pub gmail_poll_paused: bool,
@@ -59,7 +58,6 @@ pub async fn debug_fetch_audit_log(
 
     Ok(rows)
 }
-
 
 #[tauri::command]
 pub async fn debug_fetch_reconciliation_clusters(
@@ -122,25 +120,14 @@ pub async fn debug_audit_scan_coverage<R: tauri::Runtime>(
     crate::ipc::validation::validate_date_range(&start_date, &end_date)?;
 
     let pool = pool.inner().clone();
-    let access_token =
-        crate::ingestion::oauth::get_valid_access_token(&app, &pool, &account_id)
-            .await
-            .map_err(|e| AppError::Auth(e.to_string()))?;
+    let access_token = crate::ingestion::oauth::get_valid_access_token(&app, &pool, &account_id)
+        .await
+        .map_err(|e| AppError::Auth(e.to_string()))?;
     let refresher = crate::ingestion::oauth::create_token_refresher(&app, &pool, &account_id);
-    let client = crate::ingestion::gmail_client::GmailClient::new(
-        access_token,
-        pool.clone(),
-        refresher,
-    );
+    let client =
+        crate::ingestion::gmail_client::GmailClient::new(access_token, pool.clone(), refresher);
 
-    crate::ingestion::historical_scan::audit_scan_coverage(
-        &pool,
-        &client,
-        &start_date,
-        &end_date,
-    )
-    .await
-    .map_err(|e| AppError::Unknown(e.to_string()))
+    crate::ingestion::historical_scan::audit_scan_coverage(&pool, &client, &start_date, &end_date)
+        .await
+        .map_err(|e| AppError::Unknown(e.to_string()))
 }
-
-

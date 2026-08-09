@@ -207,7 +207,7 @@ pub fn run() {
                             }),
                         );
                     }
-                    
+
                     // Restore connected_accounts if they were backed up during "Delete My Data"
                     let backup_path = app_dir.join("gmail_accounts_backup.json");
                     if backup_path.exists() {

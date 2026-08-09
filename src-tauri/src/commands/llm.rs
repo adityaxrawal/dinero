@@ -284,10 +284,7 @@ pub async fn llm_set_parallel_slots(
 /// Falls back to the same 5.0 GB default `llm_hardware_recommendation` uses
 /// when no model is resolvable, so both paths size against the same
 /// assumption rather than disagreeing.
-async fn active_model_size_gb(
-    app: &tauri::AppHandle,
-    pool: &deadpool_sqlite::Pool,
-) -> f64 {
+async fn active_model_size_gb(app: &tauri::AppHandle, pool: &deadpool_sqlite::Pool) -> f64 {
     use tauri::Manager as _;
     let Ok(app_dir) = app.path().app_data_dir() else {
         return 5.0;

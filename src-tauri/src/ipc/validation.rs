@@ -90,7 +90,12 @@ pub fn validate_date_range(start_date: &str, end_date: &str) -> Result<(), AppEr
 /// carrying sign, Document 18 §4.3) from ones where it never is; kept as a
 /// parameter rather than hardcoded so a future signed field doesn't need a
 /// second function.
-pub const MAX_REASONABLE_AMOUNT_MINOR: i64 = 100_000_000_00; // Doc 30: "unreasonably large... likely input errors" -- INR 1,00,00,000 (1 crore), an engineering default, not a sourced figure.
+// Grouped as `<rupees>_00` rather than clippy's preferred uniform 3-digit
+// grouping so the trailing paise pair stays visible at a glance.
+#[allow(clippy::inconsistent_digit_grouping)]
+// Doc 30: "unreasonably large... likely input errors" -- INR 1,00,00,000
+// (1 crore) in paise, an engineering default, not a sourced figure.
+pub const MAX_REASONABLE_AMOUNT_MINOR: i64 = 100_000_000_00;
 
 pub fn validate_amount_minor(
     field_name: &str,
@@ -120,7 +125,7 @@ pub fn validate_pagination(page: u32, per_page: u32) -> Result<(), AppError> {
             "page must be >= 1, got {page}"
         )));
     }
-    if per_page < 1 || per_page > MAX_PAGE_SIZE {
+    if !(1..=MAX_PAGE_SIZE).contains(&per_page) {
         return Err(AppError::Validation(format!(
             "per_page must be between 1 and {MAX_PAGE_SIZE}, got {per_page}"
         )));

@@ -116,8 +116,7 @@ mod tests {
     /// reappear is `.emit("scan_progress"` etc.).
     #[test]
     fn test_all_event_types_use_centralized_emit_module() {
-        let historical_scan_src =
-            include_str!("../ingestion/historical_scan.rs");
+        let historical_scan_src = include_str!("../ingestion/historical_scan.rs");
         let indicator_src = include_str!("../background_tasks/indicator.rs");
         let system_warnings_src = include_str!("system_warnings.rs");
 
@@ -252,7 +251,9 @@ mod tests {
         // can show correct state is by querying the persisted registry.
         let recovered = active_system_warnings();
         assert!(
-            recovered.iter().any(|w| w.warning_type == "test_rt001_late_mount"),
+            recovered
+                .iter()
+                .any(|w| w.warning_type == "test_rt001_late_mount"),
             "a late-mounting component must be able to recover already-emitted warning state"
         );
     }

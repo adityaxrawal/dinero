@@ -448,8 +448,9 @@ pub fn do_transactions_search(
     query: &str,
     filters: Option<&TransactionListFilters>,
 ) -> Result<Vec<TransactionRecord>, String> {
-    let rows = crate::db::transactions::search_transactions_with_filters(conn, query, filters, 50, 0)
-        .map_err(|e| e.to_string())?;
+    let rows =
+        crate::db::transactions::search_transactions_with_filters(conn, query, filters, 50, 0)
+            .map_err(|e| e.to_string())?;
 
     Ok(rows
         .into_iter()
@@ -614,7 +615,11 @@ pub fn do_fetch_unresolved_clusters(conn: &Connection) -> Result<Vec<ClusterReco
             let id: String = row.get(0)?;
             let reason: Option<String> = row.get(1)?;
             let created_at: Option<String> = row.get(2)?;
-            Ok((id, reason.unwrap_or_else(|| "Unknown".to_string()), created_at))
+            Ok((
+                id,
+                reason.unwrap_or_else(|| "Unknown".to_string()),
+                created_at,
+            ))
         })
         .map_err(|e| e.to_string())?;
 
@@ -686,15 +691,13 @@ pub fn do_fetch_instruments(conn: &Connection) -> Result<Vec<InstrumentRecord>, 
                 Err(_) => row.get::<_, f64>(5).ok().map(|f| f as i64),
             };
             let tx_bal_minor: i64 = row.get(10).unwrap_or(0);
-            
+
             let inst_type_str = t.as_deref().unwrap_or("credit_card");
 
             let effective_bal = match db_bal_paise {
                 Some(p) => p as f64 / 100.0,
                 None => {
-                    if inst_type_str == "credit_card" {
-                        tx_bal_minor as f64 / 100.0
-                    } else if tx_bal_minor > 0 {
+                    if inst_type_str == "credit_card" || tx_bal_minor > 0 {
                         tx_bal_minor as f64 / 100.0
                     } else {
                         0.0
@@ -1051,23 +1054,24 @@ pub async fn perform_account_deletion(
         // start, so the intent to delete is captured even if the process is
         // interrupted partway through the remaining steps.
         if let Ok(conn) = pool.get().await {
-            let _ = conn.interact(|c| {
-                crate::db::audit_log::insert(
-                    c,
-                    &crate::db::audit_log::AuditLogRow {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        actor_type: Some("user".to_string()),
-                        actor_id: Some("local".to_string()),
-                        action: Some("account_deletion_requested".to_string()),
-                        resource_type: Some("database".to_string()),
-                        resource_id: Some("local_sqlite".to_string()),
-                        before_json: None,
-                        after_json: None,
-                        created_at: chrono::Utc::now(),
-                    },
-                )
-            })
-            .await;
+            let _ = conn
+                .interact(|c| {
+                    crate::db::audit_log::insert(
+                        c,
+                        &crate::db::audit_log::AuditLogRow {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            actor_type: Some("user".to_string()),
+                            actor_id: Some("local".to_string()),
+                            action: Some("account_deletion_requested".to_string()),
+                            resource_type: Some("database".to_string()),
+                            resource_id: Some("local_sqlite".to_string()),
+                            before_json: None,
+                            after_json: None,
+                            created_at: chrono::Utc::now(),
+                        },
+                    )
+                })
+                .await;
         }
 
         // Step 3: Licensing Backend coordination. "Local Wipe Priority" (Doc 28
@@ -1083,33 +1087,41 @@ pub async fn perform_account_deletion(
 
         // Extract connected_accounts before the database is destroyed so they can be restored
         if let Ok(conn) = pool.get().await {
-            let _ = conn.interact({
-                let app_dir_clone = app_dir.to_path_buf();
-                move |c| {
-                    if let Ok(mut stmt) = c.prepare("SELECT * FROM connected_accounts") {
-                        let rows: Result<Vec<crate::db::connected_accounts::ConnectedAccountsRow>, _> = stmt.query_map([], |row| {
-                            Ok(crate::db::connected_accounts::ConnectedAccountsRow {
-                                id: row.get(0)?,
-                                profile_id: row.get(1)?,
-                                email_address: row.get(2)?,
-                                account_status: row.get(3)?,
-                                last_history_id: row.get(4)?,
-                                created_at: row.get(5)?,
-                                updated_at: row.get(6)?,
-                            })
-                        }).and_then(|mapped| mapped.collect());
-                        
-                        if let Ok(accounts) = rows {
-                            if !accounts.is_empty() {
-                                let backup_path = app_dir_clone.join("gmail_accounts_backup.json");
-                                if let Ok(json) = serde_json::to_string(&accounts) {
-                                    let _ = std::fs::write(backup_path, json);
+            let _ = conn
+                .interact({
+                    let app_dir_clone = app_dir.to_path_buf();
+                    move |c| {
+                        if let Ok(mut stmt) = c.prepare("SELECT * FROM connected_accounts") {
+                            let rows: Result<
+                                Vec<crate::db::connected_accounts::ConnectedAccountsRow>,
+                                _,
+                            > = stmt
+                                .query_map([], |row| {
+                                    Ok(crate::db::connected_accounts::ConnectedAccountsRow {
+                                        id: row.get(0)?,
+                                        profile_id: row.get(1)?,
+                                        email_address: row.get(2)?,
+                                        account_status: row.get(3)?,
+                                        last_history_id: row.get(4)?,
+                                        created_at: row.get(5)?,
+                                        updated_at: row.get(6)?,
+                                    })
+                                })
+                                .and_then(|mapped| mapped.collect());
+
+                            if let Ok(accounts) = rows {
+                                if !accounts.is_empty() {
+                                    let backup_path =
+                                        app_dir_clone.join("gmail_accounts_backup.json");
+                                    if let Ok(json) = serde_json::to_string(&accounts) {
+                                        let _ = std::fs::write(backup_path, json);
+                                    }
                                 }
                             }
                         }
                     }
-                }
-            }).await;
+                })
+                .await;
         }
     }
 
@@ -1919,24 +1931,22 @@ pub async fn fetch_transaction_source_log(
     let separator =
         "================================================================================";
 
-    for line in reader.lines() {
-        if let Ok(l) = line {
-            if l.starts_with(separator) {
-                if inside_target_block {
-                    current_block.push_str(&l);
-                    current_block.push('\n');
-                    return Ok(current_block);
-                } else {
-                    current_block.clear();
-                    current_block.push_str(&l);
-                    current_block.push('\n');
-                }
-            } else {
+    for l in reader.lines().map_while(Result::ok) {
+        if l.starts_with(separator) {
+            if inside_target_block {
                 current_block.push_str(&l);
                 current_block.push('\n');
-                if !inside_target_block && l.contains(&target_marker) {
-                    inside_target_block = true;
-                }
+                return Ok(current_block);
+            } else {
+                current_block.clear();
+                current_block.push_str(&l);
+                current_block.push('\n');
+            }
+        } else {
+            current_block.push_str(&l);
+            current_block.push('\n');
+            if !inside_target_block && l.contains(&target_marker) {
+                inside_target_block = true;
             }
         }
     }
@@ -3109,18 +3119,70 @@ pub async fn instruments_update(
         row.full_identifier = payload.full_identifier;
         row.billing_cycle_day = payload.billing_cycle_day;
         row.bank_ifsc = payload.bank_ifsc;
-        if let Some(nick) = payload.nickname { row.nickname = if nick.trim().is_empty() { None } else { Some(nick) }; }
-        if let Some(limit) = payload.credit_limit { row.credit_limit = Some((limit * 100.0) as i64); }
-        if let Some(acct) = payload.account_type { row.account_type = if acct.trim().is_empty() { None } else { Some(acct) }; }
-        if let Some(net) = payload.network { row.network = if net.trim().is_empty() { None } else { Some(net) }; }
-        if let Some(st) = payload.status { if !st.trim().is_empty() { row.status = st; } }
-        if let Some(vpa) = payload.upi_vpa { row.upi_vpa = if vpa.trim().is_empty() { None } else { Some(vpa) }; }
-        if let Some(rew) = payload.rewards_summary { row.rewards_summary = if rew.trim().is_empty() { None } else { Some(rew) }; }
-        if let Some(itype) = payload.instrument_type { if !itype.trim().is_empty() { row.r#type = itype; } }
-        if let Some(iname) = payload.issuer_name { if !iname.trim().is_empty() { row.issuer_name = iname; } }
-        if let Some(mask) = payload.masked_identifier { if !mask.trim().is_empty() { row.masked_identifier = clean_masked_identifier(&mask); } }
-        if let Some(bal) = payload.current_balance { row.current_balance = Some((bal * 100.0) as i64); }
-        if let Some(min_due) = payload.minimum_due { row.minimum_due = Some((min_due * 100.0) as i64); }
+        if let Some(nick) = payload.nickname {
+            row.nickname = if nick.trim().is_empty() {
+                None
+            } else {
+                Some(nick)
+            };
+        }
+        if let Some(limit) = payload.credit_limit {
+            row.credit_limit = Some((limit * 100.0) as i64);
+        }
+        if let Some(acct) = payload.account_type {
+            row.account_type = if acct.trim().is_empty() {
+                None
+            } else {
+                Some(acct)
+            };
+        }
+        if let Some(net) = payload.network {
+            row.network = if net.trim().is_empty() {
+                None
+            } else {
+                Some(net)
+            };
+        }
+        if let Some(st) = payload.status {
+            if !st.trim().is_empty() {
+                row.status = st;
+            }
+        }
+        if let Some(vpa) = payload.upi_vpa {
+            row.upi_vpa = if vpa.trim().is_empty() {
+                None
+            } else {
+                Some(vpa)
+            };
+        }
+        if let Some(rew) = payload.rewards_summary {
+            row.rewards_summary = if rew.trim().is_empty() {
+                None
+            } else {
+                Some(rew)
+            };
+        }
+        if let Some(itype) = payload.instrument_type {
+            if !itype.trim().is_empty() {
+                row.r#type = itype;
+            }
+        }
+        if let Some(iname) = payload.issuer_name {
+            if !iname.trim().is_empty() {
+                row.issuer_name = iname;
+            }
+        }
+        if let Some(mask) = payload.masked_identifier {
+            if !mask.trim().is_empty() {
+                row.masked_identifier = clean_masked_identifier(&mask);
+            }
+        }
+        if let Some(bal) = payload.current_balance {
+            row.current_balance = Some((bal * 100.0) as i64);
+        }
+        if let Some(min_due) = payload.minimum_due {
+            row.minimum_due = Some((min_due * 100.0) as i64);
+        }
         if let Some(date_str) = payload.statement_due_date {
             row.statement_due_date = if date_str.trim().is_empty() {
                 None
@@ -3224,9 +3286,14 @@ mod tests {
             reference_id: None,
         };
 
-        resolve_unassigned_transaction_manually(unassigned_id.clone(), payload, &pool, app.handle())
-            .await
-            .unwrap();
+        resolve_unassigned_transaction_manually(
+            unassigned_id.clone(),
+            payload,
+            &pool,
+            app.handle(),
+        )
+        .await
+        .unwrap();
 
         let conn = pool.get().await.unwrap();
         let status: String = conn
@@ -3496,14 +3563,23 @@ mod tests {
         .unwrap();
 
         let members = fetch_cluster_members(&conn, "c1").unwrap();
-        let candidate = members.iter().find(|m| m.member_role == "candidate_a").unwrap();
+        let candidate = members
+            .iter()
+            .find(|m| m.member_role == "candidate_a")
+            .unwrap();
         assert_eq!(candidate.instrument_issuer_name, Some("HDFC".to_string()));
-        assert_eq!(candidate.instrument_masked_identifier, Some("4021".to_string()));
+        assert_eq!(
+            candidate.instrument_masked_identifier,
+            Some("4021".to_string())
+        );
         assert_eq!(candidate.reference_id, Some("REF123".to_string()));
         assert_eq!(candidate.match_score, Some(0.71));
         assert_eq!(candidate.source_raw_payload_json, None);
 
-        let incoming = members.iter().find(|m| m.member_role == "incoming").unwrap();
+        let incoming = members
+            .iter()
+            .find(|m| m.member_role == "incoming")
+            .unwrap();
         assert_eq!(incoming.match_score, None);
         assert!(incoming.source_raw_payload_json.is_some());
     }
@@ -4005,13 +4081,19 @@ mod tests {
 
         let records = do_fetch_statement_history(&conn, 10, 0).unwrap();
 
-        let available = records.iter().find(|r| r.id == "stmt_hist_available").unwrap();
+        let available = records
+            .iter()
+            .find(|r| r.id == "stmt_hist_available")
+            .unwrap();
         assert_eq!(available.issuer_name.as_deref(), Some("HDFC"));
         assert_eq!(available.masked_identifier.as_deref(), Some("3825"));
         assert_eq!(available.instrument_type.as_deref(), Some("credit_card"));
         assert!(available.pdf_available);
 
-        let expired = records.iter().find(|r| r.id == "stmt_hist_expired").unwrap();
+        let expired = records
+            .iter()
+            .find(|r| r.id == "stmt_hist_expired")
+            .unwrap();
         assert!(!expired.pdf_available);
     }
 

@@ -291,7 +291,9 @@ pub async fn statements_upload(
 
     // Lazy cleanup of expired PDFs when new statements are uploaded
     if let Ok(app_data_dir) = app.path().app_data_dir() {
-        if let Err(e) = crate::statements::pdf_storage::cleanup_expired_pdfs(&app_data_dir, pool.inner()).await {
+        if let Err(e) =
+            crate::statements::pdf_storage::cleanup_expired_pdfs(&app_data_dir, pool.inner()).await
+        {
             tracing::warn!("Lazy cleanup of expired PDFs failed: {}", e);
         }
     }
@@ -590,6 +592,7 @@ pub enum PipelineOutcome {
 /// becomes the staged draft's id (see Step 11 below), so no PDF copy is ever
 /// needed between "blocked" and "staged for review". `None` mints a fresh
 /// draft id.
+#[allow(clippy::too_many_arguments)] // wide-but-flat domain signature; a params struct would add indirection without removing a single field
 pub async fn stage_parse_pipeline<R: tauri::Runtime>(
     bytes: &[u8],
     _filename: &str,
@@ -618,7 +621,9 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
     // the common case) reaches `commit_staged_draft`, which unconditionally
     // marks the PDF "available" (`pdf_retained_until`), while no file was
     // ever written for it: the "View PDF" button renders but 404s.
-    let draft_id = stmt_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let draft_id = stmt_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     if let Ok(app_data_dir) = app.path().app_data_dir() {
         let _ = crate::statements::pdf_storage::store_pdf(&app_data_dir, &draft_id, bytes);
     }
@@ -670,13 +675,21 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
             _ => {
                 delete_orphaned_queued_row(stmt_id.as_deref(), pool).await;
                 let unprocessed_id = uuid::Uuid::new_v4().to_string();
-                create_awaiting_instrument_row(&unprocessed_id, file_hash, _filename, password, pool)
-                    .await
-                    .map_err(|e| {
-                        anyhow::anyhow!("DB error creating awaiting_instrument row: {}", e)
-                    })?;
+                create_awaiting_instrument_row(
+                    &unprocessed_id,
+                    file_hash,
+                    _filename,
+                    password,
+                    pool,
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!("DB error creating awaiting_instrument row: {}", e))?;
                 if let Ok(app_data_dir) = app.path().app_data_dir() {
-                    let _ = crate::statements::pdf_storage::store_pdf(&app_data_dir, &unprocessed_id, bytes);
+                    let _ = crate::statements::pdf_storage::store_pdf(
+                        &app_data_dir,
+                        &unprocessed_id,
+                        bytes,
+                    );
                 }
                 let payload = serde_json::json!({
                     "statement_id": unprocessed_id,
@@ -700,13 +713,21 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
             _ => {
                 delete_orphaned_queued_row(stmt_id.as_deref(), pool).await;
                 let unprocessed_id = uuid::Uuid::new_v4().to_string();
-                create_awaiting_instrument_row(&unprocessed_id, file_hash, _filename, password, pool)
-                    .await
-                    .map_err(|e| {
-                        anyhow::anyhow!("DB error creating awaiting_instrument row: {}", e)
-                    })?;
+                create_awaiting_instrument_row(
+                    &unprocessed_id,
+                    file_hash,
+                    _filename,
+                    password,
+                    pool,
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!("DB error creating awaiting_instrument row: {}", e))?;
                 if let Ok(app_data_dir) = app.path().app_data_dir() {
-                    let _ = crate::statements::pdf_storage::store_pdf(&app_data_dir, &unprocessed_id, bytes);
+                    let _ = crate::statements::pdf_storage::store_pdf(
+                        &app_data_dir,
+                        &unprocessed_id,
+                        bytes,
+                    );
                 }
                 let payload = serde_json::json!({
                     "statement_id": unprocessed_id,
@@ -776,7 +797,13 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
         }
     }
 
-    emit_processing_progress(app, stmt_id.as_deref(), &instrument_id, "duplicate_check", 50);
+    emit_processing_progress(
+        app,
+        stmt_id.as_deref(),
+        &instrument_id,
+        "duplicate_check",
+        50,
+    );
 
     // ── Step 10: Extract statement rows ───────────────────────────────────────
     let bank_parser = BankParser::detect(&issuer, &instrument_type);
@@ -808,7 +835,13 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
         tracing::info!("LLM assist recovered {} additional rows", llm_rows.len());
         rows.extend(llm_rows);
     }
-    emit_processing_progress(app, stmt_id.as_deref(), &instrument_id, "extracting_rows", 65);
+    emit_processing_progress(
+        app,
+        stmt_id.as_deref(),
+        &instrument_id,
+        "extracting_rows",
+        65,
+    );
 
     // ── Step 11: Write the staged draft (nothing committed yet) ──────────────
     // Doc 18 §4.7's crash-recovery invariant pre-mints `stmt_id` for a fresh
@@ -852,7 +885,11 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
         .map_err(|e| anyhow::anyhow!("Interact error: {}", e))?
         .map_err(|e| anyhow::anyhow!("Failed to write statement draft: {}", e))?;
 
-    tracing::info!("Statement draft staged: id='{}' origin='{}'", draft_id, origin);
+    tracing::info!(
+        "Statement draft staged: id='{}' origin='{}'",
+        draft_id,
+        origin
+    );
     emit_processing_progress(app, Some(&draft_id), &instrument_id, "staged", 100);
 
     let staged_payload = serde_json::json!({ "draft_id": draft_id, "origin": origin });
@@ -909,15 +946,22 @@ pub async fn commit_staged_draft<R: tauri::Runtime>(
     pool: &deadpool_sqlite::Pool,
     app: &tauri::AppHandle<R>,
 ) -> anyhow::Result<String> {
-    use crate::db::transaction_observations::{insert_observation_idempotent, TransactionObservationsRow};
+    use crate::db::transaction_observations::{
+        insert_observation_idempotent, TransactionObservationsRow,
+    };
     use crate::statements::{
         bill_classifier,
-        metadata_extractor::{resolve_or_create_instrument, write_statement_row, StatementMetadata},
+        metadata_extractor::{
+            resolve_or_create_instrument, write_statement_row, StatementMetadata,
+        },
         observation_builder::build_all_observations,
         row_extractor::map_rows_to_statement_entries,
     };
 
-    let conn = pool.get().await.map_err(|e| anyhow::anyhow!("DB pool error: {}", e))?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| anyhow::anyhow!("DB pool error: {}", e))?;
     let draft_id_owned = draft_id.to_string();
     let draft = conn
         .interact(move |c| crate::db::statement_drafts::select_by_id(c, &draft_id_owned))
@@ -970,8 +1014,12 @@ pub async fn commit_staged_draft<R: tauri::Runtime>(
     let entry_ids = map_rows_to_statement_entries(&stmt_id, &edited_rows, pool).await;
 
     if !edited_rows.is_empty() && !entry_ids.is_empty() {
-        let observations = build_all_observations(&stmt_id, &instrument_id, &edited_rows, &entry_ids);
-        let conn = pool.get().await.map_err(|e| anyhow::anyhow!("DB pool error: {}", e))?;
+        let observations =
+            build_all_observations(&stmt_id, &instrument_id, &edited_rows, &entry_ids);
+        let conn = pool
+            .get()
+            .await
+            .map_err(|e| anyhow::anyhow!("DB pool error: {}", e))?;
         let obs_cloned = observations.clone();
         let stmt_id_for_obs = stmt_id.clone();
         conn.interact(move |c| {
@@ -990,7 +1038,10 @@ pub async fn commit_staged_draft<R: tauri::Runtime>(
                 let fmt = "%Y-%m-%d %H:%M:%S";
                 let event_time = chrono::NaiveDateTime::parse_from_str(&obs.event_time, fmt)
                     .or_else(|_| {
-                        chrono::NaiveDateTime::parse_from_str(&format!("{} 00:00:00", obs.event_time), fmt)
+                        chrono::NaiveDateTime::parse_from_str(
+                            &format!("{} 00:00:00", obs.event_time),
+                            fmt,
+                        )
                     })
                     .ok();
                 let row = TransactionObservationsRow {
@@ -1044,11 +1095,13 @@ pub async fn commit_staged_draft<R: tauri::Runtime>(
         .map_err(|e| anyhow::anyhow!("Interact error: {}", e))?;
 
         let obs_ids: Vec<String> = observations.into_iter().map(|o| o.id).collect();
-        tokio::spawn(crate::reconciliation::alert_worker::evaluate_alerts_for_observations(
-            pool.clone(),
-            app.clone(),
-            obs_ids,
-        ));
+        tokio::spawn(
+            crate::reconciliation::alert_worker::evaluate_alerts_for_observations(
+                pool.clone(),
+                app.clone(),
+                obs_ids,
+            ),
+        );
     }
 
     bill_classifier::classify_and_update(&instrument_id, &stmt_id, &meta, pool, Some(app)).await?;
@@ -1061,7 +1114,10 @@ pub async fn commit_staged_draft<R: tauri::Runtime>(
     // not (a clean first-pass extraction, which never had one before).
     let draft_id_for_retention = draft_id.to_string();
     let stmt_id_for_retention = stmt_id.clone();
-    let conn = pool.get().await.map_err(|e| anyhow::anyhow!("DB pool error: {}", e))?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| anyhow::anyhow!("DB pool error: {}", e))?;
     conn.interact(move |c| {
         c.execute(
             "INSERT OR IGNORE INTO unprocessed_statements \
@@ -1081,10 +1137,12 @@ pub async fn commit_staged_draft<R: tauri::Runtime>(
     .map_err(|e| anyhow::anyhow!("DB error linking PDF retention: {}", e))?;
 
     let draft_id_owned = draft_id.to_string();
-    conn.interact(move |c| crate::db::statement_drafts::update_status(c, &draft_id_owned, "committed"))
-        .await
-        .map_err(|e| anyhow::anyhow!("Interact error: {}", e))?
-        .map_err(|e| anyhow::anyhow!("DB error: {}", e))?;
+    conn.interact(move |c| {
+        crate::db::statement_drafts::update_status(c, &draft_id_owned, "committed")
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("Interact error: {}", e))?
+    .map_err(|e| anyhow::anyhow!("DB error: {}", e))?;
 
     // Doc 30 TASK-RT-008: enriched with the fields the frontend needs to
     // render a real summary toast ("HDFC Card statement parsed — 47
@@ -1121,7 +1179,10 @@ pub async fn discard_staged_draft(
     pool: &deadpool_sqlite::Pool,
 ) -> anyhow::Result<()> {
     let _ = crate::statements::pdf_storage::delete_pdf(app_data_dir, draft_id);
-    let conn = pool.get().await.map_err(|e| anyhow::anyhow!("DB pool error: {}", e))?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| anyhow::anyhow!("DB pool error: {}", e))?;
     let id = draft_id.to_string();
     conn.interact(move |c| crate::db::statement_drafts::delete(c, &id))
         .await
@@ -1207,7 +1268,10 @@ async fn create_awaiting_instrument_row(
         let blob = crate::statements::password::encrypt_password(pwd)?;
         use base64::Engine;
         let base64_blob = base64::engine::general_purpose::STANDARD.encode(&blob);
-        json_obj.as_object_mut().unwrap().insert("password_blob".to_string(), serde_json::json!(base64_blob));
+        json_obj
+            .as_object_mut()
+            .unwrap()
+            .insert("password_blob".to_string(), serde_json::json!(base64_blob));
     }
 
     let source_json = json_obj.to_string();
@@ -1281,15 +1345,18 @@ pub async fn statements_confirm_instrument(
     let app_data_dir = app.path().app_data_dir().map_err(|_| {
         crate::error::AppError::Unknown("Failed to determine app data directory".to_string())
     })?;
-    let bytes = crate::statements::pdf_storage::read_pdf(&app_data_dir, &statement_id).map_err(|_| {
-        crate::error::AppError::Unknown(
-            "This statement's PDF file could not be read".to_string(),
-        )
-    })?.ok_or_else(|| {
-        crate::error::AppError::Unknown(
-            "This statement's PDF file could not be found — please re-upload the file".to_string(),
-        )
-    })?;
+    let bytes = crate::statements::pdf_storage::read_pdf(&app_data_dir, &statement_id)
+        .map_err(|_| {
+            crate::error::AppError::Unknown(
+                "This statement's PDF file could not be read".to_string(),
+            )
+        })?
+        .ok_or_else(|| {
+            crate::error::AppError::Unknown(
+                "This statement's PDF file could not be found — please re-upload the file"
+                    .to_string(),
+            )
+        })?;
     // Awaiting instrument may have a password persisted in its source_json if it was prompted before blocking.
     let conn = pool
         .get()
@@ -1486,24 +1553,22 @@ pub async fn statements_submit_password(
     let app_data_dir = app.path().app_data_dir().map_err(|_| {
         crate::error::AppError::Unknown("Failed to determine app data directory".to_string())
     })?;
-    let pdf_bytes = crate::statements::pdf_storage::read_pdf(&app_data_dir, &statement_id).map_err(|_| {
-        crate::error::AppError::Unknown(
-            "This statement's PDF file could not be read".to_string(),
-        )
-    })?.ok_or_else(|| {
-        crate::error::AppError::Unknown(
-            "This statement's PDF file could not be found — please re-upload the file".to_string(),
-        )
-    })?;
+    let pdf_bytes = crate::statements::pdf_storage::read_pdf(&app_data_dir, &statement_id)
+        .map_err(|_| {
+            crate::error::AppError::Unknown(
+                "This statement's PDF file could not be read".to_string(),
+            )
+        })?
+        .ok_or_else(|| {
+            crate::error::AppError::Unknown(
+                "This statement's PDF file could not be found — please re-upload the file"
+                    .to_string(),
+            )
+        })?;
 
-    let result = try_user_password(
-        &statement_id,
-        &password,
-        &pdf_bytes,
-        pool.inner(),
-    )
-    .await
-    .map_err(|e| crate::error::AppError::Auth(e.to_string()))?;
+    let result = try_user_password(&statement_id, &password, &pdf_bytes, pool.inner())
+        .await
+        .map_err(|e| crate::error::AppError::Auth(e.to_string()))?;
 
     // NEVER log the password — only log the outcome
     match result {
@@ -1630,7 +1695,6 @@ pub async fn statements_submit_password(
                 .map_err(|e| crate::error::AppError::Db(e.to_string()))?
                 .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
 
-
             // Re-emit password_required so UI re-prompts without closing modal
             app.emit(
                 events::PASSWORD_REQUIRED,
@@ -1722,12 +1786,20 @@ pub async fn statements_retry_unprocessed(
 /// clicks, not to run a second, subtly different pipeline — so both drive
 /// `retry_one_unprocessed` and differ only in what they do with the result.
 enum RetryOutcome {
-    Unlocked { draft_id: String },
-    AwaitingInstrument { statement_id: String },
+    Unlocked {
+        draft_id: String,
+    },
+    AwaitingInstrument {
+        statement_id: String,
+    },
     /// No stored password opened it; the row stays in the queue untouched.
-    StillLocked { filename: String },
+    StillLocked {
+        filename: String,
+    },
     /// The retained PDF is gone from disk, so there is nothing to re-parse.
-    BytesExpired { filename: String },
+    BytesExpired {
+        filename: String,
+    },
 }
 
 impl RetryOutcome {
@@ -2004,7 +2076,9 @@ pub async fn statements_list_unprocessed(
 /// Formats `statement_drafts` rows for the "Awaiting Review" queue bucket.
 /// Separated from `statements_list_unprocessed` for the same directly-testable-
 /// without-Tauri-State reason `group_unprocessed_by_status` already is.
-fn group_drafts_for_review(rows: Vec<crate::db::statement_drafts::StatementDraftRow>) -> serde_json::Value {
+fn group_drafts_for_review(
+    rows: Vec<crate::db::statement_drafts::StatementDraftRow>,
+) -> serde_json::Value {
     let entries: Vec<serde_json::Value> = rows
         .into_iter()
         .map(|row| {
@@ -2032,17 +2106,31 @@ fn group_unprocessed_by_status(
     let mut failed = Vec::new();
 
     for row in rows {
-        let source_json = serde_json::from_str::<serde_json::Value>(&row.statement_source_json).ok();
-        let filename = source_json.as_ref()
+        let source_json =
+            serde_json::from_str::<serde_json::Value>(&row.statement_source_json).ok();
+        let filename = source_json
+            .as_ref()
             .and_then(|v| v["filename"].as_str().map(|s| s.to_string()))
             .unwrap_or_default();
-            
-        let sender = source_json.as_ref().and_then(|v| v["sender"].as_str().map(|s| s.to_string()));
-        let to = source_json.as_ref().and_then(|v| v["to"].as_str().map(|s| s.to_string()));
-        let subject = source_json.as_ref().and_then(|v| v["subject"].as_str().map(|s| s.to_string()));
-        let date = source_json.as_ref().and_then(|v| v["date"].as_str().map(|s| s.to_string()));
-        let snippet = source_json.as_ref().and_then(|v| v["snippet"].as_str().map(|s| s.to_string()));
-        let html = source_json.as_ref().and_then(|v| v["html"].as_str().map(|s| s.to_string()));
+
+        let sender = source_json
+            .as_ref()
+            .and_then(|v| v["sender"].as_str().map(|s| s.to_string()));
+        let to = source_json
+            .as_ref()
+            .and_then(|v| v["to"].as_str().map(|s| s.to_string()));
+        let subject = source_json
+            .as_ref()
+            .and_then(|v| v["subject"].as_str().map(|s| s.to_string()));
+        let date = source_json
+            .as_ref()
+            .and_then(|v| v["date"].as_str().map(|s| s.to_string()));
+        let snippet = source_json
+            .as_ref()
+            .and_then(|v| v["snippet"].as_str().map(|s| s.to_string()));
+        let html = source_json
+            .as_ref()
+            .and_then(|v| v["html"].as_str().map(|s| s.to_string()));
 
         // Issue #9: the consistent `<BANK>BANKXXXX<LAST4><MON><YYYY>` label.
         // Derived here, on read, rather than stored at row-creation time, so
@@ -2190,7 +2278,10 @@ pub async fn statements_get_draft_pdf(
 ) -> Result<String, crate::error::AppError> {
     crate::ipc::validation::validate_uuid("draft_id", &draft_id)?;
 
-    let conn = pool.get().await.map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     let id = draft_id.clone();
     let exists = conn
         .interact(move |c| crate::db::statement_drafts::select_by_id(c, &id))
@@ -2199,15 +2290,25 @@ pub async fn statements_get_draft_pdf(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?
         .is_some();
     if !exists {
-        return Err(crate::error::AppError::Unknown("Draft not found".to_string()));
+        return Err(crate::error::AppError::Unknown(
+            "Draft not found".to_string(),
+        ));
     }
 
     let app_data_dir = app.path().app_data_dir().map_err(|_| {
         crate::error::AppError::Unknown("Failed to determine app data directory".to_string())
     })?;
     let bytes = crate::statements::pdf_storage::read_pdf(&app_data_dir, &draft_id)
-        .map_err(|_| crate::error::AppError::Unknown("This statement's PDF file could not be read".to_string()))?
-        .ok_or_else(|| crate::error::AppError::Unknown("This statement's PDF file could not be found".to_string()))?;
+        .map_err(|_| {
+            crate::error::AppError::Unknown(
+                "This statement's PDF file could not be read".to_string(),
+            )
+        })?
+        .ok_or_else(|| {
+            crate::error::AppError::Unknown(
+                "This statement's PDF file could not be found".to_string(),
+            )
+        })?;
 
     // If the source PDF was password-protected, the user already gave that
     // password once during unlock (stage_parse_pipeline saves it against
@@ -2229,7 +2330,10 @@ pub async fn statements_get_draft(
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
 ) -> Result<serde_json::Value, crate::error::AppError> {
     crate::ipc::validation::validate_uuid("draft_id", &draft_id)?;
-    let conn = pool.get().await.map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     let id = draft_id.clone();
     let draft = conn
         .interact(move |c| crate::db::statement_drafts::select_by_id(c, &id))
@@ -2510,13 +2614,13 @@ pub(crate) async fn create_manual_transaction<R: tauri::Runtime>(
 
     if let crate::reconciliation::audit::DecisionType::AmbiguousPending(cluster_id) = &decision {
         let _ = crate::ipc::events::emit_event(
-            &app_handle,
+            app_handle,
             crate::ipc::events::AppEvent::ReconciliationCluster,
             serde_json::json!({ "cluster_id": cluster_id, "observation_id": obs_id }),
         );
     } else {
         let _ = crate::ipc::events::emit_event(
-            &app_handle,
+            app_handle,
             crate::ipc::events::AppEvent::TransactionCreated,
             serde_json::json!({ "observation_id": obs_id }),
         );
@@ -2567,6 +2671,7 @@ const CORRECTABLE_FIELDS: &[(&str, &str)] = &[
     ("best_event_time", "event_time"),
 ];
 
+#[allow(clippy::too_many_arguments)] // wide-but-flat domain signature; a params struct would add indirection without removing a single field
 fn apply_transaction_field_update(
     conn: &rusqlite::Connection,
     tx_id: &str,
@@ -2795,78 +2900,78 @@ pub async fn transactions_update(
 
     let contexts = conn
         .interact(move |conn| {
-        let tx_id = payload.transaction_id;
-        let contexts = apply_transaction_field_update(
-            conn,
-            &tx_id.to_string(),
-            payload.merchant_display_name,
-            payload.category_id,
-            payload.notes,
-            payload.location,
-            payload.amount_minor,
-            payload.direction,
-            payload.event_time,
-            payload.instrument_id,
-        )?;
+            let tx_id = payload.transaction_id;
+            let contexts = apply_transaction_field_update(
+                conn,
+                &tx_id.to_string(),
+                payload.merchant_display_name,
+                payload.category_id,
+                payload.notes,
+                payload.location,
+                payload.amount_minor,
+                payload.direction,
+                payload.event_time,
+                payload.instrument_id,
+            )?;
 
-        // G13 fix: resolve each tag name to an existing tag or create one,
-        // then replace this transaction's tag associations with that set.
-        if let Some(tag_names) = payload.tags {
-            let existing_tags = crate::db::tags::select_all(conn)
-                .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-            let mut tag_ids = Vec::new();
-            for name in &tag_names {
-                let trimmed = name.trim();
-                if trimmed.is_empty() {
-                    continue;
+            // G13 fix: resolve each tag name to an existing tag or create one,
+            // then replace this transaction's tag associations with that set.
+            if let Some(tag_names) = payload.tags {
+                let existing_tags = crate::db::tags::select_all(conn)
+                    .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+                let mut tag_ids = Vec::new();
+                for name in &tag_names {
+                    let trimmed = name.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    if let Some(existing) = existing_tags
+                        .iter()
+                        .find(|t| t.name.eq_ignore_ascii_case(trimmed))
+                    {
+                        tag_ids.push(existing.id.clone());
+                    } else {
+                        let new_id = uuid::Uuid::new_v4().to_string();
+                        crate::db::tags::insert(
+                            conn,
+                            &crate::db::tags::TagsRow {
+                                id: new_id.clone(),
+                                name: trimmed.to_string(),
+                                color_hex: None,
+                                created_at: Some(chrono::Utc::now().naive_utc()),
+                            },
+                        )
+                        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+                        tag_ids.push(new_id);
+                    }
                 }
-                if let Some(existing) = existing_tags
-                    .iter()
-                    .find(|t| t.name.eq_ignore_ascii_case(trimmed))
-                {
-                    tag_ids.push(existing.id.clone());
-                } else {
-                    let new_id = uuid::Uuid::new_v4().to_string();
-                    crate::db::tags::insert(
+
+                let existing_assocs =
+                    crate::db::tags::select_by_transaction_id(conn, &tx_id.to_string())
+                        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+                for assoc in existing_assocs {
+                    let _ = crate::db::tags::delete_transaction_tag(
                         conn,
-                        &crate::db::tags::TagsRow {
-                            id: new_id.clone(),
-                            name: trimmed.to_string(),
-                            color_hex: None,
+                        &assoc.transaction_id,
+                        &assoc.tag_id,
+                    );
+                }
+                for tag_id in tag_ids {
+                    let _ = crate::db::tags::insert_transaction_tag(
+                        conn,
+                        &crate::db::tags::TransactionTagsRow {
+                            transaction_id: tx_id.to_string(),
+                            tag_id,
                             created_at: Some(chrono::Utc::now().naive_utc()),
                         },
-                    )
-                    .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-                    tag_ids.push(new_id);
+                    );
                 }
             }
 
-            let existing_assocs =
-                crate::db::tags::select_by_transaction_id(conn, &tx_id.to_string())
-                    .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-            for assoc in existing_assocs {
-                let _ = crate::db::tags::delete_transaction_tag(
-                    conn,
-                    &assoc.transaction_id,
-                    &assoc.tag_id,
-                );
-            }
-            for tag_id in tag_ids {
-                let _ = crate::db::tags::insert_transaction_tag(
-                    conn,
-                    &crate::db::tags::TransactionTagsRow {
-                        transaction_id: tx_id.to_string(),
-                        tag_id,
-                        created_at: Some(chrono::Utc::now().naive_utc()),
-                    },
-                );
-            }
-        }
-
-        Ok::<_, crate::error::AppError>(contexts)
-    })
-    .await
-    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))??;
+            Ok::<_, crate::error::AppError>(contexts)
+        })
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))??;
 
     let _ = crate::ipc::events::emit_event(
         &app_handle,
@@ -2994,14 +3099,8 @@ fn apply_wrong_bank_report(
         )
         .ok();
 
-    crate::db::sender_bank_overrides::upsert(
-        conn,
-        domain,
-        bank_name,
-        None,
-        feedback_id.as_deref(),
-    )
-    .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    crate::db::sender_bank_overrides::upsert(conn, domain, bank_name, None, feedback_id.as_deref())
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     Ok(())
 }
 
@@ -3450,7 +3549,12 @@ pub async fn ipc_trigger_patch_sync(
 }
 
 #[tauri::command]
-pub fn log_frontend_event(target: Option<String>, level: String, message: String, data: Option<String>) {
+pub fn log_frontend_event(
+    target: Option<String>,
+    level: String,
+    message: String,
+    data: Option<String>,
+) {
     let t = target.as_deref().unwrap_or("frontend");
     let data_str = data.map(|d| format!(" | data: {}", d)).unwrap_or_default();
     match t {
@@ -4034,7 +4138,10 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(contexts.is_empty(), "a no-op edit must not enqueue learning work");
+        assert!(
+            contexts.is_empty(),
+            "a no-op edit must not enqueue learning work"
+        );
 
         let logged: i64 = conn
             .query_row(
@@ -4202,7 +4309,8 @@ mod tests {
         ))
         .unwrap();
 
-        for (src, name) in [(&commands_mod_src, "UploadResult")] {
+        {
+            let (src, name) = (&commands_mod_src, "UploadResult");
             let block = struct_field_block(src, name);
             assert!(
                 !block.contains("Vec<u8>"),
@@ -4710,9 +4818,12 @@ mod tests {
         let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
 
         seed_test_draft(&pool, "draft_discard", "inst_discard", "5555").await;
-        crate::statements::pdf_storage::store_pdf(&app_data_dir, "draft_discard", b"%PDF-fake").unwrap();
+        crate::statements::pdf_storage::store_pdf(&app_data_dir, "draft_discard", b"%PDF-fake")
+            .unwrap();
 
-        discard_staged_draft("draft_discard", &app_data_dir, &pool).await.unwrap();
+        discard_staged_draft("draft_discard", &app_data_dir, &pool)
+            .await
+            .unwrap();
 
         let conn = pool.get().await.unwrap();
         let gone = conn
@@ -4721,7 +4832,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(gone.is_none());
-        assert!(crate::statements::pdf_storage::read_pdf(&app_data_dir, "draft_discard").unwrap().is_none());
+        assert!(
+            crate::statements::pdf_storage::read_pdf(&app_data_dir, "draft_discard")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
