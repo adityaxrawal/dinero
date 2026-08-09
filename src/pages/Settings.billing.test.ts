@@ -3,11 +3,21 @@
 // Settings tab's IPC calls too, for zero extra signal on these two specific
 // claims -- matches the same pragmatic approach already used in the
 // licensing-backend's data_isolation.test.ts).
+//
+// Settings.tsx is now a thin section router, so the scan covers it plus every
+// section component under src/pages/settings/. The PCI check in particular is
+// stronger for it: it now proves no card field exists in *any* settings pane.
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-const source = readFileSync(join(__dirname, 'Settings.tsx'), 'utf-8');
+const SETTINGS_DIR = join(__dirname, 'settings');
+const source = [
+  readFileSync(join(__dirname, 'Settings.tsx'), 'utf-8'),
+  ...readdirSync(SETTINGS_DIR)
+    .filter((f) => /\.tsx?$/.test(f) && !f.includes('.test.'))
+    .map((f) => readFileSync(join(SETTINGS_DIR, f), 'utf-8')),
+].join('\n');
 
 describe('test_refresh_button_calls_license_refresh_ipc', () => {
   it('the Refresh License button wires to API.licensing.refresh()', () => {

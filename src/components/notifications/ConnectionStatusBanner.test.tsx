@@ -15,9 +15,9 @@ vi.mock('@/lib/ipc', async () => {
   };
 });
 
-const listenHandlers: Record<string, (payload: any) => void> = {};
+const listenHandlers: Record<string, (payload: unknown) => void> = {};
 vi.mock('@/hooks/useIpcListen', () => ({
-  useIpcListen: (event: string, handler: (payload: any) => void) => {
+  useIpcListen: (event: string, handler: (payload: unknown) => void) => {
     listenHandlers[event] = handler;
   },
 }));
@@ -29,14 +29,14 @@ describe('ConnectionStatusBanner', () => {
   });
 
   it('renders nothing when there are no active warnings', async () => {
-    (API.systemWarnings.getActive as any).mockResolvedValue([]);
+    vi.mocked(API.systemWarnings.getActive).mockResolvedValue([]);
     render(<ConnectionStatusBanner />);
     await waitFor(() => expect(API.systemWarnings.getActive).toHaveBeenCalled());
     expect(screen.queryByTestId('connection-status-banner')).toBeNull();
   });
 
   it('shows a late-mount warning fetched from get_active_system_warnings', async () => {
-    (API.systemWarnings.getActive as any).mockResolvedValue([
+    vi.mocked(API.systemWarnings.getActive).mockResolvedValue([
       { warning_type: 'low_ram', message: 'Low RAM detected', severity: 'info', action_hint: null },
     ]);
     render(<ConnectionStatusBanner />);
@@ -50,7 +50,7 @@ describe('ConnectionStatusBanner', () => {
   });
 
   it('prioritizes the highest-severity warning when multiple are active', async () => {
-    (API.systemWarnings.getActive as any).mockResolvedValue([
+    vi.mocked(API.systemWarnings.getActive).mockResolvedValue([
       { warning_type: 'low_ram', message: 'Low RAM', severity: 'info', action_hint: null },
       {
         warning_type: 'gmail_quota_exhausted',
@@ -75,7 +75,7 @@ describe('ConnectionStatusBanner', () => {
   });
 
   it('excludes keychain_denied/notification_denied -- owned by PermissionDeniedOverlay', async () => {
-    (API.systemWarnings.getActive as any).mockResolvedValue([
+    vi.mocked(API.systemWarnings.getActive).mockResolvedValue([
       {
         warning_type: 'keychain_denied',
         message: 'Keychain',
@@ -89,7 +89,7 @@ describe('ConnectionStatusBanner', () => {
   });
 
   it('reacts to a live system_warning event', async () => {
-    (API.systemWarnings.getActive as any).mockResolvedValue([]);
+    vi.mocked(API.systemWarnings.getActive).mockResolvedValue([]);
     render(<ConnectionStatusBanner />);
     await waitFor(() => expect(listenHandlers['system_warning']).toBeDefined());
 
@@ -109,7 +109,7 @@ describe('ConnectionStatusBanner', () => {
   });
 
   it('clears a warning on system_warning_cleared', async () => {
-    (API.systemWarnings.getActive as any).mockResolvedValue([
+    vi.mocked(API.systemWarnings.getActive).mockResolvedValue([
       { warning_type: 'low_ram', message: 'Low RAM', severity: 'info', action_hint: null },
     ]);
     render(<ConnectionStatusBanner />);

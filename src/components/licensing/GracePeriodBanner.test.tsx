@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import GracePeriodBanner, { isGraceUrgent } from './GracePeriodBanner';
+import GracePeriodBanner from './GracePeriodBanner';
+import { isGraceUrgent } from './isGraceUrgent';
 import { useLicenseStore } from '@/stores/useLicenseStore';
 
 const handleRetry = vi.fn();

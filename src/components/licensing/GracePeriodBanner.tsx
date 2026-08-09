@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { AlertTriangle, Loader2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { isGraceUrgent } from './isGraceUrgent';
 import { useLicenseStore } from '@/stores/useLicenseStore';
 import { useLicenseRefresh } from '@/hooks/useLicenseRefresh';
 
@@ -28,15 +29,10 @@ import { useLicenseRefresh } from '@/hooks/useLicenseRefresh';
  * `days_remaining` response field, Document 19 §14.1) counts down from 7,
  * so <=3 remaining means >=4 days have already elapsed.
  */
-const GRACE_URGENT_THRESHOLD_DAYS_REMAINING = 3;
 /// Placeholder until a real Razorpay customer portal URL is provisioned
 /// (Aditya's decision, 2026-07-22) -- swap for the real portal link/deep
 /// route once billing infra is live.
 const PAYMENT_METHOD_PORTAL_URL = 'https://dashboard.razorpay.com/customer-portal';
-
-export function isGraceUrgent(daysRemaining: number | null): boolean {
-  return daysRemaining !== null && daysRemaining <= GRACE_URGENT_THRESHOLD_DAYS_REMAINING;
-}
 
 export default function GracePeriodBanner() {
   const state = useLicenseStore((s) => s.state);
