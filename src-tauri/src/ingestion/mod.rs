@@ -1,3 +1,14 @@
+//! Gmail ingestion: fetching mail and turning it into transaction observations.
+//!
+//! The pipeline is polling to discover new messages, sender verification to
+//! establish the mail is genuinely from a bank, MIME sanitisation to extract a
+//! safe body, classification to decide whether it is financial at all, and
+//! finally extraction.
+//!
+//! Two properties run through the whole module. Ingestion is resumable, because
+//! a historical scan can span years of mail and must survive being interrupted;
+//! and it is idempotent, because the same message will be seen again on the next
+//! scan and must not produce a second transaction.
 pub mod auth_results;
 pub mod content_classifier;
 pub mod gmail_client;

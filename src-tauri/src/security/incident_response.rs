@@ -1,61 +1,26 @@
-//! TASK-AUTH-014: Implement Incident Response — Suspicious Activity Detection.
+//! Escalates security-relevant triggers into a response.
 //!
-//! Monitors the trigger events documented in Document 22 §19.5/Document 26
-//! §"Local Security Incident Response": repeated OAuth failures, repeated DB
-//! decryption failures, `PRAGMA integrity_check` failures, audit-log write
-//! failure. Response actions are all on-device: revoke the current session
-//! (TASK-AUTH-005 logout), disable the affected integration (Gmail disconnect
-//! via TASK-AUTH-006, for OAuth-related triggers specifically — a DB
-//! integrity failure has nothing to do with Gmail and must not disconnect
-//! it), and write an audit trail of the incident itself.
-//!
-//! Counters are in-memory only (Tauri-managed state), not persisted —
-//! surviving only for the current run. A security monitor watching for *this
-//! process's* database corruption/decryption failures has no reason to trust
-//! a persisted counter it would need to read from the very store it's
-//! watching for corruption.
-//!
-//! **Not wired into every trigger this task names:** "unexpected refresh
-//! spikes" and "audit-log write failure" detection are not implemented here
-//! — the former has no existing rate-tracking to hook into without a larger
-//! addition to `ingestion::polling`, and the latter is closer to
-//! unimplementable-by-construction than merely unwired: if `audit_log::insert`
-//! itself is failing, recording *that* failure by calling `audit_log::insert`
-//! again is circular. Wired: repeated DB decryption failures (invalid-token
-//! Keychain reads are the closest analogous "credential looks compromised"
-//! signal already surfaced by TASK-AUTH-004's degradation path) and
-//! `PRAGMA integrity_check` failures (TASK-DB-019).
-
+//! Triggers are deduplicated before acting, so a repeating condition -- a failing
+//! integrity check on every cycle -- produces one response rather than a storm of
+//! them. Response can revoke the local session, which is what makes the guard on
+//! write commands meaningful.
 use anyhow::Result;
 use deadpool_sqlite::Pool;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter};
 
-/// The trigger conditions Document 22 §19.5 names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TriggerKind {
     RepeatedOAuthFailure,
     RepeatedDbDecryptionFailure,
     IntegrityCheckFailure,
-    /// Doc 30 TASK-OPS-003: repeated Licensing Backend `/license/validate`
-    /// failures (network/server error, not a signature problem — that's
-    /// `SignatureVerificationFailure` below). Alert-only via
-    /// `emit_health_alert`, never `respond_to_incident` — the 7-day grace
-    /// period already protects access, so forcing a session logout over a
-    /// flaky connection to the Licensing Backend would be actively harmful.
     RepeatedLicenseValidateFailure,
-    /// A license JWT that failed RSA-256 signature verification against the
-    /// embedded public key — covers both a tampered response and a
-    /// production key-rotation mismatch ("signature-rotation issues" in
-    /// Document 30's TASK-OPS-003 task text). Alert-only, same reasoning as
-    /// above.
     SignatureVerificationFailure,
-    /// The local backend (SQLite pool) failed to answer a liveness check
-    /// after startup succeeded. Alert-only.
     BackendStartupFailure,
 }
 
 impl TriggerKind {
+    /// Stable identifier for the trigger kind.
     fn as_str(&self) -> &'static str {
         match self {
             Self::RepeatedOAuthFailure => "repeated_oauth_failure",
@@ -67,15 +32,12 @@ impl TriggerKind {
         }
     }
 
-    /// How many occurrences before this trigger fires a response. Document
-    /// 22/26 name the trigger *conditions* but not a specific count for
-    /// "repeated" — 3 is an engineering default (same class of judgment call
-    /// as Document 18 §4.21b's retention-window default), not sourced from
-    /// any document; adjust if a specific count is ever specified.
+    /// How many occurrences before this trigger escalates.
+    ///
+    /// Thresholds prevent a repeating condition producing a storm of responses: an
+    /// integrity check failing every cycle should escalate once, not hourly.
     fn threshold(&self) -> u32 {
         match self {
-            // A single corrupt DB, bad signature, or dead backend is already
-            // an incident worth surfacing — no reason to wait for a repeat.
             Self::IntegrityCheckFailure
             | Self::SignatureVerificationFailure
             | Self::BackendStartupFailure => 1,
@@ -84,15 +46,10 @@ impl TriggerKind {
     }
 }
 
-/// Tauri-managed in-memory counters, one per `TriggerKind`. Register via
-/// `app.manage(...)`.
 #[derive(Default)]
 pub struct IncidentMonitor(Mutex<std::collections::HashMap<TriggerKind, u32>>);
 
-/// Records one occurrence of `kind`. Returns `true` exactly on the tick that
-/// crosses the threshold (the counter resets immediately after firing, so a
-/// sustained failure condition triggers a response once per fresh run of
-/// failures, not on every single one).
+/// Records a trigger, returning whether it now warrants a response.
 pub fn record_trigger(monitor: &IncidentMonitor, kind: TriggerKind) -> bool {
     let mut counters = monitor.0.lock().unwrap();
     let count = counters.entry(kind).or_insert(0);
@@ -105,14 +62,7 @@ pub fn record_trigger(monitor: &IncidentMonitor, kind: TriggerKind) -> bool {
     }
 }
 
-/// Executes the on-device incident response for `kind`: writes an
-/// `audit_log` entry describing the incident, emits a `security_incident`
-/// event (for the frontend to prompt re-authentication), and revokes the
-/// current session — always, regardless of trigger, since any of these
-/// conditions is reason enough to require re-auth. For OAuth-specific
-/// triggers, additionally disconnects every connected Gmail account (Document
-/// 22 §19.5: "disable the affected integration ... if token theft
-/// suspected").
+/// Responds to an incident, up to revoking the local session.
 pub async fn respond_to_incident<R: tauri::Runtime>(
     kind: TriggerKind,
     app: &AppHandle<R>,
@@ -157,13 +107,7 @@ pub async fn respond_to_incident<R: tauri::Runtime>(
     Ok(())
 }
 
-/// Doc 30 TASK-OPS-003: the alert-only counterpart to `respond_to_incident`
-/// for `RepeatedLicenseValidateFailure` / `SignatureVerificationFailure` /
-/// `BackendStartupFailure` — these are operational health conditions, not
-/// suspected security compromises, so the response is a `system_warning`
-/// the user/support can see, never a forced session logout. Call after
-/// `record_trigger` returns `true`. A no-op for the three security-incident
-/// trigger kinds, which must go through `respond_to_incident` instead.
+/// Emits a health alert to the frontend.
 pub fn emit_health_alert<R: tauri::Runtime>(kind: TriggerKind, app: &AppHandle<R>) {
     let (severity, message) = match kind {
         TriggerKind::RepeatedLicenseValidateFailure => (
@@ -212,7 +156,6 @@ mod tests {
         assert!(!record_trigger(&monitor, TriggerKind::RepeatedOAuthFailure));
         assert!(record_trigger(&monitor, TriggerKind::RepeatedOAuthFailure));
 
-        // Counter reset after firing — takes another full run to fire again.
         assert!(!record_trigger(&monitor, TriggerKind::RepeatedOAuthFailure));
     }
 
@@ -234,16 +177,9 @@ mod tests {
             &monitor,
             TriggerKind::RepeatedDbDecryptionFailure
         ));
-        // OAuth failure at 1, DB decryption at 2 (threshold 3 for both) —
-        // neither has fired yet, and one more OAuth failure alone must not
-        // be enough to cross DB decryption's independent counter.
         assert!(!record_trigger(&monitor, TriggerKind::RepeatedOAuthFailure));
     }
 
-    /// Doc 30 TASK-OPS-003 acceptance: `test_alert_thresholds_trigger_on_critical_failures`.
-    /// Backend startup failure and signature-verification failure are, like
-    /// `IntegrityCheckFailure`, single-occurrence critical conditions —
-    /// there's no reason to wait for a repeat before alerting.
     #[test]
     fn test_alert_thresholds_trigger_on_critical_failures() {
         let monitor = IncidentMonitor::default();
@@ -253,9 +189,6 @@ mod tests {
             TriggerKind::SignatureVerificationFailure
         ));
 
-        // RepeatedLicenseValidateFailure follows the "repeated" (3-strike)
-        // convention shared with OAuth/DB-decryption failures, since a single
-        // failed validate call is routine on a flaky connection.
         let license_monitor = IncidentMonitor::default();
         assert!(!record_trigger(
             &license_monitor,

@@ -1,81 +1,57 @@
-//! Parses Gmail's `Authentication-Results` header (RFC 8601) into a
-//! structured SPF/DKIM/DMARC verdict, and uses it to cross-check Gate 1's
-//! domain-string verification.
+//! Parses the Authentication-Results header (SPF, DKIM, DMARC).
 //!
-//! Gate 1 previously verified a sender using only the `From` header's domain
-//! string (exact match / suffix / homoglyph / edit-distance against the
-//! registry) -- it never looked at whether the message's origin was
-//! cryptographically authenticated at all. `Authentication-Results` is
-//! already present in the exact `headers` array Gate 1 fetches for
-//! From/Subject at `format=metadata` (no extra API call), and DKIM in
-//! particular is a signature the sending domain's private key produced --
-//! unforgeable by a spoofer who doesn't hold that key. A `From:` header that
-//! string-matches a verified bank domain but whose SPF/DKIM/DMARC all failed
-//! is strong evidence the visible domain was forged upstream of Gmail's own
-//! authentication check (e.g. a compromised relay, a raw envelope spoof) --
-//! this closes that gap without weakening anything the string checks already
-//! catch (this module only ever downgrades a Verified* result to
-//! SpoofReject; it never promotes an otherwise-rejected sender).
-
+//! Turns the header into a verdict on whether the sending domain is authentic.
+//! This is what makes sender verification more than a name check: a spoofed
+//! From address fails these, whereas the domain's own mail passes.
 use crate::ingestion::gmail_client::MessagePartHeader;
 use crate::ingestion::verified_senders::SenderVerificationResult;
 use regex::Regex;
 use std::sync::OnceLock;
 
+/// Pattern matching an authentication verdict, compiled once.
 fn verdict_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"(?i)\b(spf|dkim|dmarc)=(\w+)").unwrap())
 }
 
+/// Pattern extracting the DKIM signing domain.
 fn dkim_domain_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    // `header.i=@domain` (DKIM identity) or `header.d=domain` (DKIM signing
-    // domain) -- either form appears depending on the signer.
     RE.get_or_init(|| Regex::new(r"(?i)header\.[id]=@?([\w.-]+)").unwrap())
 }
 
+/// Pattern extracting the DMARC-evaluated From domain.
 fn dmarc_from_domain_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"(?i)header\.from=([\w.-]+)").unwrap())
 }
 
-/// Structured SPF/DKIM/DMARC verdicts extracted from one
-/// `Authentication-Results` header. Each field is the raw lowercase verdict
-/// token (`"pass"`, `"fail"`, `"softfail"`, `"neutral"`, `"none"`, ...) --
-/// deliberately not an enum, since RFC 8601 defines more result codes than
-/// this pipeline needs to branch on individually.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AuthResults {
     pub spf: Option<String>,
     pub dkim: Option<String>,
     pub dmarc: Option<String>,
-    /// The DKIM signing domain (`header.d=`/`header.i=`), when present.
     pub dkim_domain: Option<String>,
-    /// The DMARC-aligned `From:` domain (`header.from=`), when present.
     pub dmarc_from_domain: Option<String>,
 }
 
 impl AuthResults {
-    /// DMARC's own pass/fail already accounts for SPF/DKIM alignment, so an
-    /// explicit `dmarc=fail` is the strongest single signal. Falling back to
-    /// "both SPF and DKIM explicitly failed" covers senders with no DMARC
-    /// policy published at all (`dmarc=none` or the header absent), which is
-    /// still common outside large banks.
+    /// Whether the message failed sender authentication.
+    ///
+    /// DMARC failing is decisive on its own, since it evaluates alignment with the
+    /// visible From domain. SPF and DKIM must both fail to count, because either one
+    /// legitimately fails on forwarded mail while the other still passes.
     pub fn authentication_failed(&self) -> bool {
         self.dmarc.as_deref() == Some("fail")
             || (self.spf.as_deref() == Some("fail") && self.dkim.as_deref() == Some("fail"))
     }
 }
 
-/// Parses the `Authentication-Results` header Gmail's own receiving MTA
-/// attaches to inbound mail. Only trusts a header whose authserv-id (the
-/// text before the first `;`) names a Google host -- an upstream/forwarding
-/// relay could otherwise inject its own fabricated `Authentication-Results`
-/// header before the message ever reaches Gmail, and Gate 1 must not treat a
-/// spoofer-supplied verdict as if Gmail itself produced it. Returns `None`
-/// when no such trusted header is present (message never authenticated by
-/// Gmail's own MTA, or the header format is unrecognized) -- callers must
-/// treat that as "no signal available", not as a failure.
+/// Parses SPF, DKIM and DMARC verdicts from the Authentication-Results header.
+///
+/// This header is added by the receiving provider, not the sender, which is
+/// precisely why it can be trusted: a spoofed From address fails these checks,
+/// whereas a bank's own mail passes them.
 pub fn parse_authentication_results(headers: &[MessagePartHeader]) -> Option<AuthResults> {
     let trusted = headers.iter().find(|h| {
         h.name.eq_ignore_ascii_case("authentication-results")
@@ -107,14 +83,10 @@ pub fn parse_authentication_results(headers: &[MessagePartHeader]) -> Option<Aut
     Some(result)
 }
 
-/// Cross-checks a domain-string-based Gate 1 verdict against the message's
-/// authentication results. Only ever downgrades: a `Verified*` result whose
-/// SPF/DKIM/DMARC all failed becomes `SpoofReject`; every other input
-/// (already-rejected results, or a `Verified*` result with no auth-results
-/// signal available at all) passes through unchanged. Never promotes an
-/// otherwise-rejected sender -- an attacker's own domain trivially passes
-/// its own SPF/DKIM, so a pass verdict proves nothing about legitimacy on
-/// its own, only a fail on an already-domain-verified sender is meaningful.
+/// Applies the parsed verdicts to a sender verification decision.
+///
+/// Authentication alone is not sufficient -- an authenticated domain can still be
+/// a lookalike -- so this adjusts the verdict rather than deciding it.
 pub fn apply_auth_results_check(
     result: SenderVerificationResult,
     headers: &[MessagePartHeader],

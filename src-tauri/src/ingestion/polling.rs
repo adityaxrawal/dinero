@@ -1,3 +1,11 @@
+//! The background loop that discovers new mail.
+//!
+//! Polls incrementally using Gmail's history id, so each cycle asks only what
+//! has changed since the last one rather than re-listing the mailbox. The saved
+//! history id is what makes that resumable across restarts.
+//!
+//! Cadence adapts to power state, since polling aggressively on battery costs
+//! the user real runtime for mail that will still be there in ten minutes.
 use deadpool_sqlite::Pool;
 use reqwest::StatusCode;
 use serde::Deserialize;
@@ -36,27 +44,33 @@ struct HistoryMessage {
     id: String,
 }
 
-/// Doubles a backoff duration, capped at 60s (Doc 30 TASK-GMAIL-001: "1s initial, 60s max, jittered").
+/// Doubles the backoff interval, capped at a minute.
+///
+/// The cap matters: without it repeated failures would push the retry interval
+/// out to hours, and a transient outage would look like a permanently stopped
+/// sync. `saturating_mul` prevents overflow at extreme values.
 pub(crate) fn next_backoff(current: Duration) -> Duration {
     current.saturating_mul(2).min(Duration::from_secs(60))
 }
 
-/// Applies +/-15% jitter to a backoff duration so concurrent retries don't synchronize.
+/// Applies +/-15% random jitter to an interval.
+///
+/// Stops multiple accounts that failed together from retrying in lockstep and
+/// hammering the API at the same instant. Entropy comes from the clock's
+/// sub-second component, which is sufficient here and avoids pulling in an RNG.
 pub(crate) fn jittered(d: Duration) -> Duration {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|t| t.subsec_nanos())
         .unwrap_or(0);
-    let factor = 0.85 + (nanos as f64 / 1_000_000_000.0) * 0.30; // in [0.85, 1.15]
+    let factor = 0.85 + (nanos as f64 / 1_000_000_000.0) * 0.30;
     Duration::from_secs_f64((d.as_secs_f64() * factor).max(0.0)).min(Duration::from_secs(60))
 }
 
-/// Background task that polls Gmail for new history events, normally every
-/// 60 seconds. TASK-DESK-010: this interval is throttled to 5 minutes while
-/// operating in background-only mode ("continue syncing when closed") on
-/// battery power below the configured threshold -- see
-/// `lifecycle::launch_agent::PollingIntervalState`, refreshed independently
-/// of this loop's own cycle.
+/// The long-running loop that discovers new mail.
+///
+/// Runs until cancelled at shutdown. Failures back off exponentially with jitter
+/// rather than retrying tightly against an API that is already refusing.
 pub async fn start_polling_loop<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     pool: Pool,
@@ -90,9 +104,6 @@ pub async fn start_polling_loop<R: tauri::Runtime>(
                     crate::ingestion::gmail_client::GMAIL_API_BASE_URL,
                 )
                 .await;
-                // Doc 30 TASK-GMAIL-010: gmail_poll_cycle_duration_ms — timed
-                // regardless of success/failure, since a stalled cycle is
-                // exactly the case this latency signal exists to catch.
                 crate::ingestion::gmail_telemetry::gmail_telemetry()
                     .record_poll_cycle_duration(cycle_start.elapsed());
                 if let Err(e) = result {
@@ -103,23 +114,19 @@ pub async fn start_polling_loop<R: tauri::Runtime>(
     }
 }
 
-/// Doc 30 TASK-API-009: "a manual 'Sync Now' bypassing the normal 30-90s
-/// wait, debounced to at most once per 10 seconds to prevent Gmail-quota
-/// abuse." No Document 19 contract exists for this command under any name
-/// -- built verbatim under Doc 30's own name, same documentation-gap
-/// precedent as several other TASK-API-005 through 008 commands.
 const FORCE_POLL_DEBOUNCE: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// Timestamp of the last manual poll, for rate limiting.
 fn last_force_poll_at() -> &'static std::sync::Mutex<Option<std::time::Instant>> {
     static CELL: std::sync::OnceLock<std::sync::Mutex<Option<std::time::Instant>>> =
         std::sync::OnceLock::new();
     CELL.get_or_init(|| std::sync::Mutex::new(None))
 }
 
-/// Pure, directly testable: given "now" and the last-poll instant, decides
-/// whether a new force-poll is allowed. Split out from the `#[tauri::command]`
-/// below (which also needs a live `AppHandle`/`Pool` to actually poll) so
-/// `test_force_poll_debounced` doesn't need to fabricate either.
+/// Whether a manual poll may run, given how recently one did.
+///
+/// Rate-limited because the button is user-facing and repeated presses would
+/// otherwise consume API quota to no benefit.
 pub(crate) fn is_force_poll_allowed(
     now: std::time::Instant,
     last: Option<std::time::Instant>,
@@ -131,6 +138,7 @@ pub(crate) fn is_force_poll_allowed(
 }
 
 #[tauri::command]
+/// Triggers an immediate poll, subject to the rate limit.
 pub async fn sync_force_poll_now<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     pool: tauri::State<'_, Pool>,
@@ -161,10 +169,10 @@ pub async fn sync_force_poll_now<R: tauri::Runtime>(
     Ok("synced".to_string())
 }
 
-/// Doc 30 TASK-GMAIL-009: iterates every active connected account
-/// independently — each account's checkpoint is keyed on its own `id`
-/// (`poll_single_account`), and one account's failure (caught here, not
-/// propagated) never blocks the next account in the loop from being polled.
+/// Polls every connected account.
+///
+/// A failure on one account is isolated, so one broken connection does not stop
+/// the others syncing.
 pub(crate) async fn poll_all_accounts<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     pool: &Pool,
@@ -191,13 +199,13 @@ pub(crate) async fn poll_all_accounts<R: tauri::Runtime>(
     Ok(())
 }
 
+/// Polls one account incrementally from its stored history id.
 pub(crate) async fn poll_single_account<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     pool: &Pool,
     account: &ConnectedAccountsRow,
     base_url: &str,
 ) -> anyhow::Result<()> {
-    // 1. Fetch valid token
     let token = match get_valid_access_token(app, pool, &account.id).await {
         Ok(t) => t,
         Err(e) => {
@@ -206,7 +214,6 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
         }
     };
 
-    // 2. Get last_history_id
     let mut current_history_id = None;
     if let Ok(conn) = pool.get().await {
         let acc_id = account.id.clone();
@@ -247,15 +254,8 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
         base_url.to_string(),
         refresher.clone(),
     );
-    // Doc 01 §10.4 (BG-02): the history-poll loop below built its own bare
-    // client, invisible to the Network Activity audit trail — routed through
-    // NetworkClient like every other Gmail call in this module.
     let network = NetworkClient::new(pool.clone());
 
-    // TASK-TXN-001: resolved once per poll cycle and threaded down into
-    // `MessageProcessor::process_message` so Layer 5 (local LLM fallback)
-    // can actually run — the previous hardcoded `None` app_dir meant Layer 5
-    // never fired in production regardless of RAM eligibility.
     let app_dir = app.path().app_data_dir().ok();
     let llm_eligible = app
         .try_state::<crate::startup::LlmEligibility>()
@@ -276,8 +276,6 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
         }
 
         let mut retry_count = 0;
-        // Doc 30 TASK-GMAIL-001: backoff must reach and hold a 60s cap before
-        // giving up for this cycle — 8 retries covers 1,2,4,8,16,32,60,60.
         let max_retries = 8;
         let mut backoff = Duration::from_secs(1);
 
@@ -299,13 +297,6 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                         handle_invalid_history_id(pool, &account.id).await?;
                         return Ok(());
                     } else if status == StatusCode::UNAUTHORIZED && !refreshed_after_401 {
-                        // TASK-AUTH-004: on HTTP 401, force a refresh and
-                        // retry once — the cached token looked valid by our
-                        // local expiry math but Google rejected it anyway
-                        // (external revocation, clock skew). Only one retry
-                        // per cycle: if the freshly refreshed token still
-                        // gets a 401, something deeper is wrong and this
-                        // should surface as an error, not loop forever.
                         refreshed_after_401 = true;
                         tracing::warn!(
                             "Gmail API returned 401 for account {} — forcing token refresh and retrying once",
@@ -337,8 +328,6 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                             }
                         }
                     } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-                        // Doc 30 TASK-GMAIL-010: aggregate counts only — no
-                        // response body, no account/email content.
                         if status == StatusCode::TOO_MANY_REQUESTS {
                             crate::ingestion::gmail_telemetry::gmail_telemetry()
                                 .record_quota_exhausted();
@@ -411,20 +400,8 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                             None,
                         ).await {
                             Ok(Some(crate::ingestion::message_processor::ProcessResult::TransactionAlert(extracted, boxed_obs, email_meta))) => {
-                                // Doc 15 §2 principle 7 / Doc 12 §6.2a: route to the Transaction
-                                // Queue rather than processing inline — same shared worker logic
-                                // as the historical-scan entry point.
                                 let job = crate::ingestion::queues::TransactionJob {
                                     obs: *boxed_obs,
-                                    // Doc 18's CHECK constraint only allows
-                                    // 'gmail_transaction'/'statement_pdf'/'manual'
-                                    // -- "realtime_poll" isn't one of them and
-                                    // would fail every insert (same class of
-                                    // bug already fixed in historical_scan.rs
-                                    // at TASK-DB-008: this field is evidence
-                                    // origin, not ingestion trigger mechanism,
-                                    // and live polling reads the same Gmail
-                                    // transaction alerts a historical scan does).
                                     source_pipeline: "gmail_transaction".to_string(),
                                     source_record_id: msg_id.clone(),
                                     connected_account_id: account.id.clone(),
@@ -440,7 +417,6 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                 }
                             }
                             Ok(Some(crate::ingestion::message_processor::ProcessResult::StatementEmail(extracted, email_meta))) => {
-                            // Doc 15 §2 principle 7 / Doc 12 §7.2: route to the Statement Queue.
                             if extracted.pdf_attachments.is_empty() {
                                 tracing::warn!(
                                     "Realtime poll: StatementEmail msg_id='{}' has no \
@@ -452,27 +428,16 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                 } else {
                                     for att in &extracted.pdf_attachments {
                                         let filename = &att.filename;
-                                        // Prefer bytes Gmail already inlined in the payload
-                                        // (`body.data`) — no network round-trip needed, and
-                                        // this is exactly the case that used to be silently
-                                        // dropped (see `PdfAttachmentMeta::inline_bytes`'s
-                                        // doc comment).
                                         let fetch_result: anyhow::Result<Vec<u8>> =
                                             if let Some(bytes) = &att.inline_bytes {
                                                 Ok(bytes.clone())
                                             } else if let Some(att_id) = &att.attachment_id {
                                                 gmail_client.fetch_attachment(&msg_id, att_id).await
                                             } else {
-                                                // push_pdf_attachment never inserts an entry
-                                                // with neither source, so this is
-                                                // unreachable in practice.
                                                 continue;
                                             };
                                         match fetch_result {
                                             Ok(pdf_bytes) => {
-                                                // audit_04 #4: the real content hash, checked
-                                                // for a prior import before anything is created
-                                                // or the user is prompted for a password.
                                                 let file_hash = match crate::statements::duplicate_check::hash_email_attachment_if_new(
                                                     &pdf_bytes, filename, &msg_id, pool,
                                                 )
@@ -482,17 +447,8 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                                     None => continue,
                                                 };
 
-                                                // Doc 18 §4.7: the `statements` row must exist in
-                                                // `queued` state before parsing begins, regardless
-                                                // of entry point — same invariant as manual upload.
                                                 let stmt_id = uuid::Uuid::new_v4().to_string();
 
-                                                // TASK-GMAIL: this path previously skipped
-                                                // password resolution entirely — an encrypted
-                                                // attachment was enqueued with no password and
-                                                // died in pdfium with PasswordError. Same choke
-                                                // point manual upload uses (see
-                                                // `resolve_statement_password`'s doc comment).
                                                 let password = match crate::statements::password::resolve_statement_password(
                                                     &stmt_id,
                                                     &pdf_bytes,
@@ -532,10 +488,6 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                                         })
                                                         .await;
                                                 }
-                                                // audit_04 #1: stage the PDF
-                                                // into encrypted on-disk
-                                                // storage instead of carrying
-                                                // it in the job.
                                                 if let Ok(dir) = app.path().app_data_dir() {
                                                     if let Err(e) =
                                                         crate::statements::pdf_storage::store_pdf(
@@ -561,8 +513,6 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                                     filename: filename.clone(),
                                                     file_hash,
                                                     stmt_id,
-                                                    // Doc 30 TASK-STMT-009: batch progress is a
-                                                    // manual-upload-batch concept only.
                                                     batch_progress: None,
                                                     password,
                                                     origin: "email_scan".to_string(),
@@ -590,9 +540,6 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                 }
                             }
                             Ok(Some(crate::ingestion::message_processor::ProcessResult::MandateEvent(extracted, mandate_extraction, event_type))) => {
-                                // dinero-docs/design-archive/specs/2026-07-18-mandate-tracking-design.md
-                                // §4.2: route to the Mandate Queue, same shared worker logic
-                                // as the historical-scan entry point.
                                 let job = crate::ingestion::queues::MandateJob {
                                     extraction: mandate_extraction,
                                     event_type,
@@ -639,6 +586,10 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
     Ok(())
 }
 
+/// Persists the Gmail history id marking how far this account has been read.
+///
+/// Written only after messages are successfully processed, so an interrupted poll
+/// resumes rather than skipping the mail it never handled.
 pub async fn save_history_id(
     pool: &Pool,
     account_id: &str,

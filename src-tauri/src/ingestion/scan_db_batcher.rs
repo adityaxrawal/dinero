@@ -1,20 +1,9 @@
-/// Batch DB writer for historical-scan bookkeeping records.
-///
-/// During a historical scan the pre-filter phase (Phase 1) examines every
-/// message and records:
-///   - a sender-domain sighting (one row per message in `sender_reputation`)
-///   - an audit-log rejection row (for messages that fail Gate 1 / Gate 2a)
-///   - an ignored-message row (for Noise/Unknown Gate 2a rejections)
-///
-/// Writing these one-at-a-time (one `pool.get() + conn.interact()` per
-/// message) was a major bottleneck: for 897 ignored emails that's ~2,700 DB
-/// round-trips serialised through SQLite's single-writer lock.
-///
-/// `ScanDbBatcher` accumulates these records in memory and flushes them in
-/// one SQLite transaction at each checkpoint interval (default: every 50
-/// processed messages). This reduces DB overhead from O(N) transactions to
-/// O(N/50) — a 50x reduction in write count, plus the per-transaction
-/// overhead of acquiring a write lock and syncing WAL.
+//! Batches the incidental writes a scan generates.
+//!
+//! Sender sightings, rejections and ignore records are produced per message and
+//! are individually trivial. Writing each one immediately would make database
+//! contention, not mail fetching, the limit on scan throughput, so they are
+//! accumulated and flushed together.
 use anyhow::Result;
 use chrono::Utc;
 use deadpool_sqlite::Pool;
@@ -48,11 +37,12 @@ pub struct ScanDbBatcher {
 }
 
 impl ScanDbBatcher {
+    /// An empty batcher.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Buffer a sender-domain sighting to be flushed later.
+    /// Queues a sender sighting.
     pub fn record_sighting(&mut self, domain: &str, tag: &str, is_rejection_candidate: bool) {
         self.sightings.push(PendingSighting {
             domain: domain.to_string(),
@@ -61,7 +51,7 @@ impl ScanDbBatcher {
         });
     }
 
-    /// Buffer an audit-log rejection row to be flushed later.
+    /// Queues a rejection record.
     pub fn record_rejection(&mut self, message_id: &str, reason: &str) {
         self.rejections.push(PendingRejection {
             message_id: message_id.to_string(),
@@ -69,7 +59,7 @@ impl ScanDbBatcher {
         });
     }
 
-    /// Buffer an ignored-noise record to be flushed later.
+    /// Queues an ignored-message record.
     pub fn record_ignored(
         &mut self,
         message_id: &str,
@@ -87,14 +77,16 @@ impl ScanDbBatcher {
         });
     }
 
-    /// Returns true if there are no buffered records pending.
+    /// Whether anything is queued.
     pub fn is_empty(&self) -> bool {
         self.sightings.is_empty() && self.rejections.is_empty() && self.ignored.is_empty()
     }
 
-    /// Flush all buffered records to the DB in a single transaction.
-    /// Best-effort: a DB error here must not abort the scan — these are
-    /// bookkeeping records, not financial data.
+    /// Writes the queued records in one transaction.
+    ///
+    /// Batching these matters because they are produced per message and are
+    /// individually trivial: written one at a time, database contention rather than
+    /// mail fetching would become the limit on scan throughput.
     pub async fn flush(&mut self, pool: &Pool) -> Result<()> {
         if self.is_empty() {
             return Ok(());
@@ -110,8 +102,6 @@ impl ScanDbBatcher {
                 .transaction()
                 .map_err(|e| anyhow::anyhow!("TX start: {}", e))?;
 
-            // 1. Flush sightings — upsert so repeated scans over overlapping
-            //    date ranges don't create duplicate rows.
             for s in &sightings {
                 let _ = crate::db::sender_reputation::record_sighting(&tx, &s.domain, &s.tag);
                 if s.is_rejection_candidate {
@@ -125,7 +115,6 @@ impl ScanDbBatcher {
                 }
             }
 
-            // 2. Flush audit-log rejections.
             for r in &rejections {
                 let row = crate::db::audit_log::AuditLogRow {
                     id: Uuid::new_v4().to_string(),
@@ -141,7 +130,6 @@ impl ScanDbBatcher {
                 let _ = crate::db::audit_log::insert(&tx, &row);
             }
 
-            // 3. Flush ignored-noise records.
             for ig in &ignored {
                 let row = crate::db::ignored_messages::IgnoredMessageRow::new(
                     &ig.message_id,

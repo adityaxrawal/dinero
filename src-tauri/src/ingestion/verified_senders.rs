@@ -1,12 +1,18 @@
+//! Establishes whether a message genuinely came from a bank.
+//!
+//! The primary defence against ingesting phishing mail as real transactions. A
+//! registry of known financial domains is combined with authentication results,
+//! since a display name and a convincing template cost an attacker nothing --
+//! only the authenticated sending domain is meaningful evidence.
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SenderVerificationResult {
-    VerifiedTransactionCandidate(String), // bank_name
-    VerifiedStatementCandidate(String),   // bank_name
+    VerifiedTransactionCandidate(String),
+    VerifiedStatementCandidate(String),
     VerifiedNoise,
-    UnverifiedReject(String), // String contains reason
-    SpoofReject(String),      // String contains reason
+    UnverifiedReject(String),
+    SpoofReject(String),
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -27,12 +33,14 @@ pub struct SenderValidator {
 }
 
 impl Default for SenderValidator {
+    /// Loads the registry bundled with the application.
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl SenderValidator {
+    /// Builds a validator over the verified-sender registry.
     pub fn new() -> Self {
         let registry_str = include_str!("verified_senders_registry.json");
         let registry: VerifiedSenderRegistry = serde_json::from_str(registry_str)
@@ -40,16 +48,10 @@ impl SenderValidator {
         Self { registry }
     }
 
-    /// Every apex domain in the bundled registry, deduped and sorted.
+    /// Every domain in the registry, used to scope Gmail queries.
     ///
-    /// Used to push Gate 1 server-side: a historical scan asks Gmail for mail
-    /// `from:` these domains rather than downloading metadata for the whole
-    /// mailbox and rejecting ~80% of it locally at full quota cost. Gmail's
-    /// `from:` matches subdomains and substrings, so genuine subdomains
-    /// (`alerts.hdfcbank.net`) and nesting-attack lookalikes
-    /// (`hdfcbank.net.evil.com`) are both still returned and still run through
-    /// the full local `verify_sender` gate — the filter narrows what we pay to
-    /// fetch, it never becomes the security decision.
+    /// Scoping by sender pushes the selection into Gmail's index, which is far
+    /// cheaper than fetching a date range and filtering locally.
     pub fn registry_domains(&self) -> Vec<String> {
         let mut domains: Vec<String> = self
             .registry
@@ -62,17 +64,7 @@ impl SenderValidator {
         domains
     }
 
-    /// Issue #9: the shortest name this registry knows the sender's bank by —
-    /// "SBI" rather than "State Bank of India" — for labelling a statement in
-    /// the Action Needed queue.
-    ///
-    /// Deliberately a separate lookup from `verify_sender` rather than a
-    /// refactor of it. That function's domain matching is load-bearing for
-    /// spoof rejection, and this one answers a purely cosmetic question; a
-    /// naming helper must never become a place where a security decision can
-    /// be accidentally changed. It is correspondingly read-only and grants
-    /// nothing: an attacker who gets a lookalike domain to resolve here wins
-    /// only a nicer label on a row that is still blocked.
+    /// Short institution name for a sender address, if recognised.
     pub fn short_name_for_sender(&self, email_address: &str) -> Option<String> {
         let domain = email_address.rsplit_once('@')?.1.trim().to_lowercase();
         let config = self
@@ -91,9 +83,7 @@ impl SenderValidator {
         )
     }
 
-    /// Every name any registered bank is known by, for matching an issuer in
-    /// free text when the sender domain is unrecognised (a forwarded
-    /// statement, or a manually uploaded file).
+    /// All known display names, used to spot lookalike senders.
     pub fn all_display_names(&self) -> Vec<String> {
         let mut names: Vec<String> = self
             .registry
@@ -111,7 +101,11 @@ impl SenderValidator {
         names
     }
 
-    /// Verifies the sender email address and display name against the registry
+    /// Decides whether a sender is a genuine financial institution.
+    ///
+    /// The registry establishes which domains are legitimate; a matching display name
+    /// on a different domain is the signature of a phishing attempt rather than
+    /// evidence in the sender's favour.
     pub fn verify_sender(
         &self,
         email_address: &str,
@@ -125,7 +119,6 @@ impl SenderValidator {
         let domain = email_parts[1].to_lowercase();
         let display_name_lower = display_name.map(|d| d.to_lowercase());
 
-        // 1. Check for exact match in registry
         if let Some(config) = self.registry.senders.iter().find(|s| s.domain == domain) {
             return match config.classification.as_str() {
                 "transaction_candidate" => {
@@ -138,20 +131,6 @@ impl SenderValidator {
             };
         }
 
-        // 2. Spoof detection: Domain is not verified, but looks similar or uses subdomains of verified domains
-
-        // Genuine subdomain of an already-verified apex (e.g.
-        // "alerts.hdfcbank.net" when "hdfcbank.net" is registered) is
-        // first-party infrastructure under that bank's own DNS -- SPF/DKIM
-        // for such subdomains are configured by the bank itself, so the
-        // suffix relationship is safe to trust and avoids requiring every
-        // subdomain rotation to be hand-added to the registry. This is
-        // distinct from a verified domain appearing as a substring anywhere
-        // else (e.g. "hdfcbank.net.scammer.com", handled below) -- the
-        // verified domain isn't at the suffix position there, so it can't be
-        // legitimate first-party infrastructure. Longest-matching registry
-        // domain wins when more than one is a suffix, so the most specific
-        // verified entry governs classification.
         let mut best_suffix_match: Option<&VerifiedSenderConfig> = None;
         for config in &self.registry.senders {
             if domain.ends_with(&format!(".{}", config.domain))
@@ -174,9 +153,6 @@ impl SenderValidator {
             };
         }
 
-        // True nesting attack: a verified domain appears as a substring but
-        // NOT at the suffix position -- e.g. "hdfcbank.net.scammer.com"
-        // contains "hdfcbank.net" in the middle, not at the end.
         for config in &self.registry.senders {
             if domain.contains(&config.domain) {
                 return SenderVerificationResult::SpoofReject(format!(
@@ -186,16 +162,6 @@ impl SenderValidator {
             }
         }
 
-        // Homoglyph / confusable-script detection via Unicode Technical
-        // Standard #39's skeleton algorithm (`unicode-security` crate) --
-        // the actual standard confusables table, rather than an 11-character
-        // hand-picked list (previously Cyrillic + one Roman numeral only).
-        // Two strings that render identically or near-identically map to the
-        // same skeleton regardless of which script(s) they borrow confusable
-        // glyphs from (Greek, full-width forms, etc. are all covered, not
-        // just Cyrillic) -- this is what plain string equality and even
-        // Levenshtein distance can miss once more than 2-3 characters are
-        // substituted from a different script.
         if !domain.is_ascii() {
             let candidate_skeleton: String = unicode_security::skeleton(&domain).collect();
             if let Some(config) = self.registry.senders.iter().find(|s| {
@@ -208,24 +174,12 @@ impl SenderValidator {
                 ));
             }
         }
-        // Punycode-encoded (IDN ACE) labels are inherently suspicious here —
-        // none of our legitimate registry domains are internationalized.
         if domain.split('.').any(|label| label.starts_with("xn--")) {
             return SenderVerificationResult::SpoofReject(
                 "Punycode-encoded domain (possible IDN homograph attack)".into(),
             );
         }
 
-        // Typo-squatting via length-normalized Damerau-Levenshtein similarity
-        // (Doc 30 TASK-GMAIL-004: "via strsim"). A flat edit-distance
-        // threshold (the previous `dist <= 2`) is miscalibrated across
-        // domain lengths: 2 edits out of a 6-char domain is a near-total
-        // rewrite (should NOT flag), while 2 edits out of a 20-char domain
-        // is a near-exact typo (should flag). `normalized_damerau_levenshtein`
-        // returns a 0..1 similarity already scaled by the longer string's
-        // length, and Damerau (vs plain Levenshtein) also catches adjacent
-        // transpositions ("hdfcbnak.com") as a single edit, the single most
-        // common real-world typo pattern that plain Levenshtein counts as two.
         const TYPOSQUAT_SIMILARITY_THRESHOLD: f64 = 0.85;
         for config in &self.registry.senders {
             let similarity = strsim::normalized_damerau_levenshtein(&domain, &config.domain);
@@ -237,7 +191,6 @@ impl SenderValidator {
             }
         }
 
-        // Display name spoofing (e.g., display name says "HDFC Bank" but domain is random)
         if let Some(dn) = &display_name_lower {
             for config in &self.registry.senders {
                 for valid_name in &config.display_names {
@@ -251,7 +204,6 @@ impl SenderValidator {
             }
         }
 
-        // 3. Fallback: Unknown sender
         SenderVerificationResult::UnverifiedReject("Unknown sender domain".into())
     }
 }

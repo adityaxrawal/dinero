@@ -1,9 +1,13 @@
+//! Typed client for the Gmail API.
+//!
+//! Fetch format matters and is chosen per call: metadata-only requests are far
+//! cheaper against the API quota and are used when deciding whether a message is
+//! worth retrieving in full.
 use anyhow::{Context, Result};
 use base64::{
     alphabet::URL_SAFE, engine::GeneralPurpose, engine::GeneralPurposeConfig, Engine as _,
 };
 
-// Define an engine that handles both padded and unpadded URL-safe base64
 const URL_SAFE_IGNORE_PAD: GeneralPurpose = GeneralPurpose::new(
     &URL_SAFE,
     GeneralPurposeConfig::new()
@@ -21,16 +25,8 @@ pub type TokenRefresher = Arc<dyn Fn() -> BoxFuture<'static, Result<String>> + S
 
 use crate::network_client::NetworkClient;
 
-/// Production Gmail API base URL. Tests inject a mockito server URL instead
-/// (same pattern as `LicensingClient::new`).
 pub const GMAIL_API_BASE_URL: &str = "https://gmail.googleapis.com";
 
-/// Doc 2026-07-26 mail scan performance: paces total Gmail quota-unit
-/// consumption (metadata + full fetches + search pages all draw from the
-/// same bucket) instead of only capping full-fetch *concurrency* — a
-/// concurrency cap assumes ~1s/request, which real Gmail requests (a few
-/// hundred ms) violate constantly, causing bursts well past the real
-/// 250-units/sec budget and the 429-storm this replaces.
 pub(crate) struct QuotaLimiter {
     burst_ceiling: f64,
     refill_per_sec: f64,
@@ -43,18 +39,12 @@ struct QuotaState {
 }
 
 impl QuotaLimiter {
-    /// Doc 2026-07-28 dev-scan-log-issues: caps how many units can ever be
-    /// available at once, regardless of the configured per-second budget --
-    /// a full-capacity bucket (the old behavior) let a cold start or a long
-    /// idle gap (e.g. mid-scan retry backoff) release the *entire*
-    /// per-second budget in one instant, which is exactly what a
-    /// steady-rate token bucket is supposed to prevent. 45 units is ~9
-    /// Full-format fetches (5 units each) worth of simultaneous
-    /// connections -- enough to keep throughput high without synchronizing
-    /// a burst large enough to trigger Gmail-side 429s/connection resets
-    /// (observed in production logs as "error sending request" storms
-    /// immediately after "Spawning fetch" bursts).
     const MAX_BURST_UNITS: f64 = 30.0;
+/// Builds a token-bucket limiter at the given refill rate.
+///
+/// Burst capacity is capped separately from the refill rate, so a long idle period
+/// cannot accumulate enough tokens to fire a burst large enough to trip Gmail's
+/// own rate limiting.
 
     fn new(units_per_sec: f64) -> Self {
         let burst_ceiling = units_per_sec.min(Self::MAX_BURST_UNITS);
@@ -67,9 +57,12 @@ impl QuotaLimiter {
             }),
         }
     }
+/// Waits until enough quota is available, then consumes it.
+///
+/// Tokens refill continuously from elapsed time rather than on a timer, so the
+/// limiter needs no background task. Loops rather than sleeping once, because
+/// several callers may wake to compete for the same refilled tokens.
 
-    /// Blocks until `cost` units are available, refilling based on elapsed
-    /// wall-clock (or, under test, virtual-paused) time since the last call.
     pub(crate) async fn acquire(&self, cost: f64) {
         loop {
             let wait = {
@@ -105,9 +98,6 @@ impl QuotaLimiter {
     }
 }
 
-/// Doc 30 TASK-GMAIL-002's 250/sec budget, kept at a 90% safety margin
-/// (225/sec) so normal jitter and clock granularity don't still clip the
-/// real ceiling.
 pub(crate) fn gmail_quota_limiter() -> &'static QuotaLimiter {
     static LIMITER: std::sync::OnceLock<QuotaLimiter> = std::sync::OnceLock::new();
     LIMITER.get_or_init(|| QuotaLimiter::new(225.0))
@@ -178,7 +168,6 @@ impl FetchFormat {
     }
 }
 
-/// Wrapper for Gmail API operations
 pub struct GmailClient {
     network: NetworkClient,
     access_token: tokio::sync::RwLock<String>,
@@ -187,10 +176,6 @@ pub struct GmailClient {
 }
 
 impl GmailClient {
-    /// Doc 01 §10.4 (BG-02): every Gmail API call must route through
-    /// `NetworkClient` so it's captured in the local Network Activity audit
-    /// trail — this used to build its own bare `reqwest::Client`, making
-    /// every Gmail call invisible to that log.
     pub fn new(
         access_token: String,
         db_pool: deadpool_sqlite::Pool,
@@ -204,9 +189,6 @@ impl GmailClient {
         )
     }
 
-    /// Same as `new`, but with an injectable base URL — used by tests to point
-    /// at a mockito server instead of the real Gmail API (same pattern as
-    /// `LicensingClient::new`).
     pub fn new_with_base_url(
         access_token: String,
         db_pool: deadpool_sqlite::Pool,
@@ -246,14 +228,6 @@ impl GmailClient {
                         tracing::warn!(operation, attempts, error = %e, "gmail request failed, retries exhausted");
                         return Err(e).context(format!("Failed to send {} request", operation));
                     }
-                    // Doc 2026-07-28 mail scan performance: a non-timeout
-                    // error here (e.g. "error sending request") means the
-                    // pooled connection reqwest picked was already dead --
-                    // reqwest evicts it and opens a fresh one on the very
-                    // next attempt, so there's nothing to back off from.
-                    // Sleeping 2-4s here is pure waste for a failure mode
-                    // that a same-instant retry already fixes; a real
-                    // request timeout is the one case worth spacing out.
                     if e.is_timeout() {
                         tracing::warn!(operation, attempts, error = %e, ?backoff, "gmail request timed out, retrying");
                         tokio::time::sleep(jittered(backoff)).await;
@@ -281,7 +255,6 @@ impl GmailClient {
                     match refresher().await {
                         Ok(new_token) => {
                             *self.access_token.write().await = new_token;
-                            // Retry immediately with new token
                             continue;
                         }
                         Err(e) => {
@@ -318,7 +291,6 @@ impl GmailClient {
                 continue;
             }
 
-            // Other client errors
             let error_text = res.text().await.unwrap_or_default();
             anyhow::bail!(
                 "{} failed with status {}: {}",
@@ -329,13 +301,6 @@ impl GmailClient {
         }
     }
 
-    /// Wraps `execute_with_retry` with a retry around body-read + JSON-parse.
-    /// A successful status doesn't guarantee a clean body — the connection
-    /// can still drop mid-transfer (`res.text()` fails) or Google can
-    /// occasionally serve a truncated/malformed payload behind a 200
-    /// (`serde_json::from_str` fails) — both transient, so on retryable
-    /// attempts remaining this re-issues the whole request (a consumed
-    /// `Response` can't be re-read) rather than failing outright.
     async fn execute_with_retry_and_parse<F, Fut, T>(
         &self,
         operation: &str,
@@ -386,12 +351,6 @@ impl GmailClient {
     }
 
     pub async fn fetch_message(&self, message_id: &str, format: FetchFormat) -> Result<Message> {
-        // Gmail bills `users.messages.get` at 5 quota units regardless of
-        // `format` -- `metadata` is cheaper in bandwidth, not in quota. Charging
-        // it 1 unit here made the local limiter believe it was using a fifth of
-        // the quota it actually spent, so a metadata-heavy scan sailed past
-        // Google's real 250 units/sec ceiling and drew server-side throttling
-        // and connection resets that surfaced as "error sending request".
         gmail_quota_limiter().acquire(5.0).await;
 
         let url = format!(
@@ -407,19 +366,6 @@ impl GmailClient {
         .await
     }
 
-    /// Executes a general search (e.g. q=after:YYYY/MM/DD before:YYYY/MM/DD) and returns all message IDs, handling pagination.
-    ///
-    /// This whole method is one long `await` from the caller's perspective —
-    /// for a wide date range on a large mailbox it can take many sequential
-    /// page fetches before returning at all, and the historical-scan UI has
-    /// no other progress signal during this phase (`scan_progress` normally
-    /// only fires once the full ID list is known), so the counters would sit
-    /// frozen at "0 / 0" for however long pagination takes. `on_page` is
-    /// invoked after every page with the running total found so far, so the
-    /// caller can emit a progress update the user can actually see moving.
-    /// `MAX_SEARCH_PAGES` additionally bounds how long an unreasonably wide
-    /// range (e.g. a decade) can page for at all, rather than continuing
-    /// indefinitely.
     pub async fn search_messages(
         &self,
         query: &str,
@@ -475,10 +421,6 @@ impl GmailClient {
         Ok(all_message_ids)
     }
 
-    /// Downloads a Gmail attachment by its `attachmentId` and returns the raw bytes.
-    ///
-    /// Gmail API returns large attachment data via a separate endpoint — the `fetch_message(Full)`
-    /// call only carries an `attachmentId` reference, not the bytes themselves (Doc 12 §7.2 step 1).
     pub async fn fetch_attachment(&self, message_id: &str, attachment_id: &str) -> Result<Vec<u8>> {
         let url = format!(
             "{}/gmail/v1/users/me/messages/{}/attachments/{}",
@@ -502,12 +444,6 @@ impl GmailClient {
         Ok(bytes)
     }
 
-    /// Doc 01 §8.1 C-05 (Doc 22 §5.2): the account's own email address, needed
-    /// to identify a connected account, obtained via the Gmail API's own
-    /// `users.getProfile` endpoint — which `gmail.readonly` alone already
-    /// grants — rather than Google's separate `oauth2/v2/userinfo` endpoint,
-    /// which requires the `openid`/`email`/`profile` scopes this app must
-    /// never request ("Gmail scope must remain `gmail.readonly` only").
     pub async fn get_profile(&self) -> Result<GmailProfile> {
         let url = format!("{}/gmail/v1/users/me/profile", self.base_url);
         self.execute_with_retry_and_parse("get_profile", |token| {
@@ -540,43 +476,32 @@ mod quota_limiter_tests {
 
     #[tokio::test(start_paused = true)]
     async fn acquire_waits_for_refill_when_bucket_drained() {
-        let limiter = QuotaLimiter::new(10.0); // 10 units/sec, capacity 10
-        limiter.acquire(10.0).await; // drains the full starting bucket
+        let limiter = QuotaLimiter::new(10.0);
+        limiter.acquire(10.0).await;
         let start = tokio::time::Instant::now();
-        limiter.acquire(5.0).await; // needs 0.5s of refill at 10/sec
+        limiter.acquire(5.0).await;
         assert!(start.elapsed() >= std::time::Duration::from_millis(500));
     }
 
     #[tokio::test(start_paused = true)]
     async fn acquire_never_exceeds_capacity_even_after_long_idle() {
         let limiter = QuotaLimiter::new(10.0);
-        limiter.acquire(10.0).await; // drain
-        tokio::time::advance(std::time::Duration::from_secs(3600)).await; // idle an hour
+        limiter.acquire(10.0).await;
+        tokio::time::advance(std::time::Duration::from_secs(3600)).await;
         let start = tokio::time::Instant::now();
-        limiter.acquire(10.0).await; // must not wait — capacity caps the refill
+        limiter.acquire(10.0).await;
         assert_eq!(start.elapsed(), std::time::Duration::ZERO);
     }
 
     #[tokio::test(start_paused = true)]
     async fn acquire_caps_the_burst_below_capacity_for_a_large_budget() {
-        // Doc 2026-07-28 dev-scan-log-issues: production's real budget
-        // (225 units/sec) is far above MAX_BURST_UNITS (30) -- this proves
-        // the *starting* bucket for a large budget is capped at 30, not the
-        // full 225. `acquire()`'s refill is `.min(self.burst_ceiling)` on
-        // every call, so tokens can structurally never exceed the ceiling --
-        // a request *above* it (the original version of this test asked for
-        // 31.0) can never be satisfied and spins in `acquire()`'s retry loop
-        // forever. Proving the cap instead by draining exactly the ceiling
-        // (must be instant) and then requesting one more unit (must have to
-        // wait -- if the starting bucket had really been the full 225, 195
-        // units would still be left and this would also be instant).
         let limiter = QuotaLimiter::new(225.0);
         let start = tokio::time::Instant::now();
-        limiter.acquire(30.0).await; // drains the capped starting bucket
+        limiter.acquire(30.0).await;
         assert_eq!(start.elapsed(), std::time::Duration::ZERO);
 
         let start = tokio::time::Instant::now();
-        limiter.acquire(1.0).await; // bucket empty; must wait for refill
+        limiter.acquire(1.0).await;
         assert!(
             start.elapsed() > std::time::Duration::ZERO,
             "starting bucket must be capped at MAX_BURST_UNITS, not the full 225/sec budget"

@@ -1,3 +1,12 @@
+//! Backfills months or years of mail on demand.
+//!
+//! The long-running counterpart to incremental polling, used at onboarding and
+//! when a user widens their date range. Because a scan can run for hours it is
+//! checkpointed continuously, cancellable, and resumable from where it stopped.
+//!
+//! The coverage audit exists to answer a question the progress counter cannot:
+//! whether a date range was genuinely scanned end to end, or whether a gap was
+//! left behind by an interruption.
 use chrono::Utc;
 use deadpool_sqlite::Pool;
 use serde::{Deserialize, Serialize};
@@ -14,42 +23,29 @@ use crate::ingestion::gmail_client::GmailClient;
 use crate::ingestion::message_processor::{MessageProcessor, ProcessResult};
 use crate::ingestion::oauth::get_valid_access_token;
 
-/// Doc 30 TASK-GMAIL-007: checkpoint every 5 processed messages.
 const CHECKPOINT_INTERVAL: usize = 5;
 
-/// Doc 19 §18 Scans group / Doc 30 TASK-API-009: `scans_cancel`. Keyed by
-/// `account_id` since up to 10 accounts (Doc 03 §8.2) can have concurrent
-/// scans. Checked once per checkpoint interval in `scans_historical`'s main
-/// loop (the same cadence `wait_while_paused` already uses) -- didn't exist
-/// at all before this task; a scan could previously only run to completion
-/// or fail, never be stopped mid-flight.
+/// Set of accounts whose scans have been asked to stop.
+///
+/// In-memory: a cancellation applies to the running scan, and a restart begins
+/// afresh from its checkpoint rather than inheriting a stale cancellation.
 fn cancelled_scans() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
     static CELL: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
         std::sync::OnceLock::new();
     CELL.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
 }
 
+/// Whether this account's scan has been cancelled.
 fn is_scan_cancelled(account_id: &str) -> bool {
     cancelled_scans().lock().unwrap().contains(account_id)
 }
 
+/// Clears a cancellation once the scan has actually stopped.
 fn clear_scan_cancellation(account_id: &str) {
     cancelled_scans().lock().unwrap().remove(account_id);
 }
 
-/// Blocks while the scan queue is paused. Returns `true` if a cancellation
-/// arrived for `account_id` while waiting.
-///
-/// audit_01 #4: this used to poll `SCAN_QUEUE_PAUSED` alone. The report
-/// called that a 5s "zombie window", but at the prefill call site it is
-/// unbounded — that loop runs *before* the main loop's 1s `cancel_poll`
-/// ticker exists, so pausing the queue and then cancelling left the scan
-/// spinning here forever, with Cancel doing nothing until someone
-/// un-paused. Returning on cancellation is what bounds it.
-///
-/// Deliberately does not call `clear_scan_cancellation` — it reports, and
-/// the caller's existing cancellation path does the clearing, emits the
-/// event, and sets `was_cancelled`. One place owns that sequence.
+/// Blocks while the scan is paused, reporting whether it was cancelled meanwhile.
 async fn wait_while_paused(account_id: &str) -> bool {
     loop {
         let paused =
@@ -60,21 +56,21 @@ async fn wait_while_paused(account_id: &str) -> bool {
         if is_scan_cancelled(account_id) {
             return true;
         }
-        // 1s, matching the main loop's `cancel_poll` ticker, so a paused scan
-        // cancels on the same bound as a running one.
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 }
 
 #[tauri::command]
+/// Requests cancellation of a running scan.
+///
+/// Cooperative: the flag is set here and the scan loop stops at its next
+/// checkpoint, so it halts at a consistent point rather than mid-write.
 pub async fn scans_cancel(account_id: String) -> Result<String, crate::error::AppError> {
     crate::ipc::validation::validate_account_id("account_id", &account_id)?;
     cancelled_scans().lock().unwrap().insert(account_id);
     Ok("cancel_requested".to_string())
 }
 
-/// Doc 19 §18 Scans group / Doc 30 TASK-API-009's `sync_get_scan_status`.
-/// Named acceptance test: `test_scan_status_reflects_checkpoint_state`.
 #[derive(Serialize)]
 pub struct ScanStatusResponse {
     pub status: String,
@@ -87,6 +83,7 @@ pub struct ScanStatusResponse {
     pub pending_enrichment: usize,
 }
 
+/// Projects a checkpoint into the status the frontend displays.
 fn checkpoint_to_status(checkpoint: Option<ProcessingCheckpointRow>) -> ScanStatusResponse {
     match checkpoint {
         None => ScanStatusResponse {
@@ -117,6 +114,7 @@ fn checkpoint_to_status(checkpoint: Option<ProcessingCheckpointRow>) -> ScanStat
 }
 
 #[tauri::command]
+/// Reports the current scan status for an account.
 pub async fn scans_status(
     account_id: String,
     pool: State<'_, Pool>,
@@ -134,14 +132,8 @@ pub async fn scans_status(
     Ok(checkpoint_to_status(checkpoint))
 }
 
-/// Doc 19 §18 Scans group's `scans_resume`. `scans_historical`'s own
-/// checkpoint-resume logic (a `"paused"`/`"failed"`/`"cancelled"` checkpoint
-/// picks up from `state.all_message_ids`/`state.processed_count` rather than
-/// re-querying Gmail) already makes re-invoking it with the same date range
-/// a true resume, not a restart -- so this only needs to recover that
-/// original `start_date`/`end_date` from the stored checkpoint before
-/// delegating, rather than duplicating `scans_historical`'s own body.
 #[tauri::command]
+/// Resumes a scan from its last checkpoint.
 pub async fn scans_resume<R: tauri::Runtime>(
     app: AppHandle<R>,
     pool: State<'_, Pool>,
@@ -169,36 +161,22 @@ pub async fn scans_resume<R: tauri::Runtime>(
     scans_historical(app, pool, account_id, state.start_date, state.end_date).await
 }
 
+/// Whether enough messages have been processed to warrant a checkpoint.
+///
+/// Checkpointing every message would dominate the scan's cost; too rarely and an
+/// interruption discards more work than necessary.
 fn should_checkpoint(batch_count: usize) -> bool {
     batch_count >= CHECKPOINT_INTERVAL
 }
 
-/// How many `process_message` tasks stay in flight at once.
-///
-/// This is no longer the throughput governor it once looked like: every
-/// `users.messages.get` costs 5 Gmail quota units against
-/// `gmail_quota_limiter()`'s 225 units/sec refill and 30-unit burst ceiling,
-/// so the limiter — not this constant — sets the real fetch rate (~45
-/// messages/sec). Raising it further just deepens the queue behind that
-/// limiter. It stays at 25 to keep enough work pipelined that extraction and
-/// DB writes overlap network waits.
-///
-/// Earlier revisions swung this between 50 and 12 trying to tame what looked
-/// like connection contention; that was the `dev_review` runtime freeze
-/// (see `NetworkClient::with_timeout`), not concurrency.
 const MAX_CONCURRENT_FETCHES: usize = 25;
 
-/// Longest `from:` clause we'll put in one Gmail `q` parameter, in chars.
-/// The query is percent-encoded into a GET URL, so the encoded form runs
-/// roughly 1.5x this; 1500 keeps a chunk comfortably inside Google's URL
-/// limit even in the worst case, and the ~204 bundled domains split into
-/// three requests.
 const MAX_SENDER_CLAUSE_CHARS: usize = 1500;
 
-/// Builds one or more Gmail search queries covering `domains`, each scoped to
-/// `date_range`. Returns the bare `date_range` when `domains` is empty, so a
-/// registry that somehow failed to load degrades to the old scan-everything
-/// behavior rather than silently matching nothing.
+/// Builds Gmail queries scoped to known financial sender domains.
+///
+/// Querying by sender is far cheaper than fetching a date range and filtering
+/// locally, since it moves the selection to Gmail's index.
 fn build_sender_scoped_queries(date_range: &str, domains: &[String]) -> Vec<String> {
     if domains.is_empty() {
         return vec![date_range.to_string()];
@@ -209,7 +187,6 @@ fn build_sender_scoped_queries(date_range: &str, domains: &[String]) -> Vec<Stri
     let mut chunk_len = 0usize;
 
     for domain in domains {
-        // +9 for the "from:" prefix and the " OR " separator.
         let cost = domain.len() + 9;
         if !chunk.is_empty() && chunk_len + cost > MAX_SENDER_CLAUSE_CHARS {
             queries.push(format_sender_query(date_range, &chunk));
@@ -226,6 +203,7 @@ fn build_sender_scoped_queries(date_range: &str, domains: &[String]) -> Vec<Stri
     queries
 }
 
+/// Formats one sender-scoped Gmail query.
 fn format_sender_query(date_range: &str, domains: &[&str]) -> String {
     let clause = domains
         .iter()
@@ -235,21 +213,10 @@ fn format_sender_query(date_range: &str, domains: &[&str]) -> String {
     format!("({clause}) {date_range}")
 }
 
-/// The `from:` prefilter alone is NOT equivalent to Gate 1.
+/// Builds a subject-based query to catch mail from unknown senders.
 ///
-/// Gate 1 has a third acceptance path beyond "registry domain" and "approved
-/// domain": a sender it would otherwise reject is promoted to
-/// `VerifiedTransactionCandidate("Unknown Bank")` when the domain has a prior
-/// `sender_reputation` sighting *and* its subject classifies as a transaction
-/// or balance update. That is how a bank missing from the bundled registry
-/// gets picked up at all. Filtering purely on `from:` would never fetch those
-/// messages, so this adds a subject-scoped query alongside the sender ones.
-///
-/// Deliberately not restricted to previously-seen domains: that set lives in
-/// the DB and can run to thousands of entries (every marketing sender ever
-/// scanned), which would blow the query budget for no benefit. The subject
-/// terms are the narrow half of the rescue condition; the local gate still
-/// applies the `domain_previously_seen` half to whatever comes back.
+/// The rescue pass: a bank whose domain is not yet known would be missed entirely
+/// by sender-scoped queries alone.
 fn build_rescue_subject_query(date_range: &str) -> String {
     let clause = crate::ingestion::content_classifier::RESCUE_SUBJECT_TERMS
         .iter()
@@ -259,38 +226,21 @@ fn build_rescue_subject_query(date_range: &str) -> String {
     format!("({clause}) {date_range}")
 }
 
-/// Result of `audit_scan_coverage` — proof (or disproof) that the
-/// server-side prefilter drops nothing Gate 1 would have accepted.
 #[derive(Debug, Serialize)]
 pub struct ScanCoverageAudit {
-    /// Messages in the date range with no sender/subject filter at all.
     pub unfiltered_total: usize,
-    /// Messages the real scan's filtered query set returns.
     pub filtered_total: usize,
-    /// `unfiltered - filtered`: what the prefilter skipped.
     pub excluded_total: usize,
-    /// Of those, how many were actually checked against Gate 1.
     pub excluded_checked: usize,
-    /// **The number that matters.** Excluded messages that Gate 1 *would*
-    /// have accepted. Anything above zero is mail the prefilter is losing.
     pub missed_total: usize,
-    /// Up to 50 missed messages, as `msg_id | sender | subject`, so a
-    /// non-zero `missed_total` can be investigated rather than just reported.
     pub missed_samples: Vec<String>,
 }
 
-/// Answers "how do I know the fast scan isn't missing real transactions?"
-/// empirically, against the caller's actual mailbox.
+/// Audits whether a date range was genuinely scanned end to end.
 ///
-/// Runs the old unfiltered date-range search AND the current filtered query
-/// set, diffs the two ID sets, then fetches metadata for every excluded ID and
-/// runs the real `evaluate_metadata_gate` over it — the same function the scan
-/// uses. `missed_total == 0` means the prefilter provably lost nothing for
-/// this mailbox and date range.
-///
-/// Deliberately expensive: it does the whole unfiltered metadata sweep the
-/// optimisation exists to avoid. It is a verification tool, not part of a
-/// scan.
+/// Answers what the progress counter cannot -- whether an interruption left a gap
+/// in coverage that would otherwise show up only as permanently missing
+/// transactions.
 pub async fn audit_scan_coverage(
     pool: &Pool,
     client: &GmailClient,
@@ -306,7 +256,6 @@ pub async fn audit_scan_coverage(
         inclusive_end.format("%Y-%m-%d")
     );
 
-    // Same domain set the real scan builds.
     let mut sender_domains =
         crate::ingestion::message_processor::get_sender_validator().registry_domains();
     if let Ok(conn) = pool.get().await {
@@ -353,7 +302,6 @@ pub async fn audit_scan_coverage(
         };
         excluded_checked += 1;
 
-        // Gate 1 reads reputation/approved state exactly this way.
         let domain =
             crate::ingestion::message_processor::MessageProcessor::extract_sender_domain(&msg);
         let (approved, overrides) = match (&domain, pool.get().await) {
@@ -416,9 +364,6 @@ struct ScanProgressPayload {
     error_message: Option<String>,
 }
 
-/// `pub`/pub fields for the same reason as `run_scan_batches` above --
-/// `tests/historical_scan_benchmark.rs` (Doc 30 TASK-QA-002) constructs this
-/// directly to drive a scan against a pre-built synthetic message-id list.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct ScanCheckpointState {
     pub start_date: String,
@@ -440,6 +385,7 @@ pub struct ScanCheckpointState {
 }
 
 #[tauri::command]
+/// Entry point that starts a historical scan for an account.
 pub async fn scans_historical<R: tauri::Runtime>(
     app: AppHandle<R>,
     pool: State<'_, Pool>,
@@ -449,8 +395,6 @@ pub async fn scans_historical<R: tauri::Runtime>(
 ) -> Result<String, crate::error::AppError> {
     crate::ipc::validation::validate_account_id("account_id", &account_id)?;
     crate::ipc::validation::validate_date_range(&start_date, &end_date)?;
-    // Doc 22 §11.5: LOCKED blocks "all writes, including new ingestion on both
-    // queues" — a historical scan is new ingestion.
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
     let pool = pool.inner().clone();
@@ -478,14 +422,6 @@ pub async fn scans_historical<R: tauri::Runtime>(
         ));
     }
 
-    // Doc 30 TASK-API-009 / Document 19: "scans_historical -- dedupe active
-    // scans via SCAN_ALREADY_RUNNING." Atomically checks-and-claims the
-    // in_progress slot in one statement (see `claim_checkpoint_in_progress`)
-    // rather than a separate read-then-later-write -- the old version only
-    // wrote `status = 'in_progress'` deep inside `run_scan`, after an
-    // awaited Gmail network round-trip, leaving a wide window in which two
-    // near-simultaneous calls for the same account could both pass a
-    // read-only check and both start scanning.
     let existing = conn
         .interact({
             let account_id_clone = account_id.clone();
@@ -504,9 +440,6 @@ pub async fn scans_historical<R: tauri::Runtime>(
         ClaimOutcome::Claimed(existing) => existing,
     };
 
-    // TASK-DESK-003: register with the global background-task indicator
-    // before the scan starts running. `account_id` is a stable task id here
-    // -- Doc 19 §3.6 already guarantees only one active scan per account.
     if let Some(registry) =
         app.try_state::<crate::background_tasks::indicator::BackgroundTaskRegistry>()
     {
@@ -533,9 +466,6 @@ pub async fn scans_historical<R: tauri::Runtime>(
         )
         .await;
 
-        // TASK-DESK-003: deregister on completion, success or failure --
-        // this is the signal the frontend removes the task on, not an
-        // inferred `current == total`.
         if let Some(registry) =
             app.try_state::<crate::background_tasks::indicator::BackgroundTaskRegistry>()
         {
@@ -556,7 +486,6 @@ pub async fn scans_historical<R: tauri::Runtime>(
         if let Err(e) = scan_result {
             tracing::error!("Historical scan failed: {}", e);
 
-            // Mark checkpoint as failed
             if let Ok(conn) = pool.get().await {
                 let _ = conn
                     .interact({
@@ -595,6 +524,7 @@ pub async fn scans_historical<R: tauri::Runtime>(
     Ok("Scan started".to_string())
 }
 
+/// Runs the scan, checkpointing as it progresses.
 async fn run_scan<R: tauri::Runtime>(
     app: AppHandle<R>,
     pool: Pool,
@@ -604,9 +534,6 @@ async fn run_scan<R: tauri::Runtime>(
     access_token: String,
     existing_checkpoint: Option<ProcessingCheckpointRow>,
 ) -> anyhow::Result<()> {
-    // Doc 19 §18 Scans group: `scans_resume`/a fresh `scans_historical` call
-    // for this account must not inherit a stale cancellation from a
-    // previous, already-finished run.
     clear_scan_cancellation(&account_id);
 
     let refresher = crate::ingestion::oauth::create_token_refresher(&app, &pool, &account_id);
@@ -637,7 +564,6 @@ async fn run_scan<R: tauri::Runtime>(
     };
 
     if state.all_message_ids.is_empty() {
-        // Gmail's `before:` operator is exclusive. To make `end_date` inclusive, we add 1 day.
         let parsed_end = chrono::NaiveDate::parse_from_str(&end_date, "%Y-%m-%d")
             .unwrap_or_else(|_| chrono::Utc::now().naive_utc().date());
         let inclusive_end = parsed_end + chrono::Duration::days(1);
@@ -648,18 +574,8 @@ async fn run_scan<R: tauri::Runtime>(
             inclusive_end.format("%Y-%m-%d")
         );
 
-        // Push Gate 1 server-side. Previously every message in the date range
-        // was fetched at `format=metadata` just to read its From header, and
-        // ~80% were then dropped as "Unknown sender domain" -- and Gmail
-        // charges the same 5 quota units for a metadata fetch as a full one,
-        // so that rejected majority was the single largest fixed cost in the
-        // scan. Asking Gmail for `from:` the known-sender set instead means we
-        // only pay for mail that can possibly matter.
         let mut sender_domains =
             crate::ingestion::message_processor::get_sender_validator().registry_domains();
-        // User-approved domains live in the DB, not the bundled registry, and
-        // Gate 1 honours them -- so the filter must too, or approving a sender
-        // would silently stop working for historical scans.
         if let Ok(conn) = pool.get().await {
             if let Ok(Ok(rows)) = conn
                 .interact(|c| crate::db::sender_reputation::select_approved_domains(c))
@@ -677,18 +593,6 @@ async fn run_scan<R: tauri::Runtime>(
             queries = queries.len(),
             "Scoping scan to known sender domains"
         );
-        // The search/pagination phase (`search_messages`) is one long
-        // `await` from here -- for a wide date range on a large mailbox it
-        // can take many sequential page fetches before returning at all,
-        // and `run_scan_batches` doesn't emit its first `scan_progress`
-        // until this whole phase is done and the real `total` is known.
-        // Without this, the UI's counters sit frozen at "0 / 0" for however
-        // long the search takes, indistinguishable from a genuine hang.
-        // `on_page` fires after every page with the running count found so
-        // far, so at minimum the numbers visibly move.
-        // Domain chunks are searched sequentially and their results unioned.
-        // `carried` keeps the UI's running total monotonic across chunks --
-        // each `search_messages` call reports a count starting from zero.
         let mut ids: Vec<String> = Vec::new();
         let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
         for query in &queries {
@@ -718,8 +622,6 @@ async fn run_scan<R: tauri::Runtime>(
                     );
                 })
                 .await?;
-            // A message from a sender matching two chunks would otherwise be
-            // processed (and counted) twice.
             for id in chunk {
                 if seen_ids.insert(id.clone()) {
                     ids.push(id);
@@ -769,11 +671,7 @@ async fn run_scan<R: tauri::Runtime>(
     run_scan_batches(app, pool, account_id, state, client).await
 }
 
-/// `pub` (rather than private, like `run_scan`) specifically so
-/// `tests/historical_scan_benchmark.rs` (Doc 30 TASK-QA-002) can drive the
-/// real batch/checkpoint/concurrency loop directly against a mocked
-/// `GmailClient`, without needing a full `scans_historical` OAuth+licensing
-/// call chain -- the exact seam this file's own internal tests already use.
+/// Processes the scan in batches, honouring pause and cancellation.
 pub async fn run_scan_batches<R: tauri::Runtime>(
     app: AppHandle<R>,
     pool: Pool,
@@ -788,19 +686,10 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
     let client = Arc::new(client);
     let pool_arc = Arc::new(pool.clone());
 
-    // Doc 2026-07-28 mail scan performance: pre-filter bookkeeping (sender
-    // sightings, audit-log rejections, ignored-noise rows) used to write one
-    // row at a time from inside every spawned `process_message` call --
-    // O(N) DB round-trips serialized through SQLite's single-writer lock.
-    // Batched here and flushed at the same cadence as the scan checkpoint
-    // (`should_checkpoint` below) instead.
     let scan_batcher: crate::ingestion::message_processor::ScanBatcherHandle = Arc::new(
         tokio::sync::Mutex::new(crate::ingestion::scan_db_batcher::ScanDbBatcher::new()),
     );
 
-    // TASK-TXN-001: resolved once per scan and threaded into every spawned
-    // `process_message` call so Layer 5 (local LLM fallback) can actually
-    // run during a historical scan — previously hardcoded to `None`.
     let app_dir = app.path().app_data_dir().ok();
     let llm_eligible = app
         .try_state::<crate::startup::LlmEligibility>()
@@ -818,7 +707,6 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
 
     let mut batch_start_time = std::time::Instant::now();
 
-    // Emit initial progress so the UI knows how many emails were fetched immediately
     let _ = crate::ipc::events::emit_event(
         &app,
         crate::ipc::events::AppEvent::ScanProgress,
@@ -837,6 +725,10 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
     );
 
     #[allow(clippy::too_many_arguments)]
+    /// Spawns the concurrent message-fetch task.
+    ///
+    /// Fetching runs ahead of processing so network latency and extraction overlap
+    /// rather than alternating.
     fn spawn_fetch(
         join_set: &mut JoinSet<(String, anyhow::Result<Option<ProcessResult>>)>,
         client: Arc<GmailClient>,
@@ -865,16 +757,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
 
     let mut ids_iter = to_process.into_iter().skip(processed_count);
 
-    // Doc 30 TASK-GMAIL-007: keep up to MAX_CONCURRENT_FETCHES tasks in
-    // flight at once. Priming here, then refilling one-for-one as each
-    // completes below (rather than spawning a single task and draining it
-    // to empty before spawning the next) is what actually makes the bound
-    // meaningful — the previous spawn-then-immediately-drain pattern here
-    // meant effective concurrency was always 1, regardless of the semaphore
-    // that used to gate it.
     for _ in 0..MAX_CONCURRENT_FETCHES {
-        // Cancelled while paused: stop prefilling and fall through to the main
-        // loop, whose `cancel_poll` arm owns the actual cancellation sequence.
         if wait_while_paused(&account_id).await {
             break;
         }
@@ -893,20 +776,8 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
         }
     }
 
-    // TASK-RT-CANCEL-RESPONSIVE: `join_set.join_next().await` alone only
-    // gets a chance to notice `is_scan_cancelled` once some in-flight fetch
-    // completes. If every currently in-flight task is stuck -- a Gmail
-    // rate-limit backoff sleep (`execute_with_retry`'s up-to-~14s
-    // exponential backoff), or a slow/unresponsive local LLM call during
-    // Layer 6 classification -- a `scans_cancel` request could go
-    // unnoticed for an unbounded amount of time, which is exactly the
-    // "clicked Cancel and it never stops" symptom this fixes. Racing
-    // `join_next()` against a 1s ticker bounds worst-case cancellation
-    // latency to ~1s no matter how slow or stuck any individual in-flight
-    // task is. The per-message check further down is left in place too --
-    // this is additive, not a replacement.
     let mut cancel_poll = tokio::time::interval(std::time::Duration::from_secs(1));
-    cancel_poll.tick().await; // first tick fires immediately; consume it up front
+    cancel_poll.tick().await;
 
     loop {
         let join_res = tokio::select! {
@@ -931,17 +802,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                 match result {
                     Ok(Some(ProcessResult::TransactionAlert(extracted, boxed_obs, email_meta))) => {
                         tracing::info!("Classified msg_id='{}' as Transaction", msg_id);
-                        // Doc 15 §2 principle 7 / Doc 12 §6.2a: route to the Transaction
-                        // Queue rather than processing inline — no code path may write an
-                        // observation directly, only via the queue's shared worker logic.
                         state.transactions_found += 1;
-                        // TASK-DB-008 fix: was "historical_scan" -- that
-                        // conflated *evidence origin* (what this field
-                        // means, Document 18 §4.4) with *ingestion
-                        // trigger mechanism* (already tracked separately
-                        // by `processing_checkpoints.job_type`). A
-                        // historical scan still reads Gmail transaction
-                        // alert messages, exactly like live polling.
                         let job = crate::ingestion::queues::TransactionJob {
                             obs: *boxed_obs,
                             source_pipeline: "gmail_transaction".to_string(),
@@ -963,9 +824,6 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                     }
                     Ok(Some(ProcessResult::StatementEmail(extracted, email_meta))) => {
                         tracing::info!("Classified msg_id='{}' as Statement", msg_id);
-                        // Doc 15 §2 principle 7 / Doc 12 §7.2: email-detected statements
-                        // route onto the same Statement Queue as manual uploads — no
-                        // lesser-validated path for either entry point.
                         state.statements_found += 1;
                         if extracted.pdf_attachments.is_empty() {
                             tracing::warn!(
@@ -976,19 +834,6 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                                 extracted.skipped_pdf_parts.join("; ")
                             );
                         } else {
-                            // Doc 2026-07-28 mail scan performance: attachment download
-                            // and password resolution used to run inline in this loop --
-                            // `resolve_statement_password` can spawn several `pdf_sidecar`
-                            // processes in sequence (one per stored password, each with
-                            // its own up-to-30s timeout), and this loop is the same
-                            // single-threaded consumer that drains every other fetch and
-                            // refills `MAX_CONCURRENT_FETCHES`. One slow password-protected
-                            // statement stalled fetching, checkpointing, and cancellation
-                            // for the *entire* scan, not just its own message -- real logs
-                            // showed 60-200s wall-clock freezes lining up exactly with
-                            // password prompts. Detaching it here lets this loop keep
-                            // draining/refilling while the statement resolves in the
-                            // background, the same fix already applied to Layer 6.
                             let client = Arc::clone(&client);
                             let pool = pool.clone();
                             let app = app.clone();
@@ -998,25 +843,16 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                             tokio::spawn(async move {
                                 for att in &attachments {
                                     let filename = &att.filename;
-                                    // Prefer bytes Gmail already inlined in the payload
-                                    // (`body.data`) — no network round-trip needed, and this
-                                    // is exactly the case that used to be silently dropped
-                                    // (see `PdfAttachmentMeta::inline_bytes`'s doc comment).
                                     let fetch_result: anyhow::Result<Vec<u8>> =
                                         if let Some(bytes) = &att.inline_bytes {
                                             Ok(bytes.clone())
                                         } else if let Some(att_id) = &att.attachment_id {
                                             client.fetch_attachment(&msg_id, att_id).await
                                         } else {
-                                            // push_pdf_attachment never inserts an entry with
-                                            // neither source, so this is unreachable in practice.
                                             continue;
                                         };
                                     match fetch_result {
                                         Ok(pdf_bytes) => {
-                                            // audit_04 #4: the real content hash, checked for
-                                            // a prior import before anything is created or the
-                                            // user is prompted for a password.
                                             let file_hash = match crate::statements::duplicate_check::hash_email_attachment_if_new(
                                                 &pdf_bytes, filename, &msg_id, &pool,
                                             )
@@ -1026,16 +862,8 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                                                 None => continue,
                                             };
 
-                                            // Doc 18 §4.7: the `statements` row must exist in
-                                            // `queued` state before parsing begins, regardless
-                                            // of entry point — same invariant as manual upload.
                                             let stmt_id = uuid::Uuid::new_v4().to_string();
 
-                                            // TASK-GMAIL: this path previously skipped password
-                                            // resolution entirely — an encrypted attachment was
-                                            // enqueued with no password and died in pdfium with
-                                            // PasswordError. Same choke point manual upload uses
-                                            // (see `resolve_statement_password`'s doc comment).
                                             let password = match crate::statements::password::resolve_statement_password(
                                                 &stmt_id,
                                                 &pdf_bytes,
@@ -1075,11 +903,6 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                                                     })
                                                     .await;
                                             }
-                                            // audit_04 #1: stage the PDF into
-                                            // encrypted on-disk storage instead
-                                            // of carrying it in the job; the
-                                            // worker reads it back under a
-                                            // concurrency permit.
                                             if let Ok(dir) = app.path().app_data_dir() {
                                                 if let Err(e) =
                                                     crate::statements::pdf_storage::store_pdf(
@@ -1105,8 +928,6 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                                                 filename: filename.clone(),
                                                 file_hash,
                                                 stmt_id,
-                                                // Doc 30 TASK-STMT-009: batch progress is a
-                                                // manual-upload-batch concept only.
                                                 batch_progress: None,
                                                 password,
                                                 origin: "email_scan".to_string(),
@@ -1142,9 +963,6 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                         event_type,
                     ))) => {
                         tracing::info!("Classified msg_id='{}' as Mandate", msg_id);
-                        // dinero-docs/design-archive/specs/2026-07-18-mandate-tracking-design.md
-                        // §4.2: route to the Mandate Queue, same shared worker logic
-                        // as the live-poll entry point.
                         state.mandate_events_found += 1;
                         let job = crate::ingestion::queues::MandateJob {
                             extraction: mandate_extraction,
@@ -1209,11 +1027,6 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
         if should_checkpoint(batch_count) {
             state.processed_count = processed_count;
 
-            // audit_01 #2: patch the counters in place instead of
-            // re-serializing the whole state — `all_message_ids` is in there
-            // and never changes after the search phase, so rebuilding it
-            // every 5 messages was pure write amplification. See
-            // `patch_scan_progress`.
             let key = account_id.clone();
             let (p, t, s, m, n, e, pe) = (
                 processed_count,
@@ -1234,9 +1047,6 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                     .await;
             }
 
-            // Flush the batched pre-filter bookkeeping (sightings,
-            // rejections, ignored-noise rows) at the same cadence as the
-            // checkpoint above rather than every message.
             if let Err(e) = scan_batcher.lock().await.flush(&pool).await {
                 tracing::warn!("scan_batcher flush failed (best-effort): {}", e);
             }
@@ -1270,14 +1080,8 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
             );
         }
 
-        // Returns early on cancellation, so the check below fires immediately
-        // instead of after the pause poll's next wake-up.
         wait_while_paused(&account_id).await;
 
-        // Doc 19 §18 Scans group / Doc 30 TASK-API-009: `scans_cancel`.
-        // Checked at the same checkpoint cadence as the pause check above
-        // rather than every single message, matching how `wait_while_paused`
-        // itself is only consulted here, not per-message.
         if is_scan_cancelled(&account_id) {
             clear_scan_cancellation(&account_id);
             was_cancelled = true;
@@ -1298,52 +1102,26 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
         }
     }
 
-    // Flush whatever's left in the batcher (< CHECKPOINT_INTERVAL trailing
-    // records, or anything buffered when the loop broke on cancellation)
-    // rather than losing it -- every checkpoint-cadence flush above except
-    // this final one is covered by `should_checkpoint`.
     if let Err(e) = scan_batcher.lock().await.flush(&pool).await {
         tracing::warn!("scan_batcher final flush failed (best-effort): {}", e);
     }
 
-    // Root cause of slow cancellation: `is_scan_cancelled` breaks this loop
-    // within ~1s (the `cancel_poll` race above), but up to
-    // `MAX_CONCURRENT_FETCHES` (50) `process_message` tasks are still
-    // running in the background at that point -- each potentially mid a
-    // Gmail retry sequence that can take up to ~51s
-    // (`gmail_client::execute_with_retry`'s 15s timeout x 3 attempts +
-    // backoff) and each pulling connections from the same shared,
-    // finite-size `pool` for its own DB work (sender reputation, audit log,
-    // extraction-ladder lookups). Left running, they keep contending for
-    // that pool right through the cancellation cleanup below (which also
-    // needs a connection from it), so the `scan_cancelled` event the UI is
-    // waiting on doesn't fire until that backlog happens to clear -- not
-    // because cancellation was detected slowly, but because nothing ever
-    // told those tasks to stop. `abort_all()` cuts them immediately (Tokio
-    // interrupts each at its next await point), instead of leaving them to
-    // run until `join_set`'s implicit drop at this function's end, which is
-    // *after* cleanup and event emission.
     join_set.abort_all();
 
     state.processed_count = processed_count;
 
     if was_cancelled {
-        // User requested to cancel and wipe progress so the next scan starts from scratch,
-        // but keep any successfully extracted transactions/statements.
         if let Ok(conn) = pool.get().await {
             let acct_id = account_id.clone();
             let msg_ids = state.all_message_ids.clone();
 
             let _ = conn.interact(move |c| {
                 if let Ok(tx) = c.transaction() {
-                    // 1. Delete checkpoint so progress is completely wiped
                     let _ = tx.execute(
                         "DELETE FROM processing_checkpoints WHERE job_type = 'historical_scan' AND job_key = ?",
                         rusqlite::params![acct_id],
                     );
 
-                    // 2. Wipe unresolved items generated by THIS scan's fetched messages
-                    // Chunking to stay well under SQLite's parameter limits
                     for chunk in msg_ids.chunks(900) {
                         let placeholders = vec!["?"; chunk.len()].join(", ");
 
@@ -1399,13 +1177,6 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
         }
     }
 
-    // A cancelled scan didn't actually complete -- `scan_completed` would
-    // misrepresent it to the UI (progress bar shows 100%, "Sync Now" button
-    // re-enables as if nothing is pending). Emits a dedicated `scan_cancelled`
-    // event instead so the frontend has a definitive signal that the scan
-    // has actually stopped -- previously nothing was emitted at all here,
-    // leaving the UI's "Scanning..." state with no way to ever learn the
-    // cancellation it requested had taken effect.
     let final_payload = ScanProgressPayload {
         account_id: account_id.clone(),
         processed: processed_count,
@@ -1438,22 +1209,15 @@ mod tests {
     use std::fs;
     use tauri::test::{mock_builder, mock_context};
 
-    /// audit_01 #4: a scan that is paused *and* cancelled must stop. Before
-    /// this, `wait_while_paused` polled only the pause flag, so the prefill
-    /// loop — which runs before the main loop's `cancel_poll` ticker exists —
-    /// spun here indefinitely and Cancel did nothing until someone un-paused.
     #[tokio::test]
     async fn paused_scan_still_observes_cancellation() {
         use std::sync::atomic::Ordering;
         let account_id = "acct_paused_cancel";
         let paused = &crate::commands::debug::SCAN_QUEUE_PAUSED;
 
-        // Not paused: returns immediately, and does not report cancellation.
         paused.store(false, Ordering::Relaxed);
         assert!(!wait_while_paused(account_id).await);
 
-        // Paused with a cancellation pending: must return `true` rather than
-        // sleeping until the pause is lifted.
         paused.store(true, Ordering::Relaxed);
         cancelled_scans()
             .lock()
@@ -1467,24 +1231,16 @@ mod tests {
         .expect("a cancelled scan must not block on the pause flag");
         assert!(cancelled);
 
-        // Reporting cancellation must not consume it -- the caller's own
-        // cancellation path is what clears the flag and emits the event.
         assert!(is_scan_cancelled(account_id));
 
         clear_scan_cancellation(account_id);
         paused.store(false, Ordering::Relaxed);
     }
 
-    /// The sender-scoped query is what stops the scan paying Gmail quota for
-    /// mail Gate 1 would reject anyway, so it has to cover every domain it was
-    /// given, keep each chunk inside the URL budget, and never silently match
-    /// nothing when the registry is empty.
     #[test]
     fn sender_scoped_queries_cover_every_domain_within_the_size_budget() {
         let date_range = "after:2026-05-28 before:2026-07-29";
 
-        // Empty registry must degrade to scanning everything, not to a query
-        // that matches no mail at all.
         assert_eq!(
             build_sender_scoped_queries(date_range, &[]),
             vec![date_range.to_string()]
@@ -1511,26 +1267,17 @@ mod tests {
             );
         }
 
-        // The subject rescue query must always be present -- without it, a
-        // bank missing from the registry can never be discovered.
         assert!(
             queries.iter().any(|q| q.contains("subject:(debited)")),
             "sender-scoped queries must still include the Gate 1 subject rescue"
         );
     }
 
-    /// Gate 1's subject rescue is the only way a bank absent from the bundled
-    /// registry ever gets picked up. The server-side prefilter can only be
-    /// lossless if its `subject:` terms cover every phrase that rescue keys
-    /// on, so a phrase added to the classifier without adding it here would
-    /// silently shrink what a scan can discover.
     #[test]
     fn subject_terms_cover_classifier_rescue_phrases() {
         use crate::ingestion::content_classifier::{ContentClass, ContentClassifier};
 
         for term in crate::ingestion::content_classifier::RESCUE_SUBJECT_TERMS {
-            // Every listed term must actually trigger the rescue classes, or
-            // it is dead weight in the query.
             let class = ContentClassifier::classify(term, "");
             assert!(
                 matches!(
@@ -1541,7 +1288,6 @@ mod tests {
             );
         }
 
-        // And the query must actually carry them.
         let q = build_rescue_subject_query("after:2026-01-01 before:2026-07-29");
         for term in crate::ingestion::content_classifier::RESCUE_SUBJECT_TERMS {
             assert!(
@@ -1551,11 +1297,6 @@ mod tests {
         }
     }
 
-    /// `run_scan_batches` now unconditionally sources `layer6_tx` from
-    /// `QueueHandles` (Doc 2026-07-26 mail scan performance), so any test
-    /// driving it through a bare `mock_builder()` app needs this managed or
-    /// `app.state::<QueueHandles>()` panics with "state() called before
-    /// manage()" even when no message in the test actually reaches Layer 6.
     fn test_queue_handles() -> crate::ingestion::queues::QueueHandles {
         let (transaction_tx, _) = tokio::sync::mpsc::channel(1);
         let (statement_tx, _) = tokio::sync::mpsc::channel(1);
@@ -1569,11 +1310,6 @@ mod tests {
         }
     }
 
-    /// Doc 30 TASK-GMAIL-007: pure, deterministic proof that the checkpoint
-    /// cadence is every 5 (not 10, the value the code used to have before
-    /// this fix — a wall-clock/DB-timing test can't reliably distinguish "a
-    /// checkpoint fired at 5" from "only the final one fired" once fetches
-    /// run concurrently, so this checks the actual threshold value directly).
     #[test]
     fn test_historical_scan_checkpoints_every_5() {
         for n in 0..CHECKPOINT_INTERVAL {
@@ -1587,9 +1323,6 @@ mod tests {
         assert!(should_checkpoint(CHECKPOINT_INTERVAL + 1));
     }
 
-    /// Doc 30 TASK-API-009 acceptance test: `scans_status` reflects the
-    /// real stored checkpoint state -- both "no checkpoint yet" and a
-    /// genuine in-progress one with real progress numbers.
     #[test]
     fn test_scan_status_reflects_checkpoint_state() {
         let not_started = checkpoint_to_status(None);
@@ -1648,11 +1381,6 @@ mod tests {
         assert_eq!(status.pending_enrichment, 3);
     }
 
-    /// Doc 30 TASK-GMAIL-007 / Doc 19 §3.6 / TASK-API-009: only one active
-    /// scan per account -- and the claim itself (not just a preceding
-    /// read) is what enforces it, so a second claim while the first is
-    /// still in_progress must be rejected even though both calls would see
-    /// the same "not in progress" state if they read at the same time.
     #[tokio::test]
     async fn test_concurrent_scan_claim_rejected() {
         let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
@@ -1661,7 +1389,6 @@ mod tests {
         let pool = init_db(db_path.clone()).await.expect("DB init failed");
         let conn = pool.get().await.unwrap();
 
-        // First claim on a brand-new job_key: succeeds, no prior checkpoint.
         let first = conn
             .interact(|c| claim_checkpoint_in_progress(c, "historical_scan", "acc_1"))
             .await
@@ -1669,7 +1396,6 @@ mod tests {
             .unwrap();
         assert!(matches!(first, ClaimOutcome::Claimed(None)));
 
-        // Second claim for the same job_key while still in_progress: rejected.
         let second = conn
             .interact(|c| claim_checkpoint_in_progress(c, "historical_scan", "acc_1"))
             .await
@@ -1677,7 +1403,6 @@ mod tests {
             .unwrap();
         assert!(matches!(second, ClaimOutcome::AlreadyInProgress));
 
-        // Mark it completed, then a fresh claim succeeds again.
         conn.interact(|c| {
             upsert_checkpoint(
                 c,
@@ -1706,12 +1431,6 @@ mod tests {
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
-    /// audit_01 #2: the incremental checkpoint stopped re-serializing the
-    /// whole `ScanCheckpointState` — which carries every message id in the
-    /// scan — just to bump some integers. The patched row has to stay
-    /// byte-compatible with what `ScanCheckpointState` deserializes, and the
-    /// id list has to survive untouched, or a resumed scan loses its work
-    /// queue.
     #[test]
     fn patching_scan_progress_updates_counters_without_touching_the_id_list() {
         let conn = crate::db::test_helpers::setup_test_db();
@@ -1760,8 +1479,6 @@ mod tests {
         assert_eq!(patched.errors, 1);
         assert_eq!(patched.pending_enrichment, 5);
 
-        // No row yet (e.g. a job key that never ran) must not error -- the
-        // initial upsert at scan start is what creates it.
         crate::db::processing_checkpoints::patch_scan_progress(
             &conn,
             "acct_missing",
@@ -1812,7 +1529,6 @@ mod tests {
 
         let client = GmailClient::new("fake_token".into(), pool.clone(), None);
 
-        // This will process all 7 messages. It should checkpoint at 5, and at 7 (completion).
         run_scan_batches(app, pool.clone(), account_id.clone(), state, client)
             .await
             .expect("run_scan_batches failed");
@@ -1835,14 +1551,6 @@ mod tests {
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
-    /// Doc 2026-07-28 dev-scan-log-issues: previously an exhausted-retry
-    /// fetch failure was only ever logged (`tracing::error!`), never
-    /// persisted anywhere queryable -- a transaction could vanish from a
-    /// scan with nothing user-visible beyond an incremented `errors`
-    /// counter. `GmailClient::new(..., None)` here has no mock server and
-    /// no token refresher, so every fetch immediately fails with 401
-    /// Unauthorized (no retry loop -- there's no refresher to retry with),
-    /// driving every message through the exact failure path this fixes.
     #[tokio::test]
     async fn test_exhausted_fetch_failure_is_persisted_to_scan_failed_messages() {
         let app = mock_builder()
@@ -1895,12 +1603,6 @@ mod tests {
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
-    /// Regression test: a cancelled scan previously emitted nothing at all
-    /// once its loop broke, leaving the frontend's "Scanning..." state with
-    /// no definitive signal the cancellation actually took effect. Must now
-    /// emit `scan_cancelled` (not `scan_completed`, which would misrepresent
-    /// a stopped-early scan as having finished) and delete the checkpoint, so
-    /// the next scan starts from scratch rather than resuming.
     #[tokio::test]
     async fn test_historical_scan_cancellation_emits_scan_cancelled_not_scan_completed() {
         use tauri::Listener;
@@ -1917,17 +1619,8 @@ mod tests {
         let db_path = temp_dir.join("test_scan_cancel.db");
         let pool = init_db(db_path.clone()).await.expect("DB init failed");
 
-        // `scans_cancel` validates the `gmail_<uuid>` shape (unlike the
-        // other tests in this module, which construct a `ScanCheckpointState`
-        // directly and never pass their plain "acc_..." id through that
-        // validator).
         let account_id = format!("gmail_{}", uuid::Uuid::new_v4());
 
-        // Pre-request cancellation. `run_scan_batches` is called directly
-        // here (bypassing `run_scan`'s own `clear_scan_cancellation` at scan
-        // start), so this flag is already set the first time the loop's
-        // per-checkpoint cancellation check runs, after the first
-        // `CHECKPOINT_INTERVAL` (5) messages are processed.
         scans_cancel(account_id.clone()).await.unwrap();
 
         let ids: Vec<String> = (0..7).map(|i| format!("msg_{i}")).collect();
@@ -1972,7 +1665,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Assert the checkpoint was completely deleted so progress starts from 0 next time
         assert!(cp_opt.is_none(), "Checkpoint should be deleted on cancel");
 
         let captured = captured_events.lock().unwrap();
@@ -2011,7 +1703,6 @@ mod tests {
             ids.push(format!("msg_{}", i));
         }
 
-        // Start from 5 processed
         let state = ScanCheckpointState {
             start_date: "2023-01-01".into(),
             end_date: "2023-01-31".into(),
@@ -2045,7 +1736,6 @@ mod tests {
         let final_state: ScanCheckpointState =
             serde_json::from_str(&cp.checkpoint_state_json).unwrap();
 
-        // Processed count should be 12 total, meaning it resumed and finished
         assert_eq!(final_state.processed_count, 12);
 
         let _ = fs::remove_dir_all(&temp_dir);
@@ -2101,7 +1791,6 @@ mod tests {
         };
 
         let conn = pool.get().await.unwrap();
-        // Insert first time
         conn.interact({
             let row = row.clone();
             move |c| crate::db::transaction_observations::insert_observation(c, &row).unwrap()
@@ -2109,7 +1798,6 @@ mod tests {
         .await
         .unwrap();
 
-        // Insert second time should fail with unique constraint on fingerprint
         let res = conn
             .interact({
                 let row2 = row.clone();

@@ -1,3 +1,14 @@
+//! Google OAuth: obtaining and refreshing Gmail access.
+//!
+//! Uses the PKCE authorisation-code flow, which is the correct choice for a
+//! desktop application: there is no server to hold a client secret, and PKCE
+//! binds the authorisation code to this specific request so an intercepted code
+//! is useless on its own.
+//!
+//! Tokens are held in the OS keychain rather than the database, so the encrypted
+//! database file alone never grants access to anyone's mailbox. The callback is
+//! validated against the state this app generated before any code is exchanged,
+//! which is what prevents an injected authorisation response.
 use anyhow::{Context, Result};
 use deadpool_sqlite::Pool;
 use oauth2::reqwest::async_http_client;
@@ -14,10 +25,10 @@ use url::Url;
 
 use crate::db::connected_accounts;
 
-/// Renders the loopback callback response shown in the user's browser tab
-/// after the Google OAuth redirect lands, styled to match the app's
-/// champagne/emerald-ink brand (see `src/App.css` `:root` tokens) rather than
-/// tiny_http's default bare-text response.
+/// The HTML page shown in the browser once OAuth completes.
+///
+/// Served by the temporary local callback server, so the user sees a result in
+/// the tab they were sent to rather than a blank page or a connection error.
 pub(crate) fn oauth_result_page(success: bool, message: &str) -> String {
     let escaped: String = message
         .chars()
@@ -132,44 +143,30 @@ const GOOGLE_CLIENT_ID: &str = match option_env!("GOOGLE_CLIENT_ID") {
     None => "",
 };
 const GOOGLE_CLIENT_SECRET: Option<&str> = option_env!("GOOGLE_CLIENT_SECRET");
-// Doc 21 §2.1/22 §6.2, Doc 24 §3 (H6 fix): matches the `com.dinero.app`
-// service name already used by db::crypto and statements::password —
-// this was still the pre-rebrand "finance-tracker" name.
 #[cfg(not(debug_assertions))]
 const KEYCHAIN_SERVICE: &str = "com.dinero.app";
-/// Pre-rebrand service name — `get_token` migrates any entry still stored
-/// under it to `KEYCHAIN_SERVICE` on first read, rather than orphaning a
-/// user's existing Gmail connection when this constant changed.
 #[cfg(not(debug_assertions))]
 const LEGACY_KEYCHAIN_SERVICE: &str = "finance-tracker";
 #[cfg(not(debug_assertions))]
 const KEYCHAIN_ACCOUNT_PREFIX: &str = "gmail-tokens";
 
-/// `oauth2::reqwest::async_http_client` builds its own internal reqwest
-/// client with no timeout of its own -- both OAuth token-exchange calls in
-/// this file (initial code exchange, and refresh-token exchange) wrap their
-/// request in `tokio::time::timeout` with this duration rather than relying
-/// on the HTTP client itself to ever give up. Matches `NetworkClient`'s
-/// `REQUEST_TIMEOUT` (`network_client.rs`) for the same class of call.
 const OAUTH_TOKEN_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// Doc 03 §8.2, Doc 40 §11: a license supports up to 10 connected Gmail
-/// accounts (2nd-10th gated to `ACTIVE` — enforced in `start_oauth_flow_async`).
 const MAX_CONNECTED_GMAIL_ACCOUNTS: i64 = 10;
 
-/// Doc 24 §2/§8: secrets live only in Keychain — never plaintext files, env
-/// vars, or config, under any build configuration. There is no debug-mode
-/// fallback to a plaintext temp file.
-///
-/// Doc 22 §5.4/§6.2: each connected Gmail account gets its own isolated
-/// Keychain entry, keyed by `account_id` — a single shared entry would have
-/// each new account's token silently overwrite the previous account's,
-/// making genuine multi-account support (Doc 03 §8.2) impossible in practice.
 #[cfg(not(debug_assertions))]
+/// Namespaces a keychain entry per connected account.
+///
+/// Multiple mailboxes can be connected, so each needs its own entry rather than
+/// overwriting a shared one.
 fn keychain_account_name(account_id: &str) -> String {
     format!("{}-{}", KEYCHAIN_ACCOUNT_PREFIX, account_id)
 }
 
+/// Development token storage: a plain file, bypassing the keychain.
+///
+/// Dev builds avoid the keychain because it prompts on every rebuild and treats
+/// each unsigned binary as a different application.
 #[cfg(debug_assertions)]
 fn save_token(account_id: &str, token_store: &TokenStore) -> Result<()> {
     let dev_token_path = std::env::temp_dir().join(format!("dinero_dev_token_{}.json", account_id));
@@ -177,6 +174,10 @@ fn save_token(account_id: &str, token_store: &TokenStore) -> Result<()> {
     Ok(())
 }
 
+/// Release token storage: the OS keychain.
+///
+/// Tokens never enter the database, so a leaked database file grants no access to
+/// anyone's mailbox.
 #[cfg(not(debug_assertions))]
 fn save_token(account_id: &str, token_store: &TokenStore) -> Result<()> {
     let entry = Entry::new(KEYCHAIN_SERVICE, &keychain_account_name(account_id))
@@ -185,6 +186,7 @@ fn save_token(account_id: &str, token_store: &TokenStore) -> Result<()> {
     Ok(())
 }
 
+/// Reads the development token from disk.
 #[cfg(debug_assertions)]
 fn get_token(account_id: &str) -> Result<String> {
     let dev_token_path = std::env::temp_dir().join(format!("dinero_dev_token_{}.json", account_id));
@@ -194,6 +196,7 @@ fn get_token(account_id: &str) -> Result<String> {
     Err(anyhow::anyhow!("No matching entry found in secure storage"))
 }
 
+/// Reads the release token from the keychain.
 #[cfg(not(debug_assertions))]
 fn get_token(account_id: &str) -> Result<String> {
     let entry = Entry::new(KEYCHAIN_SERVICE, &keychain_account_name(account_id))
@@ -202,8 +205,6 @@ fn get_token(account_id: &str) -> Result<String> {
         return Ok(token);
     }
 
-    // H6 fix: fall back to the pre-rebrand service name and migrate the
-    // entry forward so it isn't silently orphaned by the rename above.
     let legacy_entry = Entry::new(LEGACY_KEYCHAIN_SERVICE, &keychain_account_name(account_id))
         .map_err(|e| anyhow::anyhow!("Keyring entry error: {}", e))?;
     let token = legacy_entry
@@ -221,18 +222,22 @@ fn get_token(account_id: &str) -> Result<String> {
     Ok(token)
 }
 
+/// Deletes the development token file.
 #[cfg(debug_assertions)]
 fn delete_token(account_id: &str) {
     let dev_token_path = std::env::temp_dir().join(format!("dinero_dev_token_{}.json", account_id));
     let _ = std::fs::remove_file(dev_token_path);
 }
 
+/// Deletes the release token from the keychain.
+///
+/// Errors are ignored: this runs during disconnect, where an already-absent
+/// entry is the desired end state.
 #[cfg(not(debug_assertions))]
 fn delete_token(account_id: &str) {
     if let Ok(entry) = Entry::new(KEYCHAIN_SERVICE, &keychain_account_name(account_id)) {
         let _ = entry.delete_credential();
     }
-    // Best-effort cleanup of a not-yet-migrated legacy entry (H6 fix).
     if let Ok(legacy_entry) =
         Entry::new(LEGACY_KEYCHAIN_SERVICE, &keychain_account_name(account_id))
     {
@@ -240,14 +245,10 @@ fn delete_token(account_id: &str) {
     }
 }
 
-/// Doc 28 §4.4 step 2 ("Reset App Data" full wipe): revokes every connected
-/// Gmail account's OAuth token server-side via Google's revoke endpoint — not
-/// just deleting the local Keychain copies (`auth_google_disconnect`'s per-account
-/// behavior) — then clears each Keychain entry regardless of whether the
-/// network call succeeded, per the doc's "Local Wipe Priority" rule (§4.4:
-/// local wipe proceeds even if a remote call fails or the device is offline).
-/// Iterates every row in `connected_accounts`, not just one, since Doc 03
-/// §8.2 allows up to 10 simultaneously-connected accounts.
+/// Revokes access for every connected account.
+///
+/// Revokes at Google rather than only deleting local tokens, so access genuinely
+/// ends instead of a working token being left behind.
 pub async fn revoke_gmail_access(pool: &Pool) {
     let accounts = match pool.get().await {
         Ok(conn) => conn
@@ -259,8 +260,6 @@ pub async fn revoke_gmail_access(pool: &Pool) {
         Err(_) => Vec::new(),
     };
 
-    // Doc 01 §10.4 (BG-02): routed through NetworkClient so this revocation
-    // call is captured in the local Network Activity audit trail.
     let network = crate::network_client::NetworkClient::new(pool.clone());
 
     for account in &accounts {
@@ -269,11 +268,7 @@ pub async fn revoke_gmail_access(pool: &Pool) {
     }
 }
 
-/// Calls Google's revoke endpoint for one account's stored access token.
-/// Best-effort/non-fatal by design (Doc 28 §4.4's "Local Wipe Priority" —
-/// shared by both the full-wipe path above and TASK-AUTH-006's single-account
-/// disconnect below): local cleanup must still complete even if this fails
-/// or the device is offline.
+/// Calls Google's revocation endpoint for one account.
 async fn revoke_single_account_with_google(
     network: &crate::network_client::NetworkClient,
     account_id: &str,
@@ -321,15 +316,12 @@ pub struct TokenStore {
     pub expires_at: u64,
 }
 
-/// H9 fix: `redirect_port` is the OS-assigned ephemeral port the local
-/// callback server is actually listening on (RFC 8252 §7.3 — loopback OAuth
-/// redirect URIs may use any port), not a hardcoded value that could already
-/// be in use by another process. Refresh-token exchanges (`get_valid_access_token`)
-/// also go through this function, but `redirect_uri` is never sent as part of
-/// a `refresh_token` grant (RFC 6749 §6) — the port passed there is inert.
+/// Builds the OAuth client for the PKCE authorisation-code flow.
+///
+/// PKCE is the correct choice for a desktop app: there is no server to hold a
+/// client secret, and the challenge binds the authorisation code to this specific
+/// request, so an intercepted code is useless on its own.
 pub fn get_oauth_client(redirect_port: u16) -> Result<BasicClient> {
-    // Google's Desktop App OAuth clients still require the client_secret to be sent during
-    // token exchange, even though it's not a true secret for distributed apps.
     Ok(BasicClient::new(
         ClientId::new(GOOGLE_CLIENT_ID.to_string()),
         GOOGLE_CLIENT_SECRET.map(|s| oauth2::ClientSecret::new(s.to_string())),
@@ -344,17 +336,12 @@ pub fn get_oauth_client(redirect_port: u16) -> Result<BasicClient> {
     ))?))
 }
 
-/// Doc 30 TASK-AUTH-001: the loopback listener times out after 5 minutes if
-/// the user closes the browser without completing consent.
 const OAUTH_CALLBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
-/// Blocks (synchronously — call from `spawn_blocking`) waiting for the OAuth
-/// redirect on `server`, bounded by `timeout`. `recv_timeout` bounds the wait
-/// itself, so the calling thread terminates on its own once the deadline
-/// passes rather than being left blocked indefinitely in `incoming_requests()`
-/// with no way to unblock it from the async side. Returns `Err` with the
-/// message `"oauth_timeout"` on timeout — matching `AppError::Auth`'s
-/// expected variant once the caller maps it at the IPC boundary.
+/// Runs a short-lived local server awaiting the OAuth redirect.
+///
+/// Bound to loopback only, and torn down as soon as the callback arrives or the
+/// wait times out -- it exists purely to receive one redirect.
 fn wait_for_oauth_callback(
     server: &Server,
     expected_state: &str,
@@ -390,8 +377,6 @@ fn wait_for_oauth_callback(
                         }
                     };
                 }
-                // Not the callback request (e.g. a favicon probe) — keep
-                // waiting for the real one within the remaining budget.
             }
             Ok(None) => anyhow::bail!("oauth_timeout"),
             Err(e) => anyhow::bail!("OAuth callback server error: {}", e),
@@ -399,6 +384,11 @@ fn wait_for_oauth_callback(
     }
 }
 
+/// Validates the callback and extracts the authorisation code.
+///
+/// The state parameter must match the value this app generated. Without that
+/// check an attacker could feed in their own authorisation response and have the
+/// app bind the wrong account.
 pub fn validate_oauth_callback(url: &str, expected_state: &str) -> Result<String> {
     let parsed_url = Url::parse(&format!("http://localhost{}", url)).unwrap();
     let mut code = None;
@@ -424,6 +414,7 @@ pub fn validate_oauth_callback(url: &str, expected_state: &str) -> Result<String
 }
 
 #[tauri::command]
+/// Whether any Gmail account is currently connected.
 pub async fn is_gmail_connected(
     pool: tauri::State<'_, Pool>,
 ) -> Result<bool, crate::error::AppError> {
@@ -448,21 +439,11 @@ pub async fn is_gmail_connected(
 pub struct ConnectedAccountInfo {
     pub email: String,
     pub account_id: String,
-    /// TASK-FE-015: "independent status/revoke per account" (Document 30
-    /// §21's own summary of this task). Real values: 'ACTIVE', 'degraded'
-    /// (token refresh failed -- syncing has silently stopped until the user
-    /// reconnects), 'disconnected' (excluded from this list entirely, see
-    /// the query below).
     pub account_status: String,
 }
 
-/// Doc 03 §8.2: a license supports up to 10 *simultaneously* connected Gmail
-/// accounts — the frontend needs the full list, not just one, to render a
-/// multi-account management UI.
-/// G20/H10/J8 fix: renamed from `list_connected_accounts` to match Doc 30
-/// TASK-API-008's documented `settings_get_connected_accounts` naming (no
-/// Document 19 contract exists for this command under any name).
 #[tauri::command]
+/// Lists connected accounts for the settings screen.
 pub async fn settings_get_connected_accounts(
     pool: tauri::State<'_, Pool>,
 ) -> Result<Vec<ConnectedAccountInfo>, crate::error::AppError> {
@@ -471,12 +452,6 @@ pub async fn settings_get_connected_accounts(
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(|c| {
-        // TASK-FE-015 fix: this previously filtered to `account_status =
-        // 'ACTIVE'` only, so a 'degraded' account (Gmail token refresh
-        // failed -- syncing has silently stopped) vanished from the list
-        // entirely instead of surfacing a status badge the user could act
-        // on. Only a fully 'disconnected' account (explicitly revoked,
-        // email_address cleared) is excluded.
         let mut stmt = c
             .prepare("SELECT id, email_address, account_status FROM connected_accounts WHERE account_status IS NOT NULL AND account_status != 'disconnected' ORDER BY created_at ASC")
             .map_err(|e| e.to_string())?;
@@ -503,28 +478,13 @@ pub async fn settings_get_connected_accounts(
     .map_err(crate::error::AppError::Db)
 }
 
-/// TASK-AUTH-006 (Document 30's `auth_revoke_gmail`; kept as
-/// `auth_google_disconnect` per the G20/H10/J8 fix matching Doc 19 §5.3's
-/// documented naming — that naming isn't in conflict with Document 30, which
-/// simply doesn't appear in Document 19's IPC catalog at all).
-///
-/// Calls Google's revoke endpoint (best-effort — local cleanup must still
-/// complete per Doc 28 §4.4's Local Wipe Priority even if this fails or the
-/// device is offline); deletes the Keychain token entry; marks this specific
-/// account `disconnected` (not a blanket update — Doc 03 §8.2 allows
-/// multiple simultaneously-connected accounts, and disconnecting one must
-/// not affect the others); withdraws the `gmail_oauth_consent` consent event
-/// (sets `withdrawn_at`, never deletes — TASK-AUTH-003); writes an
-/// audit_log entry (`gmail_revoked`).
 #[tauri::command]
+/// Disconnects one account, revoking its grant and clearing local state.
 pub async fn auth_google_disconnect(
     account_id: String,
     pool: tauri::State<'_, Pool>,
     session_state: tauri::State<'_, crate::auth::session::SessionState>,
 ) -> Result<String, crate::error::AppError> {
-    // TASK-AUTH-008: requires an active local session (resolved from
-    // Rust-side SessionState, never a caller-supplied argument) before any
-    // Gmail IPC command executes.
     crate::ipc::middleware::require_active_session(&session_state)?;
 
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
@@ -545,10 +505,7 @@ pub async fn auth_google_disconnect(
     Ok("Disconnected".to_string())
 }
 
-/// The DB-mutation portion of `auth_google_disconnect`, extracted so it's
-/// directly unit-testable without a real Keychain/network round-trip:
-/// marks the account `disconnected`, withdraws the `gmail_oauth_consent`
-/// event, and writes the `gmail_revoked` audit_log entry.
+/// Clears an account's local state on disconnect.
 fn apply_disconnect(c: &rusqlite::Connection, account_id: &str) {
     let _ = c.execute(
         "UPDATE connected_accounts SET account_status = 'disconnected', email_address = NULL WHERE id = ?1",
@@ -577,12 +534,10 @@ fn apply_disconnect(c: &rusqlite::Connection, account_id: &str) {
     );
 }
 
-/// Doc 03 §8.2, Doc 40 §11: enforced entirely locally — the connected-account
-/// count and the cached, signature-verified license state are both already
-/// known on-device, so this never needs a Licensing Backend round-trip.
-/// A fresh install with no `license_state` row yet (first-ever account) is
-/// always allowed, matching "at least one connected Gmail account at every
-/// license state" — this only restricts going *beyond* the first account.
+/// Refuses a new Gmail connection when one is not permitted.
+///
+/// Guards the account limit before the OAuth flow begins, so the user is not sent
+/// through a browser consent screen only to be refused at the end.
 async fn assert_new_gmail_account_allowed(pool: &Pool) -> Result<()> {
     let conn = pool.get().await?;
     let (active_count, is_active_license) = conn
@@ -621,6 +576,7 @@ async fn assert_new_gmail_account_allowed(pool: &Pool) -> Result<()> {
     Ok(())
 }
 
+/// Runs the full OAuth flow: consent, callback, token exchange.
 pub async fn start_oauth_flow_async(
     _app: AppHandle,
     pool: Pool,
@@ -628,12 +584,6 @@ pub async fn start_oauth_flow_async(
 ) -> Result<String> {
     assert_new_gmail_account_allowed(&pool).await?;
 
-    // H9 fix: bind the loopback callback server to an OS-assigned ephemeral
-    // port (port 0) rather than a hardcoded 3456 — a fixed port could already
-    // be in use by another process (or a stale previous run), failing the
-    // whole connect flow. RFC 8252 §7.3 permits any port for a loopback
-    // redirect URI, so the OAuth client is built against whatever port the
-    // server actually got.
     let server = Server::http("127.0.0.1:0")
         .map_err(|e| anyhow::anyhow!("Failed to start local OAuth callback server: {}", e))?;
     let redirect_port = server
@@ -645,11 +595,6 @@ pub async fn start_oauth_flow_async(
     let client = get_oauth_client(redirect_port)?;
     let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
 
-    // Doc 01 §8.1 C-05, Doc 22 §5.2: "Gmail scope must remain gmail.readonly
-    // only... any broader scope requires re-evaluation." No openid/email/
-    // profile scope is ever requested — the account's email address is
-    // obtained post-token via Gmail API's own users.getProfile endpoint
-    // (see GmailClient::get_profile), which gmail.readonly alone grants.
     let (auth_url, csrf_token) = client
         .authorize_url(CsrfToken::new_random)
         .add_scope(Scope::new(
@@ -673,17 +618,11 @@ pub async fn start_oauth_flow_async(
 
     let expected_state = csrf_token.secret().clone();
 
-    // Doc 30 TASK-AUTH-001: if the user closes the browser without completing
-    // consent, the loopback listener must not wait forever.
     let code = tokio::task::spawn_blocking(move || {
         wait_for_oauth_callback(&server, &expected_state, OAUTH_CALLBACK_TIMEOUT)
     })
     .await??;
 
-    // Exchange code for token. `async_http_client` (oauth2 crate) builds its
-    // own internal reqwest client with no timeout configured -- a stalled
-    // connection to Google's token endpoint would otherwise hang this call
-    // forever with no error surfaced.
     let token_result = tokio::time::timeout(
         OAUTH_TOKEN_REQUEST_TIMEOUT,
         client
@@ -709,11 +648,6 @@ pub async fn start_oauth_flow_async(
         expires_at: now + expires_in,
     };
 
-    // Fetch the account's email via Gmail API's own users.getProfile — not
-    // Google's separate userinfo endpoint, which would require scopes this
-    // app must never request (Doc 01 §8.1 C-05, see the scope comment
-    // above). GmailClient already routes through NetworkClient (Doc 01
-    // §10.4, BG-02), so this call is captured in the Network Activity log.
     let gmail_client =
         crate::ingestion::gmail_client::GmailClient::new(access_token.clone(), pool.clone(), None);
     let profile = gmail_client
@@ -722,21 +656,7 @@ pub async fn start_oauth_flow_async(
         .map_err(|e| anyhow::anyhow!("Failed to fetch Gmail profile: {}", e))?;
 
     let email_address = profile.email_address;
-    // TASK-GMAIL: previously discarded (`last_history_id: None` below,
-    // hardcoded) even though `get_profile()` already returns a real
-    // `historyId` here -- with nothing else ever seeding it (`historical_scan`
-    // doesn't touch it either), polling's `current_history_id` stayed `None`
-    // forever, so real-time sync never engaged past its first "No history ID
-    // found ... skipping" warning. Gmail's own documented pattern is to
-    // capture a starting historyId right here at connect/watch time and poll
-    // `history.list` forward from it.
     let initial_history_id = profile.history_id.clone();
-    // No stable Google account ID is available under gmail.readonly alone
-    // (users.getProfile doesn't return one) — a Gmail address uniquely and
-    // stably identifies a Gmail account, so a deterministic hash of the
-    // (lowercased) email becomes the account_id instead. Hashed rather than
-    // used verbatim so the identifier that ends up in checkpoints, audit
-    // logs, and job keys never carries the raw email address.
     let account_uuid = uuid::Uuid::new_v5(
         &uuid::Uuid::from_bytes([
             0xa1, 0x1a, 0xcc, 0x00, 0x9e, 0x3c, 0x4f, 0x6e, 0x8b, 0x1d, 0x2c, 0x3d, 0x4e, 0x5f,
@@ -748,7 +668,6 @@ pub async fn start_oauth_flow_async(
 
     save_token(&account_id, &token_store)?;
 
-    // Update connected_accounts
     let conn = pool.get().await?;
     let account = connected_accounts::ConnectedAccountsRow {
         id: account_id.clone(),
@@ -762,16 +681,8 @@ pub async fn start_oauth_flow_async(
 
     let acc_id_for_check = account_id.clone();
     let email_for_update = email_address;
-    // TASK-AUTH-003: the `gmail_oauth_consent` event itself is recorded by
-    // the frontend at the moment of consent-screen acknowledgment (Document
-    // 30: "on consent-screen acknowledgment, insert a gmail_oauth_consent
-    // row"), before this OAuth round-trip even starts — not here, tied to a
-    // *successful* token exchange. Recording it here too would both
-    // duplicate that event and record it at the wrong moment (acknowledgment,
-    // not success, is what Document 18 §4.21a's consent model tracks).
     conn.interact(move |c| {
         if let Ok(Some(mut existing_acc)) = connected_accounts::get_account(c, &acc_id_for_check) {
-            // Always update both status AND email on reconnect
             existing_acc.account_status = Some("ACTIVE".to_string());
             existing_acc.email_address = Some(email_for_update);
             connected_accounts::update_account(c, &existing_acc)
@@ -786,20 +697,11 @@ pub async fn start_oauth_flow_async(
     Ok("Authentication successful".to_string())
 }
 
-/// I8 fix: whether a degradation `reason` indicates the stored credential
-/// itself is unusable/invalid (so the Keychain entry should be purged to
-/// force a clean re-auth) versus a plausibly-transient failure (a network
-/// blip shouldn't nuke an otherwise-good refresh token). `keychain_read_failed`,
-/// `token_parse_failed`, and `no_refresh_token` are always unusable; a refresh
-/// request failure is only treated as invalid when the OAuth server itself
-/// rejected the grant (`invalid_grant`/`invalid_client`/`unauthorized`) rather
-/// than e.g. a network timeout.
-/// Document 30 TASK-AUTH-004: "Never expose the raw refresh error (may
-/// contain token fragments) to the React layer or logs." Reduces a refresh
-/// error's full `Display` text (checked once, in memory, never logged or
-/// stored itself) to one of a small, fixed set of safe category strings —
-/// this is the only representation of the failure that ever reaches a log
-/// line, an `audit_log` row, or a caller-visible error.
+/// Classifies a token-refresh failure.
+///
+/// The distinction that matters is whether the grant is permanently invalid --
+/// revoked or expired -- or the failure was transient, since only the former
+/// should mark the account degraded and prompt the user to reconnect.
 fn classify_refresh_error(raw: &str) -> &'static str {
     if raw.contains("invalid_grant") {
         "invalid_grant"
@@ -814,6 +716,7 @@ fn classify_refresh_error(raw: &str) -> &'static str {
     }
 }
 
+/// Whether a failure reason means the token is permanently invalid.
 fn reason_indicates_invalid_token(reason: &str) -> bool {
     reason == "keychain_read_failed"
         || reason == "token_parse_failed"
@@ -823,6 +726,10 @@ fn reason_indicates_invalid_token(reason: &str) -> bool {
         || reason.contains("unauthorized")
 }
 
+/// Marks an account degraded and notifies the frontend.
+///
+/// Surfaced rather than retried silently: a revoked grant needs the user to
+/// reconnect, and quiet retries would leave ingestion mysteriously stopped.
 async fn mark_account_degraded_async<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     pool: &Pool,
@@ -831,8 +738,6 @@ async fn mark_account_degraded_async<R: tauri::Runtime>(
 ) {
     let should_purge = reason_indicates_invalid_token(reason);
     if should_purge {
-        // I8 fix: revoked/invalid tokens were previously marked degraded but
-        // left sitting in Keychain indefinitely.
         delete_token(account_id);
         tracing::info!(
             "Purged Keychain token for account_id='{}' (reason='{}')",
@@ -840,10 +745,6 @@ async fn mark_account_degraded_async<R: tauri::Runtime>(
             reason
         );
 
-        // TASK-AUTH-014: a token the Keychain itself reports invalid/revoked
-        // is the closest existing signal to "repeated OAuth failure" this
-        // task names as an incident trigger — record it and, once repeated,
-        // respond (session revoke + Gmail disconnect).
         let monitor = app.state::<crate::security::incident_response::IncidentMonitor>();
         if crate::security::incident_response::record_trigger(
             monitor.inner(),
@@ -872,7 +773,6 @@ async fn mark_account_degraded_async<R: tauri::Runtime>(
                     account.account_status = Some("degraded".to_string());
                     let _ = connected_accounts::update_account(c, &account);
                 }
-                // J6 fix: token-refresh-failure lifecycle event (Doc 25 §6.1).
                 if let Err(e) = crate::db::audit_log::insert(
                     c,
                     &crate::db::audit_log::AuditLogRow {
@@ -909,6 +809,10 @@ async fn mark_account_degraded_async<R: tauri::Runtime>(
     );
 }
 
+/// Returns a valid access token, refreshing it if expired.
+///
+/// The single entry point every Gmail call goes through, so refresh happens in
+/// one place rather than being duplicated per call site.
 pub async fn get_valid_access_token<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     pool: &Pool,
@@ -940,11 +844,10 @@ pub async fn get_valid_access_token<R: tauri::Runtime>(
     refresh_token_store(app, pool, account_id, token_store).await
 }
 
-/// TASK-AUTH-004: forces a refresh-token exchange regardless of the locally
-/// cached `expires_at` — for the reactive path (an in-flight Gmail API call
-/// just got HTTP 401), where the cached expiry can't be trusted (the token
-/// may have been revoked externally, or clock skew made the local expiry
-/// math wrong), unlike `get_valid_access_token`'s proactive pre-flight check.
+/// Forces a refresh regardless of the token's apparent expiry.
+///
+/// Used when a call fails with an auth error despite a token that looked valid,
+/// which happens when a grant is revoked before its natural expiry.
 pub async fn force_refresh_access_token<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     pool: &Pool,
@@ -969,6 +872,7 @@ pub async fn force_refresh_access_token<R: tauri::Runtime>(
     refresh_token_store(app, pool, account_id, token_store).await
 }
 
+/// Exchanges the refresh token for a new access token and stores it.
 async fn refresh_token_store<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     pool: &Pool,
@@ -984,15 +888,7 @@ async fn refresh_token_store<R: tauri::Runtime>(
         }
     };
 
-    // The refresh_token grant never sends redirect_uri (RFC 6749 §6), so the
-    // port here is inert — this call opens no local server and no browser.
     let client = get_oauth_client(0)?;
-    // Same no-timeout risk as the initial code exchange above, but higher
-    // stakes here: `get_valid_access_token` is awaited synchronously by
-    // `scans_historical` *before* it returns "Scan started" to the frontend
-    // -- a hang here previously blocked the `invoke()` promise forever, with
-    // no error to catch and no scan_progress/scan_failed event ever able to
-    // fire, leaving the UI frozen on a manufactured 0/0 with no recourse.
     let refresh_result = tokio::time::timeout(
         OAUTH_TOKEN_REQUEST_TIMEOUT,
         client
@@ -1002,12 +898,6 @@ async fn refresh_token_store<R: tauri::Runtime>(
     .await;
     match refresh_result {
         Err(_elapsed) => {
-            // "network_error" -- the same transient-failure category
-            // `classify_refresh_error` already maps timeout-shaped errors
-            // to (see its doc comment) -- a stalled connection must not
-            // purge an otherwise-good refresh token from the Keychain the
-            // way an `invalid_grant` rejection would
-            // (`reason_indicates_invalid_token`).
             tracing::error!(
                 "Gmail token refresh timed out after {:?}",
                 OAUTH_TOKEN_REQUEST_TIMEOUT
@@ -1034,11 +924,6 @@ async fn refresh_token_store<R: tauri::Runtime>(
             Ok(token_store.access_token)
         }
         Ok(Err(e)) => {
-            // Document 30 TASK-AUTH-004: "Never expose the raw refresh error
-            // (may contain token fragments) to the React layer or logs."
-            // Classify into a fixed, safe vocabulary here and never format
-            // `e` itself into a log line, an audit_log row, or the error
-            // this function returns (which callers may surface to the UI).
             let category = classify_refresh_error(&e.to_string());
             tracing::error!("Gmail token refresh failed: {}", category);
             mark_account_degraded_async(
@@ -1053,6 +938,10 @@ async fn refresh_token_store<R: tauri::Runtime>(
     }
 }
 
+/// Recovers from an invalid Gmail history id.
+///
+/// History ids expire once they age out of Gmail's window. Recovery resets to a
+/// full sync, since incremental polling has no valid point to resume from.
 pub async fn handle_invalid_history_id(pool: &Pool, account_id: &str) -> Result<()> {
     tracing::warn!("history checkpoint reset: Invalid history id encountered, falling back to full historical scan");
     let conn = pool.get().await?;
@@ -1062,9 +951,6 @@ pub async fn handle_invalid_history_id(pool: &Pool, account_id: &str) -> Result<
             account.last_history_id = None;
             let _ = connected_accounts::update_account(c, &account);
         }
-        // Document 30 TASK-AUTH-004: "logging history_checkpoint_reset to
-        // audit_log" — previously only a tracing::warn!, invisible to the
-        // audit trail every other lifecycle event in this file writes to.
         if let Err(e) = crate::db::audit_log::insert(
             c,
             &crate::db::audit_log::AuditLogRow {
@@ -1090,6 +976,7 @@ pub async fn handle_invalid_history_id(pool: &Pool, account_id: &str) -> Result<
     Ok(())
 }
 
+/// Builds the refresher closure the Gmail client uses to renew tokens.
 pub fn create_token_refresher<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     pool: &deadpool_sqlite::Pool,
@@ -1110,11 +997,6 @@ pub fn create_token_refresher<R: tauri::Runtime>(
 mod tests {
     use super::*;
 
-    /// TASK-AUTH-006: disconnect marks the account `disconnected`, withdraws
-    /// the `gmail_oauth_consent` event (without deleting it), and writes a
-    /// `gmail_revoked` audit_log entry — the DB-level portion of
-    /// `auth_google_disconnect`, tested directly since the full command
-    /// needs a real Keychain/network round-trip.
     #[test]
     fn apply_disconnect_updates_status_withdraws_consent_and_logs() {
         let conn = crate::db::test_helpers::setup_test_db();
@@ -1163,9 +1045,6 @@ mod tests {
         assert_eq!(action, "gmail_revoked");
     }
 
-    /// Document 30 TASK-AUTH-004: the classified reason must never contain
-    /// the raw error text (which could carry a token fragment) — only ever
-    /// one of the fixed category strings.
     #[test]
     fn classify_refresh_error_never_echoes_raw_text() {
         assert_eq!(
@@ -1198,13 +1077,11 @@ mod tests {
 
     #[test]
     fn test_oauth_callback_payload_validation() {
-        // Valid payload
         let valid_url = "/?state=expected_state_123&code=auth_code_xyz";
         let res = validate_oauth_callback(valid_url, "expected_state_123");
         assert!(res.is_ok());
         assert_eq!(res.unwrap(), "auth_code_xyz");
 
-        // Invalid state
         let invalid_state_url = "/?state=hacker_state&code=auth_code_xyz";
         let res = validate_oauth_callback(invalid_state_url, "expected_state_123");
         assert!(res.is_err());
@@ -1213,7 +1090,6 @@ mod tests {
             "Invalid state parameter. Forged token injection prevented."
         );
 
-        // Missing code
         let missing_code_url = "/?state=expected_state_123";
         let res = validate_oauth_callback(missing_code_url, "expected_state_123");
         assert!(res.is_err());
@@ -1222,7 +1098,6 @@ mod tests {
             "Missing code or state parameter."
         );
 
-        // Missing state
         let missing_state_url = "/?code=auth_code_xyz";
         let res = validate_oauth_callback(missing_state_url, "expected_state_123");
         assert!(res.is_err());
@@ -1230,7 +1105,6 @@ mod tests {
 
     #[test]
     fn test_token_stored_in_keychain_not_sqlite() {
-        // We verify that ConnectedAccountsRow doesn't have token fields
         let account = connected_accounts::ConnectedAccountsRow {
             id: "test".to_string(),
             profile_id: 1,
@@ -1240,15 +1114,9 @@ mod tests {
             created_at: None,
             updated_at: None,
         };
-        // This is a static compilation check that `account` has no `access_token` field
         assert_eq!(account.id, "test");
     }
 
-    /// Doc 30 TASK-AUTH-001: "If the user closes the browser without
-    /// completing consent, the loopback listener times out ... with
-    /// `AppError::Auth("oauth_timeout")`." Uses a short injected timeout
-    /// (rather than the real 5 minutes) so the test itself stays fast; no
-    /// request is ever sent to the server, simulating an abandoned browser.
     #[test]
     fn oauth_callback_wait_times_out_when_browser_never_completes() {
         let server = Server::http("127.0.0.1:0").unwrap();

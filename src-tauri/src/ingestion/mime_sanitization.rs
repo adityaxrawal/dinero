@@ -1,32 +1,19 @@
+//! Safely extracts body text and attachments from a MIME message.
+//!
+//! A trust boundary. Bank emails are HTML from an external party, so the display
+//! sanitiser strips scripting and active content before anything is rendered,
+//! and the extraction path reduces the message to plain text so parsing operates
+//! on content rather than markup.
 use crate::ingestion::gmail_client::{MessagePart, MessagePartBody};
 use base64::{engine::general_purpose::URL_SAFE, Engine as _};
 use regex::Regex;
 
-/// Doc 30 TASK-GMAIL-002: attachment metadata (filename, mimeType, attachmentId, size)
-/// captured from the message payload alone — no attachment bytes are fetched here,
-/// except `inline_bytes` below, which Gmail already handed us in the payload itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PdfAttachmentMeta {
-    /// `Some` when the bytes must be fetched separately via `attachments.get`
-    /// (the common case for real attachments). `None` when Gmail inlined the
-    /// bytes directly (`inline_bytes` below) instead of assigning an ID —
-    /// exactly one of the two is always `Some` for any entry in
-    /// `pdf_attachments` (see `extract_recursive`'s push condition).
     pub attachment_id: Option<String>,
     pub filename: String,
     pub mime_type: String,
     pub size: Option<i32>,
-    /// Raw bytes when Gmail inlined the attachment directly in the message
-    /// payload (`body.data`) rather than requiring a separate
-    /// `attachments.get` fetch. Decoded eagerly here since the base64 is
-    /// already in hand — no reason to make the caller re-derive it.
-    ///
-    /// Real bug this replaced: previously this case (`body.attachmentId`
-    /// absent, `body.data` present) was silently dropped entirely —
-    /// `has_pdf_attachment` was still set `true` but nothing was ever pushed
-    /// here, so the caller saw an empty `pdf_attachments` and skipped the
-    /// statement outright with just a WARN log (field error log: "has
-    /// has_pdf_attachment=true but no downloadable attachment_ids").
     pub inline_bytes: Option<Vec<u8>>,
 }
 
@@ -34,23 +21,12 @@ pub struct PdfAttachmentMeta {
 pub struct ExtractedMessage {
     pub text_body: Option<String>,
     pub html_body: Option<String>,
-    /// True if at least one PDF attachment is present (convenience flag).
     pub has_pdf_attachment: bool,
-    /// All PDF attachments found in the MIME tree, whose bytes are
-    /// obtainable one way or another (see `PdfAttachmentMeta`). Empty only
-    /// when a PDF-typed part had neither an `attachmentId` nor inline
-    /// `data` — a genuinely malformed/unexpected payload, not the inline-data
-    /// case this struct used to conflate with that.
     pub pdf_attachments: Vec<PdfAttachmentMeta>,
-    /// Structural (never content) diagnostics for each PDF-shaped part that
-    /// `pdf_attachments` couldn't collect bytes for — part_id, mime_type,
-    /// and which of {body, attachmentId, data} were present. Empty in the
-    /// overwhelmingly common case; exists so a "has_pdf_attachment=true but
-    /// no downloadable attachment_ids" skip is diagnosable from the log
-    /// alone instead of unreproducible without the original email.
     pub skipped_pdf_parts: Vec<String>,
 }
 
+/// Extracts body text and PDF attachments from a MIME message.
 pub fn extract_body_and_attachments(part: &MessagePart) -> ExtractedMessage {
     let mut extracted = ExtractedMessage {
         text_body: None,
@@ -61,7 +37,6 @@ pub fn extract_body_and_attachments(part: &MessagePart) -> ExtractedMessage {
     };
     extract_recursive(part, &mut extracted);
 
-    // If we only have HTML, sanitize it and set it as text_body
     if let (None, Some(html)) = (&extracted.text_body, &extracted.html_body) {
         extracted.text_body = Some(sanitize_html(html));
     }
@@ -73,6 +48,10 @@ pub fn extract_body_and_attachments(part: &MessagePart) -> ExtractedMessage {
     extracted
 }
 
+/// Walks the MIME tree, collecting parts.
+///
+/// Recursive because MIME nests arbitrarily -- a multipart/mixed wrapping a
+/// multipart/alternative is the normal shape of a bank email with an attachment.
 fn extract_recursive(part: &MessagePart, extracted: &mut ExtractedMessage) {
     if part.mime_type == "text/plain" {
         if extracted.text_body.is_none() {
@@ -96,13 +75,6 @@ fn extract_recursive(part: &MessagePart, extracted: &mut ExtractedMessage) {
         }
     } else if part.mime_type == "application/pdf" {
         extracted.has_pdf_attachment = true;
-        // Collect attachment metadata so the caller can obtain the bytes
-        // later. A completely absent `body` (not just an empty one) used to
-        // silently skip this call, giving `has_pdf_attachment=true` with
-        // nothing pushed via a second, undocumented path -- collapse it into
-        // the single documented "no attachmentId, no data" case in
-        // `push_pdf_attachment` instead, so there's exactly one place that
-        // decides "this PDF part is unusable" and one log for it.
         let filename = part
             .filename
             .clone()
@@ -124,7 +96,6 @@ fn extract_recursive(part: &MessagePart, extracted: &mut ExtractedMessage) {
     } else if let Some(filename) = &part.filename {
         if filename.to_lowercase().ends_with(".pdf") {
             extracted.has_pdf_attachment = true;
-            // Attempt to collect attachment metadata for non-explicit-mimetype PDFs.
             let empty_body = MessagePartBody {
                 size: None,
                 data: None,
@@ -149,11 +120,7 @@ fn extract_recursive(part: &MessagePart, extracted: &mut ExtractedMessage) {
     }
 }
 
-/// Pushes a `PdfAttachmentMeta` when `body` gives us a way to obtain its
-/// bytes — either an `attachmentId` to fetch separately, or `data` Gmail
-/// already inlined. Pushes nothing (leaving `has_pdf_attachment` true but
-/// `pdf_attachments` short one entry) only when neither is present, which
-/// is a genuinely malformed/unexpected payload.
+/// Records a PDF attachment's metadata for later retrieval.
 fn push_pdf_attachment(
     extracted: &mut ExtractedMessage,
     body: &MessagePartBody,
@@ -184,17 +151,15 @@ fn push_pdf_attachment(
     });
 }
 
+/// Normalises plain text for parsing.
 pub fn sanitize_plain_text(text: &str) -> String {
     let lines: Vec<&str> = text.lines().collect();
     let mut sanitized = Vec::new();
 
     for line in lines {
-        // Strip quoted replies
         if line.trim_start().starts_with('>') {
             continue;
         }
-        // Strip signature block, delimited per convention by a lone "--" line
-        // (trailing whitespace is already gone after .trim()).
         if line.trim() == "--" {
             break;
         }
@@ -202,18 +167,14 @@ pub fn sanitize_plain_text(text: &str) -> String {
     }
 
     let mut result = sanitized.join("\n");
-    // Normalize whitespace (more than 2 newlines -> 2 newlines)
     let re = Regex::new(r"\n{3,}").unwrap();
     result = re.replace_all(&result, "\n\n").to_string();
 
     result.trim().to_string()
 }
 
+/// Strips markup from HTML, leaving text for extraction.
 pub fn sanitize_html(html: &str) -> String {
-    // Basic HTML sanitization:
-    // 1. Remove <script> and <style> tags and their contents
-    // 2. Convert common block tags to newlines (e.g. <div>, <p>, <br>)
-    // 3. Remove all other HTML tags
 
     let mut text = html.to_string();
 
@@ -223,7 +184,6 @@ pub fn sanitize_html(html: &str) -> String {
     let style_re = Regex::new(r"(?is)<style.*?>.*?</style>").unwrap();
     text = style_re.replace_all(&text, "").to_string();
 
-    // Strip any bare CSS rule blocks left un-enclosed
     let loose_css_re = Regex::new(r"(?i)(?:@media[^{]+\{[\s\S]*?\}|body|table|td|th|p|a|img|\.[a-z0-9_-]+|#[a-z0-9_-]+)\s*\{[^}]*\}").unwrap();
     text = loose_css_re.replace_all(&text, "").to_string();
 
@@ -233,7 +193,6 @@ pub fn sanitize_html(html: &str) -> String {
     let tag_re = Regex::new(r"(?is)<.*?>").unwrap();
     text = tag_re.replace_all(&text, "").to_string();
 
-    // Decode HTML entities (simplified)
     text = text.replace("&nbsp;", " ");
     text = text.replace("&amp;", "&");
     text = text.replace("&lt;", "<");
@@ -244,36 +203,11 @@ pub fn sanitize_html(html: &str) -> String {
     sanitize_plain_text(&text)
 }
 
-/// Sanitizes the *original* HTML body for visual display (password-prompt
-/// modal's "show the email like Gmail does" view) -- unlike `sanitize_html`
-/// above, which reduces everything to plain text, this keeps layout/typography
-/// markup (tables, inline `style`, headings, etc.) so the rendered result
-/// still looks like the source email instead of being reflowed prose.
+/// Sanitises HTML for safe rendering in the viewer.
 ///
-/// Beyond ammonia's own script/event-handler/dangerous-URL-scheme stripping,
-/// one deliberate restriction:
-/// - Any CSS `url(...)` reference (inline `style="background:url(...)"` or
-///   a `<style>` block) is neutralized first, since ammonia passes an
-///   allowed attribute's *value* through unparsed, making a background-image
-///   a tracking-pixel vector.
-///
-/// **`<img>` and `<a href>` are allowed through** (`09d0351`, "improve MIME
-/// sanitization for complex HTML structures" — pinned by
-/// `test_sanitize_html_for_display_preserves_img_and_links`), which is what
-/// makes a bank email render like it does in Gmail. The cost is that a remote
-/// `<img src>` *does* load when the viewer opens the email, so a tracking
-/// pixel fires — the one network call this otherwise offline-first app makes
-/// on a render. Blocking it again is a one-line `.rm_tags(["img"])`, at the
-/// price of logo-less, layout-broken emails.
-///
-/// This comment used to claim both tags were dropped, describing the
-/// `rm_tags(["img", "a"])` that `09d0351` replaced. audit_08 #9 flagged the
-/// wrong half of this: inline `data:` URIs are inert (they cannot phone
-/// home); remote `src` is the actual egress.
-///
-/// Caller renders the result inside `<iframe srcDoc sandbox="allow-same-origin
-/// allow-popups">` — no `allow-scripts` — so this sanitizer is a second,
-/// independent layer, not the only one.
+/// Distinct from the extraction path above: this one keeps the markup so the
+/// email still looks like itself, but removes scripting and active content. The
+/// input is untrusted third-party HTML, so this is a trust boundary.
 pub fn sanitize_html_for_display(html: &str) -> String {
     let css_url_re = Regex::new(r"(?i)url\s*\([^)]*\)").unwrap();
     let defanged = css_url_re.replace_all(html, "none").to_string();

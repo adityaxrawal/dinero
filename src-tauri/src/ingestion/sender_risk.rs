@@ -1,22 +1,12 @@
-//! Graded Gate 1 risk score, additive alongside `SenderVerificationResult`.
+//! Scores how risky a sender is, combining reputation with authentication.
 //!
-//! Gate 1's decision itself stays binary (accept/reject) -- that's still the
-//! right behavior for the automated pipeline, matching how Gate 3's
-//! mandatory-field gate and reconciliation's viability floor are also hard
-//! cutoffs, not scores, at the point where a pass/fail decision is actually
-//! made. This module instead produces a continuous 0.0 (certainly
-//! legitimate) .. 1.0 (certainly malicious) score for everything *around*
-//! that decision -- a future review queue, telemetry/alerting on rising risk
-//! for a domain over time, or ranking `pending_senders` candidates -- none of
-//! which exist as a binary decision today. It never feeds back into the
-//! accept/reject decision itself.
-
+//! Neither signal alone suffices. A domain with good history can be spoofed on a
+//! given message, and a first-time legitimate bank has no history yet -- so both
+//! are weighed rather than either being decisive.
 use crate::db::sender_reputation::SenderReputationRow;
 use crate::ingestion::auth_results::AuthResults;
 use crate::ingestion::verified_senders::SenderVerificationResult;
 
-/// A `SenderVerificationResult` plus a continuous risk score and the named
-/// signals that produced it -- the score is a summary, `signals` is why.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SenderRiskAssessment {
     pub result: SenderVerificationResult,
@@ -24,12 +14,7 @@ pub struct SenderRiskAssessment {
     pub signals: Vec<String>,
 }
 
-/// Base risk purely from which `SenderVerificationResult` variant this is --
-/// the "Unknown Bank" subject-rescue path is deliberately scored between a
-/// real registry-verified pass and an outright reject: it's a real accept
-/// decision (so far below reject), but one made off subject-line wording
-/// alone with no domain corroboration at all (so nowhere near as low-risk as
-/// an exact registry match).
+/// Starting risk score from the sender verification outcome.
 fn base_score(result: &SenderVerificationResult) -> (f64, &'static str) {
     match result {
         SenderVerificationResult::VerifiedTransactionCandidate(name)
@@ -48,10 +33,12 @@ fn base_score(result: &SenderVerificationResult) -> (f64, &'static str) {
     }
 }
 
-/// Combines the base per-variant score with SPF/DKIM/DMARC and sighting
-/// history, when available. Both extra inputs are optional -- callers that
-/// only have the `SenderVerificationResult` (no headers parsed, no DB
-/// lookup done) still get a meaningful score from the base signal alone.
+/// Combines verification, authentication and reputation into a risk assessment.
+///
+/// No single signal is decisive: a domain with good history can be spoofed on a
+/// given message, and a legitimate bank seen for the first time has no history at
+/// all. Weighing them together is what avoids both false accepts and false
+/// rejects.
 pub fn assess_sender_risk(
     result: SenderVerificationResult,
     auth: Option<&AuthResults>,
@@ -73,9 +60,6 @@ pub fn assess_sender_risk(
     if let Some(rep) = reputation {
         if rep.message_count > 0 {
             let pass_rate = rep.verified_pass_count as f64 / rep.message_count as f64;
-            // Established history of mostly-verified-pass sightings lowers
-            // risk, scaled small -- history corroborates, it doesn't override
-            // what the current message's own signals already say.
             score = (score - 0.1 * pass_rate).max(0.0);
             if pass_rate > 0.9 {
                 signals.push("established_sender_history".to_string());

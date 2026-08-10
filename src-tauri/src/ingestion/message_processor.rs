@@ -1,3 +1,12 @@
+//! Processes one message end to end.
+//!
+//! The per-message pipeline: extract metadata, sanitise the body, classify it,
+//! run extraction, and emit an observation, a mandate event, or nothing at all.
+//!
+//! Its result type distinguishes those outcomes explicitly, because "not a
+//! financial message" is a successful, expected result rather than a failure --
+//! most of a mailbox is not financial, and treating that as an error would make
+//! the failure counts meaningless.
 use crate::db::audit_log::{self, AuditLogRow};
 use crate::ingestion::content_classifier::{ContentClass, ContentClassifier};
 use crate::ingestion::gmail_client::{FetchFormat, GmailClient, Message};
@@ -14,10 +23,6 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-/// Doc 2026-07-28 mail scan performance: `Some` only for the historical-scan
-/// call path (`historical_scan.rs`) -- live polling (`polling.rs`) processes
-/// one message at a time so batching buys it nothing and it keeps passing
-/// `None`, preserving today's immediate-write behavior there unchanged.
 pub type ScanBatcherHandle = Arc<Mutex<ScanDbBatcher>>;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -42,14 +47,6 @@ pub struct EmailMetadata {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProcessResult {
-    /// audit_03 #7: this used to carry a third `Option<String>` holding the
-    /// sanitized HTML body — a verbatim `email_meta.html.clone()`, i.e. a
-    /// second copy of a string the `EmailMetadata` in the fourth slot already
-    /// owns. Nothing ever read it: `raw_payload_json`'s `"html"` key is built
-    /// from `email_meta.html` in `normalize_observation`. Removed, which drops
-    /// one full copy of every email's HTML (200–500 KB for a complex bank
-    /// template) from both this value and the 256-deep Transaction Queue it
-    /// was carried into.
     TransactionAlert(
         ExtractedMessage,
         Box<crate::extraction::ladder::ExtractionResult>,
@@ -61,31 +58,28 @@ pub enum ProcessResult {
         crate::extraction::mandate_extractor::MandateExtraction,
         MandateEventType,
     ),
-    /// Layers 1-5 failed, this machine is LLM-eligible, and a `Layer6Job`
-    /// was enqueued for background enrichment (Doc 2026-07-26 mail scan
-    /// performance) — distinct from a hard `Ok(None)` rejection so callers
-    /// (`historical_scan.rs`) can track it separately from `non_financial`.
-    /// Carries no data: the observation/`unassigned_transactions` rows are
-    /// already persisted by the time this is returned.
     EnqueuedForEnrichment,
 }
 
 pub struct MessageProcessor;
 
+/// The shared sender validator, built once.
+///
+/// Holds the compiled registry, so it is not rebuilt per message during a scan.
 pub(crate) fn get_sender_validator() -> &'static SenderValidator {
     static VALIDATOR: OnceLock<SenderValidator> = OnceLock::new();
     VALIDATOR.get_or_init(SenderValidator::new)
 }
 
 impl MessageProcessor {
-    /// Processes a message by first fetching its metadata to check against a sender/subject gate.
-    /// If it passes the gate, it fetches the full message and extracts its contents.
-    /// `layer6_tx`: when Layers 1-5 fail and this machine is LLM-eligible, a
-    /// `Layer6Job` is enqueued onto this channel instead of awaiting Layer 6
-    /// inline (Doc 2026-07-26 mail scan performance) — `None` when the
-    /// caller has no queue to enqueue onto (e.g. a plain extraction-only
-    /// test), in which case the message is still recorded to
-    /// `unassigned_transactions` but no background enrichment happens for it.
+    /// Processes one message end to end.
+    ///
+    /// The per-message pipeline: verify the sender, sanitise the body, classify the
+    /// content, extract, and emit an observation, a mandate event, or nothing.
+    ///
+    /// Returning "not financial" is a success, not a failure -- most of a mailbox is
+    /// not financial, and counting that as an error would make the failure statistics
+    /// meaningless.
     pub async fn process_message(
         pool: &Pool,
         client: &GmailClient,
@@ -95,25 +89,18 @@ impl MessageProcessor {
         layer6_tx: Option<tokio::sync::mpsc::Sender<crate::ingestion::queues::Layer6Job>>,
         scan_batcher: Option<&ScanBatcherHandle>,
     ) -> Result<Option<ProcessResult>> {
-        // 1. Fetch metadata first (fast, low bandwidth)
         let metadata_msg = client
             .fetch_message(message_id, FetchFormat::Metadata)
             .await?;
 
-        // 2. Sender Verification Gate
         let sender_domain = Self::extract_sender_domain(&metadata_msg);
 
-        // Reputation/approved-senders lookups are best-effort: a DB error
-        // here must fall back to the conservative defaults (no approved
-        // override) rather than fail the whole message -- Gate 1's
-        // string/auth checks still run either way.
         let (approved_senders, bank_overrides) = match &sender_domain {
             Some(_domain) => {
                 let conn = pool.get().await?;
                 conn.interact(move |c| {
                     let approved = crate::db::sender_reputation::select_approved_domains(c)
                         .unwrap_or_default();
-                    // Same round trip -- this adds no pool acquisition.
                     let overrides =
                         crate::db::sender_bank_overrides::select_active(c).unwrap_or_default();
                     (approved, overrides)
@@ -127,14 +114,8 @@ impl MessageProcessor {
         let gate_result =
             Self::evaluate_metadata_gate(&metadata_msg, &approved_senders, &bank_overrides);
 
-        // Best-effort history/learning-loop bookkeeping -- never blocks or
-        // fails the gate decision itself, only records it for next time.
         if let Some(domain) = &sender_domain {
             let tag = Self::classification_tag(&gate_result).to_string();
-            // Only flag rejections that plausibly look like a real bank
-            // alert (transaction-shaped subject) for human review --
-            // otherwise every random rejected domain (marketing spam,
-            // unrelated mail) would flood the promotion queue.
             let is_rejection_candidate = matches!(
                 gate_result,
                 SenderVerificationResult::UnverifiedReject(_)
@@ -171,7 +152,6 @@ impl MessageProcessor {
         let current_bank_name = match gate_result {
             SenderVerificationResult::VerifiedTransactionCandidate(bank_name)
             | SenderVerificationResult::VerifiedStatementCandidate(bank_name) => {
-                // Passes gate, proceed to fetch full body
                 bank_name
             }
             SenderVerificationResult::VerifiedNoise => {
@@ -192,7 +172,6 @@ impl MessageProcessor {
             }
             SenderVerificationResult::UnverifiedReject(reason)
             | SenderVerificationResult::SpoofReject(reason) => {
-                // Log to audit log and return None
                 crate::ingestion::gmail_telemetry::gmail_telemetry().record_gate_rejection("gate1");
                 Self::log_rejection(pool, scan_batcher, message_id, &reason).await?;
                 Self::append_to_scan_log(
@@ -208,11 +187,6 @@ impl MessageProcessor {
             }
         };
 
-        // GATE 2a: Fast Classify off metadata alone (Subject + snippet) --
-        // spec optimization #2. Gmail's `format=metadata` response already
-        // includes `snippet` at no extra cost; classifying on it before
-        // paying for a `FetchFormat::Full` fetch means a verified sender's
-        // 2MB promo/policy email never has its body downloaded at all.
         let metadata_subject = Self::header_value(&metadata_msg, "subject");
         let metadata_snippet = metadata_msg.snippet.clone().unwrap_or_default();
         let fast_class = ContentClassifier::classify(&metadata_subject, &metadata_snippet);
@@ -220,9 +194,6 @@ impl MessageProcessor {
             crate::ingestion::gmail_telemetry::gmail_telemetry().record_gate_rejection("gate2a");
             let reason = format!("gate2a_reject_{:?}", fast_class);
             if matches!(fast_class, ContentClass::Noise | ContentClass::Unknown) {
-                // Weaker signal than the full-body Gate 2 (snippet, not the
-                // whole email) -- an even stronger case for the recoverable
-                // Ignored table over a hard discard (spec optimization #5).
                 Self::record_ignored_noise(
                     pool,
                     scan_batcher,
@@ -242,10 +213,8 @@ impl MessageProcessor {
             return Ok(None);
         }
 
-        // 3. If gate passes, fetch full body
         let full_msg = client.fetch_message(message_id, FetchFormat::Full).await?;
 
-        // Extract headers and metadata
         let mut subject = String::new();
         let mut sender = String::new();
         let mut recipient = String::new();
@@ -267,7 +236,6 @@ impl MessageProcessor {
             }
         }
 
-        // 4. Extract and sanitize
         let mut body_string = String::new();
         let extracted_opt = if let Some(payload) = &full_msg.payload {
             let ext = extract_body_and_attachments(payload);
@@ -307,7 +275,6 @@ impl MessageProcessor {
         if let Some(extracted) = extracted_opt {
             let body_text = body_string.as_str();
 
-            // GATE 2: Content Classification
             let content_class = ContentClassifier::classify(&subject, body_text);
 
             match content_class {
@@ -334,7 +301,6 @@ impl MessageProcessor {
                     crate::ingestion::gmail_telemetry::gmail_telemetry()
                         .record_gate_rejection("gate2");
                     let reason = format!("gate2_reject_{:?}", content_class);
-                    // Spec optimization #5: recoverable, not a hard discard.
                     Self::record_ignored_noise(
                         pool,
                         scan_batcher,
@@ -371,17 +337,11 @@ impl MessageProcessor {
                     )));
                 }
                 ContentClass::MandateRegistration | ContentClass::MandateCancellation => {
-                    // Mandate Queue routing
-                    // (dinero-docs/design-archive/specs/2026-07-18-mandate-tracking-design.md §4.1/§4.3).
                     let event_type = if content_class == ContentClass::MandateRegistration {
                         MandateEventType::Registration
                     } else {
                         MandateEventType::Cancellation
                     };
-                    // Bank-specific mandate template first, global regex set
-                    // as the fallback. A bank with no `txn_type: "mandate"`
-                    // pattern (or whose pattern doesn't match this body)
-                    // resolves to exactly the previous behaviour.
                     let mandate_fields =
                         crate::extraction::mandate_extractor::bank_mandate_template(
                             &current_bank_name,
@@ -430,19 +390,8 @@ impl MessageProcessor {
                     }
                 }
                 ContentClass::TransactionAlert | ContentClass::BalanceUpdate => {
-                    // GATE 3: Extraction and Mandatory Field Gate
-                    // Doc 30 TASK-TXN-005: Layer 5's ±3-day statement-row
-                    // search window needs an anchor date even when the email
-                    // body itself yields none — Gmail's internalDate is the
-                    // only signal always available at this point.
                     let internal_date_seconds =
                         Self::internal_date_fallback(&full_msg.internal_date);
-                    // Doc 2026-07-26 mail scan performance: always pass
-                    // `false` here so `run_extraction_ladder` only ever runs
-                    // Layers 1-5 (fast, regex-based) on this path — Layer 6
-                    // (LLM) is never awaited inline anymore; a message that
-                    // needs it is enqueued below instead of blocking this
-                    // scan slot on LLM inference.
                     let mut _layer6_timed_out_unused = false;
                     let extracted_data = crate::extraction::ladder::run_extraction_ladder(
                         pool,
@@ -452,40 +401,18 @@ impl MessageProcessor {
                         false,
                         internal_date_seconds,
                         &mut _layer6_timed_out_unused,
-                        // Drift self-healing lives inside the Layer 6 success
-                        // path, and `llm_eligible` is hardcoded `false` above,
-                        // so no handle is needed here. Layer 6 now runs in the
-                        // background worker instead, which does its own drift
-                        // check (`queues::process_layer6_job`).
                         None,
                     )
                     .await
                     .unwrap_or(None);
 
                     if let Some(mut obs) = extracted_data {
-                        // Doc 30 TASK-TXN-004: Gmail's internalDate is a
-                        // *fallback* for Layer 3's generic date regex, not an
-                        // unconditional override — Layers 1/2 already parse
-                        // the real transaction date/time out of the email
-                        // body, which can legitimately differ from (and is
-                        // more precise than) the email's arrival timestamp.
                         if obs.event_time.is_none() {
                             obs.event_time = Self::internal_date_fallback(&full_msg.internal_date);
                         }
 
                         Self::apply_balance_update_placeholder(&content_class, &mut obs);
 
-                        // A bank-template regex matching "debited from
-                        // account X to account Y" against a self-transfer
-                        // between the user's own accounts captures the
-                        // destination account number ("account 1527") into
-                        // `merchant_raw` -- not a merchant, there genuinely
-                        // isn't one. Recognized here (before the anti-merchant
-                        // gate below would otherwise just discard it as an
-                        // implausible name) and replaced with an explicit
-                        // placeholder, the same way `BalanceUpdate` already
-                        // gets a synthetic "Balance Update" merchant instead
-                        // of failing Gate 3's counterparty requirement.
                         if let Some(dest_account) =
                             Self::self_transfer_destination_account(obs.merchant_raw.as_deref())
                         {
@@ -493,19 +420,6 @@ impl MessageProcessor {
                                 Some(format!("Internal Transfer (A/c {dest_account})"));
                         }
 
-                        // Anti-merchant gate, applied *before* Gate 3 rather
-                        // than at normalization time.
-                        //
-                        // `normalize_merchant_sync` already refuses to create a
-                        // merchants row for a generic fragment, but it runs
-                        // during reconciliation — by then Gate 3 has seen a
-                        // non-empty `merchant_raw`, passed the transaction, and
-                        // the row simply ends up permanently merchant-less with
-                        // no signal that anything was wrong. Clearing it here
-                        // instead means a generic capture is treated as the
-                        // missing counterparty it actually is, which routes it
-                        // to Layer 6 below the same way any other unresolved
-                        // field does.
                         if let Some(raw) = obs.merchant_raw.clone() {
                             let cleaned =
                                 crate::extraction::merchant_normalizer::strip_noise_tokens(&raw);
@@ -539,16 +453,6 @@ impl MessageProcessor {
                                 .record_gate_rejection("gate3");
                             let reason = Self::gate3_failure_reason(&obs);
                             Self::log_rejection(pool, scan_batcher, message_id, reason).await?;
-                            // Spec optimization #1: Gate 2 already confidently
-                            // classified this as a transaction/balance-update —
-                            // a Gate 3 mandatory-field miss must never be a
-                            // silent discard. Salvage whatever fields were
-                            // actually extracted into the Unassigned Queue,
-                            // tagged with the specific missing-field reason
-                            // (`gate3_failed:missing_amount` /
-                            // `gate3_failed:missing_counterparty`) so the user
-                            // can manually complete it instead of the
-                            // transaction vanishing outright.
                             let ids = Self::record_unassigned_transaction(
                                 pool,
                                 message_id,
@@ -558,25 +462,6 @@ impl MessageProcessor {
                                 reason,
                             )
                             .await?;
-                            // A Gate 3 miss on the counterparty is usually the
-                            // anti-merchant gate having thrown away a generic
-                            // fragment ("YOUR HDFC BANK RUPAY CREDIT") rather
-                            // than the email genuinely naming nobody — the
-                            // amount and date parsed fine, only the merchant
-                            // didn't. A miss on the instrument is the same
-                            // shape of problem: the body-wide regex heuristics
-                            // (`extract_instrument_signals`) didn't recognize
-                            // this bank's phrasing for its own last-4/issuer.
-                            // Both are exactly what Layer 6 is good at, so hand
-                            // off to the same background worker the
-                            // all-layers-failed path uses instead of leaving a
-                            // permanently incomplete row for the user to fix by
-                            // hand. `missing_amount` alone stays excluded — an
-                            // LLM has nothing more to find in the source text
-                            // than the regex layers already tried for a value
-                            // that plainly isn't there in any numeral form.
-                            // Enqueue-only: the scan slot is never blocked on
-                            // inference.
                             let recoverable_by_llm = matches!(
                                 reason,
                                 "gate3_failed:missing_counterparty"
@@ -612,11 +497,6 @@ impl MessageProcessor {
                             return Ok(None);
                         }
                     } else if llm_eligible {
-                        // Layers 1-5 failed but this machine can run Layer 6
-                        // — record now (recoverable, same principle as every
-                        // other unassigned path) and hand off to the
-                        // background Layer 6 worker instead of blocking this
-                        // scan slot on LLM inference.
                         Self::log_rejection(
                             pool,
                             scan_batcher,
@@ -687,10 +567,10 @@ impl MessageProcessor {
         Ok(None)
     }
 
-    /// Doc 30 TASK-TXN-004: parses Gmail's `internalDate` (epoch
-    /// milliseconds, as a string) into epoch seconds. Only ever called when
-    /// extraction itself found no date — this is a fallback, not a general
-    /// date source.
+    /// Falls back to the message's own timestamp when no date was extracted.
+    ///
+    /// The delivery time is a reasonable approximation for an alert, which banks send
+    /// within moments of the transaction.
     pub(crate) fn internal_date_fallback(internal_date: &Option<String>) -> Option<i64> {
         internal_date
             .as_ref()
@@ -698,11 +578,10 @@ impl MessageProcessor {
             .map(|ts_millis| ts_millis / 1000)
     }
 
-    /// Detects a raw merchant capture that's actually the destination
-    /// account of a self-transfer (e.g. HDFC's "debited from account 4691
-    /// to account 1527" template captures "account 1527" into the merchant
-    /// group since it has no dedicated self-transfer pattern). Returns the
-    /// destination account digits so the caller can build a placeholder.
+    /// Detects a self-transfer and returns the destination account.
+    ///
+    /// Money moved between the user's own accounts is not spending, so recognising it
+    /// prevents an internal transfer inflating the spending totals.
     pub(crate) fn self_transfer_destination_account(merchant_raw: Option<&str>) -> Option<String> {
         static RE: OnceLock<Regex> = OnceLock::new();
         let re = RE.get_or_init(|| {
@@ -714,16 +593,10 @@ impl MessageProcessor {
             .map(|m| m.as_str().to_string())
     }
 
-    /// A `BalanceUpdate` email is never a settled transaction, so whatever
-    /// merchant/amount extraction guessed for it is discarded unconditionally
-    /// -- not just filled in when absent. Without this, a balance-only email
-    /// ("The available balance ... is Rs. 6,773.00 ... For real-time balance
-    /// updates, call us at ...") can still mis-extract a garbage merchant
-    /// ("real") and treat the balance figure as a transaction amount, since
-    /// `evaluate_mandatory_field_gate` passes on `balance_after` alone
-    /// regardless of what else is set. A `TransactionAlert` email that
-    /// extraction genuinely returned with no merchant (but did resolve a
-    /// balance) keeps the narrower, additive fallback it always had.
+    /// Records a balance-only update as a placeholder observation.
+    ///
+    /// Some alerts report a balance without any transaction. Keeping the balance is
+    /// still useful, so it is stored without fabricating a transaction to attach it to.
     pub(crate) fn apply_balance_update_placeholder(
         content_class: &ContentClass,
         obs: &mut crate::extraction::ladder::ExtractionResult,
@@ -750,13 +623,14 @@ impl MessageProcessor {
         }
     }
 
-    /// Evaluates if the extracted observation passes Gate 3 (Mandatory Fields):
-    /// a parseable amount, at least one counterparty-identifying field
-    /// (merchant/payee/payor), and a resolvable instrument (type + issuer +
-    /// masked identifier) -- per Doc 30 TASK-GMAIL-006, extended 2026-07-30
-    /// so a transaction can no longer be created with a NULL instrument_id.
-    /// A balance-only email stays exempt from every other mandatory field,
-    /// instrument included -- it was never going to become a transaction.
+    /// Gate 3: whether extraction recovered enough to record a transaction.
+    ///
+    /// Two ways to pass. Either the full trio of amount, counterparty and instrument
+    /// is present, or the message carries a balance -- a balance-only alert is
+    /// legitimate data even though it describes no transaction.
+    ///
+    /// Failing this gate is what routes an observation to the unassigned queue rather
+    /// than into the ledger.
     pub(crate) fn evaluate_mandatory_field_gate(
         obs: &crate::extraction::ladder::ExtractionResult,
     ) -> bool {
@@ -769,10 +643,11 @@ impl MessageProcessor {
         (has_amount && has_entity && has_instrument) || has_balance
     }
 
-    /// Structured gate3_failed reason code (missing_amount / missing_counterparty
-    /// / missing_instrument, Doc 30 TASK-GMAIL-006) for the audit trail — only
-    /// meaningful to call when `evaluate_mandatory_field_gate` has already
-    /// returned `false`.
+    /// Names precisely which part of gate 3 failed.
+    ///
+    /// Ordered by dependency: a missing amount is reported before a missing
+    /// counterparty, because the amount is the more fundamental absence. The specific
+    /// reason drives the diagnosis the user is shown in the unassigned queue.
     pub(crate) fn gate3_failure_reason(
         obs: &crate::extraction::ladder::ExtractionResult,
     ) -> &'static str {
@@ -789,13 +664,11 @@ impl MessageProcessor {
         }
     }
 
-    /// `approved_senders`: user-confirmed domains that repeatedly failed
-    /// string-based verification (see `db::sender_reputation::PendingSenderRow`,
-    /// the runtime learning-loop layer alongside the compiled-in registry
-    /// JSON) -- checked before the registry so a manually-approved sender
-    /// isn't still rejected by the same heuristics that flagged it originally.
-    /// `bank_overrides`: user-reported "this sender's bank is wrong"
-    /// corrections. Relabel-only -- see [`Self::apply_bank_override`].
+    /// Gate 2: verifies sender identity from message headers.
+    ///
+    /// Missing headers are an immediate rejection -- authenticity cannot be
+    /// established without them, and an unverifiable sender is treated as untrusted
+    /// rather than given the benefit of the doubt.
     pub(crate) fn evaluate_metadata_gate(
         msg: &Message,
         approved_senders: &[crate::db::sender_reputation::PendingSenderRow],
@@ -840,35 +713,16 @@ impl MessageProcessor {
             get_sender_validator().verify_sender(&email, display_name.as_deref())
         };
 
-        // Cross-check against SPF/DKIM/DMARC (Doc 30 Gate 1 hardening): a
-        // domain-string match alone never proves the message actually
-        // originated from that domain's real infrastructure. Only ever
-        // downgrades Verified* -> SpoofReject; see
-        // `auth_results::apply_auth_results_check` for why it can't be used
-        // to promote a rejection instead.
         let verify_result =
             crate::ingestion::auth_results::apply_auth_results_check(verify_result, headers);
 
-        // Applied last, on purpose: every spoof, typo-squat, homoglyph and
-        // SPF/DKIM/DMARC check has already run and reached a verdict. This only
-        // renames the bank on a verdict that was already an acceptance.
         Self::apply_bank_override(verify_result, &domain, bank_overrides)
     }
 
-    /// Applies a user-reported bank relabel to an already-decided verification
-    /// result.
+    /// Applies a user-configured sender-to-bank override.
     ///
-    /// **Relabel only.** A rejected sender stays rejected and `VerifiedNoise`
-    /// stays noise -- the override changes the *name* on a decision, never the
-    /// decision. This matters because the user's report answers "which bank is
-    /// this?", and treating it as an answer to "is this sender trustworthy?"
-    /// would turn a one-tap naming fix into a domain whitelist.
-    /// `pending_senders` remains the only path that can promote an unverified
-    /// domain, and it asks that question explicitly.
-    ///
-    /// Nothing is lost by this restriction: a sender that never passes the gate
-    /// never produces a transaction, so there is no row for a user to report a
-    /// wrong bank on in the first place.
+    /// The manual correction path, which takes precedence over automatic
+    /// identification because the user has explicitly stated the truth.
     pub(crate) fn apply_bank_override(
         result: SenderVerificationResult,
         domain: &str,
@@ -889,10 +743,7 @@ impl MessageProcessor {
         }
     }
 
-    /// Pulls just the sender's domain out of a *metadata*-format message's
-    /// From header, for the reputation/approved-senders lookups that must
-    /// happen before `evaluate_metadata_gate` runs (it needs `pool`, which
-    /// that function deliberately doesn't take -- see its doc comment).
+    /// Extracts the sending domain from a message.
     pub(crate) fn extract_sender_domain(msg: &Message) -> Option<String> {
         let headers = msg.payload.as_ref()?.headers.as_ref()?;
         let from_header = headers
@@ -909,9 +760,10 @@ impl MessageProcessor {
         }
     }
 
-    /// Extracts clean email address and domain from an email header (e.g. "From" or "To").
-    /// Handles display names ("Display Name" <email@domain.com>), multiple comma-separated addresses,
-    /// subdomains, bare email addresses, and invalid formats.
+    /// Parses an address and domain out of a header value.
+    ///
+    /// Strips a leading `From:`/`To:` label, which appears when the value comes from
+    /// a forwarded or re-serialised message rather than a raw header.
     pub fn extract_email_and_domain(header_val: &str) -> (Option<String>, Option<String>) {
         let mut trimmed = header_val.trim();
         if trimmed.is_empty() {
@@ -958,13 +810,7 @@ impl MessageProcessor {
         (Some(email_clean), None)
     }
 
-    /// Short tag persisted to `sender_reputation.last_verification_result`
-    /// (and used to decide `verified_pass_count`) -- see
-    /// `db::sender_reputation::record_sighting`.
-    /// Spec optimization #2's Gate 2b test: "transaction, statement, or
-    /// mandate" — every `ContentClass` that justifies paying for a full-body
-    /// fetch. Everything else (`Noise`/`Unknown`/`Otp`/`Kyc`/`Marketing`/
-    /// `Reminder`) is rejected off metadata alone.
+    /// Whether a content class could plausibly describe a transaction.
     fn content_class_may_be_transactional(class: &ContentClass) -> bool {
         matches!(
             class,
@@ -976,12 +822,7 @@ impl MessageProcessor {
         )
     }
 
-    /// Spec optimization #5: `Noise`/`Unknown` is Gate 2's "I don't know"
-    /// bucket, not a confident rejection like `Otp`/`Marketing`/`Kyc`/
-    /// `Reminder` — a heuristic misfire here must be recoverable, not a hard
-    /// delete. Best-effort: a DB error recording the ignore must not fail
-    /// the caller's early-return (matches `log_rejection`'s existing
-    /// best-effort framing elsewhere in this file).
+    /// Records a message dismissed as noise, so a rescan skips it cheaply.
     async fn record_ignored_noise(
         pool: &Pool,
         scan_batcher: Option<&ScanBatcherHandle>,
@@ -1008,9 +849,7 @@ impl MessageProcessor {
         }
     }
 
-    /// Metadata-format messages only carry a `headers` array on `payload`
-    /// (no body) — same shape `evaluate_metadata_gate`/`extract_sender_domain`
-    /// already read, factored out here since Gate 2a needs the Subject too.
+    /// Reads one header value from a message, or empty if absent.
     pub(crate) fn header_value(msg: &Message, name: &str) -> String {
         msg.payload
             .as_ref()
@@ -1020,6 +859,7 @@ impl MessageProcessor {
             .unwrap_or_default()
     }
 
+    /// Short tag naming the verification outcome, for logs and telemetry.
     fn classification_tag(result: &SenderVerificationResult) -> &'static str {
         match result {
             SenderVerificationResult::VerifiedTransactionCandidate(_) => {
@@ -1034,13 +874,10 @@ impl MessageProcessor {
         }
     }
 
-    /// Whether the metadata-format message's Subject line alone looks like a
-    /// transaction alert -- the same signal `evaluate_metadata_gate`'s
-    /// subject-rescue fallback uses, re-derived here (not passed out of that
-    /// function) so a rejected sender's pending-promotion candidacy
-    /// (`db::sender_reputation::record_rejection_candidate`) only ever
-    /// covers domains that plausibly look like a real bank alert, not every
-    /// rejected domain indiscriminately.
+    /// Whether the subject alone suggests a transaction.
+    ///
+    /// A cheap pre-filter applied before the body is fetched, since retrieving full
+    /// message bodies is the expensive part of a scan.
     fn subject_looks_like_transaction(msg: &Message) -> bool {
         let Some(headers) = msg.payload.as_ref().and_then(|p| p.headers.as_ref()) else {
             return false;
@@ -1057,6 +894,7 @@ impl MessageProcessor {
         )
     }
 
+    /// Splits a From header into display name and address.
     fn parse_from_header(from: &str) -> (String, Option<String>) {
         if let (Some(start), Some(end)) = (from.find('<'), from.rfind('>')) {
             if start < end {
@@ -1075,10 +913,10 @@ impl MessageProcessor {
             }
         }
 
-        // No angle brackets, assume the whole string is the email
         (from.trim().to_string(), None)
     }
 
+    /// Records why a message was rejected, feeding sender reputation.
     async fn log_rejection(
         pool: &Pool,
         scan_batcher: Option<&ScanBatcherHandle>,
@@ -1109,16 +947,10 @@ impl MessageProcessor {
         Ok(())
     }
 
-    /// Doc 30 TASK-TXN-001 / spec optimization #1: "never silently drop data
-    /// Gate 2 believed was a transaction." Called both when extraction found
-    /// nothing at all (`obs = ExtractionResult::default()`) and when Gate 3's
-    /// mandatory-field check rejected a *partial* extraction (missing amount
-    /// or counterparty) — the latter previously bypassed this function
-    /// entirely and was audit-logged only, discarding whatever fields *were*
-    /// found. Reuses `normalize_observation` (the same obs -> row conversion
-    /// the successful-extraction path uses via
-    /// `queues::process_transaction_job`) so a partial extraction keeps
-    /// every field it actually resolved, not just the raw body.
+    /// Records a transaction that could not be attributed to an instrument.
+    ///
+    /// Held for the user to resolve rather than guessed into an account, which would
+    /// silently corrupt that account's balance.
     pub(crate) async fn record_unassigned_transaction(
         pool: &Pool,
         message_id: &str,
@@ -1176,10 +1008,7 @@ impl MessageProcessor {
         })
     }
 
-    /// Takes the `Message` itself rather than a `serde_json::Value`: only
-    /// `snippet` and two headers are ever read out of it, and serialising the
-    /// whole message (base64 body included) per call just to read three fields
-    /// was pure waste on every message the scan touched.
+    /// Appends a line to the scan log, for diagnosing a scan after the fact.
     async fn append_to_scan_log(
         message_id: &str,
         decision: &str,
