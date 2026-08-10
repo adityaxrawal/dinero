@@ -1,9 +1,13 @@
+/**
+ * Header of the inspector, showing the instrument and close control.
+ */
 import { X, ExternalLink } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const ICON_BUTTON =
   'w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-[#064E3B]/10 text-[#064E3B]/70 hover:text-[#064E3B] cursor-pointer';
 
+/** Header showing the instrument and close control. */
 export default function InspectorHeader({
   issuerName,
   maskedIdentifier,

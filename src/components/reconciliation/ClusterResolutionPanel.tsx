@@ -1,3 +1,6 @@
+/**
+ * Actions for resolving a cluster: confirm, reject, keep separate, defer.
+ */
 import { useReconciliationCluster } from '@/hooks/queries/useReconciliationCluster';
 import { useResolveClusterActions } from '@/hooks/useResolveClusterActions';
 import { summarizeClusterDiff } from '@/lib/clusterDiff';
@@ -13,14 +16,13 @@ import {
 
 interface ClusterResolutionPanelProps {
   clusterId: string | undefined;
-  /** Lighter row from the list query, rendered instantly while the full detail fetch is in flight. */
   initialCluster?: ClusterRecord;
   onResolved: () => void;
-  /** Full unresolved-cluster list, only needed to show "N of M" + prev/next queue navigation. */
   queueClusters?: ClusterRecord[] | undefined;
   onNavigate?: ((clusterId: string) => void) | undefined;
 }
 
+/** The four resolution verdicts, each with its consequence stated. */
 export default function ClusterResolutionPanel({
   clusterId,
   initialCluster,

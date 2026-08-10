@@ -1,8 +1,12 @@
+/**
+ * Displays a stored statement PDF.
+ */
 import { useEffect, useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { API } from '@/lib/ipc';
 import { useToast } from '@/hooks/use-toast';
 
+/** Converts base64 PDF bytes into a blob for display. */
 function base64ToBlob(base64: string): Blob {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
@@ -12,6 +16,7 @@ function base64ToBlob(base64: string): Blob {
   return new Blob([bytes], { type: 'application/pdf' });
 }
 
+/** Displays a stored statement PDF. */
 export default function StatementPdfViewerModal({
   statementId,
   open,

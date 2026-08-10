@@ -1,3 +1,9 @@
+/**
+ * Inspector for a transaction that could not be attributed to an instrument.
+ *
+ * Pairs a diagnosis of why attribution failed with the form to resolve it, so the
+ * user understands the cause rather than only being asked to fix the symptom.
+ */
 import { X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { UnassignedTransactionRecord } from '@/lib/ipc';
@@ -16,6 +22,7 @@ interface UnassignedInspectorProps {
   inline?: boolean;
 }
 
+/** Header for the unassigned inspector. */
 function InspectorHeader({ title, inline, onClose }: { title: string; inline: boolean; onClose: () => void }) {
   return (
     <div
@@ -41,6 +48,12 @@ function InspectorHeader({ title, inline, onClose }: { title: string; inline: bo
   );
 }
 
+/**
+ * Inspector for a transaction that could not be attributed.
+ *
+ * Pairs a diagnosis of why attribution failed with the form to resolve it, so
+ * the user understands the cause rather than only the symptom.
+ */
 export default function UnassignedInspector({
   record,
   onClose,

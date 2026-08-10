@@ -1,3 +1,6 @@
+/**
+ * Editable statement metadata within the review dialog.
+ */
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { DatePicker } from '@/components/ui/date-picker';
@@ -18,6 +21,7 @@ const MONEY_FIELDS: { id: string; label: string; field: MoneyField }[] = [
   { id: 'rm-min-due', label: 'Minimum due (₹)', field: 'minimumDue' },
 ];
 
+/** Editable statement metadata within the review dialog. */
 export default function DraftMetadataForm({
   metadata,
   onChange,

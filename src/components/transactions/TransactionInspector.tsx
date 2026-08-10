@@ -1,3 +1,9 @@
+/**
+ * Side panel for viewing and editing one transaction.
+ *
+ * Combines the editable fields with source evidence, so a correction can be made
+ * against the original message rather than from memory.
+ */
 import { useState, useEffect } from 'react';
 import {
   X,
@@ -56,6 +62,7 @@ interface TransactionInspectorProps {
 const INK = '#064E3B';
 const CREAM = '#F8E7C9';
 
+/** Titled card grouping one section of the inspector. */
 function SectionCard({
   title,
   icon,
@@ -114,7 +121,7 @@ function SectionCard({
 const DEBIT_COLOR = '#dc2626';
 const CREDIT_COLOR = '#059669';
 
-/** One of the grey pills under the amount (category, subtype, channel). */
+/** Small pill for a single piece of transaction metadata. */
 function MetaChip({ children, className }: { children: React.ReactNode; className?: string }) {
   return (
     <span
@@ -128,10 +135,7 @@ function MetaChip({ children, className }: { children: React.ReactNode; classNam
   );
 }
 
-/**
- * The amount headline: an inline-editable figure, a debit/credit toggle, the
- * posting status, and the descriptive chips beneath.
- */
+/** One prominent figure in the inspector header. */
 function HeroStat({
   show,
   tx,
@@ -213,6 +217,12 @@ function HeroStat({
   );
 }
 
+/**
+ * Row of metadata chips: channel, reference, status.
+ *
+ * Each chip renders only when its value exists, so a sparsely extracted
+ * transaction shows a short row rather than a line of empty placeholders.
+ */
 function MetaChipRow({
   tx,
   category,
@@ -256,6 +266,7 @@ function MetaChipRow({
   );
 }
 
+/** Tab bar switching between details, evidence and EMI panels. */
 function InspectorTabs({
   tabs,
   activeTab,
@@ -308,6 +319,12 @@ function InspectorTabs({
   );
 }
 
+/**
+ * Tag editing within the inspector.
+ *
+ * Suggests existing tags while typing, which is what stops near-duplicate tags
+ * accumulating from small spelling differences.
+ */
 function InspectorTagEditor({
   tags,
   availableTags,
@@ -383,6 +400,7 @@ function InspectorTagEditor({
 
 type TransactionForm = ReturnType<typeof useTransactionForm>;
 
+/** The editable field set: merchant, category, amount, date, instrument, notes. */
 function DetailsPanel({
   show,
   tx,
@@ -401,12 +419,9 @@ function DetailsPanel({
   if (!show) return null;
   return (
     <div id="panel-details" role="tabpanel" className="space-y-4 animate-in fade-in-50 duration-200">
-      {/* 1. Transaction Metadata & Editing */}
       <SectionCard title="Metadata & Categorization" icon={<SlidersHorizontal className="w-3.5 h-3.5" />}>
         <div className="p-4 space-y-4">
-          {/* 2-Column Grid for Merchant Name & Category */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {/* Merchant Name */}
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
                 <Label htmlFor="insp-form.merchant" className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70">
@@ -430,7 +445,6 @@ function DetailsPanel({
               />
             </div>
 
-            {/* Category Selection */}
             <div className="space-y-1.5">
               <Label htmlFor="insp-category" className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70">
                 Category
@@ -445,7 +459,6 @@ function DetailsPanel({
             </div>
           </div>
 
-          {/* Notes */}
           <div className="space-y-1.5">
             <Label htmlFor="insp-notes" className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70">
               Notes
@@ -471,7 +484,6 @@ function DetailsPanel({
         </div>
       </SectionCard>
 
-      {/* 2. Payment Instrument & Balance */}
       <SectionCard title="Payment Instrument & Balance" icon={<Building2 className="w-3.5 h-3.5" />}>
         <InstrumentSelect
           instrumentId={form.instrumentId}
@@ -484,7 +496,6 @@ function DetailsPanel({
         )}
       </SectionCard>
 
-      {/* 3. Audit & Technical Specifications */}
       <SectionCard
         title="Audit & Technical Specs"
         icon={<ShieldCheck className="w-3.5 h-3.5" />}
@@ -507,6 +518,12 @@ function DetailsPanel({
   );
 }
 
+/**
+ * Save and delete actions.
+ *
+ * Save is enabled only while the form is dirty, so an unchanged form cannot
+ * issue a pointless write.
+ */
 function InspectorFooter({
   show,
   isDirty,
@@ -600,6 +617,7 @@ function InspectorFooter({
   );
 }
 
+/** Header showing the transaction's headline amount, merchant and close control. */
 function InspectorHeader({
   tx,
   onOpenFullPage,
@@ -656,6 +674,7 @@ function InspectorHeader({
   );
 }
 
+/** Placeholder shown while the transaction detail query is in flight. */
 function InspectorLoading() {
   return (
     <div className="flex flex-col items-center justify-center py-16 gap-3" role="status">
@@ -665,6 +684,12 @@ function InspectorLoading() {
   );
 }
 
+/**
+ * Provenance panel: the source observations behind this transaction.
+ *
+ * Lets a user check a suspect value against what the bank actually sent, rather
+ * than trusting the extracted figure.
+ */
 function EvidencePanel({
   show,
   transactionId,
@@ -688,6 +713,7 @@ function EvidencePanel({
   );
 }
 
+/** Instalment timeline, rendered only for transactions in an EMI group. */
 function EmiPanel({ show, emiGroupId }: { show: boolean; emiGroupId: string | null }) {
   if (!show || !emiGroupId) return null;
   return (
@@ -698,9 +724,11 @@ function EmiPanel({ show, emiGroupId }: { show: boolean; emiGroupId: string | nu
 }
 
 /**
- * Right-side inspector panel that slides in when a transaction is selected.
- * Contains full transaction detail viewing, inline field editing (merchant, category,
- * notes, tags), source evidence analysis, and EMI timeline.
+ * Side panel for viewing and editing one transaction.
+ *
+ * Composes header, tabs and footer around whichever panel is selected. Form
+ * state and mutations live in dedicated hooks, so this file stays concerned with
+ * layout and leaves persistence logic elsewhere.
  */
 export default function TransactionInspector({
   transactionId,
@@ -732,7 +760,6 @@ export default function TransactionInspector({
     handleDelete,
   } = form;
 
-  // Reset tab when new transaction selected
   useEffect(() => {
     setActiveTab('details');
   }, [transactionId]);
@@ -755,14 +782,12 @@ export default function TransactionInspector({
       role="complementary"
       aria-label="Transaction detail"
     >
-      {/* ── Header Bar ───────────────────────────────────────── */}
       <InspectorHeader
         tx={tx}
         onOpenFullPage={() => navigate(`/transactions/${transactionId}`)}
         onClose={onClose}
       />
 
-      {/* ── Sub Header / Hero Stat Card ────────────────────── */}
       <HeroStat
         show={!isLoading && !!tx}
         tx={tx}
@@ -776,7 +801,6 @@ export default function TransactionInspector({
 
       <InspectorTabs tabs={TABS} activeTab={activeTab} onSelect={setActiveTab} />
 
-      {/* ── Main Tab Content Scroll Area ────────────────────── */}
       <InspectorBody
         form={form}
         transactionId={transactionId}
@@ -786,7 +810,6 @@ export default function TransactionInspector({
         setIsAuditOpen={setIsAuditOpen}
       />
 
-      {/* ── Sticky Action Footer ─────────────────────────────── */}
       <InspectorFooter
           show={!isLoading && !!tx}
           isDirty={isDirty}
@@ -801,10 +824,16 @@ export default function TransactionInspector({
   );
 }
 
-
-/** Cmd/Ctrl + S saves, but only when there is something to save. */
+/**
+ * Binds Cmd/Ctrl+S to save while the form has unsaved changes.
+ *
+ * Gated on dirtiness so the shortcut cannot fire a redundant write, and so the
+ * browser's own save dialog is only suppressed when there is genuinely something
+ * to save.
+ */
 function useSaveShortcut(isDirty: boolean, handleSave: () => void) {
   useEffect(() => {
+    /** Intercepts Cmd/Ctrl+S so the browser's save dialog does not open. */
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 's') {
         e.preventDefault();
@@ -816,7 +845,7 @@ function useSaveShortcut(isDirty: boolean, handleSave: () => void) {
   }, [isDirty, handleSave]);
 }
 
-/** The scrolling tab content: exactly one of the three panels is visible. */
+/** Routes the selected tab to its panel. */
 function InspectorBody({
   form,
   transactionId,

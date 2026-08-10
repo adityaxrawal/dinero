@@ -1,3 +1,6 @@
+/**
+ * Progress bar for an in-flight cleanup run.
+ */
 import type { MerchantCleanupProgress } from '@/lib/ipc';
 import { cn } from '@/lib/utils';
 
@@ -6,6 +9,7 @@ const BAR_TONE: Record<string, string> = {
   cancelled: 'bg-amber-500',
 };
 
+/** Progress bar for an in-flight run. */
 export default function CleanupProgressBar({
   progress,
   pct,

@@ -1,3 +1,6 @@
+/**
+ * Transactions attributed to this instrument.
+ */
 import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loader2, Search, X } from 'lucide-react';
@@ -7,6 +10,7 @@ import type { useInstrumentForm } from '../useInstrumentForm';
 type Form = ReturnType<typeof useInstrumentForm>;
 type Transactions = Form['recentTransactions'];
 
+/** Search within this instrument's transactions. */
 function SearchBar({
   query,
   onChange,
@@ -49,6 +53,7 @@ function SearchBar({
   );
 }
 
+/** Filters transactions by the search term. */
 function useFilteredTransactions(transactions: Transactions, query: string) {
   return useMemo(() => {
     if (!query.trim()) return transactions;
@@ -62,6 +67,7 @@ function useFilteredTransactions(transactions: Transactions, query: string) {
   }, [transactions, query]);
 }
 
+/** Transactions attributed to this instrument. */
 export default function TransactionsTab({
   form,
   instrumentId,

@@ -1,16 +1,19 @@
+/**
+ * Prompts for the password of an encrypted statement PDF.
+ *
+ * Raised by the backend during parsing. The source email is shown alongside,
+ * because banks commonly state the password rule in that very message.
+ */
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { useStatementPasswordPrompt } from './passwordPrompt/useStatementPasswordPrompt';
 import EmailContextPane from './passwordPrompt/EmailContextPane';
 import PasswordForm from './passwordPrompt/PasswordForm';
 
 /**
- * TASK-FE-012 (Doc 30): triggered by the backend's `statement_password_required`
- * event — GlobalStateContext owns that event listener + the 2.5-minute
- * countdown state (a genuinely global concern: the event can fire while the
- * user isn't even on the Statements page, e.g. during a background
- * historical scan), this component is purely the extracted modal UI over
- * that existing, already-correct state. Shows clear wrong-password retry
- * messaging.
+ * Prompts for an encrypted statement's password.
+ *
+ * The source email is shown alongside, because banks commonly state the password
+ * rule in that very message.
  */
 export default function PasswordPromptModal({ onUnlocked }: { onUnlocked: () => void }) {
   const prompt = useStatementPasswordPrompt(onUnlocked);

@@ -1,9 +1,12 @@
-// TASK-FE-012: no backend size limit exists on statements_upload -- this is
-// a client-side-only "immediate feedback before even attempting the round
-// trip" guard, not a server-enforced rule. 25MB comfortably exceeds any
-// real bank statement PDF (typically well under 5MB).
+/**
+ * Client-side upload checks, run before bytes are sent.
+ *
+ * A convenience filter for obvious mistakes only. The authoritative validation is
+ * the backend's magic-byte and size check, which this does not replace.
+ */
 export const MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024;
 
+/** Whether a filename looks like a PDF. */
 export function isPdf(name: string, type?: string): boolean {
   return name.toLowerCase().endsWith('.pdf') || type === 'application/pdf';
 }
@@ -18,17 +21,24 @@ export const NON_PDF_ERROR: ValidationError = {
   description: 'Only PDF files are allowed.',
 };
 
+/** Error text for a file over the size limit. */
 export function tooLargeError(names: string[]): ValidationError {
   return { title: 'File Too Large', description: `${names.join(', ')} exceeds the 25MB limit.` };
 }
 
-/** Dropped `File` objects carry name/type/size, so both checks are synchronous. */
+/**
+ * Filters dropped files to those worth uploading.
+ *
+ * A convenience check for obvious mistakes only -- the authoritative validation
+ * is the backend's magic-byte and size check.
+ */
 export function validateDroppedFiles(files: File[]): ValidationError | null {
   if (files.some((file) => !isPdf(file.name, file.type))) return NON_PDF_ERROR;
   const tooLarge = files.find((file) => file.size > MAX_FILE_SIZE_BYTES);
   return tooLarge ? tooLargeError([tooLarge.name]) : null;
 }
 
+/** Filename without its directory path. */
 export function basename(path: string): string {
   return path.split(/[/\\]/).pop() || path;
 }

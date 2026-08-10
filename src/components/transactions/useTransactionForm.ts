@@ -1,3 +1,6 @@
+/**
+ * Form state for the transaction inspector, including dirty tracking.
+ */
 import { useState } from 'react';
 import { useTransactionDetail } from '@/hooks/queries/useTransactionDetail';
 import { useTransactionTags } from '@/hooks/queries/useTransactionTags';
@@ -8,6 +11,7 @@ import { useTransactionFields } from './useTransactionFields';
 import { useTransactionMutations } from './useTransactionMutations';
 import { isForeignCurrencyTransaction, transactionAmount } from './transactionFormFields';
 
+/** Form state for the transaction inspector, with dirty tracking. */
 export function useTransactionForm(transactionId: string | undefined, onClose?: () => void) {
   const { data: detail, isLoading } = useTransactionDetail(transactionId);
   const { data: tags = [] } = useTransactionTags(transactionId);

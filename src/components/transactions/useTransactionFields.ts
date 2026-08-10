@@ -1,3 +1,6 @@
+/**
+ * Field-level state and validation for transaction editing.
+ */
 import { useState, useEffect } from 'react';
 import type { CanonicalTransaction } from '@/lib/ipc';
 import { fieldsFromTransaction, type TransactionFields } from './transactionFormFields';
@@ -12,11 +15,7 @@ const EMPTY: TransactionFields = {
   instrumentId: '',
 };
 
-/**
- * The editable copy of a transaction, plus whether it still matches what the
- * server has. Held as one record rather than seven `useState` pairs so that
- * loading, resetting and dirty-checking are each a single expression.
- */
+/** Field-level state and validation for transaction editing. */
 export function useTransactionFields(tx: CanonicalTransaction | undefined, loaded: boolean) {
   const [fields, setFields] = useState<TransactionFields>(EMPTY);
   const [showSavedConfirm, setShowSavedConfirm] = useState(false);

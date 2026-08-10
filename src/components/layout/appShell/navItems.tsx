@@ -1,3 +1,9 @@
+/**
+ * Declares the navigation entries and the active-route matcher.
+ *
+ * Structure as data, so adding a screen means adding an entry rather than
+ * editing layout markup.
+ */
 import { useLocation } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -10,6 +16,7 @@ import {
 } from 'lucide-react';
 import type { NavItem } from './SidebarItem';
 
+/** Builds the navigation groups, including counts and dev-only entries. */
 export function buildNavGroups(unresolvedClusters: number, badgePulse: boolean) {
   return [
     {
@@ -48,7 +55,11 @@ export const SYSTEM_ITEMS: NavItem[] = [
     : []),
 ];
 
-/** `/` only matches exactly; every other route matches its subtree. */
+/**
+ * Returns a predicate for whether a route is currently active.
+ *
+ * Prefix matching, so a detail route keeps its parent nav item highlighted.
+ */
 export function useIsActive() {
   const location = useLocation();
   return (path: string) =>

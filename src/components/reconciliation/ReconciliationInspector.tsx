@@ -1,3 +1,6 @@
+/**
+ * Inspector panel for a single reconciliation cluster.
+ */
 import { X } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
@@ -9,11 +12,11 @@ interface ReconciliationInspectorProps {
   cluster: ClusterRecord | undefined;
   onClose: () => void;
   inline?: boolean;
-  /** Full unresolved-cluster list, only needed to show "N of M" + prev/next queue navigation. */
   queueClusters?: ClusterRecord[];
   onNavigate?: (clusterId: string) => void;
 }
 
+/** Inspector panel for a single reconciliation cluster. */
 export default function ReconciliationInspector({
   cluster,
   onClose,

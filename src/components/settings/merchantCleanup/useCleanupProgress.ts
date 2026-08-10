@@ -1,25 +1,22 @@
+/**
+ * Subscribes to live progress events for a running cleanup.
+ */
 import { useState, useRef, useMemo } from 'react';
 import type { MerchantCleanupProgress } from '@/lib/ipc';
 import { useIpcListen } from '@/hooks/useIpcListen';
 import { useNowTicker } from '@/hooks/useNowTicker';
 import { formatClock, formatDuration, FEED_LENGTH, type FeedEntry } from './format';
 
-/** Live run state: the progress payload, the answer feed, and measured rate. */
+/** Subscribes to live progress events for a running cleanup. */
 export function useCleanupProgress({ running, onRunEnd }: { running: boolean; onRunEnd: () => void }) {
   const [progress, setProgress] = useState<MerchantCleanupProgress | null>(null);
   const [feed, setFeed] = useState<FeedEntry[]>([]);
-  /** Wall-clock start of the current run, for elapsed and measured rate. */
-  // State, not a ref: the elapsed/throughput/ETA readout is derived from this,
-  // so it has to participate in rendering. Every write already coincides with a
-  // `setProgress`/`setError` in the same handler, so this adds no extra render.
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const feedKey = useRef(0);
 
   useIpcListen<MerchantCleanupProgress>('merchant_cleanup_progress', (payload) => {
     setProgress(payload);
     if (payload.status === 'running') {
-      // Functional form: this listener closure would otherwise read a stale
-      // `startedAt` and restart the clock on every progress tick.
       setStartedAt((prev) => prev ?? Date.now());
     }
     if (payload.current_merchant) {
@@ -41,7 +38,6 @@ export function useCleanupProgress({ running, onRunEnd }: { running: boolean; on
   const isRunning = progress?.status === 'running' || running;
   const now = useNowTicker(isRunning);
 
-  /** Measured throughput, which is the only honest basis for an ETA. */
   const live = useMemo(() => {
     if (!progress || startedAt === null) return null;
     const elapsedMs = now - startedAt;

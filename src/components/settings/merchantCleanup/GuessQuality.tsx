@@ -1,12 +1,16 @@
+/**
+ * Indicates how confident the model was in a proposed merchant name.
+ *
+ * Surfacing confidence is what lets the user scrutinise the weak guesses rather
+ * than reviewing every change equally.
+ */
 import { cn } from '@/lib/utils';
 
 /**
- * How wrong the parser's guess probably is.
+ * Shows the model's confidence in a proposed merchant name.
  *
- * Deliberately not `ConfidenceMeter`: everything in this queue scored below the
- * 0.60 threshold, so a 0-to-1 scale collapses every row onto its bottom band and
- * says "Weak" eight times over. What the user needs here is ordering *within*
- * the bad range, and wording about the guess rather than about trustworthiness.
+ * Surfacing confidence lets the user scrutinise the weak guesses rather than
+ * reviewing every change equally.
  */
 export default function GuessQuality({ confidence }: { confidence: number }) {
   const [label, tone] =

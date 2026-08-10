@@ -1,3 +1,6 @@
+/**
+ * Drag-and-drop upload target for statement PDFs.
+ */
 import { useState } from 'react';
 import { UploadCloud } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
@@ -9,23 +12,7 @@ interface StatementUploadDropzoneProps {
   onUploaded: () => void;
 }
 
-/**
- * TASK-FE-012 (Doc 30): drag-and-drop/file-picker calling `statements_upload`,
- * with immediate validation error surfacing (non-PDF, too large, duplicate).
- * Non-PDF and too-large are checked client-side before any upload attempt;
- * duplicate detection is inherently server-side (TASK-STMT-002) — surfaced
- * distinctly from other failures as soon as the (single) round trip returns,
- * rather than lumped into a generic error message.
- *
- * Area 9 verification-pass fix: Doc 30 also asks for "a queued state for
- * items beyond the backend's 5-concurrent-parser cap (TASK-STMT-009)" —
- * the real `statement_batch_progress` event (`queues.rs`'s
- * `BatchProgressTracker`, emitted for batches over 10 files) existed with
- * zero frontend listeners anywhere, so a large batch showed a static
- * "Uploading…" spinner for the whole multi-minute duration with no
- * indication of how many statements were still waiting on the 5-permit
- * semaphore. Now shown via `GlobalStateContext`'s `batchProgress`.
- */
+/** Drag-and-drop upload target for statement PDFs. */
 export default function StatementUploadDropzone({ onUploaded }: StatementUploadDropzoneProps) {
   const { isUploading, batchProgress, pickAndUpload, dropFiles } = useStatementUpload(onUploaded);
   const [isDragging, setIsDragging] = useState(false);

@@ -1,3 +1,9 @@
+/**
+ * The card-styled header representing an instrument.
+ *
+ * Rendered to resemble the physical card so an account is recognised at a glance
+ * rather than read.
+ */
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
@@ -15,6 +21,7 @@ interface InstrumentCardHeroProps {
   instrument: InstrumentRecord;
 }
 
+/** Card-styled header, rendered to resemble the physical card. */
 export default function InstrumentCardHero({ instrument }: InstrumentCardHeroProps) {
   const { toast } = useToast();
   const [copied, setCopied] = useState(false);
@@ -23,6 +30,7 @@ export default function InstrumentCardHero({ instrument }: InstrumentCardHeroPro
   const balance = instrument.current_balance ?? 0;
   const absBalance = Math.abs(balance);
 
+  /** Copies the masked identifier. */
   const handleCopyIdentifier = () => {
     const textToCopy = instrument.full_identifier || instrument.masked_identifier || '';
     if (!textToCopy) return;
@@ -43,7 +51,6 @@ export default function InstrumentCardHero({ instrument }: InstrumentCardHeroPro
         theme.gradient
       )}
     >
-      {/* Background Micro Decorative Grid & Glow */}
       <div className="absolute -right-10 -bottom-10 w-44 h-44 rounded-full bg-white/[0.04] blur-2xl pointer-events-none" />
       <div className="absolute -left-10 -top-10 w-36 h-36 rounded-full bg-white/[0.03] blur-xl pointer-events-none" />
 

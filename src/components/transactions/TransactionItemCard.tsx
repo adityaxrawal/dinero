@@ -1,3 +1,6 @@
+/**
+ * One transaction row in the ledger list.
+ */
 import React from 'react';
 import {ArrowUpRight, ArrowDownRight, ChevronRight} from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -11,6 +14,7 @@ interface TransactionItemCardProps {
   compact?: boolean;
 }
 
+/** One transaction row in the ledger list. */
 export default function TransactionItemCard({
   transaction,
   onClick,
@@ -19,9 +23,6 @@ export default function TransactionItemCard({
   const formattedMerchant = formatMerchantName(transaction.merchant);
   const visuals = getMerchantCategoryVisuals(transaction.category, transaction.merchant);
 
-  // Amount sign logic:
-  // Negative amount -> Expense / Debit (-₹)
-  // Positive amount -> Credit / Refund (+₹)
   const isExpense = transaction.amount < 0 || transaction.direction === 'debit';
   const absAmount = Math.abs(transaction.amount);
 
@@ -34,7 +35,6 @@ export default function TransactionItemCard({
         compact && 'p-2.5 rounded-xl'
       )}
     >
-      {/* Left Column: Category Avatar + Merchant Details */}
       <div className="flex items-center gap-3 min-w-0 pr-2">
         <div
           className={cn(
@@ -83,7 +83,6 @@ export default function TransactionItemCard({
         </div>
       </div>
 
-      {/* Right Column: Amount + Direction Indicator + Chevron */}
       <div className="flex items-center gap-2 shrink-0">
         <div className="text-right">
           <div className="flex items-center justify-end gap-1">

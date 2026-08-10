@@ -1,7 +1,9 @@
+/**
+ * Shared sizing and styling constants for the inspector side panels.
+ */
 import { cn } from '@/lib/utils';
 
-/** The slide-out inspector shell, shared by the instrument and unassigned
- *  panels. `inline` renders the same content as a full-width page instead. */
+/** Shared classes for inspector side panels. */
 export function inspectorPanelClasses(inline: boolean, isOpen: boolean): string {
   return cn(
     !inline && 'inspector-panel',
@@ -11,6 +13,7 @@ export function inspectorPanelClasses(inline: boolean, isOpen: boolean): string 
   );
 }
 
+/** Shared inline sizing for inspector side panels. */
 export function inspectorPanelStyle(inline: boolean, isOpen: boolean): React.CSSProperties {
   return inline
     ? { backgroundColor: '#F8E7C9' }

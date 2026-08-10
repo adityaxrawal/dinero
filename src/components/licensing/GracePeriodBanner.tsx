@@ -1,3 +1,9 @@
+/**
+ * Warns that payment failed and access will end when grace elapses.
+ *
+ * Escalates in urgency as the deadline nears, so a user is not surprised by a
+ * lockout that was signalled only quietly.
+ */
 import { useState, useEffect } from 'react';
 import { AlertTriangle, Loader2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -5,35 +11,9 @@ import { isGraceUrgent } from './isGraceUrgent';
 import { useLicenseStore } from '@/stores/useLicenseStore';
 import { useLicenseRefresh } from '@/hooks/useLicenseRefresh';
 
-/**
- * TASK-FE-016 (Doc 30): "dismissable-but-recurring, showing days remaining
- * in the offline grace window and a 'Retry validation now' button wired to
- * license_validate [real name: license_refresh, Document 19 §14.4 --
- * license_validate doesn't exist]." Reactive off `useLicenseStore`.
- *
- * "Dismissable-but-recurring": dismissal is local component state, not
- * persisted -- it reappears on the next app launch/remount, and
- * immediately if the license leaves and re-enters GRACE (state !== 'GRACE'
- * resets the dismissed flag), rather than being permanently suppressed by
- * a single click the way a one-time toast would be.
- *
- * Rendered in the sidebar's "Messages" section (`AppLayout.tsx`) — see
- * `StatementOnlyModeBanner`'s doc comment for why it moved off routed
- * content entirely (a `position: absolute` overlap bug, not a design choice
- * to revert).
- *
- * Doc 30 TASK-BILL-004 (added): escalates from informational amber (Day
- * 1-3 of the 7-day grace window) to a prominent red state with a direct
- * "Update Payment Method" deep link (Day 4-7) -- `daysRemainingInTrial`
- * (the field name is reused from the trial countdown, same underlying
- * `days_remaining` response field, Document 19 §14.1) counts down from 7,
- * so <=3 remaining means >=4 days have already elapsed.
- */
-/// Placeholder until a real Razorpay customer portal URL is provisioned
-/// (Aditya's decision, 2026-07-22) -- swap for the real portal link/deep
-/// route once billing infra is live.
 const PAYMENT_METHOD_PORTAL_URL = 'https://dashboard.razorpay.com/customer-portal';
 
+/** Warns that payment failed and access ends when grace elapses. */
 export default function GracePeriodBanner() {
   const state = useLicenseStore((s) => s.state);
   const daysRemainingInTrial = useLicenseStore((s) => s.daysRemainingInTrial);

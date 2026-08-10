@@ -1,3 +1,6 @@
+/**
+ * One bank's learned rules, grouped into a single card.
+ */
 import { useState } from 'react';
 import { ChevronRight, FileText, Loader2, Mail, Undo2 } from 'lucide-react';
 import type { LearnedRule } from '@/lib/ipc';
@@ -9,6 +12,7 @@ import { ConfidenceMeter, RelativeDate } from '../SettingsPrimitives';
 import { FieldChip, StatusBadge } from './RuleBadges';
 import { describeOrigin, describeReliability, describeRule, rulePattern, shortHash } from './labels';
 
+/** Collapsible technical detail for one rule. */
 function TechnicalDetail({ rule }: { rule: LearnedRule }) {
   const pattern = rulePattern(rule) || '—';
   return (
@@ -33,6 +37,7 @@ function TechnicalDetail({ rule }: { rule: LearnedRule }) {
   );
 }
 
+/** Header for a template format group. */
 function FormatHeader({ group, isLive }: { group: FormatGroup; isLive: boolean }) {
   const primary = group.rules[0];
   return (
@@ -57,6 +62,7 @@ function FormatHeader({ group, isLive }: { group: FormatGroup; isLive: boolean }
   );
 }
 
+/** One rule row, with status, confidence and revert. */
 function FormatRow({
   group,
   onRetire,
@@ -120,6 +126,7 @@ function FormatRow({
   );
 }
 
+/** All of one bank's learned rules, grouped by template. */
 export default function BankCard({
   group,
   defaultOpen,

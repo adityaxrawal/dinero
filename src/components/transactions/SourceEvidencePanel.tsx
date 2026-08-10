@@ -1,3 +1,9 @@
+/**
+ * Shows the source observations behind a canonical transaction.
+ *
+ * Makes provenance inspectable: where each field came from, and how confident
+ * the extraction was.
+ */
 import { useState, useEffect, useMemo } from 'react';
 import { ShieldCheck, Loader2, Mail, MonitorSmartphone } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -12,7 +18,6 @@ import ReportWrongBankDialog from './ReportWrongBankDialog';
 interface SourceEvidencePanelProps {
   transactionId: string;
   observations: TransactionObservation[];
-  /** Issuer this transaction is currently filed under, for the wrong-bank picker. */
   currentBank?: string | null;
 }
 
@@ -29,6 +34,7 @@ interface RawPayload {
   recipient_domain?: string | null;
 }
 
+/** Parses a raw source payload, tolerating malformed JSON. */
 function parseRawPayload(raw: string | null): RawPayload | null {
   if (!raw) return null;
   try {
@@ -38,10 +44,7 @@ function parseRawPayload(raw: string | null): RawPayload | null {
   }
 }
 
-/**
- * Rendered using GmailEmailViewer so the email's exact layout and CSS styles apply
- * inside an isolated canvas, exactly as shown in Gmail.
- */
+/** Renders the original email that produced an observation. */
 function OriginalEmailFrame({ payload }: { payload: RawPayload }) {
   return (
     <div className="rounded-xl overflow-hidden mt-2">
@@ -57,8 +60,7 @@ function OriginalEmailFrame({ payload }: { payload: RawPayload }) {
   );
 }
 
-/** One linked observation: where it came from, how sure we are, and whether
- *  a bank statement independently confirmed it. */
+/** One observation, showing what it contributed and how confidently. */
 function ObservationEvidenceRow({ obs }: { obs: TransactionObservation }) {
   const isStatementSourced = obs.source_pipeline === 'statement_pdf';
   const { label, detail } = evidenceDescription(obs.source_pipeline);
@@ -91,7 +93,7 @@ function ObservationEvidenceRow({ obs }: { obs: TransactionObservation }) {
   );
 }
 
-/** The raw fetched source log, shown only while loading or once non-empty. */
+/** The processing log for this transaction's source. */
 function SourceLogCard({ isLoading, log }: { isLoading: boolean; log: string | null }) {
   return (
     <Card>
@@ -118,6 +120,12 @@ function SourceLogCard({ isLoading, log }: { isLoading: boolean; log: string | n
   );
 }
 
+/**
+ * Shows the provenance behind a canonical transaction.
+ *
+ * Lets a user check a suspect value against what the bank actually sent, rather
+ * than trusting the extracted figure.
+ */
 export default function SourceEvidencePanel({
   transactionId,
   observations,
@@ -128,8 +136,8 @@ export default function SourceEvidencePanel({
 
   useEffect(() => {
     let mounted = true;
+    /** Loads the source processing log on demand. */
     const fetchLog = async () => {
-      // Only fetch if there is a gmail observation
       const hasGmail = observations.some((obs) => obs.source_pipeline?.includes('gmail'));
       if (!hasGmail) return;
 
@@ -153,10 +161,6 @@ export default function SourceEvidencePanel({
     };
   }, [transactionId, observations]);
 
-  // First observation carrying a sanitized original-HTML body -- there is
-  // normally at most one gmail-sourced observation per transaction, but if
-  // several exist (e.g. a merged email+statement match) the first with real
-  // HTML wins rather than picking arbitrarily.
   const originalPayload = useMemo(() => {
     for (const obs of observations) {
       const payload = parseRawPayload(obs.raw_payload_json);
@@ -194,8 +198,6 @@ export default function SourceEvidencePanel({
         </CardContent>
       </Card>
 
-      {/* Original email exactly as it rendered in Gmail -- its own HTML/CSS,
-          not a reformatted summary. */}
       {originalPayload && (
         <Card>
           <CardHeader className="pb-3">
@@ -221,7 +223,6 @@ export default function SourceEvidencePanel({
         </Card>
       )}
 
-      {/* Source Log / Email UI */}
       {(isLoadingLog || sourceLog) && (
         <SourceLogCard isLoading={isLoadingLog} log={sourceLog} />
       )}

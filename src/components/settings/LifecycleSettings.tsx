@@ -1,14 +1,14 @@
+/**
+ * Controls launch-at-login, background sync, and close-versus-quit behaviour.
+ *
+ * These decide whether ingestion continues while the window is closed, which is
+ * what makes transactions appear without the app being open.
+ */
 import { useState, useEffect } from 'react';
 import { Power, RefreshCw } from 'lucide-react';
 import { API } from '@/lib/ipc';
 
-/**
- * TASK-DESK-010 (Doc 30 §12): "Launch at Login" (a real macOS Launch Agent,
- * via `tauri_plugin_autostart`) and "Continue syncing when app is closed"
- * (background-only mode, throttled polling on low battery). Native
- * checkboxes/inputs, matching MenuBarExtraSettings' established precedent
- * of not introducing a new Switch primitive for a handful of toggles.
- */
+/** Launch-at-login, background sync, and battery thresholds. */
 export default function LifecycleSettings() {
   const [launchAtLogin, setLaunchAtLogin] = useState(false);
   const [backgroundSync, setBackgroundSync] = useState(false);
@@ -32,6 +32,7 @@ export default function LifecycleSettings() {
       .finally(() => setIsLoading(false));
   }, []);
 
+  /** Registers or removes the login item. */
   const handleToggleLaunchAtLogin = async (next: boolean) => {
     setIsSavingLaunch(true);
     setLaunchAtLogin(next);
@@ -45,6 +46,7 @@ export default function LifecycleSettings() {
     }
   };
 
+  /** Enables background sync, which keeps ingestion running when the window closes. */
   const handleToggleBackgroundSync = async (next: boolean) => {
     setIsSavingSync(true);
     setBackgroundSync(next);
@@ -58,6 +60,7 @@ export default function LifecycleSettings() {
     }
   };
 
+  /** Sets the battery level below which polling slows. */
   const handleThresholdChange = async (next: number) => {
     setThresholdPercent(next);
     try {

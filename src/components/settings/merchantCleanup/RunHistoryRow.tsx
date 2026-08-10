@@ -1,3 +1,6 @@
+/**
+ * One past run in the history list.
+ */
 import { useState } from 'react';
 import { Loader2, Undo2, ChevronRight } from 'lucide-react';
 import type { MerchantCleanupRun } from '@/lib/ipc';
@@ -6,6 +9,7 @@ import { cn } from '@/lib/utils';
 import { RelativeDate } from '../SettingsPrimitives';
 import RunChangeRow from './RunChangeRow';
 
+/** One past run in the history list. */
 export default function RunHistoryRow({
   run,
   onUndoRun,

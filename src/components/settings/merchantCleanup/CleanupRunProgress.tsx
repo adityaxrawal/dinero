@@ -1,3 +1,6 @@
+/**
+ * Progress detail for the currently running pass.
+ */
 import type { MerchantCleanupProgress, LlmModelInfo } from '@/lib/ipc';
 import type { FeedEntry } from './format';
 import CleanupProgressBar from './CleanupProgressBar';
@@ -10,6 +13,7 @@ interface LiveStats {
   eta: string;
 }
 
+/** Detailed progress for the running pass. */
 export default function CleanupRunProgress({
   progress,
   pct,

@@ -1,7 +1,5 @@
 /**
- * Extracted from SourcePipelineIcon.tsx (was mixed component+function
- * export in one file, which breaks Fast Refresh's component-boundary
- * detection — react-refresh/only-export-components).
+ * Turns an observation's provenance into a readable description.
  */
 export function evidenceDescription(sourceMix: string | null): { label: string; detail: string } {
   const value = (sourceMix || '').toLowerCase();

@@ -1,19 +1,20 @@
+/**
+ * State and submission for the password prompt, including retry handling.
+ */
 import { useCallback, useState, useEffect } from 'react';
 import { API } from '@/lib/ipc';
 import { useGlobalState } from '@/lib/GlobalStateContext';
 
-/**
- * Derived from the IPC call that produces it rather than restated, so a change
- * to the `awaiting_password` shape surfaces here as a type error.
- */
 export type StatementEmailContext = Awaited<
   ReturnType<typeof API.statements.listUnprocessed>
 >['awaiting_password'][number];
 
+/** Turns a failure into readable prompt text. */
 function errorText(error: unknown): string {
   return typeof error === 'string' ? error : ((error as { message?: string })?.message ?? '');
 }
 
+/** State and submission for the password prompt, including retries. */
 export function useStatementPasswordPrompt(onUnlocked: () => void) {
   const {
     passwordModalOpen,
@@ -45,6 +46,7 @@ export function useStatementPasswordPrompt(onUnlocked: () => void) {
       });
   }, [passwordModalOpen, pendingStatementId]);
 
+  /** Closes the prompt and clears entered text. */
   const close = () => {
     closePasswordModal();
     setPassword('');
@@ -56,14 +58,7 @@ export function useStatementPasswordPrompt(onUnlocked: () => void) {
     setIsSubmitting(true);
     setPasswordError(null);
     try {
-      // The draft that eventually stages for this unlock reuses
-      // pendingStatementId as its id (stage_parse_pipeline reuses whatever id
-      // it's handed) — registering it here is what lets GlobalStateContext's
-      // statement_staged listener recognize it and auto-open the review modal.
       watchDraftOrigin(pendingStatementId);
-      // I9 fix (pre-existing): the backend resolves (never throws) for both
-      // wrong-password and max-attempts-exceeded outcomes — `status`, not
-      // promise rejection, is what distinguishes them.
       const result = await API.statements.submitPassword(
         pendingStatementId,
         pendingInstrumentId,
@@ -71,18 +66,10 @@ export function useStatementPasswordPrompt(onUnlocked: () => void) {
       );
 
       if (result.status === 'unlocked') {
-        // `statements_submit_password` runs staging synchronously and always
-        // reuses `pendingStatementId` as the draft id for this path, so open
-        // the review modal now rather than waiting on the statement_staged
-        // event (which may have already fired during this same await).
         close();
         openReviewModal(result.draft_id || pendingStatementId);
         onUnlocked();
       } else if (result.status === 'awaiting_instrument_confirmation') {
-        // Password was correct, but the bank/card/type couldn't be identified.
-        // The Instrument Confirmation modal is already opening via its own
-        // event listener — close silently so this one doesn't sit on top
-        // showing a false "Incorrect password".
         close();
       } else {
         setPasswordError('Incorrect password');

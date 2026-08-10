@@ -1,3 +1,6 @@
+/**
+ * Secondary sidebar used within individual pages.
+ */
 import React from 'react';
 import { SidebarNavItem } from '@/components/ui/sidebar-nav-item';
 
@@ -14,6 +17,7 @@ export interface PageSidebarProps<T extends string> {
   onSelectSection: (section: T) => void;
 }
 
+/** Secondary sidebar used within individual pages, generic over its section keys. */
 export function PageSidebar<T extends string>({
   title,
   sections,

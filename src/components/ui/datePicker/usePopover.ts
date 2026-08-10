@@ -1,19 +1,23 @@
+/**
+ * Open/close state and outside-click dismissal for a popover.
+ */
 import { useState, useRef } from 'react';
 import { useClickOutside } from '@/hooks/useClickOutside';
 
-/** Calendar is ~320px tall; below this much room it flips above the trigger. */
 const CALENDAR_HEIGHT = 330;
 
-/** Open/closed state for the calendar, plus which way it should unfold. */
+/** Open state and outside-click dismissal for a popover. */
 export function usePopover(disabled: boolean) {
   const [isOpen, setIsOpen] = useState(false);
   const [openUpward, setOpenUpward] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLDivElement>(null);
 
+  /** Closes the popover. */
   const close = () => setIsOpen(false);
   useClickOutside(containerRef, close, isOpen);
 
+  /** Toggles the popover open or closed. */
   const toggle = () => {
     if (disabled) return;
     if (!isOpen && triggerRef.current) {

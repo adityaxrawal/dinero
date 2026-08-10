@@ -1,7 +1,11 @@
+/**
+ * History of previous cleanup runs, each still revertible.
+ */
 import { History } from 'lucide-react';
 import type { MerchantCleanupRun } from '@/lib/ipc';
 import RunHistoryRow from './RunHistoryRow';
 
+/** History of previous runs, each still revertible. */
 export default function PastRuns({
   runs,
   onUndoRun,

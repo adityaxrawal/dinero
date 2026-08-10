@@ -1,3 +1,6 @@
+/**
+ * Raw audit log viewer for the debug screen.
+ */
 import { useEffect, useState, useCallback } from 'react';
 import { API } from '../../lib/ipc';
 import { DebugTableLayout } from './DebugTableLayout';
@@ -14,6 +17,7 @@ interface AuditLog {
   after_json: unknown;
 }
 
+/** Raw audit log viewer. */
 export function AuditLogViewer() {
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(true);

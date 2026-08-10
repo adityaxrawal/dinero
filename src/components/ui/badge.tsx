@@ -1,3 +1,6 @@
+/**
+ * Small status pill used for tags, states and counts.
+ */
 import * as React from 'react';
 import { cva, type VariantProps } from 'class-variance-authority';
 
@@ -11,9 +14,6 @@ const badgeVariants = cva(
         default: 'border-transparent bg-primary text-primary-foreground shadow hover:bg-primary/80',
         secondary:
           'border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80',
-        // Doc 14 §10 (WCAG AA 4.5:1): --destructive (#ef4444) with white text
-        // is only 3.76:1 — a darker solid red is used here instead of the
-        // raw token so this small-text badge clears the contrast bar.
         destructive:
           'border-transparent bg-red-700 text-destructive-foreground shadow hover:bg-red-800',
         outline: 'text-foreground',
@@ -29,6 +29,7 @@ export interface BadgeProps
   extends React.HTMLAttributes<HTMLDivElement>,
     VariantProps<typeof badgeVariants> {}
 
+/** Small status pill. */
 function Badge({ className, variant, ...props }: BadgeProps) {
   return <div className={cn(badgeVariants({ variant }), className)} {...props} />;
 }

@@ -1,22 +1,21 @@
+/**
+ * Manages saved statement-PDF passwords.
+ *
+ * Shows which instruments have a stored password and allows forgetting one. The
+ * secrets live in the OS keychain and are never displayed here.
+ */
 import { useState, useEffect } from 'react';
 import { Lock, Trash2 } from 'lucide-react';
 import { API, PdfPasswordSummary } from '@/lib/ipc';
 import { getErrorMessage } from '@/lib/errorMapping';
 
-/**
- * TASK-FE-015 (Doc 30): "instruments with a saved-password indicator
- * (never the password) plus a 'Forget Password' action." Extracted
- * verbatim from the pre-existing "Stored Statement Passwords" section
- * (G15 fix) -- already instrument-scoped (issuer_name/masked_identifier
- * are the instrument's own identity fields) and already never transmits
- * the password itself (`PdfPasswordSummary` has no password field at all,
- * by construction on the backend).
- */
+/** Manages saved statement-PDF passwords. */
 export default function StatementPasswordSettings() {
   const [pdfPasswords, setPdfPasswords] = useState<PdfPasswordSummary[]>([]);
   const [isLoadingPasswords, setIsLoadingPasswords] = useState(true);
   const [deletingPasswordId, setDeletingPasswordId] = useState<string | null>(null);
 
+  /** Loads saved password metadata. */
   const loadPdfPasswords = async () => {
     setIsLoadingPasswords(true);
     try {
@@ -33,6 +32,7 @@ export default function StatementPasswordSettings() {
     loadPdfPasswords();
   }, []);
 
+  /** Forgets a saved password, removing it from the keychain. */
   const handleDeletePassword = async (password: PdfPasswordSummary) => {
     let confirmed: boolean;
     const warning = `Forget the stored password for ${password.issuer_name} •••• ${password.masked_identifier}? You'll be prompted again next time a statement from this account needs unlocking.`;

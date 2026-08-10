@@ -1,6 +1,12 @@
+/**
+ * Warns when the selected model exceeds what this machine can comfortably run.
+ *
+ * Advisory rather than blocking -- the user may proceed knowingly, since the
+ * hardware estimate is a heuristic and not always right.
+ */
 import type { LlmHardwareInfo, LlmModelInfo } from '@/lib/ipc';
 
-/** Only shown when the chosen model outranks the one this Mac was sized for. */
+/** Warns when the chosen model exceeds this machine's comfortable capacity. */
 export default function HeavyModelNotice({
   hwInfo,
   availableModels,

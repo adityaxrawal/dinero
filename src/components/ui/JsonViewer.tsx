@@ -1,7 +1,8 @@
 /**
- * Recursive pretty-printer for the raw source payloads shown in the
- * transaction audit panel. Extracted from TransactionDetail.tsx so it can be
- * tested directly — it is pure, and the page around it is not.
+ * Renders arbitrary JSON for the debug screens.
+ *
+ * Used where the payload shape is genuinely unknown -- raw observations, source
+ * payloads, audit rows -- so a typed component could not display it.
  */
 export function JsonViewer({ data }: { data: unknown }) {
   if (typeof data === 'string') return <span className="text-green-400 break-all">"{data}"</span>;

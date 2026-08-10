@@ -1,3 +1,10 @@
+/**
+ * Renders a bank email in reader, HTML or plain-text view.
+ *
+ * HTML from an external sender is displayed in a sandboxed iframe rather than
+ * injected into the page. Quick-fill chips let values spotted in the message be
+ * pushed straight into the form beside it.
+ */
 import { useState, useRef, useMemo, type ReactNode } from 'react';
 import { Mail, Eye, Sparkles, Code, DollarSign, Calendar, Hash, Store, Zap } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -30,16 +37,22 @@ interface GmailEmailViewerProps {
   onQuickFill?: (data: QuickFillData) => void;
 }
 
-// Generates a consistent Gmail-style avatar background color from sender name
+/**
+ * Picks a stable avatar colour for a sender name.
+ *
+ * Hashes the name so the same sender always gets the same colour, which makes
+ * senders recognisable at a glance across messages. `Math.abs` guards the
+ * modulo, since the hash can go negative.
+ */
 function getAvatarColor(name: string): string {
   const colors = [
-    '#1a73e8', // Gmail Blue
-    '#ea4335', // Gmail Red
-    '#fbbc04', // Gmail Yellow
-    '#34a853', // Gmail Green
-    '#9334e6', // Purple
-    '#fa7b17', // Orange
-    '#007b83', // Teal
+    '#1a73e8',
+    '#ea4335',
+    '#fbbc04',
+    '#34a853',
+    '#9334e6',
+    '#fa7b17',
+    '#007b83',
   ];
   let hash = 0;
   for (let i = 0; i < name.length; i++) {
@@ -48,9 +61,13 @@ function getAvatarColor(name: string): string {
   return colors[Math.abs(hash) % colors.length];
 }
 
-
 type ViewMode = 'reader' | 'html' | 'text';
 
+/**
+ * Switches between reader, original-HTML and plain-text views.
+ *
+ * The HTML tab is offered only when the message actually has an HTML part.
+ */
 function ViewModeSwitcher({
   viewMode,
   setViewMode,
@@ -60,6 +77,7 @@ function ViewModeSwitcher({
   setViewMode: (mode: ViewMode) => void;
   hasHtml: boolean;
 }) {
+  /** Styling for one view-mode tab, varying with its active state. */
   const tabClass = (active: boolean) =>
     cn(
       'px-2.5 py-1 text-[11px] font-medium rounded-md transition-all flex items-center gap-1.5',
@@ -98,6 +116,12 @@ function ViewModeSwitcher({
   );
 }
 
+/**
+ * Formats an email timestamp for the header.
+ *
+ * Returns the raw string unchanged when it cannot be parsed, which is better
+ * than rendering "Invalid Date" over a value that may still be meaningful.
+ */
 function formatEmailDate(date?: string | null): string {
   if (!date) return '';
   const parsed = new Date(date);
@@ -126,6 +150,7 @@ const QUICK_FILL_FIELDS: Record<QuickCandidate['type'], QuickFillData['field']> 
   ref: 'referenceId',
 };
 
+/** Gmail-style header: subject, sender identity, date and view switcher. */
 function GmailHeader({
   subject,
   displayName,
@@ -154,7 +179,6 @@ function GmailHeader({
         </div>
       )}
 
-      {/* Sender & View Modes (identical to Gmail layout) */}
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-start gap-3 min-w-0">
           <div
@@ -191,6 +215,11 @@ function GmailHeader({
   );
 }
 
+/**
+ * Chips for values detected in the message that can be pushed into a form.
+ *
+ * Renders nothing when no candidates were found, rather than an empty bar.
+ */
 function QuickFillBar({
   candidates,
   onQuickFill,
@@ -220,6 +249,14 @@ function QuickFillBar({
   );
 }
 
+/**
+ * Renders the message body in the selected view mode.
+ *
+ * HTML is displayed inside a sandboxed iframe rather than injected into the
+ * page, since this is untrusted third-party markup. The iframe is resized to its
+ * content on load, which is why that read is wrapped -- the access throws if the
+ * content is treated as cross-origin.
+ */
 function EmailBody({
   viewMode,
   hasHtml,
@@ -236,7 +273,7 @@ function EmailBody({
   const [iframeHeight, setIframeHeight] = useState<number>(320);
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
-  // Grow the iframe to its content so the outer container does the scrolling.
+  /** Sizes the iframe to its content once loaded. */
   const handleIframeLoad = () => {
     try {
       const scrollHeight = iframeRef.current?.contentDocument?.body?.scrollHeight;
@@ -244,7 +281,9 @@ function EmailBody({
         setIframeHeight(Math.max(scrollHeight + 20, 260));
       }
     } catch {
-      // Ignore iframe cross-origin error
+      // Reading contentDocument throws when the frame's content is treated as
+      // cross-origin. Nothing to recover here -- the iframe simply keeps its
+      // default height rather than being sized to its content.
     }
   };
 
@@ -283,10 +322,7 @@ function EmailBody({
   );
 }
 
-/**
- * Whatever sits above the message body: the full Gmail header, or — when the
- * caller hides it — a compact bar carrying just the view-mode switcher.
- */
+/** Whatever sits above the body: the full header, or a compact switcher bar. */
 function ViewerChrome({
   showHeader,
   showViewModeSwitcher,
@@ -316,8 +352,16 @@ function ViewerChrome({
   );
 }
 
+/** Prefer the original HTML when present, since it is what the bank designed. */
 const defaultViewMode = (hasHtml: boolean): ViewMode => (hasHtml ? 'html' : 'reader');
 
+/**
+ * Displays a bank email, with optional quick-fill into a neighbouring form.
+ *
+ * Used beside forms where the email is the evidence -- the password prompt, the
+ * unassigned-transaction resolver -- so the user can read the source and act on
+ * it without switching context.
+ */
 export function GmailEmailViewer({
   html,
   text,

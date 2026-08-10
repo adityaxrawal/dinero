@@ -1,3 +1,6 @@
+/**
+ * Panel layout for the notification centre's task and feed sections.
+ */
 import { Bell, ChevronDown, ChevronUp } from 'lucide-react';
 import TaskCard from './TaskCard';
 import NotificationCard from './NotificationCard';
@@ -5,6 +8,7 @@ import type { useNotificationCenter } from './useNotificationCenter';
 
 type Center = ReturnType<typeof useNotificationCenter>;
 
+/** Header with the active task count and expand control. */
 export function CenterHeader({ center }: { center: Center }) {
   const active = center.activeTasks.length;
 
@@ -42,7 +46,7 @@ export function CenterHeader({ center }: { center: Center }) {
   );
 }
 
-/** Collapsed summary of everything the single primary card isn't showing. */
+/** One-line summary shown while the centre is collapsed. */
 export function CollapsedSummary({ center }: { center: Center }) {
   const extraTasks = center.activeTasks.length > 1 ? center.activeTasks.length - 1 : 0;
   const alerts = center.visibleNotifications.length;
@@ -62,6 +66,7 @@ export function CollapsedSummary({ center }: { center: Center }) {
   );
 }
 
+/** Full task list and notification feed. */
 export function ExpandedFeed({ center }: { center: Center }) {
   return (
     <div className="flex flex-col gap-3 pt-1 border-t border-[#F8E7C9]/10 mt-1 max-h-[240px] overflow-y-auto pr-1">

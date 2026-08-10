@@ -1,3 +1,6 @@
+/**
+ * Instrument type definitions and their icons.
+ */
 import { CreditCard, Landmark, Smartphone } from 'lucide-react';
 
 export const INSTRUMENT_TYPES = [
@@ -7,13 +10,12 @@ export const INSTRUMENT_TYPES = [
   { value: 'upi_vpa', label: 'UPI VPA' },
 ] as const;
 
+/** Display label for an instrument type. */
 export function instrumentTypeLabel(type: string): string {
   return INSTRUMENT_TYPES.find((t) => t.value === type)?.label ?? type;
 }
 
-// Returns a rendered element (not the component reference) — assigning a
-// component constructor to a local variable and rendering it as <Icon />
-// trips react-hooks/static-components ("component created during render").
+/** Icon for an instrument type. */
 export function instrumentIcon(type: string, size = 20) {
   switch (type) {
     case 'credit_card':

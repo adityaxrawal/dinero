@@ -1,3 +1,6 @@
+/**
+ * Card framing the cleanup action and its current state.
+ */
 import type {
   LlmModelInfo,
   MerchantCleanupPreview,
@@ -17,7 +20,6 @@ interface LiveStats {
   eta: string;
 }
 
-/** Everything about the run in flight (or the one that just ended). */
 export interface RunState {
   progress: MerchantCleanupProgress | null;
   feed: FeedEntry[];
@@ -40,7 +42,7 @@ interface CleanupActionCardProps {
   onUndoRun: (run: MerchantCleanupRun) => void;
 }
 
-/** The one card that carries all three states: idle, running, just finished. */
+/** Card framing the cleanup action and its current state. */
 export default function CleanupActionCard({
   preview,
   activeModel,

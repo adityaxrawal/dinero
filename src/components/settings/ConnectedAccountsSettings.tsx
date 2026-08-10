@@ -1,3 +1,10 @@
+/**
+ * Manages connected Gmail accounts: adding, viewing sync state, and removing.
+ *
+ * Removal revokes the OAuth grant rather than merely forgetting the account
+ * locally, so access genuinely ends rather than remaining available to a stale
+ * token.
+ */
 import { useState } from 'react';
 import { Mail, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react';
 import { API } from '@/lib/ipc';
@@ -5,23 +12,13 @@ import { getErrorMessage } from '@/lib/errorMapping';
 import RevokeGmailButton from './RevokeGmailButton';
 import { useGlobalState } from '@/lib/GlobalStateContext';
 
-/**
- * TASK-FE-015 (Doc 30): "lists all connected accounts with per-account
- * status badges, a 'Connect Another Gmail Account' button (re-triggering
- * OAuth for multi-account support), and independent revoke per account."
- *
- * Real backend gap found+fixed: `settings_get_connected_accounts` filtered
- * to `account_status = 'ACTIVE'` only, so a 'degraded' account (Gmail token
- * refresh failed -- TASK-GMAIL's own token-refresh-failure lifecycle event,
- * `gmail_token_refresh_failed`) silently vanished from this list instead of
- * surfacing a status the user could act on. Fixed to include it, and this
- * component is what actually surfaces the badge + a reconnect action.
- */
+/** Manages connected Gmail accounts. */
 export default function ConnectedAccountsSettings() {
   const { connectedAccounts, refreshConnectedAccounts } = useGlobalState();
   const [isConnecting, setIsConnecting] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
 
+  /** Starts the OAuth flow in the system browser. */
   const handleConnectGmail = async () => {
     if (connectedAccounts.length >= 10) return;
     setIsConnecting(true);
@@ -29,17 +26,14 @@ export default function ConnectedAccountsSettings() {
     try {
       await API.auth.startGoogle();
     } catch (err) {
-      // Doc 03 §8.2: connecting a 2nd-10th account requires an ACTIVE
-      // subscription — the backend refuses with a specific, user-facing
-      // message we surface here rather than a generic OAuth failure.
       setConnectError(getErrorMessage(err));
     } finally {
-      // Always refresh — OAuth may have succeeded even if invoke threw a non-critical error
       await refreshConnectedAccounts();
       setIsConnecting(false);
     }
   };
 
+  /** Disconnects an account, revoking its grant at Google. */
   const handleDisconnectGmail = async (accountId: string) => {
     try {
       await API.auth.disconnectGmail(accountId);

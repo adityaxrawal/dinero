@@ -1,3 +1,9 @@
+/**
+ * Per-issuer colours and styling for the card hero.
+ *
+ * Falls back to a neutral theme for unrecognised issuers, so a bank this app has
+ * never seen still renders sensibly.
+ */
 export interface BankTheme {
   gradient: string;
   accentColor: string;
@@ -5,7 +11,6 @@ export interface BankTheme {
   label: string;
 }
 
-/** Matched on a substring of the issuer name, first hit wins. */
 const BANK_THEMES: [match: string, theme: BankTheme][] = [
   [
     'idfc',
@@ -63,7 +68,7 @@ const BANK_THEMES: [match: string, theme: BankTheme][] = [
   ],
 ];
 
-/** Default Dinero Dark Emerald, for any issuer without its own palette. */
+/** Colours for an issuer, with a neutral fallback for unknown banks. */
 export function getBankTheme(issuerName: string): BankTheme {
   const name = issuerName.toLowerCase();
   const match = BANK_THEMES.find(([key]) => name.includes(key));

@@ -1,21 +1,10 @@
+/**
+ * Shows the highest-priority active budget alert.
+ */
 import { AlertTriangle, X } from 'lucide-react';
 import { useAlertStore, highestPriorityAlert } from '@/stores/useAlertStore';
 
-/**
- * TASK-RT-003 (Doc 30): the persistent, sustained-visibility counterpart to
- * the toast queue -- "for sustained-visibility states: the spending-
- * threshold banner ... dismissible only by user action or the underlying
- * condition resolving." Unlike a toast, a crossed spending threshold stays
- * true until the month rolls over (spend doesn't retroactively decrease),
- * so this renders in the same in-flow "System messages" sidebar slot as
- * `GracePeriodBanner`/`ConnectionStatusBanner` (`AppLayout.tsx`), not an
- * auto-dismissing overlay.
- *
- * "Dismissable-but-recurring" (`GracePeriodBanner`'s own established
- * pattern): dismissing the 80% banner doesn't suppress a later, higher 90%
- * or 100% crossing for the same scope -- `useAlertStore.onAlertThresholdCrossed`
- * clears the dismissed flag whenever a new band for that `alert_type` fires.
- */
+/** Shows the highest-priority active budget alert. */
 export default function AlertBanner() {
   const alerts = useAlertStore((s) => s.alerts);
   const dismissed = useAlertStore((s) => s.dismissed);

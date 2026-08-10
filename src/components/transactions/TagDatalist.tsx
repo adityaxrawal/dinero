@@ -1,3 +1,8 @@
+/**
+ * Autocomplete source of existing tag names.
+ *
+ * Suggesting existing tags is what stops near-duplicate tags accumulating.
+ */
 import React from 'react';
 
 interface Tag {
@@ -11,6 +16,7 @@ interface TagDatalistProps {
   availableTags: Tag[];
 }
 
+/** Autocomplete over existing tags, which stops near-duplicates accumulating. */
 export function TagDatalist({ id, tags, availableTags }: TagDatalistProps) {
   return (
     <datalist id={id}>

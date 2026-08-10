@@ -1,10 +1,8 @@
+/**
+ * Display labels for instrument types and networks.
+ */
 import { instrumentTypeLabel } from './instrumentTypes';
 
-/**
- * UPI handle suffix → the bank behind it. A VPA carries no issuer field, so
- * the handle is the only signal for what to call it. Scanned in order, so a
- * more specific suffix must precede any shorter one it contains.
- */
 const UPI_HANDLE_BANKS: [suffix: string, label: string][] = [
   ['@jupiter', 'Jupiter UPI'],
   ['@okicici', 'ICICI UPI'],
@@ -17,11 +15,13 @@ const UPI_HANDLE_BANKS: [suffix: string, label: string][] = [
   ['@hdfc', 'HDFC UPI'],
 ];
 
+/** Display label for a UPI handle. */
 function upiHandleLabel(maskedIdentifier: string): string {
   const handle = maskedIdentifier.toLowerCase();
   return UPI_HANDLE_BANKS.find(([suffix]) => handle.includes(suffix))?.[1] ?? 'UPI Payment Handle';
 }
 
+/** Primary label for an instrument: nickname, else issuer. */
 export function getInstrumentTitle(inst?: {
   issuer_name?: string | null;
   instrument_type: string;
@@ -35,6 +35,7 @@ export function getInstrumentTitle(inst?: {
   return instrumentTypeLabel(inst.instrument_type);
 }
 
+/** Secondary label: type and masked identifier. */
 export function getInstrumentSubtitle(inst?: {
   instrument_type: string;
   masked_identifier?: string | null;

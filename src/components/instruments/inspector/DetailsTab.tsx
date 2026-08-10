@@ -1,3 +1,6 @@
+/**
+ * The details tab, grouping the editable instrument cards.
+ */
 import { CheckCircle2 } from 'lucide-react';
 import type { InstrumentRecord } from '@/lib/ipc';
 import type { useInstrumentForm } from '../useInstrumentForm';
@@ -10,6 +13,7 @@ import SaveDeleteBar from './SaveDeleteBar';
 
 type Form = ReturnType<typeof useInstrumentForm>;
 
+/** The details tab, grouping the editable cards. */
 export default function DetailsTab({
   form,
   inst,

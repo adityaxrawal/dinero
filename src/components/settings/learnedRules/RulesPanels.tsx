@@ -1,3 +1,6 @@
+/**
+ * Summary statistics and filter controls for the learned-rules screen.
+ */
 import { useState } from 'react';
 import { AtSign, ChevronRight, Landmark, Layers, Loader2, ShieldCheck, Sparkles, Undo2 } from 'lucide-react';
 import type { LearnedRule, SenderBankOverride } from '@/lib/ipc';
@@ -13,6 +16,7 @@ type Rules = ReturnType<typeof useLearnedRules>;
 
 const PANEL = 'p-5 rounded-xl border bg-[#F8E7C9]/50 border-[#064E3B]/10';
 
+/** Summary counts across the learned rule set. */
 export function RulesStats({ rules }: { rules: Rules }) {
   return (
     <div className="mb-5">
@@ -42,6 +46,7 @@ export function RulesStats({ rules }: { rules: Rules }) {
   );
 }
 
+/** Filters the rule list by bank, field and status. */
 export function RuleFilters({ rules }: { rules: Rules }) {
   return (
     <div className="mb-4 flex items-center gap-2 flex-wrap">
@@ -74,6 +79,7 @@ export function RuleFilters({ rules }: { rules: Rules }) {
   );
 }
 
+/** The live rules, grouped by bank. */
 export function RulesList({
   rules,
   onRetire,
@@ -122,6 +128,12 @@ export function RulesList({
   );
 }
 
+/**
+ * Rules no longer in use.
+ *
+ * Kept visible rather than hidden, so a rule that stopped working after a bank
+ * changed its template can be found and understood instead of silently vanishing.
+ */
 export function RetiredRules({
   retired,
   revertingId,
@@ -162,6 +174,7 @@ export function RetiredRules({
   );
 }
 
+/** One sender-to-bank override, with its deactivate control. */
 function OverrideRow({
   override,
   revertingId,
@@ -202,6 +215,12 @@ function OverrideRow({
   );
 }
 
+/**
+ * Manual sender-domain overrides.
+ *
+ * The user-facing correction for misidentified banks. Overrides are deactivated
+ * rather than deleted, preserving the record of what was configured.
+ */
 export function SenderOverrides({
   overrides,
   revertingId,

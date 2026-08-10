@@ -1,3 +1,10 @@
+/**
+ * Dialog for registering a new payment instrument.
+ *
+ * Reached both from the instruments screen and from ingestion, when a statement
+ * or transaction cannot be attributed to any known account and the backend asks
+ * the user to identify it.
+ */
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
@@ -38,14 +45,7 @@ const EMPTY_FORM = {
   bankIfsc: '',
 };
 
-/**
- * TASK-FE-011 (Doc 30): manual creation form with type-conditional fields —
- * credit limit... actually billing-cycle-day only for cards, IFSC only for
- * bank accounts, and VPA-labeled identifier only for UPI (no separate `vpa`
- * backend column exists — `masked_identifier` already serves that role for
- * `upi_vpa`, matching the pre-existing schema; this just relabels the field
- * per type rather than inventing a new one).
- */
+/** Dialog for registering a new payment instrument. */
 export default function AddInstrumentModal({ open, onOpenChange }: AddInstrumentModalProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -53,12 +53,14 @@ export default function AddInstrumentModal({ open, onOpenChange }: AddInstrument
   const [isSaving, setIsSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
+  /** Closes the dialog and clears its form. */
   const close = () => {
     onOpenChange(false);
     setForm(EMPTY_FORM);
     setFormError(null);
   };
 
+  /** Creates the instrument and reports the outcome. */
   const handleCreate = async () => {
     if (!form.issuerName || !form.instrumentType || !form.maskedIdentifier) {
       setFormError('Issuer name, type, and masked identifier are required.');

@@ -1,9 +1,17 @@
+/**
+ * Calendar grid state: visible month, day cells, and selection.
+ *
+ * Separated from rendering so the month arithmetic -- where off-by-one, leap
+ * year and month-length errors hide -- is testable without a DOM.
+ */
 import { useState, useEffect } from 'react';
 import { parseISODate } from '../dateHelpers';
 
 /**
- * The month currently on screen and everything derived from it: the grid
- * geometry, the min/max bounds, and the year-jumper range.
+ * Calendar grid state: visible month, day cells, and selection.
+ *
+ * Kept apart from rendering so the month arithmetic -- where off-by-one, leap
+ * year and month-length bugs hide -- is testable without a DOM.
  */
 export function useCalendar(value: string | undefined, min?: string, max?: string) {
   const selectedDate = parseISODate(value);
@@ -13,9 +21,6 @@ export function useCalendar(value: string | undefined, min?: string, max?: strin
 
   const [viewDate, setViewDate] = useState<Date>(() => selectedDate || today);
 
-  // Sync viewDate when the value changes. `selectedDate` is re-derived here
-  // rather than closed over: it is a fresh Date object on every render, so
-  // depending on it directly would re-run this effect forever.
   useEffect(() => {
     const next = parseISODate(value);
     if (next) setViewDate(next);
@@ -24,16 +29,18 @@ export function useCalendar(value: string | undefined, min?: string, max?: strin
   const year = viewDate.getFullYear();
   const month = viewDate.getMonth();
 
+  /** Whether a day is today, compared by calendar date rather than timestamp. */
   const isToday = (dayNum: number) =>
     today.getFullYear() === year && today.getMonth() === month && today.getDate() === dayNum;
 
+  /** Whether a day is the current selection. */
   const isSelected = (dayNum: number) =>
     !!selectedDate &&
     selectedDate.getFullYear() === year &&
     selectedDate.getMonth() === month &&
     selectedDate.getDate() === dayNum;
 
-  /** Bounds compare on calendar days, so the min/max day itself stays usable. */
+  /** Whether a day falls outside the allowed min/max range. */
   const isDateDisabled = (dayNum: number, offsetMonth = 0) => {
     const dateObj = new Date(year, month + offsetMonth, dayNum);
     if (minDate && dateObj < startOfDay(minDate)) return true;
@@ -64,6 +71,12 @@ export function useCalendar(value: string | undefined, min?: string, max?: strin
   };
 }
 
+/**
+ * Midnight local time for a date.
+ *
+ * Range comparisons are at day granularity, so the time component is discarded --
+ * otherwise a bound set earlier today would wrongly exclude today.
+ */
 function startOfDay(d: Date): Date {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }

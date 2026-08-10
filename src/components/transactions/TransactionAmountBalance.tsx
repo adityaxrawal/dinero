@@ -1,13 +1,11 @@
+/**
+ * Amount and running-balance display for a transaction.
+ */
 import React from 'react';
 import { Landmark } from 'lucide-react';
 import { InfoRow } from '@/components/ui/InfoRow';
 import { formatMoney } from '@/lib/formatMoney';
 
-/**
- * Structural, not the full transaction row: these are the only five fields this
- * component reads, so both callers (`TransactionInspector`, `TransactionDetail`)
- * satisfy it without the two of them having to agree on one row type.
- */
 export interface TransactionAmountBalanceFields {
   balance_after_transaction: number | null;
   currency: string | null;
@@ -16,6 +14,7 @@ export interface TransactionAmountBalanceFields {
   exchange_rate: number | null;
 }
 
+/** Amount and running balance for a transaction. */
 export function TransactionAmountBalance({
   tx,
   isForeignCurrency,

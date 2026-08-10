@@ -1,10 +1,13 @@
+/**
+ * Explains in plain language why a transaction could not be attributed.
+ */
 import { AlertTriangle } from 'lucide-react';
 import type { UnassignedTransactionRecord } from '@/lib/ipc';
 import { cn } from '@/lib/utils';
 import { buildChecks, extractionBadge, reasonGuidance } from './diagnostics';
 import DiagnosticChecklist from './DiagnosticChecklist';
 
-/** Why this message never became a transaction, and what to do about it. */
+/** Explains in plain language why attribution failed. */
 export default function FailureDiagnosis({ record }: { record: UnassignedTransactionRecord }) {
   const { engineLabel, confidenceLabel, confidenceBadgeStyle } = extractionBadge(record);
   const { description, tip } = reasonGuidance(record.reason);

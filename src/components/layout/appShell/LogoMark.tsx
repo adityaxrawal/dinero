@@ -1,4 +1,6 @@
-/** Minimal SVG logo mark used in the rail */
+/**
+ * The application logo mark.
+ */
 export default function LogoMark() {
   return (
     <svg

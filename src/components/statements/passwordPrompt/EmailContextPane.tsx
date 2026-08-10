@@ -1,13 +1,20 @@
+/**
+ * Shows the source email beside the password prompt.
+ *
+ * Deliberate: the password rule is usually stated in the email itself, so showing
+ * it turns an unanswerable prompt into an answerable one.
+ */
 import { GmailEmailViewer } from '@/components/common/GmailEmailViewer';
 import type { StatementEmailContext } from './useStatementPasswordPrompt';
 
-/** `Acme Bank <alerts@acme.test>` → the display half and the bracketed half. */
+/** Splits a sender header into name and address. */
 function splitSender(sender: string | undefined | null) {
   const name = sender?.split('<')[0]?.trim() || 'Unknown Sender';
   const address = sender?.includes('<') ? `<${sender.split('<')[1]}` : '';
   return { name, address, initial: sender ? sender.charAt(0).toUpperCase() : '?' };
 }
 
+/** Sender identity above the message body. */
 function SenderHeader({ details }: { details: StatementEmailContext | null }) {
   const { name, address, initial } = splitSender(details?.sender);
   const received = details?.date
@@ -38,8 +45,7 @@ function SenderHeader({ details }: { details: StatementEmailContext | null }) {
   );
 }
 
-/** The original bank email, shown beside the password field so the user can
- *  find the hint the bank states in it. */
+/** Shows the source email beside the password prompt. */
 export default function EmailContextPane({ details }: { details: StatementEmailContext | null }) {
   return (
     <div className="bg-[#F3EBDD] text-black border-r flex flex-col min-h-0 min-w-0 h-full">

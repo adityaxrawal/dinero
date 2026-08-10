@@ -1,3 +1,6 @@
+/**
+ * Read-only provenance metadata for an instrument.
+ */
 import { FileText } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { DatePicker } from '@/components/ui/date-picker';
@@ -5,6 +8,7 @@ import { cn } from '@/lib/utils';
 import { FIELD_INPUT, LabeledField, SpecCard } from './fieldStyles';
 import type { InstrumentFormProps } from './formProps';
 
+/** Read-only provenance metadata. */
 export default function MetadataCard({ fields, setField, onSave }: InstrumentFormProps) {
   return (
     <SpecCard icon={FileText} title="Statement Metadata & Rewards" hint="Extracted & Editable">

@@ -1,7 +1,11 @@
+/**
+ * Visual sub-parts of the instrument card hero.
+ */
 import { AlertCircle, Check, Copy, Wifi } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { InstrumentRecord } from '@/lib/ipc';
 
+/** Issuer and nickname across the top of the card. */
 export function CardHeader({
   instrument,
   badgeBg,
@@ -40,10 +44,10 @@ export function CardHeader({
   );
 }
 
+/** Chip and network marks. */
 export function ChipRow({ cycleText }: { cycleText: string | null }) {
   return (
     <div className="flex items-center justify-between mb-6 relative z-10">
-      {/* Realistic Metallic Chip Graphic */}
       <div className="w-11 h-8 rounded-md bg-gradient-to-br from-[#E2C792] via-[#CBB079] to-[#997F48] p-1 shadow-inner border border-[#FFF5DC]/40 flex flex-col justify-between overflow-hidden">
         <div className="w-full h-[1px] bg-black/20" />
         <div className="w-full h-[1px] bg-black/20" />
@@ -59,6 +63,7 @@ export function ChipRow({ cycleText }: { cycleText: string | null }) {
   );
 }
 
+/** Balance and available credit. */
 export function BalanceRow({
   instrument,
   absBalance,
@@ -115,6 +120,7 @@ export function BalanceRow({
   );
 }
 
+/** Credit utilisation gauge. */
 export function UtilizationGauge({
   spent,
   limit,

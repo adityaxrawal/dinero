@@ -1,3 +1,6 @@
+/**
+ * One downloadable model: size, requirements, and download state.
+ */
 import { CheckCircle, Download, Loader2, Server, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -11,6 +14,7 @@ const BADGE = 'px-2.5 py-1 rounded-full text-[11px] font-bold tracking-wide uppe
 const DANGER_BUTTON =
   'h-9 px-3 border-red-200 text-red-600 hover:text-red-700 hover:bg-red-50 hover:border-red-300';
 
+/** Size and requirement badges for a model. */
 function Badges({
   isActive,
   isDownloaded,
@@ -37,6 +41,7 @@ function Badges({
   );
 }
 
+/** Progress, speed and ETA for a downloading model. */
 function DownloadProgress({ progress }: { progress: LlmDownloadProgress }) {
   const pct = downloadPercent(progress);
   return (
@@ -56,6 +61,7 @@ function DownloadProgress({ progress }: { progress: LlmDownloadProgress }) {
   );
 }
 
+/** Download, cancel, activate and delete actions. */
 function ModelActions({
   model,
   models,
@@ -130,6 +136,7 @@ function ModelActions({
   );
 }
 
+/** One model with its state and available actions. */
 export default function ModelCard({ model, models }: { model: LlmModelInfo; models: Models }) {
   const isDownloaded = models.downloadedModels.has(model.id);
   const isActive = models.activeModel === model.id;

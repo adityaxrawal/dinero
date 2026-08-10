@@ -1,9 +1,13 @@
+/**
+ * Billing cycle and due-date fields in the inspector.
+ */
 import { ShieldCheck } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 import { FIELD_INPUT, LabeledField, SpecCard } from './fieldStyles';
 import type { InstrumentFormProps } from './formProps';
 
+/** Utilisation bar against the credit limit. */
 function UtilizationBar({ balance, limit }: { balance: number; limit: number }) {
   const used = Math.min(100, Math.max(0, (balance / limit) * 100));
   return (
@@ -22,12 +26,14 @@ function UtilizationBar({ balance, limit }: { balance: number; limit: number }) 
   );
 }
 
+/** Billing cycle and due-date fields. */
 export default function BillingCard({
   fields,
   setField,
   onSave,
   currentBalance,
 }: InstrumentFormProps & { currentBalance: number | null | undefined }) {
+  /** Commits the field on Enter. */
   const saveOnEnter = (e: React.KeyboardEvent) => e.key === 'Enter' && onSave();
   const limit = parseFloat(fields.creditLimit);
 

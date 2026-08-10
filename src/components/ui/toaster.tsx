@@ -1,5 +1,12 @@
 'use client';
 
+/**
+ * Renders the live toast queue into its viewport.
+ *
+ * Mounted once near the root. Subscribes to the toast store and renders whatever
+ * it currently holds, so any code anywhere can raise a toast by calling
+ * `toast()` without needing a reference to this component.
+ */
 import { useToast } from '@/hooks/use-toast';
 import { Link } from 'react-router-dom';
 import {
@@ -12,6 +19,7 @@ import {
   ToastAction,
 } from '@/components/ui/toast';
 
+/** Renders the live toast queue into its viewport. */
 export function Toaster() {
   const { toasts } = useToast();
 

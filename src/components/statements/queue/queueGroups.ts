@@ -1,15 +1,14 @@
+/**
+ * Classifies unprocessed statements by what action they need.
+ *
+ * Separating "needs a password" from "failed to parse" matters because they call
+ * for entirely different user actions.
+ */
 import { FileWarning, Lock, RotateCw } from 'lucide-react';
 import type { UnprocessedStatementEntry } from '@/lib/ipc';
 
 export type GroupKey = 'awaiting_password' | 'pending_retry' | 'failed';
 
-/**
- * Issue #7: grouped by *what the user has to do about it*, not by the
- * backend's status enum. "pending_retry" and "failed" are two different
- * internal states that ask the same thing of a person — try it again — so
- * they sit together, while a locked PDF is the only group that genuinely
- * needs something the app cannot supply.
- */
 export const GROUPS: {
   key: GroupKey;
   label: string;
@@ -40,11 +39,7 @@ export const GROUPS: {
   },
 ];
 
-/**
- * Issue #9: the backend declines to invent a name when it cannot identify the
- * issuer, in which case the filename the bank itself chose is the more
- * informative label.
- */
+/** Readable label for a queue entry. */
 export function entryLabel(item: UnprocessedStatementEntry): string {
   return item.display_name || item.filename || 'Unknown file';
 }

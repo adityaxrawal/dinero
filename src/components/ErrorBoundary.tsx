@@ -1,3 +1,10 @@
+/**
+ * Catches render-time exceptions and shows a recovery screen instead of a blank window.
+ *
+ * Offers a reload rather than only resetting boundary state: a genuine render
+ * crash usually means the underlying app state is already corrupt, so a
+ * re-render alone tends not to fix it.
+ */
 import { Component, ReactNode } from 'react';
 import { AlertTriangle, RefreshCw, FileText } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -15,16 +22,6 @@ interface State {
   exportedPath: string | null;
 }
 
-/**
- * TASK-FE-018 (Doc 30): "catching render-time exceptions with a friendly
- * 'Something went wrong' screen (a 'Reload' action, an option to export a
- * diagnostic bundle) rather than a raw stack trace." Previously showed
- * `error.message` (often a raw, technical string) with only a "Return to
- * Dashboard" action that just reset local boundary state via `setState` --
- * for a genuine render crash the underlying app/query state that caused it
- * is usually still corrupted, so a full reload is the more reliable
- * recovery path than hoping a re-render alone fixes it.
- */
 export class ErrorBoundary extends Component<Props, State> {
   public state: State = {
     hasError: false,

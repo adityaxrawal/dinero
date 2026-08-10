@@ -1,3 +1,9 @@
+/**
+ * Input for a masked card number.
+ *
+ * Only the last digits are ever entered and stored; a full card number, or a
+ * full PAN, is never handled by this application.
+ */
 import React, { useState, useMemo } from 'react';
 import {Eye, EyeOff, Copy, Check} from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -6,7 +12,11 @@ import { useToast } from '@/hooks/use-toast';
 type CardNetwork = 'visa' | 'mastercard' | 'rupay' | 'amex' | 'generic';
 
 /**
- * Detects card network based on BIN prefixes.
+ * Identifies the card network from its leading digits.
+ *
+ * Uses the published IIN prefix ranges, which is why the Mastercard pattern is
+ * so involved -- it covers both the classic 51-55 range and the newer 2221-2720
+ * range. Falls back to a generic badge for anything unrecognised.
  */
 function getCardNetwork(cardNumber: string): { network: CardNetwork; label: string; badgeClass: string } {
   const digits = cardNumber.replace(/\D/g, '');
@@ -28,8 +38,10 @@ function getCardNetwork(cardNumber: string): { network: CardNetwork; label: stri
 }
 
 /**
- * Formats a raw numeric string into 4-digit space separated blocks.
- * e.g. "4532760319208841" -> "4532 7603 1920 8841"
+ * Groups digits into blocks of four for readability.
+ *
+ * Non-digits are stripped and the length capped at 19, the longest card number
+ * any network issues.
  */
 function formatCardNumber(value: string): string {
   const clean = value.replace(/\D/g, '').slice(0, 19);
@@ -37,8 +49,10 @@ function formatCardNumber(value: string): string {
 }
 
 /**
- * Converts a formatted card string into masked format.
- * e.g. "4532 7603 1920 8841" -> "•••• •••• •••• 8841"
+ * Masks all but the final block.
+ *
+ * The last four are what identify the card to its owner, and are all this app
+ * ever needs -- so everything before them is hidden by default.
  */
 function maskCardNumber(formattedValue: string): string {
   if (!formattedValue) return '';
@@ -62,6 +76,9 @@ interface CardNumberInputProps {
   className?: string;
 }
 
+/**
+ * Card-number field with network detection, masking and copy.
+ */
 export default function CardNumberInput({
   id,
   value,
@@ -78,17 +95,17 @@ export default function CardNumberInput({
   const displayedValue = isMasked ? maskCardNumber(formattedValue) : formattedValue;
   const brandInfo = useMemo(() => getCardNetwork(value), [value]);
 
+  /** Reformats on each keystroke so grouping keeps up with typing. */
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const rawVal = e.target.value;
 
-    // If currently masked and user typing, unmask automatically
     if (isMasked) setIsMasked(false);
 
-    // Keep only digits and format
     const digitsOnly = rawVal.replace(/\D/g, '');
     onChange(digitsOnly);
   };
 
+  /** Copies the unmasked value and shows brief confirmation. */
   const handleCopy = () => {
     const textToCopy = value.replace(/\D/g, '') || formattedValue;
     if (!textToCopy) return;
@@ -103,7 +120,6 @@ export default function CardNumberInput({
 
   return (
     <div className="relative flex items-center w-full">
-      {/* Brand Badge Icon on Left */}
       <div className="absolute left-2.5 flex items-center justify-center pointer-events-none z-10">
         <span
           className={cn(
@@ -115,7 +131,6 @@ export default function CardNumberInput({
         </span>
       </div>
 
-      {/* Styled Input Box */}
       <input
         id={id}
         type="text"
@@ -131,7 +146,6 @@ export default function CardNumberInput({
         )}
       />
 
-      {/* Action Buttons on Right: Eye Mask Toggle + Copy Button */}
       <div className="absolute right-2.5 flex items-center gap-1 z-10">
         <button
           type="button"

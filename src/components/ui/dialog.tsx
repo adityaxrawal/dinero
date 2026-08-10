@@ -1,13 +1,24 @@
+/**
+ * Modal dialog built on Radix Dialog.
+ *
+ * Radix supplies the behaviour that is genuinely difficult to get right --
+ * focus trapping, restoring focus on close, Escape handling, and marking the
+ * rest of the page inert for assistive technology. This file adds only styling
+ * and the close affordance.
+ */
 import * as React from 'react';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 
+/** Root dialog, owning open state. Re-exported unstyled from Radix. */
 const Dialog = DialogPrimitive.Root;
 
+/** Renders dialog content at the document root, escaping parent overflow and stacking contexts. */
 const DialogPortal = DialogPrimitive.Portal;
 
+/** Dimmed backdrop behind the dialog, which also captures outside clicks. */
 const DialogOverlay = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Overlay>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Overlay>
@@ -23,6 +34,13 @@ const DialogOverlay = React.forwardRef<
 ));
 DialogOverlay.displayName = DialogPrimitive.Overlay.displayName;
 
+/**
+ * The dialog panel itself, portalled above the overlay.
+ *
+ * Radix supplies focus trapping, focus restoration on close, Escape handling and
+ * inerting the rest of the page; this adds positioning, styling and the close
+ * button.
+ */
 const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
@@ -47,11 +65,13 @@ const DialogContent = React.forwardRef<
 ));
 DialogContent.displayName = DialogPrimitive.Content.displayName;
 
+/** Dialog header region. */
 const DialogHeader = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
   <div className={cn('flex flex-col space-y-1.5 text-center sm:text-left', className)} {...props} />
 );
 DialogHeader.displayName = 'DialogHeader';
 
+/** Dialog footer, typically holding the actions. */
 const DialogFooter = ({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) => (
   <div
     className={cn('flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2', className)}
@@ -60,6 +80,7 @@ const DialogFooter = ({ className, ...props }: React.HTMLAttributes<HTMLDivEleme
 );
 DialogFooter.displayName = 'DialogFooter';
 
+/** Dialog title. Radix wires it as the accessible name of the dialog. */
 const DialogTitle = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Title>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Title>
@@ -72,6 +93,7 @@ const DialogTitle = React.forwardRef<
 ));
 DialogTitle.displayName = DialogPrimitive.Title.displayName;
 
+/** Supporting text, announced alongside the title by assistive technology. */
 const DialogDescription = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Description>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Description>

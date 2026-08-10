@@ -1,6 +1,10 @@
+/**
+ * Primary navigation list for the sidebar.
+ */
 import SidebarItem from './SidebarItem';
 import { buildNavGroups, useIsActive } from './navItems';
 
+/** Primary navigation list for the sidebar. */
 export default function SidebarNav({
   unresolvedClusters,
   badgePulse,

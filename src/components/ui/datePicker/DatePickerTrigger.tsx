@@ -1,3 +1,6 @@
+/**
+ * The button that opens a date picker and displays the current selection.
+ */
 import { Calendar as CalendarIcon, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatDisplayDate } from '../dateHelpers';
@@ -8,6 +11,7 @@ const BASE_TRIGGER = [
   'focus-visible:ring-2 focus-visible:ring-[#064E3B] focus-visible:border-transparent',
 ].join(' ');
 
+/** Trigger styling, varying with disabled and open state. */
 function triggerClasses({
   disabled,
   isOpen,
@@ -28,6 +32,7 @@ function triggerClasses({
   );
 }
 
+/** Button opening the picker and showing the current selection. */
 export default function DatePickerTrigger({
   triggerRef,
   id,

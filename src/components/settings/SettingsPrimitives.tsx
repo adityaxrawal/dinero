@@ -1,3 +1,9 @@
+/**
+ * Small shared presentational pieces for settings screens.
+ *
+ * Kept together so stat tiles and strips look identical across every settings
+ * panel instead of each one restyling them.
+ */
 import type { ReactNode } from 'react';
 import {
   Dialog,
@@ -10,13 +16,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
-/**
- * The pieces both AI-facing Settings sections need. Extracted only because both
- * use all of them — there is no third consumer and no attempt to generalise
- * beyond what those two panels ask for.
- */
-
-/** One number with a label, for the strip at the top of a section. */
+/** One labelled figure in a settings statistics strip. */
 export function StatTile({
   icon,
   label,
@@ -41,9 +41,6 @@ export function StatTile({
             : 'bg-white/70 border-[#064E3B]/10'
       )}
     >
-      {/* Labels and hints wrap rather than truncate: four tiles across a
-          max-w-3xl column leaves ~180px each, which clips anything longer than
-          one word. The grid equalises heights, so wrapping costs nothing. */}
       <div className="flex items-start gap-1.5 text-[11px] font-semibold uppercase tracking-wide leading-tight text-[#064E3B]/55">
         {icon && (
           <span className="shrink-0 mt-px text-[#064E3B]/45 [&_svg]:w-3.5 [&_svg]:h-3.5">
@@ -69,7 +66,7 @@ export function StatTile({
   );
 }
 
-/** Grid wrapper for a row of {@link StatTile}s. */
+/** Row of stat tiles with consistent spacing. */
 export function StatStrip({ children }: { children: ReactNode }) {
   return <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">{children}</div>;
 }
@@ -81,13 +78,7 @@ const CONFIDENCE_BANDS = [
   { min: 0, label: 'Weak', dots: 2, className: 'text-red-700' },
 ] as const;
 
-/**
- * Confidence as a word plus a five-dot meter, with the exact figure on hover.
- *
- * A column of "95% / 90% / 80%" tells a non-technical reader nothing and makes
- * a list of genuinely different rules look like repeated rows. The number is
- * still there for anyone debugging — it moved to the tooltip, not away.
- */
+/** Bar visualising a confidence score between 0 and 1. */
 export function ConfidenceMeter({ value, className }: { value: number; className?: string }) {
   const band = CONFIDENCE_BANDS.find((b) => value >= b.min) ?? CONFIDENCE_BANDS[3];
   const pct = Math.round(value * 100);
@@ -115,22 +106,17 @@ export function ConfidenceMeter({ value, className }: { value: number; className
 }
 
 /**
- * "2 hours ago" up to a week, then "12 Jul". Full timestamp on hover.
+ * Renders a timestamp as relative text, with the exact date on hover.
  *
- * `Intl` handles both halves, so this needs no date library.
+ * Relative reads better at a glance; the title attribute preserves the precise
+ * value for when it actually matters.
  */
 export function RelativeDate({ iso, className }: { iso: string | null; className?: string }) {
   if (!iso) return <span className={className}>unknown date</span>;
 
-  // SQLite writes "YYYY-MM-DD HH:MM:SS" in UTC with no zone marker; Safari
-  // parses that as invalid, so normalise before handing it to Date.
   const parsed = new Date(/[TZ]/.test(iso) ? iso : `${iso.replace(' ', 'T')}Z`);
   if (Number.isNaN(parsed.getTime())) return <span className={className}>unknown date</span>;
 
-  // Reading the clock during render is the whole point of a relative date, and
-  // this is a leaf with no memoization — it re-reads on every render of its
-  // parent, which is exactly the intended behaviour. Hoisting "now" into state
-  // isn't possible here without restructuring the two early returns above.
   // eslint-disable-next-line react-hooks/purity
   const diffMs = Date.now() - parsed.getTime();
   const label = formatRelative(diffMs, parsed);
@@ -142,12 +128,7 @@ export function RelativeDate({ iso, className }: { iso: string | null; className
   );
 }
 
-/**
- * In-app replacement for the native `confirm()` these panels used to call.
- *
- * Both sections ask the same shape of question four times over — "this undoes
- * something, are you sure" — so the wiring lives here rather than twice.
- */
+/** Reusable confirmation dialog for destructive settings actions. */
 export function ConfirmDialog({
   open,
   onOpenChange,
@@ -207,12 +188,17 @@ export function ConfirmDialog({
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
+/**
+ * Formats an elapsed interval as relative text.
+ *
+ * Falls back to an absolute date beyond the point where "n days ago" stops being
+ * easier to interpret than the date itself.
+ */
 function formatRelative(diffMs: number, date: Date): string {
   if (Math.abs(diffMs) >= WEEK_MS) {
     return new Intl.DateTimeFormat(undefined, {
       day: 'numeric',
       month: 'short',
-      // Only show the year once it stops being the current one.
       year: date.getFullYear() === new Date().getFullYear() ? undefined : 'numeric',
     }).format(date);
   }

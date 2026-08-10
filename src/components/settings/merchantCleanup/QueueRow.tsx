@@ -1,9 +1,13 @@
+/**
+ * One merchant in the cleanup queue, showing before and after.
+ */
 import { FileWarning } from 'lucide-react';
 import type { MerchantCleanupSample } from '@/lib/ipc';
 import { RelativeDate } from '../SettingsPrimitives';
 import GuessQuality from './GuessQuality';
 import { formatAmount } from './format';
 
+/** One queued merchant, showing before and after. */
 export default function QueueRow({ sample }: { sample: MerchantCleanupSample }) {
   const amount = formatAmount(sample.amount, sample.currency);
   const isCredit = sample.direction === 'credit';

@@ -1,7 +1,11 @@
+/**
+ * Individual panels making up the release readiness view.
+ */
 import { Gauge, ShieldCheck, ExternalLink } from 'lucide-react';
 import type { DebugMetrics } from '@/lib/ipc';
 import { QUALITY_GATE_TARGETS } from './qualityGateTargets';
 
+/** Locally computed readiness metrics. */
 export function LocalMetricsPanel({ metrics }: { metrics: DebugMetrics | null }) {
   const tiles = metrics
     ? [
@@ -37,6 +41,7 @@ export function LocalMetricsPanel({ metrics }: { metrics: DebugMetrics | null })
   );
 }
 
+/** Metrics judged against their quality-gate targets. */
 export function QualityGatePanel() {
   return (
     <div className="glass-panel p-6">
@@ -65,9 +70,7 @@ export function QualityGatePanel() {
   );
 }
 
-/** The licensing backend is a separate Vercel + Neon service with zero code in
- *  this repo; saying so here stops "release readiness" reading as one unified
- *  picture when it is really two disjoint systems. */
+/** Readiness signals that originate outside this repository. */
 export function OutOfRepoPanel() {
   return (
     <div className="glass-panel p-6 border border-amber-500/30">

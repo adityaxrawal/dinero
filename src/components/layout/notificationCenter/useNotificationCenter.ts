@@ -1,6 +1,10 @@
+/**
+ * Selects and orders tasks and notifications for display.
+ */
 import { useMemo } from 'react';
 import { useNotificationStore } from '@/stores/useNotificationStore';
 
+/** Selects and orders tasks and notifications for display. */
 export function useNotificationCenter() {
   const tasksObj = useNotificationStore((s) => s.tasks);
   const notifications = useNotificationStore((s) => s.notifications);
@@ -39,7 +43,6 @@ export function useNotificationCenter() {
       visibleNotifications.length > 0 ||
       recentFinishedTasks.length > 0,
     primaryTask: activeTasks[0] ?? recentFinishedTasks[0],
-    /** Legacy test-id hook kept for the existing scan-status test suites. */
     hasScanTask:
       activeTasks.some((t) => t.id.startsWith('scan:')) ||
       recentFinishedTasks.some((t) => t.id.startsWith('scan:')),

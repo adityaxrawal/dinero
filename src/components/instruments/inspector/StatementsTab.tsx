@@ -1,3 +1,6 @@
+/**
+ * Statements associated with this instrument.
+ */
 import { useNavigate } from 'react-router-dom';
 import { FileText, Upload } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -6,6 +9,7 @@ import type { useInstrumentForm } from '../useInstrumentForm';
 
 type Statements = ReturnType<typeof useInstrumentForm>['instrumentStatements'];
 
+/** One statement for this instrument. */
 function StatementCard({
   statement,
   onView,
@@ -44,8 +48,10 @@ function StatementCard({
   );
 }
 
+/** Statements associated with this instrument. */
 export default function StatementsTab({ statements }: { statements: Statements }) {
   const navigate = useNavigate();
+  /** Navigates to the statements screen. */
   const goToStatements = () => navigate('/statements');
 
   return (

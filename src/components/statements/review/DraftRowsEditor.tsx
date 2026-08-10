@@ -1,3 +1,9 @@
+/**
+ * Editable table of extracted rows awaiting confirmation.
+ *
+ * Rows are corrected here before commit, and those corrections feed the learning
+ * loop so the same layout parses better next time.
+ */
 import { Plus, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -5,6 +11,7 @@ import { Label } from '@/components/ui/label';
 import { DatePicker } from '@/components/ui/date-picker';
 import type { DraftRow } from '@/lib/ipc';
 
+/** One editable extracted row. */
 function RowEditor({
   row,
   index,
@@ -52,6 +59,12 @@ function RowEditor({
   );
 }
 
+/**
+ * Editable table of extracted rows.
+ *
+ * Corrections made here feed the learning loop, so the same layout parses better
+ * next time.
+ */
 export default function DraftRowsEditor({
   rows,
   onUpdateRow,

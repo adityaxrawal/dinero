@@ -1,6 +1,10 @@
+/**
+ * Live feed of corrections as they are applied.
+ */
 import { ArrowRight, CheckCircle2, MinusCircle } from 'lucide-react';
 import type { FeedEntry } from './format';
 
+/** One applied correction in the live feed. */
 function FeedRow({ entry }: { entry: FeedEntry }) {
   return (
     <li className="flex items-center gap-2 text-[12px] animate-fade-in">
@@ -29,7 +33,7 @@ function FeedRow({ entry }: { entry: FeedEntry }) {
   );
 }
 
-/** The model's answers as they land — the proof a long, quiet run is working. */
+/** Live feed of corrections as they are applied. */
 export default function CleanupFeed({ feed }: { feed: FeedEntry[] }) {
   if (feed.length === 0) return null;
 

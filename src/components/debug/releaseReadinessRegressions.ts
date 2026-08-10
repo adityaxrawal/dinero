@@ -1,11 +1,13 @@
+/**
+ * Detects regressions between readiness snapshots.
+ */
 import { ReleaseReadinessLocalMetrics } from '../../lib/ipc';
 
 /**
- * Doc 30 TASK-OPS-009 acceptance `test_trend_view_highlights_regressions`.
- * Mirrors `release_readiness::detect_regressions` (src-tauri) field-for-field:
- * a metric "regresses" if it gets worse release-over-release.
- * `db_size_bytes` growing is expected as an install ages and is never
- * flagged as a regression.
+ * Reports which metrics worsened between two snapshots.
+ *
+ * Comparing against the previous snapshot turns absolute numbers into a
+ * direction of travel, which is the useful signal before a release.
  */
 export function detectRegressions(
   previous: ReleaseReadinessLocalMetrics,

@@ -1,3 +1,6 @@
+/**
+ * Raw view of statements that failed to process.
+ */
 import { useEffect, useState } from 'react';
 import { API } from '../../lib/ipc';
 import { Badge } from '../ui/badge';
@@ -12,10 +15,12 @@ interface UnprocessedStatement {
   needs_password: boolean;
 }
 
+/** Raw view of statements that failed to process. */
 export function UnprocessedStatementViewer() {
   const [statements, setStatements] = useState<UnprocessedStatement[]>([]);
   const [loading, setLoading] = useState(true);
 
+  /** Loads unprocessed statements. */
   const fetchStatements = async () => {
     setLoading(true);
     try {

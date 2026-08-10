@@ -1,26 +1,11 @@
+/**
+ * Warns when Gmail is disconnected and ingestion has therefore stopped.
+ */
 import { useEffect, useState } from 'react';
 import { AlertTriangle, Info, WifiOff } from 'lucide-react';
 import { API, type SystemWarningPayload } from '@/lib/ipc';
 import { useIpcListen } from '@/hooks/useIpcListen';
 
-/**
- * TASK-RT-007 (Doc 30, Doc 19 §15.1): renders the single highest-priority
- * active `system_warning` (low_ram, gmail_token_degraded, gmail_quota_exhausted,
- * clock_skew, ...) as a sidebar banner, same in-flow "System messages" slot as
- * `GracePeriodBanner`/`StatementOnlyModeBanner` (`AppLayout.tsx`).
- *
- * Two data sources, matching the Rust `ipc::system_warnings` module exactly:
- * - `get_active_system_warnings` on mount -- late-mount recovery, so a
- *   warning emitted before this component existed (e.g. low RAM detected at
- *   cold start) is still shown.
- * - Live `system_warning` / `system_warning_cleared` events thereafter.
- *
- * Deliberately excludes `keychain_denied`/`notification_denied`: those are
- * TASK-DESK-004's own warning family (`hard_fail`/`soft_fail` severity, not
- * this module's `critical`/`degraded`/`info`) with dedicated overlay
- * treatment in `PermissionDeniedOverlay.tsx` -- rendering them here too would
- * duplicate that UI.
- */
 const OWNED_ELSEWHERE = new Set(['keychain_denied', 'notification_denied']);
 
 const SEVERITY_RANK: Record<SystemWarningPayload['severity'], number> = {
@@ -29,6 +14,7 @@ const SEVERITY_RANK: Record<SystemWarningPayload['severity'], number> = {
   info: 1,
 };
 
+/** Picks the most severe warning when several are active. */
 function highestPriority(warnings: SystemWarningPayload[]): SystemWarningPayload | null {
   let best: SystemWarningPayload | null = null;
   for (const w of warnings) {
@@ -39,6 +25,7 @@ function highestPriority(warnings: SystemWarningPayload[]): SystemWarningPayload
   return best;
 }
 
+/** Warns when Gmail is disconnected and ingestion has stopped. */
 export default function ConnectionStatusBanner() {
   const [warnings, setWarnings] = useState<SystemWarningPayload[]>([]);
 

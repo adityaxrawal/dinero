@@ -1,3 +1,9 @@
+/**
+ * Visualises progress through an instalment plan.
+ *
+ * Turns what would otherwise look like unexplained repeating charges into a
+ * single purchase with a visible schedule.
+ */
 import { CheckCircle2, Circle, Loader2 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { useEmiGroup } from '@/hooks/queries/useEmiGroup';
@@ -6,13 +12,7 @@ interface EmiInstallmentTimelineProps {
   emiGroupId: string;
 }
 
-/**
- * TASK-FE-010 (Doc 30): shown only when `emi_group_id` is present —
- * visualizes all installments with paid/remaining progress. Only paid
- * installments exist as real rows (each is a canonical transaction); the
- * remaining count (total - paid) is rendered as placeholder slots since
- * their dates/amounts aren't known until each is actually detected.
- */
+/** Visualises progress through an instalment plan. */
 export default function EmiInstallmentTimeline({ emiGroupId }: EmiInstallmentTimelineProps) {
   const { data: summary, isLoading } = useEmiGroup(emiGroupId);
 

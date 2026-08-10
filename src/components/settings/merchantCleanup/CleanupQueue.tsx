@@ -1,9 +1,13 @@
+/**
+ * The queue of merchants awaiting normalisation.
+ */
 import { useState } from 'react';
 import { ChevronRight } from 'lucide-react';
 import type { MerchantCleanupPreview } from '@/lib/ipc';
 import { cn } from '@/lib/utils';
 import QueueRow from './QueueRow';
 
+/** Per-bank distribution of queued merchants. */
 function BankBar({
   bank,
   maxCount,
@@ -30,6 +34,7 @@ function BankBar({
   );
 }
 
+/** Sample of queued merchants awaiting normalisation. */
 function SampleList({ preview }: { preview: MerchantCleanupPreview }) {
   const remaining = preview.candidate_count - preview.samples.length;
 
@@ -53,7 +58,7 @@ function SampleList({ preview }: { preview: MerchantCleanupPreview }) {
   );
 }
 
-/** What is waiting, grouped by bank. Hidden mid-run: the counts go stale. */
+/** The queue of merchants a run would process. */
 export default function CleanupQueue({ preview }: { preview: MerchantCleanupPreview }) {
   const [showQueue, setShowQueue] = useState(false);
 

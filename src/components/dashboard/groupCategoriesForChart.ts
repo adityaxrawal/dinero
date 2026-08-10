@@ -1,3 +1,9 @@
+/**
+ * Groups spending categories for the chart, folding a long tail into 'Other'.
+ *
+ * A pie chart with thirty slices communicates nothing, so only the significant
+ * categories keep their own slice.
+ */
 import type { CategorySpend } from '@/lib/ipc';
 import { CATEGORICAL_PALETTE, OTHER_SLICE_COLOR } from './chartPalette';
 
@@ -11,12 +17,10 @@ export interface CategoryChartSlice {
 const MAX_SLICES = CATEGORICAL_PALETTE.length;
 
 /**
- * TASK-FE-008: zero-spend categories are excluded from the chart (the
- * backend returns every non-deleted category, including ones with nothing
- * spent this month — useful for a budget table, meaningless as a pie
- * slice). Sorted by spend descending; a 9th+ category never gets a
- * generated hue, it folds into a single "Other" slice (dataviz skill
- * non-negotiable).
+ * Groups categories for the donut, folding a long tail into 'Other'.
+ *
+ * A pie chart with thirty slices communicates nothing, so only significant
+ * categories keep their own slice.
  */
 export function groupCategoriesForChart(
   categories: CategorySpend[] | undefined

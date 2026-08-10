@@ -1,8 +1,12 @@
+/**
+ * Shows the source email behind an unassigned transaction, as evidence.
+ */
 import { FileText } from 'lucide-react';
 import type { UnassignedTransactionRecord } from '@/lib/ipc';
 import { GmailEmailViewer } from '@/components/common/GmailEmailViewer';
 import type { EmailEvidence } from './diagnostics';
 
+/** Shows the source email as evidence for the resolution. */
 export default function SourceEmailEvidence({
   record,
   evidence,

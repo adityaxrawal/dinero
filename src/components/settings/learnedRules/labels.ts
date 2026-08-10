@@ -1,3 +1,9 @@
+/**
+ * Display names for extraction fields and rule statuses.
+ *
+ * Maps internal identifiers to readable text in one place, so the same field is
+ * never labelled two different ways.
+ */
 import type { LearnedRule } from '@/lib/ipc';
 
 export const FIELD_LABELS: Record<string, string> = {
@@ -11,7 +17,6 @@ export const FIELD_LABELS: Record<string, string> = {
   currency: 'the currency',
 };
 
-/** Short chip form of a field name. */
 export const FIELD_CHIPS: Record<string, string> = {
   merchant: 'merchant',
   amount: 'amount',
@@ -45,7 +50,7 @@ const LEARNED_FROM_LABELS: Record<string, string> = {
   batch_cleanup: 'Learned during a merchant cleanup run',
 };
 
-/** Human-readable description of what a rule actually does. */
+/** Plain-language description of what a rule does. */
 export function describeRule(rule: LearnedRule): string {
   const source = rule.source_type === 'email' ? 'email alerts' : 'PDF statements';
   const field = FIELD_LABELS[rule.field_name] ?? rule.field_name;
@@ -56,7 +61,7 @@ export function describeRule(rule: LearnedRule): string {
   return `Reads ${field} out of ${rule.bank_name} ${source}.`;
 }
 
-/** Where the rule came from, in words. */
+/** Explains where a rule came from -- synthesis, authoring, or a template. */
 export function describeOrigin(rule: LearnedRule): string {
   const trigger = LEARNED_FROM_LABELS[rule.learned_from] ?? rule.learned_from;
   const author =
@@ -64,7 +69,7 @@ export function describeOrigin(rule: LearnedRule): string {
   return `${trigger}, ${author}.`;
 }
 
-/** Track record in words rather than two bare counters. */
+/** Turns a success rate into a readable reliability statement. */
 export function describeReliability(rule: LearnedRule): string {
   const worked = `worked ${rule.success_count} time${rule.success_count === 1 ? '' : 's'}`;
   return rule.failure_count > 0
@@ -72,11 +77,12 @@ export function describeReliability(rule: LearnedRule): string {
     : `${worked} · never wrong`;
 }
 
-/** First 4 hex characters — enough to tell two formats apart at a glance. */
+/** Shortens a template hash for display. */
 export function shortHash(hash: string): string {
   return (hash || '????').slice(0, 4).toUpperCase();
 }
 
+/** Extracts the pattern from a rule payload for display. */
 export function rulePattern(rule: LearnedRule): string {
   return rule.rule_payload_json.regex ?? rule.rule_payload_json.override_value ?? '';
 }

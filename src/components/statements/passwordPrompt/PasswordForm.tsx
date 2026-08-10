@@ -1,3 +1,6 @@
+/**
+ * Password entry form, with attempt feedback.
+ */
 import { useState } from 'react';
 import { Lock, AlertTriangle, Eye, EyeOff } from 'lucide-react';
 import { DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -8,6 +11,7 @@ import type { useStatementPasswordPrompt } from './useStatementPasswordPrompt';
 
 type Prompt = ReturnType<typeof useStatementPasswordPrompt>;
 
+/** Password entry form, with attempt feedback. */
 export default function PasswordForm({ prompt }: { prompt: Prompt }) {
   const [showPassword, setShowPassword] = useState(false);
   const { password, passwordError, isSubmitting, submitPassword } = prompt;

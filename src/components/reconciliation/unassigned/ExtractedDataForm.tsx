@@ -1,3 +1,6 @@
+/**
+ * Editable form of the values extraction managed to recover.
+ */
 import { FileText } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
@@ -14,6 +17,7 @@ import type { useUnassignedForm } from './useUnassignedForm';
 
 const INPUT_CLASS = 'h-8 bg-white/50 focus-visible:bg-white text-[13px]';
 
+/** One editable field. */
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <>
@@ -25,6 +29,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
+/** Two fields side by side. */
 function TwoColRow({
   left,
   right,
@@ -47,6 +52,7 @@ function TwoColRow({
 type Form = ReturnType<typeof useUnassignedForm>;
 type Instruments = React.ComponentProps<typeof InstrumentPicker>['instruments'];
 
+/** Editable form of the values extraction recovered. */
 export default function ExtractedDataForm({
   form,
   instruments,

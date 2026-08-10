@@ -1,10 +1,14 @@
+/**
+ * Colour-codes an upcoming bill by days until due.
+ *
+ * Status colours are reserved roles and are never reused for arbitrary series.
+ */
 export type BillUrgency = 'overdue' | 'critical' | 'warning' | 'normal';
 
 /**
- * TASK-FE-008: color-codes an upcoming bill by days-until-due.
- * Status colors are reserved roles (never reused for arbitrary series) —
- * overdue/critical map to the app's destructive red, warning to amber,
- * normal to a neutral muted tone.
+ * Colour-codes a bill by days until due.
+ *
+ * Status colours are reserved roles and never reused for arbitrary series.
  */
 export function classifyBillUrgency(dueDate: string, now: Date = new Date()): BillUrgency {
   const due = new Date(dueDate);

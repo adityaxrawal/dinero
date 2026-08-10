@@ -1,15 +1,11 @@
+/**
+ * Toggles the macOS menu-bar extra and its at-a-glance figures.
+ */
 import { useState, useEffect } from 'react';
 import { AppWindow } from 'lucide-react';
 import { API } from '@/lib/ipc';
 
-/**
- * TASK-DESK-008 (Doc 30 §12): "toggleable in Settings." A native checkbox
- * rather than a new shadcn Switch primitive -- this codebase has no
- * existing Switch component, and introducing one for a single toggle
- * would be disproportionate. Toggling calls
- * `settings_set_menu_bar_extra_enabled`, which immediately builds or
- * removes the real tray icon (`menu::status_item`) -- no restart needed.
- */
+/** Toggles the macOS menu-bar extra. */
 export default function MenuBarExtraSettings() {
   const [enabled, setEnabled] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -23,6 +19,7 @@ export default function MenuBarExtraSettings() {
       .finally(() => setIsLoading(false));
   }, []);
 
+  /** Applies the preference immediately, without a save step. */
   const handleToggle = async (next: boolean) => {
     setIsSaving(true);
     setEnabled(next);

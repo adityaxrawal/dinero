@@ -1,8 +1,15 @@
+/**
+ * Scrollable region with consistently styled scrollbars.
+ *
+ * Native scrollbar appearance differs sharply between platforms and between
+ * trackpad and mouse on macOS; this keeps panels looking the same everywhere.
+ */
 import * as React from 'react';
 import * as ScrollAreaPrimitive from '@radix-ui/react-scroll-area';
 
 import { cn } from '@/lib/utils';
 
+/** Scrollable region with consistently styled scrollbars. */
 const ScrollArea = React.forwardRef<
   React.ElementRef<typeof ScrollAreaPrimitive.Root>,
   React.ComponentPropsWithoutRef<typeof ScrollAreaPrimitive.Root>
@@ -21,6 +28,7 @@ const ScrollArea = React.forwardRef<
 ));
 ScrollArea.displayName = ScrollAreaPrimitive.Root.displayName;
 
+/** The scrollbar itself, orientable horizontally or vertically. */
 const ScrollBar = React.forwardRef<
   React.ElementRef<typeof ScrollAreaPrimitive.ScrollAreaScrollbar>,
   React.ComponentPropsWithoutRef<typeof ScrollAreaPrimitive.ScrollAreaScrollbar>

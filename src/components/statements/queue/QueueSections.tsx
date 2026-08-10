@@ -1,3 +1,6 @@
+/**
+ * Groups the unprocessed queue into actionable sections.
+ */
 import { CheckCircle2, Lock, Trash2 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -10,6 +13,7 @@ type Queue = ReturnType<typeof useUnprocessedQueue>;
 
 const SECTION = 'rounded-xl border border-[#064E3B]/10 bg-[#F8E7C9]/50 overflow-hidden';
 
+/** Header for one queue group. */
 function GroupHeader({
   icon: Icon,
   label,
@@ -32,6 +36,7 @@ function GroupHeader({
   );
 }
 
+/** Statements awaiting review. */
 export function ReviewableSection({ items }: { items: Queue['reviewable'] }) {
   const { openReviewModal } = useGlobalState();
 
@@ -67,6 +72,7 @@ export function ReviewableSection({ items }: { items: Queue['reviewable'] }) {
   );
 }
 
+/** One statement in the queue. */
 function EntryRow({
   item,
   action,
@@ -83,9 +89,6 @@ function EntryRow({
   return (
     <div className="flex items-center justify-between gap-3 p-4">
       <div className="min-w-0">
-        {/* Issue #9: the derived `HDFCBANKXXXX1234JUN2026` name. Monospaced so
-            the fixed-width segments line up down the column and a mismatched
-            card is easy to spot. */}
         <p className="truncate font-mono text-[13px] font-medium text-[#064E3B]">{name}</p>
         {item.display_name && item.filename && (
           <p className="truncate text-xs text-[#064E3B]/50">{item.filename}</p>
@@ -128,6 +131,7 @@ function EntryRow({
   );
 }
 
+/** Groups the queue by the action each entry needs. */
 export function ActionableGroups({ queue }: { queue: Queue }) {
   const { groups } = queue;
   if (!groups) return null;

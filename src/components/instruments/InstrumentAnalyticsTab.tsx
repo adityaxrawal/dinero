@@ -1,3 +1,6 @@
+/**
+ * Spending analytics scoped to one instrument.
+ */
 import { useMemo } from 'react';
 import {PieChart, ShoppingBag, ArrowUpRight, ArrowDownRight} from 'lucide-react';
 import type { TransactionRecord } from '@/lib/ipc';
@@ -6,6 +9,7 @@ interface InstrumentAnalyticsTabProps {
   transactions: TransactionRecord[];
 }
 
+/** Spending analytics scoped to one instrument. */
 export default function InstrumentAnalyticsTab({ transactions }: InstrumentAnalyticsTabProps) {
   const stats = useMemo(() => {
     let inflow = 0;
@@ -54,7 +58,6 @@ export default function InstrumentAnalyticsTab({ transactions }: InstrumentAnaly
 
   return (
     <div className="space-y-4 animate-in fade-in-50 duration-200">
-      {/* 2x2 Summary Metric Cards */}
       <div className="grid grid-cols-2 gap-3">
         <div className="bg-[#F8E7C9]/70 border border-[#064E3B]/10 rounded-2xl p-3.5 space-y-1">
           <div className="flex items-center justify-between">
@@ -81,7 +84,6 @@ export default function InstrumentAnalyticsTab({ transactions }: InstrumentAnaly
         </div>
       </div>
 
-      {/* Metric Details */}
       <div className="grid grid-cols-2 gap-3">
         <div className="bg-[#F8E7C9]/50 border border-[#064E3B]/10 rounded-2xl p-3">
           <span className="text-[10px] font-bold uppercase tracking-wider text-[#064E3B]/60 block">Total Activity</span>
@@ -95,7 +97,6 @@ export default function InstrumentAnalyticsTab({ transactions }: InstrumentAnaly
         </div>
       </div>
 
-      {/* Top Categories / Merchants Breakdown */}
       <div className="bg-[#F8E7C9]/60 border border-[#064E3B]/10 rounded-2xl p-4 space-y-3">
         <div className="flex items-center justify-between border-b border-[#064E3B]/10 pb-2">
           <h4 className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]">Top Volume Items</h4>

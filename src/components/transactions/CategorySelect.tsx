@@ -1,3 +1,6 @@
+/**
+ * Category chooser for a transaction.
+ */
 import {
   Select,
   SelectContent,
@@ -20,6 +23,7 @@ interface CategorySelectProps {
   triggerClassName?: string;
 }
 
+/** Category chooser for a transaction. */
 export function CategorySelect({ categoryId, onChange, categories, id, triggerClassName }: CategorySelectProps) {
   return (
     <Select value={categoryId} onValueChange={onChange}>

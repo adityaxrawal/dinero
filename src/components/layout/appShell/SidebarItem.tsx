@@ -1,3 +1,6 @@
+/**
+ * One navigation item in the app sidebar.
+ */
 import { NavLink } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 
@@ -6,12 +9,10 @@ export interface NavItem {
   label: string;
   icon: React.ReactNode;
   badge?: number;
-  /** TASK-RT-006: a brief attention pulse on the badge itself -- suppressed
-   * during an active bulk scan and fired once, in aggregate, on
-   * `scan_completed` instead (`useReconciliationNudgeStore`). */
   pulse?: boolean;
 }
 
+/** Count badge on a navigation item, pulsing when newly incremented. */
 function NavBadge({ item, isActive }: { item: NavItem; isActive: boolean }) {
   return (
     <span
@@ -29,6 +30,7 @@ function NavBadge({ item, isActive }: { item: NavItem; isActive: boolean }) {
   );
 }
 
+/** One navigation item in the app sidebar. */
 export default function SidebarItem({ item, isActive }: { item: NavItem; isActive: boolean }) {
   const hasBadge = item.badge != null && item.badge > 0;
 

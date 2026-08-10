@@ -1,3 +1,6 @@
+/**
+ * Form state for manually resolving an unassigned transaction.
+ */
 import { useState, useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { API, type UnassignedTransactionRecord } from '@/lib/ipc';
@@ -6,7 +9,7 @@ import { useToast } from '@/hooks/use-toast';
 import { getErrorToast } from '@/lib/errorMapping';
 import { useResolveUnassignedTransaction } from '@/hooks/mutations/useResolveUnassignedTransaction';
 
-/** The editable copy of an unassigned record, reset whenever the record changes. */
+/** Form state for manually resolving an unassigned transaction. */
 export function useUnassignedForm(
   record: UnassignedTransactionRecord | undefined,
   onClose: () => void
@@ -39,6 +42,7 @@ export function useUnassignedForm(
 
   const canSubmit = Boolean(merchant.trim() && amount && date && instrumentId);
 
+  /** Dismisses the entry without resolving it. */
   const handleDismiss = async () => {
     if (!record) return;
     try {
@@ -50,6 +54,7 @@ export function useUnassignedForm(
     }
   };
 
+  /** Resolves the transaction with the supplied fields. */
   const handleSave = () => {
     if (!record || !canSubmit) return;
     resolveManually.mutate(
@@ -73,7 +78,7 @@ export function useUnassignedForm(
     );
   };
 
-  /** Applied from the email evidence pane's Quick-Fill buttons. */
+  /** Applies a value spotted in the source email to a form field. */
   const applyQuickFill = ({ field, value }: { field: string; value: string }) => {
     const setters: Record<string, (v: string) => void> = {
       amount: setAmount,

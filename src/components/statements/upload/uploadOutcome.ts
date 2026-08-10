@@ -1,24 +1,24 @@
+/**
+ * Interprets the result of an upload into a user-facing outcome.
+ */
 import { API } from '@/lib/ipc';
 
 type UploadResult = Awaited<ReturnType<typeof API.statements.upload>>[number];
 
 export interface UploadOutcome {
-  /** macOS TCC blocked at least one file. */
   accessDenied: boolean;
   succeeded: number;
   duplicates: string[];
   otherFailures: string[];
-  /** Statement ids that will stage under the same id, so their draft can be
-   *  watched and the review modal auto-opened. */
   queuedIds: string[];
 }
 
+/** A zeroed upload tally. */
 export function emptyOutcome(): UploadOutcome {
   return { accessDenied: false, succeeded: 0, duplicates: [], otherFailures: [], queuedIds: [] };
 }
 
-/** Sorts one upload round trip's per-file results into the four things the
- *  user needs told apart: blocked, succeeded, already-imported, broken. */
+/** Sorts upload results into succeeded, duplicate and failed. */
 export function classifyUploadResults(results: UploadResult[]): UploadOutcome {
   const outcome = emptyOutcome();
 
@@ -49,13 +49,10 @@ interface ToastSpec {
   description: string;
 }
 
-/** One toast per distinct outcome, so a mixed batch reports all of them. */
+/** Builds the toasts summarising an upload's outcome. */
 export function uploadToasts(outcome: UploadOutcome, attempted: number): ToastSpec[] {
   const toasts: ToastSpec[] = [];
 
-  // TASK-DESK-004 (Doc 30): a dismissable toast for this specific upload
-  // attempt, not a blocking modal -- macOS TCC file/folder access is a
-  // soft-fail, unlike the Keychain hard-fail case.
   if (outcome.accessDenied) {
     toasts.push({
       variant: 'destructive',

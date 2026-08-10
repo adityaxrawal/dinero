@@ -1,5 +1,9 @@
+/**
+ * Save and delete actions for the inspector, with dirty-state awareness.
+ */
 import { Loader2, Save, Trash2 } from 'lucide-react';
 
+/** Save and delete actions, aware of dirty state. */
 export default function SaveDeleteBar({
   isSaving,
   isDeleting,

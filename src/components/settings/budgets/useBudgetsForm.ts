@@ -1,16 +1,16 @@
+/**
+ * Form state for budget editing, including dirty tracking and save.
+ *
+ * Holds edits locally until saved, so a partially typed limit is never persisted
+ * as though it were the user's intent.
+ */
 import { useState, useEffect, useCallback } from 'react';
 import { API, SpendingLimits as SpendingLimitsData, CategoryBudget } from '@/lib/ipc';
 import { useToast } from '@/hooks/use-toast';
 
-/** Rejected before the round trip: the backend stores paise in an i64, and a
- *  limit this large is a typo rather than an intent. */
 const MAX_GLOBAL_LIMIT = 999999999999;
 
-/**
- * Load/edit/save state for the spending-limits form. Split out of
- * `BudgetsSettings` so the validation rules below are reachable without
- * rendering the settings page.
- */
+/** Budget form state, with dirty tracking and save. */
 export function useBudgetsForm() {
   const { toast } = useToast();
   const [loading, setLoading] = useState(true);
@@ -46,14 +46,17 @@ export function useBudgetsForm() {
     loadLimits();
   }, [loadLimits]);
 
+  /** Updates one category's budget locally until saved. */
   const handleCategoryBudgetChange = (name: string, value: string) => {
     const budget = parseFloat(value) || 0;
     setCategories((prev) => prev.map((c) => (c.name === name ? { ...c, budget } : c)));
   };
 
+  /** Toggles an alert threshold. */
   const toggleThreshold = (key: keyof typeof thresholds) =>
     setThresholds((prev) => ({ ...prev, [key]: !prev[key] }));
 
+  /** Persists the edited budgets. */
   const handleSave = async () => {
     const parsedLimit = parseFloat(globalLimit);
     if (isNaN(parsedLimit) || parsedLimit < 0) {

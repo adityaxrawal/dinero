@@ -1,3 +1,9 @@
+/**
+ * Control for how many inference requests may run concurrently.
+ *
+ * Bounded by the backend's memory-derived ceiling, since exceeding it does not
+ * merely slow inference but pushes the machine into swap.
+ */
 import { CheckCircle, Loader2, Server } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -7,6 +13,7 @@ import type { useParallelSlots } from './useParallelSlots';
 
 type Slots = ReturnType<typeof useParallelSlots>;
 
+/** Save control, enabled only when the value changed. */
 function SaveButton({ slots }: { slots: Slots }) {
   const label = slots.isSaving ? 'Saving…' : slots.justSaved ? 'Saved' : 'Save';
   return (
@@ -27,6 +34,7 @@ function SaveButton({ slots }: { slots: Slots }) {
   );
 }
 
+/** Concurrency control, bounded by the memory-derived ceiling. */
 export default function ParallelSlotsCard({
   slots,
   hwInfo,

@@ -1,3 +1,6 @@
+/**
+ * Body layout of the instrument inspector, switching between tabs.
+ */
 import { Loader2 } from 'lucide-react';
 import type { InstrumentRecord } from '@/lib/ipc';
 import type { useInstrumentForm } from '../useInstrumentForm';
@@ -20,6 +23,7 @@ interface InspectorBodyProps {
   onTxSearchChange: (q: string) => void;
 }
 
+/** Body layout, switching between tabs. */
 export default function InspectorBody({
   form,
   inst,

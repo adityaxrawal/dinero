@@ -1,3 +1,6 @@
+/**
+ * Applied, skipped and remaining counts for a run.
+ */
 import { CheckCircle2, MinusCircle, Sparkles, Timer } from 'lucide-react';
 import type { MerchantCleanupProgress } from '@/lib/ipc';
 
@@ -7,6 +10,7 @@ interface LiveStats {
   eta: string;
 }
 
+/** One labelled counter. */
 function Counter({
   icon,
   label,
@@ -25,7 +29,7 @@ function Counter({
   );
 }
 
-/** Rate and ETA only appear mid-run: after it ends they would be stale. */
+/** Applied, skipped and remaining counts. */
 export default function CleanupCounters({
   progress,
   live,

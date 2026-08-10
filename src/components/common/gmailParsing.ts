@@ -1,35 +1,45 @@
-/**
- * Pure parsing helpers behind GmailEmailViewer: turning raw bank-alert HTML and
- * headers into readable text, quick-fill candidates and a sender identity.
- * Kept out of the component file so the component module only exports
- * components (react-refresh) and so these stay directly testable.
- */
 
+/**
+ * Pure parsing helpers behind the email viewer.
+ *
+ * Kept out of the component file so the module exports components alone (which
+ * Fast Refresh requires) and so this logic stays directly testable.
+ */
+/** One value spotted in an email body that the user can push into a form field. */
 export type QuickCandidate = { type: 'amount' | 'merchant' | 'date' | 'ref'; label: string; value: string };
 
 /**
- * Strips raw CSS rules, style blocks, and non-content code from string.
+ * Strips CSS and script content out of text destined for the reader view.
+ *
+ * Bank emails are built as HTML tables with large embedded stylesheets, so
+ * naively stripping tags leaves the CSS rules behind as text. Each pass removes
+ * a different way that styling leaks through: whole <style> and <script>
+ * elements, media queries, bare selector-and-brace blocks, and finally any
+ * remaining brace block containing recognisably CSS property names.
  */
 function sanitizeCssAndCode(input: string): string {
   if (!input) return '';
   
   let cleaned = input;
-  // Remove full <style>...</style> blocks
   cleaned = cleaned.replace(/<style[\s\S]*?<\/style>/gi, ' ');
-  // Remove <script>...</script> blocks
   cleaned = cleaned.replace(/<script[\s\S]*?<\/script>/gi, ' ');
-  // Remove @media queries
   cleaned = cleaned.replace(/@media[^{]+\{(?:[^{}]*|\{[^{}]*\})*\}/gi, ' ');
-  // Remove any CSS rule declaration blocks: e.g. body { ... }, body, table, td, a { ... }, .cls { ... }
   cleaned = cleaned.replace(/(?:^|\n)\s*(?:[a-z0-9_#.:\-\s,>+*()]+\s*\{[^}]*\})/gi, ' ');
-  // Remove loose braces with CSS-like properties
   cleaned = cleaned.replace(/\{[^}]*(?:margin|padding|color|font-|border-|display:|text-align|width:|height:|background)[^}]*\}/gi, ' ');
   
   return cleaned;
 }
 
 /**
- * Converts raw HTML or text into clean, readable plain text for Reader View.
+ * Produces readable plain text from an email, for the reader view.
+ *
+ * Prefers the plain-text part when the message provides one, since it is already
+ * what the sender intended to be read. Falling back to HTML, structural tags are
+ * converted to line breaks before the remaining tags are dropped -- stripping
+ * tags first would run every table cell together into one unreadable line.
+ *
+ * Blank lines are collapsed and paragraphs double-spaced so the result is
+ * scannable rather than a wall of text.
  */
 export function cleanTextForReader(rawHtml?: string | null, rawText?: string | null): string {
   let textContent = '';
@@ -37,7 +47,6 @@ export function cleanTextForReader(rawHtml?: string | null, rawText?: string | n
   if (rawText && rawText.trim()) {
     textContent = rawText;
   } else if (rawHtml && rawHtml.trim()) {
-    // Strip HTML tags to get pure text content
     textContent = rawHtml.replace(/<br\s*\/?>/gi, '\n')
                          .replace(/<\/p>/gi, '\n\n')
                          .replace(/<\/tr>/gi, '\n')
@@ -45,10 +54,8 @@ export function cleanTextForReader(rawHtml?: string | null, rawText?: string | n
                          .replace(/<[^>]+>/g, '');
   }
 
-  // Strip all residual CSS code
   textContent = sanitizeCssAndCode(textContent);
 
-  // Normalize whitespace: max 2 consecutive newlines, collapse trailing spaces
   return textContent
     .split('\n')
     .map((line) => line.trim())
@@ -57,12 +64,21 @@ export function cleanTextForReader(rawHtml?: string | null, rawText?: string | n
 }
 
 /**
- * Prepares and repairs email HTML content so it renders accurately in Gmail iframe view.
+ * Wraps an email's HTML in a self-contained document for the sandboxed iframe.
+ *
+ * Three problems are handled here. A message may carry its HTML in the text part
+ * rather than the HTML part, so that case is detected and used. Some senders
+ * emit their CSS outside any <style> element, where it would render as visible
+ * text -- that CSS is extracted and re-wrapped properly. And the surrounding
+ * document supplies resets that keep an email designed for a full-width client
+ * from overflowing a narrow panel.
+ *
+ * `base target="_blank"` ensures any link the user clicks leaves the iframe
+ * rather than navigating it in place.
  */
 export function prepareGmailHtml(rawHtml?: string | null, rawText?: string | null): string {
   let content = rawHtml || '';
 
-  // Fallback: If no HTML provided, check if rawText has HTML tags
   if (!content.trim() && rawText) {
     const isHtmlTag = /<(table|tr|td|th|div|p|span|b|strong|em|i|u|h[1-6]|ul|ol|li|br|hr|html|body|head|header|footer|section|article|a|img|pre|code)[^>]*>/i.test(rawText);
     if (isHtmlTag) {
@@ -74,7 +90,6 @@ export function prepareGmailHtml(rawHtml?: string | null, rawText?: string | nul
     return '';
   }
 
-  // Check if content has bare CSS rules without <style> tag
   if (!content.includes('<style')) {
     const hasHtmlTags = /<[a-z1-6][^>]*>/i.test(content);
     if (hasHtmlTags) {
@@ -87,7 +102,6 @@ export function prepareGmailHtml(rawHtml?: string | null, rawText?: string | nul
     }
   }
 
-  // Construct isolated HTML document for the iframe
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -126,12 +140,14 @@ export function prepareGmailHtml(rawHtml?: string | null, rawText?: string | nul
 </html>`;
 }
 
-
 /**
- * Runs one capture-group regex over `text`, de-duplicating on the normalised
- * capture. `build` turns a capture into a candidate, or returns null to reject
- * it. Rejected captures stay de-duplicated, which is harmless: the same text
- * would be rejected again.
+ * Runs one detection pattern over the text and builds deduplicated candidates.
+ *
+ * Shared by every quick-fill detector below. The `build` callback may return
+ * null to reject a match that fits the pattern but is not actually useful, and
+ * `normalize` canonicalises the captured text before the duplicate check -- so
+ * that "1,200" and "1200" are recognised as the same amount rather than offered
+ * twice.
  */
 function scanCandidates(
   text: string,
@@ -153,12 +169,20 @@ function scanCandidates(
 }
 
 /**
- * Extracts candidate financial entities from text content for Quick-Fill Chips.
+ * Finds amounts, dates, references and merchants a user might want to fill in.
+ *
+ * Each detector is deliberately conservative and rejects its own false
+ * positives: non-positive amounts, unparseable dates, reference captures that
+ * are really common words, and merchant captures that are generic banking terms.
+ * A wrong suggestion is worse than a missing one, because the user may accept it
+ * without checking.
+ *
+ * The result is capped, since a long strip of chips is harder to scan than a
+ * short one and defeats the purpose.
  */
 export function extractQuickCandidates(text: string): QuickCandidate[] {
   if (!text) return [];
 
-  // Amounts (e.g. INR 450.00, Rs. 1,200, ₹500.00)
   const amounts = scanCandidates(
     text,
     /(?:INR|RS\.?|₹)\s*([\d,]+(?:\.\d{1,2})?)/gi,
@@ -170,7 +194,6 @@ export function extractQuickCandidates(text: string): QuickCandidate[] {
     (raw) => raw.replace(/,/g, '')
   );
 
-  // Dates (e.g. 26-Jul-2026, 2026-07-26, 26/07/2026)
   const dates = scanCandidates(
     text,
     /\b(\d{4}-\d{2}-\d{2}|\d{1,2}[-/\s](?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[-/\s]\d{2,4})\b/gi,
@@ -182,7 +205,6 @@ export function extractQuickCandidates(text: string): QuickCandidate[] {
     }
   );
 
-  // Reference / Txn IDs (e.g. Ref: 12345678, Txn ID: TXN987654)
   const refs = scanCandidates(
     text,
     /\b(?:ref|reference|txn|transaction|utr|rrn)[\s#:]*([a-z0-9]{6,20})\b/gi,
@@ -190,7 +212,6 @@ export function extractQuickCandidates(text: string): QuickCandidate[] {
       /^(bank|card|account|alert|info)$/i.test(value) ? null : { type: 'ref', label: `Ref: ${value}`, value }
   );
 
-  // Merchants (e.g. spent at SWIGGY, paid to AMAZON)
   const merchants = scanCandidates(
     text,
     /(?:spent\s+(?:at|on)|paid\s+to|info[:\s]+|towards\s+)([A-Z0-9\s&]{3,20})/gi,
@@ -201,20 +222,23 @@ export function extractQuickCandidates(text: string): QuickCandidate[] {
     (raw) => raw.trim()
   );
 
-  return [...amounts, ...dates, ...refs, ...merchants].slice(0, 6); // Top 6 relevant candidates
+  return [...amounts, ...dates, ...refs, ...merchants].slice(0, 6);
 }
 
-// "alerts@hdfcbank.net" -> "Hdfcbank Bank". Empty string when no usable domain.
+/**
+ * Derives a display name from an email domain, as a last resort.
+ *
+ * Produces something like "Hdfc Bank" from the domain's first label. Crude, but
+ * strictly better than showing the user a bare address.
+ */
 function bankNameFromEmailDomain(address: string): string {
   const mainDomain = (address.split('@')[1] || '').split('.')[0] || '';
   return mainDomain ? `${mainDomain.charAt(0).toUpperCase()}${mainDomain.slice(1)} Bank` : '';
 }
 
-/**
- * Parses RFC 822 sender strings like "IndusInd Bank <indusind_bank@indusind.com>" or "alerts@indusind.com"
- * into separate clean display name and email address.
- * Falls back to scanning email body text/HTML for sender emails and bank names if headers are missing.
- */
+// Institution names looked for in the message body when the headers are
+// unhelpful. Longer names precede shorter ones that they contain, so the more
+// specific match wins.
 const BANK_KEYWORDS = [
   'HDFC Bank',
   'IndusInd Bank',
@@ -233,11 +257,16 @@ const BANK_KEYWORDS = [
   'Google Pay',
 ];
 
-// Names the upstream extractor emits when it could not identify the sender.
+/** Whether a name is one of our own fallbacks rather than a real sender name. */
 const isPlaceholderName = (name: string) => name === 'Bank Alert' || name === 'Bank / Service Alert';
 
-// "IndusInd Bank <alerts@indusind.com>" -> name and address. A sender without
-// angle brackets, or one that does not parse, comes back as the name alone.
+/**
+ * Splits a `Display Name <address@host>` header into its two parts.
+ *
+ * Returns the whole string as the name when there are no angle brackets, since
+ * a bare address is still the best label available. Surrounding quotes are
+ * stripped, as senders commonly quote names containing commas.
+ */
 function splitRfc822Sender(raw: string): { name: string; email: string } {
   if (!raw.includes('<') || !raw.includes('>')) return { name: raw, email: '' };
   const match = raw.match(/^(.*?)\s*<([^>]+)>/);
@@ -245,36 +274,56 @@ function splitRfc822Sender(raw: string): { name: string; email: string } {
   return { name: match[1].replace(/^["']|["']$/g, '').trim(), email: match[2].trim() };
 }
 
-// First address in the body that is not a schema.org/example.com placeholder.
+/**
+ * Finds a plausible sender address inside the message body.
+ *
+ * Skips example.com and schema.org, which appear in boilerplate and structured
+ * metadata rather than belonging to the actual sender.
+ */
 function findEmailInBody(body: string): string {
   const matches = body.match(/\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/g);
   return matches?.find((e) => !e.includes('example.com') && !e.includes('schema.org')) || '';
 }
 
+/** First known institution name mentioned in the body, if any. */
 function findBankNameInBody(body: string): string {
   return BANK_KEYWORDS.find((kw) => new RegExp(`\\b${kw}\\b`, 'i').test(body)) || '';
 }
 
-// Second pass for when the headers gave us nothing usable: mine the body for an
-// address and a bank name, falling back to the address domain for the name.
+/**
+ * Recovers sender identity from the body when the headers were insufficient.
+ *
+ * Ordered by reliability: a real name already in the header is kept, otherwise a
+ * recognised institution name in the body is preferred, and only then is the
+ * email domain used. This runs because forwarded and relayed bank alerts
+ * frequently lose their original From header.
+ */
 function recoverIdentityFromBody(name: string, email: string, body: string): { name: string; email: string } {
   const foundEmail = email || findEmailInBody(body);
   if (name && !isPlaceholderName(name)) return { name, email: foundEmail };
 
   let foundName = findBankNameInBody(body) || name;
-  // Note: only 'Bank Alert' retries here, not every placeholder name.
   if ((!foundName || foundName === 'Bank Alert') && foundEmail) {
     foundName = bankNameFromEmailDomain(foundEmail) || foundName;
   }
   return { name: foundName, email: foundEmail };
 }
 
+/**
+ * Resolves the sender's display name and address from whatever is available.
+ *
+ * Works through progressively weaker sources -- the From header, then an
+ * explicitly supplied address, then the body -- and handles the common case of a
+ * header carrying only an address with no name.
+ *
+ * Always returns something displayable, falling back to a generic label rather
+ * than an empty string, because this feeds a UI that must render regardless.
+ */
 export function parseSenderInfo(rawSender?: string | null, rawEmail?: string | null, contentText?: string | null) {
   const fromHeader = splitRfc822Sender(rawSender?.trim() || '');
   let name = fromHeader.name;
   let email = rawEmail?.trim() || fromHeader.email;
 
-  // Sender header carried a bare address rather than a display name.
   if (name.includes('@') && !email) {
     email = name;
     name = bankNameFromEmailDomain(name) || email;

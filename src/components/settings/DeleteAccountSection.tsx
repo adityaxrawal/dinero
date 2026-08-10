@@ -1,3 +1,10 @@
+/**
+ * Irreversible deletion of all local data.
+ *
+ * Deliberately the most guarded action in settings: it destroys the encrypted
+ * database and every derived artefact, and nothing here is recoverable
+ * afterwards without a backup the user made themselves.
+ */
 import { useState } from 'react';
 import { AlertTriangle, HardDrive } from 'lucide-react';
 import {
@@ -15,7 +22,7 @@ import { API } from '@/lib/ipc';
 
 const RESET_CONFIRM_PHRASE = 'DELETE MY DATA';
 
-/** Step 1: what is about to be destroyed, with no way to confirm yet. */
+/** First step: states plainly what deletion destroys. */
 function ResetWarningStep({ onCancel, onContinue }: { onCancel: () => void; onContinue: () => void }) {
   return (
     <>
@@ -57,8 +64,7 @@ function ResetWarningStep({ onCancel, onContinue }: { onCancel: () => void; onCo
   );
 }
 
-/** Step 2: type-to-confirm. The delete button stays disabled until the
- *  phrase matches exactly, and while the wipe is in flight. */
+/** Second step: requires explicit confirmation before proceeding. */
 function ResetConfirmStep({
   confirmText,
   onConfirmTextChange,
@@ -125,17 +131,10 @@ function ResetConfirmStep({
 }
 
 /**
- * TASK-FE-014 (Doc 30): "the two-step confirmation UI (warning modal, then
- * type-to-confirm 'DELETE MY DATA') wired to auth_delete_account." Extracted
- * verbatim from the pre-existing "Reset Local Database" modal in
- * Settings.tsx (Doc 28 §4.4/§6.1/§6.3, TASK-AUTH-013) -- that modal was
- * already this exact two-step warning-then-typed-phrase flow, already wired
- * to the real backend command (`settings_delete_account`, the actual
- * Document 19 §13/§18 name; Doc 30's own task text says
- * "auth_delete_account", which doesn't exist -- this app has no
- * login/account concept, so the real command is a full local wipe, the
- * closest and only documented equivalent). This is a structural extraction
- * and rename to match Doc 30's file/section naming, not new functionality.
+ * Irreversible deletion of all local data.
+ *
+ * Two steps by design: this destroys the encrypted database and every derived
+ * artefact, with no recovery afterwards short of a backup the user made.
  */
 export default function DeleteAccountSection() {
   const [resetModalOpen, setResetModalOpen] = useState(false);
@@ -143,12 +142,14 @@ export default function DeleteAccountSection() {
   const [resetConfirmText, setResetConfirmText] = useState('');
   const [isResetting, setIsResetting] = useState(false);
 
+  /** Closes the dialog and resets it to its first step. */
   const closeResetModal = () => {
     setResetModalOpen(false);
     setResetStep(1);
     setResetConfirmText('');
   };
 
+  /** Performs the deletion after confirmation. */
   const handleConfirmReset = async () => {
     if (resetConfirmText !== RESET_CONFIRM_PHRASE) return;
     setIsResetting(true);

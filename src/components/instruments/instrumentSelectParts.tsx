@@ -1,3 +1,6 @@
+/**
+ * Rendered option pieces for the instrument select.
+ */
 import type { ReactNode } from 'react';
 import { Check } from 'lucide-react';
 import { SelectItem, SelectGroup, SelectLabel } from '@/components/ui/select';
@@ -12,7 +15,7 @@ export interface SelectableInstrument {
   masked_identifier?: string | null;
 }
 
-/** One selectable instrument row inside the dropdown. */
+/** One option in the instrument select. */
 function InstrumentOption({
   inst,
   isSelected,
@@ -57,11 +60,7 @@ function InstrumentOption({
   );
 }
 
-/**
- * A titled section of the dropdown (Credit Cards / Bank Accounts / UPI).
- * Renders nothing when empty, so callers can list every section
- * unconditionally; `showDivider` separates it from whatever precedes it.
- */
+/** Options grouped by issuer. */
 export function InstrumentOptionGroup({
   icon,
   label,

@@ -1,3 +1,10 @@
+/**
+ * Lists the extraction rules the app inferred from corrections, and allows reverting them.
+ *
+ * Makes the learning loop inspectable rather than opaque -- a rule that started
+ * producing wrong values can be found and removed instead of silently degrading
+ * every future extraction from that bank.
+ */
 import { useState } from 'react';
 import { AlertTriangle, GraduationCap, Undo2 } from 'lucide-react';
 import type { LearnedRule, SenderBankOverride } from '@/lib/ipc';
@@ -13,28 +20,10 @@ import {
   SenderOverrides,
 } from './learnedRules/RulesPanels';
 
-/**
- * Read-only visibility into what the extraction pipeline has taught itself.
- *
- * This replaces the old "approve this regex" queue, and the read-only part is
- * the point rather than a simplification: a rule is written only after it has
- * mechanically proved it reproduces a real correction and does not change any
- * answer the bank's history already settled on. Asking a person to re-check
- * that by reading `([\d,]+(?:\.\d+)?)\s*(?:INR|Rs)` was never a reasonable
- * request, and it is not one this panel makes.
- *
- * The organising principle is the *email format*, not the rule. Every rule for
- * one bank and field describes itself with the same sentence ("Reads the
- * merchant name out of Yes Bank email alerts"), so a flat list of them reads as
- * a duplicate-rows bug. What actually differs is `template_hash` — which layout
- * of that bank's mail the rule applies to — so that is what the rows are keyed
- * on. The regex sits behind a disclosure for the rare case someone is
- * debugging. The one judgment left to a human is "this rule is misbehaving,
- * retire it".
- */
 const BLURB =
   'Every time you correct a merchant, amount or date, Dinero works out the rule behind the mistake and checks it against your own history before using it — so the same bank’s next email gets read correctly without you doing anything. Rules are grouped by the email layout they apply to: one bank sends several formats, and each needs its own rule. Nothing here needed your approval, and nothing here leaves your Mac. If a rule ever gets something wrong, retire it.';
 
+/** Lists learned extraction rules and allows reverting them. */
 export default function LearnedRulesSettings() {
   const rules = useLearnedRules();
   const [pendingRule, setPendingRule] = useState<LearnedRule | null>(null);

@@ -1,3 +1,6 @@
+/**
+ * Shared field styling for the inspector cards, so every card aligns identically.
+ */
 import type { LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Label } from '@/components/ui/label';
@@ -8,7 +11,7 @@ export const FIELD_SELECT =
   'h-9 text-[13px] font-bold bg-[#F3EBDD]/80 border-[#064E3B]/15 text-[#064E3B] focus:ring-1 focus:ring-[#064E3B]/30 rounded-xl';
 const FIELD_LABEL = 'text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70';
 
-/** One titled card in the details grid. */
+/** Card wrapper for a group of instrument fields. */
 export function SpecCard({
   icon: Icon,
   title,
@@ -35,6 +38,7 @@ export function SpecCard({
   );
 }
 
+/** Label-and-input pair, aligned consistently across cards. */
 export function LabeledField({
   htmlFor,
   label,

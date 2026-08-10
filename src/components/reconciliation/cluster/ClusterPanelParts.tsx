@@ -1,3 +1,6 @@
+/**
+ * Presentational pieces of the cluster resolution panel.
+ */
 import type { ReactNode } from 'react';
 import { Loader2, GitMerge, Ban, Clock, SplitSquareHorizontal, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -7,6 +10,12 @@ import type { useResolveClusterActions } from '@/hooks/useResolveClusterActions'
 
 type Actions = ReturnType<typeof useResolveClusterActions>;
 
+/**
+ * Pairs an action with a caption explaining its consequence.
+ *
+ * Used throughout the resolution panel, because each verdict does something
+ * materially different to the data and the button label alone cannot convey it.
+ */
 function ActionWithCaption({ caption, children }: { caption: string; children: ReactNode }) {
   return (
     <div className="flex flex-col gap-1">
@@ -16,6 +25,7 @@ function ActionWithCaption({ caption, children }: { caption: string; children: R
   );
 }
 
+/** Placeholder while a cluster loads. */
 export function ClusterLoading() {
   return (
     <div className="flex items-center justify-center py-16 gap-2 text-sm text-muted-foreground">
@@ -24,6 +34,12 @@ export function ClusterLoading() {
   );
 }
 
+/**
+ * Shown when a cluster id no longer resolves.
+ *
+ * Expected rather than exceptional: the cluster may have been resolved in
+ * another view, or from a notification, since this URL is directly linkable.
+ */
 export function ClusterNotFound() {
   return (
     <div className="flex flex-col items-center justify-center py-16 gap-2 text-center">
@@ -35,7 +51,7 @@ export function ClusterNotFound() {
   );
 }
 
-/** "3 of 12" with prev/next, only when the full queue was handed down. */
+/** Previous/next navigation through the cluster queue, for resolving in sequence. */
 export function QueueNav({
   queueClusters,
   clusterId,
@@ -80,6 +96,7 @@ export function QueueNav({
   );
 }
 
+/** Header summarising what the matcher concluded and how confidently. */
 export function VerdictHeader({
   cluster,
   verdict,
@@ -122,6 +139,12 @@ export function VerdictHeader({
   );
 }
 
+/**
+ * The four resolution verdicts.
+ *
+ * Each is presented with its consequence, since merging is destructive in a way
+ * that is not obvious from a button label alone.
+ */
 export function ResolutionActions({
   actions,
   selectedMerchant,

@@ -1,10 +1,12 @@
+/**
+ * Loads the transactions and statements related to an instrument.
+ */
 import type { InstrumentRecord } from '@/lib/ipc';
 import { useTransactionsInfiniteList } from '@/hooks/queries/useTransactionsInfiniteList';
 import { useStatementsList } from '@/hooks/queries/useStatementsList';
 import { usePdfPasswordsList } from '@/hooks/queries/usePdfPasswordsList';
 
-/** Everything filed under one instrument: its transactions, statements and
- *  saved statement passwords. */
+/** Loads transactions and statements related to an instrument. */
 export function useInstrumentRelated(
   instrumentId: string | undefined,
   inst: InstrumentRecord | undefined

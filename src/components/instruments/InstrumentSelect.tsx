@@ -1,3 +1,6 @@
+/**
+ * Compact instrument dropdown for inline use.
+ */
 import React, { useState, useMemo } from 'react';
 import { Pencil, Search, X, CreditCard, Landmark, Zap } from 'lucide-react';
 import { Select, SelectTrigger, SelectContent } from '@/components/ui/select';
@@ -17,6 +20,7 @@ interface InstrumentSelectProps {
   }>;
 }
 
+/** Compact instrument dropdown for inline use. */
 export function InstrumentSelect({
   instrumentId,
   onInstrumentChange,
@@ -79,7 +83,6 @@ export function InstrumentSelect({
           hideScrollButtons
           className="bg-[#F8E7C9] border-[#064E3B]/20 text-[#064E3B] shadow-2xl min-w-[340px] max-h-[380px] p-2 rounded-2xl"
         >
-          {/* Header & Search Input */}
           <div className="px-2 pt-1 pb-2 border-b border-[#064E3B]/10 space-y-2 mb-1">
             <div className="flex items-center justify-between">
               <span className="text-[10px] font-extrabold uppercase tracking-wider text-[#064E3B]/70">

@@ -1,3 +1,6 @@
+/**
+ * Tab bar for the inspector's details, transactions and statements views.
+ */
 import { cn } from '@/lib/utils';
 
 export type Tab = 'details' | 'transactions' | 'statements' | 'analytics';
@@ -9,6 +12,7 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'analytics', label: 'Analytics' },
 ];
 
+/** Tab bar for details, transactions and statements. */
 export default function InspectorTabs({
   activeTab,
   onSelect,

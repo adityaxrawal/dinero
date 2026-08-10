@@ -1,3 +1,9 @@
+/**
+ * Lets the user correct a misidentified sending bank.
+ *
+ * The correction becomes a sender override, so future mail from that domain is
+ * attributed correctly rather than needing the same fix repeatedly.
+ */
 import { useState, useEffect } from 'react';
 import { Building2, AlertTriangle, Loader2 } from 'lucide-react';
 import {
@@ -29,19 +35,10 @@ interface ReportWrongBankDialogProps {
 }
 
 /**
- * "This isn't the right bank" — the only correction in the app whose blast
- * radius is larger than the row it is made from.
+ * Corrects a misidentified sending bank.
  *
- * The mistake being corrected is that Gate 1 resolved the *sender domain* to
- * the wrong bank, so the fix is necessarily domain-scoped: correcting only this
- * transaction would leave every future email from that domain making the same
- * mistake. That means one tap here changes how an unbounded number of future
- * messages are filed, which is why the scope sentence below is not optional
- * copy — the user has to see the radius before accepting it.
- *
- * The bank list is closed (the sender registry's own names) rather than free
- * text: a typo would file a whole domain under a bank name nothing else in the
- * app recognises.
+ * The correction becomes a sender override, so future mail from that domain is
+ * attributed correctly rather than needing the same fix each time.
  */
 export default function ReportWrongBankDialog({
   transactionId,
@@ -67,10 +64,9 @@ export default function ReportWrongBankDialog({
       .catch(() => setBanks([]));
   }, [open, banks.length]);
 
-  // A manually created transaction has no sender to relabel, so there is
-  // nothing this control could do.
   if (!domain) return null;
 
+  /** Submits the correction as a sender override. */
   const submit = async () => {
     if (!selected) return;
     setIsSaving(true);
@@ -98,9 +94,6 @@ export default function ReportWrongBankDialog({
 
   return (
     <>
-      {/* This codebase's Dialog primitive exports no Trigger, so the opener is
-          a plain button driving controlled state -- same shape
-          PasswordPromptModal uses. */}
       <button
         type="button"
         onClick={() => setOpen(true)}
@@ -138,7 +131,6 @@ export default function ReportWrongBankDialog({
               </Select>
             </div>
 
-            {/* Mandatory: the user must see the blast radius before confirming. */}
             <div className="p-3 rounded-xl border border-amber-300 bg-amber-50 text-xs text-amber-900 flex items-start gap-2">
               <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
               <span>

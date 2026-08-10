@@ -1,3 +1,9 @@
+/**
+ * Side-by-side comparison of the transactions in a cluster.
+ *
+ * The core of the merge decision: it highlights exactly which fields differ, so
+ * the user can judge whether these are one payment or two.
+ */
 import type { ReactNode } from 'react';
 import { Check } from 'lucide-react';
 import { Link } from 'react-router-dom';
@@ -17,27 +23,17 @@ const ROLE_LABEL: Record<string, string> = {
 };
 
 /**
- * TASK-FE-013 (Doc 30): side-by-side member comparison "designed to make
- * ambiguity visually obvious" -- merchant, amount, date, source pipeline.
- * No confidence score column: Document 18 §4.6/§4.6a has no such field on
- * either `reconciliation_clusters` or `reconciliation_cluster_members`, so
- * one is never fabricated here (the pre-rewrite page hardcoded a static
- * "Confidence: 75%" badge on every cluster regardless of its real data).
+ * Colour for a match score.
  *
- * Layout: the "incoming" member is pinned full-width at the top as the
- * fixed reference every candidate is diffed against, with candidates
- * stacked full-width below -- never a horizontal scroll strip, which used
- * to crop the reference card itself off-screen.
- *
- * `onSelectCandidate` is optional: only the cluster detail page's
- * "Confirm Match" flow needs the user to pick which candidate is the real
- * match; the review queue's compact preview renders read-only.
+ * The threshold marks where the matcher would have been confident enough to
+ * merge automatically, so the colour tells the user whether this cluster is a
+ * near-certainty or a genuine judgement call.
  */
-/** Score-zone color: amber for the ambiguous mid-range, emerald once a candidate is clearly ahead. */
 function scoreColor(score: number): string {
   return score >= 0.85 ? 'emerald' : 'amber';
 }
 
+/** Match-confidence bar with its percentage and an explanation of the blend. */
 function ScoreBar({ score }: { score: number }) {
   const color = scoreColor(score);
   return (
@@ -58,7 +54,12 @@ function ScoreBar({ score }: { score: number }) {
   );
 }
 
-/** Field cell that highlights itself when its value differs from the reference ("New Evidence") member. */
+/**
+ * One field, highlighted when it differs from the reference member.
+ *
+ * The highlight is the point of the whole comparison -- it directs attention to
+ * exactly what disagrees rather than making the user scan every field.
+ */
 function DiffField({
   label,
   value,
@@ -83,6 +84,12 @@ function DiffField({
   );
 }
 
+/**
+ * The comparable fields of one cluster member.
+ *
+ * Instrument and reference render only when present, since a sparsely extracted
+ * observation may have neither.
+ */
 function MemberFields({
   member,
   diff,
@@ -128,6 +135,14 @@ function MemberFields({
   );
 }
 
+/**
+ * Side-by-side comparison of a cluster's members.
+ *
+ * The incoming observation is shown first as the reference, with candidates
+ * below it diffed against it. That anchoring is deliberate: the question is
+ * always "is this new evidence the same as one of these?", not an unanchored
+ * comparison of everything against everything.
+ */
 export default function ClusterMemberComparison({
   members,
   selectedCandidateId,
@@ -190,6 +205,7 @@ export default function ClusterMemberComparison({
   );
 }
 
+/** Renders the original email behind a member, as evidence for the decision. */
 function SourceMessagePreview({ rawPayloadJson }: { rawPayloadJson: string }) {
   let html = '';
   let text = '';
@@ -202,7 +218,10 @@ function SourceMessagePreview({ rawPayloadJson }: { rawPayloadJson: string }) {
     subject = parsed.subject || '';
     sender = parsed.sender || parsed.from || '';
   } catch {
-    // malformed payload -- leave both empty, nothing to show
+    // Malformed or absent payload JSON. The locals keep their empty defaults,
+    // and the guard below renders nothing -- a source message that cannot be
+    // parsed is simply not previewed, which is preferable to failing the whole
+    // comparison view around it.
   }
 
   if (!html && !text) return null;
@@ -214,6 +233,12 @@ function SourceMessagePreview({ rawPayloadJson }: { rawPayloadJson: string }) {
   );
 }
 
+/**
+ * One candidate, selectable when the caller supports choosing a match.
+ *
+ * Given a button role and keyboard handlers when selectable, so the merge
+ * decision is reachable without a mouse.
+ */
 function CandidateCard({
   member,
   reference,

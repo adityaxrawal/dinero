@@ -1,9 +1,13 @@
+/**
+ * Groups learned rules by bank for display.
+ *
+ * Pure and separate from the component so the grouping is directly testable.
+ */
 import type { LearnedRule } from '@/lib/ipc';
 
 export type FormatGroup = {
   templateHash: string;
   rules: LearnedRule[];
-  /** Lowest confidence in the group — the one worth acting on. */
   confidence: number;
   fields: string[];
   learnedAt: string | null;
@@ -16,12 +20,7 @@ export type BankGroup = {
   confidence: number;
 };
 
-/**
- * Bank → email format → the rules that format teaches.
- *
- * Two rules sharing a bank and field but not a `template_hash` are genuinely
- * different rules about different mail, and must never collapse into one row.
- */
+/** Groups learned rules by bank for display. */
 export function groupRules(rules: LearnedRule[]): BankGroup[] {
   const banks = new Map<string, Map<string, LearnedRule[]>>();
   for (const rule of rules) {
@@ -47,8 +46,6 @@ export function groupRules(rules: LearnedRule[]): BankGroup[] {
               .sort()
               .at(-1) ?? null,
         }))
-        // Newest format first: the thing that just changed is the thing worth
-        // looking at.
         .sort((a, b) => (b.learnedAt ?? '').localeCompare(a.learnedAt ?? ''));
 
       const all = groups.flatMap((g) => g.rules);

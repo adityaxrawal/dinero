@@ -1,3 +1,6 @@
+/**
+ * Shared table layout for the debug viewers.
+ */
 import React from 'react';
 
 interface DebugTableLayoutProps<T> {
@@ -12,6 +15,7 @@ interface DebugTableLayoutProps<T> {
   headerActions?: React.ReactNode;
 }
 
+/** Shared table layout for the debug viewers, generic over its row type. */
 export function DebugTableLayout<T>({
   title,
   onRefresh,

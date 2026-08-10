@@ -1,9 +1,12 @@
+/**
+ * Threshold toggles and per-category budget cards for the budgets screen.
+ */
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
 import type { CategoryBudget } from '@/lib/ipc';
 
-/** One alert-threshold tile, toggled on or off. */
+/** Toggle for one alert threshold level. */
 export function ThresholdToggle({
   label,
   description,
@@ -50,7 +53,7 @@ export function ThresholdToggle({
   );
 }
 
-/** One category's monthly budget field. A budget of 0 means "no limit". */
+/** Editable budget for a single category. */
 export function CategoryBudgetCard({
   cat,
   onChange,

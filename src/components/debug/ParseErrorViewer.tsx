@@ -1,3 +1,6 @@
+/**
+ * Lists extraction failures with their raw context, for diagnosis.
+ */
 import { useEffect, useState } from 'react';
 import { API } from '../../lib/ipc';
 
@@ -10,10 +13,12 @@ interface ParseError {
   raw_payload_json: string | null;
 }
 
+/** Lists extraction failures with their raw context. */
 export function ParseErrorViewer() {
   const [errors, setErrors] = useState<ParseError[]>([]);
   const [loading, setLoading] = useState(true);
 
+  /** Loads recent parse errors. */
   const fetchErrors = async () => {
     setLoading(true);
     try {

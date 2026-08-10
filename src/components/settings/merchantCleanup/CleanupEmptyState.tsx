@@ -1,5 +1,9 @@
+/**
+ * Shown when there is nothing to clean up.
+ */
 import { Cpu } from 'lucide-react';
 
+/** Shown when there is nothing to clean up. */
 export default function CleanupEmptyState() {
   return (
     <div className="p-5 rounded-xl border border-dashed border-[#064E3B]/15 bg-[#F8E7C9]/40 flex items-start gap-2.5">

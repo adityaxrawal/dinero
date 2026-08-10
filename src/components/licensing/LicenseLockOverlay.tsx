@@ -1,3 +1,9 @@
+/**
+ * Blocks write access once a licence is locked.
+ *
+ * Reads deliberately remain available -- a lapsed subscription must not hold the
+ * user's own financial history hostage.
+ */
 import { useNavigate } from 'react-router-dom';
 import { AlertTriangle, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -5,47 +11,10 @@ import { useLicenseStore } from '@/stores/useLicenseStore';
 import { useLicenseRefresh } from '@/hooks/useLicenseRefresh';
 
 /**
- * TASK-FE-016 (Doc 30): "full-screen, non-dismissable, rendered at the
- * AppShell level whenever isLocked === true, blocking write interactions
- * but explicitly still allowing navigation to read-only views (per
- * TASK-API-010's read/write license-gate distinction) and to the
- * reactivation flow." Reactive off `useLicenseStore`, so a background
- * revalidation dismisses it immediately without a page reload.
+ * Blocks write access once a licence is locked.
  *
- * Real gap this replaces: AppLayout previously had an ad-hoc "locked"
- * dialog driven by listening for a `license_clock_skew` event -- that
- * event is defined in the backend's event enum but never actually emitted
- * anywhere (grepped the whole crate), so that dialog could never appear in
- * production regardless of why the license was really locked (grace
- * expiry, JWT failure, etc., not just clock skew). It also replaced the
- * entire app (sidebar included).
- *
- * Area 9 verification-pass fix: the first rebuild of this component fixed
- * the sidebar-blocking bug above but introduced a narrower version of the
- * exact same defect -- it was an opaque `absolute inset-0` scrim mounted
- * inside `<main>`, so it covered every routed page's content, not just the
- * page it was first shown on. Clicking a sidebar link did change the URL,
- * but the destination page's content was still hidden behind the same
- * full-content-pane overlay -- "read-only views" were reachable in name
- * only, never actually visible. Since the real write-gate is already
- * enforced backend-side (`assert_write_allowed` fails closed on every
- * mutating command regardless of what the frontend shows), this component
- * only needs to *communicate* the lock, not visually block reading -- so
- * it's now a persistent, non-dismissable banner (same positioning pattern
- * as `GracePeriodBanner`, just non-dismissable and rendered above the
- * routed content rather than as a scrim over it) instead of a full-pane
- * overlay. Content underneath stays fully visible/scrollable on every
- * route.
- *
- * No specific lock *reason* (clock skew vs. grace expiry vs. invalid JWT)
- * is exposed by `LicenseStatusResponse` -- only `state: "LOCKED"` -- so the
- * copy here is deliberately generic rather than fabricating a reason the
- * backend never reports.
- *
- * Rendered in the sidebar's "Messages" section (`AppLayout.tsx`) — see
- * `StatementOnlyModeBanner`'s doc comment for why it moved off routed
- * content entirely (a `position: absolute` overlap bug, not a design choice
- * to revert).
+ * Reads remain available -- a lapsed subscription must not hold the user's own
+ * financial history hostage.
  */
 export default function LicenseLockOverlay() {
   const isLocked = useLicenseStore((s) => s.isLocked);

@@ -1,3 +1,6 @@
+/**
+ * Reverts an individual correction or a whole run.
+ */
 import { useState } from 'react';
 import { API, type MerchantCleanupProgress, type MerchantCleanupRun } from '@/lib/ipc';
 import { toast } from '@/hooks/use-toast';
@@ -9,9 +12,11 @@ interface UseCleanupUndoArgs {
   reload: () => void;
 }
 
+/** Reverts individual corrections or whole runs. */
 export function useCleanupUndo({ setError, setProgress, reload }: UseCleanupUndoArgs) {
   const [busyId, setBusyId] = useState<string | null>(null);
 
+  /** Reverts every correction from a run. */
   const revertRun = async (run: MerchantCleanupRun) => {
     setBusyId(run.run_id);
     setError(null);
@@ -31,6 +36,7 @@ export function useCleanupUndo({ setError, setProgress, reload }: UseCleanupUndo
     }
   };
 
+  /** Reverts one correction. */
   const revertChange = async (correctionId: string) => {
     setBusyId(correctionId);
     setError(null);

@@ -1,3 +1,6 @@
+/**
+ * Searchable instrument chooser for forms and filters.
+ */
 import {
   Select,
   SelectTrigger,
@@ -6,14 +9,7 @@ import {
   SelectItem,
 } from '@/components/ui/select';
 
-/**
- * The plain "Issuer •••• 1234" dropdown, shared by the new-transaction dialog
- * and the unassigned inspector — both had their own identical copy.
- *
- * Not to be confused with `InstrumentSelect`, the richer searchable picker
- * that groups by instrument type and renders inside an `InfoRow`. This one is
- * a bare form control for use next to a `<Label>` or in a table cell.
- */
+/** Searchable instrument chooser. */
 export function InstrumentPicker({
   value,
   onChange,

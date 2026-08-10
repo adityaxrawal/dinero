@@ -1,3 +1,10 @@
+/**
+ * Presents the network disclosure and the outbound activity log.
+ *
+ * The user-facing side of the app's central promise: it states what leaves the
+ * machine and then shows the actual log, so the claim can be checked rather than
+ * taken on trust.
+ */
 import { useState, useEffect } from 'react';
 import { History, ShieldAlert, FileText } from 'lucide-react';
 import { API, ConsentEventRecord } from '@/lib/ipc';
@@ -5,19 +12,14 @@ import { getErrorMessage } from '@/lib/errorMapping';
 import ConsentHistoryList from './ConsentHistoryList';
 import DeleteAccountSection from './DeleteAccountSection';
 
-/**
- * TASK-FE-014 (Doc 30): "Build Settings — Privacy and Consent History
- * Page." Composes the always-accessible consent history, the "Export
- * Diagnostic Bundle" action (with copy explicitly stating the bundle is
- * saved locally and never auto-uploaded -- the pre-existing button had no
- * such copy at all), and the two-step delete-my-data flow.
- */
+/** Network disclosure, consent history, and diagnostic export. */
 export default function PrivacySettings() {
   const [consentHistory, setConsentHistory] = useState<ConsentEventRecord[]>([]);
   const [isLoadingConsent, setIsLoadingConsent] = useState(true);
   const [isExporting, setIsExporting] = useState(false);
   const [exportedPath, setExportedPath] = useState<string | null>(null);
 
+  /** Loads the consent event history. */
   const loadConsentHistory = async () => {
     setIsLoadingConsent(true);
     try {
@@ -34,6 +36,12 @@ export default function PrivacySettings() {
     loadConsentHistory();
   }, []);
 
+  /**
+   * Exports a diagnostic bundle.
+   *
+   * The backend refuses to write one if its PII scan finds anything, so a failure
+   * here can mean the bundle was blocked rather than that the write failed.
+   */
   const handleExportDiagnosticBundle = async () => {
     setIsExporting(true);
     setExportedPath(null);

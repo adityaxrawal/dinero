@@ -1,8 +1,11 @@
+/**
+ * Loads a preview of what a cleanup run would change.
+ */
 import { useState, useEffect, useCallback } from 'react';
 import { API, type MerchantCleanupPreview, type MerchantCleanupRun, type LlmModelInfo } from '@/lib/ipc';
 import { errorMessage } from '@/lib/utils';
 
-/** The queue and the run log, both derived server-side from confidence. */
+/** Loads a preview of what a run would change. */
 export function useCleanupPreview() {
   const [preview, setPreview] = useState<MerchantCleanupPreview | null>(null);
   const [runs, setRuns] = useState<MerchantCleanupRun[]>([]);
@@ -26,8 +29,6 @@ export function useCleanupPreview() {
   useEffect(() => {
     loadPreview();
     loadRuns();
-    // The model name is what makes "on-device AI" concrete; without it the user
-    // cannot tell what is about to read their mail.
     Promise.all([API.llm.getActiveModel(), API.llm.getAvailableModels()])
       .then(([id, models]) => setActiveModel(models.find((m) => m.id === id) ?? null))
       .catch(() => setActiveModel(null));

@@ -1,3 +1,9 @@
+/**
+ * The month grid shown inside a date picker's popover.
+ *
+ * Presentational: it renders whatever cells `useCalendar` computed and reports
+ * clicks back, so month arithmetic stays out of the render path.
+ */
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toISODate } from '../dateHelpers';
@@ -17,6 +23,7 @@ const SELECT_CLASS =
 const NAV_CLASS = 'p-1.5 rounded-md hover:bg-[#064E3B]/10 text-[#064E3B] transition-colors';
 const DAY_CLASS = 'h-8 w-8 rounded-lg text-xs flex items-center justify-center transition-all mx-auto';
 
+/** Month title with previous/next navigation. */
 function CalendarHeader({ calendar }: { calendar: Calendar }) {
   return (
     <div className="flex items-center justify-between mb-3 gap-1">
@@ -73,6 +80,7 @@ function CalendarHeader({ calendar }: { calendar: Calendar }) {
   );
 }
 
+/** The day cells for the visible month. */
 function DayGrid({
   calendar,
   onSelectDay,
@@ -84,7 +92,6 @@ function DayGrid({
 
   return (
     <div className="grid grid-cols-7 gap-1 text-center">
-      {/* Previous Month Trail */}
       {Array.from({ length: firstDayOfMonth }).map((_, i) => {
         const dayNum = daysInPrevMonth - firstDayOfMonth + i + 1;
         const disabled = calendar.isDateDisabled(dayNum, -1);
@@ -105,7 +112,6 @@ function DayGrid({
         );
       })}
 
-      {/* Current Month Days */}
       {Array.from({ length: daysInMonth }).map((_, i) => {
         const dayNum = i + 1;
         const selected = calendar.isSelected(dayNum);
@@ -141,6 +147,7 @@ function DayGrid({
   );
 }
 
+/** Month grid shown inside the picker's popover. */
 export default function CalendarPopover({
   calendar,
   openUpward,

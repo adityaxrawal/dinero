@@ -1,18 +1,16 @@
+/**
+ * The editable field set of the transaction inspector.
+ */
 import { X, Hash, MapPin, Link2, ShieldCheck, Clock } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { InfoRow } from '@/components/ui/InfoRow';
 import type { CanonicalTransaction } from '@/lib/ipc';
 
-/**
- * Editor fields and audit rows shared by the transaction inspector (side panel)
- * and the transaction detail page. Both render the same record, so keeping one
- * copy here stops the two screens drifting apart.
- */
-
 const FIELD_INPUT_CLASS =
   'h-9 text-[13px] font-semibold bg-[#F3EBDD]/70 border-[#064E3B]/15 text-[#064E3B] focus-visible:ring-1 focus-visible:ring-[#064E3B]/30 focus-visible:border-[#064E3B]/40 rounded-xl pr-8';
 
+/** Editable merchant name. */
 export function MerchantField({
   id,
   merchant,
@@ -48,7 +46,7 @@ export function MerchantField({
   );
 }
 
-/** "Tags" label with the live count beside it. */
+/** Header for the tags section, with a count. */
 export function TagsHeader({ count }: { count: number }) {
   return (
     <div className="flex items-center justify-between">
@@ -60,10 +58,12 @@ export function TagsHeader({ count }: { count: number }) {
   );
 }
 
+/** Shown when a transaction has no tags. */
 export function EmptyTagsNotice() {
   return <span className="text-[12px] italic text-[#064E3B]/40">No tags added yet.</span>;
 }
 
+/** Badge showing the transaction's status. */
 function StatusBadge({ status }: { status: string | null | undefined }) {
   const isPosted = (status ?? '').toLowerCase() === 'posted';
   return (
@@ -79,7 +79,7 @@ function StatusBadge({ status }: { status: string | null | undefined }) {
   );
 }
 
-/** The audit / technical-spec rows, rendered inside whichever card wraps them. */
+/** Audit rows recording what changed and when. */
 export function TransactionAuditRows({ tx }: { tx: CanonicalTransaction }) {
   return (
     <>

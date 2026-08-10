@@ -1,3 +1,6 @@
+/**
+ * One live background task, with progress and cancel affordance.
+ */
 import { Loader2, CheckCircle2, AlertCircle, XCircle, X } from 'lucide-react';
 import type { UnifiedTask } from '@/stores/useNotificationStore';
 import { formatDuration } from '@/lib/scanTiming';
@@ -14,6 +17,7 @@ const FAILED_ICON = (
   <AlertCircle className="w-3.5 h-3.5 shrink-0 text-[#ef4444]" aria-hidden="true" />
 );
 
+/** Progress bar, indeterminate until a total is known. */
 function ProgressBar({ task }: { task: UnifiedTask }) {
   const counts =
     task.total > 0 ? `${task.current}/${task.total} (${task.progressPct}%)` : `${task.progressPct}%`;
@@ -36,6 +40,7 @@ function ProgressBar({ task }: { task: UnifiedTask }) {
   );
 }
 
+/** One live background task, with progress and cancel. */
 export default function TaskCard({
   task,
   onCancel,

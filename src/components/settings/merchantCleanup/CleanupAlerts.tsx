@@ -1,5 +1,9 @@
+/**
+ * Warnings and errors raised during a cleanup run.
+ */
 import { AlertTriangle } from 'lucide-react';
 
+/** One alert banner. */
 function Banner({ tone, children }: { tone: 'error' | 'warn'; children: React.ReactNode }) {
   const className =
     tone === 'error'
@@ -13,8 +17,7 @@ function Banner({ tone, children }: { tone: 'error' | 'warn'; children: React.Re
   );
 }
 
-/** The three reasons this panel can't do anything right now, in priority order:
- *  a failed call, a Mac that can't host the model, no model downloaded. */
+/** Warnings and errors raised during a run. */
 export default function CleanupAlerts({
   error,
   blocked,

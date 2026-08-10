@@ -1,3 +1,6 @@
+/**
+ * Main body of the cleanup panel, switching between preview, progress and results.
+ */
 import type { LlmModelInfo, MerchantCleanupPreview, MerchantCleanupRun } from '@/lib/ipc';
 import CleanupAlerts from './CleanupAlerts';
 import CleanupStats from './CleanupStats';
@@ -18,6 +21,7 @@ interface CleanupBodyProps {
   onUndoChange: (correctionId: string) => void;
 }
 
+/** Switches between preview, progress and results. */
 export default function CleanupBody({
   preview,
   runs,

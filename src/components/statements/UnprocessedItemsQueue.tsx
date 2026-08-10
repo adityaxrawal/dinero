@@ -1,3 +1,6 @@
+/**
+ * Queue of statements that failed to process, with retry and discard.
+ */
 import { AlertTriangle, CheckCircle2, Loader2, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useUnprocessedQueue } from './queue/useUnprocessedQueue';
@@ -9,6 +12,7 @@ interface UnprocessedItemsQueueProps {
 
 const PANEL = 'rounded-xl border border-[#064E3B]/10 bg-[#F8E7C9]/50 p-4';
 
+/** Shown when nothing is awaiting action. */
 function EmptyQueue() {
   return (
     <div className="rounded-xl border border-[#064E3B]/10 bg-[#F8E7C9]/50 p-10 text-center">
@@ -21,6 +25,7 @@ function EmptyQueue() {
   );
 }
 
+/** Progress for a bulk re-parse. */
 function ReparseProgress({ processed, total }: { processed: number; total: number }) {
   const percent = total > 0 ? Math.round((processed / total) * 100) : 0;
   return (
@@ -45,6 +50,7 @@ function ReparseProgress({ processed, total }: { processed: number; total: numbe
   );
 }
 
+/** Queue of statements that failed, with retry and discard. */
 export default function UnprocessedItemsQueue({ onEnterPassword }: UnprocessedItemsQueueProps) {
   const queue = useUnprocessedQueue(onEnterPassword);
   const { total, progress, isReparsing } = queue;

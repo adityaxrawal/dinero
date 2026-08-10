@@ -1,13 +1,23 @@
+/**
+ * Select control built on Radix Select.
+ *
+ * A native <select> cannot be styled consistently across platforms, so Radix
+ * supplies an accessible listbox with full keyboard support and this layer
+ * styles it. The scroll buttons exist for option lists taller than the viewport.
+ */
 import * as React from 'react';
 import * as SelectPrimitive from '@radix-ui/react-select';
 import { Check, ChevronDown, ChevronUp } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 
+/** Root select, owning open state and the selected value. */
 const Select = SelectPrimitive.Root;
 
+/** Displays the current selection, or the placeholder when empty. */
 const SelectValue = SelectPrimitive.Value;
 
+/** The button that opens the listbox and shows the current value. */
 const SelectTrigger = React.forwardRef<
   React.ElementRef<typeof SelectPrimitive.Trigger>,
   React.ComponentPropsWithoutRef<typeof SelectPrimitive.Trigger> & { hideChevron?: boolean }
@@ -15,22 +25,14 @@ const SelectTrigger = React.forwardRef<
   <SelectPrimitive.Trigger
     ref={ref}
     className={cn(
-      // Base layout
       'flex h-10 w-full items-center justify-between whitespace-nowrap rounded-md px-3 py-2 text-sm shadow-sm',
-      // Border + background
       'border border-border bg-background',
-      // Placeholder
       'data-[placeholder]:text-muted-foreground/60',
-      // Transitions
       'transition-all duration-150 ease-out',
-      // Hover
       'hover:border-[#064E3B]/30 hover:bg-accent',
-      // Open (active) state — same as focus so it's clearly active
       'data-[state=open]:border-[#064E3B]/60 data-[state=open]:bg-[#064E3B]/[0.04]',
       'data-[state=open]:ring-2 data-[state=open]:ring-[#064E3B]/30',
-      // Focus
       'focus:outline-none focus:ring-2 focus:ring-[#064E3B]/60 focus:ring-offset-0 focus:border-[#064E3B]/60',
-      // Disabled
       'disabled:cursor-not-allowed disabled:opacity-40',
       '[&>span]:line-clamp-1',
       className
@@ -47,6 +49,7 @@ const SelectTrigger = React.forwardRef<
 ));
 SelectTrigger.displayName = SelectPrimitive.Trigger.displayName;
 
+/** Scroll affordance shown when options extend above the viewport. */
 const SelectScrollUpButton = React.forwardRef<
   React.ElementRef<typeof SelectPrimitive.ScrollUpButton>,
   React.ComponentPropsWithoutRef<typeof SelectPrimitive.ScrollUpButton>
@@ -61,6 +64,7 @@ const SelectScrollUpButton = React.forwardRef<
 ));
 SelectScrollUpButton.displayName = SelectPrimitive.ScrollUpButton.displayName;
 
+/** Scroll affordance shown when options extend below the viewport. */
 const SelectScrollDownButton = React.forwardRef<
   React.ElementRef<typeof SelectPrimitive.ScrollDownButton>,
   React.ComponentPropsWithoutRef<typeof SelectPrimitive.ScrollDownButton>
@@ -75,6 +79,12 @@ const SelectScrollDownButton = React.forwardRef<
 ));
 SelectScrollDownButton.displayName = SelectPrimitive.ScrollDownButton.displayName;
 
+/**
+ * The popover listbox.
+ *
+ * Portalled so it is not clipped by an ancestor's overflow, and positioned by
+ * Radix so it flips rather than overflowing the window near a screen edge.
+ */
 const SelectContent = React.forwardRef<
   React.ElementRef<typeof SelectPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof SelectPrimitive.Content> & { hideScrollButtons?: boolean }
@@ -83,11 +93,8 @@ const SelectContent = React.forwardRef<
     <SelectPrimitive.Content
       ref={ref}
       className={cn(
-        // Base
         'relative z-50 max-h-[--radix-select-content-available-height] min-w-[8rem] overflow-y-auto overflow-x-hidden',
-        // Styling
         'rounded-xl border border-border bg-popover text-popover-foreground shadow-lg',
-        // Animations
         'data-[state=open]:animate-in data-[state=closed]:animate-out',
         'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
         'data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',
@@ -117,6 +124,7 @@ const SelectContent = React.forwardRef<
 ));
 SelectContent.displayName = SelectPrimitive.Content.displayName;
 
+/** Heading for a group of options. */
 const SelectLabel = React.forwardRef<
   React.ElementRef<typeof SelectPrimitive.Label>,
   React.ComponentPropsWithoutRef<typeof SelectPrimitive.Label>
@@ -132,6 +140,7 @@ const SelectLabel = React.forwardRef<
 ));
 SelectLabel.displayName = SelectPrimitive.Label.displayName;
 
+/** One selectable option, with its selected-state indicator. */
 const SelectItem = React.forwardRef<
   React.ElementRef<typeof SelectPrimitive.Item>,
   React.ComponentPropsWithoutRef<typeof SelectPrimitive.Item> & { hideCheckmark?: boolean }
@@ -139,24 +148,18 @@ const SelectItem = React.forwardRef<
   <SelectPrimitive.Item
     ref={ref}
     className={cn(
-      // Base layout
       'relative flex w-full cursor-pointer select-none items-center rounded-lg py-2 pl-3 pr-9 text-sm outline-none',
       'text-muted-foreground',
-      // Transitions
       'transition-all duration-100 ease-out',
-      // Hover — clear background + text color change
       'focus:bg-[#064E3B]/10 focus:text-foreground',
       'hover:bg-accent hover:text-foreground',
-      // Selected — Emerald Ink accent background + foreground text + bold
       'data-[state=checked]:bg-[#064E3B]/10 data-[state=checked]:text-[#053d2f] data-[state=checked]:font-medium',
       'data-[state=checked]:border-l-2 data-[state=checked]:border-l-[#064E3B] data-[state=checked]:pl-[10px]',
-      // Disabled
       'data-[disabled]:pointer-events-none data-[disabled]:opacity-30',
       className
     )}
     {...props}
   >
-    {/* Checkmark indicator — right side */}
     {!hideCheckmark && (
       <span className="absolute right-2.5 flex h-4 w-4 items-center justify-center">
         <SelectPrimitive.ItemIndicator>
@@ -169,6 +172,7 @@ const SelectItem = React.forwardRef<
 ));
 SelectItem.displayName = SelectPrimitive.Item.displayName;
 
+/** Groups related options under a shared label. */
 const SelectGroup = SelectPrimitive.Group;
 
 export { Select, SelectValue, SelectTrigger, SelectContent, SelectItem, SelectGroup, SelectLabel };

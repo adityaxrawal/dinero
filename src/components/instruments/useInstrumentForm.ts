@@ -1,3 +1,6 @@
+/**
+ * Form state for the instrument inspector, including dirty tracking.
+ */
 import { useState, useEffect, useCallback } from 'react';
 import type { InstrumentRecord } from '@/lib/ipc';
 import { useInstrumentDetail } from '@/hooks/queries/useInstrumentDetail';
@@ -24,6 +27,7 @@ const EMPTY_FIELDS: InstrumentFormFields = {
   minimumDue: '',
 };
 
+/** Projects an instrument into editable form fields. */
 function fieldsFromInstrument(inst: InstrumentRecord): InstrumentFormFields {
   return {
     issuerName: inst.issuer_name ?? '',
@@ -40,11 +44,11 @@ function fieldsFromInstrument(inst: InstrumentRecord): InstrumentFormFields {
     upiVpa: inst.upi_vpa ?? '',
     rewardsSummary: inst.rewards_summary ?? '',
     statementDueDate: inst.statement_due_date ?? '',
-    // Stored in minor units, edited in major.
     minimumDue: inst.minimum_due != null ? (inst.minimum_due / 100.0).toString() : '',
   };
 }
 
+/** Form state for the inspector, with dirty tracking. */
 export function useInstrumentForm(
   instrumentId: string | undefined,
   initialInstrument?: InstrumentRecord,
@@ -54,9 +58,6 @@ export function useInstrumentForm(
   const { data: detailInst, isLoading } = useInstrumentDetail(instrumentId);
   const forgetPassword = useForgetPdfPassword();
 
-  // One record rather than 15 useState pairs: the flat version had to be
-  // named twice in the hook's return and a third time in every consumer's
-  // destructure, which is what fallow flagged as dup:900f8eb6.
   const [fields, setFields] = useState<InstrumentFormFields>(EMPTY_FIELDS);
   const setField = useCallback(
     <K extends keyof InstrumentFormFields>(name: K, value: InstrumentFormFields[K]) =>

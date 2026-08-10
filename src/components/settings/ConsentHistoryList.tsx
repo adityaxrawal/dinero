@@ -1,12 +1,13 @@
+/**
+ * Shows the record of consents given and withdrawn.
+ *
+ * Read directly from the backend's durable consent events, so this reflects what
+ * was actually recorded rather than a UI-side approximation of it.
+ */
 import { Loader2, RefreshCw } from 'lucide-react';
 import type { ConsentEventRecord } from '@/lib/ipc';
 
-/**
- * TASK-FE-014 (Doc 30): "renders all consent events, always accessible,
- * showing granted/withdrawn timestamps." Extracted verbatim from the
- * pre-existing inline Settings.tsx section (Doc 25 §4.4) -- the loading
- * logic was already correct, this is a structural extraction only.
- */
+/** Lists consents given and withdrawn, read from the durable event log. */
 export default function ConsentHistoryList({
   events,
   isLoading,

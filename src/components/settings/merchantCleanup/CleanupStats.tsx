@@ -1,8 +1,12 @@
+/**
+ * Summary statistics for a completed run.
+ */
 import { FileWarning, Landmark, ListChecks, Timer } from 'lucide-react';
 import type { MerchantCleanupPreview, LlmModelInfo } from '@/lib/ipc';
 import { StatStrip, StatTile } from '../SettingsPrimitives';
 import { estimateMinutes } from './format';
 
+/** Summary statistics for a completed run. */
 export default function CleanupStats({
   preview,
   activeModel,

@@ -1,10 +1,14 @@
+/**
+ * Reminds the user about reconciliation clusters left unresolved.
+ *
+ * Dismissal is local state only, so it reappears next launch rather than being
+ * permanently suppressed by one click. Not a modal -- a stale cluster is
+ * low-urgency backlog, not something demanding immediate action.
+ */
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Clock, X } from 'lucide-react';
 import type { ClusterRecord } from '@/lib/ipc';
-
-
-
 
 import { isClusterStale } from './isClusterStale';
 
@@ -13,12 +17,10 @@ interface StaleClusterReminderProps {
 }
 
 /**
- * "Dismissable-but-recurring" -- same established pattern as
- * `GracePeriodBanner`: dismissal is local component state only, so it
- * reappears on the next app launch rather than being permanently
- * suppressed by one click. Deliberately not a modal -- a stale cluster is
- * a legitimate, low-urgency backlog item, not something demanding
- * immediate action.
+ * Reminds the user about clusters left unresolved.
+ *
+ * Dismissal is local state only, so it reappears next launch rather than being
+ * permanently suppressed by one click.
  */
 export default function StaleClusterReminder({ clusters }: StaleClusterReminderProps) {
   const navigate = useNavigate();

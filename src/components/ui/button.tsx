@@ -1,3 +1,10 @@
+/**
+ * Button primitive with variant and size styles (shadcn/Radix pattern).
+ *
+ * `asChild` renders the styling onto the caller's own element via Radix Slot,
+ * which is how a link can be styled as a button without nesting an anchor inside
+ * a button -- invalid markup that also breaks keyboard behaviour.
+ */
 import * as React from 'react';
 import { Slot } from '@radix-ui/react-slot';
 import { cva, type VariantProps } from 'class-variance-authority';
@@ -5,7 +12,6 @@ import { cva, type VariantProps } from 'class-variance-authority';
 import { cn } from '@/lib/utils';
 
 const buttonVariants = cva(
-  // Base — smooth transitions, stronger focus ring, accessible active state
   'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ' +
     'transition-all duration-200 ease-out ' +
     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#064E3B] focus-visible:ring-offset-2 focus-visible:ring-offset-background ' +
@@ -15,7 +21,6 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        // Primary action — Emerald Ink (Doc 14 §4.1)
         default:
           'bg-primary text-primary-foreground shadow-sm ' +
           'hover:bg-primary/85 hover:shadow-md ' +
@@ -37,9 +42,7 @@ const buttonVariants = cva(
           'hover:bg-accent hover:text-foreground ' +
           'active:bg-accent/70',
         link:
-          // Emerald Ink link variant (replaces blue #2563eb)
           'text-[#064E3B] underline-offset-4 hover:underline hover:text-[#053d2f]',
-        // Accent/brand primary — solid Emerald Ink fill (Doc 14 §4.1)
         accent:
           'bg-[#064E3B] text-[#F8E7C9] font-semibold border border-transparent ' +
           'shadow-sm hover:bg-[#053d2f] hover:shadow-md ' +
@@ -65,6 +68,7 @@ interface ButtonProps
   asChild?: boolean;
 }
 
+/** Button with variant and size styles; `asChild` styles a caller's element. */
 const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className, variant, size, asChild = false, ...props }, ref) => {
     const Comp = asChild ? Slot : 'button';

@@ -1,12 +1,17 @@
+/**
+ * Derives the month-over-month change from the spend trend series.
+ *
+ * Computed from the last two monthly points rather than a dedicated backend
+ * field. Returns null when there is no full pair to compare, so a new install
+ * shows nothing instead of a fabricated figure.
+ */
 import type { SpendTrendPoint } from '@/lib/ipc';
 
 /**
- * TASK-FE-008: `DashboardSummary` has no month-over-month delta field —
- * derived here from the monthly-granularity spend trend series instead
- * (`analytics_spend_trend`'s last two points), rather than fabricating a
- * number the backend doesn't provide. Returns null when there isn't a full
- * pair of months to compare (e.g. a brand-new install) or the prior month
- * had zero spend (percentage change is undefined at that point).
+ * Month-over-month change, derived from the last two monthly trend points.
+ *
+ * Returns null without a full pair to compare, so a new install shows nothing
+ * rather than a fabricated figure.
  */
 export function computeMonthOverMonthDelta(trend: SpendTrendPoint[] | undefined): number | null {
   if (!trend || trend.length < 2) return null;

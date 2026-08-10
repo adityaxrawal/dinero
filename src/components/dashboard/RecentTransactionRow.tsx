@@ -1,7 +1,10 @@
+/**
+ * One row of the recent-ledger widget, briefly highlighted when newly arrived.
+ */
 import { cn, formatRelativeDate } from '@/lib/utils';
 import type { TransactionRecord } from '@/lib/ipc';
 
-/** One row of the Recent Ledger table, highlighted briefly when newly arrived. */
+/** One row of the recent-ledger widget, highlighted when newly arrived. */
 export default function RecentTransactionRow({
   tx,
   isNew,

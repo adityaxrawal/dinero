@@ -1,3 +1,9 @@
+/**
+ * One navigation entry in the sidebar: icon, label, active state and badge.
+ *
+ * Kept separate from the sidebar itself so the active and pulse styling live in
+ * one place rather than being repeated per entry.
+ */
 import * as React from 'react';
 import { cn } from '@/lib/utils';
 
@@ -7,6 +13,7 @@ interface SidebarNavItemProps extends React.ButtonHTMLAttributes<HTMLButtonEleme
   isSelected?: boolean;
 }
 
+/** One sidebar navigation entry: icon, label, active state, badge. */
 export const SidebarNavItem = React.forwardRef<HTMLButtonElement, SidebarNavItemProps>(
   ({ className, icon, label, isSelected, ...props }, ref) => {
     return (

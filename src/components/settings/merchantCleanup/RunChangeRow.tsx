@@ -1,9 +1,13 @@
+/**
+ * A single applied correction within a run, with its undo control.
+ */
 import { ArrowRight } from 'lucide-react';
 import type { MerchantCleanupRun } from '@/lib/ipc';
 import { cn } from '@/lib/utils';
 
 type Change = MerchantCleanupRun['changes'][number];
 
+/** One applied correction, with its undo control. */
 export default function RunChangeRow({
   change,
   onUndoChange,

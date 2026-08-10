@@ -1,3 +1,9 @@
+/**
+ * Budget configuration: the global spending limit, its alert thresholds, and per-category budgets.
+ *
+ * Thresholds here are what the backend's alert worker fires against, so changing
+ * one immediately affects which breaches raise a notification.
+ */
 import type { CategoryBudget } from '@/lib/ipc';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -14,6 +20,7 @@ const ALERT_THRESHOLDS = [
 
 type Thresholds = Record<(typeof ALERT_THRESHOLDS)[number]['key'], boolean>;
 
+/** The overall monthly spending limit. */
 function GlobalLimitSection({
   globalLimit,
   onGlobalLimitChange,
@@ -72,6 +79,7 @@ function GlobalLimitSection({
   );
 }
 
+/** Which percentage thresholds raise an alert. */
 function AlertThresholdsSection({
   thresholds,
   onToggle,
@@ -103,6 +111,7 @@ function AlertThresholdsSection({
   );
 }
 
+/** Per-category budgets. */
 function CategoryBudgetsSection({
   categories,
   onChange,
@@ -133,6 +142,7 @@ function CategoryBudgetsSection({
   );
 }
 
+/** Budget configuration: global limit, thresholds, and per-category budgets. */
 export default function BudgetsSettings() {
   const {
     loading,

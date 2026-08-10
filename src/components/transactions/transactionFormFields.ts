@@ -1,3 +1,6 @@
+/**
+ * Field definitions for the transaction form.
+ */
 import type { CanonicalTransaction } from '@/lib/ipc';
 
 export interface TransactionFields {
@@ -10,12 +13,22 @@ export interface TransactionFields {
   instrumentId: string;
 }
 
-/** Major units, from whichever of the two amount columns the row carries. */
+/**
+ * The transaction's amount in major units.
+ *
+ * Prefers the stored float where present and otherwise derives it from minor
+ * units, which is the authoritative field.
+ */
 export function transactionAmount(tx: CanonicalTransaction): number {
   return tx.amount ?? (tx.amount_minor ?? 0) / 100;
 }
 
-/** The editable fields as they stand on the server, i.e. the "not dirty" baseline. */
+/**
+ * Projects a transaction into editable form fields.
+ *
+ * The amount is taken as an absolute value because direction is edited as its
+ * own field -- a negative here would double-apply the sign on save.
+ */
 export function fieldsFromTransaction(tx: CanonicalTransaction | undefined): TransactionFields {
   return {
     merchant: tx?.merchant_display_name ?? '',
@@ -28,7 +41,12 @@ export function fieldsFromTransaction(tx: CanonicalTransaction | undefined): Tra
   };
 }
 
-/** True when the row records an amount in a currency other than the account's. */
+/**
+ * Whether the transaction was billed in another currency.
+ *
+ * Requires the original currency to differ from the settled one, so a foreign
+ * charge already in the home currency is not flagged.
+ */
 export function isForeignCurrencyTransaction(tx: CanonicalTransaction | undefined): boolean {
   return Boolean(
     !!tx?.original_amount_minor && tx.original_currency && tx.original_currency !== tx.currency

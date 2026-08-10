@@ -1,3 +1,10 @@
+/**
+ * Single-date and date-range pickers.
+ *
+ * Built on the local calendar, popover and date helpers rather than a date
+ * library, so the component tree stays small and the rendered format matches
+ * the app's house style. The range variant enforces that start precedes end.
+ */
 import React from 'react';
 import { cn } from '@/lib/utils';
 import { parseISODate, toISODate } from './dateHelpers';
@@ -38,6 +45,7 @@ export const DatePicker: React.FC<DatePickerProps> = ({
   const { isOpen, openUpward, containerRef, triggerRef, toggle, close } = usePopover(disabled);
   const calendar = useCalendar(value ?? undefined, min, max);
 
+  /** Applies a chosen day and closes the picker. */
   const handleSelectDay = (dayNum: number, offsetMonth: number) => {
     const dateObj = new Date(calendar.year, calendar.month + offsetMonth, dayNum);
     if (calendar.minDate && dateObj < calendar.minDate) return;
@@ -78,8 +86,6 @@ export const DatePicker: React.FC<DatePickerProps> = ({
   );
 };
 
-/* ── Date Range Picker Component with Quick Presets ── */
-
 export interface DateRangePickerProps {
   startDate?: string | undefined;
   endDate?: string | undefined;
@@ -101,6 +107,7 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
   className,
   showPresets = true,
 }) => {
+  /** Applies a preset range such as this month or last 30 days. */
   const handlePreset = (daysBack: number | 'thisMonth' | 'lastMonth' | 'thisYear' | 'lastYear' | 'all') => {
     const end = new Date();
     let start = new Date();
@@ -111,7 +118,7 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
       start = new Date(end.getFullYear(), end.getMonth(), 1);
     } else if (daysBack === 'lastMonth') {
       start = new Date(end.getFullYear(), end.getMonth() - 1, 1);
-      end.setDate(0); // last day of previous month
+      end.setDate(0);
     } else if (daysBack === 'thisYear') {
       start = new Date(end.getFullYear(), 0, 1);
     } else if (daysBack === 'lastYear') {
@@ -129,7 +136,6 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
 
   return (
     <div className={cn('space-y-3', className)}>
-      {/* Quick Presets Bar */}
       {showPresets && (
         <div className="flex flex-wrap gap-1.5 text-xs">
           {[
@@ -153,7 +159,6 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
         </div>
       )}
 
-      {/* Start and End Date Inputs */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div className="space-y-1">
           <label className="text-[11px] font-semibold uppercase tracking-wider text-[#064E3B]/70">

@@ -1,3 +1,6 @@
+/**
+ * Loads the unprocessed queue and exposes retry and discard actions.
+ */
 import { useState } from 'react';
 import type { StatementReparseProgress, UnprocessedStatementEntry } from '@/lib/ipc';
 import { useToast } from '@/hooks/use-toast';
@@ -9,6 +12,7 @@ import { useReparseAllStatements } from '@/hooks/mutations/useReparseAllStatemen
 import { useIpcListen } from '@/hooks/useIpcListen';
 import { entryLabel, type GroupKey } from './queueGroups';
 
+/** Loads the unprocessed queue with retry and discard actions. */
 export function useUnprocessedQueue(onEnterPassword: (statementId: string) => void) {
   const { toast } = useToast();
   const { data: groups } = useUnprocessedStatements();
@@ -24,6 +28,7 @@ export function useUnprocessedQueue(onEnterPassword: (statementId: string) => vo
     ? groups.awaiting_password.length + groups.pending_retry.length + groups.failed.length
     : 0;
 
+  /** Re-runs extraction across every stored statement. */
   const handleReparseAll = () => {
     setProgress(null);
     reparseAll.mutate(undefined, {
@@ -40,6 +45,7 @@ export function useUnprocessedQueue(onEnterPassword: (statementId: string) => vo
     });
   };
 
+  /** Retries one failed statement. */
   const handleRetry = (item: UnprocessedStatementEntry, groupKey: GroupKey) => {
     if (groupKey === 'awaiting_password') {
       onEnterPassword(item.statement_id);
@@ -52,6 +58,7 @@ export function useUnprocessedQueue(onEnterPassword: (statementId: string) => vo
     });
   };
 
+  /** Permanently dismisses a failed statement. */
   const handleDiscard = (item: UnprocessedStatementEntry) => {
     discard.mutate(item.statement_id, {
       onSuccess: () =>

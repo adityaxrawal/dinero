@@ -1,3 +1,9 @@
+/**
+ * Saved statement passwords for this instrument.
+ *
+ * Lists which passwords exist and allows forgetting them; the secrets themselves
+ * stay in the OS keychain and are never rendered.
+ */
 import { KeyRound, ShieldCheck } from 'lucide-react';
 
 interface VaultEntry {
@@ -5,6 +11,7 @@ interface VaultEntry {
   success_count: number;
 }
 
+/** Saved statement passwords; the secrets stay in the keychain. */
 export default function PasswordVaultList({
   passwords,
   onForget,

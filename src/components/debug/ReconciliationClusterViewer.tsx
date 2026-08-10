@@ -1,3 +1,6 @@
+/**
+ * Raw view of reconciliation clusters and their members.
+ */
 import { useEffect, useState } from 'react';
 import { API } from '../../lib/ipc';
 import { Badge } from '../ui/badge';
@@ -13,10 +16,12 @@ interface ReconciliationCluster {
   observation_id: string | null;
 }
 
+/** Raw view of reconciliation clusters. */
 export function ReconciliationClusterViewer() {
   const [clusters, setClusters] = useState<ReconciliationCluster[]>([]);
   const [loading, setLoading] = useState(true);
 
+  /** Loads clusters in raw form. */
   const fetchClusters = async () => {
     setLoading(true);
     try {

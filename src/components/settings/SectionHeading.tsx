@@ -1,7 +1,10 @@
+/**
+ * Consistent heading for a settings section.
+ */
 import type { LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-/** The icon + title + blurb block every settings pane opens with. */
+/** Consistent heading for a settings section. */
 export default function SectionHeading({
   icon: Icon,
   title,

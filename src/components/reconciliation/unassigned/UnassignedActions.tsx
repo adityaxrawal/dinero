@@ -1,6 +1,10 @@
+/**
+ * Resolve and dismiss actions for an unassigned transaction.
+ */
 import { Ban, Save } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
+/** Resolve and dismiss actions. */
 export default function UnassignedActions({
   canSubmit,
   isPending,

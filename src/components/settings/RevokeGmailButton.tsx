@@ -1,13 +1,12 @@
+/**
+ * Revokes Gmail access for a connected account.
+ *
+ * Calls Google's revocation endpoint rather than just deleting the local token,
+ * so the grant is withdrawn at the source.
+ */
 import { useState } from 'react';
 
-/**
- * TASK-FE-014 (Doc 30): "per-account revoke with a confirmation dialog
- * explaining new transactions will stop syncing." The pre-existing
- * `handleDisconnectGmail` in Settings.tsx called `auth_google_disconnect`
- * with zero confirmation of any kind -- a single misclick silently cut off
- * a connected account. Reuses this codebase's established
- * `@tauri-apps/plugin-dialog` `ask()` confirmation pattern.
- */
+/** Revokes Gmail access for an account. */
 export default function RevokeGmailButton({
   email,
   onRevoke,
@@ -17,6 +16,7 @@ export default function RevokeGmailButton({
 }) {
   const [isRevoking, setIsRevoking] = useState(false);
 
+  /** Confirms, then revokes the grant at Google. */
   const handleClick = async () => {
     let confirmed: boolean;
     const warning = `Disconnect ${email}? New transactions from this account will stop syncing immediately. Transactions already imported are not affected or deleted.`;

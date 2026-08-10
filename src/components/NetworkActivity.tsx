@@ -1,3 +1,9 @@
+/**
+ * Displays the outbound network activity log.
+ *
+ * The evidence behind the privacy disclosure, showing what actually left the
+ * machine rather than only what was promised.
+ */
 import { useState, useEffect } from 'react';
 import { Activity, RefreshCcw } from 'lucide-react';
 import { API } from '../lib/ipc';
@@ -14,11 +20,13 @@ interface NetworkLogEntry {
   status_code: number | null;
 }
 
+/** Displays the outbound network activity log. */
 export default function NetworkActivity() {
   const [logs, setLogs] = useState<NetworkLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  /** Loads a page of activity entries. */
   const fetchLogs = async () => {
     setLoading(true);
     setError(null);

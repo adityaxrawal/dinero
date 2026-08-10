@@ -1,3 +1,15 @@
+/**
+ * The application shell: persistent sidebar plus a routed main content area.
+ *
+ * Rendered once around every authenticated route, so anything mounted here
+ * lives for the whole session -- which is exactly what the banners, overlays and
+ * notification centre need in order to keep reporting background work while the
+ * user navigates between screens.
+ *
+ * One branch short-circuits the entire layout: a corrupted database replaces the
+ * shell with a recovery screen, because navigation and data-backed panels cannot
+ * function until the user chooses to restore a backup or start fresh.
+ */
 import { useEffect } from 'react';
 import { Outlet } from 'react-router-dom';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
@@ -18,7 +30,13 @@ import { SYSTEM_ITEMS, useIsActive } from './appShell/navItems';
 import CorruptedDbScreen from './appShell/CorruptedDbScreen';
 import { useBackendStatus } from './appShell/useBackendStatus';
 
-/** TASK-RT-006: a one-shot badge pulse, cleared after the animation. */
+/**
+ * Drives the one-shot pulse on the reconciliation badge.
+ *
+ * The store latches the flag on; this hook clears it after the animation window
+ * so the pulse plays once per trigger instead of animating continuously. The
+ * timer is cleared on unmount to avoid setting state on a gone component.
+ */
 function useBadgePulse() {
   const badgePulse = useReconciliationNudgeStore((s) => s.justPulsed);
   const clearBadgePulse = useReconciliationNudgeStore((s) => s.clearPulse);
@@ -30,6 +48,7 @@ function useBadgePulse() {
   return badgePulse;
 }
 
+/** Sidebar footer indicator showing whether the Rust backend is responding. */
 function EngineStatus({ healthy }: { healthy: boolean }) {
   return (
     <div className="px-6 mt-4 flex items-center justify-between">
@@ -43,16 +62,16 @@ function EngineStatus({ healthy }: { healthy: boolean }) {
   );
 }
 
+/** The application shell: persistent sidebar plus a routed content area. */
 export default function AppLayout() {
   const status = useBackendStatus();
   const badgePulse = useBadgePulse();
   const isActive = useIsActive();
 
-  // TASK-RT-006: React Query already auto-invalidates this on every
-  // `reconciliation_cluster` event (`useIpcQueryInvalidation.ts`), so the
-  // count itself live-increments with no polling and no manual re-fetch.
   const { data: reconciliationClusters = [] } = useReconciliationClusters();
 
+  // Recovery takes over the whole window. Rendering the normal shell over a
+  // corrupted database would offer navigation to screens that cannot load.
   if (status.backendStatus === 'corrupted') {
     return (
       <CorruptedDbScreen
@@ -66,7 +85,8 @@ export default function AppLayout() {
 
   return (
     <div className="flex h-screen w-screen overflow-hidden" style={{ backgroundColor: '#F8E7C9' }}>
-      {/* Skip link */}
+      {/* Skip link: visually hidden until focused, giving keyboard and screen
+          reader users a way past the sidebar straight to the content. */}
       <a
         href="#main-content"
         className="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-14 focus:z-50 focus:px-4 focus:py-2 focus:rounded-lg focus:text-sm focus:font-medium focus:shadow-lg"
@@ -75,7 +95,8 @@ export default function AppLayout() {
         Skip to main content
       </a>
 
-      {/* ── Column 1: Sidebar ──────────────────────────────── */}
+      {/* Sidebar: fixed-width navigation column, laid out top to bottom as
+          brand, primary nav, system messages, then the status footer. */}
       <aside
         className="flex-shrink-0 z-40 flex flex-col border-r border-[#064E3B]/20"
         style={{ width: '256px', backgroundColor: '#064E3B' }}
@@ -101,9 +122,11 @@ export default function AppLayout() {
           badgePulse={badgePulse}
         />
 
-        {/* System messages (Gmail-disconnected, license grace/locked) —
-            in-flow here, not an absolutely-positioned overlay on top of
-            routed content (see StatementOnlyModeBanner's doc comment). */}
+        {/* System messages (Gmail disconnected, license grace/locked, and
+            similar). These sit in the normal flow rather than floating over the
+            routed content, so a persistent warning never obscures the screen the
+            user is trying to work on. Each banner decides for itself whether it
+            has anything to show. */}
         <div className="flex flex-col flex-shrink-0" aria-label="System messages">
           <LicenseLockOverlay />
           <GracePeriodBanner />
@@ -112,7 +135,10 @@ export default function AppLayout() {
           <AlertBanner />
         </div>
 
-        {/* Bottom area (System & Status) */}
+        {/* Bottom area (System & Status). `mt-auto` pins this block to the
+            bottom of the sidebar regardless of how tall the nav above it is.
+            SidebarNotificationCenter is the single owner of scan and
+            background-task progress -- it must stay inside this block. */}
         <div className="mt-auto flex flex-col">
           <SidebarNotificationCenter />
 
@@ -125,14 +151,17 @@ export default function AppLayout() {
         </div>
       </aside>
 
-      {/* ── Main Content Area ──────────────────────────────── */}
+      {/* Main content area: the routed screen fills whatever space the sidebar
+          leaves, managing its own internal columns. */}
       <main id="main-content" className="flex-1 flex overflow-hidden relative">
-        {/* Outlet acts as Column 2 and Column 3 (or full canvas) */}
+        {/* The boundary wraps only the Outlet, so a render crash in one screen
+            leaves the sidebar intact and the app still navigable. */}
         <ErrorBoundary>
           <Outlet />
         </ErrorBoundary>
 
-        {/* OS permission denied overlay */}
+        {/* Positioned last and absolutely, so it covers the content area when an
+            OS-level permission has been denied. */}
         <PermissionDeniedOverlay />
       </main>
     </div>

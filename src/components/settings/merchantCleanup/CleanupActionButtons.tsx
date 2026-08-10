@@ -1,3 +1,6 @@
+/**
+ * Start, cancel and undo controls for a cleanup run.
+ */
 import { Loader2, Sparkles, Undo2, XCircle } from 'lucide-react';
 import type { MerchantCleanupPreview, MerchantCleanupRun } from '@/lib/ipc';
 import { Button } from '@/components/ui/button';
@@ -5,6 +8,7 @@ import { Button } from '@/components/ui/button';
 const DANGER =
   'border-red-200 text-red-600 hover:bg-red-50 hover:border-red-300';
 
+/** Cancels a running cleanup. */
 function StopButton({ onCancel }: { onCancel: () => void }) {
   return (
     <Button
@@ -17,6 +21,7 @@ function StopButton({ onCancel }: { onCancel: () => void }) {
   );
 }
 
+/** Starts a cleanup run. */
 function StartButton({
   preview,
   isStarting,
@@ -45,6 +50,7 @@ function StartButton({
   );
 }
 
+/** Reverts an entire completed run. */
 function UndoRunButton({
   run,
   busyId,
@@ -80,6 +86,7 @@ interface CleanupActionButtonsProps {
   onUndoRun: (run: MerchantCleanupRun) => void;
 }
 
+/** Start, cancel and undo controls, shown per run state. */
 export default function CleanupActionButtons(props: CleanupActionButtonsProps) {
   const { isRunning, finishedRun } = props;
   const canUndo = finishedRun && finishedRun.applied > 0 && !isRunning;

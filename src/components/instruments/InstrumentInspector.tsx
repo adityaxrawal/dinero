@@ -1,3 +1,9 @@
+/**
+ * Side panel for viewing and editing one instrument.
+ *
+ * Composed from the smaller inspector pieces, each owning one card of the panel,
+ * so a change to billing fields does not touch identity or security.
+ */
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
@@ -15,6 +21,7 @@ interface InstrumentInspectorProps {
   inline?: boolean;
 }
 
+/** Side panel for viewing and editing one instrument. */
 export default function InstrumentInspector({
   instrument,
   onClose,
@@ -31,12 +38,12 @@ export default function InstrumentInspector({
   const form = useInstrumentForm(instrument?.id, instrument, onClose);
   const { inst } = form;
 
-  // Reset tab when instrument changes
   useEffect(() => {
     setActiveTab('details');
     setTxSearchQuery('');
   }, [instrument?.id]);
 
+  /** Copies the account identifier. */
   const handleCopyAccountId = () => {
     if (!inst?.id) return;
     navigator.clipboard.writeText(inst.id);

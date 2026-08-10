@@ -1,3 +1,9 @@
+/**
+ * Issuer, nickname and masked-identifier fields.
+ *
+ * The masked identifier is what ingestion matches against when attributing a
+ * transaction, so editing it changes future attribution.
+ */
 import { CreditCard, Copy, Check } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import {
@@ -25,6 +31,12 @@ const STATUSES = [
   ['archived', 'Archived'],
 ] as const;
 
+/**
+ * Issuer, nickname and masked identifier.
+ *
+ * The masked identifier is what ingestion matches on, so editing it changes
+ * future attribution.
+ */
 export default function IdentityCard({
   fields,
   setField,
@@ -37,6 +49,7 @@ export default function IdentityCard({
   copied: boolean;
   onCopyAccountId: () => void;
 }) {
+  /** Commits the field on Enter. */
   const saveOnEnter = (e: React.KeyboardEvent) => e.key === 'Enter' && onSave();
 
   return (

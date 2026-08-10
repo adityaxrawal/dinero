@@ -1,8 +1,14 @@
+/**
+ * Label-and-value row used throughout the detail panels.
+ *
+ * Exists so that every inspector aligns its fields identically instead of each
+ * panel inventing its own two-column layout.
+ */
 import React, { useState } from 'react';
 import { Copy, Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-/** A single label/value row inside one of the panel's info cards. */
+/** Label-and-value row with an optional copy affordance. */
 export function InfoRow({
   icon,
   label,
@@ -18,6 +24,7 @@ export function InfoRow({
 }) {
   const [copied, setCopied] = useState(false);
 
+  /** Copies the value, confirming briefly in place. */
   const handleCopy = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!copyValue) return;

@@ -1,3 +1,6 @@
+/**
+ * Starts a cleanup run and tracks its pending state.
+ */
 import { useState } from 'react';
 import { API, type MerchantCleanupPreview, type MerchantCleanupProgress } from '@/lib/ipc';
 import { errorMessage } from '@/lib/utils';
@@ -11,6 +14,7 @@ interface UseCleanupStartArgs {
   setStartedAt: (at: number | null) => void;
 }
 
+/** Starts a run and tracks its pending state. */
 export function useCleanupStart({
   preview,
   setError,
@@ -20,6 +24,7 @@ export function useCleanupStart({
 }: UseCleanupStartArgs) {
   const [isStarting, setIsStarting] = useState(false);
 
+  /** Begins the run. */
   const handleStart = async () => {
     setError(null);
     setIsStarting(true);
@@ -47,6 +52,7 @@ export function useCleanupStart({
     }
   };
 
+  /** Requests cancellation. */
   const handleCancel = async () => {
     try {
       await API.merchantCleanup.cancel();

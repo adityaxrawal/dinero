@@ -1,3 +1,9 @@
+/**
+ * Covers the content area when a required OS permission is denied.
+ *
+ * Used for keychain denial, which has no fallback -- the database key lives
+ * there, so the app genuinely cannot proceed.
+ */
 import { useState } from 'react';
 import { useIpcListen } from '@/hooks/useIpcListen';
 import { AlertTriangle, BellOff, X } from 'lucide-react';
@@ -12,24 +18,7 @@ interface SystemWarningPayload {
 const KEYCHAIN_DENIED = 'keychain_denied';
 const NOTIFICATION_DENIED = 'notification_denied';
 
-/**
- * TASK-DESK-004 (Doc 30 §12): OS-level permission denial UI states, driven
- * by the backend's `system_warning` event (Document 19 §15) carrying this
- * task's `warning_type`/`severity` values.
- *
- * - **Keychain denied** (`hard_fail`): a persistent, full-screen,
- *   non-dismissable overlay -- Gmail tokens and the SQLite encryption key
- *   both live in Keychain, so there is no safe degraded mode to fall back
- *   to. A direct System Settings deep link, not just instructions.
- * - **Notification permission denied** (`soft_fail`): a small, dismissable,
- *   non-blocking note -- core functionality is unaffected.
- *
- * File/folder access denial is deliberately not handled here: it's
- * necessarily reactive (macOS TCC grants per-path at the moment of a real
- * read), so it's a dismissable toast at the specific failed upload attempt
- * instead (`StatementUploadDropzone.tsx`), not a global state this
- * component would need to track.
- */
+/** Covers the content area when a required OS permission is denied. */
 export default function PermissionDeniedOverlay() {
   const [keychainDenied, setKeychainDenied] = useState<string | null>(null);
   const [notificationDenied, setNotificationDenied] = useState<string | null>(null);
@@ -45,6 +34,7 @@ export default function PermissionDeniedOverlay() {
     }
   });
 
+  /** Opens the relevant System Settings pane. */
   const openSystemSettings = async (pane: string) => {
     try {
       const { openUrl } = await import('@tauri-apps/plugin-opener');

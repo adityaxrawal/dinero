@@ -1,9 +1,9 @@
+/**
+ * Icon indicating which pipeline produced an observation.
+ */
 import { Mail, FileText, PenLine, HelpCircle } from 'lucide-react';
 
-/**
- * G11 fix (extracted for TASK-FE-009/010 reuse): a row/detail-page icon
- * showing which ingestion pipeline produced a transaction.
- */
+/** Icon indicating which pipeline produced an observation. */
 export default function SourcePipelineIcon({ sourceMix }: { sourceMix: string | null }) {
   const value = (sourceMix || '').toLowerCase();
   if (value.includes('statement')) {

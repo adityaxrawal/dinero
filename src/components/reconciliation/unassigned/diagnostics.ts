@@ -1,5 +1,10 @@
+/**
+ * Derives the failure diagnosis from which extraction signals are absent.
+ */
 import type { UnassignedTransactionRecord } from '@/lib/ipc';
 
+// Backend failure reasons mapped to human titles. Keyed by the reason codes the
+// reconciliation pipeline emits.
 const REASON_TITLE: Record<string, string> = {
   extraction_failed: 'Failed to Extract Details',
   issuer_name_not_found: 'Unknown Payment Instrument',
@@ -10,6 +15,7 @@ const REASON_TITLE: Record<string, string> = {
   gate3_failed: 'Mandatory Field Gate Failed',
 };
 
+/** Human title for a failure reason, falling back for unrecognised codes. */
 export function reasonTitle(reason: string): string {
   return REASON_TITLE[reason] || reason || 'Unresolved Issue';
 }
@@ -19,11 +25,15 @@ export interface ReasonGuidance {
   tip: string;
 }
 
+// Used when a reason has no specific guidance, so the panel always tells the
+// user something actionable rather than rendering blank.
 const DEFAULT_GUIDANCE: ReasonGuidance = {
   description: 'An unexpected issue occurred while processing this message.',
   tip: 'Review the extracted data below and complete any missing fields before saving.',
 };
 
+// Per-reason explanation and suggested fix. Written as guidance the user can
+// act on, not as a restatement of the error.
 const REASON_GUIDANCE: Record<string, ReasonGuidance> = {
   extraction_failed: {
     description:
@@ -57,6 +67,7 @@ const REASON_GUIDANCE: Record<string, ReasonGuidance> = {
   },
 };
 
+/** Guidance for a failure reason, with a usable default. */
 export function reasonGuidance(reason: string): ReasonGuidance {
   return REASON_GUIDANCE[reason] ?? DEFAULT_GUIDANCE;
 }
@@ -71,7 +82,12 @@ export interface ExtractionBadge {
   confidenceBadgeStyle: string;
 }
 
-/** Which engine produced this record, and how much to trust it. */
+/**
+ * Summarises how complete an extraction was, as a coloured badge.
+ *
+ * Colour encodes severity so the queue can be triaged visually: what is missing
+ * determines whether a row is trivially fixable or genuinely ambiguous.
+ */
 export function extractionBadge(record: UnassignedTransactionRecord): ExtractionBadge {
   const method = record.extraction_method;
 
@@ -92,8 +108,6 @@ export function extractionBadge(record: UnassignedTransactionRecord): Extraction
     return {
       engineLabel,
       confidenceLabel: `${pct}% Confidence`,
-      // Below 50% the LLM's own answer is no better than the unextracted
-      // default, so it keeps the red badge rather than a reassuring amber.
       confidenceBadgeStyle: pct >= 80 ? EMERALD : pct >= 50 ? AMBER : RED,
     };
   }
@@ -129,6 +143,13 @@ export interface DiagnosticCheck {
   value: string;
 }
 
+/**
+ * Diagnoses specifically why instrument attribution failed.
+ *
+ * Separated from the other checks because it is the most common cause and has
+ * distinct sub-cases -- no signal extracted at all, versus a signal that matched
+ * no known instrument.
+ */
 function instrumentCheck(record: UnassignedTransactionRecord): DiagnosticCheck {
   const unmatched = record.reason === 'issuer_name_not_found';
   const noSignal = record.reason.includes('missing_instrument');
@@ -145,7 +166,12 @@ function instrumentCheck(record: UnassignedTransactionRecord): DiagnosticCheck {
   };
 }
 
-/** Which ingestion gate let this message through, and which one dropped it. */
+/**
+ * Builds the diagnostic checklist for an unassigned transaction.
+ *
+ * Reports which signals were recovered and which were missing, so the user sees
+ * why attribution failed rather than only that it did.
+ */
 export function buildChecks(record: UnassignedTransactionRecord): DiagnosticCheck[] {
   const hasAmount = record.amount_minor != null;
   return [
@@ -192,7 +218,12 @@ export interface EmailEvidence {
   sender: string;
 }
 
-/** The stored raw payload, if it is still parseable; the snippet otherwise. */
+/**
+ * Extracts the source email from the record's raw payload, for display.
+ *
+ * Tolerates a malformed or absent payload by returning empty fields, since the
+ * evidence pane is supplementary and must not break the resolver around it.
+ */
 export function parseEmailEvidence(record: UnassignedTransactionRecord): EmailEvidence {
   const empty: EmailEvidence = { html: '', text: '', subject: '', sender: '' };
 

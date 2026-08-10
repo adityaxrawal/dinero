@@ -1,6 +1,18 @@
+/**
+ * Recovery screen shown when the database cannot be opened.
+ *
+ * Replaces the entire shell, because navigation is meaningless when no screen
+ * behind it can load. Offers restore-from-backup or start-fresh.
+ */
 import { AlertTriangle, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
+/**
+ * Recovery screen shown when the database cannot be opened.
+ *
+ * Replaces the whole shell, since navigation is meaningless when no screen
+ * behind it can load.
+ */
 export default function CorruptedDbScreen({
   isRestoring,
   isStartingFresh,

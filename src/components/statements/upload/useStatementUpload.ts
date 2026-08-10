@@ -1,3 +1,6 @@
+/**
+ * Handles selecting and uploading statement files, including batches.
+ */
 import { useCallback, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { readFile } from '@tauri-apps/plugin-fs';
@@ -16,6 +19,7 @@ import {
   type ValidationError,
 } from './validation';
 
+/** Handles selecting and uploading statement files, including batches. */
 export function useStatementUpload(onUploaded: () => void) {
   const { toast } = useToast();
   const { batchProgress, setBatchProgress, watchDraftOrigin } = useGlobalState();
@@ -34,10 +38,6 @@ export function useStatementUpload(onUploaded: () => void) {
       try {
         const results = await API.statements.upload(paths);
         outcome = classifyUploadResults(results);
-        // A 'queued' upload eventually stages under this same statement_id
-        // (stage_parse_pipeline reuses insert_queued()'s pre-minted id as the
-        // draft id) — watching it is what lets the resulting statement_staged
-        // event auto-open the review modal for this user-initiated upload.
         outcome.queuedIds.forEach((id) => watchDraftOrigin(id));
       } catch (err) {
         outcome.otherFailures.push(getErrorMessage(err));
@@ -51,9 +51,6 @@ export function useStatementUpload(onUploaded: () => void) {
     [onUploaded, toast, setBatchProgress, watchDraftOrigin]
   );
 
-  /** Immediate client-side validation before any upload attempt: non-PDF
-   *  (belt-and-suspenders on the picker's own filter, since a user can still
-   *  type an arbitrary path) and too-large. */
   const pickAndUpload = useCallback(async () => {
     try {
       const selected = await open({
@@ -82,9 +79,6 @@ export function useStatementUpload(onUploaded: () => void) {
     (files: File[]) => {
       const error = files.length > 0 ? validateDroppedFiles(files) : null;
       if (error) return reject(error);
-      // Browser drag-drop events don't carry absolute filesystem paths (needed
-      // for statements_upload's byte-read) -- fall back to the file picker,
-      // which does, once the client-side checks above have passed.
       pickAndUpload();
     },
     [pickAndUpload, reject]

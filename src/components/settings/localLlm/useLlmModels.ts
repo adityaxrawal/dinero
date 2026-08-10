@@ -1,9 +1,17 @@
+/**
+ * Model catalogue state: available models, download progress, activation.
+ */
 import { useState, useEffect } from 'react';
 import { API, type LlmModelInfo, type LlmHardwareInfo } from '@/lib/ipc';
 import { useIpcListen } from '@/hooks/useIpcListen';
 import { RAM_OVERRIDE_STORAGE_KEY, type LlmDownloadProgress } from './format';
 
-/** Returns false only when the user declines the not-enough-RAM warning. */
+/**
+ * Whether this machine has enough RAM for a model, honouring a prior override.
+ *
+ * A user who previously accepted the risk is not asked again -- the override is
+ * remembered, so the warning appears once per machine rather than per attempt.
+ */
 async function ramAllows(model: LlmModelInfo): Promise<boolean> {
   try {
     const ramGb = await API.dev.checkSystemRam();
@@ -16,12 +24,17 @@ async function ramAllows(model: LlmModelInfo): Promise<boolean> {
     if (allow) localStorage.setItem(RAM_OVERRIDE_STORAGE_KEY, 'true');
     return allow;
   } catch (err) {
-    // A RAM probe failure must not block the user from choosing a model.
     console.error(err);
     return true;
   }
 }
 
+/**
+ * Model catalogue state: what is available, downloaded, and active.
+ *
+ * Takes a hardware callback rather than reading hardware itself, so the caller
+ * decides how the RAM figure is obtained and this hook stays testable.
+ */
 export function useLlmModels(onHardware: (hw: LlmHardwareInfo) => number) {
   const [availableModels, setAvailableModels] = useState<LlmModelInfo[]>([]);
   const [downloadedModels, setDownloadedModels] = useState<Set<string>>(new Set());
@@ -31,6 +44,7 @@ export function useLlmModels(onHardware: (hw: LlmHardwareInfo) => number) {
   const [cancellingModelId, setCancellingModelId] = useState<string | null>(null);
   const [hwInfo, setHwInfo] = useState<LlmHardwareInfo | null>(null);
 
+  /** Clears a finished or cancelled download's progress state. */
   const clearDownload = (modelId: string) =>
     setDownloads((prev) => {
       const next = { ...prev };
@@ -38,6 +52,7 @@ export function useLlmModels(onHardware: (hw: LlmHardwareInfo) => number) {
       return next;
     });
 
+  /** Re-reads which models are present on disk. */
   const refreshDownloaded = async () => {
     setDownloadedModels(new Set(await API.llm.getDownloadedModels()));
   };
@@ -75,6 +90,7 @@ export function useLlmModels(onHardware: (hw: LlmHardwareInfo) => number) {
     }
   });
 
+  /** Starts a download after checking RAM suitability. */
   const download = async (modelId: string) => {
     try {
       setDownloads((prev) => ({
@@ -90,6 +106,7 @@ export function useLlmModels(onHardware: (hw: LlmHardwareInfo) => number) {
     }
   };
 
+  /** Cancels an in-flight download. */
   const cancelDownload = async (modelId: string) => {
     setCancellingModelId(modelId);
     try {
@@ -101,6 +118,7 @@ export function useLlmModels(onHardware: (hw: LlmHardwareInfo) => number) {
     }
   };
 
+  /** Deletes a downloaded model. */
   const remove = async (modelId: string) => {
     if (!confirm('Are you sure you want to delete this model?')) return;
     try {
@@ -115,6 +133,7 @@ export function useLlmModels(onHardware: (hw: LlmHardwareInfo) => number) {
     }
   };
 
+  /** Activates a model for inference. */
   const setActive = async (model: LlmModelInfo) => {
     if (!downloadedModels.has(model.id)) {
       alert('You need to download this model first.');

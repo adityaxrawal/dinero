@@ -1,6 +1,10 @@
+/**
+ * Release go/no-go status from the acceptance-criteria gate.
+ */
 import { ShieldCheck, CheckCircle2, XCircle, TrendingUp } from 'lucide-react';
 import type { ReleaseReadinessSnapshot } from '@/lib/ipc';
 
+/** One readiness snapshot row. */
 function SnapshotRow({ snapshot }: { snapshot: ReleaseReadinessSnapshot }) {
   return (
     <div className="flex justify-between items-center text-xs py-1 border-b border-[var(--border-color)] last:border-0">
@@ -16,6 +20,7 @@ function SnapshotRow({ snapshot }: { snapshot: ReleaseReadinessSnapshot }) {
   );
 }
 
+/** The most recent go/no-go verdict. */
 function LatestVerdict({ latest }: { latest: ReleaseReadinessSnapshot | null }) {
   if (!latest) {
     return (
@@ -43,6 +48,7 @@ function LatestVerdict({ latest }: { latest: ReleaseReadinessSnapshot | null }) 
   );
 }
 
+/** Release go/no-go status from the acceptance-criteria gate. */
 export default function GoNoGoPanel({
   snapshots,
   latest,

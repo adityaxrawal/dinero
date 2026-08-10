@@ -1,3 +1,6 @@
+/**
+ * Polls backend health and exposes the recovery actions for a corrupted database.
+ */
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { API } from '@/lib/ipc';
@@ -9,7 +12,7 @@ const CORRUPTION_EVENT = 'db_corrupted';
 const START_FRESH_WARNING =
   'Start fresh? This permanently deletes all local data (transactions, statements, settings) and returns you to onboarding. This cannot be undone.';
 
-/** Native dialog where available; the browser confirm is the web-preview path. */
+/** Confirms a destructive recovery choice before acting. */
 async function askConfirm(warning: string): Promise<boolean> {
   try {
     const { ask } = await import('@tauri-apps/plugin-dialog');
@@ -19,6 +22,7 @@ async function askConfirm(warning: string): Promise<boolean> {
   }
 }
 
+/** Polls backend health and exposes the corrupted-database recovery actions. */
 export function useBackendStatus() {
   const navigate = useNavigate();
   const [backendStatus, setBackendStatus] = useState<'healthy' | 'offline' | 'corrupted'>('healthy');
@@ -57,7 +61,7 @@ export function useBackendStatus() {
       return;
     }
 
-    // A corrupted status must survive a later health check resolving.
+    /** Runs an action only while the database is usable. */
     const ifNotCorrupted = (next: 'healthy' | 'offline') => (prev: typeof backendStatus) =>
       prev === 'healthy' || prev === 'offline' ? next : prev;
 
@@ -70,6 +74,7 @@ export function useBackendStatus() {
 
     const unlisteners: (() => void)[] = [];
 
+    /** Starts the health poll. */
     const setup = async () => {
       let listen;
       try {
@@ -82,12 +87,6 @@ export function useBackendStatus() {
 
       unlisteners.push(await listen(CORRUPTION_EVENT, () => setBackendStatus('corrupted')));
 
-      // Doc 30 TASK-RT-003: `alert_threshold_crossed` handling (toast +
-      // persistent banner) lives in `useAlertStore.ts`'s own module-load
-      // subscription, alongside the other event-store patterns
-      // (`useSyncStore.ts`) -- it previously listened here with a fabricated
-      // `{category, threshold}` payload shape that never matched the real
-      // `{transaction_id, alert_type, message}` the backend emits.
     };
 
     setup().catch(console.error);

@@ -1,3 +1,6 @@
+/**
+ * Loads learned rules and handles reverting them.
+ */
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { API, type LearnedRule, type SenderBankOverride } from '@/lib/ipc';
 import { toast } from '@/hooks/use-toast';
@@ -9,6 +12,7 @@ export const FIELD_FILTERS = ['all', 'merchant', 'amount', 'event_time'] as cons
 type FieldFilter = (typeof FIELD_FILTERS)[number];
 type SortMode = 'default' | 'weakest';
 
+/** Loads learned rules and sender overrides. */
 export function useLearnedRules() {
   const [rules, setRules] = useState<LearnedRule[] | null>(null);
   const [overrides, setOverrides] = useState<SenderBankOverride[] | null>(null);
@@ -31,6 +35,7 @@ export function useLearnedRules() {
     void load();
   }, [load]);
 
+  /** Reverts a rule to its previous variant. */
   const revertRule = async (rule: LearnedRule) => {
     setRevertingId(rule.id);
     setError(null);
@@ -48,6 +53,7 @@ export function useLearnedRules() {
     }
   };
 
+  /** Deactivates a sender override. */
   const revertOverride = async (o: SenderBankOverride) => {
     setRevertingId(o.id);
     setError(null);
@@ -102,7 +108,6 @@ export function useLearnedRules() {
     setFieldFilter,
     sortMode,
     setSortMode,
-    /** Only worth showing controls once the list is long enough to need them. */
     showControls: live.length > 6,
     activeOverrides: overrides?.filter((o) => o.status === 'active') ?? [],
     revertRule,

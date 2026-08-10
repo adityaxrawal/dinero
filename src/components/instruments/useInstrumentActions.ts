@@ -1,3 +1,6 @@
+/**
+ * Create, update and delete actions for instruments, with confirmation and toasts.
+ */
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { API, type InstrumentRecord } from '@/lib/ipc';
@@ -7,7 +10,7 @@ import { confirmAction } from '@/lib/confirmDialog';
 import { queryKeys } from '@/lib/queryKeys';
 import { buildInstrumentUpdate, type InstrumentFormFields } from './instrumentUpdate';
 
-/** Save and delete for one instrument, with their invalidations and toasts. */
+/** Create, update and delete actions with confirmation and toasts. */
 export function useInstrumentActions(
   inst: InstrumentRecord | undefined,
   fields: InstrumentFormFields,
@@ -19,8 +22,10 @@ export function useInstrumentActions(
   const [isDeleting, setIsDeleting] = useState(false);
   const [showSavedConfirm, setShowSavedConfirm] = useState(false);
 
+  /** Surfaces a failure as a toast. */
   const reportError = (err: unknown) => toast({ variant: 'destructive', ...getErrorToast(err) });
 
+  /** Persists edited fields. */
   const handleSave = async () => {
     if (!inst) return;
     setIsSaving(true);
@@ -43,6 +48,7 @@ export function useInstrumentActions(
     }
   };
 
+  /** Soft-deletes the instrument after confirmation. */
   const handleDelete = async () => {
     if (!inst) return;
     const confirmed = await confirmAction(

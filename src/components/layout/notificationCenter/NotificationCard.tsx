@@ -1,3 +1,6 @@
+/**
+ * One historical notification entry.
+ */
 import { Link } from 'react-router-dom';
 import { X, Sparkles, FileText, Activity, Database, Bell, ArrowUpRight } from 'lucide-react';
 import type {
@@ -22,6 +25,7 @@ const SEVERITY_STYLES: Record<string, string> = {
 
 const DEFAULT_SEVERITY = 'border-[#F8E7C9]/10 bg-[#064E3B]/30 text-[#F8E7C9]';
 
+/** Relative time for a feed entry. */
 function formatTimeAgo(timestamp: number): string {
   const diffSec = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
   if (diffSec < 10) return 'Just now';
@@ -31,6 +35,7 @@ function formatTimeAgo(timestamp: number): string {
   return `${Math.floor(diffMin / 60)}h ago`;
 }
 
+/** One historical notification entry. */
 export default function NotificationCard({
   item,
   onDismiss,
@@ -38,9 +43,6 @@ export default function NotificationCard({
   item: NotificationFeedItem;
   onDismiss: () => void;
 }) {
-  // Not a component created during render: the lookup returns one of five
-  // module-level lucide components, so the identity is stable per category and
-  // nothing remounts.
   const Icon = CATEGORY_ICON[item.category] ?? Bell;
 
   return (

@@ -1,3 +1,9 @@
+/**
+ * The dashboard's recent-ledger widget.
+ *
+ * Reactive purely off its props: cache invalidation driven by backend events is
+ * what refetches the data, so this only has to notice the change and animate it.
+ */
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Activity, Plus } from 'lucide-react';
@@ -11,15 +17,7 @@ interface RecentTransactionsProps {
   transactions: TransactionRecord[];
 }
 
-/**
- * TASK-RT-005: the Dashboard's "Recent Ledger" widget, extracted so the
- * new-row highlight/animation and "near-real-time" copy are independently
- * testable. Reactive purely off whatever `transactions` prop the parent's
- * `useTransactionsList` query currently holds -- `useIpcQueryInvalidation`'s
- * existing `transaction_created` -> `queryKeys.transactions.all()`
- * invalidation is what actually causes a re-fetch; this component only
- * needs to notice the resulting prop change and animate it.
- */
+/** The dashboard's recent-ledger widget. */
 export default function RecentTransactions({ transactions }: RecentTransactionsProps) {
   const navigate = useNavigate();
   const seenIdsRef = useRef<Set<string> | null>(null);
@@ -33,7 +31,6 @@ export default function RecentTransactions({ transactions }: RecentTransactionsP
     seenIdsRef.current = currentIds;
 
     if (previouslySeen === null) {
-      // First render -- nothing to diff against, nothing is "new."
       return;
     }
     const newIds = [...currentIds].filter((id) => !previouslySeen.has(id));
@@ -46,8 +43,6 @@ export default function RecentTransactions({ transactions }: RecentTransactionsP
     return () => clearTimeout(timer);
   }, [transactions]);
 
-  // Re-renders once a minute purely so the "last synced" label's relative
-  // wording keeps advancing even when nothing else about the list changes.
   useEffect(() => {
     const interval = setInterval(() => forceTick((t) => t + 1), 60_000);
     return () => clearInterval(interval);

@@ -1,3 +1,10 @@
+/**
+ * Review dialog for an extracted statement draft.
+ *
+ * The gate before anything reaches the ledger: rows and metadata are confirmed or
+ * corrected here, so a misparsed statement is fixed rather than silently
+ * absorbed.
+ */
 import {
   Dialog,
   DialogContent,
@@ -21,6 +28,12 @@ const STAGE_LABELS: Record<string, string> = {
   staged: 'Ready for review',
 };
 
+/**
+ * Review dialog for an extracted statement draft.
+ *
+ * The gate before anything reaches the ledger: rows and metadata are confirmed
+ * or corrected here.
+ */
 export default function StatementReviewModal() {
   const draft = useStatementDraft();
   const { metadata, isStaged, processingProgress } = draft;

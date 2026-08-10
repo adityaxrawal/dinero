@@ -1,3 +1,6 @@
+/**
+ * Draft state for the review dialog: loading, editing, committing, discarding.
+ */
 import { useCallback, useEffect, useState } from 'react';
 import { API, type DraftMetadataInput, type DraftRow, type StatementDraft } from '@/lib/ipc';
 import { useToast } from '@/hooks/use-toast';
@@ -5,6 +8,7 @@ import { useGlobalState } from '@/lib/GlobalStateContext';
 import { useCommitStatementDraft } from '@/hooks/mutations/useCommitStatementDraft';
 import { useDiscardStatementDraft } from '@/hooks/mutations/useDiscardStatementDraft';
 
+/** Converts base64 PDF bytes into a blob. */
 function base64ToBlob(base64: string): Blob {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
@@ -12,6 +16,7 @@ function base64ToBlob(base64: string): Blob {
   return new Blob([bytes], { type: 'application/pdf' });
 }
 
+/** Projects a draft into editable metadata fields. */
 function metadataFromDraft(d: StatementDraft): DraftMetadataInput {
   return {
     issuerName: d.issuer_name ?? '',
@@ -37,6 +42,7 @@ const EMPTY_ROW: DraftRow = {
   llm_extracted: false,
 };
 
+/** Draft state: loading, editing, committing, discarding. */
 export function useStatementDraft() {
   const { toast } = useToast();
   const { reviewModalOpen, activeDraftId, processingProgress, closeReviewModal } = useGlobalState();
@@ -123,6 +129,7 @@ export function useStatementDraft() {
     setRows((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
+  /** Discards the draft without committing. */
   const handleCancel = () => {
     if (activeDraftId) {
       discardDraft.mutate(activeDraftId, {
@@ -133,6 +140,7 @@ export function useStatementDraft() {
     closeReviewModal();
   };
 
+  /** Commits the reviewed rows into the ledger. */
   const handleSubmit = () => {
     if (!activeDraftId || !metadata) return;
     commitDraft.mutate(

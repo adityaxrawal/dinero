@@ -1,3 +1,6 @@
+/**
+ * Security-related instrument settings.
+ */
 import { Building } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import CardNumberInput from '@/components/ui/CardNumberInput';
@@ -25,7 +28,9 @@ const ACCOUNT_TYPES = [
   ['Salary', 'Salary Account'],
 ] as const;
 
+/** Security-related instrument settings. */
 export default function SecurityCard({ fields, setField, onSave }: InstrumentFormProps) {
+  /** Commits the field on Enter. */
   const saveOnEnter = (e: React.KeyboardEvent) => e.key === 'Enter' && onSave();
   const isCard = fields.instrumentType === 'credit_card' || fields.instrumentType === 'debit_card';
 
