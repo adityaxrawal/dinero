@@ -1,3 +1,9 @@
+//! Cargo build script.
+//!
+//! Runs `tauri_build`, which generates the context the application embeds --
+//! bundled frontend assets, the capability/permission manifest, and platform
+//! resources. Without it `tauri::generate_context!` has nothing to expand.
+/// Runs the Tauri build step and regenerates the bank template list.
 fn main() {
     println!("cargo:rerun-if-changed=../.env");
     let env_path = std::path::Path::new("../.env");
@@ -27,12 +33,10 @@ fn main() {
     tauri_build::build()
 }
 
-/// Emits the `BANK_TEMPLATE_FILES` array consumed by
-/// `extraction::ladder::bank_templates` -- one `(filename, include_str!(..))`
-/// pair per `assets/bank_templates/*.json`. Generated rather than
-/// hand-maintained because there is one template file per verified-sender
-/// registry bank (~139), where a forgotten `include_str!` line would be a
-/// silent, whole-bank Layer 2 coverage gap rather than a compile error.
+/// Generates the compile-time list of banks that ship with a template.
+///
+/// Derived from the template files themselves, so adding a template does not also
+/// require editing a hand-maintained list that could drift out of step.
 fn generate_bank_template_list() {
     let dir = std::path::Path::new("assets/bank_templates");
     println!("cargo:rerun-if-changed=assets/bank_templates");
@@ -44,9 +48,6 @@ fn generate_bank_template_list() {
             name.ends_with(".json").then_some(name)
         })
         .collect();
-    // Sorted so the generated file is stable across filesystems -- an
-    // arbitrary readdir order would rewrite it (and trigger a rebuild) on
-    // machines that enumerate differently.
     files.sort();
 
     assert!(
@@ -57,7 +58,6 @@ fn generate_bank_template_list() {
 
     let mut out = String::from("const BANK_TEMPLATE_FILES: &[(&str, &str)] = &[\n");
     for name in &files {
-        // CARGO_MANIFEST_DIR-relative so the generated file works from OUT_DIR.
         out.push_str(&format!(
             "    ({name:?}, include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \
              \"/assets/bank_templates/\", {name:?}))),\n"
