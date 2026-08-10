@@ -1,17 +1,14 @@
-//! Local command CLI tool: performs the exact same functionality of "DELETE MY DATA"
-//! as done through the application.
+//! Command-line tool that erases all local application data.
 //!
-//! Usage:
-//!   cargo run --bin delete_my_data                    # Prompts for 'DELETE MY DATA' confirmation
-//!   cargo run --bin delete_my_data -- --yes          # Bypass prompt and execute immediately
-//!   cargo run --bin delete_my_data -- --app-dir PATH  # Use custom app directory path
-//!   cargo run --bin delete_my_data -- --db PATH       # Use custom database path
-
+//! Provides a way to delete everything that does not depend on the GUI starting
+//! -- which matters precisely when the database is corrupt and the app will not
+//! launch.
 use dinero_app_lib::commands::data::perform_account_deletion;
 use dinero_app_lib::db;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
+/// Default app data directory.
 fn default_app_data_dir() -> PathBuf {
     #[cfg(target_os = "macos")]
     {
@@ -41,6 +38,10 @@ fn default_app_data_dir() -> PathBuf {
 }
 
 #[tokio::main]
+/// Erases all local data without needing the GUI.
+///
+/// Exists precisely for the case where the database is corrupt and the app will
+/// not start.
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let auto_confirm = args

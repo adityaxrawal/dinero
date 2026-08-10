@@ -1,10 +1,14 @@
+//! HTTP client for the licensing service.
+//!
+//! Sends only what entitlement requires -- licence key, device fingerprint,
+//! subscription status. No transaction, balance or merchant data is ever
+//! included, which is the commitment the privacy disclosure makes about this
+//! channel.
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 use crate::network_client::NetworkClient;
 
-/// Doc 19 §14.2: activation is a Razorpay payment confirmation bound to this
-/// device — there is no separate "license_key" concept in the documented model.
 #[derive(Serialize)]
 pub struct ActivateRequest {
     pub email: String,
@@ -20,9 +24,6 @@ pub struct LicenseResponse {
     pub status: String,
 }
 
-/// Document 19 §3.4/§4's error response shape (`{code, message, details}`),
-/// used by the Licensing Backend's HTTP error responses same as the local
-/// IPC error contract.
 #[derive(Deserialize)]
 struct LicensingErrorResponse {
     code: String,
@@ -30,18 +31,11 @@ struct LicensingErrorResponse {
     message: Option<String>,
 }
 
-/// Doc 19 §14.2/§14.4: post-activation revalidation is keyed on `device_id`
-/// alone — one device is bound to exactly one license (§11.3), so there is no
-/// separate license key to carry.
 #[derive(Serialize)]
 pub struct ValidateRequest {
     pub device_id: String,
 }
 
-/// Doc 30 TASK-BILL-002: `POST /api/billing/create-order { email, plan_id }`
-/// (keyed on email, not account_id -- the desktop has no server-side
-/// account_id for a first-time purchaser; the backend find-or-creates the
-/// account the same way `license_activate` does).
 #[derive(Serialize)]
 pub struct CreateOrderRequest {
     pub email: String,
@@ -62,10 +56,7 @@ pub struct LicensingClient {
 }
 
 impl LicensingClient {
-    /// Doc 01 §10.4 (BG-02): every Licensing Backend call must route through
-    /// `NetworkClient` so it's captured in the local Network Activity audit
-    /// trail — this used to build its own bare `reqwest::Client`, making
-    /// every licensing call invisible to that log.
+    /// Builds a client for the licensing service.
     pub fn new(base_url: String, db_pool: deadpool_sqlite::Pool) -> Self {
         Self {
             network: NetworkClient::new(db_pool),
@@ -73,16 +64,12 @@ impl LicensingClient {
         }
     }
 
+    /// Activates a licence for this device.
     pub async fn activate(&self, req: ActivateRequest) -> Result<LicenseResponse> {
         let url = format!("{}/api/license/activate", self.base_url);
         let builder = self.network.client().post(&url).json(&req);
         let res = self.network.execute("licensing_backend", builder).await?;
 
-        // Document 19 §14.2/Document 30 TASK-AUTH-011: `DEVICE_ALREADY_BOUND`
-        // must be surfaced clearly, with guidance to deactivate elsewhere
-        // first — not flattened into a generic network-error string, which
-        // `error_for_status_ref()` alone would do (it only sees the HTTP
-        // status, never the error body carrying the actual code).
         if !res.status().is_success() {
             if let Ok(body) = res.json::<LicensingErrorResponse>().await {
                 anyhow::bail!(body.code);
@@ -94,6 +81,7 @@ impl LicensingClient {
         Ok(data)
     }
 
+    /// Validates the licence, returning current entitlement.
     pub async fn validate(&self, req: ValidateRequest) -> Result<LicenseResponse> {
         let url = format!("{}/api/license/validate", self.base_url);
         let builder = self.network.client().post(&url).json(&req);
@@ -103,6 +91,7 @@ impl LicensingClient {
         Ok(data)
     }
 
+    /// Deactivates this device's binding.
     pub async fn deactivate(&self, req: ValidateRequest) -> Result<()> {
         let url = format!("{}/api/license/deactivate", self.base_url);
         let builder = self.network.client().post(&url).json(&req);
@@ -111,9 +100,7 @@ impl LicensingClient {
         Ok(())
     }
 
-    /// Doc 30 TASK-BILL-002: creates a Razorpay order server-side before the
-    /// desktop app opens hosted checkout — never talks to Razorpay directly,
-    /// keeping the Razorpay API key off the desktop entirely.
+    /// Creates a payment order for a purchase.
     pub async fn create_order(&self, req: CreateOrderRequest) -> Result<CreateOrderResponse> {
         let url = format!("{}/api/billing/create-order", self.base_url);
         let builder = self.network.client().post(&url).json(&req);
@@ -133,13 +120,6 @@ impl LicensingClient {
 mod tests {
     use super::*;
 
-    /// `test_licensing_backend_receives_no_financial_data` (Document 30
-    /// TASK-AUTH-010) for the periodic-validation call specifically:
-    /// `ValidateRequest`'s payload must be exactly `{device_id}` — no Gmail
-    /// tokens, financial data, transaction counts, or instrument details,
-    /// and (per Document 19 §14.2/§14.4's device_id-only revalidation
-    /// design) not even `license_key`/`email` either, since this system has
-    /// no separate license-key concept post-activation.
     #[tokio::test]
     async fn test_licensing_backend_receives_no_financial_data_on_validate() {
         let mut server = mockito::Server::new_async().await;
@@ -171,9 +151,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
-    /// TASK-AUTH-011: `DEVICE_ALREADY_BOUND` must be surfaced clearly as
-    /// that exact code, not flattened into a generic error string that
-    /// loses which specific failure occurred.
     #[tokio::test]
     async fn activate_surfaces_device_already_bound_distinctly() {
         let mut server = mockito::Server::new_async().await;

@@ -1,20 +1,17 @@
-//! Binary integrity self-check at launch (Doc 26 T-10, I11 fix).
+//! Verifies that the running binary has not been tampered with.
 //!
-//! macOS's `SecStaticCodeCheckValidity` API (what `codesign --verify` calls
-//! under the hood) confirms the running executable's code signature is
-//! intact and matches its on-disk bytes — a documented, previously
-//! unimplemented anti-tampering / anti-dylib-injection control. Only
-//! meaningful for signed release builds: local dev builds are typically
-//! unsigned or ad-hoc signed, so this is a no-op outside release builds.
+//! On macOS this shells out to `codesign`, which checks the application's
+//! signature and the seal over its bundled resources. `--deep` extends the check
+//! to nested code such as the sidecar executable, so a swapped-in binary inside
+//! the bundle is caught rather than only a modified main executable.
+//!
+//! Every other platform gets a no-op implementation, so callers need no
+//! conditional compilation of their own.
 
 use std::process::Command;
 
-/// Verifies the currently-running executable's code signature via
-/// `codesign --verify --strict`, matching the semantics of
-/// `SecStaticCodeCheckValidity`. Returns `Ok(())` if the signature is valid,
-/// `Err` with `codesign`'s diagnostic otherwise (invalid/missing signature,
-/// or the binary's bytes no longer match what was signed).
 #[cfg(target_os = "macos")]
+/// Verifies the macOS code signature over the bundle and its resources.
 pub fn verify_binary_integrity() -> anyhow::Result<()> {
     let exe_path = std::env::current_exe()?;
 
@@ -35,8 +32,9 @@ pub fn verify_binary_integrity() -> anyhow::Result<()> {
     }
 }
 
+// No signature scheme wired up off macOS; succeed rather than block startup.
 #[cfg(not(target_os = "macos"))]
+/// No-op on platforms with no signature scheme wired up.
 pub fn verify_binary_integrity() -> anyhow::Result<()> {
-    // Doc 26 T-10 is scoped to the macOS distribution — no-op elsewhere.
     Ok(())
 }

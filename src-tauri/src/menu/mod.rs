@@ -1,21 +1,8 @@
-//! TASK-DESK-001 (Doc 30 §12, Doc 29 §14): the native macOS application menu
-//! bar -- distinct from the in-app React navigation (Area 9). Menu wiring is
-//! a pure dispatch layer: each custom item either emits a Tauri event for
-//! React (`AppShell`) to act on, or directly invokes an existing backend
-//! command -- no business logic lives here. Predefined items (About, Hide,
-//! Quit, Cut/Copy/Paste, Undo/Redo, window controls) are handled entirely
-//! natively by the OS and never reach `handle_menu_event`.
+//! Native application menu.
 //!
-//! The menu's structure is described once, as the pure `MENU_SPEC` data
-//! table below, and `build_menu` is the only thing that walks it to
-//! construct a real `tauri::menu::Menu`. This is deliberate: `muda` (the
-//! native menu backend Tauri uses) enforces an actual OS-level "must be
-//! constructed on the main thread" check on macOS, which a plain `cargo
-//! test` process cannot satisfy -- so unlike most Tauri IPC/event code in
-//! this codebase, a live `Menu` object can't be built inside a unit test
-//! here. Keeping the spec free of any Tauri type means the acceptance tests
-//! can assert against it directly without ever constructing one.
-
+//! Menu structure is declared as data and actions resolved from it, which keeps
+//! the mapping from menu item to behaviour testable without constructing a real
+//! menu or a running app.
 pub mod status_item;
 
 use tauri::menu::{Menu, MenuBuilder, MenuItem, Submenu, SubmenuBuilder};
@@ -23,9 +10,6 @@ use tauri::{AppHandle, Manager, Runtime};
 
 use crate::ipc::events::{emit_event, AppEvent};
 
-/// Custom (non-predefined) menu item ids. Named constants so `MENU_SPEC`
-/// (construction) and `resolve_menu_action` (interpretation) can never drift
-/// out of sync with each other.
 pub const MENU_ID_CHECK_FOR_UPDATES: &str = "check_for_updates";
 pub const MENU_ID_PREFERENCES: &str = "preferences";
 pub const MENU_ID_UPLOAD_STATEMENT: &str = "upload_statement";
@@ -36,12 +20,9 @@ pub const MENU_ID_DOCUMENTATION: &str = "documentation";
 pub const MENU_ID_REPORT_ISSUE: &str = "report_issue";
 pub const MENU_ID_PRIVACY_POLICY: &str = "privacy_policy";
 
-/// Production marketing/docs domain (Document 49 §7: `dinero.app` resolved
-/// 2026-07-14 as the production domain name).
 const DOCS_URL: &str = "https://dinero.app/docs";
 const PRIVACY_POLICY_URL: &str = "https://dinero.app/privacy";
 
-/// A custom menu item's static shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ItemSpec {
     pub id: &'static str,
@@ -49,10 +30,6 @@ pub struct ItemSpec {
     pub accelerator: Option<&'static str>,
 }
 
-/// One entry in a submenu: either a custom item, a separator, or one of the
-/// OS-native predefined items (About/Hide/Quit/Cut/Copy/.../Bring All to
-/// Front) that carry no id of our own and are never routed through
-/// `handle_menu_event`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntrySpec {
     Custom(ItemSpec),
@@ -74,17 +51,12 @@ pub enum EntrySpec {
     PredefinedBringAllToFront,
 }
 
-/// A top-level submenu's static shape.
 #[derive(Debug, Clone, Copy)]
 pub struct SubmenuSpec {
     pub title: &'static str,
     pub entries: &'static [EntrySpec],
 }
 
-/// The standard macOS application menu bar (Doc 30 TASK-DESK-001): App /
-/// File / Edit / View / Window / Help, in macOS convention order. The sole
-/// source of truth for both `build_menu` (construction) and this module's
-/// tests (assertion) -- see the module doc comment for why.
 pub const MENU_SPEC: &[SubmenuSpec] = &[
     SubmenuSpec {
         title: "Dinero",
@@ -128,10 +100,6 @@ pub const MENU_SPEC: &[SubmenuSpec] = &[
         ],
     },
     SubmenuSpec {
-        // Standard Cut/Copy/Paste/Undo/Redo/Select All -- required for
-        // WebKit text-field compatibility (Doc 30: without a native Edit
-        // menu, keyboard shortcuts for text editing inside the WebView
-        // don't work on macOS).
         title: "Edit",
         entries: &[
             EntrySpec::PredefinedUndo,
@@ -190,32 +158,18 @@ pub const MENU_SPEC: &[SubmenuSpec] = &[
     },
 ];
 
-/// What a custom menu item resolves to -- the pure half of dispatch, kept
-/// free of any `AppHandle` so it is trivially unit-testable (Doc 30
-/// TASK-DESK-001 acceptance criterion
-/// `test_upload_statement_shortcut_dispatches_correctly`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuAction {
-    /// Ask React (`AppShell`) to navigate to this route.
     Navigate(&'static str),
-    /// Ask React to toggle the sidebar's collapsed state.
     ToggleSidebar,
-    /// Ask React to open the statement-upload flow.
     UploadStatement,
-    /// Ask for an update check. The check itself is TASK-DESK-005's scope --
-    /// this item only dispatches the request.
     CheckForUpdates,
-    /// Trigger an immediate Gmail poll directly (no UI round-trip needed).
     RefreshNow,
-    /// Generate a diagnostic bundle directly.
     ReportIssue,
-    /// Open an external URL in the system browser.
     OpenUrl(&'static str),
 }
 
-/// Maps a menu item id to the action it should dispatch. Returns `None` for
-/// any id not recognized here -- in practice this only ever happens for
-/// predefined items, which Tauri never routes through `on_menu_event` at all.
+/// Resolves a menu item id to the action it triggers.
 pub fn resolve_menu_action(id: &str) -> Option<MenuAction> {
     match id {
         MENU_ID_CHECK_FOR_UPDATES => Some(MenuAction::CheckForUpdates),
@@ -227,10 +181,6 @@ pub fn resolve_menu_action(id: &str) -> Option<MenuAction> {
         MENU_ID_DOCUMENTATION => Some(MenuAction::OpenUrl(DOCS_URL)),
         MENU_ID_REPORT_ISSUE => Some(MenuAction::ReportIssue),
         MENU_ID_PRIVACY_POLICY => Some(MenuAction::OpenUrl(PRIVACY_POLICY_URL)),
-        // TASK-DESK-008: the menu bar extra (status item)'s own dropdown
-        // menu shares this same global dispatch -- muda's menu-event system
-        // is global regardless of which menu (app menu bar or tray) an item
-        // belongs to, so no separate resolver is needed for it.
         status_item::MENU_BAR_EXTRA_ID_OPEN_DASHBOARD => Some(MenuAction::Navigate("/")),
         status_item::MENU_BAR_EXTRA_ID_OPEN_REVIEW_QUEUE => {
             Some(MenuAction::Navigate("/reconciliation"))
@@ -239,9 +189,7 @@ pub fn resolve_menu_action(id: &str) -> Option<MenuAction> {
     }
 }
 
-/// Builds one submenu from its spec. Generic over `R: Runtime` so
-/// production code can call it with the real Wry runtime -- this function
-/// itself is never exercised in tests (see module doc comment).
+/// Builds one submenu from its declarative spec.
 fn build_submenu<R: Runtime>(app: &AppHandle<R>, spec: &SubmenuSpec) -> tauri::Result<Submenu<R>> {
     let mut builder = SubmenuBuilder::new(app, spec.title);
     for entry in spec.entries {
@@ -272,8 +220,7 @@ fn build_submenu<R: Runtime>(app: &AppHandle<R>, spec: &SubmenuSpec) -> tauri::R
     builder.build()
 }
 
-/// Builds the standard macOS application menu bar from `MENU_SPEC`. Generic
-/// over `R: Runtime` for the same reason as `build_submenu`.
+/// Builds the application menu.
 pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let mut builder = MenuBuilder::new(app);
     for submenu_spec in MENU_SPEC {
@@ -283,12 +230,7 @@ pub fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     builder.build()
 }
 
-/// Executes the effect a resolved `MenuAction` implies. This is the one
-/// place custom menu items are allowed to touch backend state -- everything
-/// else in this module is pure dispatch. Tied to the concrete default
-/// (`Wry`) runtime, matching the existing calling convention of the backend
-/// commands invoked directly from here (`sync_force_poll_now`,
-/// `export_logs`), which are likewise not generic over `R`.
+/// Dispatches a menu event to its action.
 pub fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
     let Some(action) = resolve_menu_action(event.id().0.as_str()) else {
         return;
@@ -313,10 +255,6 @@ pub fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
             );
         }
         MenuAction::CheckForUpdates => {
-            // TASK-DESK-005: the menu item now actually triggers a real
-            // update check (previously this only dispatched the event,
-            // deferring the real check to this task, per TASK-DESK-001's
-            // own fix-log note).
             let _ = emit_event(app, AppEvent::MenuCheckForUpdates, serde_json::json!({}));
             crate::updater::trigger_manual_check(app);
         }
@@ -360,7 +298,6 @@ mod tests {
         })
     }
 
-    /// Doc 30 TASK-DESK-001 acceptance: `test_menu_structure_matches_macos_conventions`.
     #[test]
     fn test_menu_structure_matches_macos_conventions() {
         let titles: Vec<&str> = MENU_SPEC.iter().map(|s| s.title).collect();
@@ -409,7 +346,6 @@ mod tests {
         assert!(find_custom(help_menu, MENU_ID_PRIVACY_POLICY).is_some());
     }
 
-    /// Doc 30 TASK-DESK-001 acceptance: `test_upload_statement_shortcut_dispatches_correctly`.
     #[test]
     fn test_upload_statement_shortcut_dispatches_correctly() {
         let file_menu = &MENU_SPEC[1];
@@ -435,9 +371,6 @@ mod tests {
 
     #[test]
     fn test_unknown_id_resolves_to_no_action() {
-        // Predefined items (Cut/Copy/Quit/etc.) carry no id of ours and
-        // never reach resolve_menu_action with a recognized id -- confirm
-        // the fallthrough is inert.
         assert_eq!(resolve_menu_action("some_predefined_item_id"), None);
     }
 
@@ -473,9 +406,6 @@ mod tests {
         );
     }
 
-    /// Every custom item id referenced in `MENU_SPEC` must have a
-    /// `resolve_menu_action` arm -- guards against the two definitions
-    /// silently drifting apart as the menu grows.
     #[test]
     fn test_every_custom_item_in_spec_resolves_to_an_action() {
         for submenu in MENU_SPEC {

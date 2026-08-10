@@ -1,22 +1,8 @@
-//! Dev-only measurement harness: replays a real fetched-mail corpus through
-//! the actual extraction ladder and reports, per bank, which layer produced
-//! each result.
+//! Replays the benchmark corpus through the extraction pipeline.
 //!
-//! This exists because the only honest measure of a bank-template change is
-//! how many *real* emails it newly extracts — a template that looks right and
-//! never fires is worse than no template, since it costs maintenance without
-//! moving accuracy. Run it before and after a template change; the number to
-//! move is `bank_templates`' share.
-//!
-//! The corpus is gitignored local data, so this skips cleanly when absent
-//! (same posture as `corpus_root()` in the phase-10 quality-gate tests).
-//!
-//! Usage:
-//!   cargo run --bin replay_corpus                       # default corpus path
-//!   cargo run --bin replay_corpus -- --corpus PATH
-//!   cargo run --bin replay_corpus -- --bank "HDFC Bank" # one bank, verbose
-//!   cargo run --bin replay_corpus -- --merchants        # rank extracted merchants
-
+//! The regression harness for extraction: it reports which ladder layer produced
+//! each field, so a change that improves accuracy only by escalating everything
+//! to the LLM is visible as the cost regression it is.
 use dinero_app_lib::extraction::ladder::run_extraction_ladder;
 use dinero_app_lib::extraction::lexicon::is_stopword_only_merchant;
 use dinero_app_lib::extraction::merchant_confidence::{score_merchant, LOW_CONFIDENCE_THRESHOLD};
@@ -56,6 +42,7 @@ struct Stats {
     unextracted: usize,
 }
 
+/// Extracts the sender address from a From header.
 fn sender_address(from: &str) -> String {
     from.rsplit('<')
         .next()
@@ -65,8 +52,7 @@ fn sender_address(from: &str) -> String {
         .to_lowercase()
 }
 
-/// Mirrors `MessageProcessor`'s body selection: prefer the text part, fall
-/// back to flattening HTML, then to Gmail's snippet.
+/// Returns the body text of a corpus email.
 fn body_of(e: &Email) -> String {
     let raw = e.body_text.clone().unwrap_or_default();
     let looks_html = raw.trim_start().starts_with('<') || raw.contains("<html");
@@ -79,6 +65,7 @@ fn body_of(e: &Email) -> String {
 }
 
 #[tokio::main(flavor = "current_thread")]
+/// Replays the corpus and reports per-layer extraction accuracy.
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
     let arg = |k: &str| {
@@ -115,7 +102,6 @@ async fn main() {
         let Some(from) = e.from.as_deref() else {
             continue;
         };
-        // Gate 1, exactly as the real pipeline runs it.
         let bank = match validator.verify_sender(&sender_address(from), None) {
             SenderVerificationResult::VerifiedTransactionCandidate(b)
             | SenderVerificationResult::VerifiedStatementCandidate(b) => b,
@@ -126,9 +112,6 @@ async fn main() {
         }
 
         let body = body_of(e);
-        // Gate 2 proper needs the full classifier; this harness only skips
-        // bodies with no currency-marked amount at all, which no extraction
-        // layer could succeed on anyway.
         if !body.contains('₹')
             && !body.to_lowercase().contains("rs.")
             && !body.to_lowercase().contains("rs ")
@@ -146,7 +129,6 @@ async fn main() {
         });
 
         let mut timed_out = false;
-        // `llm_eligible: false` -- Layers 1-5 only, matching the scan path.
         let result = run_extraction_ladder(
             &pool,
             &bank,
@@ -165,8 +147,6 @@ async fn main() {
         match result {
             Some(obs) => {
                 if let Some(raw) = obs.merchant_raw.as_deref() {
-                    // Key on the post-cleanup form, which is what actually
-                    // becomes a `merchants` row.
                     let cleaned = strip_noise_tokens(raw);
                     if !cleaned.is_empty() {
                         let e = merchants
@@ -197,13 +177,8 @@ async fn main() {
         );
         println!("{}", "-".repeat(108));
         for (name, (count, src)) in &rows {
-            // Both existing gates, as the pipeline would apply them.
             let stop_only = is_stopword_only_merchant(name);
             let plausible = is_plausible_merchant_name(name);
-            // `established = false`: on a fresh database every one of these
-            // is auto-created from a single email, which is exactly the state
-            // the cleanup pass is meant to unwind. A user's real DB will rate
-            // the recurring merchants higher.
             let layer = src.rsplit('|').next().unwrap_or("").trim();
             let conf = score_merchant(Some(layer), name, false);
             println!(

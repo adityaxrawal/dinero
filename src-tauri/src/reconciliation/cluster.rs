@@ -1,43 +1,21 @@
+//! Creates and resolves ambiguity clusters.
+//!
+//! Where the scorer is unsure, the ambiguity is recorded rather than guessed
+//! away. Resolution applies the user's decision and records it as training
+//! signal, so the same ambiguity is less likely to recur.
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
-/// Doc 30 TASK-DEDUP-006: same window used for windowed candidate search
-/// (TASK-DEDUP-003) — an existing open cluster is treated as "the same
-/// ambiguous situation" if its members fall within this many days of the
-/// new observation's event_time.
 const CLUSTER_OVERLAP_WINDOW_DAYS: i64 = 3;
 
-/// Doc 30 TASK-DEDUP-006: above this top score, an ambiguous case is
-/// classified as `multiple_high_score_candidates` (several strong
-/// candidates competing); at or below it, `mid_range_score` (candidates
-/// that cleared the viability floor but without a standout).
 const HIGH_SCORE_CLUSTER_REASON_THRESHOLD: f64 = 0.75;
 
-/// Creates an ambiguity cluster in `reconciliation_clusters` and links the
-/// incoming observation plus all competing candidate transactions into
-/// `reconciliation_cluster_members`, per Document 18 §4.6/§4.6a — or, if an
-/// existing open cluster already covers the same instrument + amount +
-/// direction + overlapping date window (Doc 30 TASK-DEDUP-006), appends the
-/// new observation to that cluster instead of creating a duplicate one.
-///
-/// Ambiguity triggers (Doc 11 §6):
-///  - Multiple exact matches for the same observation
-///  - Top two scored candidates within 15% margin of each other
-///  - Conflicting identifiers that cannot be resolved confidently
-///
-/// Cluster behavior (Doc 11 §6):
-///  - Stored in reconciliation_clusters, cluster_status = 'open'
-///  - The incoming observation is its own member row (member_role = 'incoming')
-///  - Each competing candidate transaction is a member row
-///    (member_role = 'candidate_a' | 'candidate_b' | 'candidate_other')
-///  - Excluded from analytics totals while cluster_status = 'open'
-///  - Visible in the reconciliation console
-///
-/// **Hard invariant (Doc 30 TASK-DEDUP-006):** no `transactions` row is ever
-/// created or modified as a side effect of this function — clusters exist
-/// entirely outside the canonical analytics path until explicitly resolved.
 #[allow(clippy::too_many_arguments)]
+/// Creates a cluster recording an unresolved ambiguity.
+///
+/// The alternative to guessing. A wrong merge destroys a transaction and a wrong
+/// split inflates spending, so the ambiguity is preserved for the user instead.
 pub fn create_ambiguity_cluster(
     conn: &Connection,
     observation_id: &str,
@@ -92,12 +70,10 @@ pub fn create_ambiguity_cluster(
     Ok(cluster_id)
 }
 
-/// Doc 30 TASK-DEDUP-006: "check for an existing cluster covering the same
-/// instrument + amount + direction + overlapping date window; if found,
-/// append the observation as a new member rather than creating a duplicate
-/// cluster." Looks at each open cluster's members (whether backed by a
-/// canonical transaction or a raw observation) for one matching all four
-/// conditions.
+/// Finds an existing open cluster overlapping these members.
+///
+/// Prevents the same ambiguity being raised twice, which would ask the user the
+/// same question again.
 fn find_overlapping_open_cluster(
     conn: &Connection,
     instrument_id: &str,
@@ -126,29 +102,12 @@ fn find_overlapping_open_cluster(
     Ok(cluster_id)
 }
 
-/// Resolves an existing cluster based on a user decision from the reconciliation console.
-/// Supported actions (Doc 19 §10.3's documented "Allowed actions"), mapped onto
-/// Document 18 §4.6's 4-value `cluster_status` enum (open/resolved/deferred/rejected):
-///  - "confirm_match"    — link observation to the chosen canonical transaction; cluster_status = 'resolved'
-///  - "reject_candidate" — reject the candidate relationship entirely; cluster_status = 'rejected'
-///  - "keep_separate"    — keep observation and candidate as separate canonical transactions; cluster_status = 'resolved'
-///  - "mark_unresolved"  — the user isn't ready to decide yet; cluster_status = 'deferred'.
-///    Unlike the three actions above, this doesn't set resolved_at and the
-///    cluster remains visible in `reconciliation_clusters_list`, which
-///    filters on `cluster_status IN ('open', 'deferred')`.
-///
-/// All resolution outcomes (except `mark_unresolved`) write a match_decisions
-/// row with decision = 'manually_confirmed'.
-///
-/// `action` is validated against this exact allowlist. Any unrecognized
-/// string (a typo, a stale frontend build, or arbitrary IPC input) is
-/// rejected outright rather than silently falling through to a no-op match
-/// arm while the cluster is still marked resolved.
+/// Applies the user's decision and records it as training signal.
 pub fn resolve_cluster(
     conn: &Connection,
     cluster_id: &str,
     observation_id: &str,
-    action: &str, // "confirm_match" | "reject_candidate" | "keep_separate" | "mark_unresolved"
+    action: &str,
     chosen_canonical_id: Option<&str>,
 ) -> Result<()> {
     if !matches!(
@@ -225,16 +184,9 @@ pub fn resolve_cluster(
                 )?;
             }
         }
-        // "reject_candidate" — deliberately no canonical-transaction side
-        // effect (Doc 19 §10.3): the observation is left unmatched.
         _ => {}
     }
 
-    // Doc 30 TASK-DEDUP-007: "writes a new match_decisions row
-    // (manually_confirmed, reviewed_by set)". "user_id" matches the same
-    // single-local-user actor placeholder this function's own audit_log
-    // inserts below already use — there is no multi-user actor model
-    // (Document 18 §7.1).
     crate::reconciliation::audit::append_match_decision(
         conn,
         observation_id,
@@ -256,8 +208,6 @@ pub fn resolve_cluster(
 
 #[cfg(test)]
 mod cluster_creation_tests {
-    //! Doc 30 TASK-DEDUP-006: Implement Reconciliation Cluster Creation and
-    //! Membership Management.
     use super::*;
 
     fn setup_test_db() -> Connection {
@@ -272,7 +222,6 @@ mod cluster_creation_tests {
         conn
     }
 
-    /// Doc 30 TASK-DEDUP-006 acceptance test.
     #[test]
     fn test_new_cluster_created_for_first_ambiguous_case() {
         let conn = setup_test_db();
@@ -309,14 +258,9 @@ mod cluster_creation_tests {
                 |r| r.get(0),
             )
             .unwrap();
-        // 1 incoming (the observation) + 1 candidate.
         assert_eq!(member_count, 2);
     }
 
-    /// TASK-FE-013: each candidate's own score (previously discarded before
-    /// reaching this function -- only the single best `top_score` was ever
-    /// passed in) is now persisted per member, so the frontend can show a
-    /// real per-candidate score instead of the internal `reason` bucket.
     #[test]
     fn test_candidate_scores_are_persisted_on_members() {
         let conn = setup_test_db();
@@ -368,9 +312,6 @@ mod cluster_creation_tests {
         assert_eq!(incoming_score, None);
     }
 
-    /// Doc 30 TASK-DEDUP-006 acceptance test: a second ambiguous observation
-    /// covering the same instrument+amount+direction+overlapping window
-    /// extends the existing open cluster instead of creating a duplicate.
     #[test]
     fn test_existing_cluster_extended_for_overlapping_case() {
         let conn = setup_test_db();
@@ -396,8 +337,6 @@ mod cluster_creation_tests {
         )
         .unwrap();
 
-        // Second observation: same instrument/amount/direction, event_time
-        // ~21 hours later -- well within the 3-day overlap window.
         let second_cluster_id = create_ambiguity_cluster(
             &conn,
             "obs_second",
@@ -432,14 +371,9 @@ mod cluster_creation_tests {
                 |r| r.get(0),
             )
             .unwrap();
-        // 2 incoming (obs_new, obs_second) + 1 candidate from the first call
-        // (the second call's candidate list is not re-added since the
-        // cluster already exists).
         assert_eq!(member_count, 3);
     }
 
-    /// Doc 30 TASK-DEDUP-006 acceptance test: cluster creation must never
-    /// create or modify a `transactions` row as a side effect.
     #[test]
     fn test_cluster_creation_does_not_touch_transactions_table() {
         let conn = setup_test_db();
@@ -491,8 +425,6 @@ mod cluster_creation_tests {
         assert_eq!(before_snapshot, after_snapshot);
     }
 
-    /// A non-overlapping (different instrument) ambiguous case must not be
-    /// folded into an unrelated existing cluster.
     #[test]
     fn test_non_overlapping_case_creates_separate_cluster() {
         let conn = setup_test_db();

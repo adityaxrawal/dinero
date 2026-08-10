@@ -1,33 +1,17 @@
-//! TASK-AUTH-009: Implement Local License State Machine.
+//! The licence state transition rules.
 //!
-//! Document 03's authoritative state machine: `ANONYMOUS_EVAL`, `TRIAL`,
-//! `ACTIVE`, `GRACE`, `LOCKED`, backed by the single-row `license_state`
-//! table. This module is the one place that decides whether a *local*,
-//! offline status change (network failure → grace, grace exhaustion → lock,
-//! clock-skew tampering → lock) is topologically legal — previously these
-//! writes happened as ad-hoc raw SQL scattered across `worker.rs`/`state.rs`
-//! with no shared enforcement, so an illegal transition (e.g. `LOCKED`
-//! silently becoming `ACTIVE` again without a real reactivation) had nothing
-//! stopping it.
-//!
-//! Deliberately **not** used for the "trust a freshly server-verified JWT"
-//! writes (a successful `license_activate` or a successful periodic
-//! validation) — those establish a wholesale-fresh authoritative state from
-//! an externally-verified source, which is a different kind of write than a
-//! local graph transition, and must never be blocked by this graph.
-
+//! Isolated as a pure function so every path -- trial expiry, payment failure,
+//! grace elapsing, reactivation -- is exhaustively testable without a database
+//! or a network.
 use anyhow::{bail, Result};
 use rusqlite::Connection;
 
 use super::state::{get_license_state, LicenseStatus};
 
-/// The local transition graph. `AnonymousEval -> Locked` is included even
-/// though Document 30's own transition list doesn't name it, to preserve
-/// existing clock-skew-lock behavior for a fresh, never-activated install —
-/// not introducing a new rejection for a case the docs don't address either
-/// way. `Locked` has no outgoing edges in this graph: reactivation goes
-/// through `license_activate` establishing fresh state, not a local
-/// transition.
+/// Whether a state transition is permitted.
+///
+/// Enumerated explicitly so an invalid jump -- locked straight back to active
+/// without revalidation -- cannot occur through an unchecked write.
 fn is_legal_transition(from: &LicenseStatus, to: &LicenseStatus) -> bool {
     use LicenseStatus::*;
     matches!(
@@ -43,11 +27,7 @@ fn is_legal_transition(from: &LicenseStatus, to: &LicenseStatus) -> bool {
     )
 }
 
-/// Applies a local status transition, enforcing `is_legal_transition`.
-/// A no-op (not an error) if `to` already equals the current status.
-/// Errors on any transition not in the legal graph above — most notably
-/// `LOCKED -> ACTIVE`, which must never happen without a real reactivation
-/// through `license_activate` (a different write path entirely).
+/// Applies a state transition if it is legal.
 pub fn transition(conn: &Connection, to: LicenseStatus) -> Result<()> {
     let current = get_license_state(conn)?;
     let from = current
@@ -95,13 +75,10 @@ mod tests {
         .unwrap();
     }
 
-    /// `test_license_state_machine_transitions` (Document 30 TASK-AUTH-009):
-    /// every legal transition succeeds, illegal ones are rejected.
     #[test]
     fn test_license_state_machine_transitions() {
         let conn = crate::db::test_helpers::setup_test_db();
 
-        // Legal transitions, walked in sequence.
         seed_state(&conn, LicenseStatus::AnonymousEval);
         transition(&conn, LicenseStatus::Trial).unwrap();
         assert_eq!(
@@ -148,15 +125,12 @@ mod tests {
             LicenseStatus::Locked
         );
 
-        // Illegal: LOCKED -> ACTIVE without reactivation (Document 30's own
-        // named example) must be rejected.
         let result = transition(&conn, LicenseStatus::Active);
         assert!(
             result.is_err(),
             "LOCKED -> ACTIVE must be rejected without a real reactivation"
         );
 
-        // Still LOCKED after the rejected attempt.
         assert_eq!(
             get_license_state(&conn)
                 .unwrap()

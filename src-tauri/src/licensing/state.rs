@@ -1,3 +1,8 @@
+//! Persisted licence state and its transitions.
+//!
+//! Cached locally so entitlement is known at launch without waiting on the
+//! network, and so a machine that is offline continues to work against its last
+//! validated state rather than failing closed.
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, Result as SqliteResult};
 use serde::{Deserialize, Serialize};
@@ -15,6 +20,7 @@ pub enum LicenseStatus {
 }
 
 impl LicenseStatus {
+    /// Stable string form of the licence status.
     pub fn as_str(&self) -> &'static str {
         match self {
             LicenseStatus::AnonymousEval => "anonymous",
@@ -28,6 +34,7 @@ impl LicenseStatus {
         }
     }
 
+    /// Parses a stored status string back into its enum.
     pub fn parse_status(s: &str) -> Option<Self> {
         match s {
             "anonymous" => Some(LicenseStatus::AnonymousEval),
@@ -58,6 +65,11 @@ pub struct LicenseStateRow {
     pub billing_interval_cached: Option<String>,
 }
 
+/// Reads the cached licence state.
+///
+/// Cached locally so entitlement is known at launch without waiting on the
+/// network, and an offline machine keeps working against its last validated
+/// state.
 pub fn get_license_state(conn: &Connection) -> SqliteResult<Option<LicenseStateRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, license_jwt, subscription_status_cached, plan_id_cached,
@@ -89,6 +101,7 @@ pub fn get_license_state(conn: &Connection) -> SqliteResult<Option<LicenseStateR
     }
 }
 
+/// Writes the licence state.
 pub fn upsert_license_state(conn: &Connection, state: &LicenseStateRow) -> SqliteResult<()> {
     conn.execute(
         "INSERT INTO license_state (
@@ -126,10 +139,10 @@ pub fn upsert_license_state(conn: &Connection, state: &LicenseStateRow) -> Sqlit
     Ok(())
 }
 
-/// TASK-AUTH-009: routes through `state_machine::transition` so this can
-/// never silently move an already-`Locked` (or any other illegal source
-/// state) row — previously this ran an unconditional raw `UPDATE` with no
-/// legality check at all.
+/// Transitions to locked, recording whether clock skew caused it.
+///
+/// The skew reason is retained because a clock moved backwards produces the same
+/// symptom as an expired licence, and the two need different remedies.
 pub fn transition_to_locked(conn: &Connection, reason_clock_skew: bool) -> anyhow::Result<()> {
     super::state_machine::transition(conn, LicenseStatus::Locked)?;
     if reason_clock_skew {
@@ -138,6 +151,9 @@ pub fn transition_to_locked(conn: &Connection, reason_clock_skew: bool) -> anyho
     Ok(())
 }
 
+/// Records a time known to be trustworthy.
+///
+/// The reference point for detecting a clock rolled back to extend a trial.
 pub fn record_known_valid_time(conn: &Connection, time: DateTime<Utc>) -> SqliteResult<()> {
     conn.execute(
         "UPDATE license_state SET last_known_valid_time = ?1 WHERE id = 1",

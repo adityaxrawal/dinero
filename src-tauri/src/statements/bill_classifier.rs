@@ -1,23 +1,14 @@
+//! Identifies which statements represent bills with an amount due.
+//!
+//! A credit-card statement carries a due date and a payable amount; a savings
+//! account statement does not. Distinguishing them is what allows an upcoming
+//! bill to be surfaced without inventing one for every account.
 use crate::statements::metadata_extractor::StatementMetadata;
 use anyhow::Result;
 use chrono::{Datelike, NaiveDate, Utc};
 use tauri::Emitter;
 
-/// Evaluates whether a statement represents the current active billing cycle
-/// and updates instrument fields accordingly (Doc 10 §15).
-///
-/// An upcoming bill is detected when:
-///   - billing_period_end is within the current month or immediately past month, AND
-///   - due_date is in the future relative to now()
-///
-/// On detection, updates to `instruments`:
-///   - instruments.statement_due_date = due_date
-///   - instruments.minimum_due = minimum_due
-///   - instruments.current_balance = current_balance
-///
-/// Then emits Tauri event: `statement.upcoming_bill_set`
-///
-/// If due_date is in the past → historical statement; no instrument fields updated (§15.2).
+/// Classifies a statement as a bill and updates its instrument.
 pub async fn classify_and_update<R: tauri::Runtime>(
     instrument_id: &str,
     statement_id: &str,
@@ -35,10 +26,8 @@ pub async fn classify_and_update<R: tauri::Runtime>(
             meta.due_date
         );
 
-        // Update instruments table with statement fields
         update_instrument_bill_fields(instrument_id, meta, pool).await?;
 
-        // Emit Tauri event `statement.upcoming_bill_set`
         let payload = serde_json::json!({
             "statement_id": statement_id,
             "instrument_id": instrument_id,
@@ -60,22 +49,19 @@ pub async fn classify_and_update<R: tauri::Runtime>(
             instrument_id,
             statement_id
         );
-        // §15.2: Past statements are archived; instruments table is NOT updated
     }
 
     Ok(is_upcoming)
 }
 
-/// Pure evaluation logic: returns true if the statement qualifies as an upcoming bill.
-/// Separated from DB/event side-effects for testability.
+/// Whether a statement represents a bill with an amount due.
 ///
-/// Conditions (Doc 10 §15.1):
-///   1. `billing_period_end` is parseable AND falls within the current or immediately preceding month.
-///   2. `due_date` is parseable AND is strictly in the future (after today UTC).
+/// A credit-card statement carries a due date and a payable amount; a savings
+/// account statement does not. Distinguishing them prevents inventing an upcoming
+/// bill for every account the user holds.
 pub fn evaluate_upcoming_bill(meta: &StatementMetadata) -> bool {
     let today = Utc::now().date_naive();
 
-    // Require both billing_period_end and due_date to be present
     let period_end = match meta
         .billing_period_end
         .as_deref()
@@ -100,11 +86,9 @@ pub fn evaluate_upcoming_bill(meta: &StatementMetadata) -> bool {
         }
     };
 
-    // Condition 1: billing_period_end is in current month or prior month
     let current_year = today.year();
     let current_month = today.month();
 
-    // Prior month (handle January → December of previous year)
     let (prior_year, prior_month) = if current_month == 1 {
         (current_year - 1, 12u32)
     } else {
@@ -127,7 +111,6 @@ pub fn evaluate_upcoming_bill(meta: &StatementMetadata) -> bool {
         return false;
     }
 
-    // Condition 2: due_date is strictly in the future
     if due_date <= today {
         tracing::debug!(
             "evaluate_upcoming_bill: due_date {:?} is not in the future (today={:?})",
@@ -146,7 +129,7 @@ pub fn evaluate_upcoming_bill(meta: &StatementMetadata) -> bool {
     true
 }
 
-/// Updates the `instruments` row with current billing cycle fields (Doc 10 §15.1).
+/// Writes due-date and amount fields onto the instrument.
 async fn update_instrument_bill_fields(
     instrument_id: &str,
     meta: &StatementMetadata,
@@ -182,13 +165,10 @@ async fn update_instrument_bill_fields(
     Ok(())
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Creates a StatementMetadata with given dates for testing.
     fn make_meta(
         billing_period_end: Option<&str>,
         due_date: Option<&str>,
@@ -209,8 +189,6 @@ mod tests {
         }
     }
 
-    // ── test_upcoming_bill_detected_and_instrument_updated ────────────────────
-
     #[tokio::test]
     async fn test_upcoming_bill_detected_and_instrument_updated() {
         let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
@@ -218,7 +196,6 @@ mod tests {
         let db_path = temp_dir.join("test.db");
         let pool = crate::db::init_db(db_path).await.unwrap();
 
-        // Seed instrument
         let conn = pool.get().await.unwrap();
         conn.interact(|c| {
             c.execute(
@@ -231,14 +208,12 @@ mod tests {
         .await
         .unwrap();
 
-        // Create metadata: billing_period_end = current month, due_date = next month (future)
         let today = Utc::now().date_naive();
         let period_end = NaiveDate::from_ymd_opt(today.year(), today.month(), 1)
             .unwrap()
             .format("%Y-%m-%d")
             .to_string();
 
-        // due_date = 30 days from today (guaranteed future)
         let due = today + chrono::Duration::days(30);
         let due_str = due.format("%Y-%m-%d").to_string();
 
@@ -249,13 +224,11 @@ mod tests {
             Some(25_000),
         );
 
-        // Must be detected as upcoming
         assert!(
             evaluate_upcoming_bill(&meta),
             "Statement with current-month period_end and future due_date must be upcoming"
         );
 
-        // Run full classify_and_update pipeline
         let is_upcoming = classify_and_update(
             "inst_bill",
             "stmt_bill",
@@ -267,7 +240,6 @@ mod tests {
         .unwrap();
         assert!(is_upcoming);
 
-        // Verify instrument was updated
         let conn2 = pool.get().await.unwrap();
         let (due_date_col, min_due_col, cur_bal_col): (Option<String>, Option<i64>, Option<i64>) =
             conn2
@@ -296,11 +268,8 @@ mod tests {
         );
     }
 
-    // ── test_past_statement_not_marked_upcoming ───────────────────────────────
-
     #[test]
     fn test_past_statement_not_marked_upcoming() {
-        // billing_period_end = 6 months ago, due_date = 5 months ago (both past)
         let today = Utc::now().date_naive();
         let old_period_end = today - chrono::Duration::days(180);
         let old_due_date = today - chrono::Duration::days(150);
@@ -317,8 +286,6 @@ mod tests {
             "Historical statement with past period_end and past due_date must NOT be upcoming"
         );
     }
-
-    // ── Edge cases ────────────────────────────────────────────────────────────
 
     #[test]
     fn test_upcoming_bill_missing_due_date_returns_false() {
@@ -344,7 +311,6 @@ mod tests {
 
     #[test]
     fn test_upcoming_bill_prior_month_period_end_future_due_date() {
-        // Prior month period_end + future due_date → should be upcoming
         let today = Utc::now().date_naive();
         let (prior_year, prior_month) = if today.month() == 1 {
             (today.year() - 1, 12u32)
@@ -370,18 +336,11 @@ mod tests {
         );
     }
 
-    // ── test_future_due_date_required (Doc 30 TASK-STMT-007) ─────────────────
-    // The exact acceptance-criteria name for the rule already exercised piecemeal
-    // by test_upcoming_bill_due_today_is_not_future/missing_due_date_returns_false:
-    // a valid, in-current/prior-month billing_period_end alone is never enough —
-    // due_date must independently be present AND strictly future.
-
     #[test]
     fn test_future_due_date_required() {
         let today = Utc::now().date_naive();
         let valid_period_end = today.format("%Y-%m-%d").to_string();
 
-        // Future due_date + valid period_end → upcoming.
         let future_due = (today + chrono::Duration::days(5))
             .format("%Y-%m-%d")
             .to_string();
@@ -392,7 +351,6 @@ mod tests {
             None
         )));
 
-        // Past due_date, otherwise identical → not upcoming.
         let past_due = (today - chrono::Duration::days(5))
             .format("%Y-%m-%d")
             .to_string();
@@ -403,7 +361,6 @@ mod tests {
             None
         )));
 
-        // No due_date at all, otherwise identical → not upcoming.
         assert!(!evaluate_upcoming_bill(&make_meta(
             Some(&valid_period_end),
             None,
@@ -414,7 +371,6 @@ mod tests {
 
     #[test]
     fn test_upcoming_bill_due_today_is_not_future() {
-        // due_date = today → not strictly in the future → must NOT be upcoming
         let today = Utc::now().date_naive();
         let period_end = today.format("%Y-%m-%d").to_string();
         let meta = make_meta(
@@ -423,7 +379,6 @@ mod tests {
             None,
             None,
         );
-        // due_date == today: not strictly > today → false
         assert!(
             !evaluate_upcoming_bill(&meta),
             "due_date == today must NOT be upcoming"

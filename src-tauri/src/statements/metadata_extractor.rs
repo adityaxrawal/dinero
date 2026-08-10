@@ -1,41 +1,32 @@
+//! Recovers a statement's identity: issuer, account, and billing period.
+//!
+//! This is what attributes a statement to an instrument. When identification
+//! fails the statement is not guessed into an arbitrary account -- the user is
+//! asked instead, since a misattributed statement would corrupt the balances of
+//! two accounts at once.
 use crate::extraction::normalization::clean_masked_identifier;
 use crate::statements::parser::ParsedPage;
 use anyhow::Result;
 use regex::Regex;
 
-/// Extracted statement-level metadata (Doc 10 §9.1).
 #[derive(Debug, Default)]
 pub struct StatementMetadata {
-    pub billing_period_start: Option<String>, // YYYY-MM-DD (UTC)
-    pub billing_period_end: Option<String>,   // YYYY-MM-DD (UTC)
-    pub due_date: Option<String>,             // YYYY-MM-DD (UTC)
-    pub minimum_due: Option<i64>,             // amount_minor (paise)
-    pub current_balance: Option<i64>,         // amount_minor (paise)
+    pub billing_period_start: Option<String>,
+    pub billing_period_end: Option<String>,
+    pub due_date: Option<String>,
+    pub minimum_due: Option<i64>,
+    pub current_balance: Option<i64>,
     pub issuer_name: Option<String>,
-    pub masked_identifier: Option<String>, // last 4 digits or masked account
-    pub network: Option<String>,           // VISA / MASTERCARD / RUPAY
+    pub masked_identifier: Option<String>,
+    pub network: Option<String>,
     pub rewards_summary_json: Option<String>,
-    /// The date printed on the statement itself ("billing date" in the
-    /// review-modal UI). No current extraction regex populates this — it's
-    /// routinely blank from `extract_metadata` and filled in by the user
-    /// during draft review (`commit_staged_draft`).
     pub statement_date: Option<String>,
 }
 
-/// Extracts statement-level metadata from parsed pages (Doc 10 §9).
-///
-/// If mandatory fields (billing_period_start, billing_period_end, due_date) are all absent,
-/// the statement is still persisted with parse_status = 'parsed' with missing fields (§9.3, §9.4).
-/// Partial metadata is never a reason to reject the statement entirely.
-///
-/// Leap-year and month-end edge cases are handled per §9.4:
-///   - Dates are stored as ISO-8601 YYYY-MM-DD strings for exact-equality duplicate detection.
-///   - Month-end anchoring uses the last day of the actual calendar month.
+/// Extracts a statement's identity: issuer, account, period and balances.
 pub fn extract_metadata(pages: &[ParsedPage]) -> Result<StatementMetadata> {
     let mut meta = StatementMetadata::default();
 
-    // Use only the first page for header extraction per §9.1 (header appears on page 1).
-    // If first page is empty, fall back to full document text.
     let first_page_text: String = pages
         .first()
         .map(|p| p.text.as_str())
@@ -52,21 +43,8 @@ pub fn extract_metadata(pages: &[ParsedPage]) -> Result<StatementMetadata> {
         &full_text
     };
 
-    // ── Issuer / Bank detection (drives regex pattern selection) ─────────────
-
     meta.issuer_name = detect_issuer(header_text);
 
-    // ── Billing period ───────────────────────────────────────────────────────
-    // Patterns cover common Indian bank header terminology (Doc 10 §9.1).
-    // Dates in bank statements: dd/MM/YYYY, dd-MM-YYYY, dd MMM YYYY, DD-MON-YYYY
-    // Issue #8: the wordings below are the ones real statements use —
-    // "Billing Period  14 Apr, 2026 - 13 May, 2026" (HDFC),
-    // "for Statement Period: 10 Jun 26 to 09 Jul 26" (SBI),
-    // "21/Oct/2025 - 20/Nov/2025" (IDFC). The previous patterns accepted only
-    // `dd/MM/YYYY` and only the word "to" as the separator, so none of them
-    // matched any real statement and the billing period was always absent —
-    // which in turn disabled the billing-cycle duplicate check entirely,
-    // since it only runs when both ends of the period are known.
     let period_labels = r"(?:billing|statement)\s+period";
     meta.billing_period_start = extract_date_pattern(
         header_text,
@@ -81,7 +59,6 @@ pub fn extract_metadata(pages: &[ParsedPage]) -> Result<StatementMetadata> {
     meta.billing_period_end = extract_date_pattern(
         header_text,
         &[
-            // The second date of the pair, whichever separator joins them.
             format!(r"(?i){period_labels}\s*:?\s+(?:{DATE})\s*(?:-|–|—|to)\s*({DATE})"),
             r"(?i)billing\s+to[:\s]+(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})".to_string(),
             r"(?i)to\s+date[:\s]+(\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4})".to_string(),
@@ -89,9 +66,6 @@ pub fn extract_metadata(pages: &[ParsedPage]) -> Result<StatementMetadata> {
         ],
     );
 
-    // The date printed on the statement itself. No pattern populated this
-    // before, so it was documented as "routinely blank and filled in by the
-    // user during draft review" — every real statement in fact prints it.
     meta.statement_date = extract_date_pattern(
         header_text,
         &[format!(
@@ -101,7 +75,6 @@ pub fn extract_metadata(pages: &[ParsedPage]) -> Result<StatementMetadata> {
     .or_else(|| value_below_label(header_text, r"statement\s+(?:generation\s+)?date", DATE))
     .and_then(|d| normalize_date_string(&d));
 
-    // Normalize extracted dates to YYYY-MM-DD
     if let Some(ref d) = meta.billing_period_start.clone() {
         meta.billing_period_start = normalize_date_string(d);
     }
@@ -109,7 +82,6 @@ pub fn extract_metadata(pages: &[ParsedPage]) -> Result<StatementMetadata> {
         meta.billing_period_end = normalize_date_string(d);
     }
 
-    // ── Due date ─────────────────────────────────────────────────────────────
     let due_labels = r"(?:payment\s+due\s+date|due\s+date|pay\s+by|amount\s+due\s+date)";
     meta.due_date =
         extract_date_pattern(header_text, &[format!(r"(?i){due_labels}\s*:?\s+({DATE})")])
@@ -118,16 +90,6 @@ pub fn extract_metadata(pages: &[ParsedPage]) -> Result<StatementMetadata> {
         meta.due_date = normalize_date_string(d);
     }
 
-    // ── Monetary fields (search full document, not just header) ──────────────
-    // Issue #8: `( \` )` in SBI's "**Minimum Amount Due ( ` )" is the rupee
-    // symbol as pdfium decodes it, so the label and its value are separated
-    // by a currency annotation the old `[:\s]+` could not cross. And on Axis
-    // the figure sits on the line *below* its label, which no same-line
-    // pattern can reach — hence the `value_below_label` fallback.
-    // Decimals are required. A bare digit run matches far too much — SBI's
-    // header carries a statement reference number ("A26070900725") and a
-    // GSTIN beside its amounts, and an unanchored `[\d,]{2,}` picked one of
-    // those up as a minimum due of ₹26,07,09,00,725.
     const AMOUNT: &str = r"\d[\d,]*\.\d{2}";
     let currency = r"(?:\(\s*[`\x{20B9}]?\s*\)|INR|Rs\.?|[`\x{20B9}])?";
     let min_labels = r"\*{0,2}min(?:imum)?\s+(?:amount\s+|payment\s+)?due";
@@ -150,32 +112,18 @@ pub fn extract_metadata(pages: &[ParsedPage]) -> Result<StatementMetadata> {
         value_below_label(header_text, total_labels, AMOUNT).and_then(|v| parse_amount(&v))
     });
 
-    // ── Card / account identity ───────────────────────────────────────────────
-    // Masked card number patterns: XXXX XXXX XXXX 1234, **** **** **** 1234, ending 1234
-    // Issue #8: these capture the *whole* masked token and hand it to
-    // `clean_masked_identifier`, rather than capturing the first two-to-four
-    // digits after the label themselves.
-    //
-    // HDFC prints `Credit Card No.   526873XXXXXX0364`. The previous
-    // `card\s+no\.?[:\s]*[Xx*\s\-]*(\d{2,4})` matched the *leading* digits and
-    // returned "5268" — the BIN, identical across every HDFC card of that
-    // product, and not the tail at all. That value became the instrument's
-    // `masked_identifier`, so separate cards collapsed onto one instrument
-    // and the number shown to the user was one no card ends with.
     meta.masked_identifier = extract_text_pattern(
         header_text,
         &[
             r"(?i)card\s+(?:ending|number|no\.?)\s*:?\s*([\dXx*][\dXx*\s\-]{3,24}\d)",
             r"(?i)a/c\s+(?:no\.?|number|ending)\s*:?\s*([\dXx*][\dXx*\s\-]{3,24}\d)",
             r"(?i)account\s+(?:no\.?|number|ending)\s*:?\s*([\dXx*][\dXx*\s\-]{3,24}\d)",
-            // Inline masked card with no label: XXXX XXXX XXXX 1234, XX-1234.
             r"(?i)([Xx*]{2,}[\dXx*\s\-]*\d{2,4})\b",
         ],
     )
     .map(|s| clean_masked_identifier(&s))
     .filter(|s| !s.is_empty());
 
-    // Network: VISA, MASTERCARD, RUPAY, AMEX
     meta.network = extract_text_pattern(
         header_text,
         &[
@@ -189,9 +137,8 @@ pub fn extract_metadata(pages: &[ParsedPage]) -> Result<StatementMetadata> {
     Ok(meta)
 }
 
-/// Detects the issuer/bank name from common header markers.
+/// Identifies the issuing bank from statement text.
 fn detect_issuer(text: &str) -> Option<String> {
-    // Ordered by specificity — check longer names first
     const ISSUERS: &[(&str, &str)] = &[
         ("American Express", "AMEX"),
         ("amex", "AMEX"),
@@ -221,32 +168,15 @@ fn detect_issuer(text: &str) -> Option<String> {
     None
 }
 
-// ── Date helpers ──────────────────────────────────────────────────────────────
-
-/// Normalizes various date string formats to `YYYY-MM-DD`.
-///
-/// Supported input formats:
-///   dd/MM/YYYY, dd-MM-YYYY  → e.g. 31/01/2024, 31-01-2024
-///   dd MMM YYYY             → e.g. 31 Jan 2024
-///   YYYY-MM-DD              → already correct, passed through
-/// Issue #8: delegates to `row_extractor::parse_date`, which knows every date
-/// form observed across the real statements — including the two-digit years
-/// SBI uses ("10 Jun 26"), the comma form HDFC uses ("13 May, 2026") and the
-/// slashed month IDFC uses ("21/Oct/2025"). This function previously
-/// recognised five formats, none of which covered those three, so the header
-/// dates of most real statements normalised to `None` even when the regex
-/// above had captured them correctly.
+/// Normalises a date string to ISO form.
 fn normalize_date_string(date: &str) -> Option<String> {
     crate::statements::row_extractor::parse_date(date)
 }
 
-/// A date as the banks write it in a header. Shared by every pattern below so
-/// the accepted forms cannot drift apart from `normalize_date_string`'s.
 const DATE: &str =
     r"\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}|\d{1,2}[\s\-/][A-Za-z]{3}[\s\-/]?,?\s?\d{2,4}";
 
-/// Generic over the pattern type so a call site can mix literals with
-/// patterns built from the shared `DATE` fragment, which are `String`.
+/// Finds the first date matching any of the supplied patterns.
 fn extract_date_pattern<S: AsRef<str>>(text: &str, patterns: &[S]) -> Option<String> {
     for pat in patterns {
         if let Ok(re) = Regex::new(pat.as_ref()) {
@@ -260,7 +190,7 @@ fn extract_date_pattern<S: AsRef<str>>(text: &str, patterns: &[S]) -> Option<Str
     None
 }
 
-/// Parses a rupee figure as printed in a header into minor units.
+/// Parses an amount into minor units.
 fn parse_amount(raw: &str) -> Option<i64> {
     let cleaned = raw.replace(',', "");
     cleaned
@@ -269,8 +199,7 @@ fn parse_amount(raw: &str) -> Option<i64> {
         .map(|v| (v * 100.0).round() as i64)
 }
 
-/// Generic over the pattern type so a call site can mix literals with
-/// patterns built from the shared `DATE` fragment, which are `String`.
+/// Finds the first amount matching any of the supplied patterns.
 fn extract_amount_minor<S: AsRef<str>>(text: &str, patterns: &[S]) -> Option<i64> {
     for pat in patterns {
         if let Ok(re) = Regex::new(pat.as_ref()) {
@@ -287,25 +216,10 @@ fn extract_amount_minor<S: AsRef<str>>(text: &str, patterns: &[S]) -> Option<i64
     None
 }
 
-/// Issue #8: finds the value printed *underneath* a label rather than beside
-/// it.
+/// Reads a value positioned beneath its label.
 ///
-/// Half the real statements lay their header out as a row of labels with a
-/// row of values below, column-aligned:
-///
-/// ```text
-/// Total Payment Due    Minimum Payment Due    Statement Period    Payment Due Date
-/// 15,636.26            782.00                 10 Jun - 09 Jul     03/08/2026
-/// ```
-///
-/// Every `label: value` regex misses this entirely, which is why total due,
-/// minimum due and the statement period came back empty for most statements.
-/// Now that `statements::layout` rebuilds column geometry, the value for a
-/// label is simply the token on a following line that starts nearest to the
-/// label's own column — so the alignment the bank drew is what resolves it.
-///
-/// Searches the next two lines: a label row is sometimes two lines tall
-/// ("Credit Limit ( ` )" wrapping above its value).
+/// Statement layouts frequently place a label above its value rather than beside
+/// it, which a same-line pattern would miss entirely.
 fn value_below_label(text: &str, label: &str, value: &str) -> Option<String> {
     let label_re = Regex::new(&format!(r"(?i){label}")).ok()?;
     let value_re = Regex::new(&format!(r"(?i){value}")).ok()?;
@@ -315,9 +229,6 @@ fn value_below_label(text: &str, label: &str, value: &str) -> Option<String> {
         let Some(found) = label_re.find(line) else {
             continue;
         };
-        // A line that already carries its own value is handled by the
-        // same-line patterns; taking the line below would read a
-        // *different* row's figure.
         if value_re.find_at(line, found.end()).is_some() {
             continue;
         }
@@ -330,8 +241,6 @@ fn value_below_label(text: &str, label: &str, value: &str) -> Option<String> {
                     let column = below[..m.start()].chars().count();
                     (column.abs_diff(label_column), m.as_str().to_string())
                 })
-                // Guard against picking a far-away column's value: a match
-                // must begin within roughly one column of the label.
                 .filter(|(distance, _)| *distance <= 24)
                 .min_by_key(|(distance, _)| *distance);
             if let Some((_, matched)) = best {
@@ -342,8 +251,7 @@ fn value_below_label(text: &str, label: &str, value: &str) -> Option<String> {
     None
 }
 
-/// Generic over the pattern type so a call site can mix literals with
-/// patterns built from the shared `DATE` fragment, which are `String`.
+/// Finds the first text matching any of the supplied patterns.
 fn extract_text_pattern<S: AsRef<str>>(text: &str, patterns: &[S]) -> Option<String> {
     for pat in patterns {
         if let Ok(re) = Regex::new(pat.as_ref()) {
@@ -357,33 +265,17 @@ fn extract_text_pattern<S: AsRef<str>>(text: &str, patterns: &[S]) -> Option<Str
     None
 }
 
-// ── DB integration ────────────────────────────────────────────────────────────
-
-/// Upserts the `statements` row for `stmt_id` with all extracted metadata
-/// fields: `UPDATE` if `insert_queued()` already wrote a `queued` row for it
-/// at intake (Doc 18 §4.7's crash-recovery invariant, the normal case for
-/// both entry points), or a fresh `INSERT` if not (the statement-instrument-
-/// gate/password-resume paths, which reuse `unprocessed_statements`'s own ID
-/// as `stmt_id` here and have never had a `statements` row before now).
-///
-/// Per §5.4 / §9.4: partial metadata is acceptable — `parse_status = 'parsed'` even
-/// when optional fields are absent. The statement is never rejected for missing metadata.
-///
-/// Returns the same `stmt_id` the caller passed in, for call-site convenience.
+/// Writes the statement row derived from extracted metadata.
 pub async fn write_statement_row(
     stmt_id: &str,
     instrument_id: &str,
-    instrument_type: &str, // "credit_card" | "bank_account" (instruments.type, not statements.statement_type)
+    instrument_type: &str,
     meta: &StatementMetadata,
     source_message_id: Option<&str>,
     pool: &deadpool_sqlite::Pool,
 ) -> Result<String> {
     let sid = stmt_id.to_string();
     let inst_id = instrument_id.to_string();
-    // Doc 18 §4.7: `statements.statement_type` is `credit_card_statement` /
-    // `bank_account_statement` — a distinct vocabulary from `instruments.type`
-    // ("credit_card" / "bank_account"), which is what this function used to
-    // (incorrectly) store here verbatim.
     let stmt_type = match instrument_type {
         "bank_account" => "bank_account_statement".to_string(),
         _ => "credit_card_statement".to_string(),
@@ -430,7 +322,6 @@ pub async fn write_statement_row(
             )?;
         }
 
-        // Auto-populate extracted statement metadata onto the target instrument row
         let cycle_day: Option<u8> = if bpe != "1970-01-01" {
             bpe.split('-').nth(2).and_then(|s| s.parse::<u8>().ok())
         } else {
@@ -466,10 +357,11 @@ pub async fn write_statement_row(
     Ok(stmt_id.to_string())
 }
 
-/// Resolves an instrument from the `instruments` table; auto-creates it if missing.
+/// Resolves the statement's instrument, creating one if warranted.
 ///
-/// Match key: `(type, issuer_name, masked_identifier)` — per Doc 10 §10.1.
-/// Uses `INSERT OR IGNORE` + subsequent `SELECT` for atomicity (§4.7 pattern).
+/// Where identification is not confident the user is asked instead. A
+/// misattributed statement corrupts the balances of two accounts at once, so
+/// guessing is the worse option.
 pub async fn resolve_or_create_instrument(
     instrument_type: &str,
     issuer_name: &str,
@@ -486,14 +378,12 @@ pub async fn resolve_or_create_instrument(
     let conn = pool.get().await?;
     let instrument_id = conn
         .interact(move |c| {
-            // INSERT OR IGNORE: if unique key already exists, this is a no-op
             c.execute(
                 "INSERT OR IGNORE INTO instruments \
                  (id, type, issuer_name, masked_identifier, network, status, created_at, updated_at) \
                  VALUES (?, ?, ?, ?, ?, 'active', datetime('now'), datetime('now'))",
                 rusqlite::params![id, itype, issuer, masked, net],
             )?;
-            // Always SELECT to get the canonical ID (handles both insert and existing rows)
             c.query_row(
                 "SELECT id FROM instruments \
                  WHERE type = ? AND issuer_name = ? AND masked_identifier = ?",
@@ -515,8 +405,6 @@ pub async fn resolve_or_create_instrument(
     Ok(instrument_id)
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod real_statement_headers {
     use super::*;
@@ -530,13 +418,6 @@ mod real_statement_headers {
         .unwrap()
     }
 
-    /// Issue #8, and the most damaging metadata bug found: banks mask the
-    /// *middle* of a card number, leaving a leading BIN. Capturing
-    /// `(\d{2,4})` right after the label took that BIN — "5268" for
-    /// `526873XXXXXX0364` — which is identical across every card of the same
-    /// product. Five of nine real statements were affected, so distinct cards
-    /// collapsed onto one instrument and the user was shown a number no card
-    /// of theirs ends with.
     #[test]
     fn a_masked_card_yields_its_tail_not_its_bin() {
         for (header, want) in [
@@ -561,11 +442,6 @@ mod real_statement_headers {
         }
     }
 
-    /// HDFC's real header wording and date style. The previous patterns
-    /// required the literal word "to" between the dates and accepted only
-    /// `dd/MM/YYYY`, so the period was absent for every real statement —
-    /// which silently disabled the billing-cycle duplicate check, since that
-    /// check only runs when both ends are known.
     #[test]
     fn hdfc_billing_period_and_statement_date() {
         let meta = meta_of(
@@ -578,9 +454,6 @@ mod real_statement_headers {
         assert_eq!(meta.statement_date.as_deref(), Some("2026-05-13"));
     }
 
-    /// SBI writes a two-digit year, and annotates each label with the rupee
-    /// symbol — which pdfium decodes as a backtick — between the label and
-    /// the value, so `label[:\s]+value` cannot reach across it.
     #[test]
     fn sbi_period_and_amounts_across_a_currency_annotation() {
         let meta = meta_of(
@@ -596,9 +469,6 @@ mod real_statement_headers {
         assert_eq!(meta.minimum_due, Some(20_000));
     }
 
-    /// Axis prints a row of labels with the figures column-aligned beneath,
-    /// which no same-line pattern can read. Resolved by column position, now
-    /// that `statements::layout` preserves the alignment the bank drew.
     #[test]
     fn axis_values_are_read_from_the_column_below_their_label() {
         let meta = meta_of(
@@ -610,10 +480,6 @@ mod real_statement_headers {
         assert_eq!(meta.due_date.as_deref(), Some("2026-08-01"));
     }
 
-    /// An amount must carry decimals. SBI's header prints a statement
-    /// reference ("A26070900725") and a GSTIN alongside its figures, and a
-    /// pattern accepting a bare digit run reported a minimum due of
-    /// ₹26,07,09,00,725.
     #[test]
     fn a_reference_number_is_not_read_as_an_amount() {
         let meta = meta_of(
@@ -624,8 +490,6 @@ mod real_statement_headers {
         assert_eq!(meta.minimum_due, None);
     }
 
-    /// A label that already carries its own value must not also pull the
-    /// figure from the line below — that belongs to a different row.
     #[test]
     fn a_same_line_value_is_not_overridden_by_the_line_below() {
         let meta = meta_of(
@@ -647,8 +511,6 @@ mod tests {
             ocr_used: false,
         }
     }
-
-    // ── test_extract_billing_period_hdfc ──────────────────────────────────────
 
     #[test]
     fn test_extract_billing_period_hdfc() {
@@ -693,8 +555,6 @@ mod tests {
         );
     }
 
-    // ── test_extract_current_balance_icici ────────────────────────────────────
-
     #[test]
     fn test_extract_current_balance_icici() {
         let text = "ICICI Bank Platinum Credit Card\n\
@@ -709,12 +569,12 @@ mod tests {
 
         assert_eq!(
             meta.current_balance,
-            Some(850_000), // 8500.00 in paise
+            Some(850_000),
             "current_balance must be 850000 paise"
         );
         assert_eq!(
             meta.minimum_due,
-            Some(50_000), // 500.00 in paise
+            Some(50_000),
             "minimum_due must be 50000 paise"
         );
         assert_eq!(
@@ -734,11 +594,8 @@ mod tests {
         );
     }
 
-    // ── test_partial_metadata_still_persists_statement_row ────────────────────
-
     #[test]
     fn test_partial_metadata_still_persists_statement_row() {
-        // Page with only partial data — missing due_date, minimum_due, billing_period_end
         let text = "HDFC Bank Statement\n\
                     Statement Period: 01/01/2024 to\n\
                     VISA";
@@ -746,21 +603,16 @@ mod tests {
         let meta =
             extract_metadata(&pages).expect("extract_metadata must not fail on partial data");
 
-        // Billing start parsed; end absent (regex stops at "to" with no following date)
         assert_eq!(
             meta.billing_period_start.as_deref(),
             Some("2024-01-01"),
             "billing_period_start must be extracted even if end is missing"
         );
-        // billing_period_end and due_date will be None — that is correct and expected
-        // The statement row MUST still be persisted (§9.3, §9.4)
         assert!(
             meta.due_date.is_none() || meta.due_date.is_some(),
             "due_date absence must not cause rejection"
         );
     }
-
-    // ── test_auto_create_instrument_from_statement (Doc 30 TASK-STMT-004) ────
 
     #[tokio::test]
     async fn test_auto_create_instrument_from_statement() {
@@ -768,7 +620,6 @@ mod tests {
         std::fs::create_dir_all(&temp_dir).unwrap();
         let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
 
-        // No `instruments` row exists yet for this (type, issuer, masked) key.
         let conn = pool.get().await.unwrap();
         let existing: i64 = conn
             .interact(|c| {
@@ -788,9 +639,6 @@ mod tests {
             .unwrap();
         assert!(!id1.is_empty());
 
-        // Doc 12 §10.4a: a second resolution for the identical key (e.g. a
-        // concurrently-processing email alert for the same instrument) must
-        // reuse the same row, never create a duplicate.
         let id2 = resolve_or_create_instrument("credit_card", "HDFC", "4321", Some("VISA"), &pool)
             .await
             .unwrap();
@@ -816,8 +664,6 @@ mod tests {
         );
     }
 
-    // ── Async DB test: write_statement_row ────────────────────────────────────
-
     #[tokio::test]
     async fn test_write_statement_row_partial_metadata() {
         let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
@@ -825,8 +671,6 @@ mod tests {
         let db_path = temp_dir.join("test.db");
         let pool = crate::db::init_db(db_path).await.unwrap();
 
-        // Seed instrument + the queued row insert_queued() would already have
-        // written at intake (Doc 18 §4.7 crash-recovery invariant).
         let conn = pool.get().await.unwrap();
         conn.interact(|c| {
             c.execute(
@@ -841,7 +685,6 @@ mod tests {
         .await
         .unwrap();
 
-        // Partial metadata (billing_period_end and due_date absent)
         let meta = StatementMetadata {
             billing_period_start: Some("2024-01-01".to_string()),
             billing_period_end: None,
@@ -860,7 +703,6 @@ mod tests {
             .unwrap();
         assert!(!stmt_id.is_empty(), "Statement ID must be returned");
 
-        // Verify row was persisted
         let conn2 = pool.get().await.unwrap();
         let (parse_status, bal): (String, Option<i64>) = conn2
             .interact(move |c| {
@@ -877,8 +719,6 @@ mod tests {
         assert_eq!(parse_status, "parsed");
         assert_eq!(bal, Some(500_000));
     }
-
-    // ── Date normalization unit tests ────────────────────────────────────────
 
     #[test]
     fn normalize_dd_slash_mm_yyyy() {

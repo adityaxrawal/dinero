@@ -1,3 +1,9 @@
+//! Short-lived storage for statement PDFs.
+//!
+//! Retained only long enough to support retry and review, then purged by the
+//! cleanup sweep on the daily loop. Raw statements are the most sensitive
+//! artefacts the app touches, so retention is deliberately brief rather than
+//! indefinite.
 use aes_gcm::aead::rand_core::RngCore;
 use aes_gcm::{
     aead::{Aead, KeyInit, OsRng},
@@ -12,22 +18,12 @@ use crate::db::crypto::derive_database_key;
 
 const STATEMENTS_DIR: &str = "statements";
 
-/// Process-lifetime cache for `derive_storage_key`.
-///
-/// The key is deterministic — `derive_database_key` combines the
-/// Keychain-held base key (itself cached) with the machine's hardware UUID,
-/// neither of which changes while the process is running — so caching cannot
-/// return a different key than a fresh derivation would.
-///
-/// Worth caching because the derivation runs Argon2id, which is deliberately
-/// expensive (~tens of ms). Since audit_04 #1 the Statement Queue does a
-/// `store_pdf` at intake plus a `read_pdf` in the worker for *every*
-/// statement, so a 64-file batch would otherwise pay ~128 Argon2 derivations
-/// for a value that never varies.
 static STORAGE_KEY: OnceLock<[u8; 32]> = OnceLock::new();
 
-/// Derives a 32-byte AES key from the Argon2id SQLCipher database key.
-/// By hashing the Argon2 output with SHA-256, we get exactly 32 bytes for AES-256-GCM.
+/// Derives the key used to encrypt stored statement PDFs.
+///
+/// Statements are the most sensitive documents this app holds, so they are
+/// encrypted at rest rather than left as plain files on disk.
 fn derive_storage_key() -> Result<[u8; 32]> {
     if let Some(key) = STORAGE_KEY.get() {
         return Ok(*key);
@@ -38,17 +34,17 @@ fn derive_storage_key() -> Result<[u8; 32]> {
     let result = hasher.finalize();
     let mut key = [0u8; 32];
     key.copy_from_slice(&result);
-    // A concurrent caller may have won the race; defer to whichever landed
-    // first so every caller in this process uses the identical key.
     Ok(*STORAGE_KEY.get_or_init(|| key))
 }
 
+/// Path of a stored statement, keyed by its id.
 fn statement_path(app_data_dir: &Path, statement_id: &str) -> PathBuf {
     app_data_dir
         .join(STATEMENTS_DIR)
         .join(format!("{}.pdf.enc", statement_id))
 }
 
+/// Stores a statement PDF, encrypted.
 pub fn store_pdf(app_data_dir: &Path, statement_id: &str, bytes: &[u8]) -> Result<()> {
     let statements_dir = app_data_dir.join(STATEMENTS_DIR);
     if !statements_dir.exists() {
@@ -77,6 +73,7 @@ pub fn store_pdf(app_data_dir: &Path, statement_id: &str, bytes: &[u8]) -> Resul
     Ok(())
 }
 
+/// Reads and decrypts a stored statement, if it still exists.
 pub fn read_pdf(app_data_dir: &Path, statement_id: &str) -> Result<Option<Vec<u8>>> {
     let path = statement_path(app_data_dir, statement_id);
     if !path.exists() {
@@ -103,6 +100,7 @@ pub fn read_pdf(app_data_dir: &Path, statement_id: &str) -> Result<Option<Vec<u8
     Ok(Some(plaintext))
 }
 
+/// Deletes a stored statement.
 pub fn delete_pdf(app_data_dir: &Path, statement_id: &str) -> Result<()> {
     let path = statement_path(app_data_dir, statement_id);
     if path.exists() {
@@ -111,6 +109,10 @@ pub fn delete_pdf(app_data_dir: &Path, statement_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Deletes statements past their retention window.
+///
+/// Runs on every launch. Retention is deliberately brief -- these are raw
+/// financial documents, kept only long enough to support retry and review.
 pub async fn cleanup_expired_pdfs(app_data_dir: &Path, pool: &deadpool_sqlite::Pool) -> Result<()> {
     let conn = pool
         .get()
@@ -142,7 +144,6 @@ pub async fn cleanup_expired_pdfs(app_data_dir: &Path, pool: &deadpool_sqlite::P
             );
         }
 
-        // Also remove the retained_until flag so we don't keep trying to delete it
         let id_clone = id.clone();
         let _ = conn
             .interact(move |c| {
@@ -161,13 +162,6 @@ pub async fn cleanup_expired_pdfs(app_data_dir: &Path, pool: &deadpool_sqlite::P
 mod tests {
     use super::*;
 
-    /// audit_04 #1 introduced `STORAGE_KEY`, a process-lifetime cache in front
-    /// of the Argon2id derivation, because the Statement Queue now does a
-    /// `store_pdf` at intake and a `read_pdf` in the worker for every
-    /// statement. A cache that returned a different key than the derivation it
-    /// replaces would make every previously-stored PDF undecryptable, so pin
-    /// both halves: the key is stable across calls, and a payload encrypted
-    /// under it still round-trips.
     #[test]
     fn storage_key_is_stable_and_pdfs_round_trip() {
         let first = derive_storage_key().unwrap();
@@ -180,8 +174,6 @@ mod tests {
         let payload = b"%PDF-1.4 statement bytes";
         store_pdf(&dir, "stmt_round_trip", payload).unwrap();
 
-        // The stored file must not contain the plaintext -- these are bank
-        // statements, and the whole reason this path isn't a plain temp file.
         let on_disk = std::fs::read(dir.join("statements/stmt_round_trip.pdf.enc")).unwrap();
         assert!(
             on_disk.windows(payload.len()).all(|w| w != payload),
@@ -193,8 +185,6 @@ mod tests {
 
         delete_pdf(&dir, "stmt_round_trip").unwrap();
         assert!(read_pdf(&dir, "stmt_round_trip").unwrap().is_none());
-        // Deleting an already-deleted PDF is not an error -- the Statement
-        // Queue worker deletes unconditionally after parsing.
         delete_pdf(&dir, "stmt_round_trip").unwrap();
 
         let _ = std::fs::remove_dir_all(&dir);

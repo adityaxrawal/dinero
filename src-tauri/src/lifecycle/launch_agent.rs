@@ -1,55 +1,46 @@
-//! Doc 30 TASK-DESK-010 (Doc 29 §12): "Launch at Login" + "Continue syncing
-//! when app is closed" Settings toggles, plus the battery-aware background
-//! polling-interval policy this task's own source material frames as the
-//! resolution to Document 16 §20 OQ-01 -- already reflected as [RESOLVED]
-//! in the currently-published Document 16 (v1.8, Documentation Audit
-//! finding H-01) and Doc 30 §21.2, so there is no open conflict left to
-//! flag here.
-
+//! Controls background running and the close-vs-quit decision.
+//!
+//! With background sync enabled, closing the window hides it rather than exiting,
+//! so scheduled ingestion continues. Polling cadence is also adapted to power
+//! state here -- polling aggressively on battery costs real runtime.
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::{AppHandle, Manager, Runtime};
 
-// ---------------------------------------------------------------------
-// Launch at Login
-// ---------------------------------------------------------------------
-
-/// Thin abstraction over the real OS-level login-item registration
-/// (`tauri_plugin_autostart`, backed by a real Launch Agent plist under
-/// this Mac's `~/Library/LaunchAgents`) so the orchestration logic below
-/// is unit-testable without actually mutating this machine's real login
-/// items -- the same "never touch the real system in a unit test"
-/// convention already established for Keychain access (`db::crypto`).
 pub trait LoginItemController {
+    /// Enables the login item.
     fn enable(&self) -> Result<(), String>;
+    /// Disables the login item.
     fn disable(&self) -> Result<(), String>;
+    /// Whether the login item is currently enabled.
     fn is_enabled(&self) -> Result<bool, String>;
 }
 
-/// The real controller backing `settings_set_launch_at_login`. Deliberately
-/// not exercised in `cargo test` (see `LoginItemController`'s doc comment);
-/// `apply_launch_at_login`'s orchestration is tested against a fake instead.
 pub struct TauriAutoLaunchController<'a, R: Runtime> {
     app: &'a AppHandle<R>,
 }
 
 impl<'a, R: Runtime> TauriAutoLaunchController<'a, R> {
+    /// Wraps a Tauri app handle as a login-item controller.
     pub fn new(app: &'a AppHandle<R>) -> Self {
         Self { app }
     }
 }
 
 impl<'a, R: Runtime> LoginItemController for TauriAutoLaunchController<'a, R> {
+    /// Registers the app to launch at login.
     fn enable(&self) -> Result<(), String> {
         use tauri_plugin_autostart::ManagerExt;
         self.app.autolaunch().enable().map_err(|e| e.to_string())
     }
 
+    /// Removes the login-item registration.
     fn disable(&self) -> Result<(), String> {
         use tauri_plugin_autostart::ManagerExt;
         self.app.autolaunch().disable().map_err(|e| e.to_string())
     }
 
+    /// Queries the current login-item state.
     fn is_enabled(&self) -> Result<bool, String> {
         use tauri_plugin_autostart::ManagerExt;
         self.app
@@ -59,12 +50,10 @@ impl<'a, R: Runtime> LoginItemController for TauriAutoLaunchController<'a, R> {
     }
 }
 
-/// Doc 30 TASK-DESK-010 acceptance: `test_launch_at_login_toggle_registers_login_item`.
-/// Pure orchestration over any `LoginItemController` -- tested here against
-/// a fake; the real controller's actual system effect (writing/removing the
-/// Launch Agent plist) is exercised only by manual QA, the same limitation
-/// already documented for every other real-OS-side-effect path this run has
-/// touched (Keychain writes, code signing/notarization).
+/// Applies the launch-at-login preference.
+///
+/// Takes the controller as a parameter so the decision logic is testable without
+/// touching the real system login items.
 pub fn apply_launch_at_login<C: LoginItemController>(
     controller: &C,
     enabled: bool,
@@ -76,24 +65,24 @@ pub fn apply_launch_at_login<C: LoginItemController>(
     }
 }
 
-// ---------------------------------------------------------------------
-// "Continue syncing when app is closed" (background-only mode)
-// ---------------------------------------------------------------------
-
 const BACKGROUND_SYNC_SETTING_FILE: &str = "background_sync_enabled";
 
+/// Path of the background-sync setting file.
 fn background_sync_settings_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join(BACKGROUND_SYNC_SETTING_FILE)
 }
 
-/// Defaults to `false` -- disabled, matching the pre-existing behavior of
-/// fully quitting the process on window close until a user opts in.
+/// Whether background sync is enabled.
+///
+/// Read from a plain file rather than the database, because it is needed during
+/// the window-close handler -- before the database pool is necessarily reachable.
 pub fn read_background_sync_enabled(app_data_dir: &Path) -> bool {
     std::fs::read_to_string(background_sync_settings_path(app_data_dir))
         .map(|s| s.trim() == "true")
         .unwrap_or(false)
 }
 
+/// Persists the background-sync preference.
 pub fn write_background_sync_enabled(app_data_dir: &Path, enabled: bool) -> std::io::Result<()> {
     std::fs::write(
         background_sync_settings_path(app_data_dir),
@@ -101,24 +90,15 @@ pub fn write_background_sync_enabled(app_data_dir: &Path, enabled: bool) -> std:
     )
 }
 
-/// Pure: whether the main window's close request should be intercepted
-/// (hidden, kept running) rather than left to quit the process normally.
+/// Whether closing the window should hide it instead of quitting.
 pub fn should_prevent_close(background_sync_enabled: bool) -> bool {
     background_sync_enabled
 }
 
-/// Effectful, wired into the app-level `on_window_event` handler in
-/// `lib.rs::run`. When "continue syncing when closed" is enabled, hides
-/// the window and the Dock icon instead of letting the close proceed --
-/// the ingestion queues/polling loop/reconciliation worker spawned in
-/// `lib.rs::run` are already fully independent of window lifetime, so
-/// nothing else needs pausing or resuming here. When disabled, does
-/// nothing: the close proceeds and Tauri's default behavior (quit when the
-/// last window closes) takes over, deferring to the next launch's
-/// checkpoint-resume to catch up on missed history, per this task's spec.
-/// The application menu/tray's own Quit items (`PredefinedMenuItem::quit`)
-/// call `AppHandle::exit` directly and never raise `CloseRequested` at all,
-/// so an explicit Quit always fully quits regardless of this setting.
+/// Handles a close request, hiding the window when background sync is on.
+///
+/// Hiding rather than exiting is what lets scheduled ingestion keep running after
+/// the user closes the window.
 pub fn handle_main_window_close_requested<R: Runtime>(
     window: &tauri::Window<R>,
     api: &tauri::CloseRequestApi,
@@ -134,24 +114,17 @@ pub fn handle_main_window_close_requested<R: Runtime>(
     crate::menu::status_item::apply_dock_visibility(window.app_handle(), true);
 }
 
-// ---------------------------------------------------------------------
-// Battery-aware background polling interval
-// ---------------------------------------------------------------------
-
-/// Doc 30: "the normal 30-90s" cadence -- `ingestion::polling`'s loop
-/// currently sleeps a fixed 60s per cycle (within that documented range);
-/// this task increases that interval under the stated condition, it does
-/// not change the normal-cadence value itself.
 pub const NORMAL_POLL_INTERVAL_SECS: u64 = 60;
 pub const LOW_BATTERY_POLL_INTERVAL_SECS: u64 = 300;
 
-/// No document specifies an exact default charge threshold -- mirrors
-/// macOS's own Low Power Mode prompt, which commonly triggers at 20%.
-/// Configurable via `settings_set_low_battery_poll_threshold_percent`.
 pub const DEFAULT_LOW_BATTERY_THRESHOLD_PERCENT: f32 = 20.0;
 
-/// Pure decision. Doc 30 TASK-DESK-010 acceptance:
-/// `test_polling_interval_increases_on_low_battery`.
+/// Chooses the polling interval for the current power state.
+///
+/// Only throttles while running in background-only mode: with the window open the
+/// user is present and expects prompt updates. On battery below the threshold the
+/// interval widens, since aggressive polling costs real runtime for mail that
+/// will still be there later.
 pub fn effective_poll_interval_secs(
     background_only_mode_active: bool,
     on_battery: bool,
@@ -167,32 +140,34 @@ pub fn effective_poll_interval_secs(
     }
 }
 
-/// Shared, atomically-updated poll interval: read every cycle by
-/// `ingestion::polling::start_polling_loop`, written by
-/// `run_battery_aware_polling_interval_loop` below.
 pub struct PollingIntervalState(AtomicU64);
 
 impl Default for PollingIntervalState {
+    /// Starts at the normal interval until power state is known.
     fn default() -> Self {
         Self(AtomicU64::new(NORMAL_POLL_INTERVAL_SECS))
     }
 }
 
 impl PollingIntervalState {
+    /// Reads the current interval.
     pub fn load_secs(&self) -> u64 {
         self.0.load(Ordering::Relaxed)
     }
 
+    /// Updates the interval.
+    ///
+    /// Atomic because the polling loop and the battery watcher touch this
+    /// concurrently, without either taking a lock.
     pub fn store_secs(&self, secs: u64) {
         self.0.store(secs, Ordering::Relaxed);
     }
 }
 
-/// Real battery query. `None` on a desktop Mac with no battery (Mac
-/// mini/Studio/iMac) or if the platform battery API is unavailable --
-/// `effective_poll_interval_secs` treats that identically to "on AC power,"
-/// which is the correct, safe default (never throttle polling on a machine
-/// that has no battery to run low on).
+/// Reads whether the machine is on battery, and its charge percentage.
+///
+/// Returns None where no battery exists, as on a desktop, which the caller treats
+/// as mains power.
 pub fn read_battery_power_state() -> Option<(bool, f32)> {
     let manager = battery::Manager::new().ok()?;
     let mut batteries = manager.batteries().ok()?;
@@ -209,10 +184,12 @@ pub fn read_battery_power_state() -> Option<(bool, f32)> {
 
 const LOW_BATTERY_THRESHOLD_SETTING_FILE: &str = "low_battery_poll_threshold_percent";
 
+/// Path of the low-battery threshold setting.
 fn low_battery_threshold_settings_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join(LOW_BATTERY_THRESHOLD_SETTING_FILE)
 }
 
+/// Reads the low-battery threshold percentage.
 pub fn read_low_battery_threshold_percent(app_data_dir: &Path) -> f32 {
     std::fs::read_to_string(low_battery_threshold_settings_path(app_data_dir))
         .ok()
@@ -220,6 +197,7 @@ pub fn read_low_battery_threshold_percent(app_data_dir: &Path) -> f32 {
         .unwrap_or(DEFAULT_LOW_BATTERY_THRESHOLD_PERCENT)
 }
 
+/// Persists the low-battery threshold percentage.
 pub fn write_low_battery_threshold_percent(
     app_data_dir: &Path,
     threshold_percent: f32,
@@ -230,14 +208,7 @@ pub fn write_low_battery_threshold_percent(
     )
 }
 
-/// Spawned once at startup (`lib.rs::run`). Refreshes `PollingIntervalState`
-/// on its own 30s cadence, independent of the polling loop's own cycle --
-/// only relevant while "continue syncing when closed" is enabled AND the
-/// main window is currently hidden (i.e. actually operating in
-/// background-only mode right now, not merely eligible to); with the
-/// window visible, always resolves to the normal cadence regardless of
-/// battery state, since a foreground app isn't the background-only
-/// scenario Document 16 §20 OQ-01 concerns.
+/// Watches power state and adjusts the polling interval to match.
 pub async fn run_battery_aware_polling_interval_loop<R: Runtime>(
     app: AppHandle<R>,
     cancel_token: tokio_util::sync::CancellationToken,
@@ -282,8 +253,6 @@ mod tests {
         dir
     }
 
-    /// A fake controller recording calls, never touching the real system --
-    /// exactly the substitution `LoginItemController`'s doc comment exists for.
     struct FakeLoginItemController {
         enabled: RefCell<bool>,
         enable_calls: RefCell<u32>,
@@ -316,7 +285,6 @@ mod tests {
         }
     }
 
-    /// Doc 30 TASK-DESK-010 acceptance: `test_launch_at_login_toggle_registers_login_item`.
     #[test]
     fn test_launch_at_login_toggle_registers_login_item() {
         let controller = FakeLoginItemController::new(false);
@@ -354,11 +322,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Doc 30 TASK-DESK-010 acceptance: `test_background_only_mode_hides_dock_icon`.
-    /// `apply_dock_visibility` (TASK-DESK-008) is the real effectful call --
-    /// this exercises the decision that must trigger it: only when
-    /// "continue syncing when closed" is enabled does closing the window
-    /// hide the Dock icon; otherwise the close is left alone entirely.
     #[test]
     fn test_background_only_mode_hides_dock_icon() {
         assert!(
@@ -371,10 +334,6 @@ mod tests {
         );
     }
 
-    /// A window-less smoke test confirming `handle_main_window_close_requested`'s
-    /// downstream `apply_dock_visibility` call is a safe no-op against a
-    /// `MockRuntime` app with no real window -- mirrors
-    /// `status_item::test_update_dock_badge_is_a_safe_noop_without_a_main_window`.
     #[test]
     fn test_apply_dock_visibility_safe_noop_under_mock_runtime() {
         let app = tauri::test::mock_builder()
@@ -386,22 +345,18 @@ mod tests {
         crate::menu::status_item::apply_dock_visibility(&app, false);
     }
 
-    /// Doc 30 TASK-DESK-010 acceptance: `test_polling_interval_increases_on_low_battery`.
     #[test]
     fn test_polling_interval_increases_on_low_battery() {
-        // Not in background-only mode at all -- always normal, regardless of battery.
         assert_eq!(
             effective_poll_interval_secs(false, true, Some(5.0), 20.0),
             NORMAL_POLL_INTERVAL_SECS
         );
 
-        // Background-only mode, on battery, below threshold -- throttle.
         assert_eq!(
             effective_poll_interval_secs(true, true, Some(15.0), 20.0),
             LOW_BATTERY_POLL_INTERVAL_SECS
         );
 
-        // Background-only mode, on battery, at/above threshold -- normal cadence.
         assert_eq!(
             effective_poll_interval_secs(true, true, Some(20.0), 20.0),
             NORMAL_POLL_INTERVAL_SECS
@@ -411,15 +366,11 @@ mod tests {
             NORMAL_POLL_INTERVAL_SECS
         );
 
-        // Background-only mode, on AC power -- normal cadence regardless of a
-        // stale/irrelevant percent reading.
         assert_eq!(
             effective_poll_interval_secs(true, false, Some(5.0), 20.0),
             NORMAL_POLL_INTERVAL_SECS
         );
 
-        // Background-only mode, no battery hardware at all (desktop Mac) --
-        // treated the same as AC power.
         assert_eq!(
             effective_poll_interval_secs(true, false, None, 20.0),
             NORMAL_POLL_INTERVAL_SECS

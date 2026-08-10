@@ -1,23 +1,16 @@
-//! The statement-PDF half of the learned-rule read path (design 2026-07-29).
+//! Applies learned corrections to extracted statement rows.
 //!
-//! Separate from `ladder::apply_learned_fields` because the two extractors are
-//! structurally different, not because the rules are: an email rule runs once
-//! against one body, a statement rule runs against each row's own text. The
-//! rule *storage*, synthesis, validation and lifecycle are shared verbatim —
-//! only the loop differs, which is why this file is small.
-//!
-//! The unit of source text is the row description, which is also what
-//! `statement_entries.description_raw` persists and therefore what a correction
-//! on a statement-sourced transaction learns from. Same text in, same text out,
-//! so a rule taught by a correction fires on the next statement's matching row.
-
+//! Carries the same learning loop used for emails into statement parsing, so a
+//! correction the user makes once is applied automatically to later statements
+//! sharing that layout.
 use crate::statements::row_extractor::{parse_amount_minor, parse_date, StatementRow};
 use deadpool_sqlite::Pool;
 
-/// Overlays this bank's learned statement rules onto freshly extracted rows.
+/// Applies learned corrections to extracted statement rows.
 ///
-/// Returns how many rows a rule actually changed — logged by the caller, and
-/// the only signal that the learning loop is doing anything on the PDF side.
+/// Carries the same learning loop used for emails into statement parsing, so a
+/// correction made once is applied automatically to later statements sharing the
+/// same layout.
 pub async fn apply_learned_rules_to_rows(
     pool: &Pool,
     bank_name: &str,
@@ -43,10 +36,6 @@ pub async fn apply_learned_rules_to_rows(
 
     let mut changed = 0usize;
     for row in rows.iter_mut() {
-        // `merchant_raw` is the row's full description at this stage (see
-        // `map_rows_to_statement_entries`, which writes it to both
-        // `description_raw` and `merchant_raw`), so it is the source text a
-        // correction on this row would later learn from.
         let source = row.merchant_raw.clone();
         let source_hash = crate::extraction::ladder::compute_template_hash(&source);
         let mut row_changed = false;
@@ -66,9 +55,6 @@ pub async fn apply_learned_rules_to_rows(
                 continue;
             }
 
-            // Every arm leaves the row untouched when the capture will not
-            // parse: a rule that fires but yields nonsense must degrade to a
-            // no-op, never to a zeroed amount or a cleared date.
             match rule.field_name.as_str() {
                 "merchant" => {
                     row.merchant_raw = captured.to_string();
@@ -220,7 +206,6 @@ mod tests {
         assert_eq!(rows[0].merchant_raw, "UPI-ZOMATO-9988776655-PAYMENT");
     }
 
-    /// An email-learned rule must never reach PDF extraction.
     #[tokio::test]
     async fn an_email_rule_does_not_apply_to_statement_rows() {
         let pool = setup_pool().await;
@@ -293,8 +278,6 @@ mod tests {
         assert_eq!(rows[0].merchant_raw, "ANY DESCRIPTION");
     }
 
-    /// A capture that cannot be parsed must leave the row's value alone rather
-    /// than zeroing it — a broken rule should degrade to no-op, not to data loss.
     #[tokio::test]
     async fn an_unparseable_capture_leaves_the_row_intact() {
         let pool = setup_pool().await;

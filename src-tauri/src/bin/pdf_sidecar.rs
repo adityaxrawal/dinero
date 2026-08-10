@@ -1,37 +1,12 @@
-//! Doc 30 TASK-STMT-003: an isolated OS-process sidecar for `pdfium-render`
-//! calls. A malformed or malicious PDF can crash or exhaust memory in
-//! pdfium's C++ core — running it here, in a short-lived child process
-//! spawned per request, means that failure mode takes down this process
-//! only, never the main Tauri process (avoiding a macOS Jetsam OOM kill of
-//! the whole app). Standalone binary — deliberately has no dependency on the
-//! main `dinero_app_lib` crate (DB, Tauri, Keychain); it only ever sees raw
-//! PDF bytes over stdin and writes a JSON result to stdout, never touching
-//! disk (Doc 15 Core Principle 4/10).
+//! Sandboxed PDF worker process.
 //!
-//! ## Protocol (stdin, written by the parent process)
-//! 1. One newline-terminated JSON line: `{"operation": "unlock_check" | "extract_text" | "decrypt", "password": "..."}`
-//! 2. A 4-byte big-endian `u32` length prefix for the PDF payload.
-//! 3. The raw PDF bytes (exactly that many bytes).
-//!
-//! ## Protocol (stdout, written by this process)
-//! One newline-terminated JSON line:
-//! - `unlock_check`: `{"success": true, "unlocked": bool}` or `{"success": false, "error": "..."}`
-//! - `extract_text`: `{"success": true, "pages": [{"page_number": 1, "text": "..."}]}` or `{"success": false, "error": "..."}`
-//! - `decrypt`: `{"success": true, "pdf_base64": "..."}` or `{"success": false, "error": "..."}` —
-//!   opens the PDF with the given password and re-saves it via pdfium's `FPDF_SaveAsCopy`,
-//!   which does not re-apply the original password protection, producing a plain,
-//!   unencrypted copy for display purposes only (never written to disk).
-
+//! Runs the unlock, text-extraction and decryption operations out-of-process.
+//! Separation is the whole point: PDF parsing is a well-known source of
+//! memory-safety bugs and the input is an untrusted file, so a malformed or
+//! hostile document crashes this process instead of the application.
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-// Issue #8: layout reconstruction is shared verbatim with the library
-// (`statements::layout`) via a path include rather than a crate dependency —
-// this binary deliberately does not link `dinero_app_lib` (see the module
-// doc above), and the alternative, shipping raw per-character geometry over
-// the pipe for the parent to reassemble, would mean megabytes of JSON per
-// statement to arrive at the identical string. The module is pure std logic
-// with no DB, Tauri or Keychain reach, so sharing it costs nothing.
 #[path = "../statements/layout.rs"]
 mod layout;
 
@@ -69,20 +44,20 @@ struct DecryptResponse {
     error: Option<String>,
 }
 
+/// Sidecar entry point.
 fn main() {
     if let Err(e) = run() {
-        // Last-resort error path: still emit a well-formed JSON response so
-        // the parent's parser never has to guess at a bare stderr message.
         let _ = write_line(&serde_json::json!({ "success": false, "error": e.to_string() }));
         std::process::exit(1);
     }
 }
 
+/// Reads newline-delimited JSON requests and answers each in turn.
+///
+/// A line protocol over stdio keeps the boundary trivial, which matters because
+/// this process exists to be crashed by hostile input without taking the app
+/// with it.
 fn run() -> anyhow::Result<()> {
-    // One BufReader for the whole request — reading the line via a
-    // throwaway BufReader and then switching back to unbuffered `Stdin`
-    // reads would silently drop any bytes it had already buffered ahead
-    // past the newline, corrupting the length-prefixed payload that follows.
     let stdin = std::io::stdin();
     let mut reader = std::io::BufReader::new(stdin.lock());
 
@@ -118,6 +93,7 @@ fn run() -> anyhow::Result<()> {
     }
 }
 
+/// Reports whether a password unlocks a PDF.
 fn unlock_check(pdf_bytes: &[u8], password: &str) -> UnlockCheckResponse {
     use pdfium_render::prelude::*;
 
@@ -147,6 +123,7 @@ fn unlock_check(pdf_bytes: &[u8], password: &str) -> UnlockCheckResponse {
     }
 }
 
+/// Extracts text from a PDF, optionally with a password.
 fn extract_text(pdf_bytes: &[u8], password: Option<&str>) -> ExtractTextResponse {
     use pdfium_render::prelude::*;
 
@@ -179,42 +156,22 @@ fn extract_text(pdf_bytes: &[u8], password: Option<&str>) -> ExtractTextResponse
         let text = page
             .text()
             .map(|t| {
-                // Issue #8: `t.all()` collapses every run of horizontal space
-                // to a single ' ', destroying the column structure that both
-                // `row_extractor`'s row regexes and `metadata_extractor`'s
-                // `label: value` patterns depend on. Rebuild the visual layout
-                // from per-character geometry instead — see `layout`'s module
-                // doc for the full failure it fixes.
                 let page_height = page.height().value;
                 let chars: Vec<layout::PositionedChar> = t
                     .chars()
                     .iter()
                     .filter_map(|ch| {
-                        // The *loose* box on both axes — it spans the glyph's
-                        // full advance, so consecutive letters in a word
-                        // abut at a gap of zero while a real space leaves a
-                        // clearly positive one. Tight ink extents look
-                        // tempting but measure the same 1.8pt gap after a
-                        // comma as between two words, which splits "1,250.00"
-                        // into "1, 250.00". See `layout::SPACE_GAP_RATIO`.
                         let bounds = ch.loose_bounds().ok()?;
                         Some(layout::PositionedChar {
                             text: ch.unicode_string()?,
                             x0: bounds.left().value,
                             x1: bounds.right().value,
-                            // pdfium's origin is bottom-left; `layout` works
-                            // top-down, matching reading order.
                             y0: page_height - bounds.top().value,
                             y1: page_height - bounds.bottom().value,
                         })
                     })
                     .collect();
                 let rebuilt = layout::reconstruct_page(&chars);
-                // A PDF whose glyphs carry no usable bounding boxes (some
-                // generators, and some OCR-produced text layers) yields
-                // nothing here. Falling back to `all()` keeps such a
-                // document parsing exactly as well as it did before, rather
-                // than regressing it to empty.
                 if rebuilt.trim().is_empty() {
                     t.all()
                 } else {
@@ -243,6 +200,7 @@ fn extract_text(pdf_bytes: &[u8], password: Option<&str>) -> ExtractTextResponse
     }
 }
 
+/// Decrypts a PDF and returns its bytes.
 fn decrypt(pdf_bytes: &[u8], password: Option<&str>) -> DecryptResponse {
     use pdfium_render::prelude::*;
 
@@ -287,6 +245,7 @@ fn decrypt(pdf_bytes: &[u8], password: Option<&str>) -> DecryptResponse {
     }
 }
 
+/// Writes one JSON response line.
 fn write_line<T: Serialize>(value: &T) -> anyhow::Result<()> {
     let json = serde_json::to_string(value)?;
     let stdout = std::io::stdout();
@@ -297,13 +256,13 @@ fn write_line<T: Serialize>(value: &T) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Small helper trait so `main`'s one-line-read doesn't need a full
-/// `BufRead` import juggling act at the call site.
 trait ReadLineInto {
+    /// Reads a request line from stdin.
     fn read_line_into(&mut self, buf: &mut String) -> std::io::Result<usize>;
 }
 
 impl<R: std::io::BufRead> ReadLineInto for R {
+    /// Reads a request line from a generic reader, used in tests.
     fn read_line_into(&mut self, buf: &mut String) -> std::io::Result<usize> {
         self.read_line(buf)
     }

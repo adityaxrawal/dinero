@@ -1,35 +1,13 @@
-//! TASK-DESK-005 (Doc 30 §12, Doc 29 §14): the Tauri auto-updater, per
-//! Document 16 §9.1 -- "over-the-air updates via Tauri updater, GitHub
-//! Releases as update server, signed updater endpoint." Checks on a
-//! schedule (every ~6 hours while running, plus once on launch) and via
-//! the manual "Check for Updates" menu item (TASK-DESK-001). Every release
-//! artifact is signed with the updater's Ed25519 keypair; the actual
-//! cryptographic verification against the embedded public key
-//! (`tauri.conf.json`'s `plugins.updater.pubkey`) is `tauri-plugin-
-//! updater`'s own internal, already-tested responsibility
-//! (`verify_signature`/`minisign_verify` in its vendored source) -- not
-//! reimplemented here. This module's job is: never treat a check/download
-//! error (including a signature failure) as "no update available" or
-//! silently swallow it, schedule checks correctly, coordinate a graceful
-//! shutdown of active background workers before installing, and drive the
-//! non-intrusive "Update Now" / "Remind Me Later" prompt.
+//! Application update checking and installation.
 //!
-//! Per this task's own text, this is also the source implementation for
-//! the updater signing-key mechanism Document 26 TM-OQ-05 flags as lacking
-//! a documented custody/rotation policy -- still genuinely open, not
-//! resolved by this task (no custody/rotation process exists to implement
-//! yet).
-
+//! Updates are never applied silently -- an available update is surfaced and
+//! installed only on explicit confirmation, since a background restart mid-scan
+//! would discard work in progress.
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tauri_plugin_updater::UpdaterExt;
 
-/// Doc 30 TASK-DESK-005: checked every ~6 hours while running.
 pub const UPDATE_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
 
-/// Bounded window given to in-flight background work to observe
-/// cancellation and checkpoint before the installer actually runs. Not
-/// indefinite -- an update must still eventually proceed even if a worker
-/// is slow to notice.
 const GRACEFUL_SHUTDOWN_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(3);
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -39,22 +17,10 @@ pub struct UpdateAvailable {
     pub notes: Option<String>,
 }
 
-/// Holds the most recently found `Update` so the frontend's "Update Now"
-/// toast action (a plain button with no room to carry the `Update` object
-/// itself) can trigger the real install via a follow-up IPC command
-/// (`updater_confirm_install`) without re-checking. "Remind Me Later" is
-/// simply not clicking it -- the next scheduled check (or manual menu
-/// trigger) re-populates this if the update is still available, no
-/// separate snooze state needed.
 #[derive(Default)]
 pub struct PendingUpdate(pub tokio::sync::Mutex<Option<tauri_plugin_updater::Update>>);
 
-/// Checks for an update and, if one is available, emits `update_available`
-/// for the frontend's non-intrusive "Update Now" / "Remind Me Later"
-/// prompt (never a forced-restart popup). Any error from the check --
-/// including a signature/verification failure surfaced later at download
-/// time -- propagates as `Err` here; it is never conflated with `Ok(None)`
-/// ("no update available"), which would silently mask a real failure.
+/// Checks for an available update.
 pub async fn check_for_update<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<Option<UpdateAvailable>, String> {
@@ -77,12 +43,10 @@ pub async fn check_for_update<R: Runtime>(
     }
 }
 
-/// Doc 30 TASK-DESK-005: backs the frontend's "Update Now" action. Not in
-/// Document 19's command catalog (this task predates/extends it, same
-/// precedent as several Area 8 tasks' own additive commands) -- consumes
-/// whatever `Update` the most recent check found, running the same
-/// graceful-shutdown-then-install path as `download_and_install`.
 #[tauri::command]
+/// Installs a pending update after the user confirms.
+///
+/// Never silent: a background restart mid-scan would discard work in progress.
 pub async fn updater_confirm_install(
     app: AppHandle,
     pending: tauri::State<'_, PendingUpdate>,
@@ -95,10 +59,7 @@ pub async fn updater_confirm_install(
         .map_err(crate::error::AppError::Unknown)
 }
 
-/// Doc 30 TASK-DESK-005 acceptance: `test_manual_check_for_updates_menu_item`.
-/// Called from the menu's `MenuAction::CheckForUpdates` dispatch
-/// (`menu::handle_menu_event`) -- spawned so the menu handler itself
-/// (a synchronous callback) never blocks on the network round-trip.
+/// Triggers a manual update check from the menu.
 pub fn trigger_manual_check<R: Runtime>(app: &AppHandle<R>) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
@@ -108,17 +69,9 @@ pub fn trigger_manual_check<R: Runtime>(app: &AppHandle<R>) {
     });
 }
 
-/// Doc 30 TASK-DESK-005: "if the user updates while a large polling/
-/// extraction loop is active, the backend signals all active Tokio
-/// workers via `CancellationToken`s to checkpoint and shut down cleanly
-/// first -- never force-kill the process (avoiding SQLite WAL
-/// corruption)." Signals the app-wide `CancellationToken` (the Gmail
-/// polling and missing-data alert loops both already select on it) and
-/// requests cancellation of any in-flight historical scans via
-/// `scans_cancel` -- discovered via `BackgroundTaskRegistry`
-/// (TASK-DESK-003), reused here rather than adding a second way to
-/// enumerate active scans. Must be called, and awaited, before
-/// `download_and_install` -- never after.
+/// Prepares for shutdown before an update restarts the app.
+///
+/// Stops background work so an update does not interrupt a scan mid-write.
 pub async fn prepare_for_graceful_shutdown<R: Runtime>(app: &AppHandle<R>) {
     if let Some(cancel_token) = app.try_state::<tokio_util::sync::CancellationToken>() {
         cancel_token.cancel();
@@ -137,11 +90,7 @@ pub async fn prepare_for_graceful_shutdown<R: Runtime>(app: &AppHandle<R>) {
     tokio::time::sleep(GRACEFUL_SHUTDOWN_GRACE_PERIOD).await;
 }
 
-/// Doc 30 TASK-DESK-005: the actual install, always preceded by graceful
-/// shutdown coordination. After relaunch, `TASK-DB-002`'s migration path
-/// runs cleanly against the updated schema before anything else --
-/// unchanged by this task, since that's simply the normal `init_db` flow
-/// every launch already goes through, updated binary or not.
+/// Downloads and installs the update.
 pub async fn download_and_install<R: Runtime>(
     app: &AppHandle<R>,
     update: tauri_plugin_updater::Update,
@@ -153,8 +102,7 @@ pub async fn download_and_install<R: Runtime>(
         .map_err(|e| e.to_string())
 }
 
-/// Doc 30 TASK-DESK-005: checked once on launch, then every
-/// `UPDATE_CHECK_INTERVAL` while running.
+/// Starts the periodic update-check loop.
 pub fn spawn_update_check_loop<R: Runtime>(app: AppHandle<R>) {
     tauri::async_runtime::spawn(async move {
         loop {
@@ -173,12 +121,6 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     fn mock_app() -> AppHandle<tauri::test::MockRuntime> {
-        // The updater plugin's own `setup` hook fails a missing
-        // `plugins.updater` config section outright (it deserializes
-        // straight into its `Config` struct, no `#[serde(default)]`) --
-        // `tauri::test::mock_context` otherwise leaves `plugins` empty, so
-        // a minimal real config is supplied here for every updater test,
-        // not just the one that needs a real endpoint override.
         let mut ctx = tauri::test::mock_context(tauri::test::noop_assets());
         ctx.config_mut().plugins.0.insert(
             "updater".into(),
@@ -195,7 +137,6 @@ mod tests {
             .clone()
     }
 
-    /// Doc 30 TASK-DESK-005 acceptance: `test_update_triggers_graceful_worker_shutdown`.
     #[tokio::test]
     async fn test_update_triggers_graceful_worker_shutdown() {
         let app = mock_app();
@@ -228,28 +169,11 @@ mod tests {
         );
         app.manage(registry);
 
-        // Not asserting scans_cancel's DB side effect here (that's Area 4's
-        // own test surface) -- this proves the call path runs to
-        // completion without panicking for an in-flight scan, which is the
-        // part this task actually owns.
         prepare_for_graceful_shutdown(&app).await;
     }
 
-    /// Doc 30 TASK-DESK-005 acceptance: `test_unsigned_update_rejected`.
-    /// Drives the *real* `tauri-plugin-updater` against a real local HTTP
-    /// server serving a syntactically well-formed manifest whose signature
-    /// field is not a valid signature at all -- this is a real "unsigned/
-    /// invalid-signature" update by Doc 30's own wording, rejected by the
-    /// plugin's own `download()` (which calls `verify_signature` internally)
-    /// before any bytes could ever reach an installer. Proves this module
-    /// propagates that rejection as `Err`, never as `Ok` (accepted) and
-    /// never a panic.
     #[tokio::test]
     async fn test_unsigned_update_rejected() {
-        // Same "bind to an ephemeral port, read back the real port" pattern
-        // already established for the local OAuth callback server
-        // (`ingestion::oauth`), reused here for a local test-only mock
-        // update server.
         let server = Arc::new(
             tiny_http::Server::http("127.0.0.1:0")
                 .expect("failed to start local mock update server"),
@@ -262,7 +186,6 @@ mod tests {
 
         let server_for_thread = Arc::clone(&server);
         let handle = std::thread::spawn(move || {
-            // Request 1: the manifest.
             if let Ok(request) = server_for_thread.recv() {
                 let body = serde_json::json!({
                     "version": "999.0.0",
@@ -271,8 +194,6 @@ mod tests {
                     "platforms": {
                         "darwin": {
                             "url": format!("http://127.0.0.1:{port}/fake-binary"),
-                            // Not a valid minisign signature at all --
-                            // guaranteed to fail decode/verification.
                             "signature": "not-a-real-signature",
                         }
                     }
@@ -285,7 +206,6 @@ mod tests {
                 let _ = request.respond(response);
             }
 
-            // Request 2: the "binary" download itself.
             if let Ok(request) = server_for_thread.recv() {
                 let response = tiny_http::Response::from_string("fake binary bytes");
                 let _ = request.respond(response);
@@ -322,22 +242,8 @@ mod tests {
         handle.join().ok();
     }
 
-    /// Doc 30 TASK-DESK-005 acceptance: `test_manual_check_for_updates_menu_item`.
-    /// Drives the real path `menu::handle_menu_event`'s `MenuAction::CheckForUpdates`
-    /// arm calls: `trigger_manual_check` spawns `check_for_update`, which
-    /// (via a real local mock server, same pattern as the signature-
-    /// rejection test) must actually reach the network and populate
-    /// `PendingUpdate` -- proving the menu item is wired to a real check,
-    /// not just dispatching an inert event (the gap this task's own
-    /// fix-log flagged in TASK-DESK-001).
     #[tokio::test]
     async fn test_manual_check_for_updates_menu_item() {
-        // Bind first so the real port is known before the app (and its
-        // static `plugins.updater.endpoints` config) is built -- `check_for_update`
-        // calls the plain `app.updater()` (no per-call override), exactly
-        // as `trigger_manual_check`/`menu::handle_menu_event`'s real
-        // dispatch does, so the mock endpoint has to be baked into the
-        // app's config up front rather than passed in later.
         let server = Arc::new(
             tiny_http::Server::http("127.0.0.1:0")
                 .expect("failed to start local mock update server"),
@@ -392,7 +298,6 @@ mod tests {
 
         trigger_manual_check(&app);
 
-        // Bounded wait for the spawned check to complete.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             if app.state::<PendingUpdate>().0.lock().await.is_some() {

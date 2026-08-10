@@ -1,8 +1,12 @@
+//! Records why each reconciliation decision was made.
+//!
+//! Retains the score, the rules that fired and the outcome, so a merge can be
+//! explained to the user afterwards and the matcher's behaviour reviewed rather
+//! than trusted blindly.
 use anyhow::Result;
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
-/// Immutable match decision types (Doc 11 §7).
 #[derive(Debug, Clone, PartialEq)]
 pub enum DecisionType {
     AutoMatchedExact,
@@ -15,6 +19,7 @@ pub enum DecisionType {
 }
 
 impl DecisionType {
+    /// Stable string form of the decision type.
     pub fn as_str(&self) -> &'static str {
         match self {
             DecisionType::AutoMatchedExact => "auto_matched_exact",
@@ -28,15 +33,7 @@ impl DecisionType {
     }
 }
 
-/// Appends an immutable row to `match_decisions`.
-/// Every reconciliation action — auto or manual — must create one of these rows (Doc 11 §7).
-/// This table is the auditable, append-only trail of all reconciliation outcomes.
-///
-/// `reviewed_by` (Document 18 §4.5) should be `None` for every automated
-/// decision (`AutoMatchedExact`/`AutoMatchedScored`/`AmbiguousPending`/
-/// `NewCanonical` — there is no human reviewer) and `Some(actor)` for
-/// manual resolutions (`ManuallyConfirmed`/`ManuallyCorrected`/
-/// `RejectedMatch`, Doc 30 TASK-DEDUP-007's "reviewed_by set" requirement).
+/// Records an automatic match decision with its score and rules.
 pub fn append_match_decision(
     conn: &Connection,
     observation_id: &str,
@@ -46,10 +43,6 @@ pub fn append_match_decision(
     reviewed_by: Option<&str>,
 ) -> Result<()> {
     let id = Uuid::new_v4().to_string();
-    // TASK-DB-011 fix: Document 18 §4.5's authoritative review_status enum is
-    // not_required/pending_review/reviewed -- was "unreviewed"/"needs_review",
-    // which never matched it. Zero other code read these exact strings
-    // (checked before changing), so this is a pure internal-consistency fix.
     let review_status = if let DecisionType::AmbiguousPending(_) = decision {
         "pending_review"
     } else if reviewed_by.is_some() {
@@ -67,8 +60,7 @@ pub fn append_match_decision(
     Ok(())
 }
 
-/// Creates a corrected match_decisions row when a user corrects an auto-matched transaction.
-/// The original auto-match row is preserved for full traceability (Doc 11 §9.1).
+/// Records a correction the user made to a prior decision.
 pub fn append_correction_decision(
     conn: &Connection,
     observation_id: &str,
@@ -83,8 +75,6 @@ pub fn append_correction_decision(
         params![id, observation_id, new_canonical_id],
     )?;
 
-    // We do NOT update the original_decision_id here, to preserve immutability.
-
     let audit_id = Uuid::new_v4().to_string();
     conn.execute(
         "INSERT INTO audit_log (id, actor_type, actor_id, action, resource_type, resource_id, created_at)
@@ -95,13 +85,6 @@ pub fn append_correction_decision(
     Ok(())
 }
 
-/// Everything the learning worker needs about one corrected field, captured at
-/// correction time.
-///
-/// `source_text` is copied here rather than re-fetched by the worker on
-/// purpose: the retention sweep nulls `raw_payload_json` on reconciled
-/// observations past a year, and a job that outlived that sweep would silently
-/// stop learning. Copying costs one string per correction.
 #[derive(Debug, Clone)]
 pub struct CorrectionContext {
     pub feedback_log_id: String,
@@ -114,8 +97,6 @@ pub struct CorrectionContext {
     pub new_value: String,
 }
 
-/// The observation row backing a correction: `(id, source_pipeline,
-/// source_record_id, raw_payload_json, issuer_name, description_raw)`.
 type CorrectionObservationRow = (
     String,
     Option<String>,
@@ -125,20 +106,7 @@ type CorrectionObservationRow = (
     Option<String>,
 );
 
-/// Writes the `feedback_log` audit row for one corrected field, decays the rule
-/// that produced the wrong value, and returns the context needed to learn a
-/// better one.
-///
-/// This function used to also *author* a rule -- `{"regex": "learned regex for
-/// <new_value>"}` -- which could never match anything and quietly filled the
-/// table with rules that did nothing. Authoring now belongs to
-/// `learning::worker`, which is the only place that can actually validate what
-/// it writes. What stays here is the half that was always correct: a correction
-/// is direct evidence that whichever rule fired was wrong, so decay it.
-///
-/// Returns `Ok(None)` when the transaction has no observation -- a manually
-/// created transaction has no source text and nothing to learn from. That is a
-/// normal outcome, not an error.
+/// Logs a user correction, feeding both the audit trail and learning.
 pub fn log_user_correction(
     conn: &Connection,
     tx_id: &str,
@@ -193,8 +161,6 @@ pub fn log_user_correction(
         ]
     )?;
 
-    // A statement-sourced correction learns from the entry's own row text; an
-    // email-sourced one from the persisted body.
     let is_statement = source_pipeline.as_deref() == Some("statement_pdf");
     let source_type = if is_statement {
         "statement_pdf"
@@ -210,7 +176,6 @@ pub fn log_user_correction(
             .and_then(|v| v.get("body").and_then(|b| b.as_str()).map(String::from))
     };
 
-    // Decay whatever rule covered this exact shape: it fired and was wrong.
     if let Some(text) = source_text.as_deref() {
         let template_hash = crate::extraction::ladder::compute_template_hash(text);
         let existing: rusqlite::Result<String> = conn.query_row(
@@ -275,8 +240,6 @@ mod tests {
         .unwrap();
     }
 
-    /// Two different banks' corrections must resolve to their own bank names,
-    /// never collide into a shared "Unknown".
     #[test]
     fn test_log_user_correction_resolves_real_bank_name() {
         let conn = setup_db();
@@ -294,9 +257,6 @@ mod tests {
         assert_eq!(icici.bank_name, "ICICI Bank");
     }
 
-    /// When the observation has no resolvable instrument (e.g. a non-gmail
-    /// pipeline with no instrument_id), fall back to "Unknown" same as
-    /// before -- this is a fallback, not a regression.
     #[test]
     fn test_log_user_correction_falls_back_to_unknown_without_instrument() {
         let conn = setup_db();
@@ -320,10 +280,6 @@ mod tests {
         assert_eq!(ctx.bank_name, "Unknown");
     }
 
-    /// The placeholder regex this function used to write ("learned regex for
-    /// X") could never match anything. It is gone; authoring is the learning
-    /// worker's job now, and this function's only rule-touching duty is to
-    /// decay the rule that got it wrong.
     #[test]
     fn a_correction_no_longer_writes_a_placeholder_rule() {
         let conn = setup_db();
@@ -339,7 +295,6 @@ mod tests {
         );
     }
 
-    /// A correction means whichever rule produced the wrong value was wrong.
     #[test]
     fn a_correction_decays_the_rule_that_produced_the_wrong_value() {
         let conn = setup_db();
@@ -380,8 +335,6 @@ mod tests {
         );
     }
 
-    /// The context the learning worker needs, captured at correction time --
-    /// the retention sweep could null the body before the worker runs.
     #[test]
     fn a_correction_returns_the_context_needed_to_learn_from_it() {
         let conn = setup_db();
@@ -398,7 +351,6 @@ mod tests {
         assert!(!ctx.feedback_log_id.is_empty());
     }
 
-    /// feedback_log stays the single audit trail every trigger writes to.
     #[test]
     fn a_correction_still_writes_exactly_one_feedback_log_row() {
         let conn = setup_db();
@@ -415,8 +367,6 @@ mod tests {
         assert_eq!(count, 1);
     }
 
-    /// A transaction with no observation has no source to learn from, and must
-    /// not crash the save.
     #[test]
     fn a_correction_without_an_observation_is_a_no_op() {
         let conn = setup_db();

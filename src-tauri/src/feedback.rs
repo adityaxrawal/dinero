@@ -1,3 +1,9 @@
+//! User-submitted feedback, optionally bundled with diagnostic logs.
+//!
+//! Submission is explicit and user-initiated -- nothing is sent in the
+//! background. Attaching logs is a separate opt-in, since logs are far more
+//! revealing than the feedback text itself.
+
 use aes_gcm::aead::{Aead, AeadCore, KeyInit, OsRng};
 use aes_gcm::{Aes256Gcm, Key};
 use chrono::Local;
@@ -8,8 +14,6 @@ use tauri::State;
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 
-/// Doc 28 §4.2 (J5 fix): feedback notes retained at most 7 days, matching
-/// crash reports.
 const FEEDBACK_RETENTION_DAYS: u64 = 7;
 const FEEDBACK_KEY_LABEL: &[u8] = b"dinero-feedback-note-key-v1";
 
@@ -18,6 +22,7 @@ pub struct FeedbackManager {
     app_data_dir: PathBuf,
 }
 
+/// Key protecting stored feedback notes.
 fn feedback_key() -> Option<Vec<u8>> {
     let base_key = crate::db::crypto::get_or_create_base_key().ok()?;
     let mut hasher = Sha256::new();
@@ -26,9 +31,10 @@ fn feedback_key() -> Option<Vec<u8>> {
     Some(hasher.finalize().to_vec())
 }
 
-/// J5 fix: encrypts a feedback note at rest (AES-256-GCM, CSPRNG nonce),
-/// same Keychain-derived-key pattern as crash reports and PDF passwords —
-/// previously written as indefinitely-retained plaintext.
+/// Encrypts a feedback note for storage.
+///
+/// Encrypted at rest because a user describing a problem routinely quotes the
+/// financial data involved.
 fn encrypt_note(plaintext: &str) -> Vec<u8> {
     if let Some(key_bytes) = feedback_key() {
         let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
@@ -45,6 +51,7 @@ fn encrypt_note(plaintext: &str) -> Vec<u8> {
     plaintext.as_bytes().to_vec()
 }
 
+/// Deletes feedback notes past the retention window.
 fn prune_old_notes(feedback_dir: &std::path::Path) {
     let max_age = Duration::from_secs(FEEDBACK_RETENTION_DAYS * 24 * 60 * 60);
     let Ok(entries) = std::fs::read_dir(feedback_dir) else {
@@ -63,12 +70,12 @@ fn prune_old_notes(feedback_dir: &std::path::Path) {
 }
 
 impl FeedbackManager {
+    /// Creates a manager rooted at the app data directory.
     pub fn new(app_data_dir: PathBuf) -> Self {
         Self { app_data_dir }
     }
 
-    /// Encrypted local note — used when the user does not opt to attach
-    /// diagnostics (`include_logs = false`, Doc 41 §5).
+    /// Stores a feedback note, encrypted.
     pub async fn submit_feedback_note(&self, text: String) -> Result<String, String> {
         let feedback_dir = self.app_data_dir.join("audit_log").join("feedback");
         if let Err(e) = tokio::fs::create_dir_all(&feedback_dir).await {
@@ -79,7 +86,6 @@ impl FeedbackManager {
         prune_old_notes(&feedback_dir);
 
         let timestamp = Local::now().format("%Y%m%d_%H%M%S").to_string();
-        // J5 fix: `.enc` extension signals this file is not plain text.
         let report_path = feedback_dir.join(format!("feedback_{}.enc", timestamp));
 
         let report = format!(
@@ -114,15 +120,17 @@ impl FeedbackManager {
         }
     }
 
+    /// The app data directory this manager writes into.
     pub fn app_data_dir(&self) -> &std::path::Path {
         &self.app_data_dir
     }
 }
 
-/// Doc 41 §5: "Submit Feedback... generates the same sanitized diagnostic
-/// bundle already specified in Document 36 §4" when `include_logs` is true —
-/// one mechanism, one export flow, rather than a second raw-text writer.
 #[tauri::command]
+/// Submits feedback, optionally attaching diagnostic logs.
+///
+/// Log attachment is a separate opt-in, since logs reveal far more than the
+/// feedback text itself.
 pub async fn submit_user_feedback(
     text: String,
     include_logs: bool,

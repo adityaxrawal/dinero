@@ -1,3 +1,10 @@
+//! Raises spending alerts and flags missing data.
+//!
+//! Two jobs share this module. Threshold alerts fire when spending crosses a
+//! budget boundary. The missing-data loop watches for the absence of expected
+//! input -- a statement period with no statement, an account that has gone quiet
+//! -- which is the failure mode a transaction-driven system cannot otherwise
+//! notice, since nothing arriving generates no event.
 use crate::db::alerts::{insert_alert, Alert};
 use crate::db::transactions::{
     get_category_spend_current_month, get_global_spend_current_month,
@@ -17,12 +24,7 @@ pub struct AlertPayload {
     pub message: String,
 }
 
-/// Doc 30 TASK-RT-002: real user-configured global monthly limit
-/// (`local_profile.spending_limit_monthly`, already stored in rupees --
-/// same unit `get_global_spend_current_month` returns, no conversion
-/// needed). `None`/`<= 0` means "no limit configured," matching
-/// `BudgetsSettings.tsx`'s own semantics -- no alert should ever fire
-/// against a limit the user never set.
+/// The user's global monthly spending limit, if set.
 fn global_monthly_limit(conn: &rusqlite::Connection) -> Option<f64> {
     conn.query_row(
         "SELECT spending_limit_monthly FROM local_profile WHERE id = 1",
@@ -34,11 +36,7 @@ fn global_monthly_limit(conn: &rusqlite::Connection) -> Option<f64> {
     .filter(|&v| v > 0.0)
 }
 
-/// Doc 30 TASK-RT-002: real user-configured per-category monthly limit
-/// (`categories.monthly_budget_minor`, minor units/paise -- converted to
-/// rupees here since `get_category_spend_current_month` returns rupees).
-/// `None`/`<= 0` means "no limit configured" (`BudgetsSettings.tsx`'s
-/// "Leave at 0 for no limit").
+/// A category's monthly budget, if set.
 fn category_monthly_limit(conn: &rusqlite::Connection, category_id: &str) -> Option<f64> {
     conn.query_row(
         "SELECT monthly_budget_minor FROM categories WHERE id = ?1",
@@ -51,11 +49,7 @@ fn category_monthly_limit(conn: &rusqlite::Connection, category_id: &str) -> Opt
     .filter(|&v| v > 0.0)
 }
 
-/// Doc 30 TASK-RT-002: which of the 80/90/100 bands the user actually wants
-/// notified about (`local_profile.limit_thresholds`, a JSON percentage
-/// array -- same shape `commands::data`'s `thresholds_to_array` writes).
-/// Defaults to all three, sorted ascending, if unset -- matching
-/// `fetch_spending_limits`'s own default.
+/// Which threshold levels the user has enabled.
 fn enabled_threshold_levels(conn: &rusqlite::Connection) -> Vec<i64> {
     let json: Option<String> = conn
         .query_row(
@@ -76,12 +70,10 @@ fn enabled_threshold_levels(conn: &rusqlite::Connection) -> Vec<i64> {
     levels
 }
 
-/// Doc 30 TASK-RT-002 acceptance `test_threshold_fires_once_per_month`: a
-/// dedup key of `(month, threshold_level[, category])` checked against the
-/// `alerts` table (reused, not a new migration -- same convention as the
-/// licensing backend's audit-log-based idempotency checks) before firing,
-/// so a *second* transaction crossing the same already-fired band in the
-/// same month doesn't re-alert.
+/// Whether this threshold has already fired this month.
+///
+/// The idempotency guard: without it every subsequent transaction over the limit
+/// would fire the alert again, turning one breach into a stream of notifications.
 fn threshold_already_fired_this_month(
     conn: &rusqlite::Connection,
     alert_key: &str,
@@ -97,6 +89,7 @@ fn threshold_already_fired_this_month(
         .is_some())
 }
 
+/// Records that a threshold fired, so it does not fire again this month.
 fn record_threshold_fired(
     conn: &rusqlite::Connection,
     alert_key: &str,
@@ -116,15 +109,14 @@ fn record_threshold_fired(
     )
 }
 
-/// Doc 30 TASK-RT-002: shared threshold-band logic for both the global and
-/// per-category checks. Walks `thresholds` (must be pre-sorted ascending)
-/// and fires **every** currently-crossed-but-not-yet-fired-this-month band,
-/// not only the highest one reached -- acceptance
-/// `test_backfill_scan_fires_all_crossed_thresholds_in_sequence`: if one
-/// batch (e.g. a historical scan backfill) jumps `spend` straight past
-/// 80% and 90% in a single check, both fire, in ascending order, instead of
-/// only 90%.
 #[allow(clippy::too_many_arguments)]
+/// Evaluates spend against each enabled threshold and fires those newly crossed.
+///
+/// The epsilon in the comparison absorbs floating-point error, so spending exactly
+/// at a boundary reliably triggers rather than depending on representation.
+///
+/// A missing limit means no budget is configured, which yields no alerts rather
+/// than an alert about an undefined limit.
 fn check_threshold_bands(
     conn: &rusqlite::Connection,
     tx_id: &str,
@@ -164,6 +156,7 @@ fn check_threshold_bands(
     Ok(fired)
 }
 
+/// Evaluates alerts for newly ingested observations.
 pub async fn evaluate_alerts_for_observations<R: tauri::Runtime>(
     pool: Pool,
     app_handle: AppHandle<R>,
@@ -184,8 +177,7 @@ pub async fn evaluate_alerts_for_observations<R: tauri::Runtime>(
     Ok(())
 }
 
-/// Checks for upcoming subscription renewals within the next 3 days and fires alerts.
-/// Queries `recurring_payments.next_billing_date` or `next_predicted_date` ≤ today + 3 days.
+/// Warns about subscription charges due soon.
 pub fn check_upcoming_subscriptions(
     conn: &rusqlite::Connection,
     app_handle: Option<&AppHandle>,
@@ -232,6 +224,7 @@ pub fn check_upcoming_subscriptions(
     Ok(())
 }
 
+/// Core alert evaluation over the current spending state.
 pub fn evaluate_alerts_internal<R: tauri::Runtime>(
     conn: &rusqlite::Connection,
     app_handle: Option<AppHandle<R>>,
@@ -277,13 +270,6 @@ pub fn evaluate_alerts_internal<R: tauri::Runtime>(
         );
         let thresholds = enabled_threshold_levels(conn);
 
-        // 1. Per-category budget threshold bands (Doc 30 TASK-RT-002: real
-        // user-configured `categories.monthly_budget_minor`, not a hardcoded
-        // constant; fires every crossed-but-unfired band this month, in
-        // ascending order; excludes ambiguous-cluster transactions and
-        // counts EMI installments at their real per-installment amount --
-        // both already guaranteed by `get_category_spend_current_month`'s
-        // own query, not re-implemented here).
         if let Some(cat) = &category_id {
             let category_spend =
                 get_category_spend_current_month(conn, cat, &event_time).unwrap_or(0.0);
@@ -300,8 +286,6 @@ pub fn evaluate_alerts_internal<R: tauri::Runtime>(
             )?);
         }
 
-        // 2. Global monthly spending threshold bands (same real-limit /
-        // dedup / ascending-order treatment as the per-category check).
         let global_spend = get_global_spend_current_month(conn, &event_time).unwrap_or(0.0);
         let global_limit = global_monthly_limit(conn);
         fired_alerts.extend(check_threshold_bands(
@@ -315,7 +299,6 @@ pub fn evaluate_alerts_internal<R: tauri::Runtime>(
             &month_start,
         )?);
 
-        // 3. Merchant Spike Anomaly (unusual spend: current > 3x trailing 30-day average)
         if let Some(merchant) = &merchant_raw {
             let average =
                 get_trailing_30_day_merchant_average(conn, merchant, &event_time).unwrap_or(0.0);
@@ -337,11 +320,6 @@ pub fn evaluate_alerts_internal<R: tauri::Runtime>(
 
             if let Some(app) = &app_handle {
                 for alert in fired_alerts {
-                    // TASK-DESK-002: native notification for a real
-                    // spending-limit threshold crossing specifically --
-                    // not the merchant-spike anomaly or subscription
-                    // reminder alerts this same event also carries, which
-                    // aren't what Doc 30 describes for this task.
                     if alert.alert_type.starts_with("global_budget_") {
                         crate::notifications::send_notification(
                             app,
@@ -363,6 +341,10 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+/// Polls for missing expected data, such as an absent statement period.
+///
+/// Catches the failure a transaction-driven system cannot see on its own: nothing
+/// arriving generates no event, so absence has to be actively looked for.
 pub async fn start_missing_data_polling_loop(
     app_handle: AppHandle,
     pool: Pool,
@@ -386,6 +368,7 @@ pub async fn start_missing_data_polling_loop(
     }
 }
 
+/// Evaluates and raises missing-data alerts.
 pub async fn evaluate_missing_data_alerts(pool: Pool, app_handle: AppHandle) -> Result<()> {
     let conn = pool.get().await?;
     let alerts_to_create = conn
@@ -445,7 +428,6 @@ pub async fn evaluate_missing_data_alerts(pool: Pool, app_handle: AppHandle) -> 
                                 should_alert = true;
                             }
                         } else {
-                            // No sync metadata for this bank yet
                             should_alert = true;
                         }
 

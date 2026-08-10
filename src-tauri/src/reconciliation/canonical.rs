@@ -1,3 +1,9 @@
+//! Creates and updates the canonical transaction behind observations.
+//!
+//! Sources have different strengths -- an alert arrives immediately but sparsely,
+//! a statement arrives late but authoritative -- so merging follows a precedence
+//! rule rather than last-write-wins, and null fields are backfilled from whatever
+//! source can supply them.
 use crate::db::transaction_observations::update_canonical_transaction_id;
 use crate::db::transactions::{insert_transaction, TransactionsRow};
 use crate::reconciliation::engine::IncomingObservation;
@@ -6,15 +12,9 @@ use chrono::NaiveDateTime;
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
-/// Doc 18 §4.3's `source_mix` enum is `email_only` / `statement_only` /
-/// `merged` / `manual` -- distinct from the raw `source_pipeline` values
-/// (`gmail_transaction` / `statement_pdf` / `manual`) an observation itself
-/// carries. Maps the latter to the former for a brand-new canonical row.
-/// The four `transactions` fields a precedence overwrite can change, snapshotted
-/// before the UPDATE in `update_canonical_with_statement` runs:
-/// `(reference_id, best_posting_date, merchant_display_name, amount_minor)`.
 type CanonicalAuditSnapshot = (Option<String>, Option<String>, Option<String>, Option<i64>);
 
+/// The initial source mix for a canonical built from one pipeline.
 fn source_mix_for_new_canonical(source_pipeline: &str) -> &'static str {
     match source_pipeline {
         "gmail_transaction" => "email_only",
@@ -23,36 +23,15 @@ fn source_mix_for_new_canonical(source_pipeline: &str) -> &'static str {
     }
 }
 
-/// Creates a new canonical transaction from an incoming observation that had no matching
-/// candidate. Uses normalized fields from the observation as specified in Doc 11 §8.
-///
-/// Field precedence when both Gmail and statement arrive later (Doc 11 §5):
-///  - reference_id      → Statement preferred
-///  - posting_date      → Statement preferred
-///  - merchant display  → Statement preferred
-///  - settled amount    → Statement preferred
-///  - event_time        → Email preferred (authorization-time context)
-///  - balance_after     → Email preferred
+/// Creates a canonical transaction from an incoming observation.
 pub fn create_canonical_transaction(conn: &Connection, obs: &IncomingObservation) -> Result<()> {
     let tx_id = Uuid::new_v4().to_string();
 
-    // Parse event_time if possible
     let fmt = "%Y-%m-%d %H:%M:%S";
     let event_time_dt = NaiveDateTime::parse_from_str(&obs.event_time, fmt)
         .or_else(|_| NaiveDateTime::parse_from_str(&format!("{} 00:00:00", obs.event_time), fmt))
         .ok();
 
-    // Doc 30 TASK-TXN-007: this call site previously stored `merchant_raw`
-    // verbatim as `merchant_display_name` and left `merchant_normalized_name`/
-    // `merchant_entity_id` permanently NULL -- meaning the plausibility-gated
-    // normalization pipeline (`merchant_normalizer::normalize_merchant_sync`)
-    // never ran on a brand-new transaction at all, so a mis-extracted
-    // boilerplate fragment (e.g. "inform you that") landed straight on the
-    // transaction with no check whatsoever. `merchant_display_name` still
-    // shows the raw string either way (Doc 11 §8 wants the human-readable
-    // original), but `normalized_name`/`entity_id` are now only populated
-    // when the string clears the same plausibility gate step 3 of
-    // `normalize_merchant_sync` applies to auto-created merchants.
     let (merchant_entity_id, merchant_normalized_name) = match &obs.merchant_raw {
         Some(raw) => {
             match crate::extraction::merchant_normalizer::normalize_merchant_sync(conn, raw) {
@@ -75,19 +54,11 @@ pub fn create_canonical_transaction(conn: &Connection, obs: &IncomingObservation
         },
         instrument_type: None,
         direction: Some(obs.direction.clone()),
-        // Generated column (audit_05 #4) -- SQLite derives it from
-        // `amount_minor`, so anything set here would be ignored.
         amount: None,
         amount_minor: Some(obs.amount_minor),
         currency: Some(obs.currency.clone()),
         authorization_time: event_time_dt,
         best_event_time: event_time_dt,
-        // Default "high" for the common case (unambiguous parse); an
-        // observation flagged by `apply_date_cross_check`
-        // (extraction::ladder) -- "swapped_by_anchor" or
-        // "anchor_mismatch_needs_review" -- carries that instead, so the
-        // UI (TransactionInspector/TransactionDetail "Time Confidence")
-        // reflects the real uncertainty instead of always claiming "high".
         event_time_confidence: obs
             .event_time_confidence
             .clone()
@@ -103,12 +74,6 @@ pub fn create_canonical_transaction(conn: &Connection, obs: &IncomingObservation
         original_currency: None,
         exchange_rate: None,
         balance_after_transaction: None,
-        // Doc 30 TASK-TXN-010: "status = 'confirmed'" -- but Document 18 §4.3
-        // (schema-authoritative, Doc 49 §6) has no 'confirmed' value at all;
-        // its actual enum is posted/pending/pending_fx/reversed/refunded/
-        // declined. 'posted' is the correct value for a normal, successfully
-        // processed transaction -- the prior 'canonical' value matched
-        // neither document and had no CHECK constraint to catch it.
         status: Some("posted".to_string()),
         match_confidence: None,
         source_mix: Some(source_mix_for_new_canonical(&obs.source_pipeline).to_string()),
@@ -144,10 +109,10 @@ pub fn create_canonical_transaction(conn: &Connection, obs: &IncomingObservation
     Ok(())
 }
 
-/// Called when statement evidence arrives after a canonical transaction already exists from
-/// an email observation. Updates the canonical record with statement-preferred fields without
-/// overwriting raw source evidence. Logs as 'canonical_field_overwritten_by_statement'
-/// with before/after values (Doc 30 TASK-DEDUP-008).
+/// Merges statement data into an existing canonical transaction.
+///
+/// Statements arrive later but are authoritative, so they can correct values an
+/// earlier alert only approximated.
 pub fn update_canonical_with_statement(
     conn: &Connection,
     canonical_id: &str,
@@ -156,16 +121,6 @@ pub fn update_canonical_with_statement(
     merchant_display: Option<&str>,
     settled_amount_minor: Option<i64>,
 ) -> Result<()> {
-    // We update fields if they are provided, leaving existing ones if None
-    // In SQLite, we can dynamically build or just update what's Some.
-    // For simplicity here, we'll update reference_id, posting_date, merchant, amount_minor if provided
-    //
-    // Real bug fixed here: every real call site passes `obs.event_time`,
-    // which is a full "YYYY-MM-DD HH:MM:SS" datetime, not a bare date -- the
-    // original bare-`%Y-%m-%d`-only parse always failed on real input,
-    // silently leaving `posting_date_parsed` `None` forever, so
-    // `best_posting_date` (Doc 30 TASK-TXN-010: "postingDate → Statement
-    // preferred") never actually updated via this path in production.
     let posting_date_parsed = posting_date.and_then(|pd| {
         chrono::NaiveDateTime::parse_from_str(pd, "%Y-%m-%d %H:%M:%S")
             .map(|dt| dt.date())
@@ -174,9 +129,6 @@ pub fn update_canonical_with_statement(
             .map(|d| d.format("%Y-%m-%d").to_string())
     });
 
-    // Doc 30 TASK-DEDUP-008: "every precedence-driven overwrite is logged to
-    // audit_log... with before/after values for full auditability" --
-    // snapshot the fields this UPDATE can change before it runs.
     let before: Option<CanonicalAuditSnapshot> = conn
         .query_row(
             "SELECT reference_id, best_posting_date, merchant_display_name, amount_minor FROM transactions WHERE id = ?1",
@@ -211,7 +163,6 @@ pub fn update_canonical_with_statement(
         ],
     )?;
 
-    // Doc 30 TASK-DEDUP-008: named exactly `canonical_field_overwritten_by_statement`.
     let audit_id = Uuid::new_v4().to_string();
     let (before_ref, before_posting, before_merchant, before_amount) =
         before.unwrap_or((None, None, None, None));
@@ -241,12 +192,10 @@ pub fn update_canonical_with_statement(
     Ok(())
 }
 
-/// Doc 30 TASK-TXN-010: "an email observation on an already-statement-sourced
-/// canonical row only fills currently-`NULL` fields, never overwrites."
-/// The mirror case of [`update_canonical_with_statement`] — only called when
-/// the matched canonical's `source_mix` is already `statement_only`/`merged`;
-/// callers must check that before calling this (this function itself doesn't
-/// re-check, to avoid a redundant read here).
+/// Backfills null fields from an email observation.
+///
+/// Only fills gaps -- it never overwrites a value already present, so a later
+/// weaker source cannot degrade what a stronger one established.
 pub fn fill_null_fields_from_email(
     conn: &Connection,
     canonical_id: &str,
@@ -273,42 +222,21 @@ pub fn fill_null_fields_from_email(
     Ok(())
 }
 
-/// Doc 30 TASK-DEDUP-008: "both email (e.g. two connected accounts alerting
-/// on the same transaction) -> standard scoring match, first-arriving data
-/// generally retained unless the second has materially higher-confidence
-/// fields." How much higher `obs.confidence_score` must be than the
-/// already-linked email observation's own confidence before the newer
-/// arrival is allowed to overwrite it.
 const EMAIL_VS_EMAIL_CONFIDENCE_MARGIN: f64 = 0.15;
 
-/// Doc 30 TASK-DEDUP-008 email-vs-email precedence path. Only called when
-/// the matched canonical's `source_mix` is `email_only` (both sides are
-/// email evidence, no statement involved anywhere) — compares the incoming
-/// observation's extraction confidence against the already-linked email
-/// observation's; overwrites merchant/reference fields only if the new one
-/// is materially more confident.
+/// Overwrites a field when the email source is more confident.
+///
+/// The exception to fill-only merging, and deliberately narrow: precedence is
+/// checked explicitly rather than letting the most recent write win.
 fn maybe_overwrite_from_higher_confidence_email(
     conn: &Connection,
     canonical_id: &str,
     obs: &IncomingObservation,
 ) -> Result<()> {
     let Some(new_confidence) = obs.confidence_score else {
-        return Ok(()); // No confidence signal on the new observation -- can't compare, keep first-arriving.
+        return Ok(());
     };
 
-    // Doc 30 TASK-DEDUP-008: compare against the observation that actually
-    // last *won* the field values, not just the oldest linked email. The
-    // oldest-linked row can go stale: if obs1 (confidence 0.5) sets the
-    // fields, obs2 (0.9) later materially overwrites them, and obs3 (0.92)
-    // arrives after that, comparing against obs1's stale 0.5 wrongly
-    // triggers another overwrite (large margin) instead of comparing
-    // against obs2's current 0.9 (small margin, correctly not "materially
-    // higher"). The latest `auto_matched_exact`/`auto_matched_scored`/
-    // `manually_confirmed` `match_decisions` row for this canonical
-    // identifies whichever observation most recently won; if none exists
-    // yet (no overwrite has ever happened), fall back to the founding
-    // (oldest-linked) email observation, which is the only correct
-    // reference point at that point in the canonical's history anyway.
     let existing_confidence: Option<f64> = conn
         .query_row(
             "SELECT o.confidence_score
@@ -336,11 +264,11 @@ fn maybe_overwrite_from_higher_confidence_email(
         });
 
     let Some(existing_confidence) = existing_confidence else {
-        return Ok(()); // Nothing to compare against -- keep first-arriving.
+        return Ok(());
     };
 
     if new_confidence - existing_confidence <= EMAIL_VS_EMAIL_CONFIDENCE_MARGIN {
-        return Ok(()); // Not materially higher -- first-arriving data is retained.
+        return Ok(());
     }
 
     let before: Option<(Option<String>, Option<String>)> = conn
@@ -376,13 +304,7 @@ fn maybe_overwrite_from_higher_confidence_email(
     Ok(())
 }
 
-/// Doc 30 TASK-TXN-010: shared entry point for both `AutoMatchedExact` and
-/// `AutoMatchedScored` decisions — "update the existing row per the
-/// statement-overrides-email precedence rule... [and] populate
-/// `transaction_observations.canonical_transaction_id` for full
-/// traceability." Applies regardless of which field-update branch (if any)
-/// fires, since traceability must hold for every matched decision, not just
-/// the ones that also touch a field.
+/// Applies match precedence and links the observation to its canonical.
 pub fn apply_match_precedence_and_link(
     conn: &Connection,
     obs: &IncomingObservation,
@@ -411,16 +333,9 @@ pub fn apply_match_precedence_and_link(
     {
         maybe_overwrite_from_higher_confidence_email(conn, matched_id, obs)?;
     }
-    // obs.source_pipeline == "manual": no document specifies a precedence
-    // rule for a manual entry matching an existing canonical, so no field
-    // update is made beyond linking below.
 
     update_canonical_transaction_id(conn, &obs.id, Some(matched_id))?;
 
-    // Doc 30 TASK-TXN-011/012: "after each canonical create/update" --
-    // matched decisions are an update, not just a create, so post-processing
-    // (which now also runs recurring-payment detection) must run here too,
-    // not just from `create_canonical_transaction`.
     let fmt = "%Y-%m-%d %H:%M:%S";
     if let Ok(event_time_dt) = NaiveDateTime::parse_from_str(&obs.event_time, fmt)
         .or_else(|_| NaiveDateTime::parse_from_str(&format!("{} 00:00:00", obs.event_time), fmt))

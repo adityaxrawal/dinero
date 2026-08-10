@@ -1,3 +1,13 @@
+//! HTTP client wrapper that records every outbound request.
+//!
+//! All network access from the backend goes through here, which is what makes
+//! the privacy disclosure enforceable rather than aspirational: each call is
+//! tagged with a channel and written to the network activity log, so the
+//! settings screen can show exactly what left the machine and when.
+//!
+//! Only request metadata is logged -- destination, timing, status -- never
+//! request or response bodies.
+
 use crate::db::network_activity_log::{self, NetworkActivityLogRow};
 use chrono::Utc;
 use deadpool_sqlite::Pool;
@@ -5,13 +15,8 @@ use reqwest::{Client, RequestBuilder, Response};
 use std::time::Duration;
 use uuid::Uuid;
 
-/// Every network call this app makes (Gmail API fetches, licensing,
-/// GitHub/HuggingFace releases) previously ran on a bare `Client::new()`
-/// with no timeout at all -- a stalled connection (dead peer, network
-/// partition, DNS hang) blocked the call forever with no error surfaced.
-/// For a historical Gmail scan specifically, this meant a single hung
-/// request could freeze the whole scan indefinitely with the UI stuck
-/// showing "Scanning..." and no way to tell the user anything went wrong.
+// Every outbound request is bounded. An unbounded request would hang a
+// background task indefinitely against an unresponsive host.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct NetworkClient {
@@ -20,89 +25,35 @@ pub struct NetworkClient {
 }
 
 impl NetworkClient {
+    /// Builds a client with the default request timeout.
     pub fn new(db_pool: Pool) -> Self {
         Self::with_timeout(db_pool, REQUEST_TIMEOUT)
     }
 
-    /// Real constructor behind `new()` -- takes an explicit timeout so
-    /// tests can prove the timeout mechanism actually fires without waiting
-    /// out the real 15s production value.
+    /// Builds a client with an explicit timeout, for tests.
     pub(crate) fn with_timeout(db_pool: Pool, timeout: Duration) -> Self {
         Self {
             client: Client::builder()
                 .timeout(timeout)
-                // Google's frontend closes idle keep-alive connections well
-                // under reqwest's 90s default pool_idle_timeout. A scan's
-                // bursty concurrency (many requests firing at once after a
-                // quiet moment) kept grabbing those stale pooled connections
-                // and failing instantly with "error sending request" --
-                // 306 of ~630 fetches in one logged scan -- each eating a
-                // 2-6s retry backoff. Recycling connections before Google's
-                // side does avoids the failure instead of retrying around it.
                 .pool_idle_timeout(Duration::from_secs(30))
-                // `pool_idle_timeout` alone only stops reqwest from reusing a
-                // connection idle *longer* than 30s -- one that Google closed
-                // at, say, 20s is still inside that window and still handed
-                // out, so the request writes fine but the server never
-                // answers, and we only notice once our own 15s REQUEST_TIMEOUT
-                // fires (logged as "gmail request timed out" despite the
-                // connection being the actual problem). HTTP/2 keepalive pings
-                // idle connections proactively and evicts ones that don't
-                // answer, so a dead connection is caught before being handed
-                // to a real request at all, regardless of Google's actual
-                // close threshold.
                 .http2_keep_alive_interval(Duration::from_secs(10))
                 .http2_keep_alive_timeout(Duration::from_secs(5))
                 .http2_keep_alive_while_idle(true)
-                // A previous revision forced `.http1_only()` here, believing
-                // HTTP/2 multiplexing was collapsing every concurrent scan
-                // fetch onto one fragile connection -- the evidence was
-                // "~19 lockstep ~100s stalls (dozens of 'Spawning fetch' lines
-                // go silent, then everything finishes in one burst)".
-                //
-                // That read the symptom of a different bug. Those stalls were
-                // the *whole process* freezing, not the connection: during the
-                // same windows, purely local SQLite IPC commands
-                // (`settings_get_connected_accounts`) also took 17-99s and
-                // completed in the same instant, and stalled Gmail requests
-                // came back with `status=200` -- the server had answered and
-                // nothing was polling the socket. The cause was
-                // `dev_review::record` holding a global `std::sync::Mutex`
-                // across an O(n^2) multi-hundred-MB JSON rewrite from inside
-                // async tasks, pinning every tokio worker (since removed).
-                //
-                // With that gone, h1-only is a straight loss: it opens a fresh
-                // TCP+TLS connection per concurrent request instead of
-                // multiplexing a scan's thousand-plus small fetches over one.
                 .build()
                 .expect("reqwest::Client::builder() with only a timeout set must always succeed"),
             db_pool,
         }
     }
 
+    /// The underlying reqwest client.
     pub fn client(&self) -> &Client {
         &self.client
     }
 
-    /// Doc 30 TASK-API-006: `channel` is written directly into
-    /// `network_activity_log.channel` rather than inferred later from the
-    /// destination hostname (`commands/network.rs`'s read-time fallback,
-    /// which silently produces "unknown" for any host it doesn't recognize).
+    /// Execute a request, logging its outcome to the network activity log.
     ///
-    /// Doc 30 TASK-QA-007 finding: only 3 channels actually route through
-    /// this client today (`gmail_api`/`licensing_backend`/`google_oauth`) --
-    /// `llm_manager.rs`'s GGUF model download and `llama_sidecar.rs`'s
-    /// llama.cpp release download both build their own bare `reqwest::Client`
-    /// (huggingface.co / github.com), invisible to the Network Activity
-    /// audit trail, and the auto-updater goes through `tauri-plugin-updater`
-    /// entirely outside this module. A previous version of this comment
-    /// claimed "5 disclosed channels" including `github_releases`/
-    /// `huggingface` as if already wired -- they were not. Routing those
-    /// through `NetworkClient` would need threading a `deadpool_sqlite::Pool`
-    /// down through `download_file_with_hash`'s two call sites (one of which,
-    /// `llama_sidecar::ensure_binary`, sits in the LLM sidecar startup path)
-    /// -- flagged as real follow-up work, not fixed here to avoid risking
-    /// that startup path in the same pass as an unrelated audit task.
+    /// The `channel` names the disclosed purpose (Gmail, licensing, updates) and
+    /// is what ties a logged entry back to a row in the privacy disclosure.
     pub async fn execute(
         &self,
         channel: &str,
@@ -114,7 +65,6 @@ impl NetworkClient {
         let url = request.url().clone();
         let domain = url.domain().unwrap_or("unknown").to_string();
 
-        // Redact url query parameters if they contain sensitive tokens
         let mut redacted_url = url.clone();
         if url.query().is_some() {
             redacted_url.set_query(Some("redacted"));
@@ -206,18 +156,10 @@ mod tests {
         Pool::builder(mgr).build().unwrap()
     }
 
-    /// Proves the timeout mechanism actually fires end-to-end: a real TCP
-    /// listener that accepts the connection but never sends a response
-    /// must cause `execute()` to return an `Err` once the configured
-    /// timeout elapses, rather than hanging forever -- this is the exact
-    /// failure mode (a stalled Gmail API connection) that previously froze
-    /// a historical scan indefinitely with no error surfaced at all.
     #[tokio::test]
     async fn test_request_times_out_on_stalled_connection() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        // Accept the connection in the background and then just hold it
-        // open without ever writing a response.
         std::thread::spawn(move || {
             let _accepted = listener.accept();
             std::thread::sleep(Duration::from_secs(30));

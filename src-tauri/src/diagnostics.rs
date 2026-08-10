@@ -1,3 +1,15 @@
+//! Builds the diagnostic bundle a user can attach to a support request.
+//!
+//! The defining constraint is that this data leaves the machine, so the bundle
+//! is assembled from redacted sources and then re-checked before it is written.
+//! `scan_for_pii` is that second gate: it greps the assembled text for
+//! email-shaped, card-shaped and currency-shaped matches and aborts the export
+//! outright if any are found.
+//!
+//! Failing the export is deliberate. A bundle that cannot be produced is a
+//! nuisance; one that quietly carries a card number is a breach, so the check
+//! errors rather than stripping and continuing.
+
 use anyhow::{Context, Result};
 use chrono::Local;
 use regex::Regex;
@@ -5,27 +17,15 @@ use rusqlite::Connection;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// Doc 19 §21.1, Doc 36 §4: defense-in-depth redaction pass applied to any
-/// free-text content (crash reports, error-log lines) before it enters a
-/// diagnostic bundle. This is not a formal PII-scrubbing guarantee — the
-/// primary safeguard is the aggressive-whitelist principle itself: only
-/// ERROR-level log lines and panic reports are considered at all (never the
-/// full application log, which can contain arbitrary interpolated values
-/// from anywhere in the codebase); this pass additionally masks the two
-/// highest-risk patterns that could slip into even those narrower sources.
-///
-/// TASK-OPS-007: moved to `crate::logging` so the same regexes back both
-/// this lazy bundle-export pass and `RedactingWriter`'s write-time pass over
-/// `app-logs.log` itself, rather than drifting into two copies.
 use crate::logging::redact;
 
-/// TASK-AUTH-015's acceptance criteria: "An automated test scans the
-/// generated bundle for zero PII matches (email/16-digit-card/₹-amount
-/// regex) before allowing export to proceed." Implemented as a real runtime
-/// gate here, not only a test — even if a future change introduces a bug in
-/// `redact()`, this final verification pass over the assembled bundle
-/// content refuses to write the ZIP rather than silently shipping PII.
-/// Returns `Err` naming the first pattern that still matches.
+/// Final safety net before a bundle is written to disk.
+///
+/// Deliberately pattern-based and conservative: it looks for the *shape* of
+/// sensitive data rather than known values, so it catches leaks from sources
+/// this module does not know about. A match aborts the export instead of
+/// redacting, because a silent redaction would hide the fact that some upstream
+/// redaction failed.
 fn scan_for_pii(sections: &[(&str, &str)]) -> Result<()> {
     let email_re = Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}").unwrap();
     let card_re = Regex::new(r"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b").unwrap();
@@ -54,11 +54,7 @@ fn scan_for_pii(sections: &[(&str, &str)]) -> Result<()> {
     Ok(())
 }
 
-/// Doc 19 §21.1's "Bundle includes: ... error traces and panic logs
-/// (redacted of PII and financial data)" — only ERROR-level lines from the
-/// rolling app log are considered (an aggressive whitelist: most financial
-/// data flows through info/debug-level pipeline logs, not error logs), each
-/// additionally passed through `redact`.
+/// Collects recent error lines from the logs, bounded in length.
 fn collect_error_lines(log_dir: &Path, max_lines: usize) -> String {
     let target_dir = if log_dir.join("logs").is_dir() {
         log_dir.join("logs")
@@ -102,9 +98,7 @@ fn collect_error_lines(log_dir: &Path, max_lines: usize) -> String {
         .join("\n")
 }
 
-/// Panic reports written by `crash_reporter::init` — already narrow
-/// (timestamp, panic message, file/line), redacted defensively before
-/// inclusion since a panic payload can in principle `Display` arbitrary data.
+/// Collects crash reports, decrypting them for inclusion.
 fn collect_crash_reports(crash_dir: &Path) -> String {
     let Ok(entries) = std::fs::read_dir(crash_dir) else {
         return String::new();
@@ -113,8 +107,6 @@ fn collect_crash_reports(crash_dir: &Path) -> String {
     for entry in entries.flatten() {
         let path = entry.path();
         let ext = path.extension().and_then(|e| e.to_str());
-        // J5 fix: crash reports are now written encrypted (`.enc`) — `.log`
-        // is still read for any file left over from before that fix.
         let content = match ext {
             Some("enc") => std::fs::read(&path)
                 .ok()
@@ -136,10 +128,10 @@ fn collect_crash_reports(crash_dir: &Path) -> String {
         .join("\n---\n")
 }
 
-/// Doc 19 §21.1 "Bundle includes: ... row counts per table (no raw financial
-/// payloads)" — table names are read from `sqlite_master` (never hardcoded),
-/// so this stays correct as the schema evolves, and only `COUNT(*)` is ever
-/// executed, never a `SELECT *`.
+/// Collects per-table row counts.
+///
+/// Counts only -- never contents -- so the bundle describes the database's shape
+/// without carrying any of the user's financial data.
 fn collect_table_row_counts(conn: &Connection) -> Result<String> {
     let mut stmt = conn.prepare(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
@@ -161,11 +153,7 @@ fn collect_table_row_counts(conn: &Connection) -> Result<String> {
     Ok(out)
 }
 
-/// TASK-AUTH-015: "pipeline health metrics" in the bundle — reuses the same
-/// aggregate-only metrics the Debug page already computes (`do_get_debug_metrics`:
-/// extraction-layer distribution, reconciliation-decision distribution, LLM
-/// fallback rate, queue depth). No raw transaction/merchant content, only
-/// counts and rates.
+/// Summarises pipeline health for the bundle.
 fn collect_pipeline_health(conn: &Connection) -> String {
     match crate::commands::data::do_get_debug_metrics(conn) {
         Ok(metrics) => format!(
@@ -182,13 +170,7 @@ fn collect_pipeline_health(conn: &Connection) -> String {
     }
 }
 
-/// TASK-AUTH-015: "redacted audit-log entries" — only `actor_type`,
-/// `action`, `resource_type`, and `created_at` are included verbatim (all
-/// non-sensitive category/timestamp fields); `before_json`/`after_json` (the
-/// fields most likely to carry real values — email addresses, file paths,
-/// consent text) are passed through `redact` rather than included raw or
-/// omitted outright, since the redacted shape is still useful for support to
-/// see *what kind* of change occurred.
+/// Collects audit entries with sensitive fields redacted.
 fn collect_redacted_audit_log(conn: &Connection) -> String {
     let Ok(entries) = crate::db::audit_log::fetch_all(conn, None, 200, 0) else {
         return String::new();
@@ -209,13 +191,7 @@ fn collect_redacted_audit_log(conn: &Connection) -> String {
         .join("\n")
 }
 
-/// Doc 19 §21.1, Doc 36 §4, Doc 41 §5: generates a single privacy-safe,
-/// redacted diagnostic bundle (`.zip`) — the one mechanism for crash reports,
-/// error logs, and schema/environment metadata, replacing the two previously
-/// overlapping raw-text writers (`crash_reporter`, `feedback`'s unused
-/// `include_logs` flag). Excludes, by construction: raw transaction/statement
-/// data (never queried — only `COUNT(*)`), Gmail content, OAuth tokens,
-/// PDFs, and full application logs (only redacted ERROR-level lines).
+/// Assembles the diagnostic bundle, refusing to write it if PII is detected.
 pub fn generate_diagnostic_bundle(
     app_data_dir: &Path,
     conn: &Connection,
@@ -249,10 +225,6 @@ pub fn generate_diagnostic_bundle(
 
     let table_counts = collect_table_row_counts(conn).unwrap_or_default();
 
-    // Matches lib.rs's exact log-directory resolution — the appender is
-    // rooted at the current working directory (or its parent, if launched
-    // from `src-tauri/`), not `app_data_dir`; this is a pre-existing, unrelated
-    // quirk (see M48) reproduced here only so the bundle finds the real file.
     let mut log_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     if log_dir.ends_with("src-tauri") {
         log_dir = log_dir.parent().unwrap_or(Path::new(".")).to_path_buf();
@@ -264,11 +236,6 @@ pub fn generate_diagnostic_bundle(
     let pipeline_health = collect_pipeline_health(conn);
     let audit_log_redacted = collect_redacted_audit_log(conn);
 
-    // TASK-AUTH-015 acceptance criterion: block export on any PII match, as
-    // a real runtime gate over the assembled content — not only a test.
-    // `feedback_text` is deliberately excluded (see the comment below: it's
-    // the user's own words, not extracted financial data, and isn't subject
-    // to this scan).
     scan_for_pii(&[
         ("manifest", &manifest),
         ("table_row_counts", &table_counts),
@@ -288,11 +255,6 @@ pub fn generate_diagnostic_bundle(
     zip.start_file("manifest.txt", options)?;
     zip.write_all(manifest.as_bytes())?;
 
-    // Doc 41 §5: "Submit Feedback" attaches the user's own note to the same
-    // bundle rather than a separate raw-text file — one mechanism, one
-    // export flow. User-authored feedback text is not redacted (it isn't
-    // extracted financial data, and redacting a user's own words they chose
-    // to type would be actively unhelpful to support).
     if let Some(text) = feedback_text {
         zip.start_file("feedback.txt", options)?;
         zip.write_all(text.as_bytes())?;
@@ -315,11 +277,6 @@ pub fn generate_diagnostic_bundle(
 
     zip.finish().context("Failed to finalize bundle zip")?;
 
-    // Doc 25 §4.2/§4.4, Doc 36 §4 (C20 fix): bundle export is the one path by
-    // which any operational data leaves the device — record it as a consent
-    // event, same as Gmail authorization. Both callers (export_logs,
-    // submit_user_feedback with include_logs) route through this single
-    // function, so this is the one place that needs it.
     if let Err(e) = crate::auth::consent::insert_consent_event(
         conn,
         "bundle_export",
@@ -335,11 +292,6 @@ pub fn generate_diagnostic_bundle(
 mod tests {
     use super::*;
 
-    // `redact()`'s own regex-behavior tests now live in `crate::logging`
-    // (moved there under TASK-OPS-007, since that's where the function
-    // itself now lives) -- this module's tests below cover what's specific
-    // to *this* module: the PII-scan gate and the full bundle-generation flow.
-
     #[test]
     fn scan_for_pii_rejects_email_card_and_amount() {
         assert!(scan_for_pii(&[("x", "reach me at test@example.com")]).is_err());
@@ -348,12 +300,6 @@ mod tests {
         assert!(scan_for_pii(&[("x", "no PII in here, just a count: 12")]).is_ok());
     }
 
-    /// TASK-AUTH-015's exact acceptance criterion: "An automated test scans
-    /// the generated bundle for zero PII matches ... before allowing export
-    /// to proceed." This generates a real bundle against a real (seeded,
-    /// PII-bearing) database, then unzips every file it produced and scans
-    /// the actual bytes on disk — not just the in-memory strings the
-    /// function assembled — for the same three patterns.
     #[test]
     fn generated_bundle_contains_zero_pii_matches() {
         let conn = crate::db::test_helpers::setup_test_db();
@@ -414,7 +360,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
-    /// Doc 30 TASK-OPS-004 acceptance: `test_diagnostic_bundle_contains_version_metadata`.
     #[test]
     fn test_diagnostic_bundle_contains_version_metadata() {
         let conn = crate::db::test_helpers::setup_test_db();
@@ -438,10 +383,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
-    /// Doc 30 TASK-OPS-004 acceptance: `test_support_export_writes_local_archive`.
-    /// The one export path (`export_logs` IPC command / "Submit Feedback"
-    /// with `include_logs`) writes a real local `.zip` -- entirely on-device,
-    /// never uploaded anywhere by this function itself.
     #[test]
     fn test_support_export_writes_local_archive() {
         let conn = crate::db::test_helpers::setup_test_db();
@@ -473,10 +414,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
-    /// Doc 30 TASK-OPS-004 acceptance: `test_crash_bundle_excludes_sensitive_fields`.
-    /// A crash report containing a raw email/card/amount (the kind of thing a
-    /// panic's `Display` output could in principle carry) must never reach
-    /// the bundle un-redacted.
     #[test]
     fn test_crash_bundle_excludes_sensitive_fields() {
         let conn = crate::db::test_helpers::setup_test_db();

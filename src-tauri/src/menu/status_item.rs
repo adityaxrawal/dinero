@@ -1,9 +1,7 @@
-//! TASK-DESK-008 (Doc 30 §12, Doc 29 §14): the Dock icon badge
-//! (`analytics_pending_review_count`, TASK-API-006) and the optional macOS
-//! menu bar extra (status item) -- distinct from the app's own application
-//! menu bar (TASK-DESK-001). Also implements the "Hide Dock icon, show
-//! only menu bar extra" mode via `NSApplication.setActivationPolicy`.
-
+//! macOS menu-bar extra and dock badge.
+//!
+//! Surfaces pending review counts and headline figures while the main window is
+//! closed, so the app remains informative without needing to be open.
 use std::path::{Path, PathBuf};
 use tauri::menu::{Menu, MenuBuilder, MenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
@@ -16,14 +14,10 @@ pub const MENU_BAR_EXTRA_ID_QUIT: &str = "tray_quit";
 const MENU_BAR_EXTRA_SETTING_FILE: &str = "menu_bar_extra_enabled";
 const TRAY_ICON_ID: &str = "dinero-menu-bar-extra";
 
-// ---------------------------------------------------------------------
-// Dock icon badge
-// ---------------------------------------------------------------------
-
-/// Pure: what Dock badge label a given pending-review count implies.
-/// `None` clears the badge -- macOS shows no badge at all for `None`/`Some(0)`.
-/// Doc 30 TASK-DESK-008 acceptance: `test_dock_badge_reflects_pending_review_count`,
-/// `test_dock_badge_clears_at_zero`.
+/// Badge count to display, or None when there is nothing pending.
+///
+/// None rather than zero, so the badge disappears entirely instead of showing a
+/// zero that reads as an unread item.
 pub fn badge_count_for(pending_review_count: i64) -> Option<i64> {
     if pending_review_count > 0 {
         Some(pending_review_count)
@@ -32,16 +26,7 @@ pub fn badge_count_for(pending_review_count: i64) -> Option<i64> {
     }
 }
 
-/// Updates the Dock icon badge on the main window. Best-effort: no main
-/// window (e.g. a test `AppHandle`) or a platform without Dock badges must
-/// never surface as an application error.
-///
-/// Dispatched via `run_on_main_thread` -- this is called from the periodic
-/// refresh loop (`lib.rs`) inside a `deadpool_sqlite` `conn.interact`
-/// closure, which runs on a blocking-pool thread, never the main thread.
-/// AppKit window/status-bar APIs are main-thread-only; see this file's
-/// other `run_on_main_thread` uses for the crash this exact pattern causes
-/// when skipped.
+/// Updates the dock badge with the pending review count.
 pub fn update_dock_badge<R: Runtime>(app: &AppHandle<R>, pending_review_count: i64) {
     let app_handle = app.clone();
     let _ = app.run_on_main_thread(move || {
@@ -54,17 +39,7 @@ pub fn update_dock_badge<R: Runtime>(app: &AppHandle<R>, pending_review_count: i
     });
 }
 
-// ---------------------------------------------------------------------
-// Menu bar extra (status item)
-// ---------------------------------------------------------------------
-
-/// Pure: the quick-summary text shown as the status item's title (macOS
-/// tray icons can show text directly in the menu bar, not just an icon).
-/// `month_to_date_spend` is already-converted display rupees (the same
-/// value `dashboard_summary`'s `DashboardSummary.month_to_date_spend`
-/// field holds) -- reused directly rather than round-tripping back
-/// through `amount_minor` a second time just to convert it back to
-/// display rupees here.
+/// Formats the tray's at-a-glance summary line.
 pub fn format_tray_summary(
     month_to_date_spend: f64,
     pending_review_count: i64,
@@ -80,9 +55,7 @@ pub fn format_tray_summary(
     parts.join(" · ")
 }
 
-/// Builds the menu bar extra's dropdown menu -- a small, fixed set of
-/// quick actions, not the full application menu (TASK-DESK-001's
-/// `menu::build_menu` is a completely separate menu).
+/// Builds the tray menu.
 fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     MenuBuilder::new(app)
         .item(&MenuItem::with_id(
@@ -104,10 +77,7 @@ fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .build()
 }
 
-/// Builds and registers the tray icon. Called only when the menu bar extra
-/// is enabled (`read_menu_bar_extra_enabled`) -- the app runs perfectly
-/// well with no tray icon at all when it's off, matching Doc 30's "optional"
-/// framing.
+/// Creates the menu-bar tray icon.
 pub fn build_tray_icon<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayIcon<R>> {
     let menu = build_tray_menu(app)?;
     TrayIconBuilder::with_id(TRAY_ICON_ID)
@@ -122,7 +92,7 @@ pub fn build_tray_icon<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayIcon
         .build(app)
 }
 
-/// Updates an already-built tray icon's summary text.
+/// Updates the tray's summary figures.
 pub fn update_tray_summary<R: Runtime>(
     tray: &TrayIcon<R>,
     month_to_date_spend: f64,
@@ -139,10 +109,10 @@ pub fn update_tray_summary<R: Runtime>(
     }
 }
 
-/// Looks up the tray icon by this module's own id and updates it if (and
-/// only if) the menu bar extra is currently enabled -- a safe no-op
-/// otherwise, so callers (the periodic refresh loop) don't need to know
-/// the tray icon's id or track whether it currently exists themselves.
+/// Updates the tray only if it is currently shown.
+///
+/// The extra is optional, so this avoids constructing figures for a tray the user
+/// has turned off.
 pub fn update_tray_summary_if_present<R: Runtime>(
     app: &AppHandle<R>,
     month_to_date_spend: f64,
@@ -162,24 +132,7 @@ pub fn update_tray_summary_if_present<R: Runtime>(
     });
 }
 
-/// Builds (if not already present) or removes the tray icon to match
-/// `enabled`, using Tauri's own tray registry (`tray_by_id`/`remove_tray_by_id`)
-/// rather than tracking a separate handle -- idempotent, so it's safe to
-/// call both at startup (to match the persisted setting) and from the
-/// settings-toggle command.
-///
-/// Real crash, not just a theoretical race: `settings_set_menu_bar_extra_enabled`
-/// (the Settings toggle's command handler) runs on Tauri's async command
-/// runtime, not the main thread. `TrayIcon::new` (the enable path, via
-/// `build_tray_icon`) checks for the main thread itself and fails soft
-/// (`Error::NotMainThread`, caught below) -- but `remove_tray_by_id`'s
-/// underlying `NSStatusBar.removeStatusItem` call (the disable path) has no
-/// such guard at all (`tray-icon` crate v0.24.1,
-/// `platform_impl::macos::TrayIcon::remove`) and calls straight into AppKit
-/// unconditionally. AppKit status-bar mutations off the main thread crash
-/// the process -- exactly the "enabling works, disabling crashes" asymmetry
-/// this was reported as. `run_on_main_thread` schedules both branches onto
-/// the actual main thread instead of assuming the caller is already there.
+/// Shows or hides the menu-bar extra at runtime.
 pub fn apply_menu_bar_extra_runtime_state<R: Runtime>(app: &AppHandle<R>, enabled: bool) {
     let app_handle = app.clone();
     if let Err(e) = app.run_on_main_thread(move || {
@@ -200,10 +153,7 @@ pub fn apply_menu_bar_extra_runtime_state<R: Runtime>(app: &AppHandle<R>, enable
     }
 }
 
-/// Applies "Hide Dock icon, show only menu bar extra" mode.
-/// `NSApplicationActivationPolicyAccessory` (Tauri's `ActivationPolicy::Accessory`)
-/// hides the Dock icon while keeping the app fully running; `Regular`
-/// (the default) shows it normally.
+/// Shows or hides the dock icon.
 pub fn apply_dock_visibility<R: Runtime>(app: &AppHandle<R>, hide_dock_icon: bool) {
     let policy = if hide_dock_icon {
         ActivationPolicy::Accessory
@@ -215,27 +165,19 @@ pub fn apply_dock_visibility<R: Runtime>(app: &AppHandle<R>, hide_dock_icon: boo
     }
 }
 
-// ---------------------------------------------------------------------
-// Persisted setting: menu bar extra enabled (Doc 30: "toggleable in Settings")
-// ---------------------------------------------------------------------
-
+/// Path of the menu-bar extra setting.
 fn menu_bar_extra_settings_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join(MENU_BAR_EXTRA_SETTING_FILE)
 }
 
-/// Doc 30 TASK-DESK-008 acceptance: `test_menu_bar_extra_toggle_persists_setting`.
-/// A single-line marker file rather than a new schema column/table -- this
-/// is one boolean UI preference, not data that belongs in `local_profile`
-/// (whose existing JSON column, `limit_thresholds`, is already a
-/// different, already-resolved concept -- TASK-API-008 -- not a spare
-/// place to stash unrelated settings). Defaults to `false` (disabled,
-/// Dock icon shown normally) when the file doesn't exist yet.
+/// Whether the menu-bar extra is enabled.
 pub fn read_menu_bar_extra_enabled(app_data_dir: &Path) -> bool {
     std::fs::read_to_string(menu_bar_extra_settings_path(app_data_dir))
         .map(|s| s.trim() == "true")
         .unwrap_or(false)
 }
 
+/// Persists the menu-bar extra preference.
 pub fn write_menu_bar_extra_enabled(app_data_dir: &Path, enabled: bool) -> std::io::Result<()> {
     std::fs::write(
         menu_bar_extra_settings_path(app_data_dir),
@@ -253,7 +195,6 @@ mod tests {
         dir
     }
 
-    /// Doc 30 TASK-DESK-008 acceptance: `test_dock_badge_reflects_pending_review_count`.
     #[test]
     fn test_dock_badge_reflects_pending_review_count() {
         assert_eq!(badge_count_for(1), Some(1));
@@ -261,7 +202,6 @@ mod tests {
         assert_eq!(badge_count_for(42), Some(42));
     }
 
-    /// Doc 30 TASK-DESK-008 acceptance: `test_dock_badge_clears_at_zero`.
     #[test]
     fn test_dock_badge_clears_at_zero() {
         assert_eq!(badge_count_for(0), None);
@@ -272,7 +212,6 @@ mod tests {
         );
     }
 
-    /// Doc 30 TASK-DESK-008 acceptance: `test_menu_bar_extra_toggle_persists_setting`.
     #[test]
     fn test_menu_bar_extra_toggle_persists_setting() {
         let dir = temp_dir();
@@ -309,7 +248,6 @@ mod tests {
             .unwrap()
             .handle()
             .clone();
-        // MockRuntime never has a real "main" window -- must not panic.
         update_dock_badge(&app, 5);
     }
 }

@@ -1,47 +1,17 @@
-//! Issue #8: the LLM fallback for statement pages the bank parsers cannot
-//! read — the `ParseMethod::LlmAssist` that has existed as an enum variant
-//! since the pipeline was written, with nothing behind it.
+//! LLM fallback for statement pages the deterministic parser could not read.
 //!
-//! ## When it runs
-//!
-//! Per page, and only for a page the deterministic parser returned nothing
-//! for. `row_extractor` covers five banks; a statement from any of the other
-//! two hundred issuers in the sender registry falls to
-//! `parse_generic_fallback` and often yields nothing at all. Rather than
-//! writing a parser per bank against formats nobody has seen, an unreadable
-//! page is handed to the local model.
-//!
-//! A page is only sent if it plausibly *contains* a table — a statement's
-//! cover page and its terms-and-conditions page also parse to zero rows, and
-//! spending ten seconds of inference to confirm there is nothing there is
-//! ten seconds wasted on every statement.
-//!
-//! ## Why the output is checked so hard
-//!
-//! A language model asked to transcribe a table will, when the table is
-//! ambiguous, produce a plausible one instead. In a statement pipeline that
-//! means inventing transactions — strictly worse than extracting none, since
-//! a missing row is visible to the user and a fabricated one is not. So every
-//! row must quote an amount that appears verbatim on the page, and a
-//! description that appears there too. Anything else is dropped.
-
+//! Gated behind a cheap heuristic that first asks whether a page even looks like
+//! a transaction table, so cover pages, terms and marketing inserts never reach
+//! the model. Output is schema-constrained and validated afterwards.
 use crate::statements::parser::ParsedPage;
 use crate::statements::row_extractor::{
     extract_reference_id, is_excluded_row, parse_amount_minor, parse_date, StatementRow,
 };
-/// Ceiling on pages sent for inference per statement. At roughly ten seconds
-/// each, a 60-page statement would otherwise tie up the model for ten
-/// minutes during what the user experiences as a single import.
 const MAX_LLM_PAGES: usize = 12;
 
-/// A page needs at least this many date-like and amount-like tokens before
-/// it is worth inference. Two of each is the smallest thing that could
-/// reasonably be called a table.
 const MIN_TABLE_SIGNALS: usize = 2;
 
-/// Constrains the model's output shape. `direction` is an enum, so the
-/// grammar makes an out-of-vocabulary value undecodable rather than merely
-/// unlikely.
+/// Schema constraining the model's row-extraction output.
 pub fn rows_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -64,6 +34,7 @@ pub fn rows_schema() -> serde_json::Value {
     })
 }
 
+/// Builds the row-extraction prompt for one page.
 pub fn generate_prompt(issuer: &str, page_text: &str) -> String {
     format!(
         "You are reading one page of a {issuer} bank statement. Extract every \
@@ -84,7 +55,10 @@ STATEMENT PAGE:\n{page_text}"
     )
 }
 
-/// Whether this page is worth spending inference on.
+/// Cheap heuristic for whether a page could hold a transaction table.
+///
+/// Gates the expensive model call, so cover pages, terms and marketing inserts
+/// never reach it.
 pub fn looks_like_a_transaction_table(text: &str) -> bool {
     let dates = regex::Regex::new(r"\d{1,2}[/\-][A-Za-z0-9]{2,3}[/\-]\d{2,4}")
         .map(|re| re.find_iter(text).count())
@@ -95,9 +69,11 @@ pub fn looks_like_a_transaction_table(text: &str) -> bool {
     dates >= MIN_TABLE_SIGNALS && amounts >= MIN_TABLE_SIGNALS
 }
 
-/// Parses and *verifies* the model's output against the page it was given,
-/// returning only rows that survive. `start_index` continues the row
-/// numbering from whatever the deterministic parsers already produced.
+/// Validates model-extracted rows against the page they came from.
+///
+/// Each row is checked for grounding in the actual page text, because a schema
+/// guarantees shape rather than truth -- and a fabricated transaction reaching
+/// the ledger is the failure that matters most here.
 pub fn validate(raw_output: &str, page_text: &str, start_index: usize) -> Vec<StatementRow> {
     let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw_output) else {
         tracing::debug!("row_llm: output was not valid JSON");
@@ -124,10 +100,6 @@ pub fn validate(raw_output: &str, page_text: &str, start_index: usize) -> Vec<St
         if description.is_empty() || is_excluded_row(description) {
             continue;
         }
-        // The hallucination guard. Both the amount and the description must
-        // actually be printed on this page — a transcription that quotes
-        // something the page does not contain is an invention, whatever else
-        // it got right.
         if !haystack.contains(&collapse(amount_raw)) || !haystack.contains(&collapse(description)) {
             tracing::debug!("row_llm: dropped a row not present in the page text");
             continue;
@@ -155,10 +127,7 @@ pub fn validate(raw_output: &str, page_text: &str, start_index: usize) -> Vec<St
     out
 }
 
-/// Normalizes for the presence check: case-folded, whitespace collapsed. The
-/// reconstructed page pads columns with runs of spaces, so an exact
-/// substring match against raw text would fail on any description that
-/// spans a column boundary.
+/// Collapses whitespace for comparison against source text.
 fn collapse(text: &str) -> String {
     text.split_whitespace()
         .collect::<Vec<_>>()
@@ -166,10 +135,7 @@ fn collapse(text: &str) -> String {
         .to_uppercase()
 }
 
-/// Runs the fallback over whichever pages the deterministic parsers left
-/// empty. Returns the extra rows; an empty vector means the fallback found
-/// nothing it could stand behind, which is the correct outcome for a cover
-/// page and for a model that is not available.
+/// Runs the model over pages the deterministic parser could not read.
 pub async fn extract_unparsed_pages(
     pages: &[ParsedPage],
     parser: crate::statements::row_extractor::BankParser,
@@ -189,7 +155,6 @@ pub async fn extract_unparsed_pages(
             );
             break;
         }
-        // Only pages the bank parser could make nothing of.
         let already =
             crate::statements::row_extractor::extract_rows(std::slice::from_ref(page), parser)
                 .unwrap_or_default();
@@ -258,9 +223,6 @@ Closing Balance                              18,750.00";
         assert!(rows[0].llm_extracted, "must be tagged as LLM-extracted");
     }
 
-    /// The failure mode this validation exists for: a plausible row that is
-    /// nowhere on the page. Fabricating a transaction is worse than
-    /// extracting none, because the user cannot see that it is wrong.
     #[test]
     fn an_invented_transaction_is_rejected() {
         let raw = output(
@@ -269,8 +231,6 @@ Closing Balance                              18,750.00";
         assert!(validate(&raw, PAGE, 0).is_empty());
     }
 
-    /// A real description paired with an amount that is not on the page —
-    /// the subtler half of the same failure.
     #[test]
     fn a_real_merchant_with_an_invented_amount_is_rejected() {
         let raw = output(
@@ -279,8 +239,6 @@ Closing Balance                              18,750.00";
         assert!(validate(&raw, PAGE, 0).is_empty());
     }
 
-    /// Balance and total lines are not transactions, and the same exclusion
-    /// list the bank parsers use applies here.
     #[test]
     fn balance_rows_are_excluded() {
         let raw = output(
@@ -289,9 +247,6 @@ Closing Balance                              18,750.00";
         assert!(validate(&raw, PAGE, 0).is_empty());
     }
 
-    /// The reconstructed page pads columns with runs of spaces, so the
-    /// presence check has to compare on collapsed whitespace or every
-    /// multi-word description would look invented.
     #[test]
     fn column_padding_does_not_defeat_the_presence_check() {
         let padded = "05/12/2025      NETFLIX      INDIA          649.00  DR";
@@ -307,8 +262,6 @@ Closing Balance                              18,750.00";
             r#"{"date":"01/12/2025","description":"SWIGGY ORDER BANGALORE","amount":"1,250.00","direction":"debit"},
                {"date":"15/12/2025","description":"PAYMENT - THANK YOU","amount":"20,000.00","direction":"credit"}"#,
         );
-        // "PAYMENT - THANK YOU" is on the exclusion list, so only the first
-        // survives — and it must take the index it was offered.
         let rows = validate(&raw, PAGE, 7);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].row_index, 7);
@@ -321,15 +274,12 @@ Closing Balance                              18,750.00";
         assert!(validate(r#"{"rows":[{"date":"bad"}]}"#, PAGE, 0).is_empty());
     }
 
-    /// A cover page or a terms-and-conditions page must not cost a round
-    /// trip to the model.
     #[test]
     fn only_pages_that_look_like_tables_are_sent() {
         assert!(looks_like_a_transaction_table(PAGE));
         assert!(!looks_like_a_transaction_table(
             "Thank you for banking with us. Terms and conditions apply."
         ));
-        // One lone date and amount is a header, not a table.
         assert!(!looks_like_a_transaction_table(
             "Statement date 01/12/2025 Total amount due 3,903.00"
         ));

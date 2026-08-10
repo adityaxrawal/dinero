@@ -1,10 +1,9 @@
-//! Doc 30 TASK-STMT-003: parent-side driver for the `pdf_sidecar` binary —
-//! spawns it per request, writes the length-prefixed protocol
-//! (`src/bin/pdf_sidecar.rs` documents the exact framing), and enforces a
-//! timeout, killing the child rather than waiting indefinitely on a hung or
-//! malicious PDF. PDF bytes only ever cross a stdin pipe — never a temp file
-//! (Doc 15 Core Principle 4/10).
-
+//! Runs PDF operations in a sandboxed sidecar process.
+//!
+//! Unlocking, text extraction and decryption all happen out-of-process. PDF
+//! parsing is a historically rich source of memory-safety vulnerabilities and the
+//! input is an untrusted file, so a malformed or hostile document can crash the
+//! sidecar without compromising the application.
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -16,9 +15,6 @@ use tokio::process::Command;
 #[cfg(test)]
 mod tests;
 
-/// Doc 30 TASK-STMT-003: "enforce a 30-second-per-page execution timeout."
-/// For the password unlock check (this task's own scope — it doesn't do
-/// per-page work), a flat single-page budget applies.
 pub const SIDECAR_TIMEOUT_SECS: u64 = 30;
 
 #[derive(Serialize)]
@@ -55,12 +51,6 @@ struct DecryptResponse {
 }
 
 fn sidecar_binary_path() -> PathBuf {
-    // Sibling of the running executable — matches how the main `dinero-app`
-    // binary is laid out in `target/debug`, and how a Tauri-bundled app
-    // places sidecar binaries alongside the main executable. Bundling/
-    // signing the sidecar into the release `.app` is TASK-DESK-009's
-    // (Configure Tauri Build Pipeline) explicit scope, not reached yet —
-    // this resolution already works unmodified once it is.
     let exe = std::env::current_exe().ok();
     let sibling = exe
         .as_ref()
@@ -71,13 +61,6 @@ fn sidecar_binary_path() -> PathBuf {
             return path.clone();
         }
     }
-    // Doc 30 TASK-QA-003: `cargo test` binaries run from `target/debug/deps/`,
-    // one level below where `cargo build`'s `[[bin]]` targets (including
-    // `pdf_sidecar`) actually land -- the sibling lookup above never finds it
-    // from a test binary, only from the real app binary. Checked only as a
-    // fallback (never preferred over the sibling) so production resolution
-    // is unchanged; this is what lets a test exercise the *real* sidecar
-    // against a real PDF instead of every statement test having to avoid it.
     exe.as_ref()
         .and_then(|p| p.parent())
         .and_then(|p| p.parent())
@@ -87,7 +70,6 @@ fn sidecar_binary_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("pdf_sidecar"))
 }
 
-/// Doc 30 TASK-STMT-003: runs the pdfium unlock-check in the isolated sidecar.
 pub async fn unlock_check_in_sidecar(pdf_bytes: &[u8], password: &str) -> Result<bool> {
     let meta = serde_json::to_vec(&SidecarRequest {
         operation: "unlock_check",
@@ -114,11 +96,6 @@ pub async fn unlock_check_in_sidecar(pdf_bytes: &[u8], password: &str) -> Result
     }
 }
 
-/// Doc 30 TASK-STMT-003 (infrastructure shared with STMT-004/005's page-text
-/// consumers): runs pdfium's page-text extraction in the isolated sidecar.
-/// Timeout is `30s * page count is unknown up front`, so this uses a
-/// generous fixed ceiling instead — refined once a later task can supply a
-/// real page-count estimate ahead of the call.
 pub async fn extract_text_in_sidecar(
     pdf_bytes: &[u8],
     password: Option<&str>,
@@ -153,11 +130,6 @@ pub async fn extract_text_in_sidecar(
     }
 }
 
-/// Opens `pdf_bytes` with `password` and returns a decrypted copy of the PDF
-/// (pdfium's `FPDF_SaveAsCopy` does not re-apply the original password
-/// protection) — for display purposes only. The decrypted bytes exist only
-/// in memory for the lifetime of this call and whatever the caller does with
-/// them; nothing here touches disk.
 pub async fn decrypt_pdf_in_sidecar(pdf_bytes: &[u8], password: &str) -> Result<Vec<u8>> {
     let meta = serde_json::to_vec(&SidecarRequest {
         operation: "decrypt",
@@ -190,13 +162,6 @@ pub async fn decrypt_pdf_in_sidecar(pdf_bytes: &[u8], password: &str) -> Result<
     }
 }
 
-/// Generic process-isolation primitive: spawn `binary args...`, write a JSON
-/// metadata line + a 4-byte-length-prefixed payload to its stdin, read
-/// whatever it writes to stdout until EOF, killing the child if it doesn't
-/// finish within `timeout`. Kept separate from the pdfium-specific functions
-/// above so the isolation/timeout mechanism itself — the actual invariant
-/// TASK-STMT-003 cares about — is directly testable without a real PDF or
-/// the real `pdf_sidecar` binary.
 async fn run_with_timeout(
     binary: PathBuf,
     args: &[&str],
@@ -204,14 +169,6 @@ async fn run_with_timeout(
     payload: &[u8],
     timeout: Duration,
 ) -> Result<Vec<u8>> {
-    // ROOT CAUSE FIX: the sidecar looks for libpdfium.dylib via
-    // `Pdfium::pdfium_platform_library_name_at_path("./")`, which resolves
-    // relative to the *child process's* CWD — not relative to the sidecar
-    // binary. Without `.current_dir()` the child inherits the Tauri app's
-    // CWD (e.g. the user's home or app bundle root), where libpdfium.dylib
-    // does not exist. Setting CWD to the binary's parent directory ensures
-    // `./libpdfium.dylib` resolves to the copy placed alongside the binary
-    // by the build system.
     let binary_dir = binary
         .parent()
         .map(|p| p.to_path_buf())
@@ -262,9 +219,6 @@ async fn run_with_timeout(
             Err(anyhow!("sidecar I/O error: {}", e))
         }
         Err(_) => {
-            // Doc 30 TASK-STMT-003: the whole point — a hung or malicious
-            // sidecar is killed, never left to block (or, if it were
-            // in-process, crash) the caller indefinitely.
             let _ = child.kill().await;
             Err(anyhow!(
                 "sidecar_timeout: exceeded {:?} — child process killed",

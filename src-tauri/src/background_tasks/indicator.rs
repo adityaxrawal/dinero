@@ -1,20 +1,8 @@
-//! TASK-DESK-003 (Doc 30 §12, Doc 29 §14): a single aggregated registry of
-//! long-running background tasks (historical scans, local-LLM-assisted
-//! extraction during those scans), backing a persistent, non-blocking
-//! progress indicator. Any long-running task registers with this on start
-//! and deregisters on completion; every mutation emits the Document 19
-//! §15-catalogued `background_task_progress` event so React can render a
-//! summary count with expandable per-task detail.
+//! Tracks active background tasks and their progress.
 //!
-//! Event shape note: Document 19 §15 names this event's payload fields as
-//! `task_type`, `progress_pct`, `status_message` -- this module emits
-//! exactly those plus additive fields (`task_id`, `label`, `current`,
-//! `total`, `eta_seconds`, `status`) per Document 19 §19's "introduce new
-//! fields as additive changes" versioning rule. `status` is what lets the
-//! frontend distinguish "still running" from "done" without having to
-//! (incorrectly) infer completion from `current == total`, which would be
-//! wrong for a task that fails or is cancelled partway through.
-
+//! A single registry every long-running operation reports into, so the frontend
+//! has one place to read from rather than subscribing to each subsystem
+//! separately. Also lets a restarted frontend re-adopt work already in flight.
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -38,21 +26,16 @@ pub struct TaskProgress {
     pub total: u64,
     pub eta_seconds: Option<u64>,
     pub status: TaskStatus,
-    /// Document 19 §15's named field for this event.
     pub progress_pct: f64,
-    /// Document 19 §15's named field for this event.
     pub status_message: String,
 }
 
-/// Doc 30 acceptance `test_indicator_does_not_block_ui_thread`: a plain
-/// `std::sync::Mutex` guarding a small `HashMap` is held only for the
-/// duration of a `HashMap` insert/remove/clone -- never across an `.await`
-/// point -- so it can never itself stall the async runtime driving the UI.
 #[derive(Default)]
 pub struct BackgroundTaskRegistry {
     tasks: Mutex<HashMap<String, (TaskProgress, Instant)>>,
 }
 
+/// Progress percentage, guarding against a zero total.
 fn compute_progress_pct(current: u64, total: u64) -> f64 {
     if total == 0 {
         0.0
@@ -61,6 +44,7 @@ fn compute_progress_pct(current: u64, total: u64) -> f64 {
     }
 }
 
+/// Estimated seconds remaining, extrapolated from the rate so far.
 fn compute_eta_seconds(current: u64, total: u64, elapsed: std::time::Duration) -> Option<u64> {
     if current == 0 || current >= total {
         return None;
@@ -71,10 +55,8 @@ fn compute_eta_seconds(current: u64, total: u64, elapsed: std::time::Duration) -
 }
 
 impl BackgroundTaskRegistry {
-    /// Registers a new task (or re-registers/updates an existing one --
-    /// insert-or-replace, so callers don't need a separate "does this task
-    /// already exist" check before calling this on every progress tick).
     #[allow(clippy::too_many_arguments)]
+    /// Registers a task or updates its progress, emitting an event.
     pub fn register_or_update<R: Runtime>(
         &self,
         app: &AppHandle<R>,
@@ -115,10 +97,7 @@ impl BackgroundTaskRegistry {
         );
     }
 
-    /// Deregisters a task on completion (success or failure) and emits one
-    /// final event carrying the terminal `status` -- this is the signal the
-    /// frontend removes the task from its active list on, not an inferred
-    /// `current == total`.
+    /// Removes a finished task and notifies the frontend.
     pub fn deregister<R: Runtime>(
         &self,
         app: &AppHandle<R>,
@@ -140,11 +119,7 @@ impl BackgroundTaskRegistry {
         );
     }
 
-    /// All currently-registered (i.e. still running) tasks. Doc 30
-    /// TASK-RT-004: backs `get_active_background_tasks`, so a late-mounting
-    /// (or freshly-navigated-to) indicator can recover in-progress tasks it
-    /// never received the live `background_task_progress` event for, same
-    /// principle as `ipc::system_warnings`'s registry (TASK-RT-007).
+    /// Snapshot of currently active tasks.
     pub fn active_tasks(&self) -> Vec<TaskProgress> {
         self.tasks
             .lock()
@@ -154,15 +129,14 @@ impl BackgroundTaskRegistry {
             .collect()
     }
 
+    /// Number of active tasks.
     pub fn active_count(&self) -> usize {
         self.tasks.lock().unwrap().len()
     }
 }
 
-/// Doc 30 TASK-RT-004: late-mount/route-navigation recovery for the
-/// background task indicator -- mirrors `get_active_system_warnings`
-/// (TASK-RT-007)'s same rationale.
 #[tauri::command]
+/// Command returning active tasks, so a reloaded frontend can re-adopt them.
 pub fn get_active_background_tasks(
     registry: tauri::State<'_, BackgroundTaskRegistry>,
 ) -> Vec<TaskProgress> {
@@ -182,7 +156,6 @@ mod tests {
             .clone()
     }
 
-    /// Doc 30 TASK-DESK-003 acceptance: `test_multiple_concurrent_tasks_aggregate_correctly`.
     #[test]
     fn test_multiple_concurrent_tasks_aggregate_correctly() {
         let app = mock_app();
@@ -216,7 +189,6 @@ mod tests {
         ids.sort();
         assert_eq!(ids, vec!["scan_1".to_string(), "scan_2".to_string()]);
 
-        // Updating an already-registered task must not create a duplicate entry.
         registry.register_or_update(
             &app,
             "scan_1",
@@ -235,7 +207,6 @@ mod tests {
         assert_eq!(updated.current, 20);
     }
 
-    /// Doc 30 TASK-DESK-003 acceptance: `test_task_deregistered_on_completion`.
     #[test]
     fn test_task_deregistered_on_completion() {
         let app = mock_app();
@@ -265,11 +236,6 @@ mod tests {
         assert_eq!(registry.active_count(), 0);
     }
 
-    /// Doc 30 TASK-DESK-003 acceptance: `test_indicator_does_not_block_ui_thread`.
-    /// The registry's lock is only ever held for a synchronous HashMap
-    /// operation -- proven here by driving concurrent register/deregister
-    /// calls from many tasks on a real multi-threaded Tokio runtime and
-    /// confirming they all complete promptly (no deadlock, no long stall).
     #[tokio::test]
     async fn test_indicator_does_not_block_ui_thread() {
         use std::sync::Arc;
@@ -299,9 +265,6 @@ mod tests {
         );
     }
 
-    /// Doc 30 TASK-RT-004: a late-mounting indicator component (or one
-    /// re-mounted after a route navigation) must be able to recover
-    /// already-running tasks it never received the live event for.
     #[test]
     fn test_get_active_background_tasks_recovers_already_running_task() {
         let app = mock_app();
@@ -341,7 +304,6 @@ mod tests {
             compute_eta_seconds(100, 100, std::time::Duration::from_secs(10)),
             None
         );
-        // 10 units in 10s -> 1s/unit; 90 remaining -> ~90s.
         assert_eq!(
             compute_eta_seconds(10, 100, std::time::Duration::from_secs(10)),
             Some(90)

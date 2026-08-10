@@ -1,10 +1,7 @@
-//! TASK-AUTH-005: Implement Local Session State Management.
+//! Establishes and revokes the local session.
 //!
-//! Provides the "current session" concept `audit_log.actor_id` and
-//! TASK-AUTH-008's tenant-isolation pattern both depend on. The session_id
-//! lives only in Tauri's managed in-memory state — never persisted outside
-//! SQLite's own `sessions` table, never sent to React as a raw string.
-
+//! The device fingerprint computed here also underpins licence binding, so it
+//! must stay stable across restarts while remaining distinct between machines.
 use anyhow::Result;
 use chrono::Utc;
 use deadpool_sqlite::Pool;
@@ -14,17 +11,15 @@ use std::sync::Mutex;
 
 use crate::db::sessions::{self, SessionsRow};
 
-/// Matches `tauri.conf.json`'s `identifier` and the Keychain service name
-/// used elsewhere (`ingestion::oauth::KEYCHAIN_SERVICE`).
 pub const BUNDLE_ID: &str = "com.dinero.app";
 
-/// Tauri-managed in-memory session state. Register via `app.manage(...)` —
-/// never construct a second instance, since there is exactly one session per
-/// running app instance (single local profile, Document 22 §13.1).
 #[derive(Default)]
 pub struct SessionState(pub Mutex<Option<String>>);
 
-/// Document 30 TASK-AUTH-005: `SHA-256(IOPlatformUUID + bundle_id)`.
+/// Derives the device fingerprint from the hardware UUID.
+///
+/// Must be stable across restarts yet distinct between machines, since licence
+/// binding depends on it.
 pub fn compute_device_fingerprint(hw_uuid: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(hw_uuid.as_bytes());
@@ -32,9 +27,7 @@ pub fn compute_device_fingerprint(hw_uuid: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// On startup: ensures the `sessions` table has an active (non-revoked) row
-/// for this device, creating one if none exists, and stores its id in
-/// `state`. Idempotent — safe to call on every launch.
+/// Ensures a live local session exists, creating one if needed.
 pub async fn ensure_active_session(pool: &Pool, state: &SessionState) -> Result<String> {
     let existing_id: Option<String> = {
         let conn = pool.get().await?;
@@ -75,10 +68,7 @@ pub async fn ensure_active_session(pool: &Pool, state: &SessionState) -> Result<
     Ok(session_id)
 }
 
-/// `auth_logout`: revokes the current session (`revoked_at`, never deleted)
-/// and clears in-memory state. Subsequent `current_session_id()` calls
-/// return `None` until the next `ensure_active_session` (e.g. app restart or
-/// re-auth) establishes a new one.
+/// Ends the current session.
 pub async fn logout(pool: &Pool, state: &SessionState) -> Result<()> {
     let session_id = state.0.lock().unwrap().clone();
     if let Some(id) = session_id {
@@ -91,9 +81,7 @@ pub async fn logout(pool: &Pool, state: &SessionState) -> Result<()> {
     Ok(())
 }
 
-/// The current session id, for internal use (`audit_log.actor_id`,
-/// TASK-AUTH-008's tenant-isolation checks) — never returned directly to the
-/// frontend as a raw string.
+/// The current session id, if any.
 pub fn current_session_id(state: &SessionState) -> Option<String> {
     state.0.lock().unwrap().clone()
 }
@@ -123,8 +111,6 @@ mod tests {
             .unwrap();
         assert_eq!(count, 0);
 
-        // Directly exercise the DB-level logic ensure_active_session uses,
-        // without needing a real Pool/AppHandle in a unit test.
         let id = uuid::Uuid::new_v4().to_string();
         let row = SessionsRow {
             id: id.clone(),

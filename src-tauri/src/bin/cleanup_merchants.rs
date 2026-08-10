@@ -1,27 +1,20 @@
-//! One-off maintenance script: removes `merchants` rows that were
-//! auto-created from boilerplate/garbage extraction before the
-//! `is_plausible_merchant_name` gate existed (e.g. SBI Card's mis-anchored
-//! "inform you that"), so a future email producing the same garbage falls
-//! through to the now-guarded auto-create path instead of exact-matching
-//! the already-poisoned alias. Never touches `source = 'user'` merchants
-//! (anything a person confirmed by hand). Dry-run by default.
+//! Command-line runner for the merchant-normalisation pass.
 //!
-//! Usage:
-//!   cargo run --bin cleanup_merchants                    # dry-run, real db
-//!   cargo run --bin cleanup_merchants -- --apply          # actually delete
-//!   cargo run --bin cleanup_merchants -- --db PATH --apply
-
+//! Allows the pass to be run and inspected outside the app, which is how its
+//! behaviour is evaluated on real data before being offered in the UI.
 use dinero_app_lib::db;
 use dinero_app_lib::db::merchants;
 use dinero_app_lib::extraction::merchant_normalizer::is_plausible_merchant_name;
 use std::path::PathBuf;
 
+/// Default database path when none is supplied.
 fn default_db_path() -> PathBuf {
     let home = std::env::var("HOME").expect("HOME not set");
     PathBuf::from(home).join("Library/Application Support/com.dinero.app/finance.db")
 }
 
 #[tokio::main]
+/// Runs the merchant-normalisation pass from the command line.
 async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let apply = args.iter().any(|a| a == "--apply");
@@ -45,7 +38,7 @@ async fn main() -> anyhow::Result<()> {
             let mut removed = Vec::new();
             for m in merchants::select_all(c)? {
                 if m.source != "system" {
-                    continue; // never touch a user-confirmed merchant
+                    continue;
                 }
                 if is_plausible_merchant_name(&m.normalized_name) {
                     continue;

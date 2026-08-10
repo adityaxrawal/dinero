@@ -1,3 +1,8 @@
+//! Background licence revalidation.
+//!
+//! Periodically re-checks entitlement so a cancellation or expiry takes effect
+//! without a restart. Failures are tolerated rather than escalated -- a network
+//! outage must not lock out a paying customer.
 use crate::licensing::client::{LicensingClient, ValidateRequest};
 use crate::licensing::state::{
     get_license_state, record_known_valid_time, transition_to_locked, LicenseStatus,
@@ -8,19 +13,12 @@ use std::time::Duration;
 use tauri::Manager;
 use tokio::time;
 
-/// Doc 12 §7.4/§7.5, Doc 33 §4: fixed 7-day offline grace period after
-/// payment/validation failure — a business invariant (Doc 03), never configurable.
 const GRACE_PERIOD: ChronoDuration = ChronoDuration::days(7);
 
-/// Doc 30 TASK-QA-006: whether the 7-day offline grace period has elapsed
-/// since the last successful server validation -- extracted as a pure
-/// function so the grace-expiry-to-LOCKED transition is independently
-/// testable without needing the full 6-hour-interval background validation
-/// loop (`start_background_validation`) to actually tick 7 days forward.
-/// No `last_server_validated_at` at all (a state row somehow reaching GRACE
-/// without ever having validated) is treated as expired -- there is no
-/// evidence the grace window's clock has ever started, so it cannot be
-/// trusted to still be running.
+/// Whether the grace period has elapsed.
+///
+/// Grace exists so a failed card does not instantly destroy access for a paying
+/// customer.
 fn is_grace_period_expired(
     last_validated: Option<chrono::DateTime<Utc>>,
     now: chrono::DateTime<Utc>,
@@ -31,31 +29,21 @@ fn is_grace_period_expired(
     }
 }
 
-/// Doc 22 §10.5 (I7 fix): legitimate NTP/DST corrections can move the clock
-/// backward by a few minutes — only a rollback larger than this grace window
-/// counts as suspicious tampering. Previously *any* backward movement, even
-/// one second, triggered an immediate lock.
 const CLOCK_CORRECTION_GRACE: ChronoDuration = ChronoDuration::hours(1);
 
-/// Distinguishes "no license state row yet" from "clock skew just locked the
-/// license" — both used to collapse to the same `None`, which made it
-/// impossible to tell the two apart at the call site in order to also emit
-/// a `system_warning` for the clock-skew case specifically.
 enum PollOutcome {
     NoState,
     ClockSkewLocked,
     Active(crate::licensing::state::LicenseStateRow),
 }
 
+/// Periodically revalidates the licence in the background.
 pub async fn start_background_validation<R: tauri::Runtime>(
     pool: Pool,
     base_url: String,
     app_handle: tauri::AppHandle<R>,
 ) {
     let client = LicensingClient::new(base_url, pool.clone());
-    // Doc 40 §7: "roughly every 6 hours" — this is also the cadence that must
-    // keep running while LOCKED, so a healed payment auto-unlocks the app
-    // without the user needing to click "Refresh License" (C11).
     let mut interval = time::interval(Duration::from_secs(6 * 60 * 60));
 
     loop {
@@ -68,8 +56,6 @@ pub async fn start_background_validation<R: tauri::Runtime>(
                 if let Some(state) = state_opt {
                     let now = Utc::now();
 
-                    // I7 fix: only a rollback beyond the correction grace counts as
-                    // tampering — a small backward NTP/DST correction should not lock.
                     if now < state.last_known_valid_time - CLOCK_CORRECTION_GRACE {
                         tracing::warn!("ClockSkewDetected: System time moved backward beyond the correction grace. Locking license.");
                         transition_to_locked(c, true)?;
@@ -85,11 +71,6 @@ pub async fn start_background_validation<R: tauri::Runtime>(
             }).await;
 
             if matches!(res, Ok(Ok(PollOutcome::ClockSkewLocked))) {
-                // Doc 19 §15.1: alongside the existing `license_clock_skew` event
-                // (kept as-is so any existing consumers don't break), also surface
-                // this through the centralized system_warning channel so the
-                // banner UI (TASK-RT-007) picks it up like every other
-                // degraded-state condition.
                 crate::ipc::system_warnings::emit_system_warning(
                     &app_handle,
                     crate::ipc::system_warnings::SystemWarningPayload {
@@ -106,13 +87,7 @@ pub async fn start_background_validation<R: tauri::Runtime>(
 
             match res {
                 Ok(Ok(PollOutcome::Active(state))) => {
-                    // Doc 40 §7 (C11): LOCKED must keep validating too — this is what
-                    // lets a healed payment auto-unlock the app without user action.
-                    // Only AnonymousEval (no license ever entered, nothing to validate
-                    // against) is skipped.
                     if state.subscription_status_cached != LicenseStatus::AnonymousEval {
-                        // Doc 22 §11.1: always derive device_id fresh from the hardware UUID
-                        // rather than trusting a possibly-stale/unset stored fingerprint.
                         let device_id = match crate::licensing::device::get_device_id() {
                             Ok(id) => id,
                             Err(e) => {
@@ -125,9 +100,6 @@ pub async fn start_background_validation<R: tauri::Runtime>(
 
                         match client.validate(req).await {
                             Ok(response) => {
-                                // Doc 22 §10.3: the raw HTTP success is not sufficient — the JWT's
-                                // RSA-256 signature must verify locally against the embedded public
-                                // key before the response is trusted for anything.
                                 match crate::licensing::jwt::verify_license_jwt(&response.jwt) {
                                     Ok(_claims) => {
                                         tracing::info!("License validation successful (JWT signature verified)");
@@ -150,9 +122,6 @@ pub async fn start_background_validation<R: tauri::Runtime>(
                                             .interact(move |c| transition_to_locked(c, false))
                                             .await;
 
-                                        // Doc 30 TASK-OPS-003: a signature-verification
-                                        // failure is a single-occurrence critical
-                                        // condition, not something to wait 3 strikes on.
                                         let monitor = app_handle.state::<crate::security::incident_response::IncidentMonitor>();
                                         if crate::security::incident_response::record_trigger(
                                             &monitor,
@@ -169,10 +138,6 @@ pub async fn start_background_validation<R: tauri::Runtime>(
                             Err(e) => {
                                 tracing::error!("License validation failed: {:?}", e);
 
-                                // Doc 30 TASK-OPS-003: alert (not session-revoke) once
-                                // validate has failed 3 times in a row — a single
-                                // failure is routine on a flaky connection, and the
-                                // 7-day grace period already protects access.
                                 let monitor = app_handle
                                     .state::<crate::security::incident_response::IncidentMonitor>(
                                 );
@@ -188,7 +153,6 @@ pub async fn start_background_validation<R: tauri::Runtime>(
 
                                 let now = Utc::now();
 
-                                // Apply Grace period logic (7 days — Doc 12 §7.4/§7.5, Doc 33 §4)
                                 let _ = conn
                                     .interact(move |c| {
                                         if state.subscription_status_cached == LicenseStatus::Active
@@ -224,11 +188,6 @@ pub async fn start_background_validation<R: tauri::Runtime>(
                 Err(e) => tracing::error!("Pool interact error: {}", e),
             }
 
-            // TASK-FE-002/016: broadcast the (possibly just-changed) status once
-            // per tick so `useLicenseStore` stays in sync without polling. Cheap
-            // and idempotent on the frontend if nothing actually changed; simpler
-            // and more robust than threading a "did this tick mutate?" flag out
-            // of every branch above.
             crate::licensing::commands::emit_license_state_changed(&app_handle, &pool).await;
         }
     }
@@ -238,10 +197,6 @@ pub async fn start_background_validation<R: tauri::Runtime>(
 mod tests {
     use super::*;
 
-    /// Doc 30 TASK-QA-006 acceptance: `test_grace_state_expires_to_read_only`
-    /// (this half: the pure timing decision itself; the write-gate
-    /// enforcement half is covered by `licensing::gate`'s own tests against
-    /// the resulting `LOCKED` state).
     #[test]
     fn test_is_grace_period_expired() {
         let now = Utc::now();

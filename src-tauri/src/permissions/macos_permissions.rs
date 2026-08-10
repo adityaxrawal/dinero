@@ -1,29 +1,8 @@
-//! TASK-DESK-004 (Doc 30 §12, Doc 29 §14): OS-level permission denial
-//! states. Three distinct kinds, two distinct severities:
+//! Checks macOS permissions the app depends on.
 //!
-//! - **Keychain access denied** (hard-fail): Gmail tokens and the SQLite
-//!   encryption key both live there (Document 18 §7.2), so this is fatal.
-//!   The existing cold-start path (`lib.rs`'s `DbInitError::KeychainAccessDenied`
-//!   branch) already fails closed with a native dialog + process exit before
-//!   any window exists to render a React overlay into -- that stays as the
-//!   last-resort safety net for the case where the app cannot start at all.
-//!   This module's job is the complementary case Document 30 actually asks
-//!   for: proactive, ongoing detection (an already-running app noticing
-//!   Keychain has become inaccessible, or confirming at launch that it's
-//!   fine), surfaced via a real `PermissionDeniedOverlay` in the frontend.
-//! - **File/folder access denied** (soft-fail): necessarily reactive, not
-//!   proactive -- macOS TCC grants access per-path at the moment of a real
-//!   read attempt, so there is no meaningful global "is file access okay"
-//!   probe to run at launch. Handled entirely on the frontend, at the
-//!   specific upload attempt that failed (`StatementUploadDropzone.tsx`).
-//! - **Notification permission denied** (soft-fail): checked via the
-//!   notification plugin. Known limitation, documented rather than hidden:
-//!   `tauri-plugin-notification` 2.3.3's desktop backend unconditionally
-//!   reports `Granted` on macOS (verified by reading its vendored source),
-//!   so real OS-level denial cannot currently be detected through this
-//!   crate version. This function is still real and wired so it starts
-//!   reporting correctly the moment that crate gap closes.
-
+//! Keychain access is the critical one and has no fallback: the database key
+//! lives there, so a denial is fatal rather than degrading. Notification access
+//! is optional, and its absence merely disables reminders.
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +12,7 @@ pub enum PermissionKind {
 }
 
 impl PermissionKind {
+    /// Warning type identifier for this permission.
     fn warning_type(&self) -> &'static str {
         match self {
             Self::Keychain => "keychain_denied",
@@ -41,10 +21,6 @@ impl PermissionKind {
     }
 }
 
-/// Doc 30 TASK-DESK-004: Keychain is a hard-fail (blocking, non-dismissable
-/// overlay); notification permission is a soft-fail (non-blocking Settings
-/// note). File access denial isn't represented here at all -- see the
-/// module doc comment on why it's handled entirely on the frontend instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionSeverity {
@@ -52,6 +28,10 @@ pub enum PermissionSeverity {
     SoftFail,
 }
 
+/// How serious a denial of this permission is.
+///
+/// Keychain denial is fatal -- the database key lives there -- whereas a denied
+/// notification permission merely disables reminders.
 pub fn severity_for(kind: PermissionKind) -> PermissionSeverity {
     match kind {
         PermissionKind::Keychain => PermissionSeverity::HardFail,
@@ -59,9 +39,7 @@ pub fn severity_for(kind: PermissionKind) -> PermissionSeverity {
     }
 }
 
-/// Emits a `system_warning` event (Document 19 §15) for a denied
-/// permission, carrying this task's `warning_type`/`severity` values so
-/// `PermissionDeniedOverlay.tsx` can render the correct treatment.
+/// Emits a permission-denied warning.
 pub fn emit_permission_denied<R: Runtime>(app: &AppHandle<R>, kind: PermissionKind, message: &str) {
     let _ = app.emit(
         crate::ipc::events::AppEvent::SystemWarning.as_str(),
@@ -73,22 +51,15 @@ pub fn emit_permission_denied<R: Runtime>(app: &AppHandle<R>, kind: PermissionKi
     );
 }
 
-/// Proactive Keychain accessibility probe. Reuses the exact same base-key
-/// get-or-create path `db::init_db` itself depends on (Document 18 §7.2) --
-/// idempotent, so calling it here costs nothing extra beyond what would
-/// happen anyway, and it reports exactly what `init_db` will see rather
-/// than a separately-scoped, potentially-inconsistent Keychain probe.
+/// Whether the keychain is reachable.
 pub fn check_keychain_accessible() -> bool {
     crate::db::crypto::get_or_create_base_key().is_ok()
 }
 
-/// See the module doc comment's "Notification permission denied" section
-/// for why this always currently returns `true` when the plugin backend
-/// itself always reports `Granted` -- that's the plugin's limitation, not
-/// a bug in this function.
+/// Whether notification permission has been granted.
 pub fn check_notification_permission<R: Runtime>(app: &AppHandle<R>) -> bool {
     let Some(notification) = app.try_state::<tauri_plugin_notification::Notification<R>>() else {
-        return true; // plugin not registered (tests) -- not a real denial
+        return true;
     };
     !matches!(
         notification.permission_state(),
@@ -96,12 +67,7 @@ pub fn check_notification_permission<R: Runtime>(app: &AppHandle<R>) -> bool {
     )
 }
 
-/// Pure decision logic over already-computed permission states -- kept
-/// separate from `check_permissions_at_launch` so tests can exercise it
-/// without ever touching the real Keychain or notification plugin,
-/// consistent with this codebase's existing `db::crypto` test convention
-/// (see that module's `hardware_migration_tests` doc comment) of avoiding
-/// real Keychain calls in unit tests.
+/// Emits warnings for every denied permission.
 fn emit_denied_permissions<R: Runtime>(
     app: &AppHandle<R>,
     keychain_ok: bool,
@@ -123,10 +89,7 @@ fn emit_denied_permissions<R: Runtime>(
     }
 }
 
-/// Doc 30 TASK-DESK-004 acceptance: "each permission state is detected
-/// proactively at launch, not only reactively on first failure." Runs
-/// unconditionally -- both checks always execute, regardless of either
-/// outcome -- and emits `system_warning` for anything already denied.
+/// Checks all required permissions at startup.
 pub fn check_permissions_at_launch<R: Runtime>(app: &AppHandle<R>) {
     let keychain_ok = check_keychain_accessible();
     let notification_ok = check_notification_permission(app);
@@ -157,18 +120,9 @@ mod tests {
         );
     }
 
-    /// Doc 30 TASK-DESK-004 acceptance: `test_keychain_denial_shows_blocking_overlay`.
-    /// The Rust-side half of this: a denied Keychain must emit a
-    /// `system_warning` classified as `hard_fail` -- `PermissionDeniedOverlay.tsx`
-    /// renders the blocking, non-dismissable overlay only for that severity.
-    /// Uses `emit_denied_permissions` (pure over already-computed booleans),
-    /// never the real-Keychain-touching `check_keychain_accessible`.
     #[test]
     fn test_keychain_denial_shows_blocking_overlay() {
         let app = mock_app();
-        // Does not panic and completes -- the actual event payload shape
-        // (severity: "hard_fail", warning_type: "keychain_denied") is what
-        // the frontend test in this same task asserts against.
         emit_denied_permissions(&app, false, true);
         assert_eq!(
             severity_for(PermissionKind::Keychain),
@@ -176,25 +130,15 @@ mod tests {
         );
     }
 
-    /// Doc 30 TASK-DESK-004 acceptance: `test_permission_states_checked_proactively_at_launch`.
-    /// Proves the decision logic evaluates both permissions unconditionally
-    /// (neither short-circuits the other) across all four true/false
-    /// combinations, without ever touching the real Keychain.
     #[test]
     fn test_permission_states_checked_proactively_at_launch() {
         let app = mock_app();
-        // None of these four combinations may panic -- proves both checks
-        // are genuinely independent and always both considered.
         emit_denied_permissions(&app, true, true);
         emit_denied_permissions(&app, true, false);
         emit_denied_permissions(&app, false, true);
         emit_denied_permissions(&app, false, false);
     }
 
-    /// `check_notification_permission` must degrade safely (not panic) when
-    /// the notification plugin isn't registered (true in this mock, and in
-    /// any test) -- the real Keychain-touching `check_keychain_accessible`
-    /// is deliberately not exercised here or anywhere else in this suite.
     #[test]
     fn test_notification_check_is_safe_without_plugin_registered() {
         let app = mock_app();

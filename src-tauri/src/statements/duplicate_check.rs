@@ -1,24 +1,26 @@
+//! Prevents the same statement being imported twice.
+//!
+//! Four independent checks, because one signal is never enough: the file hash
+//! catches a byte-identical re-upload, the billing cycle catches the same
+//! statement re-downloaded and thus differing in bytes, the source message id
+//! catches re-ingesting the same email, and the filename period catches a
+//! re-issued copy. A duplicate slipping through would double every transaction
+//! in the statement.
 use anyhow::Result;
 use regex::Regex;
 
-/// Result of a duplicate check.
 #[derive(Debug, PartialEq)]
 pub enum DuplicateCheckResult {
-    /// No duplicate found — safe to proceed.
     NoDuplicate,
-    /// Bit-identical file already processed (same SHA-256 hash).
     DuplicateFileHash,
-    /// Same instrument + same billing period already imported.
     DuplicateBillingCycle,
-    /// Same Gmail message ID already processed.
     DuplicateSourceMessage,
 }
 
-/// Checks whether this file hash already exists in the `statements` or `unprocessed_statements`
-/// tables for the given account.
+/// Detects a byte-identical re-upload by content hash.
 ///
-/// Per Doc 10 §5.2 and §17: Duplicate file detection uses `sha256(file_content)`.
-/// This check must happen BEFORE password resolution to avoid wasting processing.
+/// The strictest and cheapest check, and the only one that catches an exact
+/// duplicate regardless of naming.
 pub async fn check_file_hash_duplicate(
     sha256_hex: &str,
     _instrument_id: Option<&str>,
@@ -29,12 +31,6 @@ pub async fn check_file_hash_duplicate(
     let hash = sha256_hex.to_string();
     let is_duplicate = conn
         .interact(move |c| {
-            // Check statements table first. `insert_queued()` (Doc 18 §4.7)
-            // is the pipeline's one write path into the dedicated `file_hash`
-            // column — this used to check `source_message_id` instead, a
-            // proxy-hack from before that column existed, which would have
-            // silently stopped matching once `insert_queued` started writing
-            // the real hash into `file_hash` instead.
             let count: i64 = c.query_row(
                 "SELECT COUNT(*) FROM statements WHERE file_hash = ?",
                 [&hash],
@@ -43,7 +39,6 @@ pub async fn check_file_hash_duplicate(
             if count > 0 {
                 return Ok::<bool, rusqlite::Error>(true);
             }
-            // Also check unprocessed_statements via JSON field
             let count: i64 = c.query_row(
                 "SELECT COUNT(*) FROM unprocessed_statements WHERE json_extract(statement_source_json, '$.file_hash') = ?",
                 [&hash],
@@ -61,24 +56,7 @@ pub async fn check_file_hash_duplicate(
     }
 }
 
-/// Validates an email-sourced PDF attachment and returns its SHA-256, or
-/// `None` if it is not a usable PDF or has already been imported.
-///
-/// audit_04 #4: both email paths used to set `StatementJob.file_hash` to the
-/// Gmail `message_id` as a "proxy". `file_hash` is a *content* hash — the
-/// column `check_file_hash_duplicate` above queries — so the proxy meant the
-/// same statement forwarded or re-sent produced two unrelated values and was
-/// imported twice, and no email-sourced statement could ever match a manual
-/// upload of the same file. The message-id dimension it was standing in for is
-/// already covered separately by `check_source_message_duplicate`.
-///
-/// Called before the `statements` row is created and before password
-/// resolution, matching both the manual-upload ordering and this module's own
-/// "must happen BEFORE password resolution to avoid wasting processing" rule —
-/// a PDF we already have should not cost the user a password prompt.
-///
-/// Fails open on a DB error: a transient failure should not silently drop a
-/// statement, and `check_billing_cycle_duplicate` still runs downstream.
+/// Hashes an email attachment, skipping work if already seen.
 pub async fn hash_email_attachment_if_new(
     bytes: &[u8],
     filename: &str,
@@ -122,15 +100,15 @@ pub async fn hash_email_attachment_if_new(
     Some(file_hash)
 }
 
-/// Checks whether a statement for this instrument and billing period already exists.
+/// Detects a statement covering an already-imported billing period.
 ///
-/// Duplicate := same `instrument_id` AND same `billing_period_start` AND same `billing_period_end`
-/// Per Doc 10 §6.1. If duplicate, action = reject silently, log `duplicate_statement_rejected`.
-/// Must be run BEFORE row extraction to avoid wasted parsing effort.
+/// Catches the case the hash cannot: the same statement re-downloaded is a
+/// different file byte-for-byte, but importing it twice would double every
+/// transaction it contains.
 pub async fn check_billing_cycle_duplicate(
     instrument_id: &str,
-    billing_period_start: &str, // YYYY-MM-DD
-    billing_period_end: &str,   // YYYY-MM-DD
+    billing_period_start: &str,
+    billing_period_end: &str,
     pool: &deadpool_sqlite::Pool,
 ) -> Result<DuplicateCheckResult> {
     tracing::debug!(
@@ -163,8 +141,7 @@ pub async fn check_billing_cycle_duplicate(
     }
 }
 
-/// Checks whether a Gmail message ID has already been ingested.
-/// Per Doc 10 §17 acceptance criterion 3.
+/// Detects re-ingestion of the same source email.
 pub async fn check_source_message_duplicate(
     source_message_id: &str,
     pool: &deadpool_sqlite::Pool,
@@ -193,22 +170,10 @@ pub async fn check_source_message_duplicate(
     }
 }
 
-// ── §5.2 Filename-based billing period heuristic ────────────────────────────
-
-/// Extracts a billing period (start, end as YYYY-MM-DD strings) from a PDF filename.
+/// Extracts a billing period from a statement filename.
 ///
-/// Strategy (Doc 10 §5.2 / §6.2):
-/// 1. Search for numeric YYYY-MM or YYYY/MM patterns.
-/// 2. Search for month-name abbreviation + year (e.g. Jan2024, 2024-Jan).
-/// 3. If found → infer start = first day of that month, end = last day.
-/// 4. If not found → return None so the caller defers to post-metadata extraction.
-///
-/// Supported filename patterns (case-insensitive):
-///   HDFC_Statement_Jan2024.pdf
-///   ICICI_Credit_Card_Statement_2024-01.pdf
-///   SBI_2024_03_Statement.pdf
-///   statement_202403.pdf
-///   Axis_Bank_Mar-2024.pdf
+/// Filenames frequently encode the period, which is often the only period signal
+/// available before the document has been parsed.
 pub fn extract_billing_period_from_filename(filename: &str) -> Option<(String, String)> {
     let lower = filename.to_lowercase();
     let name = std::path::Path::new(&lower)
@@ -216,12 +181,10 @@ pub fn extract_billing_period_from_filename(filename: &str) -> Option<(String, S
         .and_then(|s| s.to_str())
         .unwrap_or(&lower);
 
-    // Pattern 1: YYYY-MM or YYYY_MM or YYYYMM (6-digit compact)
     if let Some((year, month)) = try_numeric_month_year(name) {
         return build_period(year, month);
     }
 
-    // Pattern 2: Month-name abbreviation + 4-digit year (in either order)
     if let Some((year, month)) = try_named_month_year(name) {
         return build_period(year, month);
     }
@@ -229,9 +192,8 @@ pub fn extract_billing_period_from_filename(filename: &str) -> Option<(String, S
     None
 }
 
-/// Tries patterns like 2024-01, 2024_01, 202401
+/// Parses a numeric month/year pair from a filename.
 fn try_numeric_month_year(name: &str) -> Option<(u32, u32)> {
-    // YYYY-MM or YYYY_MM
     let re_sep = Regex::new(r"(?:^|[\-_])(\d{4})[\-_](\d{2})(?:[\-_]|$)").ok()?;
     if let Some(caps) = re_sep.captures(name) {
         let year: u32 = caps[1].parse().ok()?;
@@ -240,7 +202,6 @@ fn try_numeric_month_year(name: &str) -> Option<(u32, u32)> {
             return Some((year, month));
         }
     }
-    // MM-YYYY or MM_YYYY
     let re_rev = Regex::new(r"(?:^|[\-_])(\d{2})[\-_](\d{4})(?:[\-_]|$)").ok()?;
     if let Some(caps) = re_rev.captures(name) {
         let month: u32 = caps[1].parse().ok()?;
@@ -249,7 +210,6 @@ fn try_numeric_month_year(name: &str) -> Option<(u32, u32)> {
             return Some((year, month));
         }
     }
-    // Compact YYYYMM (6 digits after a separator or at word boundary)
     let re_compact = Regex::new(r"(?:^|[\-_ ])(\d{4})(\d{2})(?:[\-_ ]|$)").ok()?;
     if let Some(caps) = re_compact.captures(name) {
         let year: u32 = caps[1].parse().ok()?;
@@ -261,7 +221,7 @@ fn try_numeric_month_year(name: &str) -> Option<(u32, u32)> {
     None
 }
 
-/// Tries patterns like jan2024, 2024jan, jan-2024, 2024-jan
+/// Parses a named month and year from a filename.
 fn try_named_month_year(name: &str) -> Option<(u32, u32)> {
     const MONTHS: [(&str, u32); 12] = [
         ("jan", 1),
@@ -279,7 +239,6 @@ fn try_named_month_year(name: &str) -> Option<(u32, u32)> {
     ];
 
     for (abbr, month_num) in &MONTHS {
-        // month-name followed by year: jan2024 or jan-2024 or jan_2024
         let re_mn_yr = Regex::new(&format!(r"{}[\-_]?(\d{{4}})", abbr)).ok()?;
         if let Some(caps) = re_mn_yr.captures(name) {
             let year: u32 = caps[1].parse().ok()?;
@@ -287,7 +246,6 @@ fn try_named_month_year(name: &str) -> Option<(u32, u32)> {
                 return Some((year, *month_num));
             }
         }
-        // year followed by month-name: 2024jan or 2024-jan or 2024_jan
         let re_yr_mn = Regex::new(&format!(r"(\d{{4}})[\-_]?{}", abbr)).ok()?;
         if let Some(caps) = re_yr_mn.captures(name) {
             let year: u32 = caps[1].parse().ok()?;
@@ -299,11 +257,10 @@ fn try_named_month_year(name: &str) -> Option<(u32, u32)> {
     None
 }
 
-/// Builds (billing_period_start, billing_period_end) as YYYY-MM-DD strings for the given month.
+/// Builds period start and end dates from a month and year.
 fn build_period(year: u32, month: u32) -> Option<(String, String)> {
     use chrono::NaiveDate;
     let start = NaiveDate::from_ymd_opt(year as i32, month, 1)?;
-    // Last day of month: first day of next month minus one day
     let end = if month == 12 {
         NaiveDate::from_ymd_opt(year as i32 + 1, 1, 1)?
     } else {
@@ -316,12 +273,10 @@ fn build_period(year: u32, month: u32) -> Option<(String, String)> {
     ))
 }
 
-/// Combined filename-first duplicate cycle check (Doc 10 §5.2).
+/// Checks a filename-derived period against already-imported statements.
 ///
-/// Returns:
-///   - `DuplicateBillingCycle` if filename yields a clear period AND that period already exists.
-///   - `NoDuplicate`  if filename yields a period and it is new.
-///   - `None`         if filename yields no parseable period → caller must defer to post-metadata.
+/// The cheapest of the period checks, since it needs no parsing of the document
+/// itself.
 pub async fn check_filename_billing_cycle(
     filename: &str,
     instrument_id: &str,
@@ -342,21 +297,16 @@ pub async fn check_filename_billing_cycle(
     }
 }
 
-// ── Tests ────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // Helper: spin up an in-memory test DB with full schema
     async fn setup_db() -> deadpool_sqlite::Pool {
         let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).unwrap();
         let db_path = temp_dir.join("test.db");
         crate::db::init_db(db_path).await.unwrap()
     }
-
-    // ── Filename heuristic unit tests ────────────────────────────────────────
 
     #[test]
     fn filename_numeric_yyyy_mm_hyphen() {
@@ -387,7 +337,6 @@ mod tests {
 
     #[test]
     fn filename_named_month_dec_year_boundary() {
-        // December: end should be 2024-12-31
         let result = extract_billing_period_from_filename("axis_dec2024.pdf");
         assert_eq!(
             result,
@@ -430,12 +379,9 @@ mod tests {
 
     #[test]
     fn filename_ambiguous_numbers_returns_none() {
-        // "statement_12.pdf" — no year, cannot infer
         let result = extract_billing_period_from_filename("statement_12.pdf");
         assert_eq!(result, None);
     }
-
-    // ── test_duplicate_hash_rejected (Doc 30 TASK-STMT-001) ──────────────────
 
     #[tokio::test]
     async fn test_duplicate_hash_rejected() {
@@ -466,10 +412,6 @@ mod tests {
         assert_eq!(no_match, DuplicateCheckResult::NoDuplicate);
     }
 
-    /// audit_04 #4: email-sourced statements used the Gmail `message_id` as a
-    /// `file_hash` "proxy", so the same PDF arriving twice (forwarded, re-sent,
-    /// or already manually uploaded) never matched and was imported again.
-    /// The hash must be of the bytes, and a known one must be skipped.
     #[tokio::test]
     async fn email_attachment_hash_is_content_derived_and_skips_reimports() {
         let pool = setup_db().await;
@@ -485,8 +427,6 @@ mod tests {
             "must be the same sha256 the manual-upload path computes"
         );
 
-        // Same bytes from a *different* message -- a forward or re-send. The
-        // message-id proxy produced a fresh value here and re-imported.
         let same_bytes_other_message =
             hash_email_attachment_if_new(pdf, "stmt.pdf", "msg_b", &pool).await;
         assert_eq!(
@@ -495,7 +435,6 @@ mod tests {
             "hash depends on content, not on which message carried it"
         );
 
-        // Once imported under that hash, it must be skipped.
         let conn = pool.get().await.unwrap();
         let hash = first.clone();
         conn.interact(move |c| {
@@ -516,16 +455,11 @@ mod tests {
             "an already-imported statement must not be enqueued again"
         );
 
-        // Not a PDF at all -- skipped before a row or a password prompt.
         assert_eq!(
             hash_email_attachment_if_new(b"not a pdf", "notes.pdf", "msg_c", &pool).await,
             None
         );
     }
-
-    // ── test_filename_billing_period_heuristic (Doc 30 TASK-STMT-001) ───────
-    // (the individual `filename_*` unit tests above already exercise every
-    // named pattern; this is the one test matching the spec's exact name)
 
     #[test]
     fn test_filename_billing_period_heuristic() {
@@ -534,11 +468,6 @@ mod tests {
             Some(("2026-01-01".to_string(), "2026-01-31".to_string()))
         );
     }
-
-    // ── test_ambiguous_filename_defers_check (Doc 30 TASK-STMT-002) ──────────
-    // A dedicated test for the deferral behavior alone, distinct from
-    // test_duplicate_cycle_skipped_after_metadata_extraction's fuller
-    // filename-then-post-metadata round trip.
 
     #[tokio::test]
     async fn test_ambiguous_filename_defers_check() {
@@ -556,9 +485,6 @@ mod tests {
         .await
         .unwrap();
 
-        // "statement.pdf" has no year/month pattern at all — the heuristic
-        // must yield None rather than guessing, deferring to Doc 30
-        // TASK-STMT-004's real metadata extraction.
         let result = check_filename_billing_cycle("statement.pdf", "inst_ambig", &pool)
             .await
             .unwrap();
@@ -568,13 +494,10 @@ mod tests {
         );
     }
 
-    // ── test_duplicate_cycle_skipped_from_filename (Doc 10 §5.2) ────────────
-
     #[tokio::test]
     async fn test_duplicate_cycle_skipped_from_filename() {
         let pool = setup_db().await;
 
-        // Seed: insert instrument + statement for 2024-01 cycle
         let conn = pool.get().await.unwrap();
         conn.interact(|c| {
             c.execute(
@@ -596,7 +519,6 @@ mod tests {
         .await
         .unwrap();
 
-        // Filename clearly encodes the already-imported billing cycle
         let result = check_filename_billing_cycle("ICICI_Credit_2024-01.pdf", "inst_fn", &pool)
             .await
             .unwrap();
@@ -604,13 +526,10 @@ mod tests {
         assert_eq!(result, Some(DuplicateCheckResult::DuplicateBillingCycle));
     }
 
-    // ── test_duplicate_cycle_skipped_after_metadata_extraction (Doc 10 §5.2) ─
-
     #[tokio::test]
     async fn test_duplicate_cycle_skipped_after_metadata_extraction() {
         let pool = setup_db().await;
 
-        // Seed instrument + statement for 2024-06 cycle
         let conn = pool.get().await.unwrap();
         conn.interact(|c| {
             c.execute(
@@ -632,7 +551,6 @@ mod tests {
         .await
         .unwrap();
 
-        // Generic filename yields None from heuristic
         let filename_result =
             check_filename_billing_cycle("account-statement.pdf", "inst_meta", &pool)
                 .await
@@ -642,8 +560,6 @@ mod tests {
             "Generic filename should yield None — defer to post-metadata"
         );
 
-        // After metadata extraction provides billing period, check_billing_cycle_duplicate
-        // should detect the duplicate
         let post_meta_result =
             check_billing_cycle_duplicate("inst_meta", "2024-06-01", "2024-06-30", &pool)
                 .await
@@ -653,15 +569,12 @@ mod tests {
             DuplicateCheckResult::DuplicateBillingCycle
         );
 
-        // Different period: must pass
         let new_period =
             check_billing_cycle_duplicate("inst_meta", "2024-07-01", "2024-07-31", &pool)
                 .await
                 .unwrap();
         assert_eq!(new_period, DuplicateCheckResult::NoDuplicate);
     }
-
-    // ── Original test for billing period duplicate ───────────────────────────
 
     #[tokio::test]
     async fn test_duplicate_billing_period_rejected() {
@@ -699,7 +612,6 @@ mod tests {
         assert_eq!(res2, DuplicateCheckResult::NoDuplicate);
     }
 
-    // ── test_duplicate_statement_reuploaded_after_deletion_succeeds ────────
     #[tokio::test]
     async fn test_duplicate_statement_reuploaded_after_deletion_succeeds() {
         let temp_dir =
@@ -716,7 +628,6 @@ mod tests {
             )
             .unwrap();
 
-            // Insert a statement for the billing period
             c.execute(
                 "INSERT INTO statements \
                  (id, instrument_id, statement_type, billing_period_start, billing_period_end, \
@@ -735,7 +646,6 @@ mod tests {
             .unwrap();
         assert_eq!(res, DuplicateCheckResult::DuplicateBillingCycle);
 
-        // Delete the statement simulating a user deleting a rejected duplicate or bad parse
         conn.interact(|c| {
             c.execute("DELETE FROM statements WHERE id = 'stmt_del'", [])
                 .unwrap();
@@ -747,7 +657,6 @@ mod tests {
             check_billing_cycle_duplicate("inst_del", "2023-01-01", "2023-01-31", &pool)
                 .await
                 .unwrap();
-        // Since the previous one is deleted, it should NOT flag as duplicate, allowing re-upload
         assert_eq!(res_after_del, DuplicateCheckResult::NoDuplicate);
     }
 }

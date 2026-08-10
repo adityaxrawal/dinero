@@ -1,32 +1,12 @@
-//! Doc 30 TASK-DEDUP-001: Fingerprint Pre-Filter Lookup.
+//! Narrows candidates by fingerprint before scoring.
 //!
-//! Before the full windowed candidate search (TASK-DEDUP-003) and scoring
-//! engine (TASK-DEDUP-004) ever run, an indexed lookup via
-//! `idx_transaction_observations_fingerprint`: an exact fingerprint match
-//! against an already-reconciled observation is treated as an extremely
-//! strong exact-match candidate, skipping the more expensive fuzzy scoring
-//! entirely for performance (Document 29 §11). No match falls through to
-//! windowed candidate generation.
-//!
-//! The fingerprint (Doc 30 TASK-TXN-008) is only ever set on observations
-//! whose source pipeline could compute one (Gmail-sourced observations with
-//! a resolved `instrument_id` and `connected_account_id`); observations
-//! without one (manual entries, and currently statement-PDF rows -- flagged
-//! separately, see `src-tauri/src/statements/observation_builder.rs`)
-//! simply skip this pre-filter and fall through to windowed search, which is
-//! always correctness-preserving, just not the performance shortcut.
-
+//! Scoring every observation against the entire ledger would not scale. The
+//! fingerprint lookup reduces the field to plausible matches cheaply, so the
+//! expensive comparison runs over a handful of rows rather than all of them.
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension};
 
-/// Looks up an existing, already-reconciled observation sharing the given
-/// fingerprint (excluding the incoming observation's own row, which is
-/// already persisted by the time reconciliation runs, Doc 30 TASK-TXN-009).
-///
-/// Returns the linked `canonical_transaction_id` of the oldest such match,
-/// if any -- the caller (`reconciliation::engine::reconcile`) is responsible
-/// for verifying the strict exact-match conditions (TASK-DEDUP-002) before
-/// treating this as a confirmed match.
+/// Narrows candidates by fingerprint before the expensive scoring pass.
 pub fn fingerprint_prefilter_lookup(
     conn: &Connection,
     fingerprint: &str,
@@ -79,7 +59,6 @@ mod tests {
         .expect("insert obs");
     }
 
-    /// Doc 30 TASK-DEDUP-001 acceptance test.
     #[test]
     fn test_prefilter_finds_exact_fingerprint_match() {
         let conn = setup_test_db();
@@ -89,7 +68,6 @@ mod tests {
         assert_eq!(hit, Some("txn_canonical_1".to_string()));
     }
 
-    /// Doc 30 TASK-DEDUP-001 acceptance test.
     #[test]
     fn test_prefilter_falls_through_to_full_scoring_on_miss() {
         let conn = setup_test_db();
@@ -99,9 +77,6 @@ mod tests {
         assert_eq!(hit, None);
     }
 
-    /// A fingerprint match against a row that hasn't been reconciled yet
-    /// (`canonical_transaction_id IS NULL`) is not a usable pre-filter hit --
-    /// there is nothing yet to auto-match against.
     #[test]
     fn test_prefilter_ignores_unlinked_observation() {
         let conn = setup_test_db();
@@ -111,8 +86,6 @@ mod tests {
         assert_eq!(hit, None);
     }
 
-    /// The incoming observation's own row (already persisted, Doc 30
-    /// TASK-TXN-009) must never match itself.
     #[test]
     fn test_prefilter_excludes_self() {
         let conn = setup_test_db();

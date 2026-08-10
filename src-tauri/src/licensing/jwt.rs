@@ -1,14 +1,13 @@
+//! Verifies licence tokens against the embedded public key.
+//!
+//! The algorithm is pinned rather than read from the token header; trusting the
+//! header would let a forged token nominate `none` and bypass verification.
 use anyhow::{Context, Result};
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 
-/// Public key embedded at build time (Doc 22 §10.2, §10.3: `include_str!("keys/license_public.pem")`).
-///
-/// ⚠️ See `keys/README.md` — this is currently a placeholder keypair with no
-/// real Licensing Backend counterpart and must be replaced before release.
 const EMBEDDED_PUBLIC_KEY_PEM: &str = include_str!("../../keys/license_public.pem");
 
-/// Claims carried by the Licensing Backend's RSA-256 JWT (Doc 22 §10.3, Doc 19 §14.2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LicenseClaims {
     pub sub: String,
@@ -18,17 +17,15 @@ pub struct LicenseClaims {
     pub exp: i64,
 }
 
-/// Verifies a license JWT's RSA-256 signature and expiry against the embedded
-/// public key (Doc 22 §10.3). This is the cryptographic check every
-/// paid-feature-gated command must perform before trusting license state —
-/// `subscription_status_cached` is display-only and must never be trusted alone.
+/// Verifies a licence token against the embedded public key.
 pub fn verify_license_jwt(jwt: &str) -> Result<LicenseClaims> {
     verify_license_jwt_with_key(jwt, EMBEDDED_PUBLIC_KEY_PEM)
 }
 
-/// Core verification logic, parameterized on the public key PEM so it can be
-/// exercised in tests against a dedicated test keypair — the embedded
-/// placeholder has no real matching private key to sign test tokens with.
+/// Verifies a token against a supplied key.
+///
+/// The algorithm is pinned rather than read from the token header; trusting the
+/// header would let a forged token nominate `none` and skip verification.
 fn verify_license_jwt_with_key(jwt: &str, public_key_pem: &str) -> Result<LicenseClaims> {
     let decoding_key = DecodingKey::from_rsa_pem(public_key_pem.as_bytes())
         .context("Failed to parse RSA public key")?;
@@ -47,9 +44,6 @@ mod tests {
     use super::*;
     use jsonwebtoken::{encode, EncodingKey, Header};
 
-    // Dedicated test-only RSA-2048 keypair, generated once for this test suite.
-    // Unrelated to the embedded production placeholder in keys/license_public.pem
-    // and never used outside this test module.
     const TEST_PRIVATE_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----
 MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC7uXV4lFFmcvzN
 A7y3Z9NWxIzYCGY777EQT3jBgmdkuJZ8L+oEhh33FsHn/a5JsWQuBDiFixU76c+S
@@ -128,9 +122,6 @@ NwIDAQAB
     fn test_signature_from_wrong_key_rejected() {
         let claims = valid_claims();
         let jwt = sign_test_jwt(&claims);
-        // Verifying a JWT signed by the test private key against the *embedded
-        // placeholder* public key (an unrelated keypair) must fail — this proves
-        // signature verification is real, not a no-op that just decodes claims.
         let result = verify_license_jwt_with_key(&jwt, EMBEDDED_PUBLIC_KEY_PEM);
         assert!(
             result.is_err(),
@@ -143,7 +134,6 @@ NwIDAQAB
         let claims = valid_claims();
         let jwt = sign_test_jwt(&claims);
         let mut parts: Vec<&str> = jwt.split('.').collect();
-        // Corrupt one character of the base64url payload segment.
         let mut payload = parts[1].to_string();
         let last = payload.pop().unwrap();
         payload.push(if last == 'A' { 'B' } else { 'A' });
@@ -158,8 +148,6 @@ NwIDAQAB
 
     #[test]
     fn test_embedded_placeholder_key_is_well_formed() {
-        // Sanity check: the embedded placeholder key must at least be valid PEM,
-        // even though nothing will ever legitimately validate against it.
         let result = DecodingKey::from_rsa_pem(EMBEDDED_PUBLIC_KEY_PEM.as_bytes());
         assert!(
             result.is_ok(),

@@ -1,3 +1,4 @@
+//! Tauri commands exposing licence status and billing actions.
 use crate::db::local_profile::select_by_id;
 use crate::error::AppError;
 use crate::licensing::client::{ActivateRequest, LicensingClient, ValidateRequest};
@@ -11,8 +12,6 @@ use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use serde::Serialize;
 use tauri::State;
 
-/// Same Licensing Backend host used by the background validation worker
-/// (Doc 22 §10.1 — the narrow, single-purpose licensing network destination).
 const LICENSING_BASE_URL: &str = "https://api.dinero-app.com";
 
 #[derive(Serialize, Clone)]
@@ -48,10 +47,7 @@ pub struct LicenseRefreshResponse {
     pub state: String,
 }
 
-/// Shared by `license_get_status` and by every state-mutating call site
-/// (TASK-FE-002/016: `useLicenseStore` needs a fresh, consistent snapshot to
-/// emit alongside `AppEvent::LicenseStateChanged`, not a hand-rolled partial
-/// payload per call site).
+/// Projects stored licence state into the status the frontend consumes.
 pub(crate) fn compute_license_status(
     c: &rusqlite::Connection,
 ) -> Result<LicenseStatusResponse, AppError> {
@@ -76,7 +72,6 @@ pub(crate) fn compute_license_status(
     Ok(LicenseStatusResponse {
         state: state.subscription_status_cached.as_str().to_uppercase(),
         is_active,
-        // Doc 19 §14.2: Razorpay-based activation has no license_key at all.
         license_key_masked: None,
         plan_id: state.plan_id_cached,
         billing_interval: state.billing_interval_cached,
@@ -88,8 +83,8 @@ pub(crate) fn compute_license_status(
     })
 }
 
-/// Doc 19 §14.1.
 #[tauri::command]
+/// Returns the current licence status.
 pub async fn license_get_status(
     pool: State<'_, deadpool_sqlite::Pool>,
 ) -> Result<LicenseStatusResponse, AppError> {
@@ -99,10 +94,10 @@ pub async fn license_get_status(
         .map_err(|e| AppError::Unknown(e.to_string()))?
 }
 
-/// Recomputes and emits the current license status as `AppEvent::LicenseStateChanged`
-/// — TASK-FE-002/016's `useLicenseStore` reactive-mirror requirement. Errors are
-/// logged, never propagated: a failed status broadcast must not fail the write
-/// that triggered it.
+/// Notifies the frontend that licence state changed.
+///
+/// Pushed as an event so a purchase or expiry takes effect immediately, without
+/// the user restarting the app.
 pub(crate) async fn emit_license_state_changed<R: tauri::Runtime>(
     app_handle: &tauri::AppHandle<R>,
     pool: &deadpool_sqlite::Pool,
@@ -120,6 +115,7 @@ pub(crate) async fn emit_license_state_changed<R: tauri::Runtime>(
     }
 }
 
+/// Builds the status response for a trial.
 fn trial_status_response(c: &rusqlite::Connection) -> Result<LicenseStatusResponse, AppError> {
     let remaining = trial_days_remaining(c)?;
     let profile = select_by_id(c, 1)
@@ -146,9 +142,8 @@ fn trial_status_response(c: &rusqlite::Connection) -> Result<LicenseStatusRespon
     })
 }
 
-/// Doc 19 §14.2: activate via Razorpay payment confirmation, bind this device,
-/// store the returned JWT (never returned to the frontend).
 #[tauri::command]
+/// Activates a licence against the licensing service.
 pub async fn license_activate(
     email: String,
     razorpay_payment_id: String,
@@ -158,9 +153,6 @@ pub async fn license_activate(
     session_state: State<'_, crate::auth::session::SessionState>,
     app_handle: tauri::AppHandle,
 ) -> Result<LicenseActivateResponse, AppError> {
-    // TASK-AUTH-008: requires an active local session (resolved from
-    // Rust-side SessionState, never a caller-supplied argument) before any
-    // licensing IPC command executes.
     crate::ipc::middleware::require_active_session(&session_state)?;
 
     let device_id = get_device_id().map_err(|e| AppError::Auth(e.to_string()))?;
@@ -176,9 +168,6 @@ pub async fn license_activate(
         })
         .await
         .map_err(|e| {
-            // Document 30 TASK-AUTH-011: DEVICE_ALREADY_BOUND must be
-            // surfaced clearly, with guidance to deactivate elsewhere first
-            // — not a generic network-error string.
             if e.to_string() == "DEVICE_ALREADY_BOUND" {
                 AppError::Auth(
                     "This license is already active on another Mac. Deactivate it there first \
@@ -190,7 +179,6 @@ pub async fn license_activate(
             }
         })?;
 
-    // Doc 22 §10.3: never trust an unverified JWT, even on HTTP success.
     let claims = verify_license_jwt(&response.jwt)
         .map_err(|e| AppError::Auth(format!("Activation JWT failed verification: {}", e)))?;
 
@@ -215,8 +203,6 @@ pub async fn license_activate(
         jwt_expires_at: expires_at,
         last_server_validated_at: Some(Utc::now()),
         last_known_valid_time: Utc::now(),
-        // Doc 22 §11.2: device_fingerprint is stored "at first activation" — this
-        // is that first write; nothing populated it before now (C8).
         device_fingerprint: Some(device_id),
         source: "server_fresh".to_string(),
         billing_interval_cached: Some(claims.billing_interval.clone()),
@@ -238,14 +224,8 @@ pub async fn license_activate(
     })
 }
 
-/// Doc 19 §14.3.
-///
-/// TASK-AUTH-008: requires an active local session for the genuine
-/// user-invoked IPC path. The "Reset App Data" full wipe (`commands::data`)
-/// calls `deactivate_license_internal` directly instead — Doc 28 §4.4's
-/// Local Wipe Priority means that flow must attempt deactivation
-/// unconditionally, even if no session happens to be active at that moment.
 #[tauri::command]
+/// Command deactivating this device's licence.
 pub async fn license_deactivate(
     pool: State<'_, deadpool_sqlite::Pool>,
     session_state: State<'_, crate::auth::session::SessionState>,
@@ -257,8 +237,7 @@ pub async fn license_deactivate(
     Ok(response)
 }
 
-/// The actual deactivation logic, callable without a session requirement —
-/// see `license_deactivate`'s doc comment for why the wipe flow needs this.
+/// Performs deactivation and clears local licence state.
 pub async fn deactivate_license_internal(
     pool: &deadpool_sqlite::Pool,
 ) -> Result<LicenseDeactivateResponse, AppError> {
@@ -287,13 +266,8 @@ pub async fn deactivate_license_internal(
     })
 }
 
-/// Doc 19 §14.4 — the "Refresh License" manual action (also what C11's fixed
-/// background loop calls on its own cadence).
-///
-/// TASK-AUTH-008/011: gated behind an active session for the same reason as
-/// `license_activate`/`license_deactivate` — all three are "licensing IPC
-/// commands" this task's text groups together.
 #[tauri::command]
+/// Re-validates the licence with the service.
 pub async fn license_refresh(
     pool: State<'_, deadpool_sqlite::Pool>,
     session_state: State<'_, crate::auth::session::SessionState>,
@@ -350,13 +324,8 @@ pub struct CheckoutCompletedResponse {
     pub razorpay_signature: String,
 }
 
-/// Doc 30 TASK-BILL-002: creates a Razorpay order, opens hosted checkout in
-/// the system browser (never embedding raw card-entry fields in the Tauri
-/// WebView), and blocks until the loopback listener sees either a completed
-/// payment or a dismissal/timeout. Returns the payment id/signature for the
-/// frontend to pass straight into the existing `license_activate` command
-/// (Doc 19 §14.2) -- this command never itself activates anything.
 #[tauri::command]
+/// Starts the checkout flow for a purchase.
 pub async fn billing_start_checkout(
     email: String,
     plan_id: String,

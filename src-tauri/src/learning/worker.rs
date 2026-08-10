@@ -1,32 +1,23 @@
+//! Background worker that processes correction feedback into rules.
+//!
+//! Queued and asynchronous by design: rule synthesis can invoke the LLM, and
+//! making the user wait on that to edit a merchant name would be intolerable.
 use deadpool_sqlite::Pool;
 use tokio::sync::mpsc;
 
-/// Bounded so a runaway producer cannot grow memory without limit. Corrections
-/// are human-paced, so this is never reached in practice; when it is, [`enqueue`]
-/// drops rather than waits.
 pub(crate) const FEEDBACK_QUEUE_CAPACITY: usize = 128;
 
-/// How much of a bank's settled history a candidate is regressed against.
-/// Twenty is enough to catch a rule that fires on the wrong template shape
-/// without making the check a scan.
 const REGRESSION_SAMPLE_LIMIT: usize = 20;
 
-/// One field correction, with everything the worker needs to author a rule from
-/// it. The source text is captured by the *producer*, at correction time, rather
-/// than re-fetched here — the retention sweep could otherwise null the body
-/// between the save and the worker picking the job up.
 pub struct FeedbackJob {
     pub feedback_log_id: String,
     pub bank_name: String,
     pub field_name: String,
-    /// `'email' | 'statement_pdf'`.
     pub source_type: String,
-    /// The email body, or the statement row's `description_raw`.
     pub source_text: String,
     pub old_value: Option<String>,
     pub new_value: String,
     pub observation_id: Option<String>,
-    /// `'user_edit' | 'drift_llm' | 'batch_cleanup'`.
     pub learned_from: String,
     pub app_dir: Option<std::path::PathBuf>,
 }
@@ -36,21 +27,13 @@ pub struct LearningHandle {
     pub tx: mpsc::Sender<FeedbackJob>,
 }
 
-/// Which author produced a candidate. Recorded on the row so a later "why is
-/// this rule here" question is answerable — it grants no extra trust, since both
-/// arms cleared the identical gate.
 pub(crate) enum Authored {
     Deterministic(serde_json::Value),
     Llm(serde_json::Value),
     None,
 }
 
-/// One sequential consumer. Corrections arrive at human pace — a worker pool
-/// would add contention on the LLM sidecar for no throughput anyone can
-/// perceive.
-///
 /// ponytail: single consumer; revisit only if a bulk re-correction feature ever
-/// makes this a real queue.
 pub fn spawn_learning_worker(pool: Pool) -> LearningHandle {
     let (tx, mut rx) = mpsc::channel::<FeedbackJob>(FEEDBACK_QUEUE_CAPACITY);
     tauri::async_runtime::spawn(async move {
@@ -61,29 +44,19 @@ pub fn spawn_learning_worker(pool: Pool) -> LearningHandle {
     LearningHandle { tx }
 }
 
-/// Hands a job to the worker without ever blocking the caller.
-///
-/// `try_send` rather than `send`: the caller is an IPC command that has already
-/// committed the user's correction and is about to return. Waiting on a full
-/// channel would make saving a transaction slow for a background nicety, and
-/// failing would surface a learning-pipeline problem as a failed save. A dropped
-/// job means one correction is not learned from; the correction itself is
-/// already safe on disk.
+/// Queues a feedback job for background processing.
 pub async fn enqueue(handle: &LearningHandle, job: FeedbackJob) {
     if let Err(e) = handle.tx.try_send(job) {
         tracing::debug!("learning queue full or closed, dropping feedback job: {e}");
     }
 }
 
-/// Author a rule for one correction, validate it, store it if it holds.
+/// Turns one user correction into a synthesised rule.
 ///
-/// Every exit is a no-op for the user's data: the correction was committed
-/// before this job existed, and nothing here writes to `transactions` or
-/// `transaction_observations`.
+/// Runs on the worker rather than inline, because synthesis can invoke the LLM
+/// and the user's edit must stay instant.
 pub(crate) async fn process_feedback_job(job: FeedbackJob, pool: &Pool) {
     if job.source_text.trim().is_empty() || job.new_value.trim().is_empty() {
-        // No retained source (purged past retention, or a manually-created
-        // transaction) — log-only, nothing to anchor on.
         tracing::debug!(
             field = %job.field_name,
             "learning: no source text for this correction, nothing to learn from"
@@ -93,7 +66,6 @@ pub(crate) async fn process_feedback_job(job: FeedbackJob, pool: &Pool) {
 
     let template_hash = crate::extraction::ladder::compute_template_hash(&job.source_text);
 
-    // ── Author: deterministic first, LLM only if it cannot produce one ───────
     let authored = match crate::extraction::rule_synthesis::synthesize(
         &job.field_name,
         &job.source_text,
@@ -118,9 +90,6 @@ pub(crate) async fn process_feedback_job(job: FeedbackJob, pool: &Pool) {
         }
     };
 
-    // ── Gate step 1: self-check ──────────────────────────────────────────────
-    // Belt and braces — both authors already ran it, but this is the one
-    // invariant that must never depend on a caller having remembered to.
     let needles =
         crate::extraction::rule_synthesis::needle_candidates(&job.field_name, &job.new_value);
     let is_override = payload.get("override_value").is_some();
@@ -131,7 +100,6 @@ pub(crate) async fn process_feedback_job(job: FeedbackJob, pool: &Pool) {
         return;
     }
 
-    // ── Gate step 2: regression against this bank's settled history ──────────
     let samples = {
         let (bank, field, source_type, obs) = (
             job.bank_name.clone(),
@@ -166,10 +134,6 @@ pub(crate) async fn process_feedback_job(job: FeedbackJob, pool: &Pool) {
         return;
     }
 
-    // ── Store ────────────────────────────────────────────────────────────────
-    // A confirmed user correction (or a validated LLM rewrite of one) is ground
-    // truth and goes live immediately. A drift-detected candidate is a guess and
-    // still earns activation through 3 auto-successes.
     let status = if job.learned_from == "drift_llm" {
         "pending"
     } else {
@@ -200,8 +164,6 @@ pub(crate) async fn process_feedback_job(job: FeedbackJob, pool: &Pool) {
     let Ok(conn) = pool.get().await else { return };
     let stored = conn
         .interact(move |c| {
-            // An empty feedback_log_id means this candidate came from drift
-            // detection, which has no user correction to point at.
             let feedback_ref = if feedback_id.is_empty() {
                 None
             } else {
@@ -225,9 +187,7 @@ pub(crate) async fn process_feedback_job(job: FeedbackJob, pool: &Pool) {
     }
 }
 
-/// The fallback author. Silent no-op when the model is unavailable — an
-/// LLM-less machine simply learns from the deterministic pass alone, which is
-/// where the large majority of corrections land anyway.
+/// Authors a replacement rule using the LLM.
 async fn author_with_llm(job: &FeedbackJob, pool: &Pool) -> Authored {
     let Some(app_dir) = job.app_dir.as_deref() else {
         return Authored::None;
@@ -282,8 +242,6 @@ async fn author_with_llm(job: &FeedbackJob, pool: &Pool) -> Authored {
     {
         Ok(r) => r,
         Err(e) => {
-            // TimedOut / InfraFailed / Rejected all land here. The worker just
-            // does not write a rule.
             tracing::debug!(field = %job.field_name, "learning: LLM authoring failed: {e}");
             return Authored::None;
         }
@@ -300,8 +258,7 @@ async fn author_with_llm(job: &FeedbackJob, pool: &Pool) -> Authored {
     }
 }
 
-/// Same resolution `commands::merchant_cleanup` uses — the stored preference if
-/// its model is actually downloaded, otherwise whatever is.
+/// Resolves which model to use, or None if unavailable.
 async fn resolve_model(pool: &Pool, app_dir: &std::path::Path) -> Option<String> {
     let stored = match pool.get().await {
         Ok(conn) => conn
@@ -320,6 +277,7 @@ async fn resolve_model(pool: &Pool, app_dir: &std::path::Path) -> Option<String>
     crate::llm_manager::resolve_active_model(&downloaded, stored.as_deref())
 }
 
+/// Records a rejected rule candidate, so it is not re-derived repeatedly.
 async fn record_rejection(
     pool: &Pool,
     job: &FeedbackJob,
@@ -380,13 +338,10 @@ mod tests {
             new_value: new_value.to_string(),
             observation_id: Some("obs_1".to_string()),
             learned_from: "user_edit".to_string(),
-            // No app_dir: the LLM fallback must be unreachable in tests, so a
-            // pass here proves the deterministic path did the work.
             app_dir: None,
         }
     }
 
-    /// The headline behaviour: a correction becomes an immediately-active rule.
     #[tokio::test]
     async fn a_user_correction_becomes_an_active_rule() {
         let pool = setup_pool().await;
@@ -408,7 +363,6 @@ mod tests {
         assert_eq!(rules[0].field_name, "merchant");
     }
 
-    /// Drift-detected guesses do not get day-one trust.
     #[tokio::test]
     async fn a_drift_candidate_starts_pending() {
         let pool = setup_pool().await;
@@ -429,7 +383,6 @@ mod tests {
         );
     }
 
-    /// The edge case the design calls out: nothing written, nothing broken.
     #[tokio::test]
     async fn a_value_absent_from_the_source_is_rejected_not_applied() {
         let pool = setup_pool().await;
@@ -507,7 +460,6 @@ mod tests {
         assert_eq!(rules[0].rule_payload_json["override_value"], "credit");
     }
 
-    /// Scoping is structural: rules never cross banks or source types.
     #[tokio::test]
     async fn a_rule_is_scoped_to_its_bank_and_source_type() {
         let pool = setup_pool().await;
@@ -527,14 +479,10 @@ mod tests {
         assert!(other_source.is_empty());
     }
 
-    /// The channel must never make a correction slow or fail it.
     #[tokio::test]
     async fn enqueueing_never_blocks_the_caller() {
         let (tx, _rx) = mpsc::channel::<FeedbackJob>(FEEDBACK_QUEUE_CAPACITY);
         let handle = LearningHandle { tx };
-        // Far more than the channel capacity, with no consumer draining it; a
-        // full channel must drop rather than await, because the caller is an
-        // IPC command mid-save.
         for _ in 0..(FEEDBACK_QUEUE_CAPACITY * 2) {
             enqueue(&handle, job("merchant", "RAZ*SWIGGY LIMITE BANGALORE")).await;
         }
