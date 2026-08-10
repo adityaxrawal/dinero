@@ -1,30 +1,18 @@
-//! Doc 30 TASK-API-001: IPC Request Validation Middleware.
+//! Input validation at the IPC trust boundary.
 //!
-//! A shared `Validate` trait every IPC argument struct can implement, plus
-//! the individual field-level checks Document 30 names: non-empty-string,
-//! UUID format on every `*_id` field, date-range sanity, amount bounds, and
-//! pagination bounds. Failures return `AppError::Validation` with a
-//! specific, actionable message — never a generic "invalid input."
-//!
-//! **Retrofit status:** wired into the IPC argument structs for the
-//! command surfaces built or touched in this same Area 8 pass
-//! (transactions/instruments/statements/reconciliation list+search
-//! commands, TASK-API-002 through TASK-API-009) — retrofitting the full
-//! ~66-command surface (including commands outside Area 8's own file list,
-//! e.g. `licensing/commands.rs`) is a wider change than any single Area 8
-//! task's own file scope covers; flagged here rather than silently
-//! expanded.
-
+//! Arguments arrive from the frontend as untyped JSON, so they are checked here
+//! before reaching any query. Ids are validated as UUIDs, ranges for ordering,
+//! amounts for plausibility -- rejecting bad input at the edge rather than
+//! letting it fail deeper where the error is far harder to attribute.
 use crate::error::AppError;
 use chrono::NaiveDate;
 
-/// Implemented by every IPC argument struct that carries user-suppliable
-/// fields needing validation before the command body runs.
 pub trait Validate {
+    /// Validates this value, returning an error describing any problem.
     fn validate(&self) -> Result<(), AppError>;
 }
 
-/// Non-empty-string check, Document 30's first named rule.
+/// Rejects an empty or whitespace-only string.
 pub fn validate_non_empty(field_name: &str, value: &str) -> Result<(), AppError> {
     if value.trim().is_empty() {
         return Err(AppError::Validation(format!(
@@ -34,11 +22,10 @@ pub fn validate_non_empty(field_name: &str, value: &str) -> Result<(), AppError>
     Ok(())
 }
 
-/// UUID format check for every `*_id` field. Dinero's IDs are UUIDv4
-/// (Document 18, throughout) except `local_profile`/`license_state`
-/// (always `id = 1`, never user-suppliable) — this validator is for the
-/// UUID-keyed entities (transactions, instruments, statements, clusters,
-/// etc.).
+/// Rejects a value that is not a well-formed UUID.
+///
+/// Ids arrive from the frontend as untyped strings, so they are checked here
+/// rather than failing deeper in a query.
 pub fn validate_uuid(field_name: &str, value: &str) -> Result<(), AppError> {
     uuid::Uuid::parse_str(value).map_err(|_| {
         AppError::Validation(format!("{field_name} must be a valid UUID, got '{value}'"))
@@ -46,9 +33,7 @@ pub fn validate_uuid(field_name: &str, value: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Format check for a connected-account id: `gmail_<uuidv5>` (see
-/// `oauth.rs`'s `account_id` construction — a `gmail_`-prefixed deterministic
-/// hash of the account's email, not a bare UUID like other `*_id` fields).
+/// Validates an account identifier.
 pub fn validate_account_id(field_name: &str, value: &str) -> Result<(), AppError> {
     let uuid_part = value.strip_prefix("gmail_").ok_or_else(|| {
         AppError::Validation(format!(
@@ -63,7 +48,7 @@ pub fn validate_account_id(field_name: &str, value: &str) -> Result<(), AppError
     Ok(())
 }
 
-/// Date-range sanity: `start_date <= end_date`, both `YYYY-MM-DD`.
+/// Rejects a range whose start is after its end.
 pub fn validate_date_range(start_date: &str, end_date: &str) -> Result<(), AppError> {
     let start = NaiveDate::parse_from_str(start_date, "%Y-%m-%d").map_err(|_| {
         AppError::Validation(format!(
@@ -83,20 +68,10 @@ pub fn validate_date_range(start_date: &str, end_date: &str) -> Result<(), AppEr
     Ok(())
 }
 
-/// Doc 30: "reject invalid negative `amount_minor`, reject unreasonably
-/// large amounts as likely input errors." `allow_negative` distinguishes
-/// fields where a negative value is meaningful (none currently — all
-/// monetary fields in this schema are unsigned magnitudes with `direction`
-/// carrying sign, Document 18 §4.3) from ones where it never is; kept as a
-/// parameter rather than hardcoded so a future signed field doesn't need a
-/// second function.
-// Grouped as `<rupees>_00` rather than clippy's preferred uniform 3-digit
-// grouping so the trailing paise pair stays visible at a glance.
 #[allow(clippy::inconsistent_digit_grouping)]
-// Doc 30: "unreasonably large... likely input errors" -- INR 1,00,00,000
-// (1 crore) in paise, an engineering default, not a sourced figure.
 pub const MAX_REASONABLE_AMOUNT_MINOR: i64 = 100_000_000_00;
 
+/// Rejects an implausible monetary amount.
 pub fn validate_amount_minor(
     field_name: &str,
     amount_minor: i64,
@@ -115,10 +90,11 @@ pub fn validate_amount_minor(
     Ok(())
 }
 
-/// Pagination bounds: `page >= 1`, `per_page` in `[1, 200]` (Document 19
-/// §3.3's `page_size` cap).
 pub const MAX_PAGE_SIZE: u32 = 200;
 
+/// Rejects pagination parameters outside sane bounds.
+///
+/// An unbounded page size would let one call load the entire ledger into memory.
 pub fn validate_pagination(page: u32, per_page: u32) -> Result<(), AppError> {
     if page < 1 {
         return Err(AppError::Validation(format!(
@@ -137,7 +113,6 @@ pub fn validate_pagination(page: u32, per_page: u32) -> Result<(), AppError> {
 mod tests {
     use super::*;
 
-    /// Doc 30 TASK-API-001 acceptance test.
     #[test]
     fn test_uuid_validation_rejects_malformed() {
         assert!(validate_uuid("transaction_id", "not-a-uuid").is_err());
@@ -154,7 +129,6 @@ mod tests {
         assert!(validate_account_id("account_id", "").is_err());
     }
 
-    /// Doc 30 TASK-API-001 acceptance test.
     #[test]
     fn test_date_range_validation_rejects_inverted() {
         assert!(validate_date_range("2026-06-01", "2026-01-01").is_err());
@@ -166,7 +140,6 @@ mod tests {
         assert!(validate_date_range("not-a-date", "2026-01-01").is_err());
     }
 
-    /// Doc 30 TASK-API-001 acceptance test.
     #[test]
     fn test_pagination_bounds_enforced() {
         assert!(validate_pagination(0, 50).is_err(), "page must be >= 1");
@@ -179,7 +152,6 @@ mod tests {
         assert!(validate_pagination(1, 50).is_ok());
     }
 
-    /// Doc 30 TASK-API-001 acceptance test.
     #[test]
     fn test_negative_amount_rejected_where_invalid() {
         assert!(validate_amount_minor("amount_minor", -100, false).is_err());

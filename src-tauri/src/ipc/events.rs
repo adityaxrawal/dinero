@@ -1,7 +1,12 @@
+//! The catalogue of events the backend emits.
+//!
+//! Names are centralised in one enum because they are matched as strings on the
+//! frontend: a literal typed at an emit site would compile fine and simply never
+//! be received. Anything the frontend must learn about without asking -- scan
+//! progress, statement outcomes, licence changes -- arrives this way.
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Error};
 
-/// Strongly typed event names corresponding to the application's domain events.
 #[derive(Debug, Clone, Copy)]
 pub enum AppEvent {
     TransactionCreated,
@@ -25,25 +30,9 @@ pub enum AppEvent {
     BackgroundTaskProgress,
     SystemWarning,
     SystemWarningCleared,
-    /// Doc 30 TASK-RT-001: a historical scan can be cancelled mid-flight
-    /// (`scans_cancel`, Doc 19 §18) -- distinct from `ScanCompleted` because
-    /// treating a cancellation as a completion would misrepresent it to the
-    /// UI (100% progress bar, "Sync Now" re-enabled as if nothing is pending).
     ScanCancelled,
-    /// Issue #12: progress of the user-triggered LLM merchant/category
-    /// cleanup pass. Distinct from `BackgroundTaskProgress` because the
-    /// Settings panel needs the run's identity to offer "undo this run",
-    /// which a generic progress payload cannot carry.
     MerchantCleanupProgress,
-    /// Issue #7: progress of the user-triggered "Re-parse All" pass over the
-    /// Action Needed queue. Distinct from `BackgroundTaskProgress` because
-    /// the queue panel needs the per-outcome tally (parsed / still locked /
-    /// expired) to tell the user what actually changed, which a generic
-    /// progress payload cannot carry.
     StatementReparseProgress,
-    /// TASK-DESK-001: native macOS menu items that need React (AppShell) to
-    /// act on them -- navigation, sidebar toggle, and the upload-statement
-    /// flow -- rather than a direct backend command invocation.
     MenuNavigate,
     MenuToggleSidebar,
     MenuUploadStatementRequested,
@@ -51,7 +40,10 @@ pub enum AppEvent {
 }
 
 impl AppEvent {
-    /// Returns the exact string representation used across the Tauri bridge.
+    /// The event name emitted over IPC.
+    ///
+    /// Matched as a string on the frontend, so these must stay in step with the
+    /// listeners there -- a rename compiles fine and is simply never received.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::TransactionCreated => "transaction_created",
@@ -86,8 +78,7 @@ impl AppEvent {
     }
 }
 
-/// Helper structure to reliably emit asynchronous frontend events.
-/// Takes a strongly-typed `AppEvent` and a serializable payload.
+/// Emits a typed event to the frontend.
 pub fn emit_event<R: tauri::Runtime, S: Serialize + Clone>(
     app_handle: &AppHandle<R>,
     event: AppEvent,
@@ -100,20 +91,6 @@ pub fn emit_event<R: tauri::Runtime, S: Serialize + Clone>(
 mod tests {
     use super::*;
 
-    /// Doc 30 TASK-RT-001 acceptance: `test_all_event_types_use_centralized_emit_module`.
-    ///
-    /// Two source-scanned files historically emitted several of Document 19
-    /// §15's 8 documented event types via raw, ad-hoc `app.emit("literal",
-    /// ...)` calls instead of this module -- `ingestion/historical_scan.rs`
-    /// (`scan_progress`/`scan_completed`/`scan_failed`/`scan_cancelled`) and
-    /// `background_tasks/indicator.rs` (`background_task_progress`). Both
-    /// were migrated onto `emit_event` as part of this task; this test
-    /// guards against a future raw-emit regression creeping back in by
-    /// asserting the literal event-name string no longer appears as a bare
-    /// `.emit("...")` argument in either file's source (it may still appear
-    /// as an `AppEvent::X.as_str()` match arm inside this very module, or as
-    /// a doc comment/string elsewhere -- what specifically must never
-    /// reappear is `.emit("scan_progress"` etc.).
     #[test]
     fn test_all_event_types_use_centralized_emit_module() {
         let historical_scan_src = include_str!("../ingestion/historical_scan.rs");
@@ -152,8 +129,6 @@ mod tests {
             "ipc::system_warnings must emit via emit_event, not a raw string"
         );
 
-        // Document 19 §15's 8 documented event types must each have a
-        // canonical name defined exactly once, here.
         let documented_event_names = [
             "transaction_created",
             "scan_progress",
@@ -172,11 +147,6 @@ mod tests {
         }
     }
 
-    /// Every one of Document 19 §15's 8 documented event-type strings maps
-    /// to exactly one `AppEvent` variant (`statement_parsed` is owned by the
-    /// sibling `statements::events` centralized module -- see that module's
-    /// own doc comment and Doc 30 v1.17 -- so it is checked against that
-    /// module's constant instead of this enum).
     fn event_name_is_defined(name: &str) -> bool {
         if name == "statement_parsed" {
             return crate::statements::events::PARSED == "statement_parsed";
@@ -194,13 +164,6 @@ mod tests {
         .any(|e| e.as_str() == name)
     }
 
-    /// Doc 30 TASK-RT-001 acceptance: `test_typescript_payload_types_match_rust_structs`.
-    /// `src/lib/events.ts` (and its cross-check test) has since been removed
-    /// as unused -- nothing in the frontend imported from it. This test now
-    /// only proves the Rust side: every `AppEvent` variant this module
-    /// claims to centralize has a real `.as_str()` arm (a stray variant with
-    /// no match arm would be a compile error, so this is a smoke test that
-    /// the enum hasn't drifted out of sync with its own `as_str` impl).
     #[test]
     fn test_typescript_payload_types_match_rust_structs() {
         for event in [
@@ -219,14 +182,6 @@ mod tests {
         }
     }
 
-    /// Doc 30 TASK-RT-001 acceptance: `test_event_state_persisted_for_late_mount_recovery`.
-    /// Document 19 §15's "critical events also persist their state so a
-    /// late-mounted component re-derives correct banner state" requirement is
-    /// concretely implemented by `ipc::system_warnings`'s process-wide
-    /// registry (`active_system_warnings`/`get_active_system_warnings`) --
-    /// proven end-to-end (emit, then query as a fresh "late-mounting"
-    /// caller would) here rather than duplicating that module's own unit
-    /// tests.
     #[test]
     fn test_event_state_persisted_for_late_mount_recovery() {
         use crate::ipc::system_warnings::{
@@ -246,9 +201,6 @@ mod tests {
             },
         );
 
-        // Simulates a component mounting *after* the emit above already
-        // happened -- it never received the live event, so the only way it
-        // can show correct state is by querying the persisted registry.
         let recovered = active_system_warnings();
         assert!(
             recovered

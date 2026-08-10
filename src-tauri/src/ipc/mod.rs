@@ -1,3 +1,9 @@
+//! Cross-cutting concerns for the IPC boundary.
+//!
+//! `with_panic_boundary` is the important one: a panic inside a command would
+//! otherwise unwind into the Tauri runtime, where the frontend sees only a dead
+//! call with no error. Catching it converts the panic into a structured error the
+//! UI can report, and keeps one bad command from destabilising the process.
 pub mod args;
 pub mod events;
 pub mod middleware;
@@ -7,30 +13,10 @@ pub mod validation;
 
 use crate::error::AppError;
 
-/// TASK-SETUP-013. A reusable, async-safe panic boundary for IPC command
-/// bodies.
+/// Runs a command future, converting a panic into a structured error.
 ///
-/// Document 19 §3.4 calls for `std::panic::catch_unwind` wrapping every
-/// command. That mechanism only catches *synchronous* panics inside the
-/// closure passed to it and does not work across `.await` points — but
-/// nearly every command in this codebase is `async fn`. The async-safe
-/// equivalent is spawning the future on its own Tokio task and inspecting
-/// the resulting `JoinError`: Tokio isolates a panicking task from the
-/// rest of the runtime and reports it back as an `Err(JoinError)` whose
-/// `is_panic()` is true — exactly analogous to `catch_unwind` for
-/// synchronous code, and the correct mechanism for this codebase's actual
-/// (fully async) command signatures.
-///
-/// Logs via `tracing::error!` (already flowing into `app-logs.log`, which
-/// the diagnostic bundle export reads — Document 19 §21.1) rather than
-/// writing an `audit_log` row directly: that would require threading a DB
-/// pool into this generic, DB-agnostic primitive. **Not yet wired into
-/// the ~53 existing command handlers** (`commands/mod.rs`,
-/// `licensing/commands.rs`, etc.) — retrofitting every already-built
-/// command is a wide, invasive change spanning most of Area 8's IPC
-/// surface. TASK-API-001 ("IPC Request Validation Middleware") is the
-/// natural integration point, since a DB pool is already in scope there
-/// to also write the `audit_log` row Document 19 describes.
+/// Without this a panic unwinds into the Tauri runtime and the frontend sees a
+/// dead call with no error at all.
 pub async fn with_panic_boundary<F, T>(fut: F) -> Result<T, AppError>
 where
     F: std::future::Future<Output = Result<T, AppError>> + Send + 'static,

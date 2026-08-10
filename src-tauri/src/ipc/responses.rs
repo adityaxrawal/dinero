@@ -1,6 +1,9 @@
+//! Response types returned to the frontend.
+//!
+//! Mirrored by hand in the frontend's IPC module, so a change here needs the
+//! matching change there; nothing enforces that across the boundary.
 use serde::{Deserialize, Serialize};
 
-/// Generic payload wrapper enforcing the { data: T, error: null } vs { data: null, error: E } pattern.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Payload<T> {
     pub data: Option<T>,
@@ -8,7 +11,7 @@ pub struct Payload<T> {
 }
 
 impl<T> Payload<T> {
-    /// Constructs a successful payload containing data.
+    /// Wraps a successful result.
     pub fn success(data: T) -> Self {
         Self {
             data: Some(data),
@@ -16,7 +19,7 @@ impl<T> Payload<T> {
         }
     }
 
-    /// Constructs an error payload with an error message string.
+    /// Wraps an error result.
     pub fn error(err: String) -> Self {
         Self {
             data: None,
@@ -25,7 +28,6 @@ impl<T> Payload<T> {
     }
 }
 
-/// Base response for a single transaction.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TransactionResponse {
     pub id: i64,
@@ -35,7 +37,6 @@ pub struct TransactionResponse {
     pub merchant_display_name: String,
 }
 
-/// Standardized response wrapper for paginated collections.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PaginatedResponse<T> {
     pub items: Vec<T>,

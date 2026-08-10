@@ -1,3 +1,13 @@
+//! Every Tauri command the frontend can invoke.
+//!
+//! This is the IPC surface. `get_handlers` registers the complete set at
+//! startup, so a command absent from that list is unreachable regardless of
+//! whether it exists here.
+//!
+//! Commands follow a consistent shape: validate arguments, check the licence
+//! gate where the operation writes, do the work, and return either a typed
+//! response or an `AppError` whose variant name becomes the code the frontend
+//! branches on.
 pub mod network;
 use crate::statements::{
     duplicate_check::{check_file_hash_duplicate, DuplicateCheckResult},
@@ -15,8 +25,6 @@ pub mod release_readiness;
 #[cfg(test)]
 mod data_tests;
 
-/// User-confirmed instrument identity resuming a statement previously blocked
-/// by the Statement Instrument Gate (Doc 12 §7.2a, C2 fix).
 #[derive(Debug, Clone)]
 pub struct ConfirmedInstrument {
     pub issuer_name: String,
@@ -24,13 +32,6 @@ pub struct ConfirmedInstrument {
     pub instrument_type: String,
 }
 
-/// G20/H10/J8 fix: renamed from `start_oauth_flow` to match Doc 19 §5.1's
-/// documented `auth_google_start` naming.
-///
-/// TASK-DB-022: no longer accepts `profile_id` from the caller — Dinero is
-/// single-tenant by construction (`local_profile.id` can only ever be `1`),
-/// so this resolves `db::scoping::LOCAL_PROFILE_ID` internally instead of
-/// trusting an IPC-supplied value (Document 22 §13.1).
 #[tauri::command]
 pub async fn auth_google_start(
     app: tauri::AppHandle,
@@ -47,11 +48,6 @@ pub async fn auth_google_start(
     .map_err(|e| crate::error::AppError::Auth(e.to_string()))
 }
 
-/// TASK-AUTH-005: revokes the current local session (`revoked_at`, never
-/// deleted) and clears in-memory session state — requires re-auth before any
-/// subsequent Gmail/licensing IPC command that depends on an active session
-/// (enforced broadly by TASK-AUTH-008's tenant-isolation pattern, which this
-/// task's session concept is the foundation for).
 #[tauri::command]
 pub async fn auth_logout(
     app: tauri::AppHandle,
@@ -63,15 +59,6 @@ pub async fn auth_logout(
         .map_err(|e| crate::error::AppError::Auth(e.to_string()))
 }
 
-/// Doc 19 §5.4, Doc 22 §8.2: returns the opt-in 24-word Secure Backup Recovery
-/// Phrase for the current `base_key`, generating it (and marking the user as
-/// opted in) on first call. Marks `local_profile.recovery_phrase_enabled` —
-/// previously a dangling column nothing ever set — and writes the audit entry
-/// the doc requires whenever the phrase is viewed.
-// G20/H10/J8 fix: renamed from `get_recovery_phrase` to match Doc 19 §5.4's
-// documented `auth_get_recovery_phrase` naming (the internal
-// `db::crypto::get_recovery_phrase` helper this calls is untouched — it's
-// not part of the IPC surface).
 #[tauri::command]
 pub async fn auth_get_recovery_phrase(
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
@@ -109,23 +96,6 @@ pub async fn auth_get_recovery_phrase(
     Ok(phrase)
 }
 
-/// Doc 19 §5.5, Doc 22 §8.2: derives `base_key` from a Recovery Phrase,
-/// verifies it actually decrypts `finance.db` on this machine, and — on
-/// success — recreates the Keychain entry this Mac needs going forward.
-/// Deliberately does not depend on `tauri::State<Pool>` (unlike every other
-/// command here): Doc 19 §5.5 marks this "unauthenticated, pre-login" because
-/// its entire purpose is recovering from exactly the scenario where the
-/// normal Keychain-backed pool never came up. It opens its own connection
-/// using the now-verified key to write the required audit entry.
-///
-/// Reaching this command in that literal boot-time scenario requires
-/// `lib.rs`'s current `.expect("Failed to initialize encrypted database")` to
-/// be replaced with a graceful recovery-mode boot path — a structural,
-/// app-wide startup change that overlaps with M14's separate, not-yet-reached
-/// "corrupted-DB recovery screen" scope (Doc 13 Flow 4.17, Doc 12 §13.2/§13.6)
-/// and was deliberately left untouched here; see the fix log for M03.
-// G20/H10/J8 fix: renamed from `restore_from_recovery_phrase` to match Doc 19
-// §5.5's documented `auth_restore_from_recovery_phrase` naming.
 #[tauri::command]
 pub async fn auth_restore_from_recovery_phrase(
     app: tauri::AppHandle,
@@ -169,8 +139,6 @@ pub struct ExportLogsResponse {
     pub file_path: String,
 }
 
-/// Doc 19 §21.1, Doc 36 §4, Doc 41 §5: generates the privacy-safe diagnostic
-/// bundle — the only path by which any operational data leaves the device.
 #[tauri::command]
 pub async fn export_logs(
     app: tauri::AppHandle,
@@ -196,17 +164,6 @@ pub async fn export_logs(
     })
 }
 
-/// Doc 30 TASK-OPS-004: forwards a renderer-side (JS/React) error into the
-/// same `tracing`-backed logging pipeline Rust panics already use, so it
-/// lands in `app-logs.log` at ERROR level and is picked up by
-/// `diagnostics::collect_error_lines` into the diagnostic bundle exactly
-/// like a Rust-side error — previously renderer errors only ever reached
-/// `console.error`, invisible to any exported bundle. `source` distinguishes
-/// a caught React render error (`react_error_boundary`) from an uncaught
-/// exception (`window_onerror`) or unhandled promise rejection
-/// (`unhandled_rejection`). The existing `redact()` pass over ERROR-level
-/// log lines at export time already covers whatever a `message`/`stack`
-/// happens to contain -- no separate redaction needed here.
 #[tauri::command]
 pub fn log_renderer_error(message: String, stack: Option<String>, source: String) {
     tracing::error!(
@@ -216,29 +173,7 @@ pub fn log_renderer_error(message: String, stack: Option<String>, source: String
         stack.map(|s| format!("\nStack: {}", s)).unwrap_or_default(),
     );
 }
-//
-// Steps (Doc 10 §3.2):
-//   1. Read file bytes from path; handle macOS TCC EPERM
-//   2. Validate: MIME = application/pdf, size ≤ 5MB, non-zero bytes → compute SHA-256
-//   3. File hash duplicate check (pre-password, against statements + unprocessed_statements)
-//   4. Filename-based billing cycle duplicate check (§5.2)
-//   5. Password resolution: try stored → prompt if needed (§5.3)
-//   6. Parse PDF in-memory (§5.6): pdfium primary → OCR fallback
-//   7. Extract metadata from first page (§5.4): billing period, amounts, instrument
-//   8. Instrument resolve / auto-create (§5.4)
-//   9. Post-metadata billing cycle duplicate check (§5.2 deferred path)
-//  10. Write statements row with parse_status='parsed' (§5.4)
-//  11. Extract statement rows per bank parser (§5.5)
-//  12. Filter, merge broken rows, map to statement_entries (§5.5)
-//  13. Map statement_entries to transaction_observations → reconcile (§5.5, §6.x)
-//  14. Classify upcoming bill → update instrument if needed (§5.7)
-//  15. Discard raw PDF bytes from memory (§5.8)
-//  16. Emit statement.parsed or statement.parse_failed event
 
-/// Doc 19 §9.1: one file in a `statements_upload` batch. The frontend reads
-/// the file via the browser File API (`file.arrayBuffer()`) and sends bytes
-/// directly — the Rust backend never reads a filesystem path itself, so a
-/// locked-down WebView with no filesystem access still works.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UploadFile {
@@ -246,7 +181,6 @@ pub struct UploadFile {
     pub filename: String,
 }
 
-/// Doc 19 §9.1: one per-file result, in submission order.
 #[derive(serde::Serialize)]
 pub struct UploadResult {
     pub statement_id: String,
@@ -254,9 +188,6 @@ pub struct UploadResult {
     pub status: String,
 }
 
-/// Doc 30 TASK-API-004 acceptance test `test_upload_command_rejects_missing_file`:
-/// extracted as a pure function so it's directly testable without the full
-/// async IPC plumbing.
 fn validate_upload_files_non_empty(files: &[UploadFile]) -> Result<(), crate::error::AppError> {
     if files.is_empty() {
         return Err(crate::error::AppError::Validation(
@@ -266,15 +197,6 @@ fn validate_upload_files_non_empty(files: &[UploadFile]) -> Result<(), crate::er
     Ok(())
 }
 
-/// Phase 5 — Upload one or more PDF statements for in-memory parsing (Doc 19 §9.1, FR-031).
-/// Each file becomes an independent Statement Queue job, subject to the same
-/// bounded 5-concurrent cap and Statement Instrument Gate as email-detected
-/// statements. Doc 19 §3.6 / Doc 15 §2.7: expensive PDF processing is queued
-/// and processed asynchronously — this command returns as soon as each file
-/// is validated and enqueued, never blocking on the parse itself. The real
-/// outcome (parsed / failed / awaiting_password / awaiting_instrument) arrives
-/// later via `statement_parsed`/`statement_parse_failed`/`statement_password_required`/
-/// `statement_instrument_confirmation_required` events.
 #[tauri::command]
 pub async fn statements_upload(
     files: Vec<UploadFile>,
@@ -282,14 +204,9 @@ pub async fn statements_upload(
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
     queues: tauri::State<'_, crate::ingestion::queues::QueueHandles>,
 ) -> Result<serde_json::Value, crate::error::AppError> {
-    // Doc 30 TASK-API-004 acceptance test `test_upload_command_rejects_missing_file`:
-    // real gap fixed here -- an empty `files` array previously fell through
-    // the loop below untouched and returned `Ok({"results": []})`, never an
-    // error.
     validate_upload_files_non_empty(&files)?;
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
-    // Lazy cleanup of expired PDFs when new statements are uploaded
     if let Ok(app_data_dir) = app.path().app_data_dir() {
         if let Err(e) =
             crate::statements::pdf_storage::cleanup_expired_pdfs(&app_data_dir, pool.inner()).await
@@ -298,15 +215,6 @@ pub async fn statements_upload(
         }
     }
 
-    // H2 fix (Doc 19 §9.1, FR-031): a real multi-file batch contract — one
-    // IPC round-trip processes every selected file, rather than only ever
-    // accepting a single path. Each file still goes through the identical
-    // single-statement pipeline below; failures are isolated per-file so one
-    // bad file in a batch doesn't abort the rest.
-    //
-    // Doc 30 TASK-STMT-009: batches over 10 statements share one progress
-    // tracker so the Statement Queue dispatcher can emit rolling
-    // parsed/total/eta_seconds events as each one actually finishes parsing.
     let batch_progress = if files.len() > 10 {
         Some(std::sync::Arc::new(
             crate::ingestion::queues::BatchProgressTracker::new(files.len()),
@@ -353,12 +261,10 @@ async fn upload_one_statement(
         bytes.len()
     );
 
-    // ── Step 2: Validate + SHA-256 ───────────────────────────────────────────
     let file_hash =
         validate_and_hash(&bytes).map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
     tracing::info!("File validated. sha256={}", file_hash);
 
-    // ── Step 3: File hash duplicate check (pre-password) ─────────────────────
     let hash_dup = check_file_hash_duplicate(&file_hash, None, pool_ref)
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
@@ -381,12 +287,6 @@ async fn upload_one_statement(
         ));
     }
 
-    // ── Step 4: Filename-based billing cycle duplicate check ──────────────────
-    // (instrument_id not yet known — we use a placeholder; real check happens at Step 9 post-metadata)
-    // Filename check is best-effort: if filename has a parseable period, do an early reject.
-    // We can only check against a known instrument; we'll re-check post-metadata with real instrument.
-    // For now: check filename period against all instruments (across-the-board heuristic).
-    // This is refined post-metadata at step 9 for the specific instrument.
     if let Ok(Some(DuplicateCheckResult::DuplicateBillingCycle)) =
         check_filename_billing_cycle_all_instruments(&filename, pool_ref).await
     {
@@ -394,9 +294,6 @@ async fn upload_one_statement(
             "Duplicate billing cycle detected from filename: '{}'",
             filename
         );
-        // Doc 30 TASK-STMT-002: "Every skip is logged to audit_log
-        // (statement_duplicate_skipped) with the detected period for user
-        // transparency."
         let period =
             crate::statements::duplicate_check::extract_billing_period_from_filename(&filename);
         log_duplicate_skipped_audit(&filename, period.as_ref(), pool_ref).await;
@@ -409,20 +306,6 @@ async fn upload_one_statement(
         ));
     }
 
-    // ── Step 5: Password resolution ───────────────────────────────────────────
-    //
-    // Doc 15 §2 principle 7 / Doc 12 §7.2: manual upload is a Statement Queue
-    // job, subject to the same bounded 5-concurrent cap as email-detected
-    // statements — there is no separate, weaker-validated path for uploads
-    // (§7.6.10). `stmt_id` is minted once, up front, and reused whichever way
-    // resolution goes (queued row vs. awaiting_password row), matching Doc 18
-    // §4.7's crash-recovery invariant either way.
-    //
-    // `resolve_statement_password` is the single choke point shared with the
-    // email-detected entry points (`historical_scan`/`polling`) — see its own
-    // doc comment for the bug this replaced (a resolved stored password was
-    // previously discarded before parsing, and the email path never resolved
-    // a password at all).
     let stmt_id = uuid::Uuid::new_v4().to_string();
     let resolved_password = match crate::statements::password::resolve_statement_password(
         &stmt_id, &bytes, &filename, &file_hash, pool_ref, app, None,
@@ -440,12 +323,6 @@ async fn upload_one_statement(
         }
     };
 
-    // ── Steps 6–15: Parse → Metadata → Rows → Reconcile → Classify → Cleanup ─
-    // Doc 18 §4.7 / Doc 19 §9.1: the `statements` row is written in `queued`
-    // state right here, immediately before enqueueing — before any parsing
-    // begins, satisfying the crash-recovery invariant — and the command
-    // returns immediately after enqueueing rather than blocking on the parse
-    // (Doc 19 §3.6: expensive operations are async, never block the IPC call).
     {
         let conn = pool_ref
             .get()
@@ -461,10 +338,6 @@ async fn upload_one_statement(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     }
 
-    // audit_04 #1: hand the PDF to the queue via encrypted on-disk storage
-    // rather than carrying it in the job. Fail the upload if it can't be
-    // staged — enqueueing a job whose bytes aren't there would surface later
-    // as a confusing mid-pipeline failure.
     {
         let app_data_dir = app.path().app_data_dir().map_err(|e| {
             crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e))
@@ -501,13 +374,6 @@ async fn upload_one_statement(
     })
 }
 
-/// Issue #8: runs the statement-row LLM fallback, if this machine can.
-///
-/// Returns an empty vector rather than an error whenever the model is not
-/// available — an ineligible machine, no downloaded model, or an app data
-/// directory that will not resolve. The fallback is an enhancement to
-/// extraction, never a precondition for it: a statement that parsed fine
-/// deterministically must not fail to import because inference could not run.
 async fn llm_rows_for_unparsed_pages<R: tauri::Runtime>(
     pages: &[crate::statements::parser::ParsedPage],
     parser: crate::statements::row_extractor::BankParser,
@@ -516,8 +382,6 @@ async fn llm_rows_for_unparsed_pages<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     start_index: usize,
 ) -> Vec<crate::statements::row_extractor::StatementRow> {
-    // The same RAM-eligibility gate Layer 6 respects. On a machine below it,
-    // loading the model would push the app into a Jetsam kill.
     let eligible = app
         .try_state::<crate::startup::LlmEligibility>()
         .map(|e| e.eligible)
@@ -565,34 +429,7 @@ pub enum PipelineOutcome {
     BlockedAwaitingInstrument(String),
 }
 
-/// Runs steps 6–11 of the PDF statement processing pipeline: parse PDF,
-/// extract metadata, resolve/gate the instrument, check for a duplicate
-/// billing cycle, extract transaction rows, and stage everything into a
-/// `statement_drafts` row. Nothing is written to `statements`/
-/// `statement_entries`/`transactions` here — that happens later, when the
-/// user reviews and submits via `commit_staged_draft`.
-///
-/// Separated from `statements_upload` so that the raw `bytes` can be explicitly dropped
-/// at the command boundary (§5.8 Post-Parse Memory Cleanup).
-///
-/// `pub` so that email-detected statement paths in `ingestion::historical_scan` and
-/// `ingestion::polling` can call the same pipeline as manual uploads (Doc 12 §7.2 step 1).
-///
-/// `confirmed_instrument`, when `Some`, is supplied by `statements_confirm_instrument`
-/// resuming a statement previously blocked by the Instrument Gate (C2 fix) — it
-/// bypasses the gate below and uses the user-confirmed issuer/masked/type directly.
-///
-/// `origin` — `'manual_upload' | 'email_scan' | 'password_unlock'` — is stored
-/// on the resulting `statement_drafts` row for the review-queue UI.
-///
-/// `stmt_id`, when `Some`, names either a `statements` row already written by
-/// `insert_queued()` at intake (Doc 18 §4.7's crash-recovery invariant), or —
-/// for a resumed-after-block path — the `unprocessed_statements.id` the PDF
-/// is already stored under via `pdf_storage`. Either way, this same id
-/// becomes the staged draft's id (see Step 11 below), so no PDF copy is ever
-/// needed between "blocked" and "staged for review". `None` mints a fresh
-/// draft id.
-#[allow(clippy::too_many_arguments)] // wide-but-flat domain signature; a params struct would add indirection without removing a single field
+#[allow(clippy::too_many_arguments)]
 pub async fn stage_parse_pipeline<R: tauri::Runtime>(
     bytes: &[u8],
     _filename: &str,
@@ -611,16 +448,6 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
         row_extractor::{extract_rows, BankParser},
     };
 
-    // Root-cause fix: `draft_id` (below, Step 11) is the id every later
-    // consumer of the retained PDF keys off of — `commit_staged_draft`'s
-    // `unprocessed_statements` linking, `statements_get_draft_pdf`,
-    // `statements_get_pdf` after commit. It must be computed and the PDF
-    // stored under it *before* any early return, not only in the two
-    // Instrument-Gate-blocked branches below — otherwise the ordinary
-    // clean/never-blocked upload (no password, no missing metadata, by far
-    // the common case) reaches `commit_staged_draft`, which unconditionally
-    // marks the PDF "available" (`pdf_retained_until`), while no file was
-    // ever written for it: the "View PDF" button renders but 404s.
     let draft_id = stmt_id
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -628,9 +455,6 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
         let _ = crate::statements::pdf_storage::store_pdf(&app_data_dir, &draft_id, bytes);
     }
 
-    // ── Step 6: Parse PDF in-memory ──────────────────────────────────────────
-    // H3 fix: `password`, when Some, is the password the user just confirmed
-    // via statements_submit_password — pdfium must be told it on every open.
     let parse_result = parse_in_memory_with_password(bytes, password).await?;
     tracing::info!(
         "Parsed {} pages (method={:?}, ocr_pages={})",
@@ -646,7 +470,6 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
     }
     emit_processing_progress(app, stmt_id.as_deref(), "pending", "parsing", 10);
 
-    // ── Step 7: Extract metadata ──────────────────────────────────────────────
     let meta = extract_metadata(&parse_result.pages)?;
     tracing::info!(
         "Metadata: issuer={:?} masked={:?} period={:?}→{:?} due={:?}",
@@ -658,11 +481,6 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
     );
     emit_processing_progress(app, stmt_id.as_deref(), "pending", "metadata", 30);
 
-    // ── Step 8: Statement Instrument Gate (Doc 12 §7.2a, FR-033a) ────────────
-    // MANDATORY: both issuer_name and masked_identifier must resolve before row extraction.
-    // If either is absent, block and prompt the user — never guess or default silently.
-    // A `confirmed_instrument` (from statements_confirm_instrument resuming a
-    // previously-blocked statement) satisfies the gate directly.
     let (issuer, masked, instrument_type) = if let Some(confirmed) = confirmed_instrument {
         (
             confirmed.issuer_name,
@@ -748,7 +566,6 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
                 return Ok(PipelineOutcome::BlockedAwaitingInstrument(unprocessed_id));
             }
         };
-        // Instrument type: default "credit_card" now that both issuer and masked are confirmed by gate.
         (issuer, masked, "credit_card".to_string())
     };
     let instrument_id = resolve_or_create_instrument(
@@ -761,19 +578,12 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
     .await?;
     tracing::info!("Instrument resolved: id='{}'", instrument_id);
 
-    // Save a working password against the resolved instrument so future
-    // statements for the same card/account don't re-prompt — orthogonal to
-    // whether the user later edits/commits the extracted data, so this
-    // happens here (once, at the single choke point every entry point
-    // already funnels through) rather than being threaded through to
-    // commit time.
     if let Some(pwd) = password {
         crate::statements::password::save_password(&instrument_id, pwd, pool)
             .await
             .ok();
     }
 
-    // ── Step 9: Post-metadata billing cycle duplicate check ───────────────────
     if let (Some(ref start), Some(ref end)) = (&meta.billing_period_start, &meta.billing_period_end)
     {
         let dup = check_billing_cycle_duplicate(&instrument_id, start, end, pool).await?;
@@ -784,8 +594,6 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
                 start,
                 end
             );
-            // Doc 30 TASK-STMT-002: audit trail for the post-metadata-extraction
-            // duplicate-skip path too, not just the filename-heuristic one.
             log_duplicate_skipped_audit(_filename, Some(&(start.clone(), end.clone())), pool).await;
             delete_orphaned_queued_row(stmt_id.as_deref(), pool).await;
             return Err(anyhow::anyhow!(
@@ -805,7 +613,6 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
         50,
     );
 
-    // ── Step 10: Extract statement rows ───────────────────────────────────────
     let bank_parser = BankParser::detect(&issuer, &instrument_type);
     let mut rows = extract_rows(&parse_result.pages, bank_parser)?;
     tracing::info!(
@@ -814,14 +621,8 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
         bank_parser
     );
 
-    // Learned rules run before LLM assist: a row a learned rule fixes is not a
-    // row the model needs to be paid to read.
     crate::statements::learned_rows::apply_learned_rules_to_rows(pool, &issuer, &mut rows).await;
 
-    // Issue #8: pages the bank parser made nothing of go to the local model.
-    // `row_extractor` has parsers for five issuers; a statement from any of
-    // the two hundred others in the sender registry reaches
-    // `parse_generic_fallback` and frequently yields nothing at all.
     let llm_rows = llm_rows_for_unparsed_pages(
         &parse_result.pages,
         bank_parser,
@@ -843,16 +644,6 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
         65,
     );
 
-    // ── Step 11: Write the staged draft (nothing committed yet) ──────────────
-    // Doc 18 §4.7's crash-recovery invariant pre-mints `stmt_id` for a fresh
-    // upload (`insert_queued()`); a resumed-after-block path reuses the
-    // `unprocessed_statements.id` its PDF is already stored under. Either
-    // way the draft's id IS that same id (`draft_id`, computed above the
-    // Step 6 parse) — no PDF copy is ever needed between "blocked" and
-    // "staged for review".
-    // A queued `statements` row from `insert_queued()` at intake is now
-    // orphaned — the real row isn't written until commit. Same cleanup the
-    // gate-block/duplicate-reject paths above already rely on.
     delete_orphaned_queued_row(Some(&draft_id), pool).await;
 
     let rows_json = serde_json::to_string(&rows)
@@ -896,15 +687,9 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
     events::emit(events::STAGED, staged_payload.clone());
     app.emit(events::STAGED, staged_payload).ok();
 
-    // ── Caller drops raw bytes after this function returns ───────────────────
     Ok(PipelineOutcome::Staged(draft_id))
 }
 
-/// Emits `statement_processing_progress` (best-effort — a progress event
-/// failing to emit must never fail the pipeline). `draft_id` is `None` for
-/// early stages (before a draft id is known) — the frontend correlates by
-/// whichever id it's already watching for that upload/unlock, and simply
-/// ignores progress events it can't match yet.
 fn emit_processing_progress<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     draft_id: Option<&str>,
@@ -935,10 +720,6 @@ pub struct DraftMetadataUpdate {
     pub minimum_due: Option<i64>,
 }
 
-/// Commits a staged draft: writes the real `statements`/`statement_entries`
-/// rows, builds observations, reconciles, classifies the bill — exactly
-/// what `stage_parse_pipeline`'s old steps 10–14 did, now sourced from the
-/// user's edited values instead of the original extraction.
 pub async fn commit_staged_draft<R: tauri::Runtime>(
     draft_id: &str,
     edited_metadata: DraftMetadataUpdate,
@@ -1024,17 +805,6 @@ pub async fn commit_staged_draft<R: tauri::Runtime>(
         let stmt_id_for_obs = stmt_id.clone();
         conn.interact(move |c| {
             for obs in &obs_cloned {
-                // Doc 30 TASK-QA-003 finding: `reconcile_transactionally` (via
-                // `create_canonical_transaction`'s `update_canonical_transaction_id`)
-                // requires the observation to already exist as a
-                // `transaction_observations` row -- the Transaction Queue path
-                // (`ingestion::queues::process_transaction_job`) always
-                // `insert_observation_idempotent`s first for exactly this
-                // reason. This statement-commit path never did, so every
-                // single statement-sourced reconciliation was silently
-                // failing ("Observation not found", swallowed by the
-                // `tracing::warn!` below) -- no statement commit has ever
-                // produced a canonical transaction through this path.
                 let fmt = "%Y-%m-%d %H:%M:%S";
                 let event_time = chrono::NaiveDateTime::parse_from_str(&obs.event_time, fmt)
                     .or_else(|_| {
@@ -1106,12 +876,6 @@ pub async fn commit_staged_draft<R: tauri::Runtime>(
 
     bill_classifier::classify_and_update(&instrument_id, &stmt_id, &meta, pool, Some(app)).await?;
 
-    // Link/finalize the PDF's post-commit retention window (reuses the
-    // exact 30-day `unprocessed_statements` mechanism the pre-existing
-    // "View PDF" history feature already depends on — INSERT OR IGNORE so
-    // this works uniformly whether `draft_id` already names a real
-    // unprocessed_statements row (a resumed password/instrument path) or
-    // not (a clean first-pass extraction, which never had one before).
     let draft_id_for_retention = draft_id.to_string();
     let stmt_id_for_retention = stmt_id.clone();
     let conn = pool
@@ -1144,11 +908,6 @@ pub async fn commit_staged_draft<R: tauri::Runtime>(
     .map_err(|e| anyhow::anyhow!("Interact error: {}", e))?
     .map_err(|e| anyhow::anyhow!("DB error: {}", e))?;
 
-    // Doc 30 TASK-RT-008: enriched with the fields the frontend needs to
-    // render a real summary toast ("HDFC Card statement parsed — 47
-    // transactions found") -- this event previously carried only
-    // `statement_id`, so every consumer had to fall back to a generic,
-    // contentless message.
     let rows_extracted = entry_ids.len() as i64;
     let issuer_name_for_event = instrument_id.clone();
     let issuer_name = conn
@@ -1170,9 +929,6 @@ pub async fn commit_staged_draft<R: tauri::Runtime>(
     Ok(stmt_id)
 }
 
-/// Discards a staged draft — deletes the row and its stored PDF. No
-/// `statements` row is ever created. Idempotent: discarding an
-/// already-discarded/missing draft is not an error.
 pub async fn discard_staged_draft(
     draft_id: &str,
     app_data_dir: &std::path::Path,
@@ -1191,10 +947,6 @@ pub async fn discard_staged_draft(
     Ok(())
 }
 
-/// Doc 30 TASK-STMT-002: "Every skip is logged to audit_log
-/// (statement_duplicate_skipped) with the detected period for user
-/// transparency." Best-effort — a logging failure must never fail the
-/// (already-decided) duplicate rejection itself.
 async fn log_duplicate_skipped_audit(
     filename: &str,
     period: Option<&(String, String)>,
@@ -1227,13 +979,6 @@ async fn log_duplicate_skipped_audit(
     }
 }
 
-/// Best-effort cleanup for the queued `statements` row `insert_queued()` wrote
-/// at intake, when the pipeline diverges away from ever completing it (an
-/// Instrument Gate block or a post-metadata duplicate reject) — otherwise it
-/// would sit at `parse_status = 'queued'` forever, an orphan `unprocessed_statements`
-/// (or the duplicate rejection) already fully accounts for going forward.
-/// No-op (and never fails the caller) when `stmt_id` is `None` — the
-/// resumed-after-block paths never had a queued row to begin with.
 async fn delete_orphaned_queued_row(stmt_id: Option<&str>, pool: &deadpool_sqlite::Pool) {
     let Some(id) = stmt_id else { return };
     let id = id.to_string();
@@ -1249,8 +994,6 @@ async fn delete_orphaned_queued_row(stmt_id: Option<&str>, pool: &deadpool_sqlit
     }
 }
 
-/// Creates an `unprocessed_statements` row with `status = 'awaiting_instrument_confirmation'`
-/// when the Statement Instrument Gate cannot resolve issuer or masked identifier (Doc 12 §7.2a).
 async fn create_awaiting_instrument_row(
     statement_id: &str,
     file_hash: &str,
@@ -1287,8 +1030,6 @@ async fn create_awaiting_instrument_row(
              'awaiting_instrument_confirmation')",
             rusqlite::params![stmt_id, source_json],
         )?;
-        // J6 fix: Instrument Gate blocks are a documented audit_log category
-        // (Doc 25 §6.1) — previously only surfaced as a Tauri event.
         if let Err(e) = crate::db::audit_log::insert(
             c,
             &crate::db::audit_log::AuditLogRow {
@@ -1320,11 +1061,6 @@ async fn create_awaiting_instrument_row(
     Ok(())
 }
 
-/// Resumes a statement blocked by the Statement Instrument Gate (Doc 12 §7.2a,
-/// C2 fix) with a user-confirmed issuer/masked identifier. The raw PDF bytes
-/// held in-memory since the original block are re-run through the same
-/// `run_parse_pipeline` shared entry point — never re-read from disk, never
-/// written to disk (Doc 12 §7.6.5 / C22).
 #[tauri::command]
 pub async fn statements_confirm_instrument(
     statement_id: String,
@@ -1357,7 +1093,6 @@ pub async fn statements_confirm_instrument(
                     .to_string(),
             )
         })?;
-    // Awaiting instrument may have a password persisted in its source_json if it was prompted before blocking.
     let conn = pool
         .get()
         .await
@@ -1387,14 +1122,6 @@ pub async fn statements_confirm_instrument(
         .to_string();
     let file_hash = parsed["file_hash"].as_str().unwrap_or_default().to_string();
 
-    // Real-world bug this surfaced: a statement blocked by BOTH the password
-    // gate and the Instrument Gate would validate the password correctly,
-    // persist it here, then silently lose it on resume whenever any step in
-    // this chain failed -- `run_parse_pipeline` would proceed with
-    // `password=None` against still-encrypted bytes, always failing with
-    // pdfium `PasswordError` and never explaining why. NEVER log `pwd`
-    // itself (matches `statements_submit_password`'s "NEVER log the
-    // password" convention) -- only whether/where the chain broke.
     let mut decrypted_password = None;
     if let Some(b64) = parsed["password_blob"].as_str() {
         use base64::Engine;
@@ -1444,18 +1171,12 @@ pub async fn statements_confirm_instrument(
 
     match result {
         Ok(PipelineOutcome::Staged(draft_id)) => {
-            // Password/instrument save-for-next-time and unprocessed_statements
-            // "resolved" bookkeeping now happen at commit time
-            // (`commit_staged_draft`), not here — nothing is finalized until
-            // the user reviews and submits.
             Ok(serde_json::json!({
                 "status": "staged",
                 "draft_id": draft_id
             }))
         }
         Ok(PipelineOutcome::BlockedAwaitingInstrument(unprocessed_id)) => {
-            // It should theoretically not happen here because we bypass the gate,
-            // but if it does, we return the unprocessed status.
             Ok(serde_json::json!({
                 "status": "awaiting_instrument_confirmation",
                 "statement_id": unprocessed_id
@@ -1481,9 +1202,6 @@ pub async fn statements_confirm_instrument(
     }
 }
 
-/// Cross-instrument filename billing cycle check.
-/// Extracts period from filename; if parseable, checks against ALL statements.
-/// This is an early-reject optimization before instrument is known.
 async fn check_filename_billing_cycle_all_instruments(
     filename: &str,
     pool: &deadpool_sqlite::Pool,
@@ -1522,14 +1240,6 @@ async fn check_filename_billing_cycle_all_instruments(
     }
 }
 
-// ── Phase 5.3 — statements_submit_password ───────────────────────────────────
-
-/// Phase 5 — Submit a user-entered password for a locked statement (Doc 10 §7.3–7.4).
-/// The password is tried against the PDF in-memory, and if correct, saved encrypted to DB.
-/// Password is NEVER returned to the UI in any IPC response.
-///
-/// On success: unprocessed_statements status → 'resolved'; pipeline resumes.
-/// On failure: re-prompt (unprocessed_statements row preserved).
 #[tauri::command]
 pub async fn statements_submit_password(
     statement_id: String,
@@ -1547,9 +1257,6 @@ pub async fn statements_submit_password(
         password::{try_user_password, PasswordResolutionResult},
     };
 
-    // H3 fix: the real bytes, held in memory (never on disk) since the
-    // original statements_upload call — `peek` so a wrong attempt doesn't
-    // discard them before the next retry.
     let app_data_dir = app.path().app_data_dir().map_err(|_| {
         crate::error::AppError::Unknown("Failed to determine app data directory".to_string())
     })?;
@@ -1570,7 +1277,6 @@ pub async fn statements_submit_password(
         .await
         .map_err(|e| crate::error::AppError::Auth(e.to_string()))?;
 
-    // NEVER log the password — only log the outcome
     match result {
         PasswordResolutionResult::UnlockedWithUserInput => {
             tracing::info!(
@@ -1579,10 +1285,6 @@ pub async fn statements_submit_password(
             );
             record_pdf_password_event(pool.inner(), &statement_id, "pdf_password_unlocked").await;
 
-            // H3 fix: actually resume the shared parse pipeline with the
-            // now-decrypted bytes — previously this branch only emitted an
-            // event and never called run_parse_pipeline at all.
-            // PDF will be deleted by lazy cleanup logic when pdf_retained_until expires.
             let conn = pool
                 .get()
                 .await
@@ -1626,27 +1328,18 @@ pub async fn statements_submit_password(
 
             match pipeline_result {
                 Ok(PipelineOutcome::Staged(draft_id)) => {
-                    // Password-save-for-next-time and unprocessed_statements
-                    // "resolved" bookkeeping now happen inside
-                    // stage_parse_pipeline/commit_staged_draft respectively —
-                    // nothing is finalized until the user reviews and submits.
                     Ok(serde_json::json!({
                         "status": "unlocked",
                         "draft_id": draft_id
                     }))
                 }
                 Ok(PipelineOutcome::BlockedAwaitingInstrument(unprocessed_id)) => {
-                    // Password unlocked it, but it got blocked by the Instrument Gate.
-                    // The old awaiting_password row should be deleted (or marked resolved?),
-                    // since stage_parse_pipeline already created a NEW awaiting_instrument_confirmation row.
                     let conn = pool
                         .get()
                         .await
                         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
                     let orig_id = statement_id.clone();
                     conn.interact(move |c| {
-                        // Mark the old password row as resolved, but since there's no statements row yet,
-                        // we can't link resolved_statement_id. We just delete it.
                         let _ = crate::db::unprocessed_statements::delete(c, &orig_id);
                     })
                     .await
@@ -1695,7 +1388,6 @@ pub async fn statements_submit_password(
                 .map_err(|e| crate::error::AppError::Db(e.to_string()))?
                 .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
 
-            // Re-emit password_required so UI re-prompts without closing modal
             app.emit(
                 events::PASSWORD_REQUIRED,
                 serde_json::json!({
@@ -1710,7 +1402,6 @@ pub async fn statements_submit_password(
             }))
         }
         _ => {
-            // Unexpected outcome — surface as error but do not reveal password details
             Err(crate::error::AppError::Unknown(
                 "Unexpected password resolution outcome".to_string(),
             ))
@@ -1718,9 +1409,6 @@ pub async fn statements_submit_password(
     }
 }
 
-/// J6 fix: records a PDF-password lifecycle event (Doc 25 §6.1) — the outcome
-/// only, never the password itself. Best-effort — a logging failure must
-/// never block the password-resolution flow.
 async fn record_pdf_password_event(pool: &deadpool_sqlite::Pool, statement_id: &str, action: &str) {
     let Ok(conn) = pool.get().await else { return };
     let stmt_id = statement_id.to_string();
@@ -1745,16 +1433,6 @@ async fn record_pdf_password_event(pool: &deadpool_sqlite::Pool, statement_id: &
         .await;
 }
 
-/// Doc 30 TASK-STMT-010 `statements_retry(id)`: "re-attempts the full
-/// pipeline, reusing any previously-entered password first." The existing
-/// version of this command only ever re-emitted `password_required`,
-/// unconditionally re-prompting the user even when a password already on
-/// file (e.g. entered for a different statement from the same
-/// bank/instrument in the interim) would unlock this one immediately —
-/// fixed to actually attempt `try_all_stored_passwords` first, resuming the
-/// full pipeline exactly like `statements_submit_password`'s success path
-/// when one matches, and falling back to the original re-prompt behavior
-/// only when none do.
 #[tauri::command]
 pub async fn statements_retry_unprocessed(
     statement_id: String,
@@ -1766,9 +1444,6 @@ pub async fn statements_retry_unprocessed(
 
     let outcome = retry_one_unprocessed(&statement_id, &app, pool.inner()).await?;
 
-    // Only the single-statement path re-prompts. Issue #7's bulk re-parse
-    // deliberately does not: a run over a queue of thirty locked PDFs would
-    // otherwise fire thirty password modals at a user who pressed one button.
     if let RetryOutcome::StillLocked { ref filename } = outcome {
         app.emit(
             crate::statements::events::PASSWORD_REQUIRED,
@@ -1780,11 +1455,6 @@ pub async fn statements_retry_unprocessed(
     Ok(outcome.into_response(&statement_id))
 }
 
-/// What one attempt at an unprocessed statement resulted in. Issue #7:
-/// `statements_retry_unprocessed` and `statements_reparse_all` must behave
-/// identically per PDF — the bulk button exists to save the user thirty
-/// clicks, not to run a second, subtly different pipeline — so both drive
-/// `retry_one_unprocessed` and differ only in what they do with the result.
 enum RetryOutcome {
     Unlocked {
         draft_id: String,
@@ -1792,11 +1462,9 @@ enum RetryOutcome {
     AwaitingInstrument {
         statement_id: String,
     },
-    /// No stored password opened it; the row stays in the queue untouched.
     StillLocked {
         filename: String,
     },
-    /// The retained PDF is gone from disk, so there is nothing to re-parse.
     BytesExpired {
         filename: String,
     },
@@ -1826,10 +1494,6 @@ impl RetryOutcome {
     }
 }
 
-/// One attempt at one unprocessed statement: read its retained PDF, try every
-/// stored password against it, and resume the staging pipeline if one opens
-/// it. Emits nothing and prompts for nothing — the caller decides how to
-/// surface the outcome.
 async fn retry_one_unprocessed(
     statement_id: &str,
     app: &tauri::AppHandle,
@@ -1863,10 +1527,6 @@ async fn retry_one_unprocessed(
     };
     let filename = field("filename");
 
-    // ROOT CAUSE FIX: for `awaiting_password` rows that survive an app restart,
-    // we now use `pdf_storage` to read the PDF bytes from disk. If the file is missing,
-    // it returns a structured `bytes_expired` status so the UI can
-    // display a clear "please re-upload this file" message instead.
     let app_data_dir = app
         .path()
         .app_data_dir()
@@ -1914,8 +1574,6 @@ async fn retry_one_unprocessed(
     match pipeline_result {
         Ok(PipelineOutcome::Staged(draft_id)) => Ok(RetryOutcome::Unlocked { draft_id }),
         Ok(PipelineOutcome::BlockedAwaitingInstrument(unprocessed_id)) => {
-            // Password unlocked it, but blocked by the Instrument Gate.
-            // The old pending_retry row should be deleted.
             let conn = pool
                 .get()
                 .await
@@ -1942,15 +1600,6 @@ async fn retry_one_unprocessed(
     }
 }
 
-/// Issue #7: re-runs the statement pipeline over every statement currently in
-/// the Action Needed queue, using the passwords already stored in Settings.
-/// Anything no stored password opens simply stays in the queue.
-///
-/// Runs the queue one statement at a time. Each item spawns a `pdf_sidecar`
-/// process and, on success, a full parse — work that is already CPU-bound and
-/// already shares the machine with whatever else the app is doing. Widening
-/// this to a worker pool would multiply peak memory by the pool size for no
-/// wall-clock gain on the common queue of a handful of PDFs.
 #[tauri::command]
 pub async fn statements_reparse_all(
     app: tauri::AppHandle,
@@ -1958,9 +1607,6 @@ pub async fn statements_reparse_all(
 ) -> Result<serde_json::Value, crate::error::AppError> {
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
-    // A second concurrent run would race the first over the same rows: both
-    // would read the same PDF, both would stage a draft, and the queue would
-    // end up with duplicate drafts for one statement.
     static REPARSE_RUNNING: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
     if REPARSE_RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
@@ -1968,7 +1614,6 @@ pub async fn statements_reparse_all(
             "A re-parse is already running.".to_string(),
         ));
     }
-    // Released however this function exits, including on an early `?`.
     struct RunningGuard;
     impl Drop for RunningGuard {
         fn drop(&mut self) {
@@ -2002,8 +1647,6 @@ pub async fn statements_reparse_all(
             }),
         );
 
-        // One statement failing must not abandon the rest of the queue —
-        // a single corrupt PDF is exactly the case this button exists for.
         match retry_one_unprocessed(&row.id, &app, pool.inner()).await {
             Ok(RetryOutcome::Unlocked { .. }) | Ok(RetryOutcome::AwaitingInstrument { .. }) => {
                 parsed += 1
@@ -2047,8 +1690,6 @@ pub async fn statements_reparse_all(
     Ok(summary)
 }
 
-/// Doc 30 TASK-STMT-010 `statements_list_unprocessed()`: statements grouped
-/// by status into the 3 actionable UI buckets.
 #[tauri::command]
 pub async fn statements_list_unprocessed(
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
@@ -2073,9 +1714,6 @@ pub async fn statements_list_unprocessed(
     Ok(grouped)
 }
 
-/// Formats `statement_drafts` rows for the "Awaiting Review" queue bucket.
-/// Separated from `statements_list_unprocessed` for the same directly-testable-
-/// without-Tauri-State reason `group_unprocessed_by_status` already is.
 fn group_drafts_for_review(
     rows: Vec<crate::db::statement_drafts::StatementDraftRow>,
 ) -> serde_json::Value {
@@ -2094,10 +1732,6 @@ fn group_drafts_for_review(
     serde_json::Value::Array(entries)
 }
 
-/// Doc 30 TASK-STMT-010: groups `unprocessed_statements` rows into the 3
-/// actionable UI buckets. Separated from `statements_list_unprocessed`'s DB
-/// query so the grouping logic itself is directly testable without a Tauri
-/// State/App context.
 fn group_unprocessed_by_status(
     rows: Vec<crate::db::unprocessed_statements::UnprocessedStatementRow>,
 ) -> serde_json::Value {
@@ -2132,11 +1766,6 @@ fn group_unprocessed_by_status(
             .as_ref()
             .and_then(|v| v["html"].as_str().map(|s| s.to_string()));
 
-        // Issue #9: the consistent `<BANK>BANKXXXX<LAST4><MON><YYYY>` label.
-        // Derived here, on read, rather than stored at row-creation time, so
-        // rows already sitting in the queue get named too without a migration
-        // — and so a manual upload, which has no email context at all, runs
-        // through the identical code path.
         let display_name = crate::statements::display_name::derive_display_name(
             &crate::statements::display_name::StatementNameSource {
                 filename: &filename,
@@ -2175,11 +1804,6 @@ fn group_unprocessed_by_status(
     })
 }
 
-/// Doc 30 TASK-STMT-010 `statements_discard(id)`: permanently removes the
-/// row, logging `statement_discarded`. `failure_reason`/`failure_type` are
-/// always the structured, enum-like strings already written at creation
-/// time (never a raw exception message) — this command doesn't add any new
-/// error text of its own.
 #[tauri::command]
 pub async fn statements_discard(
     statement_id: String,
@@ -2228,9 +1852,6 @@ pub async fn statements_discard(
     Ok(serde_json::json!({ "status": "discarded", "statement_id": statement_id }))
 }
 
-/// Frontend contract: `edited_rows` and `edited_metadata` mirror
-/// `DraftMetadataUpdate`/`StatementRow` field-for-field (see `ipc.ts`'s
-/// `DraftMetadataInput`/`DraftRow`).
 #[tauri::command]
 pub async fn statements_commit_draft(
     draft_id: String,
@@ -2268,8 +1889,6 @@ pub async fn statements_discard_draft(
     Ok(serde_json::json!({ "status": "discarded" }))
 }
 
-/// Read-only — matches `statements_get_pdf`'s pattern exactly (base64,
-/// never `Vec<u8>` in the response type per `test_no_command_returns_pdf_bytes`).
 #[tauri::command]
 pub async fn statements_get_draft_pdf(
     draft_id: String,
@@ -2310,10 +1929,6 @@ pub async fn statements_get_draft_pdf(
             )
         })?;
 
-    // If the source PDF was password-protected, the user already gave that
-    // password once during unlock (stage_parse_pipeline saves it against
-    // the resolved instrument) — decrypt for display so the browser's
-    // native PDF viewer doesn't prompt for it again during review.
     let viewable = crate::statements::password::ensure_viewable_pdf_bytes(bytes, pool.inner())
         .await
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
@@ -2322,8 +1937,6 @@ pub async fn statements_get_draft_pdf(
     Ok(base64::engine::general_purpose::STANDARD.encode(&viewable))
 }
 
-/// Read-only fetch of a draft's current (possibly edited-in-a-previous-session)
-/// staged fields — seeds the review modal's form.
 #[tauri::command]
 pub async fn statements_get_draft(
     draft_id: String,
@@ -2362,16 +1975,10 @@ pub async fn statements_get_draft(
     }))
 }
 
-// G20/H10/J8 fix: renamed from `resolve_cluster` to match Doc 19 §10.3's
-// documented `reconciliation_clusters_resolve` naming.
 #[tauri::command]
 pub async fn reconciliation_clusters_resolve(
     cluster_id: String,
     observation_id: String,
-    // Doc 19 §10.3's real allowlist ("confirm_match" | "reject_candidate" |
-    // "keep_separate" | "mark_unresolved", enforced by
-    // cluster::resolve_cluster) -- this comment previously named a stale
-    // "merge"/"reject" pair that was never the real allowlist.
     action: String,
     chosen_canonical_id: Option<String>,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
@@ -2428,7 +2035,6 @@ pub async fn reconciliation_clusters_resolve(
     Ok("Cluster resolved".to_string())
 }
 
-/// Phase 3 — Correct an auto-matched transaction (user action from transaction detail)
 #[tauri::command]
 pub async fn correct_match(
     observation_id: String,
@@ -2509,8 +2115,6 @@ pub struct ManualTransactionPayload {
     pub reference_id: Option<String>,
 }
 
-// G20/H10/J8 fix: renamed from `transaction_create` to match Doc 19 §8.4's
-// documented `transactions_create` naming.
 #[tauri::command]
 pub async fn transactions_create(
     payload: ManualTransactionPayload,
@@ -2521,11 +2125,6 @@ pub async fn transactions_create(
     create_manual_transaction(payload, pool.inner(), &app_handle).await
 }
 
-/// Shared by `transactions_create` (the Transactions-page "New Transaction"
-/// modal) and `reconciliation_resolve_unassigned_transaction_manually` (the
-/// Reconciliation "Save as Transaction" action) -- both need the exact same
-/// manual-observation-plus-reconcile flow; only what happens *after* differs
-/// (nothing, vs. also marking an `unassigned_transactions` row resolved).
 pub(crate) async fn create_manual_transaction<R: tauri::Runtime>(
     payload: ManualTransactionPayload,
     pool: &deadpool_sqlite::Pool,
@@ -2552,11 +2151,7 @@ pub(crate) async fn create_manual_transaction<R: tauri::Runtime>(
         source_record_id: format!("manual_{}", obs_id),
         emi_total_installments: None,
         emi_original_amount_minor: None,
-        // Manual entries have no connected_account_id to hash (Doc 30
-        // TASK-TXN-008's formula input) — the fingerprint pre-filter
-        // (TASK-DEDUP-001) is simply skipped for these observations.
         fingerprint: None,
-        // Manual entries are ground truth, not extracted -- maximal confidence.
         confidence_score: Some(1.0),
         event_time_confidence: None,
         channel: None,
@@ -2629,17 +2224,6 @@ pub(crate) async fn create_manual_transaction<R: tauri::Runtime>(
     Ok(decision.as_str().to_string())
 }
 
-/// Doc 19 §8.3's exact editable set: `merchant_display_name`, `category_id`,
-/// `notes`, `location`. Real bug fixed here: the previous payload instead
-/// let the caller freely rewrite `amount_minor`/`currency`/`direction`/
-/// `event_time` — none of which Document 19 documents as editable, and all
-/// of which are evidence-derived fields (Document 15 Core Principle 6:
-/// canonical transactions are the analytics source of truth, populated
-/// through reconciliation, not ad hoc user rewrite) with no re-reconciliation
-/// or observation trail triggered by changing them this way. The frontend
-/// (`src/lib/ipc.ts`) never actually sent any of the four removed fields —
-/// confirmed via full grep before removing them — so this is not a
-/// behavior change for the real app, only a closed attack-surface/spec gap.
 #[derive(serde::Deserialize)]
 pub struct TransactionUpdatePayload {
     pub transaction_id: uuid::Uuid,
@@ -2654,16 +2238,6 @@ pub struct TransactionUpdatePayload {
     pub instrument_id: Option<String>,
 }
 
-/// Transaction columns that are evidence-derived — extracted by a regex from a
-/// bank's message and therefore learnable — paired with the canonical field
-/// name the rule tables and synthesizer use.
-///
-/// `category_id` and `notes` are deliberately absent: they are pure user
-/// classification, never extracted, so a correction there is logged for audit
-/// and never sent to the synthesizer. `last4` and `cadence` are absent because
-/// neither is a transaction column (they live on `instruments` and
-/// `recurring_payments`); adding either is one line here once an edit
-/// affordance for it exists.
 const CORRECTABLE_FIELDS: &[(&str, &str)] = &[
     ("merchant_display_name", "merchant"),
     ("amount_minor", "amount"),
@@ -2671,7 +2245,7 @@ const CORRECTABLE_FIELDS: &[(&str, &str)] = &[
     ("best_event_time", "event_time"),
 ];
 
-#[allow(clippy::too_many_arguments)] // wide-but-flat domain signature; a params struct would add indirection without removing a single field
+#[allow(clippy::too_many_arguments)]
 fn apply_transaction_field_update(
     conn: &rusqlite::Connection,
     tx_id: &str,
@@ -2706,11 +2280,6 @@ fn apply_transaction_field_update(
         new_direction = Some(dir);
     }
     if let Some(ev_time) = event_time {
-        // The date-only arm has to go through `NaiveDate`: chrono's
-        // `NaiveDateTime::parse_from_str` requires a time component, so
-        // parsing "2026-07-14" against "%Y-%m-%d" always errored and the
-        // `.or_else` chain silently dropped the edit. The arm was clearly
-        // meant to work -- it just never could.
         let parsed = chrono::NaiveDateTime::parse_from_str(&ev_time, "%Y-%m-%d %H:%M:%S")
             .or_else(|_| chrono::NaiveDateTime::parse_from_str(&ev_time, "%Y-%m-%dT%H:%M:%S"))
             .ok()
@@ -2730,8 +2299,6 @@ fn apply_transaction_field_update(
     if let Some(cat) = category_id {
         let old_val = old_tx.category_id.clone().unwrap_or_default();
         if old_val != cat {
-            // Logged for audit, never queued: a category is a user's judgment,
-            // not something a regex ever produced.
             let _ = crate::reconciliation::audit::log_user_correction(
                 conn,
                 tx_id,
@@ -2751,8 +2318,6 @@ fn apply_transaction_field_update(
     if let Some(merch) = merchant_display_name {
         let old_val = old_tx.merchant_display_name.clone().unwrap_or_default();
         if old_val != merch {
-            // The merchant diff itself is logged uniformly with every other
-            // evidence-derived field below; this block only owns alias creation.
             let cleaned = crate::extraction::merchant_normalizer::strip_noise_tokens(&merch);
             if !cleaned.is_empty() {
                 if let Ok(Some(existing)) = crate::db::merchants::select_by_alias(conn, &cleaned) {
@@ -2810,8 +2375,6 @@ fn apply_transaction_field_update(
     }
 
     conn.execute(
-        // `amount` is not written: it is a generated column derived from
-        // `amount_minor` (audit_05 #4, migration 058).
         "UPDATE transactions
          SET merchant_display_name = ?1, merchant_normalized_name = ?2, merchant_entity_id = ?3,
              category_id = ?4, notes = ?5, location = ?6,
@@ -2834,9 +2397,6 @@ fn apply_transaction_field_update(
     )
     .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
 
-    // Diff old vs. new across every evidence-derived field, after the write has
-    // succeeded. A value corrected back to itself is a no-op: nothing logged,
-    // nothing queued.
     let changes: Vec<(&str, Option<String>, String)> = CORRECTABLE_FIELDS
         .iter()
         .filter_map(|(column, field)| {
@@ -2914,8 +2474,6 @@ pub async fn transactions_update(
                 payload.instrument_id,
             )?;
 
-            // G13 fix: resolve each tag name to an existing tag or create one,
-            // then replace this transaction's tag associations with that set.
             if let Some(tag_names) = payload.tags {
                 let existing_tags = crate::db::tags::select_all(conn)
                     .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
@@ -2979,9 +2537,6 @@ pub async fn transactions_update(
         serde_json::json!({ "transaction_id": payload_tx_id }),
     );
 
-    // Enqueue learning work *after* the correction is committed and the UI has
-    // been told. A failure here can only mean one correction is not learned
-    // from — never that the save failed.
     let app_dir = app_handle.path().app_data_dir().ok();
     for ctx in contexts {
         crate::learning::enqueue(
@@ -3005,10 +2560,6 @@ pub async fn transactions_update(
     Ok("updated".to_string())
 }
 
-/// G15 fix: lists stored PDF passwords (metadata only — never the ciphertext
-/// or plaintext) so Settings can offer management, previously nonexistent.
-/// G20/H10/J8 fix: renamed from `pdf_passwords_list` to match Doc 19 §13/§18's
-/// documented `settings_pdf_passwords_list` naming.
 #[tauri::command]
 pub async fn settings_pdf_passwords_list(
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
@@ -3023,10 +2574,6 @@ pub async fn settings_pdf_passwords_list(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))
 }
 
-/// G15 fix: deletes a stored PDF password — the next time a statement from
-/// that instrument needs unlocking, the user will be re-prompted.
-/// G20/H10/J8 fix: renamed from `pdf_passwords_delete` to match Doc 19
-/// §13/§18's documented `settings_pdf_passwords_delete` naming.
 #[tauri::command]
 pub async fn settings_pdf_passwords_delete(
     id: String,
@@ -3044,18 +2591,6 @@ pub async fn settings_pdf_passwords_delete(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))
 }
 
-/// Records a "this sender's bank is wrong" report.
-///
-/// Scoped to the sender domain, not to this one transaction: the mistake being
-/// corrected is that Gate 1 resolved the *sender* to the wrong bank, so fixing
-/// it per-transaction would leave every future email from that domain making
-/// the same mistake. The UI states that scope before confirming — it is the
-/// highest-blast-radius write in this pipeline.
-///
-/// Deliberately does **not** touch `instrument_id`. Reassigning a transaction
-/// to a different card is a separate operation with separate consequences
-/// (balances, statement matching); conflating the two would make one tap do
-/// both.
 fn apply_wrong_bank_report(
     conn: &rusqlite::Connection,
     transaction_id: &str,
@@ -3079,7 +2614,6 @@ fn apply_wrong_bank_report(
         )
         .ok();
 
-    // The audit row goes first so the override always has a trigger to point at.
     let _ = crate::db::feedback_log::record_manual_correction(
         conn,
         transaction_id,
@@ -3122,21 +2656,11 @@ pub async fn feedback_report_wrong_bank(
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
 }
 
-/// Every bank name the sender registry knows, for the wrong-bank picker. A
-/// closed list rather than a free-text field: a typo here would relabel a whole
-/// domain under a bank name nothing else in the app recognises.
 #[tauri::command]
 pub async fn settings_known_bank_names() -> Result<Vec<String>, crate::error::AppError> {
     Ok(crate::ingestion::verified_senders::SenderValidator::new().all_display_names())
 }
 
-/// Every learned extraction rule, for the read-only Settings view.
-///
-/// Read-only by design: there is no status setter and no payload editor,
-/// because a human reading a regex to decide whether it is correct is exactly
-/// the judgment this pipeline replaced with a mechanical proof. What a person
-/// can usefully do is notice a rule misbehaving and retire it, which is
-/// `settings_learned_rules_revert`.
 #[tauri::command]
 pub async fn settings_learned_rules_list(
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
@@ -3151,8 +2675,6 @@ pub async fn settings_learned_rules_list(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))
 }
 
-/// Retires one rule. Soft — the row and its change-log history survive, so the
-/// revert itself stays auditable.
 #[tauri::command]
 pub async fn settings_learned_rules_revert(
     rule_id: String,
@@ -3170,7 +2692,6 @@ pub async fn settings_learned_rules_revert(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))
 }
 
-/// Every sender bank relabel, active and retired.
 #[tauri::command]
 pub async fn settings_sender_overrides_list(
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
@@ -3202,13 +2723,6 @@ pub async fn settings_sender_overrides_revert(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))
 }
 
-/// G13 fix: the full reusable-tag catalog, for autocomplete when tagging a
-/// transaction — previously tags were pure free-text with nothing behind
-/// them to autocomplete against. Returns full rows (not just names) so the
-/// frontend can resolve a tag's real id and call the dedicated
-/// `transactions_add_tag`/`transactions_remove_tag` commands (Doc19
-/// §8.7/§8.8) instead of the name-based bulk-replace workaround this
-/// previously forced (Area 9 verification pass fix).
 #[tauri::command]
 pub async fn tags_list(
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
@@ -3229,8 +2743,6 @@ pub struct TagCreatePayload {
     pub color_hex: Option<String>,
 }
 
-/// Doc 30 TASK-API-007: "`tags_create`" -- Document 19 §18 already
-/// catalogs this exact name.
 #[tauri::command]
 pub async fn tags_create(
     payload: TagCreatePayload,
@@ -3256,10 +2768,6 @@ pub async fn tags_create(
     Ok(serde_json::json!({ "id": id, "status": "created" }))
 }
 
-/// Doc 30 TASK-API-007: "`tags_delete`" -- no Document 19 contract exists
-/// (absent from §18's catalog despite `tags_list`/`tags_create` both being
-/// listed there), same documentation-gap situation as several
-/// TASK-API-005/006 commands.
 #[tauri::command]
 pub async fn tags_delete(
     id: String,
@@ -3278,8 +2786,6 @@ pub async fn tags_delete(
     Ok("deleted".to_string())
 }
 
-/// G13 fix: the tag names currently associated with a transaction, so the
-/// detail drawer can populate the correction form's tag list.
 #[tauri::command]
 pub async fn fetch_transaction_tags(
     transaction_id: String,
@@ -3311,10 +2817,6 @@ pub async fn fetch_transaction_tags(
     Ok(names)
 }
 
-/// Doc 19 §8.2 `transactions_get`: canonical transaction detail plus
-/// linked evidence (observations) and match decisions, for the "view
-/// source" panel -- did not exist as a single command before this task
-/// (only the observations/source-log/tags pieces existed separately).
 #[derive(serde::Serialize)]
 pub struct TransactionDetail {
     pub transaction: crate::db::transactions::TransactionsRow,
@@ -3358,8 +2860,6 @@ pub async fn transactions_get(
     .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
 }
 
-/// Doc 19 §8.7/§8.8: dedicated single-tag add/remove commands, distinct
-/// from `transactions_update`'s existing bulk tag-replace convenience.
 #[tauri::command]
 pub async fn transactions_add_tag(
     transaction_id: String,
@@ -3409,10 +2909,6 @@ pub async fn transactions_remove_tag(
     Ok("tag_removed".to_string())
 }
 
-/// Doc 30 TASK-API-003: "transactions_get_emi_group" -- wraps TASK-TXN-012's
-/// already-built `emi_detector::get_emi_group_summary` (total paid/count so
-/// far; `total_expected` is deliberately absent, see that function's own
-/// doc comment for why).
 #[tauri::command]
 pub async fn transactions_get_emi_group(
     emi_group_id: String,
@@ -3428,8 +2924,6 @@ pub async fn transactions_get_emi_group(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))
 }
 
-// G20/H10/J8 fix: renamed from `transaction_delete` to match Doc 19 §8.5's
-// documented `transactions_delete` naming.
 #[tauri::command]
 pub async fn transactions_delete(
     transaction_id: String,
@@ -3447,7 +2941,6 @@ pub async fn transactions_delete(
 
     let tx_id = transaction_id.clone();
     conn.interact(move |conn| -> Result<(), crate::error::AppError> {
-        // §6.6 — delete is restricted to manually-entered transactions (source_mix = 'manual') only
         let source_mix: rusqlite::Result<Option<String>> = conn.query_row(
             "SELECT source_mix FROM transactions WHERE id = ?1 AND is_deleted = 0",
             rusqlite::params![tx_id],
@@ -3460,10 +2953,9 @@ pub async fn transactions_delete(
                         .to_string(),
                 ));
             }
-            // Not found or already deleted — still proceed (no-op soft-delete)
             Err(rusqlite::Error::QueryReturnedNoRows) | Ok(None) => {}
             Err(e) => return Err(crate::error::AppError::Db(e.to_string())),
-            Ok(_) => {} // mix == "manual" — allowed
+            Ok(_) => {}
         }
         conn.execute(
             "UPDATE transactions SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
@@ -3489,7 +2981,6 @@ pub fn check_system_ram() -> Result<f64, crate::error::AppError> {
     use sysinfo::System;
     let mut sys = System::new_all();
     sys.refresh_all();
-    // System::total_memory returns bytes. Convert to GB.
     let total_ram_gb = sys.total_memory() as f64 / (1024.0 * 1024.0 * 1024.0);
     Ok(total_ram_gb)
 }
@@ -3516,17 +3007,11 @@ pub async fn ipc_trigger_patch_sync(
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
 
     if let Some(alert) = alert {
-        // H11 fix: "SMS Offline" alerts previously "resolved" themselves by
-        // pinging an undocumented, never-built companion mobile app — there is
-        // no SMS ingestion pathway anywhere in this codebase (only Gmail and
-        // PDF-statement ingestion exist), so no automated retry is possible
-        // for this alert type. Fail rather than silently claim success.
         if alert.alert_type == "SMS Offline" {
             return Err(crate::error::AppError::Unknown(
                 "No automated retry is available for this alert — please check the bank connection manually.".to_string(),
             ));
         } else if alert.alert_type == "Email Offline" {
-            // trigger fetch emails
         }
 
         let alert_id_clone = alert.alert_id.clone();
@@ -3730,24 +3215,10 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
     ]
 }
 
-// ── Tests: Phase 5.8 Post-Parse Memory Cleanup integration test ───────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Doc 30 TASK-API-010 acceptance test: "every error path must resolve
-    /// to a documented `AppError` variant -- no raw string or unstructured
-    /// `anyhow::Error` ever reaches the frontend." A live `generate_handler!`
-    /// registry has no simple runtime-introspectable command list, so this
-    /// walks every `.rs` file under `src/` (a real, exhaustive scan -- not a
-    /// hardcoded subset that would silently stop covering new files) and
-    /// asserts no command-annotated function's signature block contains
-    /// `Result<_, String>` or a raw `anyhow::Error` return type. Mirrors the
-    /// same source-scanning technique `test_no_command_returns_pdf_bytes`
-    /// already established in this file. (Deliberately not writing the
-    /// literal tauri-command attribute text in this comment -- it would
-    /// match its own scan below and self-report as an offender.)
     fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
@@ -3772,12 +3243,6 @@ mod tests {
             "the source scan itself must find files, or this test is vacuous"
         );
 
-        // Built via `format!` rather than written as a literal in this file
-        // -- if the literal substring appeared here, this test would find
-        // its own source and self-report as an offender the moment its
-        // signature block (which legitimately contains no `Result<...>`
-        // return type at all, being a `#[test]` fn) got captured downstream
-        // of a spurious match.
         let marker = format!("#[{}::{}]", "tauri", "command");
 
         let mut offenders = Vec::new();
@@ -3786,9 +3251,6 @@ mod tests {
             let mut search_from = 0usize;
             while let Some(marker_pos) = src[search_from..].find(&marker) {
                 let abs_marker = search_from + marker_pos;
-                // Capture from the marker up to the function's opening `{`
-                // (the full attribute + signature block, matching
-                // test_no_command_returns_pdf_bytes' own block-capture style).
                 let Some(brace_offset) = src[abs_marker..]
                     .find("{\n")
                     .or_else(|| src[abs_marker..].find("{ "))
@@ -3817,19 +3279,10 @@ mod tests {
         );
     }
 
-    /// Finds `fn {name}(` anywhere under `src/` and returns its full body
-    /// (brace-matched from the first `{` after the signature through to the
-    /// matching close), searching every file `collect_rs_files` finds so a
-    /// command defined in any module is located regardless of which file it
-    /// lives in.
     fn find_function_body(name: &str) -> Option<String> {
         let src_dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
         let mut files = Vec::new();
         collect_rs_files(src_dir, &mut files);
-        // Matches both a plain `fn name(...)` and a generic
-        // `fn name<R: tauri::Runtime>(...)` (`scans_historical`,
-        // `sync_force_poll_now`, and similarly-generic command signatures
-        // put the type parameter between the name and the opening paren).
         let needle_plain = format!("fn {name}(");
         let needle_generic = format!("fn {name}<");
         for path in &files {
@@ -3857,25 +3310,6 @@ mod tests {
         None
     }
 
-    /// Doc 30 TASK-API-010 acceptance test: "Ensures `AppError::LicenseLocked`
-    /// is checked/returned consistently by every write-path command."
-    /// Curated to the commands that unambiguously mutate core financial-domain
-    /// data or trigger new ingestion (Document 22 §11.5's "all writes,
-    /// including new ingestion on both queues") -- not a blanket heuristic
-    /// (e.g. matching on a `_create`/`_update` suffix) that would misclassify
-    /// borderline cases. `license_activate`/`license_deactivate` are
-    /// deliberately excluded: they are themselves the mechanism by which a
-    /// LOCKED state is resolved, so gating them behind the current lock state
-    /// would create a deadlock a locked-out user could never escape from --
-    /// confirmed correct by design, not an oversight. `settings_export_encrypted_backup`/
-    /// `settings_import_encrypted_backup` are also excluded, matching the
-    /// established, unchallenged precedent of their sibling
-    /// `settings_export_data`: none of the three mutate `finance.db`'s rows
-    /// at all (export reads only; import currently only decrypts to a
-    /// staging file, with the actual DB swap-in deferred to TASK-OPS-002
-    /// per this task's own fix-log entry) -- and a locked-out user should
-    /// still be able to back up or preserve their own data, arguably more
-    /// so, not less.
     #[test]
     fn test_write_commands_check_license_locked() {
         let write_commands = [
@@ -3918,16 +3352,6 @@ mod tests {
             "sync_force_poll_now",
         ];
 
-        // Commands whose entire mutating sequence is delegated to a shared
-        // helper that performs the `assert_write_allowed` check itself. The
-        // scan below reads only the command's own body, so it has to follow
-        // that one hop -- otherwise extracting a command's body into a helper
-        // (as `settings_delete_account` did when the `delete_my_data` CLI
-        // started sharing its deletion sequence) reads as a missing gate.
-        //
-        // This is not a suppression list: each entry is verified below by
-        // actually reading the delegate's body and confirming the call is
-        // there, so a helper that stops gating still fails this test.
         const GATE_ENFORCING_DELEGATES: [&str; 1] = ["perform_account_deletion"];
 
         let delegates_to_gated_helper = |body: &str| {
@@ -3958,12 +3382,6 @@ mod tests {
         );
     }
 
-    /// Doc 30 TASK-API-010 acceptance test: "read-path commands remain
-    /// available even when LOCKED" -- a curated sample of clearly read-only
-    /// commands (list/get/status queries with no DB mutation) must never
-    /// call `assert_write_allowed`, since doing so would incorrectly block
-    /// them for a LOCKED user who must still be able to view their existing
-    /// data.
     #[test]
     fn test_read_commands_available_when_locked() {
         let read_commands = [
@@ -3996,9 +3414,6 @@ mod tests {
                     wrongly_gated.push(name);
                 }
             }
-            // A read command not found by the scan isn't this test's
-            // concern (rename/removal is covered by other tests) -- only
-            // "found and wrongly gated" is the failure mode here.
         }
 
         assert!(
@@ -4017,11 +3432,6 @@ mod tests {
             [],
         )
         .unwrap();
-        // `log_user_correction` (Doc 30 TASK-TXN-009) attributes the
-        // correction to the transaction's linked observation -- a real
-        // canonical transaction always has one (that's how reconciliation
-        // created it); seed one here too so feedback_log writes actually
-        // fire, matching production shape.
         conn.execute(
             "INSERT INTO transaction_observations (id, canonical_transaction_id, source_pipeline, source_record_id, fingerprint) \
              VALUES ('obs_1', 'tx_1', 'gmail_transaction', 'msg_1', 'fp_1')",
@@ -4031,8 +3441,6 @@ mod tests {
         conn
     }
 
-    /// Doc 30 TASK-API-003 acceptance test: a category change writes a
-    /// `feedback_log` entry, the same as a merchant correction does.
     #[test]
     fn test_category_update_writes_feedback_log() {
         let conn = setup_tx_test_db();
@@ -4069,17 +3477,9 @@ mod tests {
         assert_eq!(new_cat, "cat_new");
     }
 
-    /// Doc 30 TASK-API-003 acceptance test: correcting a transaction's
-    /// merchant creates a `merchant_aliases` row mapping the old raw text
-    /// to the resolved/created merchant entity.
     #[test]
     fn test_merchant_update_creates_alias() {
         let conn = setup_tx_test_db();
-        // A fictional merchant name -- migration 20260101000030 already
-        // seeds 5 real merchants (Amazon/Swiggy/Uber/Starbucks/Netflix,
-        // per TASK-TXN-007/011's own established test-fixture precedent),
-        // so a real brand name here would collide with seed data instead
-        // of exercising the "genuinely new merchant" code path.
         apply_transaction_field_update(
             &conn,
             "tx_1",
@@ -4120,15 +3520,13 @@ mod tests {
         );
     }
 
-    /// The design's "corrected back to itself" edge case: nothing logged,
-    /// nothing queued.
     #[test]
     fn test_unchanged_value_produces_no_feedback() {
         let conn = setup_tx_test_db();
         let contexts = apply_transaction_field_update(
             &conn,
             "tx_1",
-            Some("ZZZTEST MKTP".to_string()), // identical to what is stored
+            Some("ZZZTEST MKTP".to_string()),
             None,
             None,
             None,
@@ -4153,8 +3551,6 @@ mod tests {
         assert_eq!(logged, 0);
     }
 
-    /// Every editable evidence-derived field now feeds the loop, not just the
-    /// two that used to.
     #[test]
     fn test_amount_and_date_corrections_are_captured() {
         let conn = setup_tx_test_db();
@@ -4179,8 +3575,6 @@ mod tests {
         assert!(fields.contains("event_time"), "got {fields:?}");
     }
 
-    /// Category and notes are user classification, never extracted by regex.
-    /// They are logged, never learned from.
     #[test]
     fn test_category_is_logged_but_never_queued_for_learning() {
         let conn = setup_tx_test_db();
@@ -4215,9 +3609,6 @@ mod tests {
         assert_eq!(logged, 1, "but the audit trail must still record it");
     }
 
-    /// The report writes the override and the audit row, and nothing else --
-    /// in particular it must not reassign the transaction's instrument, which
-    /// is a different operation with a different meaning.
     #[test]
     fn test_wrong_bank_report_writes_override_and_feedback() {
         let conn = setup_tx_test_db();
@@ -4269,7 +3660,6 @@ mod tests {
         assert_eq!(overrides[0].bank_name, "Axis Bank", "the newer report wins");
     }
 
-    /// Doc 30 TASK-API-004 acceptance test.
     #[test]
     fn test_upload_command_rejects_missing_file() {
         assert!(validate_upload_files_non_empty(&[]).is_err());
@@ -4280,11 +3670,6 @@ mod tests {
         assert!(validate_upload_files_non_empty(&one_file).is_ok());
     }
 
-    /// Doc 30 TASK-API-004 acceptance test: schema-level check that no
-    /// statement-related *response* type ever carries raw PDF bytes.
-    /// Scans each response struct's own field block (not the whole file --
-    /// `UploadFile`'s `file_bytes: Vec<u8>` is a legitimate *input* type in
-    /// the same file and must not false-positive this check).
     #[test]
     fn test_no_command_returns_pdf_bytes() {
         fn struct_field_block(src: &str, struct_name: &str) -> String {
@@ -4334,16 +3719,6 @@ mod tests {
         );
     }
 
-    /// §5.8 Integration test: Verify that the raw PDF bytes do not persist
-    /// in the database or as files on disk after the pipeline runs.
-    ///
-    /// This test validates the design invariant:
-    ///   - No column in `statements` or `statement_entries` stores raw PDF bytes.
-    ///   - The `bytes` variable is explicitly dropped after the pipeline step.
-    ///
-    /// Since we cannot run the full async pipeline in a unit test without Tauri runtime,
-    /// we test the schema invariant directly: the `statements` table must not have
-    /// any BLOB column that could store PDF bytes.
     #[tokio::test]
     async fn test_no_pdf_bytes_written_to_sqlite_or_disk() {
         let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
@@ -4353,7 +3728,6 @@ mod tests {
 
         let conn = pool.get().await.unwrap();
 
-        // Verify statements table schema: no column should be of BLOB type
         let column_types: Vec<String> = conn
             .interact(|c| {
                 let mut stmt = c.prepare("PRAGMA table_info(statements)").unwrap();
@@ -4368,7 +3742,6 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        // No column type should be "BLOB" (raw binary storage) in statements
         let has_blob_column = column_types
             .iter()
             .any(|t| t.to_uppercase().contains("BLOB"));
@@ -4379,7 +3752,6 @@ mod tests {
             column_types
         );
 
-        // Verify statement_entries table similarly
         let entry_types: Vec<String> = conn
             .interact(|c| {
                 let mut stmt = c.prepare("PRAGMA table_info(statement_entries)").unwrap();
@@ -4402,8 +3774,6 @@ mod tests {
             entry_types
         );
 
-        // Verify the DB file on disk does NOT contain PDF magic bytes
-        // (confirms bytes were never written via any code path)
         let db_bytes = std::fs::read(&db_path).unwrap();
         let pdf_magic = b"%PDF";
         let db_contains_pdf = db_bytes.windows(4).any(|w| w == pdf_magic);
@@ -4414,9 +3784,6 @@ mod tests {
         );
     }
 
-    /// Doc 30 TASK-STMT-002: "Every skip is logged to audit_log
-    /// (statement_duplicate_skipped) with the detected period for user
-    /// transparency."
     #[tokio::test]
     async fn test_duplicate_skip_writes_audit_log_with_period() {
         let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
@@ -4449,8 +3816,6 @@ mod tests {
         assert_eq!(parsed["billing_period_end"], "2026-01-31");
         assert_eq!(parsed["filename"], "HDFC_Jan_2026.pdf");
     }
-
-    // ── test_list_unprocessed_grouped_by_status (Doc 30 TASK-STMT-010) ───────
 
     #[test]
     fn test_list_unprocessed_grouped_by_status() {
@@ -4485,8 +3850,6 @@ mod tests {
         assert_eq!(grouped["awaiting_password"][0]["filename"], "s1.pdf");
     }
 
-    // ── test_retry_reuses_saved_password (Doc 30 TASK-STMT-010) ──────────────
-
     #[tokio::test]
     async fn test_retry_reuses_saved_password() {
         use crate::statements::password::{
@@ -4511,11 +3874,6 @@ mod tests {
                 [],
             )
             .unwrap();
-            // Real stored passwords under two DIFFERENT real instruments —
-            // ciphertext content doesn't matter for this test (pdfium itself
-            // isn't installed on this dev machine, so no candidate can
-            // actually unlock here regardless); what matters is which rows
-            // the query even considers.
             c.execute(
                 "INSERT INTO pdf_passwords (id, instrument_id, password_ciphertext, success_count, created_at) \
                  VALUES ('pw_a', 'inst_a', X'0102030405060708090A0B0C0D0E0F1011121314', 0, datetime('now'))",
@@ -4532,10 +3890,6 @@ mod tests {
         .await
         .unwrap();
 
-        // The real bug this fixes: the old call site scoped the lookup to
-        // instrument_id="" — a value no real instrument ever has, so it
-        // structurally could never find a stored password at all, regardless
-        // of what's actually on file.
         let old_bug_result = try_stored_passwords("", b"%PDF-1.4 fake", &pool)
             .await
             .unwrap();
@@ -4554,17 +3908,11 @@ mod tests {
             .unwrap();
         assert_eq!(scoped_count, 0, "no real instrument has an empty-string id");
 
-        // The fix: try_all_stored_passwords isn't scoped to any instrument —
-        // both seeded rows, across two different instruments, are real
-        // candidates it considers (gracefully falling through to
-        // PromptRequired once none actually unlock, rather than erroring).
         let result = try_all_stored_passwords(b"%PDF-1.4 fake", &pool)
             .await
             .unwrap();
         assert_eq!(result, PasswordResolutionResult::PromptRequired);
     }
-
-    // ── test_discard_removes_row_and_logs_audit (Doc 30 TASK-STMT-010) ───────
 
     #[tokio::test]
     async fn test_discard_removes_row_and_logs_audit() {
@@ -4629,7 +3977,6 @@ mod tests {
             Some("11111111-1111-4111-8111-111111111111")
         );
 
-        // Discarding again must fail — the row is really gone, not just hidden.
         let second_attempt = statements_discard(
             "11111111-1111-4111-8111-111111111111".to_string(),
             app.state::<deadpool_sqlite::Pool>(),
@@ -4859,10 +4206,6 @@ mod tests {
         assert_eq!(grouped[0]["masked_identifier"], "6666");
     }
 
-    /// TASK-FE-013: `reference_id` (already a real column on both
-    /// `transactions` and `transaction_observations`) was never part of the
-    /// manual-entry payload -- this confirms it round-trips through the
-    /// shared `create_manual_transaction` helper now that it does.
     #[tokio::test]
     async fn test_manual_transaction_persists_reference_id() {
         use tauri::test::{mock_builder, mock_context};

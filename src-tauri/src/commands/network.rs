@@ -1,8 +1,11 @@
+//! Command exposing the outbound network activity log.
+//!
+//! Backs the privacy screen, letting the user read exactly what left the machine
+//! rather than taking the disclosure on trust.
 use crate::db::network_activity_log::{self, NetworkActivityLogRow};
 use deadpool_sqlite::Pool;
 use tauri::State;
 
-/// Document 19 §13.10's exact 5 named fields.
 #[derive(serde::Serialize)]
 pub struct NetworkActivityEntry {
     pub id: String,
@@ -12,13 +15,10 @@ pub struct NetworkActivityEntry {
     pub occurred_at: Option<chrono::NaiveDateTime>,
 }
 
-/// Doc 30 TASK-API-006: `network_activity_log.channel` is now written
-/// directly by `NetworkClient::execute`'s caller (gmail_client.rs,
-/// oauth.rs, polling.rs, licensing/client.rs each pass their real channel
-/// through). This hostname-based inference is now only a fallback for rows
-/// written before that column existed (`channel IS NULL`) -- kept rather
-/// than deleted so old rows still resolve to a real channel instead of
-/// "unknown" in the UI.
+/// Maps a destination host to its disclosed channel.
+///
+/// The channel is what ties a logged request back to a row in the privacy
+/// disclosure, so the two can be compared.
 fn infer_channel(destination: &str) -> String {
     if destination.contains("gmail.googleapis.com") {
         "gmail_api".to_string()
@@ -37,6 +37,7 @@ fn infer_channel(destination: &str) -> String {
     }
 }
 
+/// Projects a log row into the frontend's shape.
 fn to_entry(row: NetworkActivityLogRow) -> NetworkActivityEntry {
     let channel = row
         .channel
@@ -51,18 +52,8 @@ fn to_entry(row: NetworkActivityLogRow) -> NetworkActivityEntry {
     }
 }
 
-/// G20/H10/J8 fix: renamed from `settings_network_activity_list` to match
-/// Doc 19 §13.10's documented `settings_get_network_activity` naming and
-/// `{ "entries": [...] }` response shape (was a bare array).
-///
-/// Paginated (`page` 1-based, `page_size` capped at
-/// `ipc::validation::MAX_PAGE_SIZE`) -- this table has no row-count cap
-/// (only Document 18 §4.21b's 30-day time retention window), and a single
-/// historical scan can write hundreds of rows in seconds, so fetching every
-/// row unconditionally doesn't scale. Response shape matches Document 19
-/// §10.1's already-established `{ items/entries, meta: { page, page_size,
-/// total } }` pagination convention.
 #[tauri::command]
+/// Returns a page of network activity for the privacy screen.
 pub async fn settings_get_network_activity(
     page: u32,
     page_size: u32,
@@ -116,9 +107,6 @@ mod tests {
         }
     }
 
-    /// Doc 30 TASK-API-006: a row with a real stored `channel` (written by
-    /// `NetworkClient::execute`'s caller) must use that value directly, not
-    /// the hostname-inference fallback.
     #[test]
     fn test_to_entry_prefers_stored_channel_over_inference() {
         let row = base_row(Some("gmail_api"));
@@ -126,9 +114,6 @@ mod tests {
         assert_eq!(entry.channel, "gmail_api");
     }
 
-    /// A legacy row written before the `channel` column existed (`NULL`)
-    /// still falls back to hostname inference instead of surfacing as
-    /// "unknown" for a recognized host.
     #[test]
     fn test_to_entry_falls_back_to_inference_for_legacy_rows() {
         let row = base_row(None);

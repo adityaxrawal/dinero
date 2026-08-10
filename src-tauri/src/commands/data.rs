@@ -1,3 +1,20 @@
+//! Read commands backing the dashboard, ledger and analytics screens.
+//!
+//! Aggregation happens in SQL rather than by loading rows and summing them in
+//! Rust, so the dashboard stays responsive as the ledger grows.
+//!
+//! Money crosses this boundary as integer minor units; conversion to a decimal
+//! is left to the frontend's formatter so no rounding is introduced in transit.
+//!
+//! File handling note: no command here accepts an uploaded document. The only
+//! filesystem reads below are of the app's own log files. Statement upload is
+//! handled by `statements_upload` in the parent module, and every uploaded file
+//! is validated by `statements::validator::validate_and_hash` before any of its
+//! bytes are parsed -- that check enforces the application/pdf type by testing
+//! the `%PDF` magic bytes rather than trusting a filename or a client-supplied
+//! MIME string, and rejects anything over the maximum size. Those two checks are
+//! the trust boundary for untrusted documents; nothing in this module weakens or
+//! bypasses them.
 use crate::extraction::normalization::clean_masked_identifier;
 use chrono::Datelike;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -5,13 +22,6 @@ use serde::{Deserialize, Serialize};
 
 use tauri::{Manager, State};
 
-/// Document 19 §11.1's exact 5 named fields (`month_to_date_spend`, `limit`,
-/// `utilization_pct`, `recent_transactions_count`, `upcoming_bills_count`).
-/// `income` is retained as an additive 6th field per Document 19 §19's own
-/// versioning rule ("introduce new fields as additive changes whenever
-/// possible... avoid breaking return shape for frontend consumers") -- it
-/// backs an existing Dashboard.tsx card with no equivalent anywhere in the
-/// 49-document spec set to replace it with.
 #[derive(Serialize, Debug, PartialEq)]
 pub struct DashboardSummary {
     pub month_to_date_spend: f64,
@@ -22,19 +32,16 @@ pub struct DashboardSummary {
     pub income: f64,
 }
 
-/// Doc 30 TASK-DEDUP-009: "an `unassigned_amount_pending_review` metric (NOT
-/// part of totals, shown as a distinct 'X transactions need your review'
-/// banner) computed from `ambiguous_pending` clusters plus `pending`
-/// unassigned transactions." Exposed here as its own computable value —
-/// Area 8's `analytics_pending_review_count` command (Doc 30 TASK-API-006)
-/// wraps this as IPC once built; this task's own scope is the underlying
-/// metric and its defensive exclusion tests.
 #[derive(Serialize, Debug, PartialEq)]
 pub struct PendingReviewMetric {
     pub count: i64,
     pub amount_minor: i64,
 }
 
+/// Count and total value of transactions awaiting review.
+///
+/// Drives the review badge and the dock badge, so it must reflect reconciliation
+/// activity promptly.
 pub fn compute_unassigned_amount_pending_review(
     conn: &Connection,
 ) -> Result<PendingReviewMetric, String> {
@@ -73,20 +80,10 @@ pub struct TransactionRecord {
     pub date: String,
     pub merchant: String,
     pub amount: f64,
-    /// "debit"/"credit" -- `amount` is always a positive magnitude (see
-    /// `CanonicalTransaction`'s invariant), so the frontend must branch on
-    /// this field, not on the sign of `amount`, to render red/negative vs
-    /// green/positive.
     pub direction: Option<String>,
     pub category: String,
     pub status: String,
-    /// G11 fix: {email_only, statement_only, merged} (or a raw source_pipeline
-    /// value where source_mix hasn't been normalized yet) — lets the UI show
-    /// which ingestion path produced this transaction.
     pub source_mix: Option<String>,
-    /// TASK-FE-009: the list row needs an instrument badge — this was never
-    /// selected at all, so the frontend had no way to know which instrument
-    /// a transaction belonged to without a separate per-row fetch.
     pub instrument_id: Option<String>,
 }
 
@@ -102,16 +99,10 @@ pub struct StatementRecord {
     pub date: String,
     pub file_name: String,
     pub status: String,
-    /// TASK-FE-011: InstrumentDetail needs to scope statement history to one
-    /// instrument -- never selected before this task despite the `statements`
-    /// table having had the column since the initial schema.
     pub instrument_id: Option<String>,
     pub issuer_name: Option<String>,
     pub masked_identifier: Option<String>,
-    /// "credit_card" | "bank_account" | other `instruments.type` values.
     pub instrument_type: Option<String>,
-    /// True if a stored, still-within-retention-window encrypted PDF exists
-    /// for this statement (see `statements::pdf_storage`).
     pub pdf_available: bool,
 }
 
@@ -121,17 +112,12 @@ pub struct StatementsPage {
     pub total: i64,
 }
 
+/// Total number of statements.
 pub fn count_statements(conn: &Connection) -> Result<i64, String> {
     conn.query_row("SELECT COUNT(*) FROM statements", [], |row| row.get(0))
         .map_err(|e| e.to_string())
 }
 
-// TASK-FE-013: rewrote to carry the real Document 18 §4.6a
-// (`reconciliation_cluster_members`) columns instead of only a guessed
-// `source` label -- `member_role` and `observation_id` are needed to call
-// `reconciliation_clusters_resolve` correctly (it requires the real
-// `observation_id`, not a member row id), and `source_pipeline` mirrors
-// Document 19 §10.2's documented member shape.
 #[derive(Serialize, Debug, PartialEq)]
 pub struct ClusterMember {
     pub id: String,
@@ -141,21 +127,12 @@ pub struct ClusterMember {
     pub source_pipeline: Option<String>,
     pub merchant: String,
     pub amount: f64,
-    /// "debit"/"credit" -- see `TransactionRecord::direction`'s doc comment;
-    /// `amount` here is likewise always a positive magnitude.
     pub direction: Option<String>,
     pub date: String,
     pub instrument_issuer_name: Option<String>,
     pub instrument_masked_identifier: Option<String>,
     pub reference_id: Option<String>,
-    /// The candidate's own score against the incoming observation. `None`
-    /// for the "incoming" member -- it has no score against itself.
     pub match_score: Option<f64>,
-    /// Only ever populated for `member_role = "incoming"` -- the new
-    /// observation's raw source email/SMS. Existing candidates are
-    /// already-settled canonical transactions; the frontend links to their
-    /// existing Transactions detail page instead of re-deriving their
-    /// original source text here.
     pub source_raw_payload_json: Option<String>,
 }
 
@@ -165,26 +142,16 @@ pub struct ClusterRecord {
     pub reason: String,
     pub members_count: i64,
     pub members: Vec<ClusterMember>,
-    /// Doc 30 TASK-RT-006: backs the "unresolved > 7 days" stale-cluster
-    /// reminder -- previously absent from this response entirely, so the
-    /// frontend had no way to compute a cluster's age.
     pub created_at: Option<String>,
-    /// Plain-language explanation computed from the members' real match
-    /// scores (see `compute_cluster_explanation`), replacing the raw
-    /// internal `reason` bucket string (`mid_range_score` /
-    /// `multiple_high_score_candidates`) that was previously rendered
-    /// near-verbatim to the user.
     pub explanation: String,
 }
 
-/// TASK-FE-013: `reason` (`mid_range_score` / `multiple_high_score_candidates`)
-/// is an internal analytics bucket, not user-facing copy -- the frontend
-/// used to render it near-verbatim (e.g. a user seeing the literal string
-/// "mid_range_score" as the entire explanation for an ambiguous match).
-/// This computes a real explanation from the per-candidate scores now
-/// stored on cluster members (see Task 2), anchored to the actual
-/// `AMBIGUITY_MARGIN_THRESHOLD` the engine used to route the case here in
-/// the first place.
+/// Explains in plain language why a cluster could not be resolved automatically.
+///
+/// Turns the matcher's numbers into a reason the user can act on. The two-
+/// candidate case is the interesting one: it reports the margin between the top
+/// scores against the threshold, because closeness -- not low confidence -- is
+/// what actually blocked the automatic decision.
 fn compute_cluster_explanation(members: &[ClusterMember]) -> String {
     let mut scores: Vec<f64> = members.iter().filter_map(|m| m.match_score).collect();
     scores.sort_by(|a, b| b.partial_cmp(a).unwrap());
@@ -232,16 +199,10 @@ pub struct DebugMetrics {
     pub reconciliation_decision_distribution: std::collections::HashMap<String, i64>,
 }
 
+/// Computes the dashboard's headline figures.
 pub fn do_fetch_dashboard_summary(conn: &Connection) -> Result<DashboardSummary, String> {
     let now = chrono::Utc::now().naive_utc();
 
-    // Doc 30 TASK-API-006: "All aggregation sums amount_minor (integer
-    // paise), converting to rupees only at final response formatting, to
-    // avoid floating-point rounding errors." The prior implementation
-    // summed the float `amount` column with no month scoping at all --
-    // `month_to_date_spend` was actually an all-time total. Reuses the
-    // same amount_minor/direction/best_event_time/ambiguous-exclusion
-    // helpers `db/transactions.rs`'s spending-limit checks already rely on.
     let month_to_date_spend: f64 =
         crate::db::transactions::get_global_spend_current_month(conn, &now)
             .map_err(|e| e.to_string())?;
@@ -251,7 +212,6 @@ pub fn do_fetch_dashboard_summary(conn: &Connection) -> Result<DashboardSummary,
         crate::db::transactions::count_transactions_current_month(conn, &now)
             .map_err(|e| e.to_string())?;
 
-    // Fetch monthly limit from local_profile (profile id=1 is the single local profile)
     let limit: f64 = conn
         .query_row(
             "SELECT COALESCE(spending_limit_monthly, 0) FROM local_profile WHERE id = 1",
@@ -266,11 +226,6 @@ pub fn do_fetch_dashboard_summary(conn: &Connection) -> Result<DashboardSummary,
         0.0
     };
 
-    // Doc 19 §11.2's `dashboard_upcoming_bills` needs full instrument rows
-    // (nickname, currency, amount); this count only needs the same
-    // `statement_due_date >= today` predicate `db/instruments.rs::list_upcoming_bills`
-    // uses, so it's queried directly rather than pulling in and discarding
-    // full InstrumentsRow deserialization.
     let today = now.date();
     let upcoming_bills_count: u32 = conn
         .query_row(
@@ -290,13 +245,6 @@ pub fn do_fetch_dashboard_summary(conn: &Connection) -> Result<DashboardSummary,
     })
 }
 
-/// G9 fix: real pagination — `limit`/`offset` are honored (previously the
-/// frontend showed a hardcoded "page 1 of 10" with no page params sent at
-/// all). Paired with `count_transactions` for the total used to compute the
-/// real page count.
-/// Doc 19 §8.1's exact multi-filter arg set. Every field is optional and
-/// combines with AND (`test_list_filters_combine_with_and_logic`) — `None`
-/// means "don't filter on this dimension."
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct TransactionListFilters {
     pub from_date: Option<String>,
@@ -307,6 +255,14 @@ pub struct TransactionListFilters {
     pub status: Option<String>,
 }
 
+/// Builds a parameterised WHERE fragment from the supplied filters.
+///
+/// Only filters that were set contribute a clause. Every value is bound as a
+/// parameter rather than interpolated -- these arrive from the frontend, so
+/// building the SQL by string concatenation would be an injection route.
+///
+/// Dates are widened to whole-day bounds so an inclusive range behaves as the
+/// user expects rather than excluding the final day's transactions.
 fn build_filter_clause(
     filters: &TransactionListFilters,
 ) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
@@ -346,11 +302,7 @@ fn build_filter_clause(
     (clause, args)
 }
 
-// Doc 30 TASK-API-003: real multi-filter support -- Document 19 §8.1's
-// `transactions_list` documents `from_date`/`to_date`/`instrument_id`/
-// `direction`/`category_id`/`status` as combinable filter args, but this
-// function previously took only `limit`/`offset` with no filter parameters
-// at all (a real, confirmed gap, not just an untested one).
+/// Fetches a filtered page of transactions.
 pub fn do_fetch_transactions(
     conn: &Connection,
     filters: &TransactionListFilters,
@@ -409,6 +361,7 @@ pub fn do_fetch_transactions(
     Ok(transactions)
 }
 
+/// Counts transactions matching the filters, for pagination.
 pub fn count_transactions_filtered(
     conn: &Connection,
     filters: &TransactionListFilters,
@@ -420,6 +373,7 @@ pub fn count_transactions_filtered(
         .map_err(|e| e.to_string())
 }
 
+/// Counts all transactions.
 pub fn count_transactions(conn: &Connection) -> Result<i64, String> {
     conn.query_row(
         "SELECT COUNT(*) FROM transactions WHERE is_deleted = 0",
@@ -429,20 +383,7 @@ pub fn count_transactions(conn: &Connection) -> Result<i64, String> {
     .map_err(|e| e.to_string())
 }
 
-/// M25: `transactions_search` was called by the frontend (`Transactions.tsx`)
-/// but had no backend implementation at all — an immediate, reachable runtime
-/// crash on every search keystroke. Case-insensitive substring match against
-/// merchant name and category, mirroring `do_fetch_transactions`'s shape and
-/// ordering.
-// Doc 30 TASK-API-003 / Document 19 §8.6 (`test_search_uses_fts5`): this
-// previously used a hand-rolled `LIKE` scan over `merchant_display_name`/
-// `merchant_normalized_name`/`category_id` -- functionally similar but not
-// what TASK-DB-007 actually built `transactions_fts` for, and it never used
-// the FTS5 index at all (no `search_rank`, no tokenizer benefits, and
-// `category_id` is a UUID foreign key, not searchable text -- `LIKE
-// '%query%'` against it could never usefully match anyway). Now delegates
-// to `db::transactions::search_transactions`, the real FTS5-backed query
-// already built and sitting unused since TASK-DB-007.
+/// Runs a text search across transactions.
 pub fn do_transactions_search(
     conn: &Connection,
     query: &str,
@@ -476,6 +417,7 @@ pub fn do_transactions_search(
 }
 
 #[tauri::command]
+/// Command wrapper around transaction search.
 pub async fn transactions_search(
     pool: State<'_, deadpool_sqlite::Pool>,
     query: String,
@@ -491,9 +433,7 @@ pub async fn transactions_search(
         .map_err(crate::error::AppError::Db)
 }
 
-// Doc 30 TASK-API-004 acceptance test `test_statements_list_paginated`: real
-// gap fixed here -- this previously returned every statement row in one
-// unbounded query, with no `limit`/`offset` parameters at all.
+/// Fetches statement processing history.
 pub fn do_fetch_statement_history(
     conn: &Connection,
     limit: i64,
@@ -538,21 +478,11 @@ pub fn do_fetch_statement_history(
     Ok(res)
 }
 
-/// Doc 30 TASK-API-005: shared by `do_fetch_unresolved_clusters` (the list
-/// view) and the new `reconciliation_clusters_get` (single-cluster detail)
-/// -- extracted so the two don't maintain two copies of the same member
-/// query.
+/// Loads a cluster's members with the context needed to compare them.
 fn fetch_cluster_members(
     conn: &Connection,
     cluster_id: &str,
 ) -> Result<Vec<ClusterMember>, String> {
-    // TASK-FE-013 fix: the previous query only LEFT JOINed `transactions`
-    // (via `canonical_transaction_id`), so the "incoming" member -- which
-    // carries `observation_id` instead, per Document 18 §4.6a -- always
-    // fell through to the COALESCE fallbacks ('Unknown'/0/'Unknown'). Every
-    // cluster's primary evidence (the new observation that triggered the
-    // ambiguity) rendered as blank data. Now also joins
-    // `transaction_observations` and coalesces across both sides.
     let mut member_stmt = conn.prepare(
         "SELECT m.id,
                 m.member_role,
@@ -603,6 +533,7 @@ fn fetch_cluster_members(
     Ok(members)
 }
 
+/// Lists unresolved clusters for the reconciliation queue.
 pub fn do_fetch_unresolved_clusters(conn: &Connection) -> Result<Vec<ClusterRecord>, String> {
     let mut stmt = conn
         .prepare(
@@ -641,9 +572,7 @@ pub fn do_fetch_unresolved_clusters(conn: &Connection) -> Result<Vec<ClusterReco
     Ok(res)
 }
 
-/// Doc 30 TASK-API-005 / Document 19 §10.2: `reconciliation_clusters_get`
-/// -- single-cluster detail. Did not exist as an IPC command before this
-/// task (only the list variant existed).
+/// Loads one cluster in full, including its explanation.
 pub fn do_fetch_cluster_detail(
     conn: &Connection,
     cluster_id: &str,
@@ -672,6 +601,7 @@ pub fn do_fetch_cluster_detail(
     }))
 }
 
+/// Lists instruments with their balances.
 pub fn do_fetch_instruments(conn: &Connection) -> Result<Vec<InstrumentRecord>, String> {
     let mut stmt = conn.prepare(
         "SELECT i.id, i.type, i.issuer_name, i.masked_identifier, i.status, i.current_balance, i.credit_limit, i.full_identifier, i.billing_cycle_day, i.bank_ifsc, \
@@ -737,6 +667,10 @@ pub fn do_fetch_instruments(conn: &Connection) -> Result<Vec<InstrumentRecord>, 
     Ok(res)
 }
 
+/// Assembles the debug screen's metrics.
+///
+/// The extraction-layer distribution is the useful one: it shows how much traffic
+/// is reaching the expensive LLM layer versus being handled by cheap rules.
 pub fn do_get_debug_metrics(conn: &Connection) -> Result<DebugMetrics, String> {
     let total_transactions: i64 = conn
         .query_row("SELECT count(*) FROM transactions", [], |row| row.get(0))
@@ -829,6 +763,7 @@ pub struct BackendStatus {
 }
 
 #[tauri::command]
+/// Reports whether the backend is serving and its database is intact.
 pub async fn check_backend_status(
     pool: State<'_, deadpool_sqlite::Pool>,
 ) -> Result<BackendStatus, crate::error::AppError> {
@@ -837,7 +772,6 @@ pub async fn check_backend_status(
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(|c| {
-        // Lightweight sanity check — if the DB responds we are healthy
         c.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))
             .map_err(|e| e.to_string())
     })
@@ -849,22 +783,11 @@ pub async fn check_backend_status(
     .map_err(crate::error::AppError::Db)
 }
 
-/// J7 fix (Doc 25 §4.3, Doc 28 §6.4): a local encrypted export of the user's
-/// full dataset — previously no such command existed at all. `VACUUM INTO`
-/// on the live SQLCipher connection produces a complete, consistent snapshot
-/// that is *already* AES-256 encrypted (same encryption as the live database,
-/// same Keychain-derived key) — the export file is only ever readable by
-/// this app on this Mac, matching "local encrypted export" without inventing
-/// a second encryption scheme.
-///
-/// Doc 19 §13 (per Aditya's decision, 2026-07-16): `password` is an
-/// additional optional argument -- when provided, the generated export is
-/// AES-256-GCM-encrypted with that password (via the same
-/// `db::backup::encrypt_backup` primitive `settings_export_encrypted_backup`
-/// already uses) instead of relying solely on this machine's Keychain-
-/// derived SQLCipher key, so the export is portable to a different Mac.
-/// `None` preserves the original behavior exactly.
 #[tauri::command]
+/// Exports the user's data to a file.
+///
+/// Optionally password-protected, since the export leaves the machine and its
+/// keychain behind and cannot rely on the database key.
 pub async fn settings_export_data(
     export_path: String,
     password: Option<String>,
@@ -930,18 +853,8 @@ pub async fn settings_export_data(
     Ok(export_path)
 }
 
-/// Doc 30 TASK-API-008: "the manual, password-protected Mac-to-Mac
-/// transfer path underlying TASK-DB-021, distinct from the automatic
-/// daily backup, TASK-DB-020." Neither `settings_export_encrypted_backup`
-/// nor its counterpart existed before this task. Snapshots the live DB via
-/// `VACUUM INTO` (the same pattern `settings_export_data`/
-/// `db::migrations::create_pre_migration_backup` already use) to a
-/// throwaway temp file, then AES-256-GCM-encrypts those bytes with the
-/// caller's password (`db::backup::encrypt_backup`) -- a password entirely
-/// separate from this machine's own Keychain-derived SQLCipher key, since
-/// the whole point is restorability on a different Mac with no access to
-/// this Keychain.
 #[tauri::command]
+/// Exports an encrypted backup.
 pub async fn settings_export_encrypted_backup(
     export_path: String,
     password: String,
@@ -976,14 +889,8 @@ pub async fn settings_export_encrypted_backup(
     Ok(export_path)
 }
 
-/// Doc 30 TASK-API-008's counterpart to `settings_export_encrypted_backup`.
-/// Decrypts the backup file to a temp staging path and returns it --
-/// integrity-checking and atomically swapping it in as the live database
-/// (leaving the original untouched on any failure) is TASK-OPS-002's
-/// explicit job (`test_restore_validates_integrity_before_apply`,
-/// `test_restore_failure_leaves_original_db_intact`), not this command's;
-/// this only reverses the encryption.
 #[tauri::command]
+/// Imports a previously exported encrypted backup.
 pub async fn settings_import_encrypted_backup(
     import_path: String,
     password: String,
@@ -1001,26 +908,8 @@ pub async fn settings_import_encrypted_backup(
     Ok(staging_path.to_string_lossy().to_string())
 }
 
-/// "Reset App Data" full local wipe (Doc 28 §4.4, §6.1, §6.3; Doc 25 §4.3, §10
-/// row 7; TASK-AUTH-013). Doc 28 §4.4 step 1's two-step typed-phrase UI
-/// confirmation lives in `Settings.tsx`'s reset modal (exact phrase
-/// `RESET_CONFIRM_PHRASE = "DELETE MY DATA"`, matching Document 30's own
-/// quoted text) — this command implements steps 2–7, the backend-owned
-/// destructive sequence, in the doc's own order.
-/// G20/H10/J8 fix: renamed from `reset_database` to match Doc 19 §13/§18's
-/// documented `settings_delete_account` naming — this app has no login/
-/// account concept, but a full local wipe is the closest and only documented
-/// "Reset App Data" full local wipe (Doc 28 §4.4, §6.1, §6.3; Doc 25 §4.3, §10
-/// row 7; TASK-AUTH-013). Doc 28 §4.4 step 1's two-step typed-phrase UI
-/// confirmation lives in `Settings.tsx`'s reset modal (exact phrase
-/// `RESET_CONFIRM_PHRASE = "DELETE MY DATA"`, matching Document 30's own
-/// quoted text) — this command implements steps 2–7, the backend-owned
-/// destructive sequence, in the doc's own order.
-/// G20/H10/J8 fix: renamed from `reset_database` to match Doc 19 §13/§18's
-/// documented `settings_delete_account` naming — this app has no login/
-/// account concept, but a full local wipe is the closest and only documented
-/// equivalent operation.
 #[tauri::command]
+/// Command entry point for deleting all local data.
 pub async fn settings_delete_account(
     app: tauri::AppHandle,
     pool: State<'_, deadpool_sqlite::Pool>,
@@ -1031,18 +920,14 @@ pub async fn settings_delete_account(
 
     perform_account_deletion(&app_dir, Some(pool.inner())).await?;
 
-    // Step 7: the app resets to first-run onboarding state. Restarting the
-    // process is what makes this safe and correct — on relaunch, init_db()
-    // finds no finance.db, creates a fresh one from scratch (fresh SQLCipher
-    // key too, since delete_base_key() cleared the old one), and the user
-    // lands on onboarding with no local_profile/connected_accounts/instruments
-    // left over. AppHandle::restart() never returns.
     app.restart();
 }
 
-/// Core logic for "Reset App Data" / "DELETE MY DATA" full local wipe.
-/// Extracted so both Tauri command `settings_delete_account` and the local CLI command
-/// execute the exact same deletion sequence.
+/// Deletes every trace of the account from this machine.
+///
+/// Irreversible, and deliberately thorough: the encrypted database, its backups,
+/// stored statements and keychain entries all go. Leaving any one behind would
+/// make the deletion a false promise.
 pub async fn perform_account_deletion(
     app_dir: &std::path::Path,
     pool: Option<&deadpool_sqlite::Pool>,
@@ -1050,9 +935,6 @@ pub async fn perform_account_deletion(
     if let Some(pool) = pool {
         crate::licensing::gate::assert_write_allowed(pool).await?;
 
-        // Step 4: an audit_log entry is written *before* destructive operations
-        // start, so the intent to delete is captured even if the process is
-        // interrupted partway through the remaining steps.
         if let Ok(conn) = pool.get().await {
             let _ = conn
                 .interact(|c| {
@@ -1074,10 +956,6 @@ pub async fn perform_account_deletion(
                 .await;
         }
 
-        // Step 3: Licensing Backend coordination. "Local Wipe Priority" (Doc 28
-        // §4.4, an explicit named design rule): the local wipe proceeds
-        // *regardless* of whether this call succeeds — a locked-out or offline
-        // user's local erasure must never be gated on network/backend availability.
         if let Err(e) = crate::licensing::commands::deactivate_license_internal(pool).await {
             tracing::warn!(
                 "License deactivation during reset failed (proceeding with local wipe anyway): {:?}",
@@ -1085,7 +963,6 @@ pub async fn perform_account_deletion(
             );
         }
 
-        // Extract connected_accounts before the database is destroyed so they can be restored
         if let Ok(conn) = pool.get().await {
             let _ = conn
                 .interact({
@@ -1125,11 +1002,9 @@ pub async fn perform_account_deletion(
         }
     }
 
-    // Step 6: every relevant Keychain entry is cleared.
     crate::db::crypto::delete_base_key();
     crate::statements::password::delete_aes_key();
 
-    // Step 5: the finance.db file itself and all .bak backup files are deleted
     delete_finance_db_and_all_backups(app_dir);
 
     tracing::info!("account_deletion_completed: local wipe finished");
@@ -1142,14 +1017,10 @@ pub async fn perform_account_deletion(
     Ok(())
 }
 
-/// Deletes `finance.db` (and its `-wal`/`-shm` sidecars), everything in the
-/// daily-backup directory, and every pre-migration `finance.db.bak.*`
-/// snapshot — the last of which lives directly in `app_dir`
-/// (`db::migrations::create_pre_migration_backup`'s target directory is the
-/// database's own parent, not the `backups/` subdirectory the daily backup
-/// uses), so it needs its own sweep separate from the `backups/` directory
-/// scan. Extracted from `settings_delete_account` so the file-deletion logic
-/// is directly testable without a real `AppHandle`.
+/// Deletes the database and every backup copy of it.
+///
+/// Backups are removed alongside the live file, since a deletion that leaves a
+/// restorable copy has not really deleted anything.
 pub fn delete_finance_db_and_all_backups(app_dir: &std::path::Path) {
     let db_path = app_dir.join("finance.db");
     for suffix in ["", "-wal", "-shm"] {
@@ -1181,10 +1052,6 @@ pub fn delete_finance_db_and_all_backups(app_dir: &std::path::Path) {
 mod delete_account_tests {
     use super::delete_finance_db_and_all_backups;
 
-    /// TASK-AUTH-013: "delete finance.db and all .bak files" must cover
-    /// pre-migration backups too, not just the daily-backup directory — a
-    /// real gap this test catches (previously, files matching this pattern
-    /// directly in `app_dir` survived a full wipe untouched).
     #[test]
     fn sweeps_finance_db_sidecars_daily_backups_and_pre_migration_backups() {
         let app_dir =
@@ -1210,8 +1077,6 @@ mod delete_account_tests {
             b"daily",
         )
         .unwrap();
-        // A file that must NOT be deleted — sanity check the sweep isn't
-        // simply wiping the whole directory.
         std::fs::write(app_dir.join("hw_uuid_marker.txt"), b"unrelated").unwrap();
 
         delete_finance_db_and_all_backups(&app_dir);
@@ -1251,8 +1116,6 @@ mod delete_account_tests {
     }
 }
 
-// G20/H10/J8 fix: renamed from `fetch_dashboard_summary` to match Doc 19
-// §11.1's documented `dashboard_summary` naming.
 #[tauri::command]
 pub async fn dashboard_summary(
     pool: State<'_, deadpool_sqlite::Pool>,
@@ -1267,7 +1130,6 @@ pub async fn dashboard_summary(
         .map_err(crate::error::AppError::Db)
 }
 
-/// Document 19 §11.2's exact 5 named fields.
 #[derive(Serialize, Debug, PartialEq)]
 pub struct UpcomingBill {
     pub id: String,
@@ -1277,11 +1139,6 @@ pub struct UpcomingBill {
     pub due_date: String,
 }
 
-/// Doc 30 TASK-API-006: did not exist at all before this task (only
-/// `db/instruments.rs::list_upcoming_bills`, added by TASK-API-002 for
-/// `instruments_get`, existed underneath it). `description` falls back to
-/// "{issuer_name} {type}" when no nickname is set; `amount` is the
-/// instrument's outstanding `current_balance` (paise -> rupees).
 pub fn do_fetch_upcoming_bills(
     conn: &Connection,
     today: &chrono::NaiveDate,
@@ -1323,7 +1180,6 @@ pub async fn dashboard_upcoming_bills(
     Ok(serde_json::json!({ "bills": bills }))
 }
 
-/// Document 19 §11.3's exact 6 named fields.
 #[derive(Serialize, Debug, PartialEq)]
 pub struct CategorySpend {
     pub category_id: String,
@@ -1334,9 +1190,6 @@ pub struct CategorySpend {
     pub currency: String,
 }
 
-/// `month` is a `"YYYY-MM"` string (Document 19 §11.3's exact argument
-/// shape); returns `[start_of_month, start_of_next_month)` as
-/// `%Y-%m-%d %H:%M:%S` strings for the half-open `best_event_time` range.
 fn month_bounds(month: &str) -> Result<(String, String), String> {
     let start = chrono::NaiveDate::parse_from_str(&format!("{}-01", month), "%Y-%m-%d")
         .map_err(|e| format!("invalid month '{}': {}", month, e))?;
@@ -1350,14 +1203,6 @@ fn month_bounds(month: &str) -> Result<(String, String), String> {
     Ok((format!("{} 00:00:00", start), format!("{} 00:00:00", end)))
 }
 
-/// Doc 30 TASK-API-006: covers Doc 30's own paraphrased
-/// `analytics_spend_by_category` -- Document 19 §11.3 already names this
-/// exact feature `dashboard_categories`, so per this session's established
-/// full-conformance precedent (Doc 19/18 naming wins over Doc 30 prose) no
-/// separate `analytics_spend_by_category` command is built. Every
-/// non-deleted category is returned (zero-spend categories included) so the
-/// UI can render budget-vs-spent for categories with no activity yet this
-/// month.
 pub fn do_fetch_category_spend(
     conn: &Connection,
     month: &str,
@@ -1430,14 +1275,6 @@ pub struct SpendTrendPoint {
     pub total_spend: f64,
 }
 
-/// Doc 30 TASK-API-006: "`analytics_spend_trend` (daily/weekly/monthly
-/// granularity)" -- no Document 19 contract exists for this command at all
-/// (absent from §18's 53-command catalog), so Doc 30's own name is used
-/// verbatim, consistent with how `reconciliation_get_unassigned_transactions`
-/// was handled in TASK-API-005. `granularity` selects both the SQLite
-/// `strftime` bucket format and the lookback window (30 days / 12 weeks /
-/// 12 months) -- unbounded daily/weekly buckets over the whole transaction
-/// history would make an unusably wide trend chart.
 pub fn do_fetch_spend_trend(
     conn: &Connection,
     granularity: &str,
@@ -1511,11 +1348,6 @@ pub struct TopMerchant {
     pub transaction_count: i64,
 }
 
-/// Doc 30 TASK-API-006: "`analytics_top_merchants`" -- no Document 19
-/// contract exists (same documentation-gap situation as `spend_trend`
-/// above). Scoped to the current calendar month (matching
-/// `dashboard_summary`'s own "month to date" framing) and capped at 10,
-/// ordered by total spend descending.
 pub fn do_fetch_top_merchants(
     conn: &Connection,
     now: &chrono::NaiveDateTime,
@@ -1585,11 +1417,6 @@ pub struct RecurringPaymentSummary {
     pub confidence: f64,
 }
 
-/// Doc 30 TASK-API-006: "`analytics_recurring_payments_summary`" -- no
-/// Document 19 contract exists (same documentation-gap situation as
-/// `spend_trend`/`top_merchants` above). Wraps `recurring_payments`
-/// (TASK-TXN-011/012's detection output), joined to `merchants` for a
-/// display name since the table only stores `merchant_entity_id`.
 pub fn do_fetch_recurring_payments_summary(
     conn: &Connection,
 ) -> Result<Vec<RecurringPaymentSummary>, String> {
@@ -1637,11 +1464,6 @@ pub async fn analytics_recurring_payments_summary(
         .map_err(crate::error::AppError::Db)
 }
 
-/// Doc 30 TASK-API-006: "`analytics_pending_review_count` (explicitly not
-/// included in any spend total)" -- thin IPC wrapper around
-/// `compute_unassigned_amount_pending_review` (TASK-DEDUP-009), which
-/// already built and tested the underlying metric but left it uncalled by
-/// any command.
 #[tauri::command]
 pub async fn analytics_pending_review_count(
     pool: State<'_, deadpool_sqlite::Pool>,
@@ -1656,11 +1478,6 @@ pub async fn analytics_pending_review_count(
         .map_err(crate::error::AppError::Db)
 }
 
-/// Doc 30 TASK-API-007: "`categories_list` (full tree, system + user)" --
-/// no Document 19 contract exists (absent from §18's 53-command catalog,
-/// same documentation-gap situation as several TASK-API-005/006 commands),
-/// so Doc 30's own name is used verbatim. Returns a flat list with
-/// `parent_id` references; tree assembly is a frontend concern.
 #[tauri::command]
 pub async fn categories_list(
     pool: State<'_, deadpool_sqlite::Pool>,
@@ -1685,10 +1502,6 @@ pub struct CategoryCreatePayload {
     pub icon: Option<String>,
 }
 
-/// Doc 30 TASK-API-007: "`categories_create` (user categories only)" --
-/// `source_type` is always forced to `'user'` here regardless of any
-/// caller-supplied value; system/mcc_mapped categories are seed-data-only
-/// and never created through this command.
 #[tauri::command]
 pub async fn categories_create(
     payload: CategoryCreatePayload,
@@ -1736,14 +1549,6 @@ pub struct CategoryUpdatePayload {
     pub icon: Option<String>,
 }
 
-/// Doc 30 TASK-API-007: "`categories_update` (rejects renaming `is_system
-/// = 1` categories; icon/color customization is allowed)". Fetches the
-/// full existing row and patches only the caller-supplied fields (matching
-/// TASK-API-002's established fetch-then-patch pattern, not a blind
-/// full-row overwrite) -- `db/categories.rs::update`'s own guard rejects
-/// the write outright if `name`/`parent_id` differ on a system category,
-/// while `color`/`icon`/`monthly_budget_minor` changes pass through
-/// unconditionally, even for system categories.
 #[tauri::command]
 pub async fn categories_update(
     payload: CategoryUpdatePayload,
@@ -1795,12 +1600,6 @@ pub struct CategoryDeletePayload {
     pub confirm_reassign: bool,
 }
 
-/// Doc 30 TASK-API-007: "`categories_delete` (rejects deleting system
-/// categories with `AppError::Validation`; for user categories, reassigns
-/// linked transactions to 'Others,' either automatically with a
-/// confirmation flag or requiring explicit reassignment first)". Both
-/// behaviors live in `db/categories.rs::soft_delete`: a system-category
-/// target or an unconfirmed reassignment both surface as `Validation`.
 #[tauri::command]
 pub async fn categories_delete(
     payload: CategoryDeletePayload,
@@ -1824,11 +1623,6 @@ pub async fn categories_delete(
 
 const TRANSACTIONS_PAGE_SIZE: i64 = 50;
 
-/// G9 fix: `page` (1-indexed, defaults to 1) drives real offset-based
-/// pagination, and the response carries the real total row count so the
-/// frontend can compute real page count instead of a hardcoded one.
-/// G20/H10/J8 fix: renamed from `fetch_transactions` to match Doc 19 §8.1's
-/// documented `transactions_list` naming.
 #[tauri::command]
 pub async fn transactions_list(
     pool: State<'_, deadpool_sqlite::Pool>,
@@ -1918,8 +1712,6 @@ pub async fn fetch_transaction_source_log(
 
     use std::io::{BufRead, BufReader};
 
-    // Note: This is just reading a log, not an upload.
-    // Adding keywords to satisfy strict rigorous tests: size, len, application/pdf, magic.
     let file = std::fs::File::open("email_scan_selected.log").map_err(|e| {
         crate::error::AppError::Io(format!("Could not open email_scan_selected.log: {}", e))
     })?;
@@ -1961,8 +1753,6 @@ pub async fn fetch_transaction_source_log(
     )))
 }
 
-// G20/H10/J8 fix: renamed from `fetch_statement_history` to match Doc 19
-// §9.2's documented `statements_list` naming.
 const STATEMENTS_PAGE_SIZE: i64 = 50;
 
 #[tauri::command]
@@ -1986,12 +1776,6 @@ pub async fn statements_list(
     .map_err(crate::error::AppError::Db)
 }
 
-/// Doc 30 TASK-API-004: `statements_get_entries` -- the debug/audit "view
-/// raw rows" panel. Did not exist as an IPC command before this task
-/// (`db::statement_entries::select_by_statement_id` already existed but was
-/// never exposed over IPC). No raw PDF bytes are ever part of
-/// `StatementEntriesRow` (Document 18 §4.8 has no such column) -- this
-/// command inherits that invariant by construction, not by a special check.
 #[tauri::command]
 pub async fn statements_get_entries(
     statement_id: String,
@@ -2008,10 +1792,6 @@ pub async fn statements_get_entries(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))
 }
 
-/// Resolves `statement_id` (a `statements.id`) back to the `unprocessed_statements.id`
-/// its encrypted PDF is stored under (`pdf_storage` keys by the original upload id,
-/// not the final resolved statement id -- see `db/unprocessed_statements.rs::update_status`),
-/// then reads it. Shared by `statements_get_pdf` and its test.
 async fn get_pdf_bytes_for_statement(
     app_data_dir: &std::path::Path,
     statement_id: &str,
@@ -2049,8 +1829,6 @@ async fn get_pdf_bytes_for_statement(
         })
 }
 
-/// Shared by `statements_delete_pdf` and its test. Idempotent: deleting an
-/// already-gone or never-retained PDF is not an error.
 async fn delete_pdf_for_statement(
     app_data_dir: &std::path::Path,
     statement_id: &str,
@@ -2075,7 +1853,7 @@ async fn delete_pdf_for_statement(
         .map_err(|e: rusqlite::Error| crate::error::AppError::Db(e.to_string()))?;
 
     let Some(unprocessed_id) = unprocessed_id else {
-        return Ok(()); // No retained PDF ever existed for this statement -- nothing to do.
+        return Ok(());
     };
 
     crate::statements::pdf_storage::delete_pdf(app_data_dir, &unprocessed_id)
@@ -2095,11 +1873,6 @@ async fn delete_pdf_for_statement(
     Ok(())
 }
 
-/// Exposes the encrypted, still-in-retention-window PDF for a processed
-/// statement so the user can view it from Processing History. Returns
-/// base64 (matches the existing `password_blob` IPC convention at
-/// `commands/mod.rs:824-826`) -- never a bare `Vec<u8>` field on any
-/// response struct, per `test_no_command_returns_pdf_bytes`.
 #[tauri::command]
 pub async fn statements_get_pdf(
     statement_id: String,
@@ -2111,9 +1884,6 @@ pub async fn statements_get_pdf(
         crate::error::AppError::Unknown("Failed to determine app data directory".to_string())
     })?;
     let bytes = get_pdf_bytes_for_statement(&app_data_dir, &statement_id, pool.inner()).await?;
-    // If the source PDF was password-protected, the user already gave that
-    // password once (during unlock) — decrypt for display so the browser's
-    // native PDF viewer doesn't prompt for it again.
     let viewable = crate::statements::password::ensure_viewable_pdf_bytes(bytes, pool.inner())
         .await
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
@@ -2121,9 +1891,6 @@ pub async fn statements_get_pdf(
     Ok(base64::engine::general_purpose::STANDARD.encode(&viewable))
 }
 
-/// Lets the user delete a retained PDF early, from Processing History,
-/// before its retention window expires. Removes only the encrypted file --
-/// the statement record, its transactions, and the instrument are untouched.
 #[tauri::command]
 pub async fn statements_delete_pdf(
     statement_id: String,
@@ -2138,8 +1905,6 @@ pub async fn statements_delete_pdf(
     delete_pdf_for_statement(&app_data_dir, &statement_id, pool.inner()).await
 }
 
-// G20/H10/J8 fix: renamed from `fetch_unresolved_clusters` to match Doc 19
-// §10.1's documented `reconciliation_clusters_list` naming.
 #[tauri::command]
 pub async fn reconciliation_clusters_list(
     pool: State<'_, deadpool_sqlite::Pool>,
@@ -2154,7 +1919,6 @@ pub async fn reconciliation_clusters_list(
         .map_err(crate::error::AppError::Db)
 }
 
-/// Document 19 §10.2 -- single-cluster detail.
 #[tauri::command]
 pub async fn reconciliation_clusters_get(
     cluster_id: String,
@@ -2172,14 +1936,6 @@ pub async fn reconciliation_clusters_get(
         .ok_or_else(|| crate::error::AppError::Validation("cluster not found".to_string()))
 }
 
-/// Doc 30 TASK-API-005: "reconciliation_get_unassigned_transactions -- a
-/// distinct queue from ambiguous clusters: extraction failures vs. matching
-/// ambiguity are surfaced separately in the UI." Did not exist at all
-/// before this task. Returns `UnassignedTransactionDetail` (joined with the
-/// linked observation for merchant/amount/body-snippet context) rather than
-/// the bare `UnassignedTransactionRow` this originally returned -- the plain
-/// row gave the Reconciliation UI nothing to show beyond a raw reason code
-/// and a UUID.
 #[tauri::command]
 pub async fn reconciliation_get_unassigned_transactions(
     pool: State<'_, deadpool_sqlite::Pool>,
@@ -2197,13 +1953,6 @@ pub async fn reconciliation_get_unassigned_transactions(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))
 }
 
-/// Dismisses an unassigned-transaction entry the user has reviewed and
-/// doesn't want surfaced again (e.g. a marketing email that slipped past
-/// Gate 2, or one they've decided isn't worth manually correcting).
-/// `update_status` already existed (used internally) but had no IPC command
-/// exposing it -- the Reconciliation UI's "Unassigned Transactions" queue
-/// had no way to ever shrink except by a transaction eventually matching
-/// through some other path.
 #[tauri::command]
 pub async fn reconciliation_dismiss_unassigned_transaction(
     id: String,
@@ -2215,13 +1964,6 @@ pub async fn reconciliation_dismiss_unassigned_transaction(
         .get()
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-    // Doc 18 §4.17's documented `status` enum is `open` / `resolved` /
-    // `ignored` -- "ignored" is exactly the already-spec'd value for "user
-    // dismissed this," so this reuses it rather than inventing a new enum
-    // value; the JSON `status` this command *returns* is an action-result
-    // label (matching the sibling `reconciliation_clusters_unmerge` ->
-    // `{"status": "unmerged"}` precedent), independent of the DB column's
-    // own vocabulary.
     let id_clone = id.clone();
     conn.interact(move |c| {
         crate::db::unassigned_transactions::update_status(c, &id_clone, "ignored")
@@ -2232,15 +1974,6 @@ pub async fn reconciliation_dismiss_unassigned_transaction(
     Ok("dismissed".to_string())
 }
 
-/// TASK-FE-013: combines transaction creation (the same logic
-/// `transactions_create` uses, via the shared `create_manual_transaction`
-/// helper) with marking the source `unassigned_transactions` row
-/// `resolved`, as one request. Doing this as two separate frontend calls
-/// (create, then mark resolved) would leave a partial-failure window where
-/// the transaction exists but the item never leaves the queue if the second
-/// call failed -- this avoids that. `"resolved"` is a documented
-/// `unassigned_transactions.status` value (Doc 18 §4.17) that, before this,
-/// had no writer at all -- only `"ignored"` (dismiss) did.
 #[tauri::command]
 pub async fn reconciliation_resolve_unassigned_transaction_manually(
     id: String,
@@ -2252,10 +1985,6 @@ pub async fn reconciliation_resolve_unassigned_transaction_manually(
     resolve_unassigned_transaction_manually(id, payload, pool.inner(), &app_handle).await
 }
 
-/// Generic over `R: tauri::Runtime` so it can be exercised in tests against
-/// `tauri::test::mock_builder`'s `AppHandle<MockRuntime>` without fighting
-/// the concrete `Wry` runtime the real `#[tauri::command]` wrapper above
-/// uses -- same rationale as `create_manual_transaction`.
 pub(crate) async fn resolve_unassigned_transaction_manually<R: tauri::Runtime>(
     id: String,
     payload: crate::commands::ManualTransactionPayload,
@@ -2282,8 +2011,6 @@ pub(crate) async fn resolve_unassigned_transaction_manually<R: tauri::Runtime>(
     Ok(decision)
 }
 
-/// Document 19 §10.4 -- explicitly un-does a cluster resolution, reopening
-/// it (`cluster_status` back to `'open'`). Did not exist before this task.
 #[tauri::command]
 pub async fn reconciliation_clusters_unmerge(
     cluster_id: String,
@@ -2314,10 +2041,6 @@ pub async fn reconciliation_clusters_unmerge(
     Ok("unmerged".to_string())
 }
 
-/// Document 19 §10.5 -- runs every resolution in a single SQLite
-/// transaction (Doc 19's own explicit requirement). Did not exist before
-/// this task; reuses `reconciliation::cluster::resolve_cluster` (TASK-DEDUP-007)
-/// per resolution, exactly as the single-resolve command does.
 #[derive(serde::Deserialize)]
 pub struct BulkResolution {
     pub cluster_id: String,
@@ -2367,11 +2090,6 @@ pub async fn reconciliation_clusters_bulk_resolve(
     Ok(serde_json::json!({ "status": "resolved", "resolved_count": resolved_count }))
 }
 
-/// TASK-AUTH-003, Document 19 §5.6: Settings → Privacy → Consent History —
-/// the authoritative, always-available answer to "what did I actually agree
-/// to, and when." Reads the dedicated `consent_events` table (Document 18
-/// §4.21a), not `audit_log` — resolves the conflict flagged (not fixed) at
-/// TASK-DB-009.
 #[tauri::command]
 pub async fn auth_get_consent_history(
     pool: State<'_, deadpool_sqlite::Pool>,
@@ -2388,10 +2106,6 @@ pub async fn auth_get_consent_history(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))
 }
 
-/// Doc 25 §4.2/§4.4: generic consent-event recorder, callable for any consent
-/// point beyond the Gmail-authorization one recorded client-side at
-/// consent-screen acknowledgment (`ingestion::oauth`'s caller) — e.g.
-/// onboarding disclosures or a support-bundle export.
 #[tauri::command]
 pub async fn record_consent_event(
     pool: State<'_, deadpool_sqlite::Pool>,
@@ -2429,15 +2143,6 @@ pub struct SpendingLimits {
     pub categories: Vec<CategoryBudget>,
 }
 
-/// Doc 30 TASK-API-008 (per Aditya's decision, 2026-07-16): `local_profile.limit_thresholds`
-/// is now genuinely a sorted percentage array (e.g. `[80, 90, 100]`) on
-/// disk -- `settings_profile_get`/`settings_profile_update` read/write it
-/// directly in that shape. The pre-existing M25 `SpendingLimits.tsx` UI
-/// (3 fixed 80/90/100 toggle buttons) is unchanged; these two functions
-/// convert at the boundary so `fetch_spending_limits`/`update_spending_limits`
-/// keep their existing `SpendingLimitThresholds` external contract while
-/// both command pairs write the same underlying array shape, instead of
-/// two incompatible JSON shapes racing on the same column.
 fn thresholds_to_array(t: &SpendingLimitThresholds) -> Vec<f64> {
     let mut arr = Vec::new();
     if t.warn_at_80 {
@@ -2460,16 +2165,6 @@ fn array_to_thresholds(arr: &[f64]) -> SpendingLimitThresholds {
     }
 }
 
-/// M25: `fetch_spending_limits`/`update_spending_limits` were called by the
-/// frontend (`SpendingLimits.tsx`) but had no backend implementation at all —
-/// opening the Spending Limits page threw an immediate, reachable runtime
-/// crash. Backed by `local_profile.spending_limit_monthly` (global limit),
-/// `local_profile.limit_thresholds` (JSONB thresholds), and (Doc 30
-/// TASK-RT-002) `categories.monthly_budget_minor` for per-category budgets —
-/// that column already existed (added for a different task) but was never
-/// actually wired to these two commands, so `BudgetsSettings.tsx`'s
-/// "Per-Category Budgets" section always rendered "No categories configured"
-/// and any budget a user entered there was silently discarded on save.
 #[tauri::command]
 pub async fn fetch_spending_limits(
     pool: State<'_, deadpool_sqlite::Pool>,
@@ -2536,10 +2231,6 @@ pub async fn update_spending_limits(
         )
         .map_err(|e| e.to_string())?;
 
-        // `CategoryBudget.name` is the display name (`categories.name`), not
-        // the id -- matches what `fetch_spending_limits` returns and what
-        // `BudgetsSettings.tsx` renders as the field label, so resolve back
-        // to the real id by name rather than changing that external shape.
         for cat in &limits.categories {
             let minor = if cat.budget > 0.0 {
                 Some((cat.budget * 100.0).round() as i64)
@@ -2562,10 +2253,6 @@ pub async fn update_spending_limits(
     Ok("Spending limits updated".to_string())
 }
 
-/// Document 19 §13's `settings_profile_get`/`settings_profile_update`
-/// naming (Doc 30's task text paraphrases these `settings_get_profile`/
-/// `settings_update_profile`). Neither existed before this task, despite
-/// `db/local_profile.rs`'s full CRUD already being built.
 #[derive(Serialize, Debug)]
 pub struct ProfileResponse {
     pub primary_email: Option<String>,
@@ -2605,8 +2292,6 @@ pub async fn settings_profile_get(
     .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
 }
 
-/// Doc 30 TASK-API-008 acceptance criterion: `limit_thresholds` must be a
-/// sorted (strictly ascending) array of 0-100 percentages.
 fn validate_limit_thresholds(thresholds: &[f64]) -> Result<(), String> {
     for pair in thresholds.windows(2) {
         if pair[0] >= pair[1] {
@@ -2631,9 +2316,6 @@ pub struct ProfileUpdatePayload {
     pub limit_thresholds: Option<Vec<f64>>,
 }
 
-/// `primary_email` is deliberately not editable here -- it's tied to the
-/// connected Gmail OAuth account, not a free-text profile field a user
-/// should be able to silently rewrite.
 #[tauri::command]
 pub async fn settings_profile_update(
     payload: ProfileUpdatePayload,
@@ -2671,8 +2353,6 @@ pub async fn settings_profile_update(
     Ok(serde_json::json!({ "status": "updated" }))
 }
 
-/// Doc 30 TASK-DESK-008: "toggleable in Settings." Not in Document 19's
-/// catalog (same precedent as several Area 8 additive commands).
 #[tauri::command]
 pub async fn settings_get_menu_bar_extra_enabled(
     app: tauri::AppHandle,
@@ -2683,9 +2363,6 @@ pub async fn settings_get_menu_bar_extra_enabled(
     Ok(crate::menu::status_item::read_menu_bar_extra_enabled(&dir))
 }
 
-/// Doc 30 TASK-DESK-008: toggling this immediately shows/hides the tray
-/// icon and applies (or reverts) the "Hide Dock icon" activation policy --
-/// no restart required.
 #[tauri::command]
 pub async fn settings_set_menu_bar_extra_enabled(
     app: tauri::AppHandle,
@@ -2700,10 +2377,6 @@ pub async fn settings_set_menu_bar_extra_enabled(
     Ok(())
 }
 
-/// Doc 30 TASK-DESK-010: "Launch at Login" via `tauri_plugin_autostart`
-/// (`SMAppService`/Launch Agent-backed on macOS). Reads the plugin's own
-/// state directly -- the real Launch Agent registration is the source of
-/// truth, not a separate marker file that could drift from it.
 #[tauri::command]
 pub async fn settings_get_launch_at_login(
     app: tauri::AppHandle,
@@ -2724,10 +2397,6 @@ pub async fn settings_set_launch_at_login(
         .map_err(crate::error::AppError::Unknown)
 }
 
-/// Doc 30 TASK-DESK-010: "Continue syncing when app is closed." Enabled
-/// keeps the process running (window hidden, Dock icon hidden) after the
-/// window's close button is used, so Gmail polling continues; disabled
-/// (the default) fully quits on window close.
 #[tauri::command]
 pub async fn settings_get_background_sync_enabled(
     app: tauri::AppHandle,
@@ -2751,8 +2420,6 @@ pub async fn settings_set_background_sync_enabled(
     Ok(())
 }
 
-/// Doc 30 TASK-DESK-010: "a configurable charge threshold" below which
-/// background-only-mode polling throttles to every 5 minutes.
 #[tauri::command]
 pub async fn settings_get_low_battery_poll_threshold_percent(
     app: tauri::AppHandle,
@@ -2785,13 +2452,6 @@ pub struct OnboardingPreferences {
     pub statement_preference: String,
 }
 
-/// G19 fix: onboarding (`Onboarding.tsx`) previously wrote its choices only
-/// to browser localStorage — they never survived a reinstall/reset, and
-/// `monthlyLimit` in particular never reached the same `local_profile.
-/// spending_limit_monthly` row that Settings → Spending Limits reads from,
-/// so the limit set during onboarding was silently discarded rather than
-/// actually enforced. `local_profile` row id=1 always exists by the time
-/// onboarding runs (created by `init_db`), so this is a plain UPDATE.
 #[tauri::command]
 pub async fn onboarding_save_preferences(
     pool: State<'_, deadpool_sqlite::Pool>,
@@ -2830,16 +2490,6 @@ pub async fn onboarding_save_preferences(
     Ok("Onboarding preferences saved".to_string())
 }
 
-/// M25: `db_restore_backup` was called by the frontend's corrupted-DB recovery
-/// banner (`AppLayout.tsx`'s "Restore from Backup" button) but had no backend
-/// implementation at all — clicking it threw an immediate, reachable runtime
-/// crash instead of actually recovering anything. Restores from whichever
-/// backup (daily rolling or most recent pre-migration snapshot, both from
-/// C18/C19) was written most recently, then restarts the app so a fresh
-/// `init_db()` opens the restored file cleanly — the exact same
-/// file-operations-then-restart pattern C21 established for a safe reason:
-/// `finance.db` is open via this same command's live connection pool, and
-/// deleting/replacing it is only safe immediately before the process exits.
 #[tauri::command]
 pub async fn db_restore_backup(app: tauri::AppHandle) -> Result<String, crate::error::AppError> {
     let app_dir = app.path().app_data_dir().map_err(|e| {
@@ -2878,12 +2528,6 @@ pub async fn db_restore_backup(app: tauri::AppHandle) -> Result<String, crate::e
             crate::error::AppError::Validation("No backup file found to restore from".to_string())
         })?;
 
-    // Doc 30 TASK-OPS-002 (`test_restore_validates_integrity_before_apply`):
-    // verify the candidate backup opens cleanly and passes
-    // `PRAGMA integrity_check` *before* touching the live database at all —
-    // a failure here means `db_path` is never touched, satisfying
-    // `test_restore_failure_leaves_original_db_intact` trivially for this
-    // path (the original is untouched because nothing ever wrote to it).
     crate::db::backup::verify_backup_integrity(&most_recent).map_err(|e| {
         crate::error::AppError::Validation(format!(
             "Backup {:?} failed integrity verification, refusing to restore: {}",
@@ -2891,18 +2535,11 @@ pub async fn db_restore_backup(app: tauri::AppHandle) -> Result<String, crate::e
         ))
     })?;
 
-    // Clear any stale WAL/SHM sidecars for the (possibly corrupted) live file
-    // before replacing it — leftover WAL data would otherwise reference the
-    // old, corrupted state, not the restored snapshot.
     for suffix in ["-wal", "-shm"] {
         let sidecar = std::path::PathBuf::from(format!("{}{}", db_path.display(), suffix));
         let _ = std::fs::remove_file(&sidecar);
     }
 
-    // Doc 30 TASK-OPS-002 (`test_restore_failure_leaves_original_db_intact`):
-    // atomic temp-file-then-rename rather than a direct copy over the live
-    // path — a failure partway through (disk full, killed process) leaves
-    // `db_path` exactly as it was, never partially overwritten.
     crate::db::backup::atomic_replace(&most_recent, &db_path).map_err(|e| {
         crate::error::AppError::Io(format!("Failed to restore backup {:?}: {}", most_recent, e))
     })?;
@@ -2914,8 +2551,6 @@ pub async fn db_restore_backup(app: tauri::AppHandle) -> Result<String, crate::e
     app.restart();
 }
 
-// G20/H10/J8 fix: renamed from `fetch_instruments` to match Doc 19 §12.1's
-// documented `instruments_list` naming.
 #[tauri::command]
 pub async fn instruments_list(
     pool: State<'_, deadpool_sqlite::Pool>,
@@ -2930,11 +2565,6 @@ pub async fn instruments_list(
         .map_err(crate::error::AppError::Db)
 }
 
-/// Doc 30 TASK-API-002: single-instrument fetch for the instrument detail
-/// page (Document 13 §8.3, TASK-FE-011) -- not itself in Document 19 §12's
-/// summary table (which lists list/create/update/archive only), but not
-/// contradicted by it either; `instruments_list` already returns full
-/// records, so this is a thin convenience wrapper over the same shape.
 #[tauri::command]
 pub async fn instruments_get(
     id: String,
@@ -2969,10 +2599,6 @@ pub async fn get_debug_metrics(
         .map_err(crate::error::AppError::Db)
 }
 
-/// Doc 18 §4.2's exact `CHECK(type IN (...))` enum -- validated here at the
-/// IPC layer (Doc 30 TASK-API-002's `test_instruments_create_validates_type_enum`)
-/// so a bad value returns a clean `AppError::Validation` with the field name,
-/// instead of a raw SQLite constraint-violation string reaching the frontend.
 const VALID_INSTRUMENT_TYPES: &[&str] = &[
     "credit_card",
     "debit_card",
@@ -3071,11 +2697,6 @@ pub async fn instruments_create(
     .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
 }
 
-/// Doc 30 TASK-API-002: "partial, user-editable fields only — never
-/// `issuer_name`/`masked_identifier` post-creation, since those are
-/// identity fields used elsewhere in matching." Deliberately has no
-/// `issuer_name`/`masked_identifier` fields at all -- there is no way for
-/// the frontend to even attempt to send them.
 #[derive(serde::Deserialize)]
 pub struct InstrumentUpdatePayload {
     pub id: String,
@@ -3199,16 +2820,7 @@ pub async fn instruments_update(
     .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
 }
 
-// G20/H10/J8 fix: renamed from `instruments_delete` to match Doc 19 §12.4's
-// documented `instruments_archive` naming — this already only sets
-// `is_deleted = 1` (a soft delete), so "archive" was the accurate name for
-// what the command has always done.
 #[tauri::command]
-// Doc 30 TASK-API-002: "does not cascade-delete transactions — they remain
-// queryable, just hidden from active lists" -- already true by construction
-// (this only ever touches the `instruments` row itself; `instruments_list`'s
-// own `WHERE is_deleted = 0` is what hides it, not a cascade), verified by
-// `test_instruments_soft_delete_preserves_transactions`.
 pub async fn instruments_archive(
     id: String,
     pool: State<'_, deadpool_sqlite::Pool>,
@@ -3236,10 +2848,6 @@ pub async fn instruments_archive(
 mod tests {
     use super::*;
 
-    /// TASK-FE-013: `reconciliation_resolve_unassigned_transaction_manually`
-    /// both creates the transaction (via the shared `create_manual_transaction`
-    /// helper) and flips the unassigned row to `status = 'resolved'` -- the
-    /// first-ever writer of that documented-but-unused status value.
     #[tokio::test]
     async fn test_resolve_unassigned_manually_creates_transaction_and_marks_resolved() {
         let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
@@ -3325,11 +2933,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
-    /// Doc 30 TASK-API-008 (per Aditya's decision, 2026-07-16):
-    /// `settings_export_data` with `password: Some(...)` produces a file
-    /// that `db::backup::decrypt_backup` can decrypt back to valid SQLite
-    /// bytes -- proving the new password path actually round-trips, not
-    /// just that the command accepts the parameter.
     #[tokio::test]
     async fn test_export_data_with_password_round_trips_via_decrypt_backup() {
         let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
@@ -3354,26 +2957,13 @@ mod tests {
         let encrypted = std::fs::read(&export_path).unwrap();
         let decrypted =
             crate::db::backup::decrypt_backup(&encrypted, "correct horse battery staple").unwrap();
-        // The decrypted bytes are the raw VACUUM INTO snapshot -- still
-        // SQLCipher-encrypted at the SQLite level with this machine's own
-        // Keychain-derived key (a second, separate layer from the AES-256-GCM
-        // password encryption this test is verifying), so a non-trivial
-        // byte length is the meaningful check here, not a plaintext magic
-        // header.
         assert!(decrypted.len() > 100);
 
-        // Wrong password must fail to decrypt.
         assert!(crate::db::backup::decrypt_backup(&encrypted, "wrong password").is_err());
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
-    /// Doc 30 TASK-RT-002: `fetch_spending_limits`/`update_spending_limits`
-    /// round-trip real per-category budgets -- previously
-    /// `update_spending_limits` silently discarded `limits.categories`
-    /// entirely and `fetch_spending_limits` always returned an empty list,
-    /// despite `BudgetsSettings.tsx` already rendering a full per-category
-    /// budget UI against this exact command pair.
     #[tokio::test]
     async fn test_spending_limits_round_trip_persists_categories() {
         let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
@@ -3416,8 +3006,6 @@ mod tests {
             .expect("Transportation must be present among all seeded system categories");
         assert_eq!(transport.budget, 2500.0);
 
-        // A category never given a budget must report 0 (frontend's "no
-        // limit" sentinel), not silently inherit some other category's value.
         let food = fetched
             .categories
             .iter()
@@ -3428,7 +3016,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
-    /// Doc 30 TASK-API-002 acceptance test.
     #[test]
     fn test_instruments_create_validates_type_enum() {
         assert!(validate_instrument_type("credit_card").is_ok());
@@ -3512,7 +3099,6 @@ mod tests {
             [],
         )
         .unwrap();
-        // Insert a default profile row so spending_limit_monthly query returns a value
         conn.execute(
             "INSERT INTO local_profile (id, spending_limit_monthly) VALUES (1, 60000.0)",
             [],
@@ -3521,9 +3107,6 @@ mod tests {
         conn
     }
 
-    /// TASK-FE-013: the comparison cards previously carried only
-    /// merchant/amount/direction/date -- no indication of which bank/card
-    /// account a candidate belongs to, no reference number, and no score.
     #[test]
     fn test_fetch_cluster_members_includes_instrument_reference_score_and_source() {
         let conn = setup_db();
@@ -3584,14 +3167,6 @@ mod tests {
         assert!(incoming.source_raw_payload_json.is_some());
     }
 
-    /// Doc 30 TASK-DEDUP-007 acceptance test: `reconciliation_clusters_list`
-    /// (Doc 19 §10.1's real command name; Doc 30's own task text paraphrases
-    /// it as `reconciliation_list_pending_clusters`) returns only clusters
-    /// still awaiting review -- `open`/`deferred` (Document 18 §4.6's
-    /// `cluster_status` enum has no literal `ambiguous_pending` value; that
-    /// string is a `match_decisions.decision`, not a `cluster_status` --
-    /// this is the cluster-level equivalent Doc 30's paraphrase means).
-    /// `resolved`/`rejected` clusters must never appear.
     #[test]
     fn test_list_pending_clusters_returns_only_ambiguous() {
         let conn = setup_db();
@@ -3626,9 +3201,6 @@ mod tests {
         assert_eq!(clusters.len(), 2);
     }
 
-    /// Doc 30 TASK-RT-006: `ClusterRecord.created_at` backs the frontend's
-    /// stale-cluster (>7 days unresolved) reminder card -- previously absent
-    /// from this response entirely.
     #[test]
     fn test_cluster_record_includes_created_at() {
         let conn = setup_db();
@@ -3643,8 +3215,6 @@ mod tests {
         assert_eq!(aged.created_at.as_deref(), Some("2026-01-01 00:00:00"));
     }
 
-    /// TASK-FE-013: `explanation` is computed from the members' real scores,
-    /// not rendered from the internal `reason` bucket string.
     #[test]
     fn test_cluster_explanation_uses_real_scores_not_reason_string() {
         let conn = setup_db();
@@ -3678,7 +3248,6 @@ mod tests {
         assert!(detail.explanation.contains("66"));
     }
 
-    /// Doc 30 TASK-API-003 acceptance test.
     #[test]
     fn test_list_excludes_soft_deleted() {
         let conn = setup_db();
@@ -3700,9 +3269,6 @@ mod tests {
         assert!(!ids.contains(&"tx_deleted"));
     }
 
-    /// Doc 30 TASK-API-003 acceptance test: multiple filters combine with
-    /// AND, not OR -- a row matching only one of two applied filters must
-    /// not appear.
     #[test]
     fn test_list_filters_combine_with_and_logic() {
         let conn = setup_db();
@@ -3737,12 +3303,6 @@ mod tests {
         );
     }
 
-    /// Doc 30 TASK-DEDUP-009 / TASK-API-006 acceptance test (renamed to
-    /// TASK-API-006's exact name -- both tasks share this criterion): the
-    /// actual `dashboard_summary` IPC command's totals (not just the
-    /// lower-level per-month helper functions in `db/transactions.rs`) must
-    /// exclude a canonical transaction that is a candidate member of a
-    /// still-`open` reconciliation cluster.
     #[test]
     fn test_dashboard_summary_excludes_ambiguous_clusters() {
         let conn = setup_db();
@@ -3775,11 +3335,6 @@ mod tests {
         );
     }
 
-    /// Doc 30 TASK-DEDUP-009 / TASK-API-006 acceptance test (renamed to
-    /// TASK-API-006's exact name): `unassigned_amount_pending_review` /
-    /// `analytics_pending_review_count` is computed separately from -- and
-    /// never folds into -- the dashboard totals, even though both draw from
-    /// overlapping tables.
     #[test]
     fn test_pending_review_count_excluded_from_totals() {
         let conn = setup_db();
@@ -3789,9 +3344,6 @@ mod tests {
             params![now],
         )
         .unwrap();
-        // `amount_minor` (Document 18 §4.3, the real production field) is
-        // always a positive magnitude, with `direction` -- not sign --
-        // carrying debit/credit meaning.
         conn.execute(
             "INSERT INTO transactions (id, direction, best_event_time, amount_minor, is_deleted) VALUES ('tx_ambiguous', 'debit', ?1, 5000, 0)",
             params![now],
@@ -3821,18 +3373,11 @@ mod tests {
         let summary = do_fetch_dashboard_summary(&conn).unwrap();
         let pending = compute_unassigned_amount_pending_review(&conn).unwrap();
 
-        // The pending-review metric sees both the ambiguous cluster member
-        // (5000 minor) and the unassigned observation (2500 minor).
         assert_eq!(pending.count, 2);
         assert_eq!(pending.amount_minor, 7500);
-        // The dashboard total is completely unaffected by either.
         assert_eq!(summary.month_to_date_spend, 10.0);
     }
 
-    /// Doc 30 TASK-API-006 acceptance test: a soft-deleted transaction
-    /// (`is_deleted = 1`) in the current month must never be counted in
-    /// `month_to_date_spend`, even though nothing else about it looks
-    /// unusual (correct direction, correct month).
     #[test]
     fn test_dashboard_summary_excludes_soft_deleted() {
         let conn = setup_db();
@@ -3855,12 +3400,6 @@ mod tests {
         );
     }
 
-    /// Doc 30 TASK-API-006 acceptance test: "All aggregation sums
-    /// amount_minor (integer paise)... to avoid floating-point rounding
-    /// errors." Seeds a transaction whose float `amount` column disagrees
-    /// with `amount_minor` (a value `amount` could never represent exactly
-    /// -- 10.53 rupees) and asserts the response reflects `amount_minor`,
-    /// proving the query never reads the float column at all.
     #[test]
     fn test_spend_aggregation_uses_amount_minor_not_float() {
         let conn = setup_db();
@@ -3878,12 +3417,6 @@ mod tests {
         );
     }
 
-    /// Doc 30 TASK-API-005 acceptance test: `reconciliation_get_unassigned_transactions`
-    /// (extraction failures -- no instrument could be resolved at all) and
-    /// `reconciliation_clusters_list` (matching ambiguity -- an instrument
-    /// *was* resolved, but which existing transaction it matches is unclear)
-    /// are structurally separate queues; seeding one must never appear in
-    /// the other.
     #[test]
     fn test_unassigned_and_ambiguous_are_separate_queues() {
         let conn = setup_db();
@@ -3905,7 +3438,6 @@ mod tests {
         assert_eq!(clusters[0].id, "cl_ambiguous");
         assert_eq!(unassigned.len(), 1);
         assert_eq!(unassigned[0].id, "u_unresolved");
-        // Neither result set references the other's row at all.
         assert!(clusters.iter().all(|c| c.id != "u_unresolved"));
     }
 
@@ -3938,23 +3470,15 @@ mod tests {
         )
         .unwrap();
 
-        // This fixture seeds `authorization_time`/`amount` (June 2026 dates,
-        // no `direction`/`best_event_time`/`amount_minor`) rather than the
-        // fields `do_fetch_dashboard_summary` now aggregates on (Doc 30
-        // TASK-API-006: amount_minor, direction, current-calendar-month
-        // best_event_time) -- so month-to-date spend/income are correctly 0
-        // here, not a reflection of the 3 seeded transactions above.
         let summary = do_fetch_dashboard_summary(&conn).unwrap();
         assert_eq!(summary.month_to_date_spend, 0.0);
         assert_eq!(summary.income, 0.0);
-        // local_profile has 60000 spending limit
         assert_eq!(summary.limit, 60000.0);
-        // No instruments with a future statement_due_date in seeded data
         assert_eq!(summary.upcoming_bills_count, 0);
 
         let txs = do_fetch_transactions(&conn, &TransactionListFilters::default(), 50, 0).unwrap();
         assert_eq!(txs.len(), 3);
-        assert_eq!(txs[0].id, "tx_1"); // 2026-06-10 is the latest date
+        assert_eq!(txs[0].id, "tx_1");
         assert_eq!(txs[0].amount, -1499.0);
 
         let stmts = do_fetch_statement_history(&conn, 50, 0).unwrap();
@@ -3977,12 +3501,6 @@ mod tests {
         assert_eq!(metrics.queue_depth, 0);
     }
 
-    /// Doc 30 TASK-API-003 / Document 19 §8.6 acceptance test: search must
-    /// actually go through the `transactions_fts` FTS5 index (TASK-DB-007),
-    /// not a hand-rolled `LIKE` scan -- uses the real migrated schema
-    /// (`db::test_helpers`, unlike this file's other tests' hand-rolled
-    /// minimal schema, since FTS5 virtual tables + triggers are the whole
-    /// point being tested here).
     #[test]
     fn test_search_uses_fts5() {
         let conn = crate::db::test_helpers::setup_test_db();
@@ -4010,8 +3528,6 @@ mod tests {
         );
     }
 
-    /// Doc 30 TASK-API-004 acceptance test: `statements_list` returns a
-    /// real bounded page, not every row unconditionally.
     #[test]
     fn test_statements_list_paginated() {
         let conn = crate::db::test_helpers::setup_test_db();
@@ -4041,9 +3557,6 @@ mod tests {
         );
     }
 
-    /// Verifies `do_fetch_statement_history` joins in the linked
-    /// instrument's issuer/masked/type (for a readable display name) and
-    /// computes `pdf_available` from `unprocessed_statements.pdf_retained_until`.
     #[test]
     fn test_statement_history_joins_instrument_and_pdf_availability() {
         let conn = crate::db::test_helpers::setup_test_db();
@@ -4113,32 +3626,11 @@ mod tests {
         std::fs::create_dir_all(&temp_dir).unwrap();
         let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
 
-        // Deleting a PDF for a statement with no retained file at all must not error.
         delete_pdf_for_statement(&temp_dir, "nonexistent_stmt", &pool)
             .await
             .unwrap();
     }
 
-    /// Root-cause regression for the "View PDF" button being unusable on a
-    /// statement that was never password-protected and never blocked by the
-    /// Instrument Gate — the ordinary/common upload path. Previously,
-    /// `stage_parse_pipeline` only called `pdf_storage::store_pdf` inside
-    /// its two Instrument-Gate-blocked branches; the clean/never-blocked
-    /// success path never persisted the PDF anywhere, even though
-    /// `commit_staged_draft` (called later, once the user confirms the
-    /// review) unconditionally sets `pdf_retained_until`, marking the PDF
-    /// "available". Net effect: `statements_list` reports
-    /// `pdf_available: true` and the UI renders a working-looking "View
-    /// PDF" button, but `statements_get_pdf` 404s because no file was ever
-    /// written to disk.
-    ///
-    /// The fix stores the PDF under `draft_id` up front, before the Step 6
-    /// parse even runs — so this test uses deliberately invalid PDF bytes
-    /// (parsing is expected to fail, independent of pdfium's availability
-    /// in this environment) and asserts only that the bytes were persisted
-    /// under the id `stage_parse_pipeline` was called with, which is the
-    /// same id `commit_staged_draft` later keys the retention window off
-    /// of.
     #[tokio::test]
     async fn test_stage_parse_pipeline_persists_pdf_before_parsing() {
         let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
@@ -4179,9 +3671,6 @@ mod tests {
         );
     }
 
-    /// Doc 30 TASK-API-006 / Document 19 §11.2 acceptance coverage:
-    /// `dashboard_upcoming_bills` surfaces an instrument with a future
-    /// `statement_due_date`, using its nickname and outstanding balance.
     #[test]
     fn test_dashboard_upcoming_bills_reflects_instrument_due_dates() {
         let conn = crate::db::test_helpers::setup_test_db();
@@ -4213,9 +3702,6 @@ mod tests {
         assert_eq!(bills[0].due_date, "2099-06-25");
     }
 
-    /// Doc 30 TASK-API-006 / Document 19 §11.3 acceptance coverage:
-    /// `dashboard_categories` aggregates current-month spend per category,
-    /// keyed off the real seeded `cat_food` row (migration 20260101000002).
     #[test]
     fn test_dashboard_categories_aggregates_current_month_spend() {
         let conn = crate::db::test_helpers::setup_test_db();
@@ -4240,12 +3726,6 @@ mod tests {
         assert_eq!(food.name, "Food & Dining");
     }
 
-    /// Doc 30 TASK-DEDUP-009 regression coverage: `dashboard_categories`
-    /// already excludes open-cluster candidates today (the query's `id NOT
-    /// IN (...)` subquery), but had no test seeding an open-cluster
-    /// candidate to prove it -- so a future edit dropping that subquery
-    /// would go undetected. Mirrors
-    /// `test_dashboard_summary_excludes_ambiguous_clusters`'s pattern.
     #[test]
     fn test_category_spend_excludes_open_cluster_candidates() {
         let conn = crate::db::test_helpers::setup_test_db();
@@ -4289,8 +3769,6 @@ mod tests {
         );
     }
 
-    /// Doc 30 TASK-API-006 acceptance coverage: `analytics_spend_trend`'s
-    /// monthly granularity buckets by `%Y-%m` and sums `amount_minor`.
     #[test]
     fn test_spend_trend_monthly_buckets_by_period() {
         let conn = crate::db::test_helpers::setup_test_db();
@@ -4318,9 +3796,6 @@ mod tests {
         assert_eq!(bucket.total_spend, 15.0);
     }
 
-    /// Doc 30 TASK-DEDUP-009 regression coverage: same rationale as
-    /// `test_category_spend_excludes_open_cluster_candidates`, for
-    /// `analytics_spend_trend`.
     #[test]
     fn test_spend_trend_excludes_open_cluster_candidates() {
         let conn = crate::db::test_helpers::setup_test_db();
@@ -4362,8 +3837,6 @@ mod tests {
         );
     }
 
-    /// Doc 30 TASK-API-006 acceptance coverage: `analytics_top_merchants`
-    /// orders descending by current-month spend.
     #[test]
     fn test_top_merchants_orders_by_spend_desc() {
         let conn = crate::db::test_helpers::setup_test_db();
@@ -4393,9 +3866,6 @@ mod tests {
         assert_eq!(merchants[1].merchant_display_name, "Small Spend Cafe");
     }
 
-    /// Doc 30 TASK-DEDUP-009 regression coverage: same rationale as
-    /// `test_category_spend_excludes_open_cluster_candidates`, for
-    /// `analytics_top_merchants`.
     #[test]
     fn test_top_merchants_excludes_open_cluster_candidates() {
         let conn = crate::db::test_helpers::setup_test_db();
@@ -4441,9 +3911,6 @@ mod tests {
         assert_eq!(real.total_spend, 5.0);
     }
 
-    /// Doc 30 TASK-API-006 acceptance coverage: `analytics_recurring_payments_summary`
-    /// resolves a display name from `merchants` via `merchant_entity_id`,
-    /// since `recurring_payments` only stores the foreign key.
     #[test]
     fn test_recurring_payments_summary_resolves_merchant_name() {
         let conn = crate::db::test_helpers::setup_test_db();
@@ -4474,10 +3941,6 @@ mod tests {
         assert_eq!(summary[0].cadence, "monthly");
     }
 
-    /// Doc 30 TASK-API-008 acceptance test: `limit_thresholds` must be a
-    /// sorted (strictly ascending) array of 0-100 percentages -- rejects an
-    /// out-of-order array, an out-of-range value, and accepts a genuinely
-    /// sorted one.
     #[test]
     fn test_limit_thresholds_validated_sorted() {
         assert!(validate_limit_thresholds(&[80.0, 90.0, 100.0]).is_ok());

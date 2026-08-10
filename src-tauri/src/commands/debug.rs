@@ -1,3 +1,7 @@
+//! Read-only introspection commands for the development debug screen.
+//!
+//! Surfaces parse errors, unprocessed statements, audit rows and clusters as raw
+//! records. The route that reaches these is compiled out of release builds.
 use crate::db;
 use crate::error::AppError;
 use deadpool_sqlite::Pool;
@@ -11,6 +15,7 @@ pub struct DebugDashboardState {
 }
 
 #[tauri::command]
+/// Lists extraction failures with their raw context.
 pub async fn debug_fetch_parse_errors(
     pool: State<'_, Pool>,
 ) -> Result<Vec<db::transaction_observations::TransactionObservationsRow>, AppError> {
@@ -29,6 +34,7 @@ pub async fn debug_fetch_parse_errors(
 }
 
 #[tauri::command]
+/// Lists statements that failed to process.
 pub async fn debug_fetch_unprocessed_statements(
     pool: State<'_, Pool>,
 ) -> Result<Vec<db::unprocessed_statements::UnprocessedStatementRow>, AppError> {
@@ -43,6 +49,7 @@ pub async fn debug_fetch_unprocessed_statements(
 }
 
 #[tauri::command]
+/// Returns raw audit-log rows.
 pub async fn debug_fetch_audit_log(
     pool: State<'_, Pool>,
     resource_type_filter: Option<String>,
@@ -60,6 +67,7 @@ pub async fn debug_fetch_audit_log(
 }
 
 #[tauri::command]
+/// Returns reconciliation clusters in raw form.
 pub async fn debug_fetch_reconciliation_clusters(
     pool: State<'_, Pool>,
 ) -> Result<Vec<db::reconciliation_clusters::ReconciliationClustersRow>, AppError> {
@@ -79,6 +87,7 @@ pub static GMAIL_POLL_PAUSED: AtomicBool = AtomicBool::new(false);
 pub static SCAN_QUEUE_PAUSED: AtomicBool = AtomicBool::new(false);
 
 #[tauri::command]
+/// Reports the pipeline's current pause and queue state.
 pub async fn debug_get_pipeline_state() -> Result<DebugDashboardState, AppError> {
     Ok(DebugDashboardState {
         gmail_poll_paused: GMAIL_POLL_PAUSED.load(Ordering::Relaxed),
@@ -87,28 +96,21 @@ pub async fn debug_get_pipeline_state() -> Result<DebugDashboardState, AppError>
 }
 
 #[tauri::command]
+/// Pauses or resumes Gmail polling, for debugging.
 pub async fn debug_set_gmail_poll_paused(paused: bool) -> Result<(), AppError> {
     GMAIL_POLL_PAUSED.store(paused, Ordering::Relaxed);
     Ok(())
 }
 
 #[tauri::command]
+/// Pauses or resumes the scan queue, for debugging.
 pub async fn debug_set_scan_queue_paused(paused: bool) -> Result<(), AppError> {
     SCAN_QUEUE_PAUSED.store(paused, Ordering::Relaxed);
     Ok(())
 }
 
-/// Proves whether the historical scan's server-side prefilter is dropping any
-/// mail Gate 1 would have accepted.
-///
-/// Runs the old unfiltered date-range search alongside the current filtered
-/// one, then runs the real Gate 1 over every message the filter excluded.
-/// `missed_total == 0` is the answer to "how do I know the fast scan didn't
-/// skip a real transaction?" for this mailbox and date range.
-///
-/// Slow on purpose — it performs exactly the full-mailbox metadata sweep the
-/// prefilter exists to avoid, so run it deliberately, not on a schedule.
 #[tauri::command]
+/// Audits whether a scan genuinely covered its full date range.
 pub async fn debug_audit_scan_coverage<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     pool: State<'_, Pool>,

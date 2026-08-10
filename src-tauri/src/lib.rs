@@ -1,3 +1,22 @@
+//! Application root: module tree and the Tauri startup sequence.
+//!
+//! `run()` is the single place the desktop application is assembled, and the
+//! order of what happens there is load-bearing:
+//!
+//!   1. Logging is initialised first, so every later step -- including a failure
+//!      in one -- is recorded rather than lost.
+//!   2. A panic hook is installed, which routes panics into the same log. A
+//!      panic in a Tauri command would otherwise unwind into the runtime and
+//!      leave no trace on disk.
+//!   3. Plugins are registered, then the window close handler, then `setup`.
+//!   4. Inside `setup`: the integrity check gates everything else in release
+//!      builds, and only once it passes are the database, background services
+//!      and IPC handlers brought up.
+//!
+//! The integrity check deliberately terminates the process on failure rather
+//! than degrading, since a bundle that fails signature verification may have
+//! been modified.
+
 pub mod auth;
 pub mod background_tasks;
 pub mod billing;
@@ -33,7 +52,10 @@ use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Builds and runs the desktop application.
 pub fn run() {
+    // Logs belong at the repository/app root, not inside src-tauri. During
+    // development cargo runs from src-tauri, so that one level is stripped.
     let mut log_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     if log_dir.ends_with("src-tauri") {
         log_dir = log_dir
@@ -42,20 +64,21 @@ pub fn run() {
             .to_path_buf();
     }
     let (categorized_writers, guards) = crate::logging::CategorizedLogWriters::init(&log_dir);
+    // The writer guards must outlive every log call, and logging continues
+    // until the process exits. Leaking them is the simplest correct lifetime
+    // here -- dropping them early would silently truncate the log files.
     Box::leak(Box::new(guards));
 
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
+    // RUST_LOG wins when set; otherwise a default that keeps this app's own
+    // targets verbose while leaving dependencies at info.
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,dinero_app_lib=trace,dinero_app=trace,frontend=trace,api_calls=trace,network=trace,llm_calls=info"));
 
     tracing_subscriber::registry()
         .with(env_filter)
-        // ── Stdout: compact, coloured, human-friendly for dev sessions ──────
         .with(tracing_subscriber::fmt::layer().with_ansi(true))
-        // ── File logs: richer format with source location + thread name ──────
-        // Each line is:
-        //   <timestamp>  <LEVEL> <target>  [<file>:<line>] (<thread>)  <message>  <fields…>
         .with(
             tracing_subscriber::fmt::layer()
                 .with_writer(categorized_writers)
@@ -68,14 +91,9 @@ pub fn run() {
         )
         .init();
 
-    // H4 fix (Doc 19 §3.4): a global panic hook so any panic — inside a
-    // command handler, a spawned background task, or elsewhere — is captured
-    // in app-logs.log (which the diagnostic bundle and crash_reporter both
-    // read from) instead of only going to stderr, which is invisible in a
-    // packaged app. Tokio's own task boundary already isolates a panic inside
-    // an async command/spawned task from bringing down the whole process;
-    // this hook adds the "detect and log" half of that story, which was
-    // previously entirely absent.
+    // Panics are otherwise invisible in a packaged desktop build -- there is no
+    // console attached. The payload is a `&str` or a `String` depending on how
+    // the panic was raised, so both are attempted before giving up.
     std::panic::set_hook(Box::new(|panic_info| {
         let location = panic_info
             .location()
@@ -94,28 +112,14 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        // TASK-DESK-002: native macOS notifications (UNUserNotificationCenter).
         .plugin(tauri_plugin_notification::init())
-        // Doc 30 TASK-API-004: read-only, capability-scoped (tauri.conf.json's
-        // `fs:allow-read-file`) -- lets the frontend read the bytes of a
-        // dialog-selected statement PDF so `statements_upload` can be sent
-        // real file content, matching Document 19 §9.1's actual contract.
         .plugin(tauri_plugin_fs::init())
-        // TASK-DESK-010: "Launch at Login" -- a real macOS Launch Agent
-        // (not a mere app-side preference), registered/removed via this
-        // plugin only in response to an explicit user toggle.
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
-        // TASK-DESK-010: "Continue syncing when app is closed." Disabled by
-        // default (`read_background_sync_enabled` defaults to `false`), the
-        // window's close ("red traffic light") button quits the process
-        // normally -- Tauri's own default when the last window closes.
-        // Enabled, the close is intercepted (hidden + Dock icon hidden)
-        // instead, keeping the already-independent background workers
-        // (polling/queues/reconciliation) running. The Quit menu/tray items
-        // bypass this entirely (`AppHandle::exit`, no `CloseRequested`).
+        // Closing the main window does not necessarily quit: with background sync
+        // enabled the app keeps running to continue scheduled work.
         .on_window_event(|window, event| {
             if window.label() != "main" {
                 return;
@@ -136,19 +140,15 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            // TASK-DESK-001: the native macOS application menu bar. Built and
-            // attached before anything else so a working Quit item exists
-            // even if a later fatal-startup dialog (DB init failure, etc.)
-            // is the only other thing the user sees.
             let app_menu = crate::menu::build_menu(app.handle())?;
             app.set_menu(app_menu)?;
             app.on_menu_event(|app_handle, event| {
                 crate::menu::handle_menu_event(app_handle, event);
             });
 
-            // I11 fix (Doc 26 T-10): verify the running binary's code signature
-            // before doing anything else. Release-build-only — local dev builds
-            // are typically unsigned/ad-hoc signed and would always fail this.
+            // Release builds only -- development binaries are unsigned by
+            // nature. A failure here is fatal by design: the app explains why
+            // and exits rather than running from a bundle it cannot vouch for.
             #[cfg(not(debug_assertions))]
             if let Err(e) = crate::integrity::verify_binary_integrity() {
                 tracing::error!("Fatal: binary integrity check failed — {}", e);
@@ -165,11 +165,8 @@ pub fn run() {
                 std::process::exit(1);
             }
 
-            // TASK-SETUP-006: RAM check must never block startup — runs
-            // before DB init, which can itself fail/exit in several ways.
             crate::startup::check_ram_and_set_llm_eligibility(&app.handle().clone());
 
-            // Setup DB in app data dir
             let app_dir = app
                 .path()
                 .app_data_dir()
@@ -179,22 +176,18 @@ pub fn run() {
             crate::crash_reporter::init(app_dir.clone());
             app.manage(crate::feedback::FeedbackManager::new(app_dir.clone()));
 
-            // TASK-DB-001: Document 18 §7.2 names the file `finance.db`
-            // (was `data.db` — a drift already visible in the mismatched
-            // `finance.db.bak.*` backup naming migrations.rs already used).
+            // Database bring-up. This is the most failure-prone step in startup:
+            // the file is SQLCipher-encrypted with a key held in the OS keychain,
+            // so it can fail for reasons the user must be told about explicitly
+            // rather than seeing a blank window.
             let db_path = app_dir.join("finance.db");
 
-            // TASK-DB-021: peek at the hardware-UUID marker before init_db
-            // consumes/updates it, so a successful open below can show the
-            // non-blocking "Database migrated to new Mac" toast Document 30
-            // describes — without threading a migration flag through
-            // init_db's own return type.
+            // Detected before opening: the hardware UUID marker changing means
+            // the database file has moved to a different Mac, which the user is
+            // notified about after a successful open.
             let looks_like_hardware_migration =
                 crate::db::crypto::hw_uuid_marker_indicates_migration(&app_dir);
 
-            // Initialize SQLCipher database and run migrations.
-            // Handle key-mismatch separately so the user sees a clear dialog
-            // (with recovery instructions) rather than a raw panic.
             let pool = match tauri::async_runtime::block_on(async {
                 db::init_db(db_path.clone()).await
             }) {
@@ -208,7 +201,9 @@ pub fn run() {
                         );
                     }
 
-                    // Restore connected_accounts if they were backed up during "Delete My Data"
+                    // Connected Gmail accounts survive a database reset via this
+                    // plaintext-metadata backup. It is consumed once and deleted,
+                    // so a later reset does not silently resurrect old accounts.
                     let backup_path = app_dir.join("gmail_accounts_backup.json");
                     if backup_path.exists() {
                         if let Ok(json) = std::fs::read_to_string(&backup_path) {
@@ -230,6 +225,9 @@ pub fn run() {
 
                     p
                 }
+                // Each failure below is terminal but distinct, and each explains
+                // the specific recovery path -- a generic "could not start"
+                // would leave the user with no way forward.
                 Err(db::DbInitError::KeyMismatch) => {
                     let msg = concat!(
                         "Dinero cannot open its database.\n\n",
@@ -240,7 +238,6 @@ pub fn run() {
                         "The app will now exit."
                     );
                     tracing::error!("Fatal: DB key mismatch — {}", msg);
-                    // best-effort dialog; ignore errors (dialog plugin may not be fully ready)
                     let _ = app.dialog()
                         .message(msg)
                         .title("Dinero — Database Key Mismatch")
@@ -248,9 +245,6 @@ pub fn run() {
                         .blocking_show();
                     std::process::exit(1);
                 }
-                // G3 fix: a dedicated Keychain-access-denial screen — previously
-                // this fell through to the generic "could not start" dialog,
-                // giving no indication that granting Keychain access would fix it.
                 Err(db::DbInitError::KeychainAccessDenied) => {
                     let msg = concat!(
                         "Dinero needs access to the macOS Keychain to encrypt your financial data — ",
@@ -270,9 +264,9 @@ pub fn run() {
                         .blocking_show();
                     std::process::exit(1);
                 }
-                // Doc 18 §12.1 (C18 fix): a failed migration doesn't just exit —
-                // a pre-migration backup was already taken, so offer a one-click
-                // rollback to it before giving up.
+                // A failed schema migration is recoverable: a backup is taken
+                // immediately before every migration, so the user is offered a
+                // rollback rather than being left with a half-migrated database.
                 Err(db::DbInitError::MigrationFailed { source, backup_path }) => {
                     tracing::error!(
                         "Migration failed (backup at {}): {:?}",
@@ -298,6 +292,9 @@ pub fn run() {
                         std::process::exit(1);
                     }
 
+                    // Restore, then re-open. If the reopen still fails the
+                    // situation is beyond automatic recovery and the app exits
+                    // rather than looping.
                     if let Err(e) = db::restore_backup_file(&db_path, &backup_path) {
                         let msg = format!(
                             "Failed to restore the backup:\n\n{e}\n\nThe app will now exit."
@@ -333,9 +330,8 @@ pub fn run() {
                         }
                     }
                 }
-                // I6 fix: PRAGMA integrity_check found corruption — fail closed
-                // and offer to restore the daily backup rather than silently
-                // continuing to operate on a corrupt database.
+                // Corruption. Recoverable only if a daily backup exists; without
+                // one there is nothing to fall back to.
                 Err(db::DbInitError::IntegrityCheckFailed { details }) => {
                     tracing::error!("Fatal: DB integrity check failed — {}", details);
                     let daily_backup = app_dir.join("backups").join("finance.db.daily.bak");
@@ -403,6 +399,8 @@ pub fn run() {
                         }
                     }
                 }
+                // Anything not handled above. No specific remedy to offer, so
+                // the message is generic and the app exits.
                 Err(e) => {
                     let msg = format!(
                         "Dinero could not initialise its database and must exit.\n\nError: {e}\n\n\
@@ -418,10 +416,10 @@ pub fn run() {
                 }
             };
 
-            // I12 fix: finance.db contains a user's full financial history —
-            // restrict it to owner-only read/write, matching the Keychain-only
-            // secrets posture elsewhere in the app. Best-effort: a permissions
-            // failure here shouldn't block startup, but is worth logging loudly.
+            // Owner-only permissions on the database file. It holds financial
+            // data and, although encrypted at rest, must not be readable by other
+            // local accounts. A failure is a warning rather than fatal, since the
+            // encryption remains the primary protection.
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -430,30 +428,19 @@ pub fn run() {
                 }
             }
 
+            // Shared application state. Everything registered here is reachable
+            // from any Tauri command handler through the app handle.
             let pool_clone = pool.clone();
             app.manage(pool);
 
-            // TASK-AUTH-005: ensure an active session row exists for this
-            // device, storing its id only in Tauri's managed in-memory
-            // state (never sent to React, never persisted outside the
-            // `sessions` table itself). Best-effort: a session-establishment
-            // hiccup should not block startup — `current_session_id()`
-            // simply returns `None` until the next successful call.
             app.manage(crate::auth::session::SessionState::default());
-            // TASK-AUTH-014: in-memory-only incident counters, registered
-            // once for the lifetime of this run.
             app.manage(crate::security::incident_response::IncidentMonitor::default());
-            // TASK-DESK-003: single aggregated registry of long-running
-            // background tasks, backing the global background-task indicator.
             app.manage(crate::background_tasks::indicator::BackgroundTaskRegistry::default());
-            // Per-model-id cancellation tokens for in-progress local LLM
-            // downloads (Settings' model picker Cancel button).
             app.manage(crate::llm_manager::DownloadRegistry::default());
-            // audit_07 #10: seed the dismissed-warning cache before any
-            // condition check can emit. Blocking rather than spawned on
-            // purpose — a warning emitted in the gap would be shown despite
-            // having been dismissed, which is the exact behaviour being fixed.
             {
+                // Warning dismissals are persisted, so they are loaded into the
+                // in-memory set before any warning can be raised -- otherwise a
+                // previously dismissed warning would reappear on every launch.
                 let pool_for_dismissals = pool_clone.clone();
                 let loaded = tauri::async_runtime::block_on(async move {
                     let conn = pool_for_dismissals.get().await.ok()?;
@@ -465,6 +452,8 @@ pub fn run() {
                 crate::ipc::system_warnings::load_dismissals(loaded.unwrap_or_default());
             }
             {
+                // Spawned rather than blocking: session setup is not needed for
+                // the window to appear, and blocking here would delay first paint.
                 let pool_for_session = pool_clone.clone();
                 let session_state_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
@@ -475,19 +464,8 @@ pub fn run() {
                 });
             }
 
-            // TASK-DESK-004: proactive permission-state check at launch --
-            // by this point DB init has already succeeded (Keychain access
-            // is therefore already confirmed), but this still runs the real
-            // check-and-emit path so a later mid-session Keychain revocation
-            // check (the daily maintenance loop, below) and this one share
-            // the exact same code path and event contract.
             crate::permissions::macos_permissions::check_permissions_at_launch(&app.handle().clone());
 
-            // TASK-DESK-002: request native-notification permission only if
-            // the user has already passed the onboarding network-disclosure
-            // screen -- never proactively at cold launch before that. A
-            // no-op (returns immediately) on every launch until that
-            // consent event exists.
             {
                 let pool_for_notif_permission = pool_clone.clone();
                 let app_handle_for_notif_permission = app.handle().clone();
@@ -500,30 +478,24 @@ pub fn run() {
                 });
             }
 
-            // In-memory-only holding area for PDF bytes blocked on Statement
-            // Instrument Gate confirmation (C2 fix) — never written to disk.
-
-            // The feedback learning loop. Spawned before the ingest queues
-            // because the Layer 6 worker needs its handle to queue drift
-            // candidates, but kept a separate channel and separate managed
-            // state: it must never be able to apply backpressure to a scan.
+            // Background services from here on. Each is spawned onto the async
+            // runtime so startup completes and the window renders while they come
+            // up in the background.
             let learning_handle = crate::learning::spawn_learning_worker(pool_clone.clone());
             app.manage(learning_handle.clone());
 
-            // Spawn the two isolated ingestion queues (Doc 15 §2 principle 7, §5;
-            // Doc 12 §6.2a/§7.2) before any producer (polling/historical scan/manual
-            // upload) can start pushing jobs onto them.
             let queue_handles = crate::ingestion::queues::spawn_queues(
                 app.handle().clone(),
                 pool_clone.clone(),
                 learning_handle,
             );
+            // The layer-6 sender is captured before the handles are moved into
+            // managed state, so the replay task below can still reach the queue.
             let layer6_tx_for_replay = queue_handles.layer6_tx.clone();
             app.manage(queue_handles);
 
-            // Recover Layer 6 jobs that were persisted but never reached the
-            // background worker before the app last closed/crashed — see
-            // migration `20260101000057_layer6_pending_jobs`.
+            // Re-enqueues extraction jobs that were still pending when the app
+            // last exited, so work interrupted by a quit is not silently dropped.
             let pool_for_layer6_replay = pool_clone.clone();
             let app_dir_for_layer6_replay = app_dir.clone();
             tauri::async_runtime::spawn(async move {
@@ -535,6 +507,8 @@ pub fn run() {
                 .await;
             });
 
+            // Statement PDFs are retained only briefly; expired ones are purged
+            // on every launch so raw financial documents do not accumulate.
             let pool_for_cleanup = pool_clone.clone();
             let app_data_dir = app_dir.clone();
             tauri::async_runtime::spawn(async move {
@@ -545,12 +519,13 @@ pub fn run() {
 
             let pool_for_polling = pool_clone.clone();
             let app_handle_for_polling = app.handle().clone();
+            // One cancellation token shared by the long-running loops, so app
+            // shutdown can stop them together rather than one at a time.
             let cancel_token = tokio_util::sync::CancellationToken::new();
             app.manage(cancel_token.clone());
 
-            // TASK-DESK-010: the battery-aware polling-interval policy this
-            // task frames as the resolution to Document 16 §20 OQ-01 --
-            // shared state the polling loop below reads every cycle.
+            // Polling cadence adapts to power state -- a laptop on battery polls
+            // less aggressively than one on mains.
             app.manage(crate::lifecycle::launch_agent::PollingIntervalState::default());
             let app_handle_for_battery_loop = app.handle().clone();
             let cancel_token_for_battery_loop = cancel_token.clone();
@@ -571,6 +546,8 @@ pub fn run() {
                 .await;
             });
 
+            // Watches for gaps in ingested data (a missing statement period, a
+            // silent account) and raises reconciliation alerts.
             let pool_for_alerts = pool_clone.clone();
             let app_handle_for_alerts = app.handle().clone();
             let cancel_token_alerts = app
@@ -586,31 +563,26 @@ pub fn run() {
                 .await;
             });
 
+            // Daily encrypted backup loop. The backup is written with VACUUM
+            // INTO, which produces a consistent snapshot without stopping writers
+            // and compacts the file in the same pass.
             let backup_dir = app_dir.join("backups");
             std::fs::create_dir_all(&backup_dir).unwrap();
-            // J3 fix: same directory family, one file per calendar year
-            // (finance_archive_YYYY.db) — resolved once here since deriving
-            // it needs a Keychain round-trip, not worth repeating every loop tick.
             let archive_dir = app_dir.join("archives");
             let archive_db_key = crate::db::crypto::derive_database_key().ok();
             let pool_for_backup = pool_clone.clone();
             let app_handle_for_backup = app.handle().clone();
             let db_path_for_backup = db_path.clone();
             tauri::async_runtime::spawn(async move {
-                // Background loop for backups
                 loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(60 * 60 * 24)).await; // 24 hours
+                    tokio::time::sleep(std::time::Duration::from_secs(60 * 60 * 24)).await;
                     tracing::info!("Running daily encrypted SQLite backup background task...");
 
-                    // Doc 28 §4.2/§4.8: the daily backup is a single rolling file
-                    // (finance.db.daily.bak), silently overwritten each day — not
-                    // one uniquely-timestamped file per day accumulating forever.
-                    // VACUUM INTO errors if its target already exists, so write to
-                    // a temp path first and atomically rename over the previous
-                    // backup on success, rather than deleting it up front (which
-                    // would leave a window with no valid backup at all if this
-                    // process were interrupted mid-VACUUM).
                     let backup_file = backup_dir.join("finance.db.daily.bak");
+                    // Written to a temporary file and renamed on success. The
+                    // rename is atomic, so a crash mid-backup can never leave a
+                    // truncated file sitting where the recovery path expects a
+                    // usable backup.
                     let backup_tmp_file = backup_dir.join("finance.db.daily.bak.tmp");
                     let _ = std::fs::remove_file(&backup_tmp_file);
                     let backup_tmp_file_str = backup_tmp_file.to_string_lossy().to_string();
@@ -618,7 +590,6 @@ pub fn run() {
                     if let Ok(conn) = pool_for_backup.get().await {
                         let res = conn
                             .interact(move |c| {
-                                // VACUUM INTO creates a transactionally consistent, encrypted copy
                                 c.execute("VACUUM INTO ?", [&backup_tmp_file_str])
                             })
                             .await;
@@ -631,14 +602,11 @@ pub fn run() {
                                             "Backup successful: {}",
                                             backup_file.display()
                                         );
-                                        // Doc 30 TASK-OPS-002: "a scheduled verification step
-                                        // loads a recent backup in a temporary sandbox to
-                                        // confirm it opens cleanly, preventing silent backup
-                                        // rot" -- opens the just-written backup fresh (a
-                                        // separate connection, not the one that wrote it) and
-                                        // runs a real integrity_check immediately, so rot is
-                                        // caught the same day it happens, not months later
-                                        // when a restore is actually needed.
+                                        // A backup that cannot be verified is
+                                        // worse than none, because it invites
+                                        // false confidence -- so the user is
+                                        // warned rather than left assuming it
+                                        // would work.
                                         if let Err(e) = crate::db::backup::verify_backup_integrity(&backup_file) {
                                             tracing::error!(
                                                 "Daily backup verification failed for {}: {}",
@@ -657,8 +625,6 @@ pub fn run() {
                                                 },
                                             );
                                         }
-                                        // TASK-DB-020: log completion + notify Settings so it
-                                        // can show the last-backup timestamp.
                                         let _ = app_handle_for_backup.emit(
                                             crate::ipc::events::AppEvent::DbBackupCompleted.as_str(),
                                             serde_json::json!({
@@ -700,22 +666,17 @@ pub fn run() {
                         }
                     }
 
-                    // TASK-DB-019 steps 1/3/4: corruption check, bounded
-                    // incremental vacuum, and a size warning once finance.db
-                    // exceeds 2GB. Run on the same daily cadence, after the
-                    // backup/retention/archive steps above.
                     if let Ok(conn) = pool_for_backup.get().await {
                         let app_handle_for_integrity = app_handle_for_backup.clone();
+                    // Integrity is re-checked on the same daily cadence. A
+                    // failure is escalated through the incident monitor rather
+                    // than merely logged, since silent corruption of financial
+                    // records is exactly what must not go unnoticed.
                         let integrity_ok = conn
                             .interact(move |c| {
                                 crate::db::maintenance::check_integrity_and_report(c, &app_handle_for_integrity)
                             })
                             .await;
-                        // TASK-AUTH-014: a corrupt database is itself the
-                        // incident-response trigger this task names
-                        // ("PRAGMA integrity_check failures") — fires on the
-                        // very first occurrence (see IncidentMonitor's
-                        // per-trigger threshold).
                         if let Ok(Ok(false)) = integrity_ok {
                             let monitor = app_handle_for_backup.state::<crate::security::incident_response::IncidentMonitor>();
                             if crate::security::incident_response::record_trigger(
@@ -733,6 +694,10 @@ pub fn run() {
                             }
                         }
                     }
+                    // Daily maintenance sweeps follow. Each reclaims space or
+                    // enforces a retention policy, and each is independently
+                    // fallible -- a failure in one must not skip the rest, which
+                    // is why they are separate blocks rather than one chain.
                     if let Ok(conn) = pool_for_backup.get().await {
                         let _ = conn
                             .interact(|c| crate::db::maintenance::run_incremental_vacuum(c))
@@ -740,52 +705,34 @@ pub fn run() {
                     }
                     let _ = crate::db::maintenance::check_db_size_warning(&app_handle_for_backup, &db_path_for_backup);
 
-                    // J2 fix (Doc 28 §4.2 row 1): nulls raw_payload_json/
-                    // raw_row_json on matched records older than 90 days —
-                    // previously cited as a compliance control with no
-                    // implementing code at all. Runs on the same daily cadence
-                    // as the backup above, after it, so the backup still
-                    // captures the pre-sweep state for one more day.
                     if let Ok(conn) = pool_for_backup.get().await {
                         let _ = conn
                             .interact(|c| crate::db::retention::sweep_raw_payloads(c))
                             .await;
                     }
 
-                    // audit_05 #7 / audit_03 #5: deletes settled match_decisions
-                    // and settled reconciliation_clusters, neither of which was
-                    // pruned before. Same daily cadence and same horizon as the
-                    // raw-payload sweep above — the rows it clears are the ones
-                    // explaining payloads that sweep has already nulled.
                     if let Ok(conn) = pool_for_backup.get().await {
                         let _ = conn
                             .interact(|c| crate::db::retention::sweep_reconciliation_audit(c))
                             .await;
                     }
 
-                    // audit_04 #7: deletes committed/discarded statement drafts,
-                    // whose `rows_json` duplicates `statement_entries` (or holds
-                    // rows the user rejected). `pending_review` drafts are never
-                    // touched — that's the review queue itself.
                     if let Ok(conn) = pool_for_backup.get().await {
                         let _ = conn
                             .interact(|c| crate::db::retention::sweep_settled_statement_drafts(c))
                             .await;
                     }
 
-                    // Doc-30-style optimization #5: purges `ignored_messages`
-                    // rows past their 30-day TTL. Runs on the same daily
-                    // cadence as the raw-payload sweep above — no dedicated
-                    // background task needed for a monthly-scale cleanup.
                     if let Ok(conn) = pool_for_backup.get().await {
                         let _ = conn
                             .interact(|c| crate::db::ignored_messages::purge_expired(c))
                             .await;
                     }
 
-                    // J3 fix (Doc 28 §4.2): copies transactions older than 5
-                    // years into finance_archive_YYYY.db — additive only, see
-                    // db::retention::archive_old_transactions doc comment.
+                    // Old transactions move to a separately encrypted archive
+                    // rather than being deleted, keeping the working database
+                    // small without losing history. Skipped entirely if the key
+                    // could not be derived.
                     if let Some(db_key) = archive_db_key.clone() {
                         let archive_dir = archive_dir.clone();
                         if let Ok(conn) = pool_for_backup.get().await {
@@ -797,13 +744,11 @@ pub fn run() {
                         }
                     }
 
-                    // TASK-DESK-002: native "bill due in 3 days" reminder --
-                    // runs once per day alongside the other daily maintenance
-                    // work above; `is_three_days_before_due`'s exact-equality
-                    // check (not a range) makes this self-deduplicating, so
-                    // no separate "already reminded" state is needed.
                     if let Ok(conn) = pool_for_backup.get().await {
                         let today = chrono::Utc::now().date_naive();
+                    // Bill reminders ride the same daily loop rather than
+                    // running their own timer, since a once-a-day check is
+                    // exactly the right cadence for a three-day warning.
                         let due_soon = conn
                             .interact(move |c| crate::db::instruments::list_upcoming_bills(c, &today))
                             .await;
@@ -829,17 +774,15 @@ pub fn run() {
                         }
                     }
 
-                    // TASK-DESK-004: re-checks permission state on the same
-                    // daily cadence as the rest of this maintenance loop --
-                    // the "proactive, ongoing" half of detection, covering a
-                    // Keychain access revoked (or notification permission
-                    // changed) mid-session, not just at cold launch.
                     crate::permissions::macos_permissions::check_permissions_at_launch(
                         &app_handle_for_backup,
                     );
                 }
             });
 
+            // Periodic licence revalidation against the licensing service, so a
+            // subscription that lapsed or was cancelled elsewhere takes effect
+            // without waiting for a restart.
             let pool_for_licensing = pool_clone.clone();
             let app_handle_for_licensing = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -851,13 +794,9 @@ pub fn run() {
                 .await;
             });
 
-            // TASK-OPS-003: a cheap (single `SELECT 1`) liveness re-check
-            // every 60s. Startup itself already fails closed with a blocking
-            // dialog (see the `db::init_db` match above) — this catches the
-            // case where the pool goes unresponsive *after* a successful
-            // start (disk unmounted, pool exhausted), which is the only way
-            // "backend startup failure" is an ongoing, alertable condition
-            // rather than a one-time launch-time check.
+            // Health poll. A backend that stops reporting ready is escalated to
+            // the incident monitor, which is what surfaces the offline indicator
+            // in the sidebar.
             let pool_for_health = pool_clone.clone();
             let app_handle_for_health = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -880,25 +819,16 @@ pub fn run() {
                 }
             });
 
-            // TASK-DESK-005: checks once on launch, then every ~6 hours
-            // while running (Document 16 §9.1). Skipped in debug builds --
-            // the updater endpoint (tauri.conf.json) points at GitHub
-            // Releases, which doesn't exist until the first release ships,
-            // so every dev run would otherwise log a spurious error on a
-            // fixed interval.
+            // Update checks are release-only: a dev build would otherwise be
+            // prompted to replace itself with the published version.
             app.manage(crate::updater::PendingUpdate::default());
             if !cfg!(debug_assertions) {
                 crate::updater::spawn_update_check_loop(app.handle().clone());
             }
 
-            // TASK-DESK-008: initialize the menu bar extra to match the
-            // persisted setting, then keep the Dock badge and (if enabled)
-            // the tray summary refreshed periodically. 30s, not instant --
-            // a Dock badge doesn't need sub-second latency, and this avoids
-            // needing to hook every single reconciliation-state-mutating
-            // call site individually (a fragile, easy-to-miss-one approach
-            // this run has repeatedly found bugs from elsewhere).
             {
+            // macOS menu-bar extra and dock badge, refreshed on a loop so the
+            // at-a-glance figures stay current while the window is closed.
                 let menu_bar_extra_enabled =
                     crate::menu::status_item::read_menu_bar_extra_enabled(&app_dir);
                 crate::menu::status_item::apply_menu_bar_extra_runtime_state(
@@ -946,9 +876,13 @@ pub fn run() {
 
             Ok(())
         })
+        // Registers every #[tauri::command] the frontend can invoke.
         .invoke_handler(commands::get_handlers())
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
+        // Shutdown: cancelling the shared token stops the polling, battery and
+        // alert loops together, so they do not keep touching the database while
+        // the process is tearing down.
         .run(|app_handle, event| match event {
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
                 if let Some(cancel_token) = app_handle.try_state::<tokio_util::sync::CancellationToken>() {

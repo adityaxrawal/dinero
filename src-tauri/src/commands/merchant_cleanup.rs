@@ -1,15 +1,8 @@
-//! Issue #12: the "Normalize with LLM" Settings action.
+//! Commands driving the AI merchant-normalisation pass.
 //!
-//! Walks every transaction whose merchant scores below
-//! [`LOW_CONFIDENCE_THRESHOLD`], sends each one's email body and extracted
-//! fields to the local LLM, and applies the returned canonical merchant name
-//! and category — recording enough to undo any of it.
-//!
-//! Deliberately reuses Layer 6's infrastructure rather than opening a second
-//! LLM path: the same `llama_sidecar` server, the same completion semaphore,
-//! the same grammar-constrained decoding, and the same RAM-eligibility gate.
-//! The only thing that differs is the prompt and the output schema.
-
+//! Preview before run is the point: the pass rewrites merchant names in bulk, so
+//! the user sees a sample of what would change before agreeing to it, and each
+//! applied change stays individually revertible afterwards.
 use deadpool_sqlite::Pool;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -20,14 +13,9 @@ use crate::db::merchant_cleanup;
 use crate::error::AppError;
 use crate::extraction::merchant_llm;
 
-/// Upper bound on one run, so a pathological database can't queue unbounded
-/// inference. Well above any realistic low-confidence backlog.
 const MAX_CANDIDATES_PER_RUN: usize = 5000;
 
-/// Set by [`merchant_cleanup_cancel`], checked between transactions. Mirrors
-/// how the historical scan handles cancellation.
 static CLEANUP_CANCELLED: AtomicBool = AtomicBool::new(false);
-/// Guards against two concurrent runs stacking inference on the same queue.
 static CLEANUP_RUNNING: AtomicBool = AtomicBool::new(false);
 
 #[derive(serde::Serialize, Clone)]
@@ -36,15 +24,9 @@ pub struct CleanupProgressPayload {
     pub processed: usize,
     pub total: usize,
     pub applied: usize,
-    /// Processed but left unchanged — no retained email, inference failure, or
-    /// an answer that failed validation. Emitted rather than derived so the UI
-    /// never has to re-implement "what counts as a skip".
     pub skipped: usize,
     pub current_merchant: Option<String>,
     pub bank_name: Option<String>,
-    /// What the model made of `current_merchant`, when it made anything of it.
-    /// This is what lets the panel show the run's answers as they land instead
-    /// of only a counter.
     pub resolved_merchant: Option<String>,
     pub resolved_category: Option<String>,
     pub status: String,
@@ -52,15 +34,9 @@ pub struct CleanupProgressPayload {
 
 #[derive(serde::Serialize)]
 pub struct CleanupPreview {
-    /// How many transactions would be sent to the LLM.
     pub candidate_count: usize,
-    /// Of those, how many have no retained email and will therefore be skipped.
-    /// Counted over the whole queue, not just `samples`.
     pub no_evidence_count: usize,
-    /// Per-bank split of the whole queue — `samples` is capped, so it cannot
-    /// answer "which banks is this actually about".
     pub by_bank: Vec<BankBucket>,
-    /// Worst offenders, for the "here's what will change" summary.
     pub samples: Vec<CleanupSample>,
     pub llm_eligible: bool,
     pub total_ram_gb: f64,
@@ -81,17 +57,18 @@ pub struct CleanupSample {
     pub bank_name: String,
     pub confidence: f64,
     pub has_evidence: bool,
-    /// Enough of the transaction to recognise it. A mangled merchant string on
-    /// its own is not identifiable; the amount and date are how someone tells
-    /// two "PYU*" rows apart.
     pub amount: Option<f64>,
     pub currency: Option<String>,
     pub direction: Option<String>,
     pub event_time: Option<String>,
 }
 
-/// What the Settings panel shows before the user commits to a run.
 #[tauri::command]
+/// Previews what a cleanup run would change, without applying anything.
+///
+/// Preview precedes run by design: the pass rewrites merchant names in bulk, so
+/// the user agrees to a sample of real proposed changes rather than to the idea
+/// of the operation.
 pub async fn merchant_cleanup_preview(
     app: tauri::AppHandle,
     pool: tauri::State<'_, Pool>,
@@ -124,8 +101,6 @@ pub async fn merchant_cleanup_preview(
         })
         .collect();
 
-    // Ordered by size so the panel leads with the bank that dominates the
-    // queue, which is the one the user is actually being asked about.
     let mut buckets: Vec<BankBucket> = {
         let mut acc: std::collections::HashMap<&str, (usize, usize)> = Default::default();
         for c in &candidates {
@@ -160,13 +135,8 @@ pub async fn merchant_cleanup_preview(
     })
 }
 
-/// Past cleanup runs, newest first, each with the corrections it wrote.
-///
-/// Exists because the undo affordance used to live only in frontend state: a
-/// window reload lost the run id and the Undo button with it, even though every
-/// correction was still revertible. The runs are read straight out of the undo
-/// log, so what is listed here is exactly what can still be put back.
 #[tauri::command]
+/// Lists past cleanup runs.
 pub async fn merchant_cleanup_runs(
     pool: tauri::State<'_, Pool>,
     limit: Option<usize>,
@@ -179,8 +149,8 @@ pub async fn merchant_cleanup_runs(
         .map_err(|e| AppError::Db(e.to_string()))
 }
 
-/// Undoes one correction from a run, leaving the rest of the run in place.
 #[tauri::command]
+/// Reverts a single correction.
 pub async fn merchant_cleanup_revert_correction(
     pool: tauri::State<'_, Pool>,
     correction_id: String,
@@ -194,7 +164,7 @@ pub async fn merchant_cleanup_revert_correction(
         .map_err(|e| AppError::Db(e.to_string()))
 }
 
-/// Resolves the model the user actually selected, the same way Layer 6 does.
+/// Resolves which model to use, or None if local inference is unavailable.
 async fn resolve_model(pool: &Pool, app_dir: &std::path::Path) -> Option<String> {
     let stored = match pool.get().await {
         Ok(conn) => conn
@@ -213,10 +183,8 @@ async fn resolve_model(pool: &Pool, app_dir: &std::path::Path) -> Option<String>
     crate::llm_manager::resolve_active_model(&downloaded, stored.as_deref())
 }
 
-/// Starts a cleanup run in the background and returns its `run_id`
-/// immediately — the pass reports through `merchant_cleanup_progress` events
-/// rather than blocking the IPC call, exactly as the historical scan does.
 #[tauri::command]
+/// Starts a cleanup run, reporting progress by event.
 pub async fn merchant_cleanup_start(
     app: tauri::AppHandle,
     pool: tauri::State<'_, Pool>,
@@ -272,14 +240,14 @@ pub async fn merchant_cleanup_start(
 }
 
 #[tauri::command]
+/// Cancels a running cleanup.
 pub async fn merchant_cleanup_cancel() -> Result<(), AppError> {
     CLEANUP_CANCELLED.store(true, Ordering::SeqCst);
     Ok(())
 }
 
-/// Undoes an entire run: every merchant name, entity link and category goes
-/// back, and every pattern rule the run taught is retired.
 #[tauri::command]
+/// Reverts an entire run.
 pub async fn merchant_cleanup_revert(
     pool: tauri::State<'_, Pool>,
     run_id: String,
@@ -291,8 +259,7 @@ pub async fn merchant_cleanup_revert(
         .map_err(|e| AppError::Db(e.to_string()))
 }
 
-/// The run loop. Fans out across the same number of slots the sidecar
-/// calibrated for Layer 6, since it is the same server doing the work.
+/// Executes the cleanup run over its candidate queue.
 async fn run_cleanup(app: tauri::AppHandle, pool: Pool, run_id: String) -> anyhow::Result<()> {
     let app_dir = app
         .path()
@@ -408,16 +375,7 @@ async fn run_cleanup(app: tauri::AppHandle, pool: Pool, run_id: String) -> anyho
     Ok(())
 }
 
-/// One transaction: prompt, infer, validate, apply. Returns the resolution that
-/// was written, or `None` when nothing was.
-///
-/// Every failure mode — no model, timeout, unparseable output, hallucinated
-/// merchant, DB error — leaves the transaction exactly as it was. A skipped
-/// row is not an error; it simply stays in the queue for a future run.
-///
-/// The resolution is returned rather than a bool so the progress event can
-/// carry the model's actual answer; a counter alone cannot tell the user
-/// whether the run is doing something sensible.
+/// Processes one merchant candidate through the model and applies the result.
 async fn process_one(
     pool: &Pool,
     app_dir: &std::path::Path,
@@ -427,10 +385,6 @@ async fn process_one(
     categories: &[String],
     schema: &serde_json::Value,
 ) -> Option<merchant_llm::MerchantResolution> {
-    // Without a body there is nothing to read; the extracted fields alone
-    // carry no information the parser did not already have. Retention keeps
-    // bodies for a year (`db::retention::RAW_PAYLOAD_RETENTION`), so this
-    // only bites on genuinely old transactions.
     let Some(body) = candidate.body.as_deref() else {
         tracing::debug!(
             tx = %candidate.transaction_id,
@@ -493,6 +447,7 @@ async fn process_one(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Emits a progress event for the running cleanup.
 fn emit_progress(
     app: &tauri::AppHandle,
     run_id: &str,
@@ -528,16 +483,11 @@ mod tests {
     use super::*;
     use crate::extraction::merchant_confidence::LOW_CONFIDENCE_THRESHOLD;
 
-    /// The preview's headline number must mean the same thing the run will
-    /// actually do, so both go through one queue function.
     #[test]
     fn threshold_is_shared_with_the_scorer() {
         assert_eq!(LOW_CONFIDENCE_THRESHOLD, 0.60);
     }
 
-    /// A second start must be refused while one is running, or two worker
-    /// pools would contend for the same sidecar slots and re-process the
-    /// same queue.
     #[test]
     fn concurrent_runs_are_refused() {
         CLEANUP_RUNNING.store(false, Ordering::SeqCst);

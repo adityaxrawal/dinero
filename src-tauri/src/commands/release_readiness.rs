@@ -1,33 +1,13 @@
-//! Doc 30 TASK-OPS-009: Metrics and Release Readiness Dashboard.
+//! Aggregates local health metrics into a release go/no-go view.
 //!
-//! Backs the Debug page's "Release Readiness" tab
-//! (`src/components/debug/ReleaseReadinessViewer.tsx`). Two things, kept
-//! deliberately separate:
-//!
-//! - **Locally-verifiable metrics** (`compute_local_metrics`): real
-//!   aggregate queries against this device's own encrypted DB -- see
-//!   `ops/release_metrics.sql` for the same queries kept as a standalone,
-//!   reviewable reference. Never a substitute for the labeled benchmark
-//!   corpus (extraction accuracy, false-positive rate, etc.) -- there is no
-//!   ground-truth label in a real user's own data to compare against, so
-//!   those are measured by the test suite instead.
-//! - **Go/no-go status** (`read_go_no_go`): read from
-//!   `scripts/verify_acceptance_criteria.py --output <path>`'s JSON, never
-//!   invoked by the app itself (the shipped app has no Python/Cargo/CI
-//!   toolchain to run that script with) -- this only ever reflects the
-//!   most recent run *someone* (a developer, CI) already performed. Absent
-//!   or unparsable output fails closed (`all_passed: false`), per Doc 15
-//!   Core Principle 12 -- an unknown test-suite status is never presented
-//!   as "go".
-
+//! Combines figures computed here with the acceptance-criteria results written
+//! by the CI gate script, so the in-app readiness panel reflects both runtime
+//! health and the risk-register test outcomes.
 use anyhow::Result;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-/// Doc 30 TASK-OPS-009 acceptance `test_release_dashboard_shows_aggregate_metrics_only`:
-/// every field here is a count, rate, or byte size -- never a merchant name,
-/// amount, or any other per-transaction/per-user financial detail.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 pub struct LocalMetrics {
     pub unresolved_clusters: i64,
@@ -36,9 +16,7 @@ pub struct LocalMetrics {
     pub statement_parse_failure_rate: f64,
 }
 
-/// Same 4 queries as `ops/release_metrics.sql` -- kept in sync manually
-/// (that file is a reviewable reference, not a second execution path; see
-/// its own header comment).
+/// Computes the local health metrics behind the readiness view.
 pub fn compute_local_metrics(conn: &Connection) -> rusqlite::Result<LocalMetrics> {
     let unresolved_clusters: i64 = conn.query_row(
         "SELECT count(*) FROM reconciliation_clusters WHERE cluster_status IN ('open', 'deferred')",
@@ -76,32 +54,24 @@ pub fn compute_local_metrics(conn: &Connection) -> rusqlite::Result<LocalMetrics
     })
 }
 
-/// Fail closed (Doc 15 Core Principle 12) via `#[derive(Default)]`: `bool`'s
-/// default is `false` and `Option`'s is `None`, so the derived default is
-/// already "no data is never go" -- `all_passed: false, available: false,
-/// checked_at: None` -- with no manual impl needed.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Default)]
 pub struct GoNoGoStatus {
     pub all_passed: bool,
-    /// `false` when no output file was found or it couldn't be parsed --
-    /// distinct from `all_passed: false` (a real failing run) so the UI can
-    /// show "never checked" rather than implying a run actually failed.
     pub available: bool,
     pub checked_at: Option<String>,
 }
 
-/// `CARGO_MANIFEST_DIR` is `src-tauri/`'s own directory, baked in at compile
-/// time -- this resolves to the repo root regardless of which crate calls
-/// it (a property of the crate being compiled, not of the caller).
+/// Path of the JSON file the acceptance-criteria gate writes.
 fn acceptance_criteria_output_path() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("release_readiness_check.json")
 }
 
-/// Reads the go/no-go status left behind by a prior
-/// `python3 scripts/verify_acceptance_criteria.py --output release_readiness_check.json`
-/// run. Never runs that script itself -- see this module's doc comment.
+/// Reads the go/no-go status produced by the CI gate.
+///
+/// Written by the acceptance-criteria script rather than computed here, so the
+/// in-app view reflects the same result CI enforced.
 pub fn read_go_no_go() -> GoNoGoStatus {
     let path = acceptance_criteria_output_path();
     let Ok(content) = std::fs::read_to_string(&path) else {
@@ -132,6 +102,7 @@ pub struct ReleaseReadinessSnapshot {
     pub go_no_go: bool,
 }
 
+/// Maps a result row onto a readiness snapshot.
 fn row_to_snapshot(row: &rusqlite::Row) -> rusqlite::Result<ReleaseReadinessSnapshot> {
     let metrics_json: String = row.get(2)?;
     let metrics: LocalMetrics = serde_json::from_str(&metrics_json).unwrap_or_default();
@@ -143,6 +114,7 @@ fn row_to_snapshot(row: &rusqlite::Row) -> rusqlite::Result<ReleaseReadinessSnap
     })
 }
 
+/// Stores a readiness snapshot for later comparison.
 pub fn insert_snapshot(
     conn: &Connection,
     metrics: &LocalMetrics,
@@ -157,6 +129,7 @@ pub fn insert_snapshot(
     Ok(id)
 }
 
+/// Lists stored snapshots, newest first.
 pub fn list_snapshots(
     conn: &Connection,
     limit: i64,
@@ -169,11 +142,10 @@ pub fn list_snapshots(
     rows.collect()
 }
 
-/// Doc 30 TASK-OPS-009 acceptance `test_trend_view_highlights_regressions`:
-/// a metric "regresses" release-over-release if it gets *worse* --
-/// `db_size_bytes` growing is expected as an install ages and isn't itself
-/// a quality signal, so it's excluded here (shown in the UI for context,
-/// never flagged as a regression).
+/// Reports which metrics regressed between two snapshots.
+///
+/// Comparing against the previous snapshot is what turns absolute numbers into a
+/// direction of travel, which is the actually useful signal before a release.
 pub fn detect_regressions(previous: &LocalMetrics, current: &LocalMetrics) -> Vec<&'static str> {
     let mut regressions = Vec::new();
     if current.unresolved_clusters > previous.unresolved_clusters {
@@ -189,6 +161,7 @@ pub fn detect_regressions(previous: &LocalMetrics, current: &LocalMetrics) -> Ve
 }
 
 #[tauri::command]
+/// Captures a snapshot of current readiness.
 pub async fn release_readiness_capture_snapshot(
     pool: State<'_, deadpool_sqlite::Pool>,
 ) -> Result<ReleaseReadinessSnapshot, crate::error::AppError> {
@@ -218,6 +191,7 @@ pub async fn release_readiness_capture_snapshot(
 }
 
 #[tauri::command]
+/// Lists readiness snapshots.
 pub async fn release_readiness_list_snapshots(
     pool: State<'_, deadpool_sqlite::Pool>,
 ) -> Result<Vec<ReleaseReadinessSnapshot>, crate::error::AppError> {
@@ -237,9 +211,6 @@ mod tests {
 
     #[test]
     fn test_release_dashboard_shows_aggregate_metrics_only() {
-        // Structural guarantee: the exact field set is 4 named aggregates,
-        // nothing else -- no merchant/amount/free-text field could be added
-        // here without this test's JSON key assertion catching it.
         let metrics = LocalMetrics::default();
         let value = serde_json::to_value(&metrics).unwrap();
         let obj = value.as_object().unwrap();
@@ -261,18 +232,15 @@ mod tests {
         let path = acceptance_criteria_output_path();
         let _ = std::fs::remove_file(&path);
 
-        // No file at all: fails closed, not a false "go".
         let status = read_go_no_go();
         assert!(!status.all_passed);
         assert!(!status.available);
 
-        // A real failing run.
         std::fs::write(&path, r#"{"results": [], "all_passed": false}"#).unwrap();
         let status = read_go_no_go();
         assert!(status.available);
         assert!(!status.all_passed);
 
-        // A real passing run.
         std::fs::write(&path, r#"{"results": [], "all_passed": true}"#).unwrap();
         let status = read_go_no_go();
         assert!(status.available);
@@ -300,7 +268,6 @@ mod tests {
         assert!(regressions.contains(&"unresolved_clusters"));
         assert!(regressions.contains(&"llm_fallback_rate"));
         assert!(!regressions.contains(&"statement_parse_failure_rate"));
-        // db_size_bytes growing alone must never be flagged.
         assert!(!regressions.contains(&"db_size_bytes"));
 
         let same_or_better = LocalMetrics {

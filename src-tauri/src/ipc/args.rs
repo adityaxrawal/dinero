@@ -1,6 +1,10 @@
+//! Argument types for commands taking structured input.
+//!
+//! Defined as named structs rather than long parameter lists so that field names
+//! travel with the values -- a positional signature is easy to get subtly wrong
+//! across the language boundary, where nothing checks the caller.
 use serde::{Deserialize, Serialize};
 
-/// Arguments for creating a manual transaction via IPC.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CreateTransactionArgs {
     pub instrument_id: i64,
@@ -11,7 +15,6 @@ pub struct CreateTransactionArgs {
     pub category_id: Option<i64>,
 }
 
-/// Arguments for updating a transaction via IPC.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct UpdateTransactionArgs {
     pub id: i64,
@@ -19,7 +22,6 @@ pub struct UpdateTransactionArgs {
     pub category_id: Option<i64>,
 }
 
-/// Arguments for resolving an ambiguous reconciliation cluster.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ResolveClusterArgs {
     pub cluster_id: i64,
@@ -27,14 +29,12 @@ pub struct ResolveClusterArgs {
     pub target_transaction_id: Option<i64>,
 }
 
-/// Arguments for submitting a password for a locked PDF statement.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SubmitPasswordArgs {
     pub statement_id: i64,
     pub password_plaintext: String,
 }
 
-/// Arguments for the full-text search against transactions.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SearchTransactionsArgs {
     pub query: String,

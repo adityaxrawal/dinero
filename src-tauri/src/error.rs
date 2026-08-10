@@ -1,25 +1,18 @@
+//! The error type crossing the IPC boundary to the frontend.
+//!
+//! Every Tauri command returns `AppError` on failure, and its custom `Serialize`
+//! implementation is what produces the `{ code, message }` shape the frontend's
+//! error-mapping layer branches on. Because the variant name becomes the code,
+//! renaming one silently breaks the frontend's handling of that error -- the two
+//! sides are coupled through these identifiers.
+//!
+//! Variants carry a `String` rather than the underlying error type on purpose:
+//! it forces each failure to be converted at the point it is understood, and
+//! stops internal detail (SQL text, file paths) from reaching the UI unexamined.
+
 use serde::Serialize;
 use thiserror::Error;
 
-/// TASK-SETUP-012. The doc-specified variant set is `Db, Network, Auth,
-/// LicenseLocked, Parse, Io, Internal, Validation`; the pre-existing
-/// `Unknown`/`FileAccessDenied` variants (each with dozens of call sites
-/// across `commands/`, `licensing/`, `ingestion/`) and `LicenseLocked`
-/// carrying a message (spec: unit variant) are left as-is here — fully
-/// reconciling the enum's shape (and updating every call site) against
-/// Document 19 §4's full ~25-code catalog is TASK-API-010's explicit scope
-/// ("Standardized Error Response Contract Across All Commands"), not this
-/// setup task's. `Parse`/`Io`/`Internal`/`Validation` are added additively.
-///
-/// TASK-API-010 follow-up: the domain-specific variants below (grouped by
-/// area) round out `code()` to cover Document 19 §4's full catalog. Wiring
-/// every one of the ~66 commands to use the *most specific* applicable
-/// variant instead of a generic one is a materially larger sweep than this
-/// pass covers (the audit that flagged this gap says as much) — these
-/// variants are added so callers *can* produce the documented code, and are
-/// wired at the specific call sites the audit named (`scans_historical` ->
-/// `ScanAlreadyRunning`, `instruments_create`/`categories_create` ->
-/// `Conflict`), not retrofitted everywhere.
 #[derive(Debug, Error)]
 pub enum AppError {
     #[error("Database error: {0}")]
@@ -52,7 +45,6 @@ pub enum AppError {
     #[error("Validation error: {0}")]
     Validation(String),
 
-    // ── Generic (Document 19 §4) ─────────────────────────────────────────
     #[error("Forbidden: {0}")]
     Forbidden(String),
 
@@ -65,21 +57,18 @@ pub enum AppError {
     #[error("Conflict: {0}")]
     Conflict(String),
 
-    // ── Gmail / ingestion ─────────────────────────────────────────────────
     #[error("Gmail not connected: {0}")]
     GmailNotConnected(String),
 
     #[error("Gmail API error: {0}")]
     GmailApiError(String),
 
-    // ── Scan (historical scan) ──────────────────────────────────────────
     #[error("Scan already running: {0}")]
     ScanAlreadyRunning(String),
 
     #[error("Scan not found: {0}")]
     ScanNotFound(String),
 
-    // ── Statement / file upload ─────────────────────────────────────────
     #[error("File too large: {0}")]
     FileTooLarge(String),
 
@@ -98,14 +87,12 @@ pub enum AppError {
     #[error("Statement not awaiting instrument confirmation: {0}")]
     StatementNotAwaitingInstrumentConfirmation(String),
 
-    // ── Reconciliation clusters ─────────────────────────────────────────
     #[error("Cluster not found: {0}")]
     ClusterNotFound(String),
 
     #[error("Invalid resolution action: {0}")]
     InvalidResolutionAction(String),
 
-    // ── Licensing ────────────────────────────────────────────────────────
     #[error("License invalid: {0}")]
     LicenseInvalid(String),
 
@@ -115,19 +102,15 @@ pub enum AppError {
     #[error("Payment verification failed: {0}")]
     PaymentVerificationFailed(String),
 
-    // ── Security ─────────────────────────────────────────────────────────
     #[error("Keychain access denied: {0}")]
     KeychainAccessDenied(String),
 }
 
 impl AppError {
-    /// Maps each variant to a Document 19 §4 Error Catalog code. Only codes
-    /// that already exist in that catalog and apply generically are used
-    /// here (`NETWORK_ERROR`, `UNAUTHORIZED`, `LICENSE_LOCKED`,
-    /// `VALIDATION_ERROR`, `INTERNAL_ERROR`) — the catalog's many
-    /// domain-specific codes (`SCAN_NOT_FOUND`, `CLUSTER_NOT_FOUND`, etc.)
-    /// are assigned per-command by whichever IPC handler raises them
-    /// (Area 8), not derivable from this generic error category alone.
+    /// The stable code the frontend branches on.
+    ///
+    /// Derived from the variant name, so renaming a variant silently changes the
+    /// contract the frontend matches against.
     pub fn code(&self) -> &'static str {
         match self {
             Self::Db(_) => "INTERNAL_ERROR",
@@ -166,14 +149,11 @@ impl AppError {
     }
 }
 
-/// Document 19 §3.4's structured error contract: `{ code, message, details? }`.
-/// `src/lib/ipc.ts`'s `invokeCommand()` wrapper already expects exactly this
-/// shape (checks for `'code' in error && 'message' in error`) — the previous
-/// bare-string `Serialize` impl never matched it, so every Rust command
-/// error was silently falling through to the frontend's `UNKNOWN_ERROR`
-/// catch-all instead of surfacing its real code/message. `details` is
-/// omitted (no variant currently carries structured detail data).
+// Hand-written rather than derived: the frontend contract is a flat
+// { code, message } object, where the code is the variant name. A derived
+// implementation would emit Rust's externally-tagged enum shape instead.
 impl Serialize for AppError {
+    /// Serialises to the flat { code, message } shape the frontend expects.
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -186,18 +166,10 @@ impl Serialize for AppError {
     }
 }
 
-/// Doc 30 TASK-API-002 / Document 19 §12.2: "`instruments_create` errors:
-/// `VALIDATION_ERROR`, `CONFLICT` (duplicate instrument -- same `(type,
-/// issuer_name, masked_identifier)`)" -- and the identical pattern for
-/// `categories_create`'s `UNIQUE(name)`. Both commands previously caught
-/// their DB layer's `UNIQUE` constraint violation with a generic
-/// `.map_err(|e| AppError::Db(e.to_string()))`, so the duplicate was still
-/// rejected but the raw SQLite message reached the frontend under
-/// `INTERNAL_ERROR` instead of the documented `CONFLICT`, giving the
-/// frontend no clean way to distinguish "this was a duplicate" from any
-/// other DB failure. Detects the constraint-violation error kind
-/// specifically (rather than string-matching the message) and maps only
-/// that case to `Conflict`; any other DB error still maps to `Db` unchanged.
+/// Translate a unique-constraint violation into a domain-level conflict.
+///
+/// Without this, a duplicate insert surfaces as a raw SQL error string, which
+/// tells the user nothing actionable about what already exists.
 pub fn map_insert_conflict(e: anyhow::Error, conflict_message: &str) -> AppError {
     let is_constraint_violation = e
         .downcast_ref::<rusqlite::Error>()
@@ -215,15 +187,6 @@ pub fn map_insert_conflict(e: anyhow::Error, conflict_message: &str) -> AppError
         AppError::Db(e.to_string())
     }
 }
-
-// Note: no explicit `impl From<AppError> for tauri::ipc::InvokeError` is
-// written here, despite Document 30 TASK-SETUP-012 naming one. Tauri 2.11's
-// own `impl<T: Serialize> From<T> for InvokeError` (src-tauri's tauri
-// dependency, ipc/mod.rs) is a blanket impl already covering every
-// `Serialize` type, AppError included — writing a second, overlapping impl
-// here would be a coherence violation (E0119, conflicting implementations)
-// and fail to compile. The doc's requirement is satisfied automatically by
-// AppError already implementing `Serialize`.
 
 #[cfg(test)]
 mod tests {

@@ -1,21 +1,15 @@
-//! TASK-AUTH-008: Enforce Tenant Isolation Pattern Across All IPC Handlers.
+//! Guards applied to commands before they run.
 //!
-//! Document 22 §13.1: Dinero is single-tenant per device — there is no
-//! multi-tenant row isolation to enforce (`local_profile.id` can only ever
-//! be `1`, TASK-DB-003). What *is* mandatory defense-in-depth is that the
-//! "current profile/session" is always resolved from Rust-side
-//! `SessionState` (TASK-AUTH-005), never from a React-supplied argument — a
-//! forged IPC parameter must have nothing to attach to, structurally, not
-//! merely be rejected by an incidental check.
-
+//! `require_active_session` gates commands that must not execute without a live
+//! local session, so incident response revoking a session takes effect
+//! immediately across every subsequent call.
 use crate::auth::session::{current_session_id, SessionState};
 use crate::error::AppError;
 
-/// Returns the current session id, or an `AppError::Auth` if no active
-/// session exists (e.g. after `auth_logout`, before the next launch
-/// re-establishes one via `ensure_active_session`). Call this at the top of
-/// any Gmail/licensing command that must require re-auth rather than
-/// silently operating in a logged-out state.
+/// Requires a live session, rejecting the command otherwise.
+///
+/// What makes session revocation by incident response take effect immediately
+/// across every subsequent write.
 pub fn require_active_session(state: &SessionState) -> Result<String, AppError> {
     current_session_id(state).ok_or_else(|| AppError::Auth("no_active_session".to_string()))
 }

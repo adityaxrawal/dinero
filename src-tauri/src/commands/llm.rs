@@ -1,13 +1,22 @@
+//! Commands controlling the local LLM: catalogue, downloads, active model.
+//!
+//! Downloads are multi-gigabyte and cancellable, so they are started here and
+//! report progress by event rather than blocking the invoking call.
 use crate::llm_manager::{self, LlmModelInfo};
 use anyhow::Result;
 use tauri::{Manager, State};
 
 #[tauri::command]
+/// Lists the model catalogue.
 pub async fn llm_get_available_models() -> Result<Vec<LlmModelInfo>, crate::error::AppError> {
     Ok(llm_manager::get_available_models())
 }
 
 #[tauri::command]
+/// Starts a model download, reporting progress by event.
+///
+/// Downloads are multi-gigabyte, so this returns immediately rather than blocking
+/// the IPC call for the duration.
 pub async fn llm_download_model(
     app: tauri::AppHandle,
     registry: State<'_, llm_manager::DownloadRegistry>,
@@ -32,9 +41,11 @@ pub async fn llm_download_model(
     result
 }
 
-/// No-op if `model_id` isn't currently downloading — nothing for the
-/// frontend to distinguish from "already finished."
 #[tauri::command]
+/// Cancels an in-flight download.
+///
+/// Cancellation matters here because a partially written multi-gigabyte file must
+/// not be left behind or mistaken for a usable model.
 pub async fn llm_cancel_download(
     registry: State<'_, llm_manager::DownloadRegistry>,
     model_id: String,
@@ -43,6 +54,7 @@ pub async fn llm_cancel_download(
     Ok(())
 }
 
+/// Model ids actually present on disk.
 fn downloaded_model_ids(app_dir: &std::path::Path) -> Vec<String> {
     llm_manager::get_available_models()
         .into_iter()
@@ -51,8 +63,10 @@ fn downloaded_model_ids(app_dir: &std::path::Path) -> Vec<String> {
         .collect()
 }
 
-/// Persists `resolved` (the output of `resolve_active_model`) if it differs
-/// from `stored`, so a stale DB row self-heals as soon as it's noticed.
+/// Persists a setting only when it differs from the stored value.
+///
+/// Avoids a write on every startup reconciliation, which would touch the database
+/// for no reason on each launch.
 async fn persist_if_changed(
     pool: &deadpool_sqlite::Pool,
     stored: Option<String>,
@@ -80,6 +94,7 @@ async fn persist_if_changed(
 }
 
 #[tauri::command]
+/// Deletes a downloaded model and its stored selection.
 pub async fn llm_delete_model(
     app: tauri::AppHandle,
     pool: State<'_, deadpool_sqlite::Pool>,
@@ -110,11 +125,8 @@ pub async fn llm_delete_model(
     Ok(resolved.unwrap_or_default())
 }
 
-/// Which catalog models already have their `.gguf` file on disk — the
-/// Settings model picker previously had no way to show download status at
-/// all (or even a way to trigger a download), so every model looked
-/// identical regardless of whether Layer 6 could actually use it yet.
 #[tauri::command]
+/// Lists models present on disk.
 pub async fn llm_get_downloaded_models(
     app: tauri::AppHandle,
 ) -> Result<Vec<String>, crate::error::AppError> {
@@ -126,12 +138,11 @@ pub async fn llm_get_downloaded_models(
     Ok(downloaded_model_ids(&app_dir))
 }
 
-/// The model the extraction pipeline's Layer 6 (`Layer6LlmLayer`) will
-/// actually try to load — reads `local_profile.llm_model`, self-healing it
-/// against what's actually downloaded on disk (a stale row pointing at a
-/// deleted model, or an unset row, both resolve to whatever's really
-/// available via `resolve_active_model`).
 #[tauri::command]
+/// Returns the active model, reconciled against what is downloaded.
+///
+/// A stored preference naming a deleted model degrades to something available,
+/// rather than failing later at inference time.
 pub async fn llm_get_active_model(
     app: tauri::AppHandle,
     pool: State<'_, deadpool_sqlite::Pool>,
@@ -159,6 +170,7 @@ pub async fn llm_get_active_model(
 }
 
 #[tauri::command]
+/// Sets the active model.
 pub async fn llm_set_active_model(
     pool: State<'_, deadpool_sqlite::Pool>,
     model_id: String,
@@ -188,13 +200,8 @@ pub struct HardwareRecommendation {
     pub recommended_model_id: Option<String>,
 }
 
-/// Reads machine RAM/CPU via `sysinfo` and returns a recommended parallel-
-/// slot count (sized against the *currently active* model's real weight
-/// size, not the recommended tier's — a user already running a heavier
-/// model than recommended should still get a slot count that respects that
-/// model's actual RAM footprint) plus a recommended model tier for the
-/// Settings model picker's badge.
 #[tauri::command]
+/// Reports RAM and core count with the derived model recommendation.
 pub async fn llm_get_hardware_info(
     app: tauri::AppHandle,
     pool: State<'_, deadpool_sqlite::Pool>,
@@ -239,24 +246,11 @@ pub async fn llm_get_hardware_info(
     })
 }
 
-/// Clamped both here and in the frontend's own input — defense in depth, not
-/// redundancy: this command is the one place a bad value could actually reach
-/// `llama-server`'s `--parallel` flag.
-///
-/// audit_06 #4: the ceiling used to be a flat 10 on every machine, while the
-/// slot count multiplies into `--context-size` (2048 each) *and* costs a KV
-/// cache per slot. A 16 GB machine running a 12B model could be set to 10 by
-/// hand and OOM the server at startup, with `compute_recommended_slots`'
-/// hardware-aware answer of 4 shown in the UI and then ignored. The ceiling is
-/// now what this machine's RAM can actually hold for the active model.
-///
-/// Deliberately clamps to the RAM ceiling, not to the full recommendation: the
-/// recommendation also caps on CPU cores, which is a throughput opinion the
-/// user is entitled to overrule. Running out of memory is not an opinion.
-///
-/// Async now (it reads the active model to size the ceiling) where it used to
-/// be sync — the frontend already awaits it.
 #[tauri::command]
+/// Sets the parallel slot count, bounded by the safe ceiling.
+///
+/// The ceiling is memory-derived: exceeding it does not merely slow inference, it
+/// pushes the machine into swap.
 pub async fn llm_set_parallel_slots(
     slots: usize,
     app: tauri::AppHandle,
@@ -280,10 +274,7 @@ pub async fn llm_set_parallel_slots(
     Ok(clamped)
 }
 
-/// Size of the model that would actually be loaded, for slot-ceiling maths.
-/// Falls back to the same 5.0 GB default `llm_hardware_recommendation` uses
-/// when no model is resolvable, so both paths size against the same
-/// assumption rather than disagreeing.
+/// Size of the active model in GB, used to compute the slot ceiling.
 async fn active_model_size_gb(app: &tauri::AppHandle, pool: &deadpool_sqlite::Pool) -> f64 {
     use tauri::Manager as _;
     let Ok(app_dir) = app.path().app_data_dir() else {
