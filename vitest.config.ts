@@ -16,7 +16,7 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
-    setupFiles: ['./src/test/setup.ts'],
+    setupFiles: ['./tests/setup.ts'],
     // `**/dist/**`: `licensing-backend/dist/` holds compiled `.js` output of
     // tests whose sources vitest already picks up. Without this, `npm test`
     // reports 20 failed files on a clean checkout — the compiled copies
@@ -30,7 +30,7 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text-summary', 'json'],
-      exclude: ['**/node_modules/**', '**/e2e/**', '**/src-tauri/**', '**/dist/**', '**/*.config.*', '**/src/test/**'],
+      exclude: ['**/node_modules/**', '**/e2e/**', '**/src-tauri/**', '**/dist/**', '**/*.config.*', 'tests/**'],
     },
   },
 });

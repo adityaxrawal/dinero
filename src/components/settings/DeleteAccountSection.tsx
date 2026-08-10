@@ -15,6 +15,115 @@ import { API } from '@/lib/ipc';
 
 const RESET_CONFIRM_PHRASE = 'DELETE MY DATA';
 
+/** Step 1: what is about to be destroyed, with no way to confirm yet. */
+function ResetWarningStep({ onCancel, onContinue }: { onCancel: () => void; onContinue: () => void }) {
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle id="reset-dialog-title" className="flex items-center gap-2 text-red-700">
+          <AlertTriangle className="w-5 h-5" aria-hidden="true" />
+          Delete My Data
+        </DialogTitle>
+        <DialogDescription id="reset-dialog-desc" className="text-[14px] pt-2 text-[#064E3B]">
+          This permanently deletes, on this device:
+        </DialogDescription>
+      </DialogHeader>
+      <ul className="list-disc pl-5 space-y-1 text-[13px] text-[#064E3B]/70 font-medium">
+        <li>All transactions, statements, and instruments</li>
+        <li>All local database backups (daily and pre-migration)</li>
+        <li>Your connected Gmail account(s) and stored OAuth tokens</li>
+        <li>Your license/device binding (deactivated on the server)</li>
+        <li>Encryption keys stored in Keychain</li>
+      </ul>
+      <p className="text-[13px] font-bold text-red-700">This cannot be undone.</p>
+      <DialogFooter>
+        <Button
+          variant="outline"
+          className="border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5"
+          onClick={onCancel}
+          aria-label="Cancel data deletion"
+        >
+          Cancel
+        </Button>
+        <Button
+          className="bg-red-600 text-white hover:bg-red-700"
+          onClick={onContinue}
+          aria-label="I understand, continue to confirmation"
+        >
+          I Understand, Continue
+        </Button>
+      </DialogFooter>
+    </>
+  );
+}
+
+/** Step 2: type-to-confirm. The delete button stays disabled until the
+ *  phrase matches exactly, and while the wipe is in flight. */
+function ResetConfirmStep({
+  confirmText,
+  onConfirmTextChange,
+  isResetting,
+  onCancel,
+  onConfirm,
+}: {
+  confirmText: string;
+  onConfirmTextChange: (value: string) => void;
+  isResetting: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle id="reset-dialog-title" className="flex items-center gap-2 text-red-700">
+          <AlertTriangle className="w-5 h-5" aria-hidden="true" />
+          Confirm Deletion
+        </DialogTitle>
+        <DialogDescription id="reset-dialog-desc" className="text-[#064E3B]/80 font-medium">
+          Type <strong className="text-[#064E3B]">{RESET_CONFIRM_PHRASE}</strong> below to confirm.
+          This is your last chance to cancel.
+        </DialogDescription>
+      </DialogHeader>
+      <div className="py-2 space-y-2">
+        <Label htmlFor="reset-confirm-text" className="text-[#064E3B]">
+          Confirmation phrase
+        </Label>
+        <Input
+          id="reset-confirm-text"
+          value={confirmText}
+          onChange={(e) => onConfirmTextChange(e.target.value)}
+          placeholder={RESET_CONFIRM_PHRASE}
+          autoFocus
+          aria-describedby="reset-confirm-hint"
+          className="bg-[#F8E7C9]/50 border-[#064E3B]/20 focus-visible:ring-[#064E3B]"
+        />
+        <p id="reset-confirm-hint" className="text-xs text-[#064E3B]/60">
+          Must match exactly, including capitalization.
+        </p>
+      </div>
+      <DialogFooter>
+        <Button
+          variant="outline"
+          className="border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5"
+          onClick={onCancel}
+          disabled={isResetting}
+          aria-label="Cancel data deletion"
+        >
+          Cancel
+        </Button>
+        <Button
+          className="bg-red-600 text-white hover:bg-red-700"
+          onClick={onConfirm}
+          disabled={confirmText !== RESET_CONFIRM_PHRASE || isResetting}
+          aria-label="Permanently delete my data"
+        >
+          {isResetting ? 'Deleting…' : 'Permanently Delete'}
+        </Button>
+      </DialogFooter>
+    </>
+  );
+}
+
 /**
  * TASK-FE-014 (Doc 30): "the two-step confirmation UI (warning modal, then
  * type-to-confirm 'DELETE MY DATA') wired to auth_delete_account." Extracted
@@ -85,100 +194,15 @@ export default function DeleteAccountSection() {
           aria-describedby="reset-dialog-desc"
         >
           {resetStep === 1 ? (
-            <>
-              <DialogHeader>
-                <DialogTitle
-                  id="reset-dialog-title"
-                  className="flex items-center gap-2 text-red-700"
-                >
-                  <AlertTriangle className="w-5 h-5" aria-hidden="true" />
-                  Delete My Data
-                </DialogTitle>
-                <DialogDescription
-                  id="reset-dialog-desc"
-                  className="text-[14px] pt-2 text-[#064E3B]"
-                >
-                  This permanently deletes, on this device:
-                </DialogDescription>
-              </DialogHeader>
-              <ul className="list-disc pl-5 space-y-1 text-[13px] text-[#064E3B]/70 font-medium">
-                <li>All transactions, statements, and instruments</li>
-                <li>All local database backups (daily and pre-migration)</li>
-                <li>Your connected Gmail account(s) and stored OAuth tokens</li>
-                <li>Your license/device binding (deactivated on the server)</li>
-                <li>Encryption keys stored in Keychain</li>
-              </ul>
-              <p className="text-[13px] font-bold text-red-700">This cannot be undone.</p>
-              <DialogFooter>
-                <Button
-                  variant="outline"
-                  className="border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5"
-                  onClick={closeResetModal}
-                  aria-label="Cancel data deletion"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  className="bg-red-600 text-white hover:bg-red-700"
-                  onClick={() => setResetStep(2)}
-                  aria-label="I understand, continue to confirmation"
-                >
-                  I Understand, Continue
-                </Button>
-              </DialogFooter>
-            </>
+            <ResetWarningStep onCancel={closeResetModal} onContinue={() => setResetStep(2)} />
           ) : (
-            <>
-              <DialogHeader>
-                <DialogTitle
-                  id="reset-dialog-title"
-                  className="flex items-center gap-2 text-red-700"
-                >
-                  <AlertTriangle className="w-5 h-5" aria-hidden="true" />
-                  Confirm Deletion
-                </DialogTitle>
-                <DialogDescription id="reset-dialog-desc" className="text-[#064E3B]/80 font-medium">
-                  Type <strong className="text-[#064E3B]">{RESET_CONFIRM_PHRASE}</strong> below to
-                  confirm. This is your last chance to cancel.
-                </DialogDescription>
-              </DialogHeader>
-              <div className="py-2 space-y-2">
-                <Label htmlFor="reset-confirm-text" className="text-[#064E3B]">
-                  Confirmation phrase
-                </Label>
-                <Input
-                  id="reset-confirm-text"
-                  value={resetConfirmText}
-                  onChange={(e) => setResetConfirmText(e.target.value)}
-                  placeholder={RESET_CONFIRM_PHRASE}
-                  autoFocus
-                  aria-describedby="reset-confirm-hint"
-                  className="bg-[#F8E7C9]/50 border-[#064E3B]/20 focus-visible:ring-[#064E3B]"
-                />
-                <p id="reset-confirm-hint" className="text-xs text-[#064E3B]/60">
-                  Must match exactly, including capitalization.
-                </p>
-              </div>
-              <DialogFooter>
-                <Button
-                  variant="outline"
-                  className="border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5"
-                  onClick={closeResetModal}
-                  disabled={isResetting}
-                  aria-label="Cancel data deletion"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  className="bg-red-600 text-white hover:bg-red-700"
-                  onClick={handleConfirmReset}
-                  disabled={resetConfirmText !== RESET_CONFIRM_PHRASE || isResetting}
-                  aria-label="Permanently delete my data"
-                >
-                  {isResetting ? 'Deleting…' : 'Permanently Delete'}
-                </Button>
-              </DialogFooter>
-            </>
+            <ResetConfirmStep
+              confirmText={resetConfirmText}
+              onConfirmTextChange={setResetConfirmText}
+              isResetting={isResetting}
+              onCancel={closeResetModal}
+              onConfirm={handleConfirmReset}
+            />
           )}
         </DialogContent>
       </Dialog>

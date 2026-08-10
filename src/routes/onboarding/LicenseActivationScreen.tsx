@@ -9,15 +9,17 @@ interface LicenseActivationScreenProps {
 
 function formatDate(iso: string | null): string | null {
   if (!iso) return null;
-  try {
-    return new Date(iso).toLocaleDateString(undefined, {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-    });
-  } catch {
-    return null;
-  }
+  const parsed = new Date(iso);
+  // An unparseable date renders as the literal string "Invalid Date" here
+  // rather than throwing, so the guard has to be explicit -- the try/catch
+  // this replaced could never fire, and let "Trial ends on Invalid Date"
+  // through to the screen.
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
 }
 
 /**

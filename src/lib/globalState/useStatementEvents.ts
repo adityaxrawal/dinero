@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { listen, type EventCallback, type UnlistenFn } from '@tauri-apps/api/event';
 import { API, type ProcessingProgressPayload, type StatementRecord } from '@/lib/ipc';
 import { useToast } from '@/hooks/use-toast';
 import type { useStatementModals } from './useStatementModals';
@@ -15,6 +15,18 @@ type Modals = ReturnType<typeof useStatementModals>;
  */
 export function useStatementEvents(modals: Modals) {
   const { toast } = useToast();
+
+  // Pulled out individually so the listener effect below can depend on these
+  // four alone. `useStatementModals` builds a fresh object literal on every
+  // render, so depending on `modals` itself re-ran that effect every render --
+  // tearing down and re-registering all eight listeners, re-firing
+  // `loadStatementHistory`, and leaving a window each cycle where an event
+  // could land between teardown and re-registration and be dropped.
+  // Memoizing that object would not fix it either: it would still change
+  // whenever any modal opened or closed. These four are already stable
+  // (`useCallback([])`, `useRef`, and a raw setState), so the effect registers
+  // exactly once per mount.
+  const { openInstrumentModal, setProcessingProgress, openReviewModal, watchedOriginIds } = modals;
   const [statementHistory, setStatementHistory] = useState<StatementRecord[]>([]);
   const [statementLoading, setStatementLoading] = useState(true);
   const [batchProgress, setBatchProgress] = useState<{
@@ -48,25 +60,31 @@ export function useStatementEvents(modals: Modals) {
     }
   }, []);
 
-
   useEffect(() => {
     loadStatementHistory();
 
-    let unlistenParsed: UnlistenFn;
-    let unlistenPassword: UnlistenFn;
-    let unlistenFailed: UnlistenFn;
-    let unlistenDuplicate: UnlistenFn;
-    let unlistenInstrumentConfirmation: UnlistenFn;
-    let unlistenBatchProgress: UnlistenFn;
-    let unlistenProgress: UnlistenFn;
-    let unlistenStaged: UnlistenFn;
+    const unlisteners: UnlistenFn[] = [];
+    let cancelled = false;
+
+    // Registration is async, so an unmount can land mid-setup. This used to
+    // be eight `let unlistenX` variables released one by one in the cleanup,
+    // which meant an early unmount ran against eight still-undefined
+    // variables and left every listener that registered afterwards attached
+    // for the life of the process -- the `if (unlistenX)` guards hid it.
+    // Anything that arrives after teardown now unsubscribes immediately, and
+    // a ninth listener can't be added without its release.
+    const register = async <T>(event: string, handler: EventCallback<T>) => {
+      const unlisten = await listen<T>(event, handler);
+      if (cancelled) unlisten();
+      else unlisteners.push(unlisten);
+    };
 
     const setupListeners = async () => {
       // Doc 30 TASK-RT-008: the real payload is
       // `{statement_id, instrument_id, issuer_name, rows_extracted}` --
       // previously only `statement_id` was emitted at all, so this always
       // showed a generic, contentless toast. `test_single_upload_shows_summary_toast`.
-      unlistenParsed = await listen<{
+      await register<{
         statement_id: string;
         instrument_id?: string;
         issuer_name?: string | null;
@@ -96,7 +114,7 @@ export function useStatementEvents(modals: Modals) {
       // Password" section (`Statements.tsx`'s `onEnterPassword` already
       // opens this same modal on demand) -- this listener now only
       // refreshes that queue and shows one debounced, batched toast.
-      unlistenPassword = await listen<{ statementId: string; instrumentId?: string }>(
+      await register<{ statementId: string; instrumentId?: string }>(
         'statement_password_required',
         () => {
           loadStatementHistory();
@@ -117,29 +135,26 @@ export function useStatementEvents(modals: Modals) {
 
       // Real payload is `{reason, filename}` -- previously discarded in
       // favor of a hardcoded generic message.
-      unlistenFailed = await listen<{ reason?: string; filename?: string }>(
-        'statement_parse_failed',
-        (event) => {
-          loadStatementHistory();
-          const { reason, filename } = event.payload;
-          if (batchOutcomesRef.current) {
-            batchOutcomesRef.current.failed += 1;
-            if (reason) batchOutcomesRef.current.failureReasons.push(reason);
-            return;
-          }
-          toast({
-            title: 'Parse Failed',
-            description: filename
-              ? `Failed to parse ${filename}${reason ? `: ${reason}` : ''}.`
-              : 'Failed to extract data from statement.',
-            variant: 'destructive',
-            actionTo: '/statements',
-            actionLabel: 'View retry panel',
-          });
+      await register<{ reason?: string; filename?: string }>('statement_parse_failed', (event) => {
+        loadStatementHistory();
+        const { reason, filename } = event.payload;
+        if (batchOutcomesRef.current) {
+          batchOutcomesRef.current.failed += 1;
+          if (reason) batchOutcomesRef.current.failureReasons.push(reason);
+          return;
         }
-      );
+        toast({
+          title: 'Parse Failed',
+          description: filename
+            ? `Failed to parse ${filename}${reason ? `: ${reason}` : ''}.`
+            : 'Failed to extract data from statement.',
+          variant: 'destructive',
+          actionTo: '/statements',
+          actionLabel: 'View retry panel',
+        });
+      });
 
-      unlistenDuplicate = await listen('statement_duplicate_rejected', () => {
+      await register('statement_duplicate_rejected', () => {
         loadStatementHistory();
         toast({
           title: 'Duplicate Statement',
@@ -148,7 +163,7 @@ export function useStatementEvents(modals: Modals) {
         });
       });
 
-      unlistenBatchProgress = await listen<{ parsed: number; total: number; eta_seconds: number }>(
+      await register<{ parsed: number; total: number; eta_seconds: number }>(
         'statement_batch_progress',
         (event) => {
           const { parsed, total, eta_seconds } = event.payload;
@@ -172,14 +187,14 @@ export function useStatementEvents(modals: Modals) {
         }
       );
 
-      unlistenInstrumentConfirmation = await listen<{
+      await register<{
         statement_id: string;
         filename?: string;
         issuer?: string;
         reason?: string;
       }>('statement_instrument_confirmation_required', (event) => {
         const payload = event.payload;
-        modals.openInstrumentModal(
+        openInstrumentModal(
           payload.statement_id,
           payload.filename ?? '',
           payload.issuer ?? '',
@@ -188,46 +203,41 @@ export function useStatementEvents(modals: Modals) {
         );
       });
 
-      unlistenProgress = await listen<ProcessingProgressPayload>(
-        'statement_processing_progress',
-        (event) => {
-          if (event.payload.draft_id && modals.watchedOriginIds.current.has(event.payload.draft_id)) {
-            modals.setProcessingProgress(event.payload);
-          }
+      await register<ProcessingProgressPayload>('statement_processing_progress', (event) => {
+        if (event.payload.draft_id && watchedOriginIds.current.has(event.payload.draft_id)) {
+          setProcessingProgress(event.payload);
         }
-      );
+      });
 
-      unlistenStaged = await listen<{ draft_id: string; origin: string }>(
-        'statement_staged',
-        (event) => {
-          const { draft_id } = event.payload;
-          if (modals.watchedOriginIds.current.has(draft_id)) {
-            modals.watchedOriginIds.current.delete(draft_id);
-            modals.openReviewModal(draft_id);
-          } else {
-            // Background-staged (email/historical scan) — not auto-opened.
-            toast({
-              title: 'Statement ready for review',
-              description: 'Check the Awaiting Review queue on the Statements page.',
-            });
-          }
+      await register<{ draft_id: string; origin: string }>('statement_staged', (event) => {
+        const { draft_id } = event.payload;
+        if (watchedOriginIds.current.has(draft_id)) {
+          watchedOriginIds.current.delete(draft_id);
+          openReviewModal(draft_id);
+        } else {
+          // Background-staged (email/historical scan) — not auto-opened.
+          toast({
+            title: 'Statement ready for review',
+            description: 'Check the Awaiting Review queue on the Statements page.',
+          });
         }
-      );
+      });
     };
 
     setupListeners();
 
     return () => {
-      if (unlistenParsed) unlistenParsed();
-      if (unlistenPassword) unlistenPassword();
-      if (unlistenFailed) unlistenFailed();
-      if (unlistenDuplicate) unlistenDuplicate();
-      if (unlistenInstrumentConfirmation) unlistenInstrumentConfirmation();
-      if (unlistenBatchProgress) unlistenBatchProgress();
-      if (unlistenProgress) unlistenProgress();
-      if (unlistenStaged) unlistenStaged();
+      cancelled = true;
+      for (const unlisten of unlisteners) unlisten();
     };
-  }, [loadStatementHistory, toast, modals]);
+  }, [
+    loadStatementHistory,
+    toast,
+    openInstrumentModal,
+    setProcessingProgress,
+    openReviewModal,
+    watchedOriginIds,
+  ]);
 
   return {
     statementHistory,

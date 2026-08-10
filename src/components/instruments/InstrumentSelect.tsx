@@ -1,10 +1,10 @@
 import React, { useState, useMemo } from 'react';
-import { Pencil, Search, X, Check, CreditCard, Landmark, Zap } from 'lucide-react';
-import { Select, SelectTrigger, SelectContent, SelectItem, SelectGroup, SelectLabel } from '@/components/ui/select';
+import { Pencil, Search, X, CreditCard, Landmark, Zap } from 'lucide-react';
+import { Select, SelectTrigger, SelectContent } from '@/components/ui/select';
 import { InfoRow } from '@/components/ui/InfoRow';
 import { instrumentIcon } from './instrumentTypes';
 import { getInstrumentTitle, getInstrumentSubtitle } from './instrumentLabels';
-import { cn } from '@/lib/utils';
+import { InstrumentOptionGroup } from './instrumentSelectParts';
 
 interface InstrumentSelectProps {
   instrumentId: string;
@@ -31,62 +31,28 @@ export function InstrumentSelect({
     return instruments.filter((inst) => {
       const title = getInstrumentTitle(inst).toLowerCase();
       const subtitle = getInstrumentSubtitle(inst).toLowerCase();
-      return title.includes(q) || subtitle.includes(q) || inst.instrument_type.toLowerCase().includes(q);
+      return (
+        title.includes(q) || subtitle.includes(q) || inst.instrument_type.toLowerCase().includes(q)
+      );
     });
   }, [instruments, searchQuery]);
 
-  const creditCards = useMemo(() => filtered.filter((i) => i.instrument_type === 'credit_card'), [filtered]);
+  const creditCards = useMemo(
+    () => filtered.filter((i) => i.instrument_type === 'credit_card'),
+    [filtered]
+  );
   const bankAccounts = useMemo(
-    () => filtered.filter((i) => ['bank_account', 'checking', 'savings'].includes(i.instrument_type)),
+    () =>
+      filtered.filter((i) => ['bank_account', 'checking', 'savings'].includes(i.instrument_type)),
     [filtered]
   );
   const upiAndOthers = useMemo(
-    () => filtered.filter((i) => !['credit_card', 'bank_account', 'checking', 'savings'].includes(i.instrument_type)),
+    () =>
+      filtered.filter(
+        (i) => !['credit_card', 'bank_account', 'checking', 'savings'].includes(i.instrument_type)
+      ),
     [filtered]
   );
-
-  const renderInstrumentItem = (inst: (typeof instruments)[0]) => {
-    const isSelected = inst.id === instrumentId;
-    const title = getInstrumentTitle(inst);
-    const subtitle = getInstrumentSubtitle(inst);
-
-    return (
-      <SelectItem
-        key={inst.id}
-        value={inst.id}
-        hideCheckmark
-        className={cn(
-          'py-2 px-2.5 my-0.5 rounded-xl transition-all cursor-pointer select-none outline-none pr-3',
-          'focus:bg-[#064E3B]/10 focus:text-[#064E3B]',
-          isSelected
-            ? 'bg-[#064E3B]/[0.10] border border-[#064E3B]/25 font-medium'
-            : 'hover:bg-[#064E3B]/[0.05]'
-        )}
-      >
-        <div className="flex items-center justify-between w-full gap-3">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="w-8 h-8 rounded-lg bg-[#064E3B]/10 flex items-center justify-center text-[#064E3B] shrink-0 shadow-2xs group-hover:scale-105 transition-transform">
-              {instrumentIcon(inst.instrument_type, 16)}
-            </div>
-            <div className="flex flex-col text-left min-w-0">
-              <span className="font-bold text-[13px] text-[#064E3B] leading-tight truncate">
-                {title}
-              </span>
-              <span className="text-[11px] text-[#064E3B]/65 font-medium truncate font-mono">
-                {subtitle}
-              </span>
-            </div>
-          </div>
-
-          {isSelected && (
-            <div className="w-5 h-5 rounded-full bg-[#064E3B] text-white flex items-center justify-center shrink-0 shadow-2xs">
-              <Check className="w-3 h-3" strokeWidth={3} />
-            </div>
-          )}
-        </div>
-      </SelectItem>
-    );
-  };
 
   return (
     <InfoRow
@@ -109,7 +75,10 @@ export function InstrumentSelect({
           </div>
         </SelectTrigger>
 
-        <SelectContent hideScrollButtons className="bg-[#F8E7C9] border-[#064E3B]/20 text-[#064E3B] shadow-2xl min-w-[340px] max-h-[380px] p-2 rounded-2xl">
+        <SelectContent
+          hideScrollButtons
+          className="bg-[#F8E7C9] border-[#064E3B]/20 text-[#064E3B] shadow-2xl min-w-[340px] max-h-[380px] p-2 rounded-2xl"
+        >
           {/* Header & Search Input */}
           <div className="px-2 pt-1 pb-2 border-b border-[#064E3B]/10 space-y-2 mb-1">
             <div className="flex items-center justify-between">
@@ -148,51 +117,27 @@ export function InstrumentSelect({
             </div>
           ) : (
             <div className="space-y-2 overflow-y-auto max-h-[290px] pr-0.5">
-              {/* 💳 Credit Cards */}
-              {creditCards.length > 0 && (
-                <SelectGroup>
-                  <SelectLabel className="flex items-center gap-1.5 text-[10px] font-extrabold uppercase tracking-wider text-[#064E3B]/70 px-2 py-1">
-                    <CreditCard className="w-3 h-3 text-[#064E3B]/60" />
-                    <span>Credit Cards</span>
-                    <span className="ml-auto text-[9px] px-1.5 py-0.2 rounded-full bg-[#064E3B]/10">
-                      {creditCards.length}
-                    </span>
-                  </SelectLabel>
-                  {creditCards.map(renderInstrumentItem)}
-                </SelectGroup>
-              )}
-
-              {/* 🏦 Bank Accounts */}
-              {bankAccounts.length > 0 && (
-                <SelectGroup>
-                  {creditCards.length > 0 && <div className="border-t border-[#064E3B]/10 my-1" />}
-                  <SelectLabel className="flex items-center gap-1.5 text-[10px] font-extrabold uppercase tracking-wider text-[#064E3B]/70 px-2 py-1">
-                    <Landmark className="w-3 h-3 text-[#064E3B]/60" />
-                    <span>Bank Accounts</span>
-                    <span className="ml-auto text-[9px] px-1.5 py-0.2 rounded-full bg-[#064E3B]/10">
-                      {bankAccounts.length}
-                    </span>
-                  </SelectLabel>
-                  {bankAccounts.map(renderInstrumentItem)}
-                </SelectGroup>
-              )}
-
-              {/* ⚡ UPI & Other Payments */}
-              {upiAndOthers.length > 0 && (
-                <SelectGroup>
-                  {(creditCards.length > 0 || bankAccounts.length > 0) && (
-                    <div className="border-t border-[#064E3B]/10 my-1" />
-                  )}
-                  <SelectLabel className="flex items-center gap-1.5 text-[10px] font-extrabold uppercase tracking-wider text-[#064E3B]/70 px-2 py-1">
-                    <Zap className="w-3 h-3 text-[#064E3B]/60" />
-                    <span>UPI & Digital Payments</span>
-                    <span className="ml-auto text-[9px] px-1.5 py-0.2 rounded-full bg-[#064E3B]/10">
-                      {upiAndOthers.length}
-                    </span>
-                  </SelectLabel>
-                  {upiAndOthers.map(renderInstrumentItem)}
-                </SelectGroup>
-              )}
+              <InstrumentOptionGroup
+                icon={<CreditCard className="w-3 h-3 text-[#064E3B]/60" />}
+                label="Credit Cards"
+                items={creditCards}
+                selectedId={instrumentId}
+                showDivider={false}
+              />
+              <InstrumentOptionGroup
+                icon={<Landmark className="w-3 h-3 text-[#064E3B]/60" />}
+                label="Bank Accounts"
+                items={bankAccounts}
+                selectedId={instrumentId}
+                showDivider={creditCards.length > 0}
+              />
+              <InstrumentOptionGroup
+                icon={<Zap className="w-3 h-3 text-[#064E3B]/60" />}
+                label="UPI & Digital Payments"
+                items={upiAndOthers}
+                selectedId={instrumentId}
+                showDivider={creditCards.length > 0 || bankAccounts.length > 0}
+              />
             </div>
           )}
         </SelectContent>

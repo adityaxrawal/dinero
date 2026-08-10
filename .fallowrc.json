@@ -3,6 +3,7 @@
   "entry": ["licensing-backend/api/**/*.ts", "licensing-backend/scripts/*.ts"],
   "ignoreDependencies": ["@axe-core/playwright"],
   "health": {
-    "coverage": "coverage/coverage-final.json"
+    "coverage": "coverage/coverage-final.json",
+    "ignore": ["**/*.test.*", "**/*.spec.*", "e2e/**"]
   }
 }

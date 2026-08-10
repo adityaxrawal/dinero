@@ -25,8 +25,11 @@ export default function TransactionDetail() {
   const rawSource = useRawSource(id);
 
   const { detail, tx } = form;
-  if (!id || !detail || !tx) return null;
+  if (!id) return null;
 
+  // isLoading must be checked before the detail/tx guard: both are undefined
+  // while the query is in flight, so guarding first made this spinner
+  // unreachable and rendered a blank page for the whole load.
   if (form.isLoading) {
     return (
       <div
@@ -38,6 +41,8 @@ export default function TransactionDetail() {
       </div>
     );
   }
+
+  if (!detail || !tx) return null;
 
   return (
     // AppLayout's <main> is overflow-hidden, so every routed page owns its

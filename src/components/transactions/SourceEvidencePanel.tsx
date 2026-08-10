@@ -57,6 +57,67 @@ function OriginalEmailFrame({ payload }: { payload: RawPayload }) {
   );
 }
 
+/** One linked observation: where it came from, how sure we are, and whether
+ *  a bank statement independently confirmed it. */
+function ObservationEvidenceRow({ obs }: { obs: TransactionObservation }) {
+  const isStatementSourced = obs.source_pipeline === 'statement_pdf';
+  const { label, detail } = evidenceDescription(obs.source_pipeline);
+  return (
+    <div className="p-3 bg-secondary/50 rounded-md border-l-2 border-primary text-sm space-y-1.5">
+      <div className="flex items-center justify-between">
+        <p className="font-medium flex items-center gap-2">
+          <SourcePipelineIcon sourceMix={obs.source_pipeline} />
+          {label}
+        </p>
+        {obs.confidence_score !== null && (
+          <Badge variant="outline" className="text-[10px]">
+            {Math.round(obs.confidence_score * 100)}% confidence
+          </Badge>
+        )}
+      </div>
+      <p className="text-xs text-muted-foreground">{detail}</p>
+      {obs.extraction_method && (
+        <p className="text-xs text-muted-foreground">
+          Extraction method: <span className="font-mono">{obs.extraction_method}</span>
+        </p>
+      )}
+      {isStatementSourced && (
+        <p className="flex items-center gap-1.5 text-xs text-emerald-700 font-medium pt-1">
+          <ShieldCheck className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+          This value was confirmed by your bank statement.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** The raw fetched source log, shown only while loading or once non-empty. */
+function SourceLogCard({ isLoading, log }: { isLoading: boolean; log: string | null }) {
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-[13px] flex items-center gap-2 text-[#064E3B]">
+          <Mail className="w-4 h-4" />
+          Source Email Content
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="flex items-center justify-center py-4">
+            <Loader2 className="w-4 h-4 animate-spin text-[#064E3B]/60" />
+          </div>
+        ) : log ? (
+          <div className="bg-[#F3EBDD] rounded-md border border-[#064E3B]/10 p-3 max-h-[300px] overflow-y-auto">
+            <pre className="text-[10px] font-mono whitespace-pre-wrap text-[#064E3B]/80 leading-relaxed">
+              {log}
+            </pre>
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function SourceEvidencePanel({
   transactionId,
   observations,
@@ -127,40 +188,9 @@ export default function SourceEvidencePanel({
           <CardDescription>Every record that contributed to this transaction.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          {observations.map((obs) => {
-            const isStatementSourced = obs.source_pipeline === 'statement_pdf';
-            const { label, detail } = evidenceDescription(obs.source_pipeline);
-            return (
-              <div
-                key={obs.id}
-                className="p-3 bg-secondary/50 rounded-md border-l-2 border-primary text-sm space-y-1.5"
-              >
-                <div className="flex items-center justify-between">
-                  <p className="font-medium flex items-center gap-2">
-                    <SourcePipelineIcon sourceMix={obs.source_pipeline} />
-                    {label}
-                  </p>
-                  {obs.confidence_score !== null && (
-                    <Badge variant="outline" className="text-[10px]">
-                      {Math.round(obs.confidence_score * 100)}% confidence
-                    </Badge>
-                  )}
-                </div>
-                <p className="text-xs text-muted-foreground">{detail}</p>
-                {obs.extraction_method && (
-                  <p className="text-xs text-muted-foreground">
-                    Extraction method: <span className="font-mono">{obs.extraction_method}</span>
-                  </p>
-                )}
-                {isStatementSourced && (
-                  <p className="flex items-center gap-1.5 text-xs text-emerald-700 font-medium pt-1">
-                    <ShieldCheck className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
-                    This value was confirmed by your bank statement.
-                  </p>
-                )}
-              </div>
-            );
-          })}
+          {observations.map((obs) => (
+            <ObservationEvidenceRow key={obs.id} obs={obs} />
+          ))}
         </CardContent>
       </Card>
 
@@ -193,27 +223,7 @@ export default function SourceEvidencePanel({
 
       {/* Source Log / Email UI */}
       {(isLoadingLog || sourceLog) && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-[13px] flex items-center gap-2 text-[#064E3B]">
-              <Mail className="w-4 h-4" />
-              Source Email Content
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            {isLoadingLog ? (
-              <div className="flex items-center justify-center py-4">
-                <Loader2 className="w-4 h-4 animate-spin text-[#064E3B]/60" />
-              </div>
-            ) : sourceLog ? (
-              <div className="bg-[#F3EBDD] rounded-md border border-[#064E3B]/10 p-3 max-h-[300px] overflow-y-auto">
-                <pre className="text-[10px] font-mono whitespace-pre-wrap text-[#064E3B]/80 leading-relaxed">
-                  {sourceLog}
-                </pre>
-              </div>
-            ) : null}
-          </CardContent>
-        </Card>
+        <SourceLogCard isLoading={isLoadingLog} log={sourceLog} />
       )}
     </div>
   );
