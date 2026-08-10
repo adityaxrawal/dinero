@@ -4,19 +4,29 @@ import { queryKeys } from '@/lib/queryKeys';
 import { isTauriRuntime } from '@/lib/tauriRuntime';
 
 /**
- * TASK-FE-003 (Doc 30): subscribes to backend push events and invalidates
- * the matching React Query cache entries, so background ingestion (Gmail
- * poll, historical scan, reconciliation) shows up without the user manually
- * refreshing and without the frontend polling. Mount once near the app root
- * (`IpcEventBridge` in `App.tsx`).
+ * Keeps the React Query cache honest by reacting to backend mutations.
  *
- * Doc30's illustrative event names (`transaction.created`, `sync.completed`)
- * are paraphrases — the real event strings are the snake_case ones in
- * `src-tauri/src/ipc/events.rs`'s `AppEvent::as_str()` (established
- * precedent from TASK-FE-002's `useSyncStore`/`useLicenseStore`).
+ * The Rust side changes data on its own schedule -- a background scan writes
+ * transactions, reconciliation merges records -- with no frontend mutation
+ * involved. Without this bridge the UI would keep serving cached data until
+ * something happened to refetch it.
+ *
+ * The mapping is declarative rather than imperative: one table below states
+ * which caches each event invalidates, so adding a new event means adding a row
+ * rather than writing another subscription.
  */
-// Exported (Doc 30 TASK-QA-008) so the UI state/event regression suite can
-// assert directly against the real mapping rather than duplicating it.
+
+/**
+ * Backend event to affected cache keys.
+ *
+ * Note that most events invalidate more than their obvious target, because the
+ * dashboard aggregates the ledger -- any transaction change also invalidates
+ * every figure derived from it. `scan_completed` is the broadest, since a scan
+ * can produce transactions, statements and instruments in one pass.
+ *
+ * Exported for tests, which assert this table against the events the backend
+ * actually emits.
+ */
 export const EVENT_INVALIDATIONS: ReadonlyArray<{ event: string; keys: readonly QueryKey[] }> = [
   { event: 'transaction_created', keys: [queryKeys.transactions.all(), queryKeys.dashboard.all()] },
   { event: 'transaction_updated', keys: [queryKeys.transactions.all(), queryKeys.dashboard.all()] },
@@ -40,6 +50,7 @@ export const EVENT_INVALIDATIONS: ReadonlyArray<{ event: string; keys: readonly 
   },
 ];
 
+/** Invalidates the matching caches when the backend reports a change. */
 export function useIpcQueryInvalidation(): void {
   const queryClient = useQueryClient();
 
@@ -49,6 +60,7 @@ export function useIpcQueryInvalidation(): void {
     let cancelled = false;
     const unlisteners: Array<() => void> = [];
 
+    /** Subscribes to every event in the invalidation table. */
     const subscribe = async () => {
       const { listen } = await import('@tauri-apps/api/event');
       for (const { event, keys } of EVENT_INVALIDATIONS) {
@@ -57,12 +69,17 @@ export function useIpcQueryInvalidation(): void {
             queryClient.invalidateQueries({ queryKey: key });
           }
         });
+        // Unsubscribing can reject if the listener is already gone, which is
+        // harmless during teardown. Wrapped so that one failure cannot abort
+        // the cleanup loop and strand the remaining subscriptions.
         const safeUnlisten = () => {
           Promise.resolve(unlisten()).catch((e) => {
             console.debug('Failed to unlisten to IPC event (likely already unlistened or component unmounted):', e);
           });
         };
 
+        // Same post-unmount race as elsewhere: subscriptions are established
+        // asynchronously, so any that resolve after cleanup are released at once.
         if (cancelled) {
           safeUnlisten();
         } else {

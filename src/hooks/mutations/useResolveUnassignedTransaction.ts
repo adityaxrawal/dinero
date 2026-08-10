@@ -13,6 +13,13 @@ interface ResolveUnassignedInput {
   referenceId?: string | undefined;
 }
 
+/**
+ * Manually attribute an unassigned transaction to an instrument.
+ *
+ * The fallback path for transactions extraction could not attribute
+ * automatically. The user supplies the full set of fields, so this both
+ * completes the record and removes it from the unassigned queue.
+ */
 export function useResolveUnassignedTransaction() {
   const queryClient = useQueryClient();
 

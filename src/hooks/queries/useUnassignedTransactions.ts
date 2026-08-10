@@ -2,7 +2,12 @@ import { useQuery } from '@tanstack/react-query';
 import { API } from '@/lib/ipc';
 import { queryKeys } from '@/lib/queryKeys';
 
-/** TASK-FE-013: see useReconciliationClusters for the refetchOnMount rationale. */
+/**
+ * Transactions that could not be attributed to any known instrument.
+ *
+ * Always refetched on mount for the same reason as the cluster list: it is a
+ * work queue, and stale entries would send the user to items already resolved.
+ */
 export function useUnassignedTransactions() {
   return useQuery({
     queryKey: queryKeys.reconciliation.unassigned(),

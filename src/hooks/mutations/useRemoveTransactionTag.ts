@@ -8,10 +8,14 @@ import {
 } from './optimisticTransactionPatch';
 
 /**
- * TASK-FE-010: resolves the tag name to its real id via `tags_list`, then
- * calls the dedicated `transactions_remove_tag` command (Doc19 §8.8) —
- * see `useAddTransactionTag` for why this no longer goes through
- * `transactions_update`'s bulk-replace workaround.
+ * Detach a tag from a transaction.
+ *
+ * Mirrors useAddTransactionTag: resolves the name to an id, patches optimistically,
+ * rolls back on failure. Note that removing the last usage of a tag does not
+ * delete the tag itself, so the global tag list is not invalidated here.
+ *
+ * A name matching no known tag resolves to a no-op rather than an error --
+ * the desired end state (tag absent) already holds.
  */
 export function useRemoveTransactionTag() {
   const queryClient = useQueryClient();

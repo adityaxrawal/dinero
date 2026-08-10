@@ -8,10 +8,15 @@ import {
 } from './optimisticTransactionPatch';
 
 /**
- * TASK-FE-009: inline soft-delete quick action (with confirmation, handled
- * by the calling component before this fires). Backend restricts deletion
- * to manually-entered transactions — a rejection just rolls the optimistic
- * removal back and surfaces the real error.
+ * Soft-delete a transaction, removing it from view immediately.
+ *
+ * Soft rather than hard: the backend flags the row so it can be recovered and
+ * so re-ingesting the same source does not resurrect it.
+ *
+ * Uses onSettled rather than onSuccess -- the caches are refreshed whether the
+ * delete succeeded or failed, since a rollback also needs to reconcile against
+ * server truth. The dashboard is invalidated too, because its totals include
+ * the removed transaction.
  */
 export function useSoftDeleteTransaction() {
   const queryClient = useQueryClient();

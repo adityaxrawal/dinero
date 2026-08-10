@@ -2,14 +2,14 @@ import { useEffect, useRef } from 'react';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 /**
- * TASK-SETUP-013. Subscribes to a Tauri event for the lifetime of the
- * calling component.
+ * Subscribe to a Tauri backend event for the lifetime of a component.
  *
- * Several existing components (`AppLayout.tsx`, `GlobalStateContext.tsx`,
- * `Transactions.tsx`, `SpendingLimits.tsx`) hand-roll this exact
- * `useEffect` + `listen()` + `unlisten()` pattern already — this hook
- * consolidates it for new code going forward. Existing call sites are not
- * migrated here (out of this task's scope).
+ * Solves two problems that make raw `listen` awkward inside React. The handler
+ * is held in a ref and kept current, so the subscription is established once per
+ * event name rather than being torn down whenever an inline callback's identity
+ * changes -- while still always invoking the latest handler. And because
+ * `listen` resolves asynchronously, the `cancelled` flag releases a subscription
+ * that arrives after unmount, which would otherwise leak.
  */
 export function useIpcListen<T>(event: string, handler: (payload: T) => void): void {
   const handlerRef = useRef(handler);

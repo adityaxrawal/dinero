@@ -3,11 +3,12 @@ import { API } from '@/lib/ipc';
 import { queryKeys } from '@/lib/queryKeys';
 
 /**
- * TASK-FE-013: `refetchOnMount: 'always'` — this queue drives real
- * financial-record-altering decisions, so revisiting it should never show
- * a stale snapshot from a previous visit just because it's within the
- * global 30s staleTime window (same rationale as `useUnprocessedStatements`,
- * TASK-FE-012).
+ * All unresolved duplicate clusters awaiting a merge-or-split decision.
+ *
+ * `refetchOnMount: 'always'` overrides the global staleTime deliberately: this
+ * list drives a badge count and a work queue, and showing a cluster the user
+ * already resolved -- or missing one that just appeared -- is worse here than
+ * the cost of an extra fetch on navigation.
  */
 export function useReconciliationClusters() {
   return useQuery({

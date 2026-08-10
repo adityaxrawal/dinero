@@ -3,11 +3,10 @@ import { API } from '@/lib/ipc';
 import { queryKeys } from '@/lib/queryKeys';
 
 /**
- * TASK-FE-012: TASK-STMT-010's real 3-bucket unprocessed-items backend.
- * `refetchOnMount: 'always'` — this queue directly drives user
- * action-or-discard decisions, so it should never show a stale snapshot
- * from a previous visit to this page just because it's within the global
- * 30s staleTime window.
+ * Statements that failed to parse and are awaiting a retry or a password.
+ *
+ * Always refetched on mount so the retry panel reflects the true current state
+ * rather than a cached snapshot from before the last attempt.
  */
 export function useUnprocessedStatements() {
   return useQuery({

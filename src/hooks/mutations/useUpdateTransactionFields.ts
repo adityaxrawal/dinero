@@ -14,11 +14,12 @@ interface UpdateTransactionFieldsInput {
 }
 
 /**
- * TASK-FE-010: the detail page's "Save Corrections" action — Document 19
- * §8.3's editable set (merchant_display_name, category_id, notes), distinct
- * from the list page's narrower single-field quick-action mutations
- * (TASK-FE-009). Not optimistic (this is a deliberate full-form submit, not
- * an inline quick toggle) — invalidates on success instead.
+ * Edit user-changeable fields on a transaction.
+ *
+ * Every field is optional and only those supplied are sent, so a caller editing
+ * one value cannot inadvertently blank the others. Deliberately not optimistic:
+ * edits here can change amount, direction or date, which shift derived figures
+ * across the app, and showing an unconfirmed value would be misleading.
  */
 export function useUpdateTransactionFields() {
   const queryClient = useQueryClient();

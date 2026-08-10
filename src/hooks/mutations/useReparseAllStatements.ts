@@ -3,8 +3,11 @@ import { API } from '@/lib/ipc';
 import { queryKeys } from '@/lib/queryKeys';
 
 /**
- * Issue #7: re-runs the statement pipeline over the whole Action Needed
- * queue using stored passwords.
+ * Re-run extraction across every stored statement.
+ *
+ * A bulk maintenance action, used after parser improvements so previously
+ * mis-extracted statements can be reprocessed with newer logic. Long-running:
+ * progress arrives through the background task events, not this mutation.
  */
 export function useReparseAllStatements() {
   const queryClient = useQueryClient();

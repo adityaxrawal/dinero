@@ -5,9 +5,10 @@ import { useToast } from '@/hooks/use-toast';
 import { getErrorToast } from '@/lib/errorMapping';
 
 /**
- * TASK-FE-011: InstrumentDetail's "forget saved password" action.
- * Success/error toasts live here rather than in each caller -- InstrumentDetail
- * and InstrumentInspector both used to hand-roll the identical pair.
+ * Delete a saved statement-PDF password from the OS keychain.
+ *
+ * Toasts on both outcomes, since this is a settings action with no other visual
+ * confirmation that anything happened.
  */
 export function useForgetPdfPassword() {
   const queryClient = useQueryClient();

@@ -3,7 +3,13 @@ import { API } from '@/lib/ipc';
 import { queryKeys } from '@/lib/queryKeys';
 import type { TransactionListFilters } from '@/lib/ipc';
 
-/** TASK-FE-009: FTS5-backed search (query is expected to already be debounced by the caller). */
+/**
+ * Full-text transaction search, scoped by the current filters.
+ *
+ * Stays disabled for an empty or whitespace-only query, so clearing the search
+ * box does not fire a request that would match the entire ledger. Callers are
+ * expected to debounce the query before passing it in.
+ */
 export function useTransactionSearch(query: string, filters?: TransactionListFilters) {
   return useQuery({
     queryKey: queryKeys.transactions.search(query, filters),

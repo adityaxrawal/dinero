@@ -2,15 +2,28 @@ import * as React from 'react';
 
 import type { ToastActionElement, ToastProps } from '@/components/ui/toast';
 
-// Doc 30 TASK-RT-003 acceptance (`test_toast_queue_caps_at_max_visible`,
-// `test_toast_auto_dismisses_after_timeout`): these were left at shadcn's
-// stock scaffold values (limit 1, ~16.6-minute removal delay) -- the spec
-// calls for a max of 3 simultaneously visible and a 5-8s auto-dismiss.
-// `TOAST_REMOVE_DELAY` is a distinct, smaller concern: how long *after*
-// `dismiss()` fires (either by timeout or user action) before the toast is
-// actually removed from state, giving the exit animation time to play.
+/**
+ * Toast notification store, following the standard shadcn pattern.
+ *
+ * Deliberately a module-level singleton rather than React Context, which is what
+ * makes `toast()` callable from anywhere -- including outside the component
+ * tree, where much of this app's error handling lives (IPC failures, event
+ * handlers, store subscriptions). A Context-based implementation would be
+ * unreachable from those call sites.
+ *
+ * State lives in a module variable, mutated through a reducer, with mounted
+ * components subscribing via a listener array. Dismissal is a two-stage process:
+ * DISMISS_TOAST marks a toast closed so it can animate out, and REMOVE_TOAST
+ * deletes it once that animation has finished. Timers for both stages are held
+ * in module-level maps keyed by toast id.
+ */
+
+// At most three visible at once; older toasts are pushed out rather than
+// stacking indefinitely.
 const TOAST_LIMIT = 3;
+// How long a toast remains before dismissing itself.
 const TOAST_AUTO_DISMISS_DELAY = 6000;
+// Grace period between dismissal and removal, matching the exit animation.
 const TOAST_REMOVE_DELAY = 300;
 
 type ToasterToast = ToastProps & {
@@ -24,6 +37,13 @@ type ToasterToast = ToastProps & {
 
 let count = 0;
 
+/**
+ * Monotonic id for each toast.
+ *
+ * A counter rather than a timestamp, so two toasts raised in the same
+ * millisecond cannot collide. Wraps at MAX_SAFE_INTEGER, which is unreachable
+ * in practice but keeps the arithmetic exact.
+ */
 function genId() {
   count = (count + 1) % Number.MAX_SAFE_INTEGER;
   return count.toString();
@@ -51,9 +71,18 @@ interface State {
   toasts: ToasterToast[];
 }
 
+// Pending timers, keyed by toast id. Two maps because the removal and
+// auto-dismiss stages run on independent schedules and must be cancellable
+// separately.
 const toastTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
 const autoDismissTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
 
+/**
+ * Schedule final removal of a dismissed toast, after its exit animation.
+ *
+ * The early return makes this idempotent -- dismissing an already-dismissed
+ * toast must not queue a second removal or restart the delay.
+ */
 const addToRemoveQueue = (toastId: string) => {
   if (toastTimeouts.has(toastId)) {
     return;
@@ -70,11 +99,12 @@ const addToRemoveQueue = (toastId: string) => {
   toastTimeouts.set(toastId, timeout);
 };
 
-// Doc 30 TASK-RT-003: schedules the actual auto-dismiss -- previously
-// nothing ever called `addToRemoveQueue` except a manual `dismiss()`, so a
-// toast that nobody clicked stayed on screen indefinitely (bounded only by
-// the old 1000000ms `TOAST_REMOVE_DELAY`, which was itself misused as if it
-// were this timer).
+/**
+ * Start the countdown after which a toast dismisses itself.
+ *
+ * Idempotent for the same reason: re-rendering must not extend a toast's life
+ * by restarting its timer.
+ */
 const scheduleAutoDismiss = (toastId: string) => {
   if (autoDismissTimeouts.has(toastId)) {
     return;
@@ -86,8 +116,16 @@ const scheduleAutoDismiss = (toastId: string) => {
   autoDismissTimeouts.set(toastId, timeout);
 };
 
+/**
+ * Pure state transitions for the toast queue.
+ *
+ * DISMISS_TOAST is the one case with a side effect -- it schedules removal --
+ * which is a documented deviation from purity in this well-known pattern; the
+ * animation timing has to be driven from somewhere.
+ */
 const reducer = (state: State, action: Action): State => {
   switch (action.type) {
+    // Newest first, truncated to the limit. New toasts push out old ones.
     case 'ADD_TOAST':
       return {
         ...state,
@@ -100,11 +138,11 @@ const reducer = (state: State, action: Action): State => {
         toasts: state.toasts.map((t) => (t.id === action.toast.id ? { ...t, ...action.toast } : t)),
       };
 
+    // Stage one of dismissal: flag the toast closed so it animates out, and
+    // queue the actual removal. An absent toastId means "dismiss everything".
     case 'DISMISS_TOAST': {
       const { toastId } = action;
 
-      // ! Side effects ! - This could be extracted into a dismissToast() action,
-      // but I'll keep it here for simplicity
       if (toastId) {
         addToRemoveQueue(toastId);
       } else {
@@ -125,6 +163,7 @@ const reducer = (state: State, action: Action): State => {
         ),
       };
     }
+    // Stage two: the toast leaves state entirely once its animation is done.
     case 'REMOVE_TOAST':
       if (action.toastId === undefined) {
         return {
@@ -139,10 +178,14 @@ const reducer = (state: State, action: Action): State => {
   }
 };
 
+// Mounted components that want to re-render when the queue changes.
 const listeners: Array<(state: State) => void> = [];
 
+// The store itself. Module-level, so it survives every unmount and is reachable
+// from non-React code.
 let memoryState: State = { toasts: [] };
 
+/** Apply an action and notify every subscriber of the new state. */
 function dispatch(action: Action) {
   memoryState = reducer(memoryState, action);
   listeners.forEach((listener) => {
@@ -152,14 +195,23 @@ function dispatch(action: Action) {
 
 type Toast = Omit<ToasterToast, 'id'>;
 
+/**
+ * Raise a toast. The primary entry point, callable from anywhere.
+ *
+ * Returns handles for updating or dismissing the toast after the fact, which is
+ * what allows a long-running operation to post one toast and mutate it as
+ * progress is made rather than emitting several.
+ */
 function toast({ ...props }: Toast) {
   const id = genId();
 
+  /** Replaces this toast's content in place, for a long-running operation. */
   const update = (props: ToasterToast) =>
     dispatch({
       type: 'UPDATE_TOAST',
       toast: { ...props, id },
     });
+  /** Dismisses this toast. */
   const dismiss = () => dispatch({ type: 'DISMISS_TOAST', toastId: id });
 
   dispatch({
@@ -168,11 +220,14 @@ function toast({ ...props }: Toast) {
       ...props,
       id,
       open: true,
+      // Bridges the Radix primitive's own close affordances (the X button,
+      // Escape, a swipe) back into this store's dismissal path.
       onOpenChange: (open) => {
         if (!open) dismiss();
       },
     },
   });
+  // Started after the toast is in state, so its lifetime begins when visible.
   scheduleAutoDismiss(id);
 
   return {
@@ -182,6 +237,15 @@ function toast({ ...props }: Toast) {
   };
 }
 
+/**
+ * React binding: subscribe a component to the toast queue.
+ *
+ * Needed only by components that render toasts (the viewport) or that want to
+ * dismiss them. Raising a toast requires no hook -- call `toast()` directly.
+ *
+ * Initial state is read from the module store rather than starting empty, so a
+ * component mounting while toasts are already visible renders them at once.
+ */
 function useToast() {
   const [state, setState] = React.useState<State>(memoryState);
 
@@ -202,9 +266,4 @@ function useToast() {
   };
 }
 
-// TASK-FE-018: `toast` exported directly (not just via `useToast()`) so
-// non-component code (`ToastProvider`'s error-toast dispatcher,
-// `useIpcInvoke`) can queue a toast without needing a hook — this module's
-// state is already a plain module-level singleton, not React context, so
-// this requires no new plumbing.
 export { useToast, toast };
