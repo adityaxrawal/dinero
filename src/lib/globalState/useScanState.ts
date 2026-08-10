@@ -1,3 +1,16 @@
+/**
+ * Owns the lifecycle of a historical Gmail scan.
+ *
+ * A scan is long-running and entirely backend-driven: the frontend starts it,
+ * then learns everything else from four Tauri events -- progress, completed,
+ * failed, cancelled. This hook holds the resulting status machine along with the
+ * date range that parameterises it, and the list of connected accounts a scan
+ * can run against.
+ *
+ * The three terminal events share one `finish` path, which both records the end
+ * time and detaches every listener, so a completed scan stops consuming events
+ * and a subsequent scan starts from clean subscriptions.
+ */
 import { useState, useEffect, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { API, type ConnectedAccountInfo, type ScanProgressPayload } from '@/lib/ipc';
@@ -5,14 +18,19 @@ import { errorMessage } from '@/lib/utils';
 
 export type ScanStatus = 'idle' | 'running' | 'done' | 'error' | 'cancelled';
 
+// Accounts are polled rather than pushed, because OAuth connection completes in
+// an external browser window that produces no event the app can subscribe to.
 const CONNECTED_ACCOUNTS_POLL_MS = 3000;
 
+/** Default scan window start: one month back, as an ISO date string. */
 function monthAgo(): string {
   const d = new Date();
   d.setMonth(d.getMonth() - 1);
   return d.toISOString().split('T')[0];
 }
 
+// Zeroed progress, set the moment a scan starts so the UI can render a real
+// progress panel immediately rather than waiting for the first backend event.
 const EMPTY_PROGRESS = (accountId: string): ScanProgressPayload => ({
   account_id: accountId,
   processed: 0,
@@ -25,7 +43,13 @@ const EMPTY_PROGRESS = (accountId: string): ScanProgressPayload => ({
   pending_enrichment: 0,
 });
 
-/** Blocking validation before a scan is worth starting at all. */
+/**
+ * Validate the preconditions for starting a scan.
+ *
+ * Returns the first problem as a message, or null when the request is valid.
+ * String comparison is sufficient for the ordering check because ISO dates sort
+ * lexicographically.
+ */
 function scanRangeError(
   account: ConnectedAccountInfo | null,
   start: string,
@@ -37,6 +61,7 @@ function scanRangeError(
   return null;
 }
 
+/** Owns the lifecycle of a historical Gmail scan. */
 export function useScanState() {
   const [scanStartDate, setScanStartDate] = useState(monthAgo);
   const [scanEndDate, setScanEndDate] = useState(() => new Date().toISOString().split('T')[0]);
@@ -46,8 +71,11 @@ export function useScanState() {
   const [scanStartedAt, setScanStartedAt] = useState<number | null>(null);
   const [scanFinishedAt, setScanFinishedAt] = useState<number | null>(null);
   const [connectedAccounts, setConnectedAccounts] = useState<ConnectedAccountInfo[]>([]);
+  // Holds a single composed teardown for all four scan listeners, so they are
+  // always attached and detached as one unit.
   const unlistenScanRef = useRef<(() => void) | null>(null);
 
+  /** Reloads the connected-account list. */
   const refreshConnectedAccounts = async () => {
     try {
       setConnectedAccounts(await API.auth.listConnectedAccounts());
@@ -62,13 +90,16 @@ export function useScanState() {
     return () => clearInterval(interval);
   }, []);
 
-  // Doc 13 Flow 4.1's scan trigger predates multi-account support (Doc 03
-  // §8.2) — scanning always targets the first-connected account; scanning a
-  // specific one of several accounts is a Mail Scan UX enhancement outside
-  // M02's scope (connecting/gating multiple accounts).
+  // Scans currently target one account; the first connected one is used.
   const primaryConnectedAccount = connectedAccounts[0] ?? null;
 
-  /** Every terminal event stops the progress listener as well as itself. */
+  /**
+   * Shared terminal path for completed, failed and cancelled scans.
+   *
+   * The caller supplies the status-specific state update; this records the
+   * finish time and tears the listeners down, which is what stops a finished
+   * scan from reacting to any further events.
+   */
   const finish = (apply: () => void) => {
     apply();
     setScanFinishedAt(Date.now());
@@ -78,6 +109,13 @@ export function useScanState() {
     }
   };
 
+  /**
+   * Subscribe to the four scan events and compose one combined teardown.
+   *
+   * Note the ordering below: the progress unlisten is parked in the ref first,
+   * then captured as `prev` and folded into the composed teardown alongside the
+   * three terminal listeners, so all four are released together.
+   */
   const attachScanListeners = async () => {
     const unlistenProgress = await listen<ScanProgressPayload>('scan_progress', (event) =>
       setScanProgress(event.payload)
@@ -112,6 +150,13 @@ export function useScanState() {
     };
   };
 
+  /**
+   * Validate, reset prior state, subscribe, then ask the backend to begin.
+   *
+   * State is moved to 'running' before the IPC call so the UI responds
+   * immediately; a rejected call rolls it forward to 'error' rather than back to
+   * idle, since a failed start is something the user needs told about.
+   */
   const handleStartScan = async () => {
     const error = scanRangeError(primaryConnectedAccount, scanStartDate, scanEndDate);
     if (error) {
@@ -126,6 +171,8 @@ export function useScanState() {
     setScanFinishedAt(null);
 
     try {
+      // Release any listeners left over from a previous scan before attaching
+      // new ones, so events are never handled twice.
       if (unlistenScanRef.current) unlistenScanRef.current();
       await attachScanListeners();
       await API.ingestion.startHistoricalScan(
@@ -140,6 +187,14 @@ export function useScanState() {
     }
   };
 
+  /**
+   * Request cancellation. Status is not changed here -- the backend confirms by
+   * emitting `scan_cancelled`, which is what moves the state machine, so the UI
+   * never claims a scan stopped before it actually did.
+   *
+   * The error is re-thrown after being recorded so the calling button can also
+   * react to a failed cancellation.
+   */
   const handleCancelScan = async () => {
     if (!primaryConnectedAccount) return;
     try {
@@ -150,6 +205,7 @@ export function useScanState() {
     }
   };
 
+  /** Clear a finished scan back to idle so the panel can be dismissed. */
   const resetScan = () => {
     setScanStatus('idle');
     setScanProgress(null);

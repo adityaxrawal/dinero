@@ -1,18 +1,20 @@
+/**
+ * Holds the current subscription/licensing state for the whole application.
+ *
+ * Kept in Zustand rather than React Query because this is gating state, not
+ * ordinary cached data: `isLocked` decides whether large parts of the UI are
+ * reachable at all, so it must be readable synchronously from anywhere,
+ * including outside React.
+ *
+ * Two paths keep it current -- an explicit `hydrate()` at startup, and a
+ * long-lived subscription to backend `license_state_changed` events. The second
+ * is what lets a subscription purchased or expired mid-session take effect
+ * immediately, without the user restarting the app.
+ */
 import { create } from 'zustand';
 import { API, LicenseStatusResponse } from '@/lib/ipc';
 import { isTauriRuntime } from '@/lib/tauriRuntime';
 
-/**
- * TASK-FE-002/016 (Doc 30): mirrors `license_state` reactively so the
- * License Lock Overlay / Grace Period Banner (TASK-FE-016) dismiss
- * immediately on a background revalidation, without a page reload.
- *
- * Backend push side: TASK-API-010 follow-up — `license_activate`/
- * `license_deactivate`/`license_refresh` and the 6-hourly background
- * validation worker all emit `license_state_changed` with a fresh
- * `LicenseStatusResponse` snapshot (src-tauri/src/licensing/commands.rs
- * `emit_license_state_changed`); this store just mirrors that broadcast.
- */
 interface LicenseStoreState {
   state: string;
   isLocked: boolean;
@@ -26,8 +28,11 @@ interface LicenseStoreState {
 }
 
 export const useLicenseStore = create<LicenseStoreState>((set) => ({
-  // ANONYMOUS_EVAL is the pre-onboarding default — matches the backend's
-  // own default-to-AnonymousEval when no license_state row exists yet.
+  // Optimistic defaults: unlocked until the backend says otherwise. Starting
+  // locked would flash a paywall during the brief window before hydration
+  // completes, which every legitimate user would see on every launch.
+  // `hydrated` is what lets the UI distinguish "genuinely unlocked" from
+  // "not yet checked".
   state: 'ANONYMOUS_EVAL',
   isLocked: false,
   daysRemainingInTrial: null,
@@ -36,6 +41,9 @@ export const useLicenseStore = create<LicenseStoreState>((set) => ({
   expiryDate: null,
   hydrated: false,
 
+  // Single reducer for both the startup fetch and live events, so a status from
+  // either path is projected into state identically. Note `isLocked` inverts
+  // the backend's `is_active`.
   applyStatus: (status) =>
     set({
       state: status.state,
@@ -47,6 +55,13 @@ export const useLicenseStore = create<LicenseStoreState>((set) => ({
       hydrated: true,
     }),
 
+  /**
+   * Fetch the authoritative status from the backend once at startup.
+   *
+   * On failure `hydrated` deliberately stays false and the app remains
+   * unlocked. Locking users out because a status check failed would punish them
+   * for a local error; the backend enforces entitlement independently.
+   */
   hydrate: async () => {
     try {
       const status = await API.licensing.getStatus();
@@ -57,11 +72,9 @@ export const useLicenseStore = create<LicenseStoreState>((set) => ({
   },
 }));
 
-// Module-level subscription (once per app lifetime, not per-component) so
-// the store starts mirroring `license_state_changed` as soon as it's first
-// imported, regardless of which component ends up rendering the overlay.
-// Guarded: outside the Tauri runtime (plain browser/vitest), `@tauri-apps/api`
-// has nothing to attach to and must not throw during module init.
+// Live updates, subscribed once at module load. The backend pushes a full
+// status payload whenever entitlement changes -- a completed purchase, a
+// revalidation, an expiry -- so no polling is needed here.
 (async () => {
   if (!isTauriRuntime()) return;
   try {

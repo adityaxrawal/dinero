@@ -5,27 +5,32 @@ import { useToast } from '@/hooks/use-toast';
 import type { useStatementModals } from './useStatementModals';
 import { batchSummaryToast, emptyBatchOutcome, type BatchOutcome } from './batchSummary';
 
+/**
+ * Subscribes to every statement-processing event and reacts to it.
+ *
+ * This is where backend statement activity becomes visible: history reloads,
+ * toasts, and the dialogs that ask the user for a password or an instrument.
+ *
+ * Two pieces of debouncing shape the behaviour, both there to keep a bulk import
+ * from producing a wall of notifications:
+ *
+ *   - Batch mode. Once a batch is in progress, per-statement successes and
+ *     failures are tallied into a ref instead of toasted, and one summary is
+ *     emitted when the batch completes.
+ *   - Password coalescing. Each password-required event restarts a two-second
+ *     timer, so ten encrypted PDFs produce a single "10 statements need a
+ *     password" toast rather than ten separate ones.
+ *
+ * Counters live in refs rather than state deliberately: they are read inside
+ * event handlers, they must not trigger renders, and a ref is not captured stale
+ * by the long-lived closures registered below.
+ */
 type Modals = ReturnType<typeof useStatementModals>;
 
-/**
- * Every statements-pipeline event the backend can emit, and the history list
- * they invalidate. Toasts are aggregated during a tracked batch and debounced
- * for password prompts, both of which can fire dozens of times in a burst
- * during a historical scan.
- */
+/** Subscribes to statement-processing events and reacts to them. */
 export function useStatementEvents(modals: Modals) {
   const { toast } = useToast();
 
-  // Pulled out individually so the listener effect below can depend on these
-  // four alone. `useStatementModals` builds a fresh object literal on every
-  // render, so depending on `modals` itself re-ran that effect every render --
-  // tearing down and re-registering all eight listeners, re-firing
-  // `loadStatementHistory`, and leaving a window each cycle where an event
-  // could land between teardown and re-registration and be dropped.
-  // Memoizing that object would not fix it either: it would still change
-  // whenever any modal opened or closed. These four are already stable
-  // (`useCallback([])`, `useRef`, and a raw setState), so the effect registers
-  // exactly once per mount.
   const { openInstrumentModal, setProcessingProgress, openReviewModal, watchedOriginIds } = modals;
   const [statementHistory, setStatementHistory] = useState<StatementRecord[]>([]);
   const [statementLoading, setStatementLoading] = useState(true);
@@ -35,19 +40,21 @@ export function useStatementEvents(modals: Modals) {
     etaSeconds: number;
   } | null>(null);
 
-  // TASK-RT-008 (Doc 30): while a `statement_batch_progress`-tracked batch
-  // (10+ files) is in flight, individual statement_parsed/statement_parse_failed
-  // toasts are suppressed and tallied here instead, aggregating into one
-  // summary toast on batch completion ("8/10 imported, 2 failed") rather
-  // than one toast per file.
+  // Non-null exactly while a batch import is running. Its presence is the flag
+  // that suppresses per-statement toasts in favour of a final summary.
   const batchOutcomesRef = useRef<BatchOutcome | null>(null);
 
-  // Doc 2026-07-26 mail scan performance: `statement_password_required` can
-  // fire dozens of times in a burst during a historical scan -- these
-  // accumulate the count between debounced toast flushes.
+  // Password-prompt coalescing: a running count plus the timer that flushes it.
   const pendingPasswordCountRef = useRef(0);
   const passwordToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  /**
+   * Reload statement history from the backend.
+   *
+   * Called after any event that could have changed a statement's state, so the
+   * list stays authoritative rather than being patched incrementally from event
+   * payloads.
+   */
   const loadStatementHistory = useCallback(async () => {
     setStatementLoading(true);
     try {
@@ -66,24 +73,22 @@ export function useStatementEvents(modals: Modals) {
     const unlisteners: UnlistenFn[] = [];
     let cancelled = false;
 
-    // Registration is async, so an unmount can land mid-setup. This used to
-    // be eight `let unlistenX` variables released one by one in the cleanup,
-    // which meant an early unmount ran against eight still-undefined
-    // variables and left every listener that registered afterwards attached
-    // for the life of the process -- the `if (unlistenX)` guards hid it.
-    // Anything that arrives after teardown now unsubscribes immediately, and
-    // a ninth listener can't be added without its release.
+    /**
+     * Attach one listener, guarding against a race.
+     *
+     * `listen` is async, so the effect can be cleaned up while a subscription is
+     * still resolving. The `cancelled` check immediately releases any listener
+     * that arrives after teardown, which would otherwise leak and keep firing
+     * against an unmounted component.
+     */
     const register = async <T>(event: string, handler: EventCallback<T>) => {
       const unlisten = await listen<T>(event, handler);
       if (cancelled) unlisten();
       else unlisteners.push(unlisten);
     };
 
+    /** Registers every statement event listener. */
     const setupListeners = async () => {
-      // Doc 30 TASK-RT-008: the real payload is
-      // `{statement_id, instrument_id, issuer_name, rows_extracted}` --
-      // previously only `statement_id` was emitted at all, so this always
-      // showed a generic, contentless toast. `test_single_upload_shows_summary_toast`.
       await register<{
         statement_id: string;
         instrument_id?: string;
@@ -91,6 +96,7 @@ export function useStatementEvents(modals: Modals) {
         rows_extracted?: number;
       }>('statement_parsed', (event) => {
         loadStatementHistory();
+        // In batch mode, tally silently -- the summary toast reports the total.
         if (batchOutcomesRef.current) {
           batchOutcomesRef.current.succeeded += 1;
           return;
@@ -104,21 +110,14 @@ export function useStatementEvents(modals: Modals) {
         });
       });
 
-      // Doc 2026-07-26 mail scan performance: a locked statement PDF
-      // encountered mid-scan must never hijack the screen --
-      // `resolve_statement_password`'s backend comment notes this event
-      // "can fire dozens of times in a burst during a historical scan."
-      // Previously every single firing called `openPasswordModal`,
-      // repeatedly reassigning it to whichever PDF fired last. The row is
-      // already durably queryable via `UnprocessedItemsQueue`'s "Awaiting
-      // Password" section (`Statements.tsx`'s `onEnterPassword` already
-      // opens this same modal on demand) -- this listener now only
-      // refreshes that queue and shows one debounced, batched toast.
       await register<{ statementId: string; instrumentId?: string }>(
         'statement_password_required',
         () => {
           loadStatementHistory();
           pendingPasswordCountRef.current += 1;
+          // Restarting the timer on each event is what coalesces a burst: the
+          // toast only fires once two quiet seconds have passed, by which point
+          // the count covers the whole batch.
           if (passwordToastTimerRef.current) {
             clearTimeout(passwordToastTimerRef.current);
           }
@@ -133,11 +132,11 @@ export function useStatementEvents(modals: Modals) {
         }
       );
 
-      // Real payload is `{reason, filename}` -- previously discarded in
-      // favor of a hardcoded generic message.
       await register<{ reason?: string; filename?: string }>('statement_parse_failed', (event) => {
         loadStatementHistory();
         const { reason, filename } = event.payload;
+        // Batch mode again: record the failure and its reason for the summary
+        // rather than interrupting with a toast per failed file.
         if (batchOutcomesRef.current) {
           batchOutcomesRef.current.failed += 1;
           if (reason) batchOutcomesRef.current.failureReasons.push(reason);
@@ -168,21 +167,19 @@ export function useStatementEvents(modals: Modals) {
         (event) => {
           const { parsed, total, eta_seconds } = event.payload;
 
-          // First tick of a fresh batch -- start tallying individual
-          // statement_parsed/statement_parse_failed events instead of
-          // toasting each one.
+          // The first progress event is what enters batch mode; from here on the
+          // per-statement handlers tally instead of toasting.
           batchOutcomesRef.current ??= emptyBatchOutcome();
 
+          // Batch finished: emit the one summary and leave batch mode, so any
+          // later single import toasts normally again.
           if (parsed >= total) {
             const summary = batchSummaryToast(batchOutcomesRef.current, total);
             batchOutcomesRef.current = null;
             if (summary) toast(summary);
           }
 
-          // Cleared once the last statement in the batch finishes -- the
-          // intake round trip (statements_upload) returns long before this,
-          // so this is the only signal for "still working through the
-          // 5-concurrent-parser cap" during that window.
+          // Null clears the progress bar on completion.
           setBatchProgress(parsed >= total ? null : { parsed, total, etaSeconds: eta_seconds });
         }
       );
@@ -192,6 +189,9 @@ export function useStatementEvents(modals: Modals) {
         filename?: string;
         issuer?: string;
         reason?: string;
+      // Extraction could not attribute the statement to an account. The dialog
+      // opens regardless of batch mode -- this needs an answer to proceed, so it
+      // cannot be deferred to a summary.
       }>('statement_instrument_confirmation_required', (event) => {
         const payload = event.payload;
         openInstrumentModal(
@@ -203,19 +203,25 @@ export function useStatementEvents(modals: Modals) {
         );
       });
 
+      // Progress is only surfaced for drafts the user is actively waiting on;
+      // background scans produce drafts too, and their progress must not
+      // hijack whatever dialog is currently open.
       await register<ProcessingProgressPayload>('statement_processing_progress', (event) => {
         if (event.payload.draft_id && watchedOriginIds.current.has(event.payload.draft_id)) {
           setProcessingProgress(event.payload);
         }
       });
 
+      // A draft is ready. If the user initiated this import, open the review
+      // dialog immediately; otherwise point them at the queue rather than
+      // interrupting what they are doing. The id is removed once consumed so a
+      // later re-staging of the same draft no longer auto-opens.
       await register<{ draft_id: string; origin: string }>('statement_staged', (event) => {
         const { draft_id } = event.payload;
         if (watchedOriginIds.current.has(draft_id)) {
           watchedOriginIds.current.delete(draft_id);
           openReviewModal(draft_id);
         } else {
-          // Background-staged (email/historical scan) — not auto-opened.
           toast({
             title: 'Statement ready for review',
             description: 'Check the Awaiting Review queue on the Statements page.',
@@ -226,6 +232,8 @@ export function useStatementEvents(modals: Modals) {
 
     setupListeners();
 
+    // Flip the guard first so any subscription still resolving is released on
+    // arrival, then detach everything already registered.
     return () => {
       cancelled = true;
       for (const unlisten of unlisteners) unlisten();
