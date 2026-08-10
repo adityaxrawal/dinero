@@ -1,8 +1,19 @@
 /**
- * TASK-FE-003: centralized React Query key factory so invalidation
- * (`useIpcQueryInvalidation`) and query hooks always agree on the same key
- * shape — a key typo'd differently in a hook than in the invalidator would
- * silently invalidate nothing.
+ * Central registry of React Query cache keys, grouped by data domain.
+ *
+ * Every key is produced by a function here rather than written inline at the
+ * call site. That matters because invalidation depends on exact array equality:
+ * a hand-written key that differs by even one element silently creates a second
+ * cache entry, and the stale one never gets refreshed.
+ *
+ * The arrays are hierarchical and ordered broad-to-narrow, which is what makes
+ * partial invalidation work -- invalidating `transactions.all()` also clears
+ * every list, detail and search entry beneath it, because React Query matches
+ * keys by prefix. Each group therefore exposes an `all()` root alongside its
+ * specific entries, and parameterised keys append their arguments last.
+ *
+ * `as const` throughout preserves the literal tuple types, so a typo in a key
+ * is a compile error rather than a cache miss discovered at runtime.
  */
 export const queryKeys = {
   dashboard: {

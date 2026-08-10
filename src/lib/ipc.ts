@@ -1,20 +1,54 @@
+/**
+ * The complete typed surface between the React frontend and the Rust backend.
+ *
+ * Every backend call in the application goes through this file, and that is the
+ * point: `invoke` is stringly-typed and returns `any`, so calling it directly
+ * from components would spread untyped, unlogged access across the codebase.
+ * Funnelling it through one module buys three things at once -- a TypeScript
+ * signature for each command, automatic timing and logging of every call, and a
+ * single place where backend errors are normalised into the AppError contract.
+ *
+ * The file has two halves. First the payload interfaces, which mirror the Rust
+ * structs on the other side; note their snake_case fields, which are serde's
+ * output and are deliberately left unconverted so the shapes stay directly
+ * comparable to their Rust definitions. Then the `API` object, grouped by
+ * domain (dashboard, transactions, statements, reconciliation, and so on) to
+ * give call sites a discoverable namespace.
+ *
+ * Keeping these interfaces in step with the Rust structs is manual. A field
+ * renamed in Rust will compile fine here and arrive as undefined at runtime.
+ */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { invoke } from '@tauri-apps/api/core';
 import { readFile } from '@tauri-apps/plugin-fs';
 import type { AppError } from '@/types/ipc';
 import { logger } from './logger';
 
+/**
+ * The single wrapper every command below is routed through.
+ *
+ * Times the round trip, logs both outcomes, and guarantees that whatever the
+ * caller catches is an AppError -- never a bare string or an unknown object.
+ * That guarantee is what lets the error-mapping layer branch on `code` alone.
+ */
 async function invokeCommand<T>(command: string, args?: Record<string, unknown>): Promise<T> {
   const start = performance.now();
   try {
     const res = await invoke<T>(command, args);
     const duration = performance.now() - start;
+    // The logging command itself is excluded from logging, since recording a
+    // log call would emit another log call and recurse indefinitely.
     if (command !== 'log_frontend_event') {
       logger.apiCall(command, args, duration, true);
     }
     return res;
   } catch (error) {
     const duration = performance.now() - start;
+    // Rust errors that crossed the boundary as structured payloads are already
+    // the right shape and pass through; anything else (a panic message, a
+    // plugin failure, a thrown string) is wrapped so downstream code can rely
+    // on `code` and `message` existing. The original value is preserved under
+    // `details` rather than discarded.
     const structuredErr =
       typeof error === 'object' && error !== null && 'code' in error && 'message' in error
         ? (error as AppError)
@@ -31,6 +65,16 @@ async function invokeCommand<T>(command: string, args?: Record<string, unknown>)
   }
 }
 
+// ---------------------------------------------------------------------------
+// Payload types
+//
+// TypeScript mirrors of the Rust structs these commands return. Fields stay in
+// serde's snake_case so each shape lines up with its Rust definition, and the
+// pervasive `| null` reflects a real property of this domain: extraction from
+// bank emails and PDFs is best-effort, so almost any field can be absent on a
+// transaction the parser only partially recovered.
+// ---------------------------------------------------------------------------
+
 interface DashboardSummary {
   month_to_date_spend: number;
   limit: number;
@@ -40,8 +84,6 @@ interface DashboardSummary {
   income: number;
 }
 
-// TASK-FE-008: types for the TASK-API-006 commands that had no frontend
-// call site until now (src-tauri/src/commands/data.rs's exact struct shapes).
 interface UpcomingBill {
   id: string;
   description: string;
@@ -71,10 +113,6 @@ interface PendingReviewMetric {
   amount_minor: number;
 }
 
-// TASK-FE-010: matches src-tauri's TransactionsRow/TransactionObservationsRow/
-// MatchDecisionsRow/TransactionDetail/EmiGroupSummary exactly (transactions_get
-// and transactions_get_emi_group's real response shapes — was typed `any`
-// before this task, with no frontend consumer to have caught a mismatch).
 export interface CanonicalTransaction {
   id: string;
   unique_event_id: string | null;
@@ -186,13 +224,6 @@ interface EmiGroupSummary {
 export interface UnprocessedStatementEntry {
   statement_id: string;
   filename: string;
-  /**
-   * Issue #9: the consistent `<BANK>BANKXXXX<LAST4><MON><YYYY>` label
-   * (e.g. `HDFCBANKXXXX1234JUN2026`), derived on the Rust side from the
-   * attachment filename and the source email. `null` when the issuer could
-   * not be identified — render `filename` in that case, since the name the
-   * bank chose beats a label with nothing in it.
-   */
   display_name: string | null;
   failure_type: string | null;
   failure_reason: string | null;
@@ -212,12 +243,6 @@ interface AwaitingReviewEntry {
   created_at: string | null;
 }
 
-/**
- * Issue #7: payload of the `statement_reparse_progress` event, and the return
- * value of `statements_reparse_all`. While a run is in flight only
- * `processed`/`total`/`current` are meaningful; the tallies are filled in on
- * the final emission, where `done` is true.
- */
 export interface StatementReparseProgress {
   processed: number;
   total: number;
@@ -314,7 +339,6 @@ export interface TransactionRecord {
   date: string;
   merchant: string;
   amount: number;
-  /** "debit" | "credit" — amount is always a positive magnitude. */
   direction: string | null;
   category: string;
   status: string;
@@ -328,12 +352,6 @@ export interface TransactionsPage {
   total: number;
 }
 
-// TASK-FE-009: matches src-tauri/src/commands/data.rs's TransactionListFilters
-// exactly (Document 19 §8.1's documented combinable filter args). Doc30's
-// task text also names "amount"/"tags" as filter dimensions, but neither is
-// part of the real, documented contract -- not built here, consistent with
-// this session's established precedent (Doc19/18 naming and scope win over
-// Doc30 prose).
 export interface TransactionListFilters {
   from_date?: string;
   to_date?: string;
@@ -355,11 +373,6 @@ export interface StatementRecord {
   pdf_available: boolean;
 }
 
-// TASK-FE-013: mirrors the real Rust `ClusterMember` shape (Document 18
-// §4.6a) -- `member_role` distinguishes the triggering "incoming"
-// observation from its "candidate_*" matches, and `observation_id` is the
-// real id `reconciliation_clusters_resolve` requires (not `id`, which is
-// only the join-table row's own key).
 export type ClusterMemberRole = 'incoming' | 'candidate_a' | 'candidate_b' | 'candidate_other';
 
 export interface ClusterMember {
@@ -370,15 +383,12 @@ export interface ClusterMember {
   source_pipeline: string | null;
   merchant: string;
   amount: number;
-  /** "debit" | "credit" — amount is always a positive magnitude. */
   direction: string | null;
   date: string;
   instrument_issuer_name: string | null;
   instrument_masked_identifier: string | null;
   reference_id: string | null;
-  /** null for the "incoming" member — it has no score against itself. */
   match_score: number | null;
-  /** only ever populated for member_role === "incoming". */
   source_raw_payload_json: string | null;
 }
 
@@ -387,11 +397,7 @@ export interface ClusterRecord {
   reason: string;
   members_count: number;
   members: ClusterMember[];
-  // Doc 30 TASK-RT-006: backs the "unresolved > 7 days" stale-cluster reminder.
   created_at: string | null;
-  // TASK-FE-013: plain-language explanation computed server-side from the
-  // members' real match scores — replaces rendering the raw `reason`
-  // bucket string directly.
   explanation: string;
 }
 
@@ -445,8 +451,6 @@ export interface DebugMetrics {
   reconciliation_decision_distribution: Record<string, number>;
 }
 
-// Doc 30 TASK-OPS-009: matches src-tauri's release_readiness::LocalMetrics
-// exactly -- aggregate counts/rates only, never per-transaction detail.
 export interface ReleaseReadinessLocalMetrics {
   unresolved_clusters: number;
   llm_fallback_rate: number;
@@ -465,9 +469,6 @@ interface BackendStatus {
   status: 'healthy' | 'corrupted' | 'locked';
 }
 
-// TASK-OPS-003: coarse operational status only — never the underlying
-// financial content, email address, JWT, or tokens (see
-// src-tauri/src/health.rs's NEVER_INCLUDED list).
 interface HealthReport {
   backend_ready: boolean;
   db_integrity_ok: boolean;
@@ -476,10 +477,6 @@ interface HealthReport {
   license_status: string;
 }
 
-// TASK-FE-015: account_status added -- the real backend column existed
-// (Document 18's connected_accounts.account_status) but was never selected
-// or exposed, so a 'degraded' account (Gmail token refresh failed) had no
-// way to surface a status badge.
 export interface ConnectedAccountInfo {
   email: string;
   account_id: string;
@@ -491,8 +488,6 @@ export interface CategoryBudget {
   budget: number;
 }
 
-// Doc 16 §12.3's 5-tier local LLM hardware matrix — mirrors
-// src-tauri/src/llm_manager.rs::LlmModelInfo exactly.
 export interface LlmModelInfo {
   id: string;
   name: string;
@@ -513,26 +508,18 @@ export interface LlmHardwareInfo {
   recommended_model_id: string | null;
 }
 
-// Issue #12: shapes returned by `commands::merchant_cleanup`.
 export interface MerchantCleanupSample {
   transaction_id: string;
   merchant: string;
   bank_name: string;
-  /// Heuristic merchant-extraction confidence, 0-1. Below 0.6 qualifies.
   confidence: number;
-  /// Whether the source email is still retained — without it the LLM has
-  /// nothing to read and the transaction is skipped.
   has_evidence: boolean;
-  /// Enough of the transaction to recognise it; a mangled merchant string on
-  /// its own does not identify anything.
   amount: number | null;
   currency: string | null;
   direction: string | null;
   event_time: string | null;
 }
 
-/// Per-bank split of the *whole* queue. `samples` is capped at 20, so it can
-/// never answer "which banks is this actually about".
 export interface MerchantCleanupBankBucket {
   bank_name: string;
   count: number;
@@ -549,7 +536,6 @@ export interface MerchantCleanupPreview {
   running: boolean;
 }
 
-/// Payload of the `merchant_cleanup_progress` event.
 export interface MerchantCleanupProgress {
   run_id: string;
   processed: number;
@@ -558,13 +544,11 @@ export interface MerchantCleanupProgress {
   skipped: number;
   current_merchant: string | null;
   bank_name: string | null;
-  /// The model's answer for `current_merchant`, when it produced a usable one.
   resolved_merchant: string | null;
   resolved_category: string | null;
   status: 'running' | 'completed' | 'cancelled' | 'failed';
 }
 
-/// One merchant a past run rewrote.
 export interface MerchantCleanupChange {
   correction_id: string;
   transaction_id: string;
@@ -576,8 +560,6 @@ export interface MerchantCleanupChange {
   reverted: boolean;
 }
 
-/// A past cleanup run. Read out of the undo log, so anything listed here is
-/// still something that can be put back.
 export interface MerchantCleanupRun {
   run_id: string;
   started_at: string | null;
@@ -597,11 +579,18 @@ export interface SpendingLimits {
   categories: CategoryBudget[];
 }
 
-// Scaffold examples for Phase 5 frontend
+/**
+ * The command surface, namespaced by domain.
+ *
+ * Each leaf is a thin typed binding onto a Rust command name. Where the backend
+ * returns a wrapper object around a single collection, the binding unwraps it
+ * with `.then()` so callers receive the array directly rather than having to
+ * reach through a redundant envelope at every call site.
+ */
 export const API = {
+  // Aggregate figures for the dashboard's summary tiles.
   dashboard: {
     getSummary: () => invokeCommand<DashboardSummary>('dashboard_summary'),
-    // TASK-API-006 built these with no frontend call site; wired here.
     getUpcomingBills: () =>
       invokeCommand<{ bills: UpcomingBill[] }>('dashboard_upcoming_bills').then((r) => r.bills),
     getCategories: (month: string) =>
@@ -609,23 +598,21 @@ export const API = {
         (r) => r.categories
       ),
   },
+
+  // Derived time series and review metrics that back the charts.
   analytics: {
     getSpendTrend: (granularity: SpendTrendGranularity) =>
       invokeCommand<SpendTrendPoint[]>('analytics_spend_trend', { granularity }),
     getPendingReviewCount: () =>
       invokeCommand<PendingReviewMetric>('analytics_pending_review_count'),
   },
+  // The core ledger: listing, search, manual entry, edits, and the per-
+  // transaction detail panels (observations, tags, source provenance).
   transactions: {
-    // G9 fix: real offset-based pagination — `page` is honored server-side
-    // and the response carries the real total row count.
-    // G20/H10/J8 fix: renamed to match Doc 19 §8.1's documented `transactions_list`.
     list: (page = 1, filters?: TransactionListFilters) =>
       invokeCommand<TransactionsPage>('transactions_list', { page, filters }),
     search: (query: string, filters?: TransactionListFilters) =>
       invokeCommand<TransactionRecord[]>('transactions_search', { query, filters }),
-    // G12 fix: transaction_create/transaction_delete existed on the backend
-    // but had no ipc.ts wrapper or UI at all. G20/H10/J8 fix: both renamed to
-    // the plural `transactions_*` form to match Doc 19 §8.4/§8.5.
     create: (input: {
       amountMinor: number;
       currency: string;
@@ -648,15 +635,6 @@ export const API = {
       }),
     delete: (transactionId: string) =>
       invokeCommand<string>('transactions_delete', { transactionId }),
-    // Doc 30 TASK-API-003: matches the real `TransactionUpdatePayload`
-    // contract (renamed from `ManualTransactionUpdatePayload` -- this
-    // command was never actually restricted to manual transactions).
-    // Editable fields per Document 19 §8.3 exactly: merchant_display_name,
-    // category_id, notes, location (amount/currency/direction/event_time
-    // were removed from the backend entirely -- evidence-derived fields,
-    // never actually sent by this wrapper even before the fix). `tags`
-    // remains as an additive bulk-replace convenience, not itself in
-    // Document 19's editable-field list.
     update: (
       transactionId: string,
       updates: {
@@ -694,7 +672,6 @@ export const API = {
       }),
     getSourceLog: (id: string) =>
       invokeCommand<string>('fetch_transaction_source_log', { transactionId: id }),
-    // G13 fix: the tag names currently on a transaction (relational, not free-text).
     getTags: (id: string) =>
       invokeCommand<string[]>('fetch_transaction_tags', { transactionId: id }),
     addTag: (transactionId: string, tagId: string) =>
@@ -704,32 +681,19 @@ export const API = {
     getEmiGroup: (emiGroupId: string) =>
       invokeCommand<EmiGroupSummary>('transactions_get_emi_group', { emiGroupId }),
   },
+  // Free-form user labels applied across transactions.
   tags: {
-    // G13 fix: the full reusable-tag catalog, for autocomplete. Returns
-    // full rows (id + name) so callers can resolve a name to the id
-    // `transactions_add_tag`/`_remove_tag` (Doc19 §8.7/§8.8) require.
     list: () => invokeCommand<TagRecord[]>('tags_list'),
     create: (name: string) =>
       invokeCommand<{ id: string; status: string }>('tags_create', { payload: { name } }),
   },
+  // The fixed spending taxonomy transactions are classified into.
   categories: {
-    // TASK-API-007 built categories_list with no frontend call site at all
-    // until now (TASK-FE-009 needs a real category filter dropdown).
     list: () => invokeCommand<CategoryRecord[]>('categories_list'),
   },
+  // PDF statement ingestion, from upload through password unlock, parsing and
+  // draft review, to the retry paths for statements that failed.
   statements: {
-    // H2 fix: statements_upload is now a real multi-file batch contract
-    // (Doc 19 §9.1, FR-031) — one IPC call processes every selected file.
-    // Doc 30 TASK-API-004 fix: the real backend command needs `files:
-    // [{ file_bytes, filename }]` (actual PDF byte content), not paths —
-    // the previous `{ filePaths }` shape never matched the command's real
-    // argument type, so upload from the UI never actually worked. Reads
-    // each dialog-selected path's bytes via the newly-added, read-only,
-    // capability-scoped `@tauri-apps/plugin-fs` (tauri.conf.json's
-    // `fs:allow-read-file`) before sending — the bytes are held in memory
-    // only for this one IPC call, consistent with Document 15's "raw PDFs
-    // never persisted" invariant (this is the frontend's read of the
-    // user's own already-selected file, not a new persistence path).
     upload: async (filePaths: string[]) => {
       const files = await Promise.all(
         filePaths.map(async (path) => {
@@ -738,11 +702,6 @@ export const API = {
           return { file_bytes: Array.from(bytes), filename };
         })
       );
-      // Doc 30 TASK-API-004 fix: the real command wraps its array in
-      // `{ results: [...] }` (Document 19 §9.1's exact response shape) --
-      // this wrapper was previously also mismatched (the caller expected a
-      // bare array), which would have thrown ("not iterable") the moment
-      // upload actually reached a real response.
       const response = await invokeCommand<{
         results: Array<{
           status: string;
@@ -775,29 +734,14 @@ export const API = {
           instrumentType,
         }
       ),
-    // TASK-FE-012: TASK-STMT-010 built this dedicated unprocessed-items
-    // retry/recovery backend (statements_list_unprocessed/_retry_unprocessed/
-    // _discard) with zero frontend call sites -- the pre-existing page
-    // instead derived its own ad-hoc "unprocessed" list by filtering the
-    // general statement history for PASSWORD_REQUIRED/FAILED, missing the
-    // real 3-bucket grouping (awaiting_password/pending_retry/failed) and
-    // the discard action entirely.
     listUnprocessed: () => invokeCommand<UnprocessedStatementGroups>('statements_list_unprocessed'),
     retryUnprocessed: (statementId: string) =>
       invokeCommand<{ status: string; statement_id: string }>('statements_retry_unprocessed', {
         statementId,
       }),
-    // Issue #7: re-runs the pipeline over the whole Action Needed queue using
-    // stored passwords. Reports progress via the `statement_reparse_progress`
-    // event as it goes; anything no stored password opens stays in the queue.
     reparseAll: () => invokeCommand<StatementReparseProgress>('statements_reparse_all'),
     discard: (statementId: string) =>
       invokeCommand<{ status: string }>('statements_discard', { statementId }),
-    // Doc 30 TASK-API-004: `statements_list` now returns a real paginated
-    // page ({ records, total }, matching Document 19 §3.3's pagination
-    // convention -- it previously had no pagination at all). Unwrapped to
-    // `.records` here so the existing array-shaped consumer keeps working;
-    // `page`/`total` are available for a future paginated statements UI.
     listHistory: (page = 1) =>
       invokeCommand<{ records: StatementRecord[]; total: number }>('statements_list', {
         page,
@@ -830,26 +774,16 @@ export const API = {
     discardDraft: (draftId: string) =>
       invokeCommand<{ status: string }>('statements_discard_draft', { draftId }),
   },
+  // Duplicate resolution: clusters of transactions that may be the same real
+  // payment seen through different sources, and the merge/split decisions on them.
   reconciliation: {
-    // G20/H10/J8 fix: both renamed to match Doc 19 §10.1/§10.3's documented
-    // `reconciliation_clusters_*` naming family.
     listUnresolved: () => invokeCommand<ClusterRecord[]>('reconciliation_clusters_list'),
-    // TASK-FE-013: `reconciliation_clusters_get` (Doc 19 §10.2) existed on
-    // the backend with zero frontend call site -- needed for the cluster
-    // detail page.
     getCluster: (clusterId: string) =>
       invokeCommand<ClusterRecord>('reconciliation_clusters_get', { clusterId }),
-    // TASK-FE-013: `reconciliation_get_unassigned_transactions` (TASK-API-005)
-    // existed on the backend with zero frontend call site -- extraction
-    // failures (no instrument resolved) are a queue distinct from ambiguous
-    // clusters (matching ambiguity) and need their own UI section.
     listUnassigned: () =>
       invokeCommand<UnassignedTransactionRecord[]>('reconciliation_get_unassigned_transactions'),
     dismissUnassigned: (id: string) =>
       invokeCommand<void>('reconciliation_dismiss_unassigned_transaction', { id }),
-    // TASK-FE-013: combines manual transaction creation with marking the
-    // unassigned row resolved, as one request -- see
-    // `reconciliation_resolve_unassigned_transaction_manually` on the backend.
     resolveUnassignedManually: (
       id: string,
       payload: {
@@ -874,14 +808,6 @@ export const API = {
           reference_id: payload.referenceId ?? null,
         },
       }),
-    // G20/H10/J8 fix: action vocabulary realigned to Doc 19 §10.3's
-    // documented "Allowed actions" ('confirm_match'/'reject_candidate'
-    // replace the previous 'merge'/'reject' — 'keep_separate' and
-    // 'mark_unresolved' already matched).
-    // TASK-FE-013 fix: the real `reconciliation_clusters_resolve` command
-    // requires `observation_id` (Document 12's `resolve_cluster` reads it
-    // for every action except `mark_unresolved`) -- this wrapper never sent
-    // it at all, so every resolve call was missing a required argument.
     resolve: (
       clusterId: string,
       observationId: string,
@@ -894,13 +820,10 @@ export const API = {
         action,
         chosenCanonicalId,
       }),
-    // Backend has supported undoing a confirmed match since
-    // `reconciliation_clusters_unmerge` was added, but no frontend caller
-    // ever existed -- a confirmed match was effectively permanent from the
-    // UI's perspective.
     unmergeCluster: (clusterId: string) =>
       invokeCommand<string>('reconciliation_clusters_unmerge', { clusterId }),
   },
+  // Payment instruments (cards, accounts) that transactions are attributed to.
   instruments: {
     list: () => invokeCommand<InstrumentRecord[]>('instruments_list'),
     create: (
@@ -921,11 +844,6 @@ export const API = {
           bank_ifsc: bankIfsc,
         },
       }),
-    // Doc 30 TASK-API-002: issuer_name/masked_identifier are identity
-    // fields (used by resolve_instrument()'s matching key, Document 15
-    // §2.8) and are never editable post-creation -- the backend's
-    // InstrumentUpdatePayload no longer even has fields for them, so this
-    // wrapper no longer accepts them either.
     update: (
       id: string,
       fullIdentifier?: string,
@@ -959,16 +877,13 @@ export const API = {
     get: (id: string) => invokeCommand<InstrumentRecord>('instruments_get', { id }),
     delete: (id: string) => invokeCommand<string>('instruments_archive', { id }),
   },
+  // Budget ceilings and the thresholds that trigger alerts.
   spendingLimits: {
     get: () => invokeCommand<SpendingLimits>('fetch_spending_limits'),
     update: (limits: SpendingLimits) => invokeCommand<string>('update_spending_limits', { limits }),
   },
+  // First-run setup: preferences captured before the main app is usable.
   onboarding: {
-    // G19 fix: previously onboarding choices were only written to browser
-    // localStorage — never persisted to `local_profile`, so they didn't
-    // survive a reinstall/reset and never reached the same row Settings →
-    // Spending Limits reads from. Nested struct fields use exact snake_case
-    // (only top-level invoke args get camelCase conversion).
     savePreferences: (prefs: {
       timezone: string;
       spendingLimitMonthly: number;
@@ -986,65 +901,51 @@ export const API = {
         },
       }),
   },
+  // Backend liveness and health, polled by the shell's engine indicator.
   status: {
     check: () => invokeCommand<BackendStatus>('check_backend_status'),
     getHealthReport: () => invokeCommand<HealthReport>('get_health_report'),
   },
+  // Whole-database operations: backup restore, export, and deletion.
   db: {
     restoreBackup: () => invokeCommand<string>('db_restore_backup'),
-    // J7 fix: local encrypted export of the full dataset — previously no
-    // such command existed at all. `password`, when provided, additionally
-    // AES-256-GCM-encrypts the export with that password (portable to a
-    // different Mac) instead of relying solely on this machine's Keychain-
-    // derived SQLCipher key.
     exportData: (exportPath: string, password?: string) =>
       invokeCommand<string>('settings_export_data', { exportPath, password: password ?? null }),
   },
+  // Development-only helpers. Destructive; not reachable in normal use.
   dev: {
     resetDatabase: () => invokeCommand<string>('settings_delete_account'),
     getMetrics: () => invokeCommand<DebugMetrics>('get_debug_metrics'),
     checkSystemRam: () => invokeCommand<number>('check_system_ram'),
   },
+  // Diagnostics the user can send to support: log export and feedback.
   support: {
-    // Doc 19 §21.1: generates the privacy-safe diagnostic bundle.
     exportLogs: () => invokeCommand<{ success: boolean; file_path: string }>('export_logs'),
-    // Doc 41 §5: attaches the same bundle when include_logs is true.
     submitFeedback: (text: string, includeLogs: boolean) =>
       invokeCommand<string>('submit_user_feedback', { text, includeLogs }),
-    // TASK-OPS-004: forwards a renderer-side error into the same tracing
-    // pipeline Rust panics use, so it's captured in app-logs.log and
-    // included in a diagnostic bundle export like any other error.
     logRendererError: (message: string, stack: string | undefined, source: string) =>
       invokeCommand<void>('log_renderer_error', { message, stack, source }),
   },
+  // Google OAuth and connected-account management.
   auth: {
-    // TASK-DB-022: the backend resolves the single local profile internally
-    // rather than trusting a caller-supplied profileId (Document 22 §13.1).
     startGoogle: () => invokeCommand<string>('auth_google_start'),
     isGmailConnected: () => invokeCommand<boolean>('is_gmail_connected'),
-    // Doc 03 §8.2: a license supports up to 10 simultaneously connected
-    // Gmail accounts — the list can have more than one entry.
     listConnectedAccounts: () =>
       invokeCommand<ConnectedAccountInfo[]>('settings_get_connected_accounts'),
     disconnectGmail: (accountId: string) =>
       invokeCommand<void>('auth_google_disconnect', { accountId }),
-    // Doc 19 §5.4, Doc 22 §8.2: opt-in 24-word Secure Backup Recovery Phrase.
     getRecoveryPhrase: () => invokeCommand<string>('auth_get_recovery_phrase'),
   },
+  // Historical Gmail scans: start, cancel, and status.
   ingestion: {
     startHistoricalScan: (accountId: string, startDate: string, endDate: string) =>
       invokeCommand<string>('scans_historical', { accountId, startDate, endDate }),
     cancelScan: (accountId: string) => invokeCommand<string>('scans_cancel', { accountId }),
-    // audit_07 #7: scan progress arrives by event only, so a webview reload
-    // mid-scan left the UI blank until the next event. This reads the
-    // checkpoint the backend has been persisting all along, letting
-    // `useSyncStore` re-hydrate on mount.
     getScanStatus: (accountId: string) =>
       invokeCommand<ScanStatusResponse>('scans_status', { accountId }),
   },
+  // Local LLM lifecycle: model catalogue, download, activation, concurrency.
   llm: {
-    // Doc 16 §12.3: the single source of truth for the 5-tier model catalog —
-    // frontend selectors must render this, not a hardcoded local list.
     getAvailableModels: () => invokeCommand<LlmModelInfo[]>('llm_get_available_models'),
     downloadModel: (modelId: string) => invokeCommand<void>('llm_download_model', { modelId }),
     deleteModel: (modelId: string) => invokeCommand<string>('llm_delete_model', { modelId }),
@@ -1056,18 +957,18 @@ export const API = {
     setParallelSlots: (slots: number) =>
       invokeCommand<number>('llm_set_parallel_slots', { slots }),
   },
-  // Issue #12: user-triggered LLM merchant-name + category cleanup.
+  // AI merchant-name normalisation: preview, run, and review its changes.
   merchantCleanup: {
     preview: () => invokeCommand<MerchantCleanupPreview>('merchant_cleanup_preview'),
     start: () => invokeCommand<string>('merchant_cleanup_start'),
     cancel: () => invokeCommand<void>('merchant_cleanup_cancel'),
     revert: (runId: string) => invokeCommand<number>('merchant_cleanup_revert', { runId }),
-    // The run history lives in the undo log rather than frontend state, so a
-    // window reload no longer loses the ability to undo a run.
     runs: (limit = 20) => invokeCommand<MerchantCleanupRun[]>('merchant_cleanup_runs', { limit }),
     revertCorrection: (correctionId: string) =>
       invokeCommand<void>('merchant_cleanup_revert_correction', { correctionId }),
   },
+  // Debug inspection surfaces. Return `any` deliberately -- these feed a raw
+  // JSON viewer, so imposing a type would add no safety and constant churn.
   debug: {
     fetchParseErrors: () => invokeCommand<any[]>('debug_fetch_parse_errors'),
     fetchUnprocessedStatements: () => invokeCommand<any[]>('debug_fetch_unprocessed_statements'),
@@ -1084,14 +985,12 @@ export const API = {
     listReleaseReadinessSnapshots: () =>
       invokeCommand<ReleaseReadinessSnapshot[]>('release_readiness_list_snapshots'),
   },
+  // The outbound-request audit log backing the privacy disclosure screen.
   network: {
     getActivityList: () =>
       invokeCommand<{ entries: any[] }>('settings_get_network_activity').then((r) => r.entries),
   },
-  // The read-only successor to the old pattern-rule approval UI. There is no
-  // create, no edit and no status setter: a rule is only ever written after it
-  // has mechanically proved it reproduces a real correction, so the only
-  // judgment left for a person is "this one is misbehaving, retire it".
+  // Rules the app inferred from user corrections, listable and revertible.
   learnedRules: {
     list: () => invokeCommand<LearnedRule[]>('settings_learned_rules_list'),
     revert: (ruleId: string) => invokeCommand<void>('settings_learned_rules_revert', { ruleId }),
@@ -1102,24 +1001,17 @@ export const API = {
     knownBankNames: () => invokeCommand<string[]>('settings_known_bank_names'),
   },
   pdfPasswords: {
-    // G15 fix: management UI for stored PDF passwords (metadata only — the
-    // password itself is never sent to the frontend).
     list: () => invokeCommand<PdfPasswordSummary[]>('settings_pdf_passwords_list'),
     delete: (id: string) => invokeCommand<void>('settings_pdf_passwords_delete', { id }),
   },
   privacy: {
-    // TASK-AUTH-003, Doc 19 §5.6: Settings → Privacy → Consent History,
-    // backed by the dedicated consent_events table (Doc 18 §4.21a).
     getConsentHistory: (limit = 50, offset = 0) =>
       invokeCommand<ConsentEventRecord[]>('auth_get_consent_history', { limit, offset }),
     recordConsentEvent: (consentType: string, detail: string) =>
       invokeCommand<void>('record_consent_event', { consentType, detail }),
   },
   licensing: {
-    // Doc 19 §14.1
     getStatus: () => invokeCommand<LicenseStatusResponse>('license_get_status'),
-    // Doc 19 §14.2: Razorpay payment confirmation, bound to this device — no
-    // separate license-key concept (C10).
     activate: (
       email: string,
       razorpayPaymentId: string,
@@ -1132,14 +1024,8 @@ export const API = {
         razorpaySignature,
         billingInterval,
       }),
-    // Doc 19 §14.3
     deactivate: () => invokeCommand<LicenseDeactivateResponse>('license_deactivate'),
-    // Doc 19 §14.4 — same action the C11-fixed background loop calls every 6h.
     refresh: () => invokeCommand<LicenseRefreshResponse>('license_refresh'),
-    // Doc 30 TASK-BILL-002/010: opens Razorpay hosted checkout in the system
-    // browser and blocks until payment completes (or times out/is dismissed)
-    // -- never renders card-entry fields in this app. Returns the payment
-    // confirmation for `activate` to verify server-side.
     startCheckout: (email: string, planId: string) =>
       invokeCommand<{ razorpay_payment_id: string; razorpay_signature: string }>(
         'billing_start_checkout',
@@ -1147,48 +1033,28 @@ export const API = {
       ),
   },
   updater: {
-    // Doc 30 TASK-DESK-005: not in Document 19's catalog (this task
-    // predates/extends it, same precedent as several Area 8 additive
-    // commands) -- installs whichever update the most recent check found.
     confirmInstall: () => invokeCommand<void>('updater_confirm_install'),
   },
   systemWarnings: {
-    // Doc 30 TASK-RT-007: late-mount recovery -- a `ConnectionStatusBanner`
-    // that mounts after a warning was already emitted (e.g. app launched
-    // with Gmail already rate-limited) queries this instead of only ever
-    // reacting to the live `system_warning` event it missed.
     getActive: () => invokeCommand<SystemWarningPayload[]>('get_active_system_warnings'),
-    // audit_07 #10: persists the dismissal so a structural condition (a
-    // machine permanently under the RAM threshold) stops re-prompting on every
-    // launch. Rejects `critical` warnings — those report blocked
-    // functionality and are session-dismissable only.
     dismiss: (warningType: string) =>
       invokeCommand<void>('settings_dismiss_system_warning', { warningType }),
   },
   backgroundTasks: {
-    // Doc 30 TASK-RT-004: same late-mount recovery rationale as
-    // systemWarnings.getActive -- an indicator that mounts (or remounts,
-    // e.g. across a route navigation) after a task already started
-    // recovers its in-progress state instead of showing nothing until the
-    // next progress tick.
     getActive: () => invokeCommand<BackgroundTaskProgressPayload[]>('get_active_background_tasks'),
   },
   menuBarExtra: {
-    // Doc 30 TASK-DESK-008: "toggleable in Settings."
     getEnabled: () => invokeCommand<boolean>('settings_get_menu_bar_extra_enabled'),
     setEnabled: (enabled: boolean) =>
       invokeCommand<void>('settings_set_menu_bar_extra_enabled', { enabled }),
   },
   lifecycle: {
-    // Doc 30 TASK-DESK-010: "Launch at Login" (real macOS Launch Agent).
     getLaunchAtLogin: () => invokeCommand<boolean>('settings_get_launch_at_login'),
     setLaunchAtLogin: (enabled: boolean) =>
       invokeCommand<void>('settings_set_launch_at_login', { enabled }),
-    // Doc 30 TASK-DESK-010: "Continue syncing when app is closed."
     getBackgroundSyncEnabled: () => invokeCommand<boolean>('settings_get_background_sync_enabled'),
     setBackgroundSyncEnabled: (enabled: boolean) =>
       invokeCommand<void>('settings_set_background_sync_enabled', { enabled }),
-    // Doc 30 TASK-DESK-010: "a configurable charge threshold."
     getLowBatteryPollThresholdPercent: () =>
       invokeCommand<number>('settings_get_low_battery_poll_threshold_percent'),
     setLowBatteryPollThresholdPercent: (thresholdPercent: number) =>
@@ -1198,11 +1064,6 @@ export const API = {
   },
 };
 
-// Doc 30 TASK-RT-007: mirrors src-tauri's `ipc::system_warnings::SystemWarningPayload`.
-// Note: TASK-DESK-004's `keychain_denied`/`notification_denied` warnings are
-// emitted separately with their own `hard_fail`/`soft_fail` severity vocabulary
-// (`permissions/macos_permissions.rs`) and are owned exclusively by
-// `PermissionDeniedOverlay.tsx` -- they never carry one of the severities below.
 export interface SystemWarningPayload {
   warning_type: string;
   message: string;
@@ -1210,7 +1071,6 @@ export interface SystemWarningPayload {
   action_hint: string | null;
 }
 
-// Doc 30 TASK-RT-004: mirrors src-tauri's `background_tasks::indicator::TaskProgress`.
 export interface BackgroundTaskProgressPayload {
   task_id: string;
   task_type: string;
@@ -1254,7 +1114,6 @@ interface LicenseRefreshResponse {
 
 export type LearnedRuleStatus = 'pending' | 'active' | 'trusted' | 'inactive' | 'flagged';
 
-/** Mirrors src-tauri/src/db/field_rules.rs's FieldRuleVariant verbatim. */
 export interface LearnedRule {
   id: string;
   bank_name: string;
@@ -1298,15 +1157,6 @@ export interface ConsentEventRecord {
   withdrawn_at: string | null;
 }
 
-// Doc 19 §15.1 (v1.14): mirrors src-tauri's real `ScanProgressPayload`
-// (`ingestion/historical_scan.rs`) field-for-field -- this shape backs
-// scan_progress/scan_completed/scan_cancelled/scan_failed, all four events.
-// Mirrors src-tauri's `ScanStatusResponse` (`ingestion/historical_scan.rs`),
-// built from the persisted `processing_checkpoints` row rather than from a
-// live event. `status` is the checkpoint's own status column
-// ('not_started' | 'in_progress' | 'completed' | 'paused' | 'failed' |
-// 'cancelled'). Note it carries no `non_financial` count and no `account_id` —
-// the caller already knows which account it asked about.
 export interface ScanStatusResponse {
   status: string;
   processed: number;

@@ -1,24 +1,19 @@
 /**
- * TASK-SETUP-013 / TASK-API-010. Shared IPC types — the canonical `AppError`
- * shape (Document 19 §3.4) previously lived as a private, unexported
- * interface inside `src/lib/ipc.ts`; moved here so `useIpcInvoke` and any
- * other consumer can share the same type instead of redefining it.
+ * Shared error contract for the IPC boundary between the React frontend and the
+ * Rust backend.
  *
- * `AppErrorCode` mirrors the exact set of string values
- * `src-tauri/src/error.rs`'s `AppError::code()` can produce -- a discriminated
- * union (not a bare `string`) so React error handling can `switch` on
- * `error.code` instead of parsing `error.message` text. Note this is a
- * many-to-one mapping, not a 1:1 mirror of the Rust enum's 10 variants:
- * `Db`/`Unknown`/`FileAccessDenied`/`Io`/`Internal` all currently produce
- * `INTERNAL_ERROR`, and `Parse`/`Validation` both produce `VALIDATION_ERROR`
- * -- `error.rs`'s own doc comment flags reconciling this against Document
- * 19 §4's full ~25-code catalog (richer, command-specific codes like
- * `SCAN_NOT_FOUND`/`CLUSTER_NOT_FOUND`) as explicitly out of this task's
- * scope; this type honestly reflects what's actually on the wire today,
- * not an aspirational richer catalog. `UNKNOWN_ERROR` is a 6th,
- * frontend-only value -- `src/lib/ipc.ts`'s `invokeCommand` catch-all for a
- * rejection that isn't even shaped like a structured `AppError` at all
- * (e.g. a raw JS/Tauri-runtime failure), never produced by Rust directly.
+ * Every command rejection is normalised into an AppError before it reaches
+ * application code, so callers can branch on a stable `code` instead of
+ * pattern-matching backend message text. The Rust side must emit values that
+ * deserialise into this shape; the mapping from code to user-facing copy lives
+ * in the error-mapping layer, not here.
+ */
+
+/**
+ * Closed set of failure categories a backend command can report.
+ *
+ * UNKNOWN_ERROR is the catch-all applied on the frontend when a rejection does
+ * not carry a recognisable structured payload at all.
  */
 export type AppErrorCode =
   | 'INTERNAL_ERROR'
@@ -28,6 +23,13 @@ export type AppErrorCode =
   | 'VALIDATION_ERROR'
   | 'UNKNOWN_ERROR';
 
+/**
+ * A normalised backend failure.
+ *
+ * `message` is diagnostic text intended for logs and developers rather than
+ * something to render directly, and `details` carries optional structured
+ * context specific to the failing command.
+ */
 export interface AppError {
   code: AppErrorCode;
   message: string;
