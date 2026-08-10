@@ -1,3 +1,13 @@
+//! Schema migrations, with a backup taken before each run.
+//!
+//! A failed migration on a financial ledger is the worst case this codebase
+//! plans for, so a full copy is written before any schema change is applied. If
+//! the migration then fails, startup can offer to roll back to that exact
+//! pre-migration state.
+//!
+//! Only the most recent few backups are retained; without a cap they would
+//! accumulate a full database copy per release indefinitely.
+
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use sqlx::sqlite::SqliteConnectOptions;
@@ -5,18 +15,14 @@ use sqlx::{Connection as SqlxConnectionTrait, SqliteConnection};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-/// Pre-migration backups retained before older ones are pruned (Doc 18 §12.1).
+// Keep only the last few pre-migration backups -- each is a full copy of the
+// database, so unbounded retention would grow without limit.
 const PRE_MIGRATION_BACKUP_RETENTION: usize = 3;
 
-/// Creates `finance.db.bak.[timestamp]` before migrations run (Doc 18 §12.1),
-/// then prunes to the last `PRE_MIGRATION_BACKUP_RETENTION` backups. Uses
-/// `VACUUM INTO` from the live connection rather than a raw file copy — the
-/// database runs in WAL mode, so copying just the main `.db` file could miss
-/// data still sitting in the `-wal` sidecar; `VACUUM INTO` always produces a
-/// complete, consistent snapshot of the current committed state.
+/// Copies the database before a migration runs.
 ///
-/// Returns the backup's path so a failed migration can offer a rollback to it
-/// (C18 fix — see `db::restore_backup_file`).
+/// The safety net that makes a failed migration recoverable: startup can offer a
+/// rollback to exactly this pre-migration state.
 pub fn create_pre_migration_backup(conn: &Connection, db_path: &Path) -> Result<PathBuf> {
     let backup_dir = db_path.parent().unwrap_or_else(|| Path::new("."));
     let timestamp = chrono::Utc::now().format("%Y%m%d%H%M%S%3f").to_string();
@@ -28,16 +34,6 @@ pub fn create_pre_migration_backup(conn: &Connection, db_path: &Path) -> Result<
     )
     .map_err(|e| anyhow::anyhow!("Failed to create pre-migration backup: {}", e))?;
 
-    // audit_08 #10: `VACUUM INTO` from an encrypted connection does produce an
-    // encrypted, complete file — but nothing checked it, and this is the copy
-    // a failed migration rolls back to. `verify_backup_integrity` re-opens it
-    // with the derived key and runs `integrity_check`, so an unopenable,
-    // unencrypted or truncated backup is caught now rather than at the moment
-    // it is needed. Its doc comment already named `finance.db.bak.*` as its
-    // subject; it was simply never wired into this path.
-    //
-    // Verify before pruning: a bad new backup must not push a good older one
-    // out of the retention window.
     if let Err(e) = crate::db::backup::verify_backup_integrity(&backup_path) {
         let _ = std::fs::remove_file(&backup_path);
         return Err(anyhow::anyhow!(
@@ -51,9 +47,10 @@ pub fn create_pre_migration_backup(conn: &Connection, db_path: &Path) -> Result<
     Ok(backup_path)
 }
 
-/// Deletes all but the most recent `PRE_MIGRATION_BACKUP_RETENTION` pre-migration
-/// backups. Pruning failures are logged, not propagated — a stale extra backup
-/// file is not worth aborting startup over.
+/// Deletes all but the most recent few backups.
+///
+/// Each is a full copy, so unbounded retention would grow by a database per
+/// release.
 fn prune_old_pre_migration_backups(backup_dir: &Path) {
     let entries = match std::fs::read_dir(backup_dir) {
         Ok(e) => e,
@@ -74,8 +71,6 @@ fn prune_old_pre_migration_backups(backup_dir: &Path) {
         })
         .collect();
 
-    // Timestamps are formatted %Y%m%d%H%M%S%3f, so lexicographic sort is
-    // chronological — oldest first.
     backups.sort();
 
     if backups.len() > PRE_MIGRATION_BACKUP_RETENTION {
@@ -87,33 +82,10 @@ fn prune_old_pre_migration_backups(backup_dir: &Path) {
     }
 }
 
-/// TASK-DB-002: runs all pending migrations via `sqlx::migrate!`, embedded
-/// at compile time from `migrations/` (path is resolved relative to
-/// `CARGO_MANIFEST_DIR` — i.e. `src-tauri/migrations/` — by the macro
-/// itself, regardless of which source file invokes it).
+/// Applies outstanding schema migrations.
 ///
-/// sqlx and the app's normal rusqlite/`deadpool_sqlite` connection stack are
-/// entirely separate — this opens its own dedicated `sqlx::SqliteConnection`
-/// to the same file, setting the identical `key` and cipher pragmas
-/// `db::init_db` uses when `sqlcipher_key` is `Some` (production always
-/// passes a key; test call sites across the codebase pass `None` to get a
-/// plain, unencrypted schema-only database — matching the semantics the
-/// old `Connection::open_in_memory()` test fixtures had, and avoiding
-/// needing to thread a key through every pooled test helper afterward).
-///
-/// This works — sqlx can open an SQLCipher-encrypted file at all — only
-/// because `sqlx-sqlite` and `rusqlite` both resolve to the exact same
-/// `libsqlite3-sys` version; Cargo's feature unification means enabling
-/// `bundled-sqlcipher` via rusqlite's `Cargo.toml` entry compiles that
-/// *shared* `libsqlite3-sys` artifact with SQLCipher support, which sqlx's
-/// connection then also links against. This was verified empirically (a
-/// throwaway feasibility test, not kept in the tree) before committing to
-/// this rewrite — sqlx has no official SQLCipher feature flag of its own.
-///
-/// `sqlx::migrate!` tracks applied migrations in its own `_sqlx_migrations`
-/// table, which Document 18 §13.1/§13.2 (schema version gate) already
-/// assumes exists — that section was written assuming sqlx, independent of
-/// this task, and is further confirmation this is the intended engine.
+/// The connection must already be keyed, since an encrypted database cannot even
+/// be read to determine its current version until it is.
 pub async fn run_migrations(db_path: &Path, sqlcipher_key: Option<&str>) -> Result<()> {
     let mut opts = SqliteConnectOptions::from_str(&format!("sqlite://{}", db_path.display()))
         .context("Invalid database path for sqlx migration connection")?

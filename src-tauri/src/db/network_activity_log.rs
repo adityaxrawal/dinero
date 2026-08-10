@@ -1,3 +1,7 @@
+//! Append-only record of every outbound network request.
+//!
+//! The evidence behind the privacy disclosure screen. Metadata only --
+//! destination, channel, timing, status -- never request or response bodies.
 use anyhow::Result;
 use chrono::NaiveDateTime;
 use rusqlite::{params, Connection};
@@ -14,14 +18,12 @@ pub struct NetworkActivityLogRow {
     pub bytes_received: Option<i64>,
     pub status_code: Option<i64>,
     pub secret_fields_masked: Option<String>,
-    /// Doc 30 TASK-API-006 / Document 18 §4.21b: which of the 5 disclosed
-    /// network channels made this call (`gmail_api`/`licensing_backend`/
-    /// `google_oauth`/`github_releases`/`huggingface`), written directly by
-    /// `NetworkClient::execute`'s caller. `None` only for rows written
-    /// before this column existed.
     pub channel: Option<String>,
 }
 
+/// Appends one outbound request record.
+///
+/// Metadata only -- destination, channel, timing, status -- never bodies.
 pub fn insert(conn: &Connection, log: &NetworkActivityLogRow) -> Result<()> {
     conn.execute(
         "INSERT INTO network_activity_log (
@@ -34,14 +36,7 @@ pub fn insert(conn: &Connection, log: &NetworkActivityLogRow) -> Result<()> {
     Ok(())
 }
 
-/// This table has no row-count cap (only Document 18 §4.21b's 30-day time
-/// retention window), and a single historical scan can write hundreds of
-/// rows in seconds -- fetching every row unconditionally doesn't scale.
-/// `page` is 1-based (matching `ipc::validation::validate_pagination`,
-/// which callers must run before this). Returns `(rows, total_row_count)`
-/// so the caller can build a `{ entries, meta: { page, page_size, total } }`
-/// response, the same shape Document 19 §10.1 already established for
-/// `reconciliation_clusters_list`.
+/// One page of network activity, for the privacy screen.
 pub fn list_paginated(
     conn: &Connection,
     page: u32,

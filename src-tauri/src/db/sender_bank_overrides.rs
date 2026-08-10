@@ -1,20 +1,8 @@
-//! Gate 1's runtime relabel layer: "mail from this verified domain is actually
-//! <bank>" (design 2026-07-29).
+//! User overrides mapping an email sender domain to a bank.
 //!
-//! Deliberately **not** folded into `pending_senders`, which looks similar and
-//! sits at the same call site. That table promotes an *unverified* domain to
-//! verified — a security decision the user makes explicitly about a sender that
-//! was rejected. This one only renames the bank on a sender that already
-//! passed verification. Sharing one table would mean a "wrong bank" report
-//! could silently grant verification to any domain the user typed, which is a
-//! much larger thing than the question they were answering.
-//!
-//! Domain-scoped, one row per domain. A per-address variant was considered and
-//! dropped: this is the highest-blast-radius write in the whole feedback
-//! pipeline (misroute a domain and every future email from it lands under the
-//! wrong bank), and two scopes would double the ways to get it wrong for a
-//! distinction real bank senders do not actually make.
-
+//! The manual escape hatch for when automatic sender identification is wrong.
+//! Overrides are deactivated rather than deleted, preserving the record of what
+//! was previously configured.
 use anyhow::Result;
 use chrono::NaiveDateTime;
 use rusqlite::{params, Connection};
@@ -30,6 +18,7 @@ pub struct SenderBankOverride {
     pub created_at: Option<NaiveDateTime>,
 }
 
+/// Maps a result row onto an override record.
 fn map_row(row: &rusqlite::Row) -> rusqlite::Result<SenderBankOverride> {
     Ok(SenderBankOverride {
         id: row.get(0)?,
@@ -41,8 +30,7 @@ fn map_row(row: &rusqlite::Row) -> rusqlite::Result<SenderBankOverride> {
     })
 }
 
-/// Records (or replaces) the override for one domain, reactivating it if a
-/// previous report had been reverted. Returns the row id.
+/// Records or updates a sender-domain to bank mapping.
 pub fn upsert(
     conn: &Connection,
     domain: &str,
@@ -75,7 +63,7 @@ pub fn upsert(
     Ok(stored_id)
 }
 
-/// What Gate 1 consults. Kept small and indexed — this runs per message.
+/// Active overrides, consulted during sender identification.
 pub fn select_active(conn: &Connection) -> Result<Vec<SenderBankOverride>> {
     let mut stmt = conn.prepare(
         "SELECT id, domain, bank_name, display_name, status, created_at
@@ -86,7 +74,7 @@ pub fn select_active(conn: &Connection) -> Result<Vec<SenderBankOverride>> {
         .map_err(Into::into)
 }
 
-/// Everything, including reverted rows, for the Settings review panel.
+/// All overrides including deactivated ones, for the settings list.
 pub fn select_all(conn: &Connection) -> Result<Vec<SenderBankOverride>> {
     let mut stmt = conn.prepare(
         "SELECT id, domain, bank_name, display_name, status, created_at
@@ -97,9 +85,10 @@ pub fn select_all(conn: &Connection) -> Result<Vec<SenderBankOverride>> {
         .map_err(Into::into)
 }
 
-/// Retires an override. Soft, not a delete: the row is the only record that
-/// this domain was ever relabelled, and "why did my mail move banks last
-/// month" needs to stay answerable.
+/// Deactivates an override rather than deleting it.
+///
+/// Keeps the record of what was previously configured, so a mapping that was
+/// tried and withdrawn is still visible.
 pub fn deactivate(conn: &Connection, id: &str) -> Result<()> {
     let updated = conn.execute(
         "UPDATE sender_bank_overrides SET status = 'inactive', updated_at = CURRENT_TIMESTAMP

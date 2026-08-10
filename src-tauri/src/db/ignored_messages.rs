@@ -1,9 +1,12 @@
+//! Messages deliberately skipped during ingestion.
+//!
+//! Prevents rescanning mail already judged non-financial. Entries expire rather
+//! than persisting forever, so a message wrongly classified once is eventually
+//! reconsidered rather than being excluded permanently.
 use anyhow::Result;
 use chrono::{Duration, NaiveDateTime, Utc};
 use rusqlite::{params, Connection};
 
-/// Auto-expiry window for Gate 2's `Noise`/`Unknown` parking lot (spec
-/// optimization #5: "auto-expiring Ignored table for 30 days").
 pub const IGNORED_MESSAGE_TTL_DAYS: i64 = 30;
 
 #[derive(Debug, Clone)]
@@ -19,7 +22,11 @@ pub struct IgnoredMessageRow {
 }
 
 impl IgnoredMessageRow {
-    /// Builds a row with `expires_at` set `IGNORED_MESSAGE_TTL_DAYS` from now.
+    /// Builds an ignore record, stamping its expiry from the retention window.
+    ///
+    /// Expiry is set at construction rather than at query time so each record
+    /// carries its own lifetime, and a later change to the window does not
+    /// retroactively resurrect or purge messages already recorded.
     pub fn new(
         message_id: &str,
         bank_name: Option<&str>,
@@ -41,6 +48,7 @@ impl IgnoredMessageRow {
     }
 }
 
+/// Marks a message as deliberately skipped.
 pub fn insert(conn: &Connection, row: &IgnoredMessageRow) -> Result<()> {
     conn.execute(
         "INSERT INTO ignored_messages (
@@ -59,10 +67,7 @@ pub fn insert(conn: &Connection, row: &IgnoredMessageRow) -> Result<()> {
     Ok(())
 }
 
-/// Recovery path spec optimization #5 describes ("scan the Ignored table" on
-/// a user complaint) — a simple most-recent-first listing, no pagination
-/// needed at this table's expected scale (the 30-day TTL bounds it
-/// naturally).
+/// Recently ignored messages, so a rescan can skip them cheaply.
 pub fn select_recent(conn: &Connection, limit: i64) -> Result<Vec<IgnoredMessageRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, message_id, bank_name, reason, subject, snippet, created_at, expires_at \
@@ -85,9 +90,10 @@ pub fn select_recent(conn: &Connection, limit: i64) -> Result<Vec<IgnoredMessage
     Ok(rows)
 }
 
-/// Deletes every row past its `expires_at` — mirrors
-/// `db::retention::sweep_raw_payloads`'s pattern, called from the same daily
-/// maintenance loop (`lib.rs`).
+/// Drops expired ignore records.
+///
+/// Expiry is deliberate: a message misclassified once is eventually reconsidered
+/// rather than excluded permanently by a decision that may have been wrong.
 pub fn purge_expired(conn: &Connection) -> Result<usize> {
     let deleted = conn.execute(
         "DELETE FROM ignored_messages WHERE expires_at < datetime('now')",

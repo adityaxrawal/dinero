@@ -1,3 +1,18 @@
+//! Key management for the encrypted database.
+//!
+//! Two keys exist and the distinction between them is the heart of this module.
+//! A *base key* is generated once and stored in the OS keychain; it is the
+//! user's actual secret and is what a recovery phrase reconstructs. The
+//! *database key* is derived from the base key using the machine's hardware UUID
+//! as an Argon2 salt, and is what SQLCipher is actually given.
+//!
+//! Deriving with a hardware-bound salt means a database file copied to another
+//! machine cannot be opened there even with the same base key -- the salt
+//! differs, so the derived key differs. That is also why a hardware change is
+//! detected and reported at startup rather than surfacing as inexplicable
+//! corruption: the marker file records the UUID last seen, so a mismatch is
+//! recognisable as a migration rather than a broken database.
+
 use aes_gcm::aead::{rand_core::RngCore, OsRng};
 use anyhow::{Context, Result};
 use argon2::{
@@ -11,31 +26,14 @@ use uuid::Uuid;
 const KEYCHAIN_SERVICE: &str = "com.dinero.app";
 const KEYCHAIN_USER: &str = "dinero-base-key";
 
-/// Retrieves the base key from the macOS Keychain.
-/// If it doesn't exist, generates a secure random 32-byte key (hex-encoded) and stores it.
-///
-/// Doc 24 §2/§8: secrets live only in Keychain — never plaintext files, env vars,
-/// or config, under any build configuration. There is no debug-mode fallback.
-///
-/// Doc 22 §7.2 (M34): the base key must be a genuinely random 32-byte value,
-/// not a UUIDv4 (~122 bits). This only changes what a *newly created* Keychain
-/// entry looks like — an entry already written by a previous run is returned
-/// as-is, so no already-encrypted database is ever re-keyed by this change.
-/// Cached after first resolution within this process. Without this, every
-/// caller (there are several -- DB key derivation, PDF password encrypt,
-/// PDF password decrypt, ...) re-reads `dev_key_path` from disk on every
-/// call with zero synchronization; two calls racing before the file exists
-/// yet can each generate a *different* random key, both return `Ok`, and
-/// whichever `std::fs::write` (whose result is deliberately ignored) lands
-/// last silently wins on disk -- a value encrypted under the loser's
-/// in-memory key can never be decrypted again by any later caller, which is
-/// exactly the failure mode that made a validated statement PDF password
-/// undecryptable moments later during the Instrument Gate resume path (see
-/// `commands::statements_confirm_instrument`). Caching means every call in
-/// this process, from the very first, shares one resolved key.
 #[cfg(debug_assertions)]
 static DEV_BASE_KEY: OnceLock<String> = OnceLock::new();
 
+/// Where the development base key is kept.
+///
+/// Development builds deliberately avoid the keychain: it prompts on every
+/// rebuild and each unsigned binary is treated as a different application. Falls
+/// back to a temp path when HOME is unset, as it is under some test runners.
 #[cfg(debug_assertions)]
 fn dev_base_key_path() -> std::path::PathBuf {
     if let Ok(home) = std::env::var("HOME") {
@@ -50,6 +48,13 @@ fn dev_base_key_path() -> std::path::PathBuf {
     }
 }
 
+/// Development base key, read from disk or generated on first use.
+///
+/// Checks the persistent location first, then migrates a key from the older temp
+/// location if one is found, so an existing dev database stays openable across
+/// the change. Cached in a OnceLock to avoid re-reading per connection.
+///
+/// This path never touches the keychain and is compiled out of release builds.
 #[cfg(debug_assertions)]
 pub fn get_or_create_base_key() -> Result<String> {
     if let Some(key) = DEV_BASE_KEY.get() {
@@ -71,11 +76,14 @@ pub fn get_or_create_base_key() -> Result<String> {
         let _ = std::fs::write(&temp_path, &new_key);
         new_key
     };
-    // `get_or_init`-style race: if another call already won, defer to it so
-    // every caller in this process converges on the exact same string.
     Ok(DEV_BASE_KEY.get_or_init(|| key).clone())
 }
 
+/// Release base key, held in the OS keychain.
+///
+/// Generated from 32 bytes of OS entropy on first launch. A missing entry is the
+/// expected first-run case and is created; every other error is classified, since
+/// a denied keychain needs different handling from a genuinely absent key.
 #[cfg(not(debug_assertions))]
 pub fn get_or_create_base_key() -> Result<String> {
     let entry =
@@ -84,7 +92,6 @@ pub fn get_or_create_base_key() -> Result<String> {
     match entry.get_password() {
         Ok(key) => Ok(key),
         Err(keyring::Error::NoEntry) => {
-            // Generate a new secure random 32-byte base key (Doc 22 §7.2 / M34).
             let mut bytes = [0u8; 32];
             OsRng.fill_bytes(&mut bytes);
             let new_key = hex::encode(bytes);
@@ -97,12 +104,11 @@ pub fn get_or_create_base_key() -> Result<String> {
     }
 }
 
-/// G3 fix: distinguishes "Keychain access denied" (the user declined the
-/// macOS system permission prompt, or the keychain is locked/unavailable)
-/// from other Keychain errors (e.g. a genuinely corrupt entry), via a marker
-/// `db::is_keychain_access_denied` recognizes — so `init_db`/`lib.rs` can show
-/// a dedicated recovery screen instead of a generic fatal-error dialog.
 #[cfg(not(debug_assertions))]
+/// Distinguishes a denied keychain from other keychain failures.
+///
+/// The marker prefix is matched upstream to raise the permission overlay: access
+/// denial is recoverable by the user, whereas other failures are not.
 fn classify_keychain_error(e: keyring::Error, action: &str) -> anyhow::Error {
     match e {
         keyring::Error::NoStorageAccess(inner) => {
@@ -116,9 +122,10 @@ fn classify_keychain_error(e: keyring::Error, action: &str) -> anyhow::Error {
     }
 }
 
-/// Converts a stored `base_key` string to its raw entropy bytes. Supports both
-/// the current 32-byte hex format and the legacy UUIDv4 (16-byte) format still
-/// held by any Keychain entry created before the M34 fix above.
+/// Decodes a base key to raw bytes, accepting both stored formats.
+///
+/// Older installs stored a UUID, newer ones hex. Both are accepted so a recovery
+/// phrase can be produced regardless of when the key was created.
 fn base_key_to_bytes(base_key: &str) -> Result<Vec<u8>> {
     if let Ok(uuid) = Uuid::parse_str(base_key) {
         Ok(uuid.as_bytes().to_vec())
@@ -127,9 +134,10 @@ fn base_key_to_bytes(base_key: &str) -> Result<Vec<u8>> {
     }
 }
 
-/// Inverse of `base_key_to_bytes` — reconstructs the exact stored-string format
-/// (16 bytes → UUID string, 32 bytes → hex string) so a recovered key round-trips
-/// byte-for-byte back to what `derive_database_key` originally hashed.
+/// Encodes recovered bytes back into a base key, choosing format by length.
+///
+/// 16 bytes means the legacy UUID form, 32 the current hex form. Any other length
+/// indicates a corrupted phrase and is rejected rather than guessed at.
 fn bytes_to_base_key(bytes: &[u8]) -> Result<String> {
     match bytes.len() {
         16 => Ok(Uuid::from_slice(bytes)?.to_string()),
@@ -141,11 +149,11 @@ fn bytes_to_base_key(bytes: &[u8]) -> Result<String> {
     }
 }
 
-/// Doc 22 §8.2, Doc 19 §5.4: generates the opt-in 24-word (or 12-word, for a
-/// legacy UUID-format key — see `base_key_to_bytes`) BIP39 mnemonic
-/// representing the current `base_key`. Deterministic — calling this twice
-/// returns the same phrase, since it's derived from the Keychain-stored key
-/// rather than a freshly-generated one.
+/// Renders the base key as a BIP39 mnemonic.
+///
+/// A word list is used because this is the one secret a user must transcribe by
+/// hand; BIP39 words are unambiguous when written down and carry a checksum, so a
+/// mistyped phrase is rejected rather than silently deriving a wrong key.
 pub fn get_recovery_phrase() -> Result<String> {
     let base_key = get_or_create_base_key()?;
     let bytes = base_key_to_bytes(&base_key)?;
@@ -154,9 +162,10 @@ pub fn get_recovery_phrase() -> Result<String> {
     Ok(mnemonic.to_string())
 }
 
-/// Doc 19 §5.5: parses a Recovery Phrase back to a candidate `base_key`
-/// string. Pure — does not touch Keychain or the database, so an invalid or
-/// mistyped phrase never risks clobbering a working Keychain entry.
+/// Reconstructs the base key from a mnemonic.
+///
+/// Parsing is normalised, so casing and spacing differences in a hand-typed
+/// phrase do not cause a spurious failure.
 fn base_key_from_phrase(phrase: &str) -> Result<String> {
     let mnemonic = bip39::Mnemonic::parse_normalized(phrase)
         .context("Invalid recovery phrase — must be 12 or 24 valid BIP39 words")?;
@@ -164,11 +173,12 @@ fn base_key_from_phrase(phrase: &str) -> Result<String> {
     bytes_to_base_key(&bytes)
 }
 
-/// Doc 19 §5.5: opens `db_path` with a candidate SQLCipher key derived from
-/// `base_key` + the *current* machine's hardware UUID, and proves decryption
-/// actually succeeded. SQLCipher's `PRAGMA key` never itself errors — even for
-/// a wrong key — so only a real query against the (would-be-encrypted) schema
-/// can distinguish a correct key from an incorrect one.
+/// Confirms a candidate key actually opens the database before it is stored.
+///
+/// Without this, a valid-looking but wrong phrase would overwrite the keychain
+/// entry and leave the real database permanently unopenable. Reading from
+/// sqlite_master is the cheapest operation that genuinely requires decryption --
+/// opening the file alone succeeds even with the wrong key.
 fn verify_key_decrypts(db_path: &std::path::Path, base_key: &str) -> Result<()> {
     let db_key = derive_database_key_from_base_key(base_key)?;
     let conn = rusqlite::Connection::open(db_path).context("Failed to open database file")?;
@@ -184,14 +194,10 @@ fn verify_key_decrypts(db_path: &std::path::Path, base_key: &str) -> Result<()> 
     Ok(())
 }
 
-/// Doc 22 §8.2, Doc 19 §5.5: derives `base_key` from a Recovery Phrase,
-/// verifies it actually decrypts `finance.db` on *this* machine before
-/// trusting it, then writes it to Keychain — recreating the entry this Mac
-/// needs to decrypt the database going forward. `derive_database_key` combines
-/// the base key with the *current* hardware UUID freshly on every call, so no
-/// separate hardware-UUID bookkeeping is needed to support the "new Mac"
-/// migration case (§7.3); the verify-before-write ordering means a mistyped
-/// phrase never overwrites a Keychain entry that might otherwise still work.
+/// Restores the base key from a recovery phrase and writes it to the keychain.
+///
+/// Verification precedes the write, so a failed recovery leaves the existing
+/// entry untouched.
 pub fn restore_base_key_from_phrase(phrase: &str, db_path: &std::path::Path) -> Result<String> {
     let base_key = base_key_from_phrase(phrase)?;
     verify_key_decrypts(db_path, &base_key)?;
@@ -204,15 +210,17 @@ pub fn restore_base_key_from_phrase(phrase: &str, db_path: &std::path::Path) -> 
     Ok(base_key)
 }
 
-/// Doc 28 §4.4 step 6 ("Reset App Data" full wipe): clears the SQLite base
-/// encryption key from Keychain. Best-effort — a missing/already-deleted
-/// entry is not an error.
+/// Removes the development key from both its current and legacy locations.
 #[cfg(debug_assertions)]
 pub fn delete_base_key() {
     let _ = std::fs::remove_file(dev_base_key_path());
     let _ = std::fs::remove_file(std::env::temp_dir().join("dinero_dev_base_key.txt"));
 }
 
+/// Removes the keychain entry.
+///
+/// Errors are ignored: this runs during data deletion, where an already-absent
+/// entry is the desired end state anyway.
 #[cfg(not(debug_assertions))]
 pub fn delete_base_key() {
     if let Ok(entry) = Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER) {
@@ -220,52 +228,35 @@ pub fn delete_base_key() {
     }
 }
 
-/// I14 fix: fetches the immutable Hardware UUID of the Mac via the
-/// `machine-uid` crate (already a Cargo.toml dependency, previously unused)
-/// rather than a hand-rolled `ioreg` invocation + line-parsing. On macOS the
-/// crate still ultimately reads `IOPlatformUUID` the same way the OS exposes
-/// it — there is no root-free API that avoids that — but it replaces our own
-/// duplicate parsing with tested, maintained upstream code.
+/// Reads the machine's hardware UUID, used as the key-derivation salt.
 pub fn get_hardware_uuid() -> Result<String> {
     machine_uid::get().map_err(|e| anyhow::anyhow!("Failed to read hardware UUID: {}", e))
 }
 
-/// Derives the SQLite encryption key by combining the base key and the Hardware UUID using Argon2id.
+/// Derives the SQLCipher key for this machine.
 pub fn derive_database_key() -> Result<String> {
     let base_key = get_or_create_base_key()?;
     derive_database_key_from_base_key(&base_key)
 }
 
-/// Core of `derive_database_key`, parameterized on an explicit `base_key` so
-/// `verify_key_decrypts` can test a *candidate* recovered key (from a
-/// Recovery Phrase) against the current machine's hardware UUID without first
-/// writing it to Keychain, and so `restore_from_recovery_phrase` can
-/// re-derive the same SQLCipher key afterward to write its audit entry.
+/// Derives the database key from a supplied base key.
+///
+/// Separate from the above so recovery can verify a candidate key without first
+/// writing it to the keychain.
 pub fn derive_database_key_from_base_key(base_key: &str) -> Result<String> {
     let hw_uuid = get_hardware_uuid()?;
     derive_database_key_with_hw_uuid(base_key, &hw_uuid)
 }
 
-/// Core of `derive_database_key_from_base_key`, parameterized on an explicit
-/// `hw_uuid` rather than always reading the *current* machine's — lets the
-/// Mac-to-Mac migration path (`try_migrate_hardware_uuid`, I4 fix) derive
-/// both the old-hardware and new-hardware keys without conflating the two.
+/// Derive the SQLCipher key from the base key, salted with the hardware UUID.
 ///
-/// TASK-DB-001 fix: this previously computed a `padded_salt` from `hw_uuid`
-/// and then never used it — the actual salt was a hardcoded constant
-/// (`"HardwareUUIDSalt"` in base64), identical across every installation.
-/// That defeats a core purpose of salting (per-target precomputation
-/// resistance) and didn't match Document 12/18/22's "derive the key via
-/// Argon2id from the base key and the Mac's Hardware UUID" — `hash_raw`'s
-/// signature is `(password, salt, ..)`, so `base_key` is the password and
-/// the hardware-UUID-derived bytes are the salt, not a fixed constant.
-/// Device-binding still worked before this fix (`hw_uuid` was folded into
-/// the password input via string concatenation instead), but the salt
-/// itself carried no device-specific entropy. No existing on-disk database
-/// depends on the old (buggy) derivation — confirmed no
-/// `~/Library/Application Support/com.dinero.app/` directory exists yet on
-/// any machine this has run on, so this is a safe correction, not a
-/// breaking migration.
+/// Argon2 is used rather than a plain hash because the base key is the only
+/// secret protecting the database at rest, and a memory-hard derivation makes
+/// offline brute force expensive.
+///
+/// The salt is padded or truncated to a fixed 16 bytes, since hardware UUID
+/// length is not guaranteed across platforms and the salt size must be stable --
+/// changing it would make every existing database underivable.
 fn derive_database_key_with_hw_uuid(base_key: &str, hw_uuid: &str) -> Result<String> {
     let salt_bytes = hw_uuid.as_bytes();
     let mut padded_salt = [0u8; 16];
@@ -280,33 +271,23 @@ fn derive_database_key_with_hw_uuid(base_key: &str, hw_uuid: &str) -> Result<Str
         .hash_password(base_key.as_bytes(), &salt)
         .map_err(|e| anyhow::anyhow!("Argon2 hashing failed: {}", e))?;
 
-    // Return the hash string to be used as SQLCipher key
     Ok(password_hash.to_string())
 }
 
-// ── Mac-to-Mac hardware-UUID migration (Doc 22 §7.3, I4 fix) ─────────────────
-//
-// Without this, a legitimate hardware migration (old Mac's Keychain + files
-// carried over via Migration Assistant/Time Machine, but a new IOPlatformUUID)
-// bricks the database: `derive_database_key` on the new Mac produces a
-// different SQLCipher key than the one the file was encrypted with, and the
-// app fails closed requiring a Recovery Phrase the user may never have opted
-// into. This records the hardware UUID that last successfully opened the
-// database and, on a mismatch, attempts a transparent one-time re-key rather
-// than failing closed immediately.
-
+// Records the hardware UUID last seen. A change means the database has moved to
+// a different machine, which startup reports as a migration rather than letting
+// it surface as an unexplained key failure.
 const HW_UUID_MARKER_FILENAME: &str = "hw_uuid_marker.txt";
 
+/// Path of the file recording the hardware UUID last seen.
 fn hw_uuid_marker_path(app_data_dir: &std::path::Path) -> std::path::PathBuf {
     app_data_dir.join(HW_UUID_MARKER_FILENAME)
 }
 
-/// Records the hardware UUID that just successfully opened the database.
-/// Not a secret — a Mac's IOPlatformUUID is already readable locally via
-/// `ioreg` by any process — so plaintext storage here doesn't weaken
-/// anything; it only gives a future launch on different hardware something
-/// to detect the change against. Best-effort: a write failure here should
-/// never block a successful startup.
+/// Records the current hardware UUID after a successful open.
+///
+/// Written only on success, so the marker always reflects a UUID the database
+/// was genuinely opened with.
 pub fn record_last_known_hw_uuid(app_data_dir: &std::path::Path) {
     match get_hardware_uuid() {
         Ok(hw_uuid) => {
@@ -318,13 +299,10 @@ pub fn record_last_known_hw_uuid(app_data_dir: &std::path::Path) {
     }
 }
 
-/// TASK-DB-021: peeks at the recorded hardware-UUID marker (without deriving
-/// or touching any keys) to tell the caller, *before* attempting DB init,
-/// whether this launch looks like a Mac-to-Mac migration — so it can show
-/// the "Database migrated to new Mac" toast (Document 30 TASK-DB-021) after
-/// a successful open, without threading a migration flag through
-/// `init_db`'s return type. Returns `false` on any read/detection error
-/// (conservatively: no toast rather than a spurious one).
+/// Whether the machine appears to have changed since the last successful open.
+///
+/// A missing marker is not a migration -- that is simply a first run, or an
+/// install predating the marker.
 pub fn hw_uuid_marker_indicates_migration(app_data_dir: &std::path::Path) -> bool {
     let Ok(old_hw_uuid) = std::fs::read_to_string(hw_uuid_marker_path(app_data_dir)) else {
         return false;
@@ -339,17 +317,12 @@ pub fn hw_uuid_marker_indicates_migration(app_data_dir: &std::path::Path) -> boo
     }
 }
 
-/// Attempts to recover from a hardware-UUID change by re-keying the database
-/// in place. Derives the *old* SQLCipher key from the marker's recorded
-/// hardware UUID, verifies it still decrypts `db_path`, and if so `PRAGMA
-/// rekey`s to the key derived from the *current* hardware UUID — no Recovery
-/// Phrase required.
+/// Re-keys the database after the machine's hardware UUID changed.
 ///
-/// Returns `Ok(true)` if a migration was performed, `Ok(false)` if there was
-/// nothing to migrate (no marker, or the marker already matches current
-/// hardware — this is some other kind of key mismatch, not a hardware
-/// change), and `Err` if a migration was attempted but failed (e.g. the old
-/// key didn't decrypt the file either — the marker is stale/irrelevant).
+/// Because the UUID is the derivation salt, moving to new hardware changes the
+/// derived key and the file stops opening. This re-derives with the previous UUID
+/// and re-keys to the new one, which is what allows a restored or migrated Mac to
+/// recover without the recovery phrase.
 pub fn try_migrate_hardware_uuid(
     db_path: &std::path::Path,
     app_data_dir: &std::path::Path,
@@ -375,8 +348,6 @@ pub fn try_migrate_hardware_uuid(
          PRAGMA kdf_iter = 256000;
          PRAGMA cipher_hmac_algorithm = HMAC_SHA512;",
     )?;
-    // SQLCipher's PRAGMA key never itself errors, even for a wrong key — only
-    // a real query proves the old-hardware key actually decrypts this file.
     conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| {
         r.get::<_, i64>(0)
     })
@@ -397,10 +368,6 @@ pub fn try_migrate_hardware_uuid(
     Ok(true)
 }
 
-// These tests avoid `get_or_create_base_key`/`get_hardware_uuid` (real macOS
-// Keychain / ioreg calls) — they exercise the pure key-derivation and
-// SQLCipher rekey mechanics that `try_migrate_hardware_uuid` relies on,
-// using explicit stand-in values instead.
 #[cfg(test)]
 mod hardware_migration_tests {
     use super::*;
@@ -429,7 +396,6 @@ mod hardware_migration_tests {
         let old_key = derive_database_key_with_hw_uuid("base", "hw-old").unwrap();
         let new_key = derive_database_key_with_hw_uuid("base", "hw-new").unwrap();
 
-        // Create and encrypt with the "old hardware" key.
         {
             let conn = rusqlite::Connection::open(&db_path).unwrap();
             conn.execute_batch(&format!("PRAGMA key = '{}';", old_key))
@@ -443,7 +409,6 @@ mod hardware_migration_tests {
                 .unwrap();
         }
 
-        // Simulate the migration's rekey step directly.
         {
             let conn = rusqlite::Connection::open(&db_path).unwrap();
             conn.execute_batch(&format!("PRAGMA key = '{}';", old_key))
@@ -461,7 +426,6 @@ mod hardware_migration_tests {
                 .unwrap();
         }
 
-        // Old key must no longer decrypt the (now rekeyed) database.
         {
             let conn = rusqlite::Connection::open(&db_path).unwrap();
             conn.execute_batch(&format!("PRAGMA key = '{}';", old_key))
@@ -475,7 +439,6 @@ mod hardware_migration_tests {
             );
         }
 
-        // New key must decrypt it.
         {
             let conn = rusqlite::Connection::open(&db_path).unwrap();
             conn.execute_batch(&format!("PRAGMA key = '{}';", new_key))
@@ -495,16 +458,13 @@ mod hardware_migration_tests {
             std::env::temp_dir().join(format!("dinero_hw_marker_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
 
-        // No marker file at all -> never a migration signal.
         assert!(!hw_uuid_marker_indicates_migration(&dir));
 
         let current = get_hardware_uuid().unwrap();
 
-        // Marker matches current hardware -> no migration.
         std::fs::write(hw_uuid_marker_path(&dir), &current).unwrap();
         assert!(!hw_uuid_marker_indicates_migration(&dir));
 
-        // Marker differs from current hardware -> looks like a migration.
         std::fs::write(hw_uuid_marker_path(&dir), "some-other-hw-uuid").unwrap();
         assert!(hw_uuid_marker_indicates_migration(&dir));
 

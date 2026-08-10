@@ -1,3 +1,8 @@
+//! Records how each reconciliation decision was reached.
+//!
+//! Retains the score and the rules that fired alongside the outcome, so a merge
+//! can be explained to the user afterwards and the matcher's behaviour audited
+//! rather than taken on trust.
 use anyhow::Result;
 use chrono::NaiveDateTime;
 use rusqlite::{params, Connection, Row};
@@ -16,6 +21,7 @@ pub struct MatchDecisionsRow {
     pub created_at: Option<NaiveDateTime>,
 }
 
+/// Records a reconciliation decision with its score and reasoning.
 pub fn insert(conn: &Connection, decision: &MatchDecisionsRow) -> Result<()> {
     conn.execute(
         "INSERT INTO match_decisions (
@@ -37,6 +43,7 @@ pub fn insert(conn: &Connection, decision: &MatchDecisionsRow) -> Result<()> {
     Ok(())
 }
 
+/// Fetch one decision.
 pub fn select_by_id(conn: &Connection, id: &str) -> Result<Option<MatchDecisionsRow>> {
     let mut stmt = conn.prepare("SELECT * FROM match_decisions WHERE id = ?1")?;
     let mut rows = stmt.query([id])?;
@@ -47,6 +54,7 @@ pub fn select_by_id(conn: &Connection, id: &str) -> Result<Option<MatchDecisions
     }
 }
 
+/// Decisions affecting an observation, so a merge can be explained afterwards.
 pub fn select_by_observation_id(
     conn: &Connection,
     observation_id: &str,
@@ -61,6 +69,7 @@ pub fn select_by_observation_id(
     Ok(decisions)
 }
 
+/// Maps a result row onto a decision record.
 fn row_to_decision(row: &Row) -> rusqlite::Result<MatchDecisionsRow> {
     Ok(MatchDecisionsRow {
         id: row.get("id")?,

@@ -1,22 +1,23 @@
-//! audit_07 #10: persistence for user-dismissed `system_warning`s.
+//! Records which system warnings the user has dismissed.
 //!
-//! The in-memory registry in `ipc::system_warnings` answers "what is wrong
-//! right now". This table answers "what has the user already told us they
-//! know about", which has to outlive the process — a machine that is
-//! permanently below the RAM threshold otherwise re-prompts on every launch.
-
+//! Keyed by a hash of the message rather than the text itself, which keeps the
+//! table compact and stable while ensuring a materially reworded warning is
+//! treated as new and shown again.
 use anyhow::Result;
 use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
-/// Identifies *what a warning said*, not just which kind it was, so a
-/// dismissal cannot silence a materially different message under the same
-/// `warning_type`.
+/// Hashes a warning message to key its dismissal.
+///
+/// Keying on content rather than an identifier means a materially reworded
+/// warning counts as new and is shown again, while a repeat of the same warning
+/// stays dismissed.
 pub fn message_hash(message: &str) -> String {
     format!("{:x}", Sha256::digest(message.as_bytes()))
 }
 
+/// Persists a dismissal so it survives a restart.
 pub fn record_dismissal(conn: &Connection, warning_type: &str, message: &str) -> Result<()> {
     conn.execute(
         "INSERT INTO dismissed_system_warnings (warning_type, message_hash)
@@ -29,10 +30,7 @@ pub fn record_dismissal(conn: &Connection, warning_type: &str, message: &str) ->
     Ok(())
 }
 
-/// Called when a warning's underlying condition resolves. Dropping the
-/// dismissal re-arms it: if the same condition recurs later it is a new event
-/// the user has not seen the resolution of, and silently swallowing it would
-/// be a worse failure than re-prompting.
+/// Clears a dismissal, allowing the warning to reappear.
 pub fn clear_dismissal(conn: &Connection, warning_type: &str) -> Result<()> {
     conn.execute(
         "DELETE FROM dismissed_system_warnings WHERE warning_type = ?1",
@@ -41,6 +39,7 @@ pub fn clear_dismissal(conn: &Connection, warning_type: &str) -> Result<()> {
     Ok(())
 }
 
+/// Loads every dismissal at startup, before any warning can be raised.
 pub fn load_all(conn: &Connection) -> Result<HashMap<String, String>> {
     let mut stmt =
         conn.prepare("SELECT warning_type, message_hash FROM dismissed_system_warnings")?;
@@ -76,15 +75,12 @@ mod tests {
             "a materially different message must not match a prior dismissal"
         );
 
-        // Re-dismissing the same type replaces rather than duplicating —
-        // `warning_type` is the primary key, so a second row would fail.
         record_dismissal(&conn, "low_ram", "Low RAM: 1 GB free").unwrap();
         assert_eq!(
             load_all(&conn).unwrap().get("low_ram"),
             Some(&message_hash("Low RAM: 1 GB free"))
         );
 
-        // Condition resolved -> dismissal dropped, so a recurrence is shown.
         clear_dismissal(&conn, "low_ram").unwrap();
         assert!(load_all(&conn).unwrap().is_empty());
     }

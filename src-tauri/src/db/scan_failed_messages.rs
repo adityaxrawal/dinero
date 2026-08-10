@@ -1,3 +1,7 @@
+//! Messages that failed during a scan, retained for retry and diagnosis.
+//!
+//! Recorded rather than dropped so a parse failure is visible and re-attemptable
+//! instead of appearing as a silently missing transaction.
 use anyhow::Result;
 use chrono::NaiveDateTime;
 use rusqlite::{params, Connection};
@@ -12,6 +16,10 @@ pub struct ScanFailedMessageRow {
     pub failed_at: Option<NaiveDateTime>,
 }
 
+/// Records a message that failed during a scan.
+///
+/// Recorded rather than dropped, so a parse failure is visible and retryable
+/// instead of appearing as a silently missing transaction.
 pub fn insert(conn: &Connection, row: &ScanFailedMessageRow) -> Result<()> {
     conn.execute(
         "INSERT INTO scan_failed_messages (id, account_id, msg_id, error) VALUES (?1, ?2, ?3, ?4)",
@@ -20,6 +28,7 @@ pub fn insert(conn: &Connection, row: &ScanFailedMessageRow) -> Result<()> {
     Ok(())
 }
 
+/// Failed messages for an account.
 pub fn select_by_account(conn: &Connection, account_id: &str) -> Result<Vec<ScanFailedMessageRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, account_id, msg_id, error, failed_at \

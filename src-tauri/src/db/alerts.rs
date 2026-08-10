@@ -1,3 +1,8 @@
+//! Budget threshold alerts and ingestion sync metadata.
+//!
+//! Alert rows record that a spending threshold was crossed, so a given breach is
+//! announced once rather than on every recalculation. The sync-metadata helpers
+//! share this module because both track "what has already been handled".
 use anyhow::Result;
 use chrono::NaiveDateTime;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -6,7 +11,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Alert {
     pub alert_id: String,
-    pub alert_type: String, // "SMS Offline" or "Email Offline"
+    pub alert_type: String,
     pub message: String,
     pub related_cluster_id: Option<String>,
     pub status: String,
@@ -21,6 +26,10 @@ pub struct SyncMetadata {
     pub updated_at: Option<NaiveDateTime>,
 }
 
+/// Record that a budget threshold was crossed.
+///
+/// Persisting the alert is what makes a breach announced once rather than on
+/// every recalculation.
 pub fn insert_alert(conn: &Connection, alert: &Alert) -> Result<()> {
     conn.execute(
         "INSERT INTO alerts (alert_id, type, message, related_cluster_id, status)
@@ -36,6 +45,7 @@ pub fn insert_alert(conn: &Connection, alert: &Alert) -> Result<()> {
     Ok(())
 }
 
+/// Fetch one alert.
 pub fn get_alert(conn: &Connection, alert_id: &str) -> Result<Option<Alert>> {
     let mut stmt = conn.prepare(
         "SELECT alert_id, type, message, related_cluster_id, status, created_at, updated_at
@@ -68,6 +78,7 @@ pub fn get_alert(conn: &Connection, alert_id: &str) -> Result<Option<Alert>> {
     Ok(alert)
 }
 
+/// Update an alert's status, such as marking it acknowledged.
 pub fn update_alert_status(conn: &Connection, alert_id: &str, status: &str) -> Result<()> {
     conn.execute(
         "UPDATE alerts SET status = ?1 WHERE alert_id = ?2",
@@ -76,6 +87,7 @@ pub fn update_alert_status(conn: &Connection, alert_id: &str, status: &str) -> R
     Ok(())
 }
 
+/// Reads an ingestion sync marker.
 pub fn get_sync_metadata(conn: &Connection, bank_name: &str) -> Result<Option<SyncMetadata>> {
     let mut stmt = conn.prepare(
         "SELECT bank_name, last_synced_at, updated_at
@@ -104,6 +116,7 @@ pub fn get_sync_metadata(conn: &Connection, bank_name: &str) -> Result<Option<Sy
     Ok(meta)
 }
 
+/// Writes an ingestion sync marker, inserting or updating as needed.
 pub fn upsert_sync_metadata(
     conn: &Connection,
     bank_name: &str,

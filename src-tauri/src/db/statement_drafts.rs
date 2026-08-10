@@ -1,3 +1,8 @@
+//! Extracted statement rows awaiting user review before they are committed.
+//!
+//! The staging area between parsing a statement and writing transactions. Nothing
+//! reaches the ledger until a draft is explicitly confirmed, so a misparsed
+//! statement is corrected rather than silently absorbed.
 use chrono::NaiveDateTime;
 use rusqlite::{params, Connection, Result, Row};
 
@@ -27,6 +32,7 @@ const SELECT_COLUMNS: &str =
      instrument_type, billing_period_start, billing_period_end, due_date, statement_date, \
      current_balance, minimum_due, rows_json, status, created_at, updated_at";
 
+/// Maps a result row onto a draft record.
 fn row_from_sql(row: &Row) -> rusqlite::Result<StatementDraftRow> {
     Ok(StatementDraftRow {
         id: row.get(0)?,
@@ -49,6 +55,7 @@ fn row_from_sql(row: &Row) -> rusqlite::Result<StatementDraftRow> {
     })
 }
 
+/// Stage an extracted draft for review.
 pub fn insert(conn: &Connection, draft: &StatementDraftRow) -> Result<()> {
     conn.execute(
         "INSERT INTO statement_drafts \
@@ -77,6 +84,7 @@ pub fn insert(conn: &Connection, draft: &StatementDraftRow) -> Result<()> {
     Ok(())
 }
 
+/// Fetch one draft.
 pub fn select_by_id(conn: &Connection, id: &str) -> Result<Option<StatementDraftRow>> {
     conn.query_row(
         &format!("SELECT {SELECT_COLUMNS} FROM statement_drafts WHERE id = ?1"),
@@ -93,6 +101,7 @@ pub fn select_by_id(conn: &Connection, id: &str) -> Result<Option<StatementDraft
     })
 }
 
+/// Drafts awaiting user confirmation.
 pub fn select_pending_review(conn: &Connection) -> Result<Vec<StatementDraftRow>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {SELECT_COLUMNS} FROM statement_drafts WHERE status = 'pending_review' ORDER BY created_at DESC"
@@ -101,6 +110,7 @@ pub fn select_pending_review(conn: &Connection) -> Result<Vec<StatementDraftRow>
     rows.collect()
 }
 
+/// Move a draft through its lifecycle as it is committed or discarded.
 pub fn update_status(conn: &Connection, id: &str, status: &str) -> Result<()> {
     conn.execute(
         "UPDATE statement_drafts SET status = ?1 WHERE id = ?2",
@@ -109,6 +119,7 @@ pub fn update_status(conn: &Connection, id: &str, status: &str) -> Result<()> {
     Ok(())
 }
 
+/// Remove a draft once it has been settled.
 pub fn delete(conn: &Connection, id: &str) -> Result<bool> {
     let count = conn.execute("DELETE FROM statement_drafts WHERE id = ?1", params![id])?;
     Ok(count > 0)

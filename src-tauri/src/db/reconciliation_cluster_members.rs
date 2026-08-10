@@ -1,3 +1,8 @@
+//! Membership rows linking transactions into a reconciliation cluster.
+//!
+//! Each row carries the member's role -- the incoming observation versus the
+//! existing candidates it might match -- which is what the comparison UI uses to
+//! decide what is being matched against what.
 use anyhow::Result;
 use chrono::NaiveDateTime;
 use rusqlite::{params, Connection, Row};
@@ -11,12 +16,10 @@ pub struct ReconciliationClusterMembersRow {
     pub canonical_transaction_id: Option<String>,
     pub member_role: String,
     pub added_at: Option<NaiveDateTime>,
-    /// The candidate's own score against the incoming observation, as
-    /// computed by `reconciliation::scorer::score_candidates`. `None` for
-    /// the "incoming" member — it has no score against itself.
     pub match_score: Option<f64>,
 }
 
+/// Adds a transaction to a cluster with its role.
 pub fn insert(conn: &Connection, member: &ReconciliationClusterMembersRow) -> Result<()> {
     conn.execute(
         "INSERT INTO reconciliation_cluster_members (
@@ -35,6 +38,7 @@ pub fn insert(conn: &Connection, member: &ReconciliationClusterMembersRow) -> Re
     Ok(())
 }
 
+/// Members of a cluster, for the comparison view.
 pub fn select_by_cluster_id(
     conn: &Connection,
     cluster_id: &str,
@@ -50,6 +54,7 @@ pub fn select_by_cluster_id(
     Ok(members)
 }
 
+/// Removes all members when a cluster is resolved.
 pub fn delete_by_cluster_id(conn: &Connection, cluster_id: &str) -> Result<()> {
     conn.execute(
         "DELETE FROM reconciliation_cluster_members WHERE cluster_id = ?1",
@@ -58,6 +63,7 @@ pub fn delete_by_cluster_id(conn: &Connection, cluster_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Maps a result row onto a cluster member.
 fn row_to_member(row: &Row) -> rusqlite::Result<ReconciliationClusterMembersRow> {
     Ok(ReconciliationClusterMembersRow {
         id: row.get("id")?,

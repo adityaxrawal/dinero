@@ -1,52 +1,43 @@
-//! TASK-DB-023: Transaction Bounding for Background Writes (Prevent SQLITE_BUSY).
+//! Batches row writes to keep ingestion from thrashing the database.
 //!
-//! Every long-running background Tokio task (historical scan, poll worker,
-//! statement parser) writes many rows over time. Wrapping the *entire* job
-//! in one giant transaction would hold a write lock for the job's whole
-//! duration, starving any other connection (including the foreground UI's
-//! own reads/writes) with `SQLITE_BUSY` — a real problem given the Power
-//! User persona's bulk-backfill case (≈20 cards × 5 years ≈ 1,200
-//! statements). `BatchWriter` groups writes into short-lived
-//! `BEGIN IMMEDIATE ... COMMIT` transactions bounded by size (max ~20 rows)
-//! or duration (max ~500ms), and retries `SQLITE_BUSY` with exponential
-//! backoff (max 3 retries) before surfacing an error.
+//! A mailbox scan produces transactions far faster than they should be committed
+//! one statement at a time. Writes are therefore accumulated and flushed either
+//! when the batch fills or when it ages out, so a slow trickle is still
+//! persisted promptly rather than waiting for a batch that may never fill.
 //!
-//! `BatchWriter` is deliberately synchronous — it never holds a write
-//! transaction open across an `await` that could block on network I/O.
-//! Callers queue writes as they produce them (e.g. while iterating parsed
-//! Gmail messages) and call `flush()` only from inside a
-//! `deadpool_sqlite::Connection::interact(...)` closure, which already runs
-//! on rusqlite's own blocking thread, not the async task's.
+//! Retries exist because SQLite returns `SQLITE_BUSY` under concurrent access
+//! rather than blocking, and a busy database during a scan is expected, not
+//! exceptional.
 
 use anyhow::Result;
 use rusqlite::{Connection, ErrorCode};
 use std::time::{Duration, Instant};
 
-/// A batch is flushed once it reaches this many queued writes...
+// Flush triggers: whichever comes first. The row cap bounds transaction size,
+// and the duration cap bounds latency so a partial batch is not held
+// indefinitely waiting for rows that never arrive.
 pub const MAX_BATCH_ROWS: usize = 20;
-/// ...or once this much time has passed since the first write was queued,
-/// whichever comes first.
 pub const MAX_BATCH_DURATION: Duration = Duration::from_millis(500);
-/// `SQLITE_BUSY` retries before a batch's error is surfaced to the caller.
+// SQLITE_BUSY is expected during a scan rather than exceptional, so contention
+// is retried a few times before the write is treated as failed.
 pub const MAX_BUSY_RETRIES: u32 = 3;
 
 type Write = Box<dyn Fn(&Connection) -> rusqlite::Result<()> + Send>;
 
-/// Accumulates write operations and flushes them as a single bounded
-/// transaction once either limit is reached, or when `flush()` is called
-/// explicitly (e.g. at the end of a job, to commit a partial batch).
 pub struct BatchWriter {
     pending: Vec<Write>,
     batch_started_at: Option<Instant>,
 }
 
 impl Default for BatchWriter {
+    /// An empty writer with the standard batch limits.
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl BatchWriter {
+    /// Creates an empty batch writer.
     pub fn new() -> Self {
         Self {
             pending: Vec::new(),
@@ -54,10 +45,7 @@ impl BatchWriter {
         }
     }
 
-    /// Queues a write. Returns `true` once the batch has reached either
-    /// bound (size or duration) and should be flushed by the caller —
-    /// callers own the actual `flush()` call so a connection is only ever
-    /// acquired at a point the caller controls, never mid-`.await`.
+    /// Queues one write, returning whether the batch is now ready to flush.
     pub fn push(
         &mut self,
         write: impl Fn(&Connection) -> rusqlite::Result<()> + Send + 'static,
@@ -69,6 +57,7 @@ impl BatchWriter {
         self.is_full()
     }
 
+    /// Whether the row cap has been reached.
     pub fn is_full(&self) -> bool {
         self.pending.len() >= MAX_BATCH_ROWS
             || self
@@ -77,20 +66,21 @@ impl BatchWriter {
                 .unwrap_or(false)
     }
 
+    /// Whether anything is queued.
     pub fn is_empty(&self) -> bool {
         self.pending.is_empty()
     }
 
+    /// Number of queued writes.
     pub fn len(&self) -> usize {
         self.pending.len()
     }
 
-    /// Flushes all pending writes as a single `BEGIN IMMEDIATE ... COMMIT`
-    /// transaction. On `SQLITE_BUSY`, rolls back and retries the *whole*
-    /// batch with exponential backoff (up to `MAX_BUSY_RETRIES` times)
-    /// before surfacing the error — any other error rolls back and returns
-    /// immediately, without retrying. Synchronous: call only from inside a
-    /// `conn.interact(...)` closure, never across an `.await`.
+    /// Commits the queued writes in one transaction.
+    ///
+    /// Retries on SQLITE_BUSY, which is expected rather than exceptional during a
+    /// scan: contention with the ingestion writers is normal, and failing the batch
+    /// on first contact would drop rows that would have succeeded a moment later.
     pub fn flush(&mut self, conn: &mut Connection) -> Result<usize> {
         if self.pending.is_empty() {
             return Ok(0);
@@ -113,6 +103,10 @@ impl BatchWriter {
         }
     }
 
+    /// Executes the queued writes inside a single transaction.
+    ///
+    /// One transaction rather than one per row is the entire point of batching --
+    /// it is what keeps database contention from becoming the limit on scan speed.
     fn run_batch(conn: &mut Connection, writes: &[Write]) -> rusqlite::Result<()> {
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         for write in writes {
@@ -121,6 +115,7 @@ impl BatchWriter {
         tx.commit()
     }
 
+    /// Whether an error is SQLITE_BUSY, and therefore worth retrying.
     fn is_sqlite_busy(err: &rusqlite::Error) -> bool {
         matches!(
             err,
@@ -207,7 +202,6 @@ mod tests {
         let mut conn = setup_db();
         let mut writer = BatchWriter::new();
         writer.push(insert_tx_write("tx_ok"));
-        // Duplicate primary key -- a real, non-retryable constraint error.
         writer.push(insert_tx_write("tx_ok"));
 
         let result = writer.flush(&mut conn);

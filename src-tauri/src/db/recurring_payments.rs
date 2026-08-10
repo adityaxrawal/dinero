@@ -1,3 +1,7 @@
+//! Detected recurring payments and subscriptions.
+//!
+//! Identified by instrument and merchant, which is what allows an upcoming
+//! charge to be predicted and surfaced as an upcoming bill before it arrives.
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -22,6 +26,7 @@ pub struct RecurringPaymentsRow {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Record a detected recurring payment.
 pub fn insert(conn: &Connection, row: &RecurringPaymentsRow) -> Result<()> {
     conn.execute(
         "INSERT INTO recurring_payments (
@@ -48,6 +53,7 @@ pub fn insert(conn: &Connection, row: &RecurringPaymentsRow) -> Result<()> {
     Ok(())
 }
 
+/// Fetch one recurring payment.
 pub fn get(conn: &Connection, id: &str) -> Result<Option<RecurringPaymentsRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, merchant_entity_id, instrument_id, amount_minor, currency, cadence,
@@ -79,10 +85,7 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<RecurringPaymentsRow>> 
     Ok(row)
 }
 
-/// Doc 30 TASK-API-006: `analytics_recurring_payments_summary` -- lists
-/// every recurring payment group still `status = 'active'`, most-recently
-/// predicted first. Did not exist before this task (only single-row
-/// `get`/`find_by_instrument_and_merchant` lookups did).
+/// Active recurring payments, used to predict upcoming charges.
 pub fn select_active(conn: &Connection) -> Result<Vec<RecurringPaymentsRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, merchant_entity_id, instrument_id, amount_minor, currency, cadence,
@@ -116,9 +119,10 @@ pub fn select_active(conn: &Connection) -> Result<Vec<RecurringPaymentsRow>> {
     Ok(results)
 }
 
-/// Doc 30 TASK-TXN-011: looks up an existing recurring-payment row for this
-/// (instrument, merchant) pair so re-detection after a new occurrence
-/// updates it in place rather than creating a duplicate row every time.
+/// Finds a recurring payment by the pair that identifies it.
+///
+/// Instrument and merchant together, because the same subscription billed to a
+/// different card is a distinct arrangement from the user's point of view.
 pub fn find_by_instrument_and_merchant(
     conn: &Connection,
     instrument_id: &str,
@@ -154,6 +158,7 @@ pub fn find_by_instrument_and_merchant(
     Ok(row)
 }
 
+/// Update a recurring payment's schedule or amount.
 pub fn update(conn: &Connection, row: &RecurringPaymentsRow) -> Result<()> {
     conn.execute(
         "UPDATE recurring_payments SET
@@ -189,16 +194,16 @@ pub fn update(conn: &Connection, row: &RecurringPaymentsRow) -> Result<()> {
     Ok(())
 }
 
+/// Remove a recurring payment.
 pub fn delete(conn: &Connection, id: &str) -> Result<()> {
     conn.execute("DELETE FROM recurring_payments WHERE id = ?1", params![id])?;
     Ok(())
 }
 
-/// Inserts or updates the explicit-source recurring_payments row for this
-/// (instrument, merchant) pair. Explicit and inferred rows never share an
-/// identity even for the same instrument+merchant -- the WHERE clause below
-/// pins `source = 'explicit'` so an inferred row (recurring_detector.rs)
-/// is never silently overwritten by an explicit registration, or vice versa.
+/// Inserts or updates a user-declared recurring payment.
+///
+/// Kept distinct from detection: a user's explicit statement about their own
+/// subscriptions outranks anything inferred from transaction history.
 pub fn upsert_explicit(
     conn: &Connection,
     instrument_id: &str,
@@ -247,11 +252,10 @@ pub fn upsert_explicit(
     }
 }
 
-/// Candidates for a cancellation email to match, in precedence order: an
-/// exact `external_mandate_id` match (if the cancellation email carried one)
-/// short-circuits to a single-element result; otherwise falls back to every
-/// active row for the same (instrument, merchant) pair. Never guesses beyond
-/// what's returned here -- the caller decides zero/one/many.
+/// Active payments that a cancellation notice might refer to.
+///
+/// A mandate cancellation names the arrangement loosely, so candidates are
+/// narrowed here and matched afterwards.
 pub fn find_active_candidates_for_cancellation(
     conn: &Connection,
     instrument_id: Option<&str>,
@@ -290,6 +294,7 @@ pub fn find_active_candidates_for_cancellation(
     Ok(rows)
 }
 
+/// Maps a result row onto a recurring payment.
 fn row_from_sql(r: &rusqlite::Row) -> rusqlite::Result<RecurringPaymentsRow> {
     Ok(RecurringPaymentsRow {
         id: r.get(0)?,
@@ -310,6 +315,7 @@ fn row_from_sql(r: &rusqlite::Row) -> rusqlite::Result<RecurringPaymentsRow> {
     })
 }
 
+/// Marks a recurring payment cancelled, stopping future predictions for it.
 pub fn mark_cancelled(conn: &Connection, id: &str) -> Result<()> {
     conn.execute(
         "UPDATE recurring_payments SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP WHERE id = ?1",

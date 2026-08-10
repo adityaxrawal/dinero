@@ -1,17 +1,10 @@
-//! TASK-DB-019: Database Integrity Check and Retention Background Task.
+//! Periodic database maintenance: integrity, vacuuming and size warnings.
 //!
-//! Document 30's TASK-DB-019 names 5 steps. Steps 2 (raw-JSON retention) and
-//! 5 (5-year archival) already exist in `db::retention` (`sweep_raw_payloads`,
-//! `archive_old_transactions`), wired into the daily background loop in
-//! `lib.rs`. This module implements the 3 steps that were still missing:
-//! 1. `PRAGMA integrity_check` — corruption detection.
-//! 3. `PRAGMA incremental_vacuum(500)` — bounded reclaim, no full-file lock.
-//! 4. A size warning once `finance.db` exceeds 2 GB.
-//!
-//! Following the pattern established in `startup.rs`'s RAM check: filesystem/
-//! event-emission side effects are kept thin so the decision logic itself is
-//! unit-testable without a real multi-GB file or a running Tauri app handle.
-
+//! Run on the daily background loop. The integrity check is the important one:
+//! silent corruption of a financial ledger is exactly the failure that must not
+//! go unnoticed, so a failure is escalated to the incident monitor rather than
+//! merely logged. Incremental vacuum reclaims space in bounded steps, avoiding
+//! the long full-database lock a plain VACUUM would take.
 use anyhow::Result;
 use chrono::Utc;
 use rusqlite::Connection;
@@ -19,34 +12,25 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter};
 
-/// `db_size_warning` fires once `finance.db` exceeds this size.
 pub const SIZE_WARNING_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
-/// Doc 30 TASK-OPS-003: the last result of `check_integrity_and_report`'s
-/// daily `PRAGMA integrity_check`, cached process-wide so `health::` can
-/// report DB integrity status cheaply on every call instead of re-running a
-/// full integrity check (expensive on a multi-GB file) on every health poll.
-/// Defaults to `true` — until the first daily check has run, there is no
-/// evidence of corruption to report.
 static LAST_INTEGRITY_OK: AtomicBool = AtomicBool::new(true);
 
-/// The most recently observed `PRAGMA integrity_check` result, without
-/// running a new one. See `LAST_INTEGRITY_OK`.
+/// The most recent recorded integrity result.
 pub fn last_known_integrity_ok() -> bool {
     LAST_INTEGRITY_OK.load(Ordering::Relaxed)
 }
 
-/// Step 1: `PRAGMA integrity_check`. Returns `Ok(true)` iff SQLite reports
-/// `"ok"` — any other string (a list of corruption findings) means `Ok(false)`.
+/// Runs SQLite's integrity check over the database.
 pub fn run_integrity_check(conn: &Connection) -> Result<bool> {
     let result: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
     Ok(result.eq_ignore_ascii_case("ok"))
 }
 
-/// Runs the integrity check and, on failure, emits `db_corrupted` and writes
-/// an `audit_log` entry (Document 30 TASK-DB-019 step 1's "on failure"
-/// behavior). Never panics — a maintenance-task failure must not crash the
-/// background job; the caller decides how the app reacts to `Ok(false)`.
+/// Runs the integrity check and escalates a failure.
+///
+/// A failure is reported rather than merely logged, because silent corruption of
+/// a financial ledger is precisely the fault that must not pass unnoticed.
 pub fn check_integrity_and_report(conn: &Connection, app_handle: &AppHandle) -> Result<bool> {
     let ok = run_integrity_check(conn)?;
     LAST_INTEGRITY_OK.store(ok, Ordering::Relaxed);
@@ -73,22 +57,21 @@ pub fn check_integrity_and_report(conn: &Connection, app_handle: &AppHandle) -> 
     Ok(ok)
 }
 
-/// Step 3: `PRAGMA incremental_vacuum(500)` — reclaims up to 500 free pages
-/// without the full-file lock a plain `VACUUM` would take. Only effective
-/// because TASK-DB-001 already set `auto_vacuum = INCREMENTAL`.
+/// Reclaims free pages in bounded steps.
+///
+/// Incremental rather than a full VACUUM, which would lock the whole database
+/// for the duration and rewrite the entire file.
 pub fn run_incremental_vacuum(conn: &Connection) -> Result<()> {
     conn.execute_batch("PRAGMA incremental_vacuum(500);")?;
     Ok(())
 }
 
-/// Pure threshold check, kept separate from filesystem access so it's
-/// unit-testable without a real multi-GB file.
+/// Whether the database has grown past the point worth warning about.
 pub fn exceeds_size_warning_threshold(size_bytes: u64) -> bool {
     size_bytes > SIZE_WARNING_BYTES
 }
 
-/// Step 4: checks `finance.db`'s on-disk size and emits `db_size_warning`
-/// once it exceeds 2 GB.
+/// Warns the user if the database has grown unusually large.
 pub fn check_db_size_warning(app_handle: &AppHandle, db_path: &Path) -> Result<()> {
     let size_bytes = std::fs::metadata(db_path)?.len();
     if exceeds_size_warning_threshold(size_bytes) {

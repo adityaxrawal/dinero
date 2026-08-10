@@ -1,3 +1,11 @@
+//! Ingestion progress markers, enabling resumable scans.
+//!
+//! A mailbox scan can run for a long time and must survive being interrupted, so
+//! progress is checkpointed continuously and a resumed scan restarts from the
+//! last marker rather than from the beginning.
+//!
+//! `claim_checkpoint_in_progress` is a claim rather than a read: it is what stops
+//! two scans of the same account running concurrently and double-ingesting.
 use anyhow::Result;
 use chrono::NaiveDateTime;
 use rusqlite::{params, Connection, OptionalExtension, Row};
@@ -14,6 +22,7 @@ pub struct ProcessingCheckpointRow {
     pub updated_at: Option<NaiveDateTime>,
 }
 
+/// Insert or update a checkpoint for a job.
 pub fn upsert_checkpoint(conn: &Connection, checkpoint: &ProcessingCheckpointRow) -> Result<()> {
     conn.execute(
         "INSERT INTO processing_checkpoints (
@@ -37,24 +46,11 @@ pub fn upsert_checkpoint(conn: &Connection, checkpoint: &ProcessingCheckpointRow
     Ok(())
 }
 
-/// Patches only the mutable counters inside a historical scan's checkpoint,
-/// leaving the rest of `checkpoint_state_json` untouched.
+#[allow(clippy::too_many_arguments)]
+/// Updates only the progress counters on a checkpoint.
 ///
-/// audit_01 #2: `ScanCheckpointState` carries `all_message_ids`, the full
-/// Gmail id list for the scan (100k+ entries on a large mailbox). The
-/// incremental checkpoint fired every `CHECKPOINT_INTERVAL` messages went
-/// through [`upsert_checkpoint`], which meant `serde_json::to_string` rebuilt
-/// that entire array — and shipped it back across the binding layer — 20,000
-/// times over a 100k-message scan, to change a handful of integers. The audit
-/// led with the ~6 MB of RAM; the write amplification is the part that
-/// actually hurts.
-///
-/// The id list never changes once the search phase has written it, so patching
-/// in place removes the cost without touching resume semantics: the stored
-/// JSON has exactly the shape `ScanCheckpointState` deserializes today.
-/// A no-op if the row does not exist yet — the initial `upsert_checkpoint` at
-/// scan start is what creates it.
-#[allow(clippy::too_many_arguments)] // wide-but-flat domain signature; a params struct would add indirection without removing a single field
+/// Called frequently during a scan, so it deliberately touches just the counters
+/// rather than rewriting the whole row on every message processed.
 pub fn patch_scan_progress(
     conn: &Connection,
     job_key: &str,
@@ -94,30 +90,20 @@ pub fn patch_scan_progress(
     Ok(())
 }
 
-/// Outcome of [`claim_checkpoint_in_progress`].
 #[derive(Debug, Clone)]
 pub enum ClaimOutcome {
-    /// This call claimed the job. Carries whatever checkpoint existed
-    /// *before* the claim (`None` for a brand-new job_type/job_key), for
-    /// resume-state purposes.
     Claimed(Option<ProcessingCheckpointRow>),
-    /// Someone else already holds this job in `in_progress` status.
     AlreadyInProgress,
 }
 
-/// Doc 30 TASK-API-009 / Document 19 (`scans_historical` -> dedupe active
-/// scans via `SCAN_ALREADY_RUNNING`): atomically claims a checkpoint for
-/// `in_progress` in a single `INSERT ... ON CONFLICT ... DO UPDATE ...
-/// WHERE` statement, rather than a separate read-then-write. SQLite skips
-/// the `DO UPDATE` (and reports zero rows changed) when the `WHERE`
-/// condition is false, and serializes writers against each other at the
-/// single-statement level regardless of what each caller's own preceding
-/// read saw -- so of two near-simultaneous callers for the same
-/// `job_type`/`job_key`, only one can ever have this function return
-/// `Claimed`, even though both may have raced past an earlier read-only
-/// check. Preserves the existing row's `checkpoint_state_json` on claim
-/// (only `status`/`updated_at` are touched by the `DO UPDATE` branch) so a
-/// paused/failed/cancelled job's resume state survives being re-claimed.
+/// Attempts to claim a job, refusing if another run already holds it.
+///
+/// The guard against concurrent scans of the same account, which would
+/// double-ingest every message. Returning AlreadyInProgress rather than an error
+/// lets the caller treat a contended claim as an ordinary outcome.
+///
+/// An existing checkpoint's id and state are carried forward, so reclaiming an
+/// interrupted job resumes it instead of restarting from the beginning.
 pub fn claim_checkpoint_in_progress(
     conn: &Connection,
     job_type: &str,
@@ -151,14 +137,13 @@ pub fn claim_checkpoint_in_progress(
     )?;
 
     if changed == 0 {
-        // Someone else's claim won the race between our read above and
-        // this write.
         return Ok(ClaimOutcome::AlreadyInProgress);
     }
 
     Ok(ClaimOutcome::Claimed(existing))
 }
 
+/// Fetch a job's checkpoint.
 pub fn get_checkpoint(
     conn: &Connection,
     job_type: &str,
@@ -187,10 +172,10 @@ pub fn get_checkpoint(
     Ok(checkpoint)
 }
 
-/// Doc 30 TASK-OPS-003: the freshest `updated_at` across every job's
-/// checkpoint row, used to report checkpoint-freshness in the local health
-/// report. `None` means no checkpoint has ever been written (a brand-new
-/// install), which is not itself unhealthy.
+/// Timestamp of the most recent checkpoint activity.
+///
+/// Feeds the health report's staleness measure: no checkpoint movement means
+/// ingestion has stopped making progress.
 pub fn most_recent_checkpoint_updated_at(conn: &Connection) -> Result<Option<NaiveDateTime>> {
     let ts: Option<NaiveDateTime> = conn.query_row(
         "SELECT MAX(updated_at) FROM processing_checkpoints",

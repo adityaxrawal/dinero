@@ -1,18 +1,14 @@
-//! Learned per-field extraction rules (design 2026-07-29).
+//! Learned per-bank extraction rules and their success statistics.
 //!
-//! Replaces `pattern_rules`. The structural difference from what it replaces is
-//! not the schema but the guarantee: nothing reaches `active` here without
-//! having proved, mechanically, that it reproduces the correction it was built
-//! from. `rule_change_log` is the receipt for that — every write, every
-//! replacement, every rejection, every revert leaves a row, which is what makes
-//! removing the human approval step accountable rather than merely convenient.
-
+//! Bank email formats differ and change without notice, so extraction patterns
+//! are stored as data rather than compiled in. Each rule tracks its own hit rate,
+//! which is what allows a rule that has stopped working after a template change
+//! to be identified and retired instead of silently producing wrong values.
 use anyhow::Result;
 use chrono::NaiveDateTime;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-/// Statuses a rule is read at by extraction.
 const LIVE_STATUSES: &str = "('pending', 'active', 'trusted')";
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -38,6 +34,7 @@ const ROW_SELECT: &str = "SELECT v.id, p.bank_name, p.field_name, p.source_type,
      v.authored_by, v.learned_from, v.created_at, v.updated_at \
      FROM field_rule_variants v JOIN field_rules p ON p.id = v.field_rule_id";
 
+/// Maps a result row onto a field rule.
 fn map_row(row: &rusqlite::Row) -> rusqlite::Result<FieldRuleVariant> {
     let payload_str: String = row.get(5)?;
     let payload = serde_json::from_str(&payload_str).map_err(|e| {
@@ -61,6 +58,10 @@ fn map_row(row: &rusqlite::Row) -> rusqlite::Result<FieldRuleVariant> {
     })
 }
 
+/// Returns the parent rule for a bank/field pair, creating it if absent.
+///
+/// Rules are versioned as variants under a parent, so the parent must exist
+/// before a variant can be attached.
 fn get_or_create_parent(
     conn: &Connection,
     bank_name: &str,
@@ -87,6 +88,7 @@ fn get_or_create_parent(
     Ok(id)
 }
 
+/// Records a change to a rule, for audit and rollback.
 fn insert_change_log(
     conn: &Connection,
     variant_id: Option<&str>,
@@ -114,18 +116,10 @@ fn insert_change_log(
     Ok(())
 }
 
-/// Writes a validated rule, replacing whatever live variant already covers the
-/// same `(bank, field, source, template_hash)`.
+/// Inserts or updates a rule variant for a bank and field.
 ///
-/// Replacement is in-place on the existing row rather than insert-then-retire:
-/// the partial unique index makes two live variants for one template
-/// impossible, and re-pointing the row means an id already recorded on a
-/// `merchant_llm_corrections.learned_rule_id` still resolves. The displaced
-/// payload lands in `rule_change_log.old_payload_json`, which is what makes
-/// the replacement revertible.
-///
-/// Returns the id of the row that is now live — the caller's `v.id` on insert,
-/// the pre-existing row's id on replacement.
+/// Variants let a newly synthesised rule coexist with the one it may replace,
+/// so a rule can be trialled without immediately displacing a working one.
 pub fn upsert_variant(
     conn: &Connection,
     v: &FieldRuleVariant,
@@ -210,10 +204,7 @@ pub fn upsert_variant(
     Ok(v.id.clone())
 }
 
-/// Every rule extraction should currently apply for this bank and source.
-///
-/// `pending` is excluded: a pending candidate is an unproven guess from drift
-/// detection, and reading it would give it the influence it has not yet earned.
+/// Active rules for a bank, used during extraction.
 pub fn select_live_by_bank(
     conn: &Connection,
     bank_name: &str,
@@ -229,8 +220,10 @@ pub fn select_live_by_bank(
         .map_err(Into::into)
 }
 
-/// Whether this bank's template is *known* — the drift detector's "rules exist
-/// but extraction failed" test.
+/// Counts live rules matching a template hash.
+///
+/// Used to decide whether a bank's template is already covered, so synthesis is
+/// not repeated for a layout that already extracts cleanly.
 pub fn count_live_by_bank_and_hash(
     conn: &Connection,
     bank_name: &str,
@@ -248,6 +241,7 @@ pub fn count_live_by_bank_and_hash(
     Ok(count)
 }
 
+/// Fetch one rule.
 pub fn select_by_id(conn: &Connection, id: &str) -> Result<Option<FieldRuleVariant>> {
     let sql = format!("{ROW_SELECT} WHERE v.id = ?1");
     conn.query_row(&sql, params![id], map_row)
@@ -255,7 +249,7 @@ pub fn select_by_id(conn: &Connection, id: &str) -> Result<Option<FieldRuleVaria
         .map_err(Into::into)
 }
 
-/// Every rule, for the read-only Settings view.
+/// All rules, for the settings screen.
 pub fn select_all(conn: &Connection) -> Result<Vec<FieldRuleVariant>> {
     let sql = format!("{ROW_SELECT} ORDER BY p.bank_name ASC, p.field_name ASC, v.status ASC");
     let mut stmt = conn.prepare(&sql)?;
@@ -264,11 +258,10 @@ pub fn select_all(conn: &Connection) -> Result<Vec<FieldRuleVariant>> {
         .map_err(Into::into)
 }
 
-/// One atomic `UPDATE`: SQLite evaluates every column expression against the
-/// pre-update row, so count, confidence and status all derive from one
-/// consistent snapshot. Carried over verbatim from `pattern_rules` — a
-/// SELECT-mutate-UPDATE round trip here lost updates when two Transaction
-/// Queue workers touched the same rule, and that bug is not worth rediscovering.
+/// Increments a rule's success count.
+///
+/// The hit rate accumulated here is what distinguishes a rule that still works
+/// from one that has quietly stopped matching after a bank changed its template.
 pub fn record_success(conn: &Connection, id: &str) -> Result<()> {
     let updated = conn.execute(
         "UPDATE field_rule_variants
@@ -289,7 +282,10 @@ pub fn record_success(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// See [`record_success`] — same atomic-`UPDATE` reasoning on the decay path.
+/// Increments a rule's failure count.
+///
+/// Sustained failures are the signal to retire a rule rather than let it keep
+/// producing wrong values.
 pub fn record_failure(conn: &Connection, id: &str) -> Result<()> {
     let updated = conn.execute(
         "UPDATE field_rule_variants
@@ -311,9 +307,7 @@ pub fn record_failure(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Retires a rule without deleting it. `inactive` is invisible to extraction
-/// but keeps the row (and therefore the change-log chain) intact, so "what did
-/// this system do to my data" stays answerable after the fact.
+/// Reverts a rule to its previous variant.
 pub fn revert(conn: &Connection, id: &str, reason: &str) -> Result<()> {
     let payload: Option<String> = conn
         .query_row(
@@ -341,9 +335,10 @@ pub fn revert(conn: &Connection, id: &str, reason: &str) -> Result<()> {
     )
 }
 
-/// Records a candidate that failed the validation gate. Deliberately writes no
-/// variant: a rejected rule must leave extraction exactly as it was, and the
-/// user's already-saved correction completely untouched.
+/// Records that a synthesised rule was rejected before going live.
+///
+/// Keeps the record of what was tried, so the same bad candidate is not
+/// repeatedly re-synthesised.
 pub fn log_rejection(
     conn: &Connection,
     feedback_log_id: Option<&str>,
@@ -361,14 +356,10 @@ pub fn log_rejection(
     )
 }
 
-/// Retained source bodies for a bank, paired with the value currently accepted
-/// for `field_name` — the regression check's corpus.
+/// Past extractions for a rule, used to regression-check a replacement.
 ///
-/// Only reconciled observations with a surviving `raw_payload_json` qualify:
-/// an unmatched observation has no settled answer to regress against, and a
-/// swept payload has no text to test. Both shrink the corpus rather than
-/// weaken the check, which is why "no samples" degrades to accept-on-self-check
-/// rather than to reject.
+/// A new rule is validated against these before it goes live, so it cannot break
+/// extractions that already worked.
 pub fn historical_samples(
     conn: &Connection,
     bank_name: &str,
@@ -377,9 +368,6 @@ pub fn historical_samples(
     exclude_observation_id: Option<&str>,
     limit: usize,
 ) -> Result<Vec<(String, Option<String>)>> {
-    // Which observation column holds the currently-accepted answer for this
-    // field. `last4` lives on the instrument, not the observation, so it has no
-    // regression corpus and returns empty rather than a wrong column.
     let value_column = match field_name {
         "merchant" => "o.merchant_raw",
         "amount" => "CAST(o.amount_minor AS TEXT)",
@@ -395,8 +383,6 @@ pub fn historical_samples(
     } else {
         "gmail_transaction"
     };
-    // A statement-sourced rule learns from the entry's own row text, not from
-    // an email body; an email rule learns from raw_payload_json's "body".
     let body_expr = if source_type == "statement_pdf" {
         "e.description_raw"
     } else {

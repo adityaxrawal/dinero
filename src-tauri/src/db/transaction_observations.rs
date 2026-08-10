@@ -1,3 +1,11 @@
+//! Raw per-source observations, before canonicalisation.
+//!
+//! The provenance layer of the schema. One real payment can be observed several
+//! times -- a bank alert, a statement line, a manual entry -- and each is stored
+//! here separately, then reconciled into a single canonical transaction.
+//!
+//! Keeping observations rather than collapsing them on arrival is what allows a
+//! merge to be explained, audited, and undone.
 use anyhow::Result;
 use chrono::{NaiveDate, NaiveDateTime};
 use rusqlite::{params, Connection, Row};
@@ -37,15 +45,13 @@ pub struct TransactionObservationsRow {
     pub emi_total_installments: Option<i32>,
     pub emi_installment_number: Option<i32>,
     pub emi_original_amount_minor: Option<i64>,
-    /// Display-only transaction rail/channel (`"upi"`, `"imps"`, ...) --
-    /// see `extraction::ladder::detect_channel`. Never consumed by
-    /// reconciliation/dedup matching.
     pub channel: Option<String>,
     pub is_deleted: bool,
     pub created_at: Option<NaiveDateTime>,
     pub updated_at: Option<NaiveDateTime>,
 }
 
+/// Insert a raw observation.
 pub fn insert_observation(conn: &Connection, obs: &TransactionObservationsRow) -> Result<()> {
     conn.execute(
         "INSERT INTO transaction_observations (
@@ -71,25 +77,18 @@ pub fn insert_observation(conn: &Connection, obs: &TransactionObservationsRow) -
     Ok(())
 }
 
-/// Doc 30 TASK-TXN-009: a re-processed message (e.g. from an overlapping
-/// historical scan re-reading a window it already covered) must be silently
-/// skipped, never surfaced as an error to the caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InsertObservationOutcome {
     Inserted,
-    /// The `UNIQUE(source_pipeline, source_record_id)` idempotency
-    /// constraint rejected this row because it already exists.
     DuplicateSkipped,
 }
 
-/// Enforces `UNIQUE(source_pipeline, source_record_id)` as an application-
-/// layer idempotency check: lets the database's own constraint do the
-/// actual detection (avoids a check-then-insert race between concurrent
-/// Transaction Queue workers), but specifically recognizes *that*
-/// constraint's violation and reports it as a clean `DuplicateSkipped`
-/// outcome rather than a generic error — any other failure (a CHECK
-/// violation, a malformed row) still propagates as a real `Err`, since
-/// silently swallowing those would hide genuine bugs.
+/// Inserts an observation, treating a duplicate as success rather than failure.
+///
+/// Re-scanning a mailbox necessarily re-encounters messages already ingested, so
+/// a unique-constraint violation on the source record is the expected outcome,
+/// not an error. The error is inspected rather than assumed, so a genuine failure
+/// is still surfaced instead of being swallowed as a duplicate.
 pub fn insert_observation_idempotent(
     conn: &Connection,
     obs: &TransactionObservationsRow,
@@ -117,6 +116,7 @@ pub fn insert_observation_idempotent(
     }
 }
 
+/// Fetch one observation.
 pub fn get_observation(conn: &Connection, id: &str) -> Result<Option<TransactionObservationsRow>> {
     let mut stmt =
         conn.prepare("SELECT * FROM transaction_observations WHERE id = ?1 AND is_deleted = 0")?;
@@ -128,6 +128,10 @@ pub fn get_observation(conn: &Connection, id: &str) -> Result<Option<Transaction
     }
 }
 
+/// Every observation contributing to a canonical transaction.
+///
+/// The provenance the detail view shows: which sources produced this row and
+/// what each of them reported.
 pub fn get_observations_for_transaction(
     conn: &Connection,
     transaction_id: &str,
@@ -142,6 +146,7 @@ pub fn get_observations_for_transaction(
     Ok(observations)
 }
 
+/// One page of observations.
 pub fn select_all_paginated(
     conn: &Connection,
     limit: i64,
@@ -157,6 +162,7 @@ pub fn select_all_paginated(
     Ok(observations)
 }
 
+/// Update an observation's fields.
 pub fn update_observation(conn: &Connection, obs: &TransactionObservationsRow) -> Result<()> {
     let updated = conn.execute(
         "UPDATE transaction_observations SET
@@ -186,6 +192,7 @@ pub fn update_observation(conn: &Connection, obs: &TransactionObservationsRow) -
     Ok(())
 }
 
+/// Soft-delete an observation.
 pub fn soft_delete(conn: &Connection, id: &str) -> Result<()> {
     let updated = conn.execute(
         "UPDATE transaction_observations SET is_deleted = 1 WHERE id = ?1 AND is_deleted = 0",
@@ -201,6 +208,7 @@ pub fn soft_delete(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Maps a result row onto an observation.
 pub fn row_to_observation(row: &Row) -> rusqlite::Result<TransactionObservationsRow> {
     Ok(TransactionObservationsRow {
         id: row.get("id")?,
@@ -242,6 +250,10 @@ pub fn row_to_observation(row: &Row) -> rusqlite::Result<TransactionObservations
     })
 }
 
+/// Links an observation to the canonical transaction it was merged into.
+///
+/// The write that completes reconciliation, and the one that makes a merge
+/// reversible -- unlinking restores the observation to standing alone.
 pub fn update_canonical_transaction_id(
     conn: &Connection,
     observation_id: &str,
@@ -311,7 +323,6 @@ mod tests {
         }
     }
 
-    /// Doc 30 TASK-TXN-009 acceptance test.
     #[test]
     fn test_observation_insert_success() {
         let conn = setup_db();
@@ -330,8 +341,6 @@ mod tests {
         );
     }
 
-    /// Doc 30 TASK-TXN-009 acceptance test: "a re-processed message... is
-    /// silently skipped, never an error."
     #[test]
     fn test_duplicate_source_record_silently_skipped() {
         let conn = setup_db();
@@ -340,8 +349,6 @@ mod tests {
         let outcome1 = insert_observation_idempotent(&conn, &row1).unwrap();
         assert_eq!(outcome1, InsertObservationOutcome::Inserted);
 
-        // Same (source_pipeline, source_record_id), different row id --
-        // simulates a re-processed message (e.g. overlapping historical scan).
         let id2 = Uuid::new_v4().to_string();
         let row2 = make_row(&id2, "gmail_transaction", "msg_dup");
         let outcome2 = insert_observation_idempotent(&conn, &row2).unwrap();
@@ -351,14 +358,10 @@ mod tests {
             "a duplicate (source_pipeline, source_record_id) must be silently skipped, not error"
         );
 
-        // Only the first insert actually landed.
         assert!(get_observation(&conn, &id1).unwrap().is_some());
         assert!(get_observation(&conn, &id2).unwrap().is_none());
     }
 
-    /// A genuine, unrelated failure (not the source_pipeline/source_record_id
-    /// duplicate case) must still propagate as a real error, not be silently
-    /// swallowed -- e.g. a source_pipeline value the CHECK constraint rejects.
     #[test]
     fn test_genuine_constraint_violation_still_errors() {
         let conn = setup_db();
@@ -373,11 +376,6 @@ mod tests {
         );
     }
 
-    /// Doc 30 TASK-TXN-008's fingerprint fix depends on `fingerprint` no
-    /// longer being UNIQUE (migration 037) -- two observations sharing a
-    /// fingerprint (the same real transaction from two sources) must both
-    /// be insertable, since deduplication happens downstream via
-    /// reconciliation, not by rejecting the second insert outright.
     #[test]
     fn test_duplicate_fingerprint_across_different_sources_both_insert() {
         let conn = setup_db();

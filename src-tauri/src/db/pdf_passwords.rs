@@ -1,3 +1,8 @@
+//! Metadata for saved statement-PDF passwords.
+//!
+//! The passwords themselves are held in the OS keychain; these rows record which
+//! instrument each belongs to and how often it has worked, so the most reliable
+//! candidate is tried first when unlocking a new statement.
 use anyhow::Result;
 use chrono::NaiveDateTime;
 use rusqlite::{params, Connection};
@@ -14,6 +19,10 @@ pub struct PdfPasswordsRow {
     pub updated_at: Option<NaiveDateTime>,
 }
 
+/// Records that a password exists for an instrument.
+///
+/// The secret itself lives in the OS keychain; this row is only the metadata
+/// needed to find and rank it.
 pub fn insert(conn: &Connection, password: &PdfPasswordsRow) -> Result<()> {
     conn.execute(
         "INSERT INTO pdf_passwords (
@@ -32,6 +41,7 @@ pub fn insert(conn: &Connection, password: &PdfPasswordsRow) -> Result<()> {
     Ok(())
 }
 
+/// Password entries for one instrument.
 pub fn select_by_instrument(
     conn: &Connection,
     instrument_id: &str,
@@ -63,10 +73,6 @@ pub fn select_by_instrument(
     Ok(passwords)
 }
 
-/// G15 fix: stored-password summary for a Settings management UI — never
-/// includes `password_ciphertext` (or the decrypted plaintext, which this
-/// query never touches at all) so the password itself is never exposed to
-/// the frontend, only which instrument it's for and how it's performed.
 #[derive(Debug, Serialize, Clone)]
 pub struct PdfPasswordSummary {
     pub id: String,
@@ -77,6 +83,7 @@ pub struct PdfPasswordSummary {
     pub last_used_at: Option<NaiveDateTime>,
 }
 
+/// All entries joined to their instruments, for the settings list.
 pub fn select_all_with_instrument(conn: &Connection) -> Result<Vec<PdfPasswordSummary>> {
     let mut stmt = conn.prepare(
         "SELECT p.id, p.instrument_id, i.issuer_name, i.masked_identifier, p.success_count, p.last_used_at
@@ -103,6 +110,10 @@ pub fn select_all_with_instrument(conn: &Connection) -> Result<Vec<PdfPasswordSu
     Ok(summaries)
 }
 
+/// Counts a successful unlock.
+///
+/// The success count orders which password is tried first, so a recurring
+/// statement unlocks on the first attempt rather than after several.
 pub fn increment_success(conn: &Connection, id: &str) -> Result<()> {
     conn.execute(
         "UPDATE pdf_passwords SET success_count = success_count + 1, last_used_at = CURRENT_TIMESTAMP WHERE id = ?1",
@@ -111,6 +122,7 @@ pub fn increment_success(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Forgets a saved password.
 pub fn delete(conn: &Connection, id: &str) -> Result<()> {
     conn.execute("DELETE FROM pdf_passwords WHERE id = ?1", params![id])?;
     Ok(())

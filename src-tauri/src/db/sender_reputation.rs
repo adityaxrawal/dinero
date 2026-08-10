@@ -1,3 +1,10 @@
+//! Tracks which sender domains have proven to be genuine financial senders.
+//!
+//! Prevents both false positives and repeated re-evaluation: a domain that has
+//! reliably produced valid transactions is trusted, while one repeatedly
+//! rejected stops being reconsidered. Reputation is built from observed
+//! behaviour rather than a fixed allowlist, so a bank this app has never seen
+//! before can still be learned.
 use anyhow::Result;
 use chrono::NaiveDateTime;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -12,13 +19,11 @@ pub struct SenderReputationRow {
     pub last_verification_result: String,
 }
 
-/// Upserts one sighting of `domain` with Gate 1's verdict for this message.
-/// `verification_result` is a short classification tag (e.g.
-/// `"verified_transaction_candidate"`, `"spoof_reject"`,
-/// `"unverified_reject"`) -- any tag starting with `"verified"` counts
-/// towards `verified_pass_count`. The first sighting of a never-seen domain
-/// creates its row with `message_count = 1`; every later sighting increments
-/// the counters and bumps `last_seen_at`.
+/// Records that a message was seen from this sender domain.
+///
+/// Reputation is accumulated from observed behaviour rather than a fixed
+/// allowlist, which is what allows a bank this app has never encountered to be
+/// learned rather than permanently rejected.
 pub fn record_sighting(conn: &Connection, domain: &str, verification_result: &str) -> Result<()> {
     let is_pass = i64::from(verification_result.starts_with("verified"));
     conn.execute(
@@ -34,13 +39,10 @@ pub fn record_sighting(conn: &Connection, domain: &str, verification_result: &st
     Ok(())
 }
 
-/// Whether `domain` has been recorded at least once *before* this call --
-/// used to gate Gate 1's subject-based "Unknown Bank" rescue fallback. A
-/// domain's very first-ever message has no history yet to weigh against a
-/// spoofed subject line, so it must not qualify for that rescue purely off
-/// subject-line wording. Call this BEFORE `record_sighting` for the current
-/// message, otherwise the current message's own just-recorded row would make
-/// every domain look "previously seen" on its very first sighting.
+/// Whether this domain has been seen before.
+///
+/// A first sighting warrants more scrutiny than a domain with history, since a
+/// phishing domain is by definition new.
 pub fn has_prior_sighting(conn: &Connection, domain: &str) -> Result<bool> {
     let count: Option<i64> = conn
         .query_row(
@@ -52,6 +54,7 @@ pub fn has_prior_sighting(conn: &Connection, domain: &str) -> Result<bool> {
     Ok(count.unwrap_or(0) > 0)
 }
 
+/// Current reputation record for a domain.
 pub fn get_reputation(conn: &Connection, domain: &str) -> Result<Option<SenderReputationRow>> {
     conn.query_row(
         "SELECT domain, first_seen_at, last_seen_at, message_count, verified_pass_count, last_verification_result
@@ -72,11 +75,6 @@ pub fn get_reputation(conn: &Connection, domain: &str) -> Result<Option<SenderRe
     .map_err(Into::into)
 }
 
-/// A domain a user has manually confirmed as a legitimate sender despite
-/// repeatedly failing Gate 1's string-based verification -- the runtime
-/// learning-loop counterpart to the compiled-in `verified_senders_registry.json`,
-/// mirroring how `field_rules` layers on top of the compiled-in
-/// `bank_templates` for the extraction ladder.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingSenderRow {
     pub id: String,
@@ -87,11 +85,10 @@ pub struct PendingSenderRow {
     pub reject_count: i64,
 }
 
-/// Records a rejected domain as a promotion candidate. Idempotent per
-/// domain: a repeat rejection of the same still-`pending` domain just bumps
-/// `reject_count` rather than inserting a duplicate row; a domain already
-/// `approved` (or `denied`) is left untouched -- re-rejecting an
-/// already-approved domain must not silently reset its status.
+/// Notes that a domain produced content rejected as non-financial.
+///
+/// Repeated rejections are what stop the pipeline re-evaluating the same
+/// marketing sender on every scan.
 pub fn record_rejection_candidate(
     conn: &Connection,
     id: &str,
@@ -111,9 +108,7 @@ pub fn record_rejection_candidate(
     Ok(())
 }
 
-/// Promotes (or denies) a pending sender. `new_status` must be `"approved"`
-/// or `"denied"` -- `SenderValidator::verify_sender` only consults
-/// `approved` rows (see `select_approved_domains`).
+/// Sets a domain's approval status.
 pub fn update_status(conn: &Connection, id: &str, new_status: &str) -> Result<()> {
     if !["approved", "denied"].contains(&new_status) {
         return Err(anyhow::anyhow!(
@@ -128,8 +123,7 @@ pub fn update_status(conn: &Connection, id: &str, new_status: &str) -> Result<()
     Ok(())
 }
 
-/// All user-approved domains, consulted by `SenderValidator` as a
-/// runtime-updatable second registry layer.
+/// Domains trusted to send genuine financial mail.
 pub fn select_approved_domains(conn: &Connection) -> Result<Vec<PendingSenderRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, domain, bank_name, classification, status, reject_count
@@ -150,6 +144,7 @@ pub fn select_approved_domains(conn: &Connection) -> Result<Vec<PendingSenderRow
     Ok(rows)
 }
 
+/// Domains seen but not yet judged either way.
 pub fn select_pending(conn: &Connection) -> Result<Vec<PendingSenderRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, domain, bank_name, classification, status, reject_count

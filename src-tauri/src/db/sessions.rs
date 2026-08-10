@@ -1,3 +1,8 @@
+//! Local session records.
+//!
+//! Not authentication in the network sense -- the app is single-user and local.
+//! Sessions scope activity for the audit trail and give incident response
+//! something concrete to revoke.
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -12,6 +17,7 @@ pub struct SessionsRow {
     pub revoked_at: Option<DateTime<Utc>>,
 }
 
+/// Creates a local session.
 pub fn insert(conn: &Connection, row: &SessionsRow) -> Result<()> {
     conn.execute(
         "INSERT INTO sessions (id, device_name, device_fingerprint, revoked_at)
@@ -26,6 +32,7 @@ pub fn insert(conn: &Connection, row: &SessionsRow) -> Result<()> {
     Ok(())
 }
 
+/// Fetch a session.
 pub fn get(conn: &Connection, id: &str) -> Result<Option<SessionsRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, device_name, device_fingerprint, created_at, revoked_at
@@ -45,6 +52,10 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<SessionsRow>> {
     Ok(row)
 }
 
+/// Revokes a session.
+///
+/// What incident response invokes, and what makes the guard on write commands
+/// take effect immediately.
 pub fn revoke(conn: &Connection, id: &str, revoked_at: DateTime<Utc>) -> Result<()> {
     conn.execute(
         "UPDATE sessions SET revoked_at = ?2 WHERE id = ?1",

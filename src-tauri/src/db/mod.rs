@@ -1,3 +1,18 @@
+//! Database bring-up: opens the encrypted SQLite pool and runs migrations.
+//!
+//! The store is SQLCipher-encrypted, so opening it is a multi-step operation
+//! rather than a file handle: derive the key, key each pooled connection, apply
+//! the cipher and journal pragmas, then migrate.
+//!
+//! `DbInitError` distinguishes the failure modes precisely because startup
+//! offers a different recovery path for each -- a key mismatch, a denied
+//! keychain, a failed migration and a corrupted file all need different advice,
+//! and collapsing them into one error would leave the user stuck.
+//!
+//! Every pooled connection is keyed in a `post_create` hook. A connection that
+//! skipped that step would fail on first use, so the hook rather than a
+//! one-time setup is what makes pooling safe here.
+
 pub mod alerts;
 pub mod audit_log;
 #[cfg(test)]
@@ -79,14 +94,8 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tracing::{error, info, warn};
 
-/// Distinct error type for `init_db` so callers can pattern-match on
-/// `KeyMismatch` without inspecting raw error strings.
 #[derive(Debug, Error)]
 pub enum DbInitError {
-    /// The on-disk database file cannot be decrypted with the current key.
-    /// This happens when the macOS Keychain entry is deleted/rotated while a
-    /// previously-encrypted `finance.db` still exists on disk.  The caller should
-    /// surface a user-facing dialog and exit cleanly rather than panic.
     #[error(
         "The local database cannot be opened — the encryption key no longer matches. \
         This usually means the Keychain entry was cleared. \
@@ -94,43 +103,25 @@ pub enum DbInitError {
     )]
     KeyMismatch,
 
-    /// G3 fix: the user denied the macOS Keychain access prompt (or the
-    /// Keychain is locked/unavailable) — distinct from `KeyMismatch` (a wrong
-    /// key) or a generic fatal error. The caller should show a dedicated
-    /// explanation of why Keychain access is required and how to grant it,
-    /// rather than a generic "could not start" dialog.
     #[error(
         "Dinero could not access the macOS Keychain, which is required to encrypt your \
         financial data. This can happen if Keychain access was denied, or the Keychain is locked."
     )]
     KeychainAccessDenied,
 
-    /// A schema migration failed after a pre-migration backup was already
-    /// taken (Doc 18 §12.1, C18 fix). The caller can offer the user a
-    /// one-click rollback to `backup_path` via `restore_backup_file`
-    /// rather than just exiting.
     #[error("Database migration failed: {source}")]
     MigrationFailed {
         source: anyhow::Error,
         backup_path: PathBuf,
     },
 
-    /// `PRAGMA integrity_check` reported corruption (Doc 22 §7.5/§19.5, I6
-    /// fix). Previously this only logged a warning and continued — silently
-    /// operating on a corrupt database. Fails closed instead: the caller can
-    /// offer to restore the daily backup if one exists.
     #[error("Database integrity check failed: {details}")]
     IntegrityCheckFailed { details: String },
 
-    /// Any other initialisation failure.
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
 
-/// Replaces the live (post-failed-migration) database file with a
-/// pre-migration backup taken by `create_pre_migration_backup` (C18 fix).
-/// Removes any WAL/SHM sidecar files left over from the failed attempt so the
-/// restored file is opened fresh on the next `init_db` call.
 pub fn restore_backup_file(db_path: &Path, backup_path: &Path) -> Result<()> {
     for suffix in ["-wal", "-shm"] {
         let sidecar = PathBuf::from(format!("{}{}", db_path.display(), suffix));
@@ -146,26 +137,15 @@ pub fn restore_backup_file(db_path: &Path, backup_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Returns `true` if the error message indicates a SQLCipher key mismatch
-/// (i.e. the file exists but cannot be decrypted with the supplied key).
 fn is_key_mismatch(msg: &str) -> bool {
     msg.contains("not a database") || msg.contains("file is not a database")
 }
 
-/// G3 fix: matches the marker `crypto::classify_keychain_error` embeds when
-/// the underlying error is `keyring::Error::NoStorageAccess` (access denied
-/// or the Keychain is locked), rather than some other Keychain failure.
 fn is_keychain_access_denied(msg: &str) -> bool {
     msg.contains("KEYCHAIN_ACCESS_DENIED")
 }
 
-/// Initializes the database with SQLCipher encryption, runs core migrations,
-/// and returns a connection pool.
-///
-/// Returns `DbInitError::KeyMismatch` (rather than panicking) when the
-/// existing on-disk `finance.db` cannot be decrypted with the current key.
 pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
-    // 1. Get or derive the SQLite encryption key
     let db_key = crypto::derive_database_key().map_err(|e| {
         let msg = e.to_string();
         if is_keychain_access_denied(&msg) {
@@ -178,12 +158,8 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
             DbInitError::Other(e.context("Failed to derive database encryption key"))
         }
     })?;
-    // TASK-DB-002: cloned before `db_key` is moved into the post_create hook
-    // below — sqlx's migration connection (a separate connection stack from
-    // rusqlite/deadpool_sqlite) needs its own copy of the same key.
     let db_key_for_migration = db_key.clone();
 
-    // 2. Configure the deadpool_sqlite pool
     let cfg = Config::new(&db_path);
     let pool = cfg
         .builder(Runtime::Tokio1)
@@ -192,16 +168,14 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
             let key = db_key.clone();
             Box::pin(async move {
                 conn.interact(move |c| {
-                    // Set encryption key first
+                    // Must be the first statement on the connection: SQLCipher
+                    // cannot read even the header until it is keyed.
                     c.execute_batch(&format!("PRAGMA key = '{}';", key))?;
 
-                    // Set SQLCipher and performance PRAGMAs. TASK-DB-001:
-                    // added `auto_vacuum = INCREMENTAL` — Document 30's spec
-                    // requires it, and it must be set from the very first
-                    // connection: DB-019's daily `PRAGMA incremental_vacuum`
-                    // background task is a no-op unless auto_vacuum mode was
-                    // INCREMENTAL before the schema was created (changing it
-                    // later requires a full VACUUM to take effect).
+                    // Cipher settings must match those the file was created
+                    // with, or the database reads as corrupt. WAL improves
+                    // concurrency for the ingestion writers; incremental
+                    // auto-vacuum keeps reclamation off the startup path.
                     c.execute_batch(
                         "
                         PRAGMA cipher_page_size = 4096;
@@ -214,19 +188,10 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
                         PRAGMA busy_timeout = 5000;
                         ",
                     )?;
-                    // SQLCipher's own header/salt write on `PRAGMA key` means
-                    // the file is no longer "virgin" by the time auto_vacuum
-                    // is set above, so the mode change silently doesn't take
-                    // effect without an explicit VACUUM. Only run that VACUUM
-                    // once — on every *later* pooled connection (this hook
-                    // fires once per physical connection, e.g. as the
-                    // Transaction Queue's 2-8 workers spin more up) the mode
-                    // will already read back as INCREMENTAL (2) and the
-                    // check below skips it; without this guard, every new
-                    // connection to an already-large financial database
-                    // would trigger a full VACUUM.
                     let auto_vacuum_mode: i64 =
                         c.query_row("PRAGMA auto_vacuum", [], |r| r.get(0))?;
+                    // auto_vacuum can only be changed by a full VACUUM, so a
+                    // database created before this setting is rewritten once.
                     if auto_vacuum_mode != 2 {
                         c.execute_batch("VACUUM;")?;
                     }
@@ -241,15 +206,6 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
         .build()
         .map_err(|e| DbInitError::Other(anyhow::anyhow!(e)))?;
 
-    // 3. Verify encryption is working and run integrity check.
-    //    `pool.get()` triggers the `post_create` hook which executes
-    //    `PRAGMA key`.  If the existing file was encrypted with a *different*
-    //    key the hook surfaces "file is not a database" — we catch that here.
-    //    Before giving up, try the Mac-to-Mac hardware-UUID migration path
-    //    (I4 fix): if a hardware-UUID marker from a previous successful open
-    //    exists and differs from this machine's, this looks like a legitimate
-    //    hardware migration rather than a cleared Keychain — re-key the
-    //    database transparently and retry, rather than failing closed.
     let app_data_dir = db_path.parent().unwrap_or(Path::new(".")).to_path_buf();
     let conn = match pool.get().await {
         Ok(conn) => conn,
@@ -293,17 +249,11 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
     };
 
     let db_path_for_backup = db_path.clone();
-    // Step A: integrity check + pre-migration backup, still via the pooled
-    // rusqlite connection (sync). Returns `Err(details)` for an integrity
-    // failure, or `Ok(backup_path)` once the pre-migration backup exists.
     let integrity_or_backup: Result<PathBuf, String> = conn
         .interact(move |c| {
-            // Test query to ensure decryption succeeds
             let count: i64 = c.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get(0))?;
             info!("Database initialized successfully. Tables count: {}", count);
 
-            // Run integrity check. I6 fix: fail closed on corruption rather than
-            // just logging a warning and continuing to operate on a corrupt db.
             let integrity: String = c.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
             if integrity != "ok" {
                 warn!("Database integrity check failed: {}", integrity);
@@ -311,10 +261,6 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
             }
             info!("Database integrity check passed.");
 
-            // Doc 18 §12.1: back up before every migration run so a failed
-            // migration can be recovered from rather than corrupting the user's
-            // only copy of their financial data. Fail closed — if the backup
-            // itself can't be created, do not proceed with the migration.
             let backup_path = migrations::create_pre_migration_backup(c, &db_path_for_backup)
                 .context("Pre-migration backup failed — aborting before migration")?;
 
@@ -339,10 +285,6 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
         Ok(path) => path,
     };
 
-    // Step B (TASK-DB-002): run migrations via sqlx, on its own dedicated
-    // connection — a failure here does NOT abort via `?`; the backup above
-    // already succeeded, so the caller can offer a one-click rollback to it
-    // (C18 fix) instead of just exiting.
     if let Err(source) = migrations::run_migrations(&db_path, Some(&db_key_for_migration)).await {
         return Err(DbInitError::MigrationFailed {
             source,
@@ -350,17 +292,8 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
         });
     }
 
-    // Step C: post-migration seeding + stuck-checkpoint reset, back on the
-    // pooled rusqlite connection.
     conn.interact(move |c| {
-        // Ensure default local_profile exists (ID=1)
         let _ = c.execute(
-            // TASK-DB-003: timezone/limit_thresholds defaults corrected to
-            // Document 30's spec ('Asia/Kolkata', [80,90,100]) — were 'UTC'
-            // and '[]', contradicting Document 18 §5.3's IST-normalization
-            // requirement ("All month-boundary calculations rely on IST
-            // normalization to correctly align with Indian banking cycles")
-            // and the 80/90/100% threshold default Document 18 §4.1 states.
             "INSERT OR IGNORE INTO local_profile (
                 id, primary_email, display_name, timezone, spending_limit_monthly,
                 limit_thresholds, recovery_phrase_enabled
@@ -368,13 +301,11 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
             [],
         );
 
-        // Reset any stuck in-progress checkpoints from a previous app run
         let _ = c.execute(
             "UPDATE processing_checkpoints SET status = 'failed' WHERE status = 'in_progress'",
             [],
         );
 
-        // Run automated cleanup for any legacy corrupted VPA instruments
         let _ = instruments::cleanup_corrupted_vpa_instruments(c);
     })
     .await
@@ -385,9 +316,6 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
         ))
     })?;
 
-    // I4 fix: refresh the hardware-UUID marker on every successful open (not
-    // just after a migration) so it always reflects the machine that last
-    // opened the db, ready for the next migration.
     crypto::record_last_known_hw_uuid(&app_data_dir);
     Ok(pool)
 }

@@ -1,3 +1,9 @@
+//! Payment instruments -- the cards and accounts transactions belong to.
+//!
+//! `find_instrument_by_key` is the attribution path used during ingestion:
+//! extraction recovers an issuer and a masked number, and this resolves that
+//! pair to an existing instrument or reports that none matches, which is what
+//! raises the instrument-confirmation prompt in the UI.
 use crate::extraction::normalization::clean_masked_identifier;
 use anyhow::Result;
 use chrono::{NaiveDate, NaiveDateTime};
@@ -7,7 +13,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct InstrumentsRow {
     pub id: String,
-    pub r#type: String, // reserved keyword
+    pub r#type: String,
     pub issuer_name: String,
     pub masked_identifier: String,
     pub network: Option<String>,
@@ -28,6 +34,7 @@ pub struct InstrumentsRow {
     pub billing_cycle_day: Option<u8>,
 }
 
+/// Insert a new payment instrument.
 pub fn insert_instrument(conn: &Connection, instrument: &InstrumentsRow) -> Result<()> {
     conn.execute(
         "INSERT INTO instruments (
@@ -62,6 +69,7 @@ pub fn insert_instrument(conn: &Connection, instrument: &InstrumentsRow) -> Resu
     Ok(())
 }
 
+/// Update an instrument's editable fields.
 pub fn update_instrument(conn: &Connection, instrument: &InstrumentsRow) -> Result<()> {
     let count = conn.execute(
         "UPDATE instruments SET
@@ -110,6 +118,7 @@ pub fn update_instrument(conn: &Connection, instrument: &InstrumentsRow) -> Resu
     Ok(())
 }
 
+/// Fetch one instrument by id.
 pub fn get_instrument(conn: &Connection, id: &str) -> Result<Option<InstrumentsRow>> {
     let mut stmt = conn.prepare("SELECT * FROM instruments WHERE id = ?1 AND is_deleted = 0")?;
     let mut rows = stmt.query([id])?;
@@ -120,15 +129,11 @@ pub fn get_instrument(conn: &Connection, id: &str) -> Result<Option<InstrumentsR
     }
 }
 
-/// Doc 30 TASK-TXN-005: a read-only lookup by the same `(type, issuer_name,
-/// masked_identifier)` key `get_or_create_instrument` uses, but never
-/// creates a row. Layer 5 (statement cross-reference) needs to know whether
-/// an instrument is already known *without* speculatively creating one from
-/// a single ambiguous, still-unextracted email — that would violate Doc 15
-/// §2 principle 8 (never guess/prematurely create an instrument). If no
-/// statement has ever been processed for this instrument, none can exist to
-/// cross-reference against either, so a clean `None` here is the correct,
-/// safe outcome for the caller to fall through on.
+/// Looks up an instrument by its natural key: type, issuer and masked identifier.
+///
+/// This is the attribution path used during ingestion. All three parts are
+/// required because none is unique alone -- a user may hold two cards from the
+/// same issuer, and the same last-four digits can recur across issuers.
 pub fn find_instrument_by_key(
     conn: &Connection,
     instrument_type: &str,
@@ -147,6 +152,7 @@ pub fn find_instrument_by_key(
     Ok(id)
 }
 
+/// All live instruments.
 pub fn get_all_instruments(conn: &Connection) -> Result<Vec<InstrumentsRow>> {
     let mut stmt = conn.prepare("SELECT * FROM instruments WHERE is_deleted = 0")?;
     let rows = stmt.query_map([], row_to_instrument)?;
@@ -158,6 +164,7 @@ pub fn get_all_instruments(conn: &Connection) -> Result<Vec<InstrumentsRow>> {
     Ok(instruments)
 }
 
+/// One page of instruments.
 pub fn get_paginated_instruments(
     conn: &Connection,
     limit: i64,
@@ -173,12 +180,10 @@ pub fn get_paginated_instruments(
     Ok(instruments)
 }
 
-/// Doc 30 TASK-API-002: "instruments_get_upcoming_bills (non-null future
-/// statement_due_date, ascending, for the dashboard widget)." Document 19
-/// §11.2 exposes this same data via the `dashboard_upcoming_bills` command
-/// (TASK-API-006) rather than a separate instruments-namespaced one -- this
-/// data-layer function is what both this task's own acceptance test and
-/// TASK-API-006's real IPC command are built on.
+/// Instruments with a billing date falling on or near the given day.
+///
+/// Drives both the dashboard's upcoming-bills widget and the daily reminder
+/// notification.
 pub fn list_upcoming_bills(conn: &Connection, today: &NaiveDate) -> Result<Vec<InstrumentsRow>> {
     let mut stmt = conn.prepare(
         "SELECT * FROM instruments \
@@ -194,8 +199,11 @@ pub fn list_upcoming_bills(conn: &Connection, today: &NaiveDate) -> Result<Vec<I
     Ok(instruments)
 }
 
+/// Soft-delete an instrument.
+///
+/// Soft because transactions reference it: hard deletion would orphan those rows
+/// and erase the account history they belong to.
 pub fn delete_instrument(conn: &Connection, id: &str) -> Result<()> {
-    // Soft delete
     let count = conn.execute(
         "UPDATE instruments SET is_deleted = 1 WHERE id = ?1 AND is_deleted = 0",
         params![id],
@@ -206,9 +214,10 @@ pub fn delete_instrument(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Scans for and soft-deletes invalid instruments where a counterparty VPA (or merchant name)
-/// was mistakenly saved as a user instrument. Re-assigns any transactions attached to
-/// these corrupt instruments so they can be re-linked to clean bank instruments.
+/// Removes instrument rows created from malformed UPI identifiers.
+///
+/// Repairs damage from an earlier extraction bug that produced instruments keyed
+/// on fragments of a VPA rather than the identifier itself.
 pub fn cleanup_corrupted_vpa_instruments(conn: &Connection) -> Result<usize> {
     let count = conn.execute(
         "UPDATE instruments \
@@ -235,6 +244,7 @@ pub fn cleanup_corrupted_vpa_instruments(conn: &Connection) -> Result<usize> {
     Ok(count)
 }
 
+/// Maps a result row onto InstrumentsRow.
 fn row_to_instrument(row: &Row) -> rusqlite::Result<InstrumentsRow> {
     Ok(InstrumentsRow {
         id: row.get("id")?,
@@ -260,13 +270,14 @@ fn row_to_instrument(row: &Row) -> rusqlite::Result<InstrumentsRow> {
     })
 }
 
-/// Finds an existing instrument by `(type, issuer_name, masked_identifier)` or auto-creates one.
+/// Returns the id of a matching instrument, creating one if none exists.
 ///
-/// Uses the `INSERT OR IGNORE` + subsequent `SELECT` pattern to ensure atomicity without
-/// relying on application-level locking.
+/// The identifier is cleaned first, so the same account written differently by
+/// two banks converges on one row rather than creating duplicates.
 ///
-/// # Returns
-/// The `id` (UUID string) of the matched or newly created instrument.
+/// INSERT OR IGNORE followed by a SELECT makes this safe under concurrency: two
+/// ingestion workers seeing the same new instrument both end up with the same id
+/// instead of one failing on the unique constraint.
 pub fn get_or_create_instrument(
     conn: &Connection,
     instrument_type: &str,
@@ -277,9 +288,6 @@ pub fn get_or_create_instrument(
     let masked_identifier_cleaned = clean_masked_identifier(masked_identifier);
     let masked_identifier = masked_identifier_cleaned.as_str();
 
-    // 1. Attempt to INSERT OR IGNORE a new row. If a row with the same
-    //    (type, issuer_name, masked_identifier) already exists the UNIQUE constraint
-    //    fires but the error is silently ignored due to `OR IGNORE`.
     let new_id = uuid::Uuid::new_v4().to_string();
     conn.execute(
         "INSERT OR IGNORE INTO instruments (
@@ -297,8 +305,6 @@ pub fn get_or_create_instrument(
         ],
     )?;
 
-    // 2. Retrieve the id of the row that actually won the race — either our freshly
-    //    inserted row or a pre-existing one.
     let id: String = conn.query_row(
         "SELECT id FROM instruments
          WHERE type = ?1
@@ -313,15 +319,11 @@ pub fn get_or_create_instrument(
     Ok(id)
 }
 
-/// Fallback instrument resolution for a sender whose transaction emails
-/// never print a masked card/account number in the body at all (e.g.
-/// Jupiter's "Your RuPay Credit Card payment was successful" template) --
-/// `get_or_create_instrument` can never fire for these since it requires a
-/// `masked_identifier`. If the user has exactly one instrument on file for
-/// this `issuer_name`, resolving to it is safe (there's no other candidate
-/// it could be); with zero or multiple matches, the ambiguity means we
-/// genuinely don't know which instrument this is, so the caller must keep
-/// treating it as unresolved rather than guessing wrong.
+/// Resolves an issuer name to an instrument, but only when it is unambiguous.
+///
+/// Returns None when the issuer matches several instruments. That refusal is the
+/// point: guessing between two cards from the same bank would silently attribute
+/// spending to the wrong account, which is worse than asking the user.
 pub fn resolve_single_instrument_by_issuer(
     conn: &Connection,
     issuer_name: &str,
@@ -342,7 +344,6 @@ pub fn resolve_single_instrument_by_issuer(
 mod tests {
     use super::*;
 
-    /// Creates an in-memory SQLite connection with the minimal `instruments` schema.
     fn setup_test_db() -> Connection {
         let conn = Connection::open_in_memory().expect("Failed to open in-memory DB");
         conn.execute_batch(
@@ -374,16 +375,10 @@ mod tests {
         conn
     }
 
-    /// Pre-inserts an instrument record and verifies that `get_or_create_instrument`
-    /// returns the existing id instead of creating a duplicate.
     #[test]
     fn test_instrument_linked_from_existing_record() {
         let conn = setup_test_db();
 
-        // Pre-seed a known instrument. Stored in already-cleaned form ("1234"),
-        // matching what get_or_create_instrument itself would have persisted --
-        // it runs every masked_identifier through clean_masked_identifier
-        // before insert/lookup, so DB rows are always in cleaned form.
         let existing_id = "aaaa-bbbb-cccc-dddd";
         conn.execute(
             "INSERT INTO instruments (id, type, issuer_name, masked_identifier, status, created_at, updated_at, is_deleted)
@@ -392,8 +387,6 @@ mod tests {
         )
         .unwrap();
 
-        // Call get_or_create with the raw masked format -- should clean to
-        // "1234" and link to the existing record rather than creating a new one.
         let returned_id =
             get_or_create_instrument(&conn, "credit_card", "HDFC Bank", "XXXX1234", None).unwrap();
 
@@ -402,15 +395,12 @@ mod tests {
             "Expected existing instrument id to be returned"
         );
 
-        // Confirm only one row exists
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM instruments", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1, "No duplicate should have been created");
     }
 
-    /// Verifies that calling `get_or_create_instrument` for a brand-new card creates
-    /// a fresh row and returns a valid UUID.
     #[test]
     fn test_instrument_auto_created_for_new_card() {
         let conn = setup_test_db();
@@ -419,10 +409,8 @@ mod tests {
             get_or_create_instrument(&conn, "credit_card", "ICICI Bank", "XXXX5678", Some("Visa"))
                 .unwrap();
 
-        // Must be a non-empty string (UUID)
         assert!(!id.is_empty(), "Returned id should not be empty");
 
-        // Verify the row was actually persisted, in cleaned form ("5678")
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM instruments WHERE type = 'credit_card' AND issuer_name = 'ICICI Bank' AND masked_identifier = '5678'",
@@ -435,7 +423,6 @@ mod tests {
             "Exactly one instrument row should have been created"
         );
 
-        // Network should be stored
         let network: Option<String> = conn
             .query_row(
                 "SELECT network FROM instruments WHERE id = ?1",
@@ -446,8 +433,6 @@ mod tests {
         assert_eq!(network, Some("Visa".to_string()));
     }
 
-    /// Verifies that two calls with the same `(type, issuer_name, masked_identifier)` tuple
-    /// produce exactly one row in the database (UNIQUE constraint enforced).
     #[test]
     fn test_instrument_unique_constraint_enforced() {
         let conn = setup_test_db();
@@ -455,7 +440,6 @@ mod tests {
         let id1 =
             get_or_create_instrument(&conn, "bank_account", "Axis Bank", "XXXX9999", None).unwrap();
 
-        // Second call — must return same id, not create a new row
         let id2 =
             get_or_create_instrument(&conn, "bank_account", "Axis Bank", "XXXX9999", None).unwrap();
 
@@ -479,7 +463,6 @@ mod tests {
         .unwrap();
     }
 
-    /// Doc 30 TASK-API-002 acceptance test.
     #[test]
     fn test_upcoming_bills_sorted_ascending() {
         let conn = setup_test_db();
@@ -500,11 +483,6 @@ mod tests {
         );
     }
 
-    /// Doc 30 TASK-API-002 acceptance test: simulates the exact
-    /// fetch-full-row-then-patch-allowed-fields-only pattern
-    /// `commands::data::instruments_update` uses -- issuer_name/
-    /// masked_identifier must survive unchanged even though every other
-    /// field can legitimately be patched.
     #[test]
     fn test_instruments_update_rejects_identity_field_changes() {
         let conn = setup_test_db();
@@ -515,10 +493,6 @@ mod tests {
         )
         .unwrap();
 
-        // The real command handler's pattern: fetch the full existing row,
-        // then only ever overwrite the user-editable fields -- there is no
-        // code path here that assigns a caller-supplied issuer_name/
-        // masked_identifier at all.
         let mut row = get_instrument(&conn, "inst_1").unwrap().unwrap();
         row.billing_cycle_day = Some(15);
         row.bank_ifsc = Some("HDFC0001234".to_string());
@@ -540,10 +514,6 @@ mod tests {
         );
     }
 
-    /// Doc 30 TASK-API-002 acceptance test: soft-deleting an instrument
-    /// (`is_deleted = 1`) must never cascade-delete or modify the
-    /// transactions that reference it -- they remain queryable, just
-    /// hidden from active instrument lists.
     #[test]
     fn test_instruments_soft_delete_preserves_transactions() {
         let conn = setup_test_db();

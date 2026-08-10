@@ -1,3 +1,8 @@
+//! Individual line items extracted from a statement.
+//!
+//! `find_crossref_candidates` supports the cross-referencing pass: a statement
+//! line and a bank alert email frequently describe the same payment, and this is
+//! how the two are brought together instead of being recorded twice.
 use anyhow::Result;
 use chrono::{NaiveDate, NaiveDateTime};
 use rusqlite::{params, Connection, Row};
@@ -23,6 +28,7 @@ pub struct StatementEntriesRow {
     pub created_at: Option<NaiveDateTime>,
 }
 
+/// Insert one extracted statement line.
 pub fn insert(conn: &Connection, entry: &StatementEntriesRow) -> Result<()> {
     conn.execute(
         "INSERT INTO statement_entries (
@@ -52,6 +58,7 @@ pub fn insert(conn: &Connection, entry: &StatementEntriesRow) -> Result<()> {
     Ok(())
 }
 
+/// All entries belonging to a statement, in extraction order.
 pub fn select_by_statement_id(
     conn: &Connection,
     statement_id: &str,
@@ -68,6 +75,7 @@ pub fn select_by_statement_id(
     Ok(entries)
 }
 
+/// Update an entry, used when the user corrects a row during review.
 pub fn update(conn: &Connection, entry: &StatementEntriesRow) -> Result<()> {
     conn.execute(
         "UPDATE statement_entries SET
@@ -109,15 +117,11 @@ pub fn update(conn: &Connection, entry: &StatementEntriesRow) -> Result<()> {
     Ok(())
 }
 
-/// Doc 30 TASK-TXN-005 (Layer 5): candidate `statement_entries` rows for the
-/// given instrument within a `±3-day` window of `anchor_date` whose
-/// `reference_id` fragment or `amount_minor` matches whatever partial field
-/// the failing email yielded. `statement_entries` carries no `instrument_id`
-/// of its own (Document 18 §4.8 — it's written only after the parent
-/// statement's Statement Instrument Gate resolves one), so this joins
-/// through `statements`. Both match fields are optional but at least one
-/// must be `Some` — an unfiltered date-window-only query would be far too
-/// permissive to safely auto-complete an extraction from.
+/// Finds statement entries that may describe the same payment as an email alert.
+///
+/// Supports cross-referencing the two ingestion sources. A statement line and a
+/// bank alert routinely describe one payment, and matching them prevents the same
+/// transaction being recorded twice from different origins.
 pub fn find_crossref_candidates(
     conn: &Connection,
     instrument_id: &str,
@@ -161,6 +165,7 @@ pub fn find_crossref_candidates(
     Ok(entries)
 }
 
+/// Maps a result row onto a statement entry.
 fn row_to_entry(row: &Row) -> rusqlite::Result<StatementEntriesRow> {
     Ok(StatementEntriesRow {
         id: row.get("id")?,
@@ -190,7 +195,6 @@ mod tests {
     fn setup_db() -> Connection {
         let conn = crate::db::test_helpers::setup_test_db();
 
-        // Setup parent constraints
         conn.execute("INSERT INTO local_profile (id) VALUES (1)", [])
             .unwrap_or_default();
         conn.execute("INSERT INTO instruments (id, type, issuer_name, masked_identifier, status) VALUES ('inst_1', 'credit_card', 'HDFC', '1234', 'active')", []).unwrap_or_default();
@@ -222,16 +226,13 @@ mod tests {
             created_at: Some(chrono::Utc::now().naive_utc()),
         };
 
-        // Insert
         insert(&conn, &entry).unwrap();
 
-        // Select by statement id
         let entries = select_by_statement_id(&conn, "stmt_1").unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].id, "entry_1");
         assert_eq!(entries[0].description_raw, Some("Test Txn".into()));
 
-        // Update
         entry.description_raw = Some("Updated Txn".into());
         entry.amount = Some(200.0);
         update(&conn, &entry).unwrap();

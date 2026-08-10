@@ -1,3 +1,10 @@
+//! Encrypted database backups and their verification.
+//!
+//! Backups are encrypted independently of the live database, so a backup file
+//! copied elsewhere is no more readable than the original. `atomic_replace` is
+//! how a restore lands: writing in place would leave an unusable half-restored
+//! database if the process died partway, so the new file is put in position
+//! atomically or not at all.
 use aes_gcm::aead::{rand_core::RngCore, Aead, AeadCore, KeyInit, OsRng};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use anyhow::{anyhow, Result};
@@ -6,6 +13,11 @@ use argon2::Argon2;
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 12;
 
+/// Derives an encryption key from a user-supplied backup password.
+///
+/// The exported backup leaves the machine and its keychain behind, so it cannot
+/// use the database key -- it is protected by a password the user supplies and
+/// remembers instead.
 fn derive_key_from_password(password: &str, salt: &[u8]) -> Result<[u8; 32]> {
     let mut key_bytes = [0u8; 32];
     Argon2::default()
@@ -14,15 +26,7 @@ fn derive_key_from_password(password: &str, salt: &[u8]) -> Result<[u8; 32]> {
     Ok(key_bytes)
 }
 
-/// Doc 30 TASK-API-008: `settings_export_encrypted_backup`'s core -- the
-/// manual, password-protected Mac-to-Mac transfer path, distinct from
-/// TASK-DB-020's automatic daily SQLCipher-native backup. Encrypts a raw
-/// SQLite snapshot with a caller-supplied password via AES-256-GCM, key
-/// derived through Argon2id with a fresh random salt per export -- not the
-/// app's own SQLCipher base key, since this backup must be restorable on a
-/// different Mac with no access to this machine's Keychain.
-///
-/// Output format: `<16-byte salt><12-byte nonce><ciphertext>`.
+/// Encrypts a backup with a password-derived key.
 pub fn encrypt_backup(plaintext_db_bytes: &[u8], password: &str) -> Result<Vec<u8>> {
     if password.is_empty() {
         return Err(anyhow!("password must not be empty"));
@@ -46,14 +50,10 @@ pub fn encrypt_backup(plaintext_db_bytes: &[u8], password: &str) -> Result<Vec<u
     Ok(blob)
 }
 
-/// Doc 30 TASK-API-008: `settings_import_encrypted_backup`'s core. A wrong
-/// password fails cleanly via AES-GCM's built-in authentication tag check
-/// (`test_import_backup_wrong_password_fails_cleanly`) -- it can never
-/// silently produce corrupt-but-accepted plaintext, unlike a non-AEAD
-/// cipher would. Returns the raw decrypted SQLite bytes; safely swapping
-/// them into place as the live database (integrity-checking, atomic
-/// replace, leaving the original untouched on failure) is TASK-OPS-002's
-/// job, not this function's -- this only reverses `encrypt_backup`.
+/// Decrypts an exported backup.
+///
+/// A wrong password fails authentication rather than yielding garbage, since the
+/// cipher is authenticated.
 pub fn decrypt_backup(blob: &[u8], password: &str) -> Result<Vec<u8>> {
     if blob.len() <= SALT_LEN + NONCE_LEN {
         return Err(anyhow!("backup file is too short to be valid"));
@@ -72,17 +72,10 @@ pub fn decrypt_backup(blob: &[u8], password: &str) -> Result<Vec<u8>> {
         .map_err(|_| anyhow!("decryption failed -- wrong password or corrupt backup file"))
 }
 
-/// Doc 30 TASK-OPS-002: verifies a SQLCipher-native rolling backup
-/// (`finance.db.daily.bak`/`finance.db.bak.*`, written by `VACUUM INTO` from
-/// the live encrypted connection — a completely different format from
-/// `encrypt_backup`/`decrypt_backup`'s AES-256-GCM password-wrapped manual
-/// export above) actually opens cleanly and passes `PRAGMA integrity_check`
-/// before it's ever trusted as a restore source. Opens the file directly
-/// (not through the app's `deadpool_sqlite` pool, which is bound to one
-/// fixed path) with the same key-derivation and SQLCipher PRAGMA sequence
-/// `db::init_db` uses, so a genuinely wrong/missing key surfaces the same
-/// "file is not a database" SQLCipher error `init_db` already handles,
-/// rather than a confusing new failure mode.
+/// Confirms a backup file is a readable, structurally sound database.
+///
+/// An unverified backup is worse than none: it invites false confidence, and the
+/// failure would only be discovered when it is needed.
 pub fn verify_backup_integrity(backup_path: &std::path::Path) -> Result<()> {
     if !backup_path.exists() {
         return Err(anyhow!(
@@ -110,11 +103,11 @@ pub fn verify_backup_integrity(backup_path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-/// Doc 30 TASK-OPS-002 acceptance `test_restore_failure_leaves_original_db_intact`:
-/// copies `source` into place at `dest` via a temp-file-then-rename so a
-/// failure partway through (disk full, permissions, process killed) never
-/// leaves `dest` partially overwritten -- `rename` on the same filesystem is
-/// atomic, unlike `std::fs::copy` writing directly over the live path.
+/// Puts a restored file into place atomically.
+///
+/// A direct overwrite that is interrupted leaves a truncated database where a
+/// working one used to be. Renaming into position means the file is either the
+/// old one or the new one, never a partial mixture.
 pub fn atomic_replace(source: &std::path::Path, dest: &std::path::Path) -> Result<()> {
     let dest_parent = dest
         .parent()
@@ -132,10 +125,6 @@ pub fn atomic_replace(source: &std::path::Path, dest: &std::path::Path) -> Resul
 mod tests {
     use super::*;
 
-    /// Doc 30 TASK-OPS-002 acceptance: `test_backup_verification_detects_corruption`.
-    /// A file that isn't a valid SQLite/SQLCipher database at all (the
-    /// simplest, most unambiguous corruption case) must fail verification,
-    /// not be silently accepted as a valid restore source.
     #[test]
     fn test_backup_verification_detects_corruption() {
         let dir =
@@ -160,10 +149,6 @@ mod tests {
         assert!(verify_backup_integrity(&missing).is_err());
     }
 
-    /// Doc 30 TASK-OPS-002 acceptance:
-    /// `test_restore_failure_leaves_original_db_intact` (the atomic-replace
-    /// half). If the source doesn't exist, the destination must be
-    /// completely untouched -- never partially written.
     #[test]
     fn test_atomic_replace_leaves_dest_untouched_on_missing_source() {
         let dir =

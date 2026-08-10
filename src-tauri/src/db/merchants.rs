@@ -1,3 +1,8 @@
+//! Canonical merchant entities and their aliases.
+//!
+//! Alias lookup is what collapses the many raw descriptor forms a single
+//! merchant appears under into one entity, so spending analytics aggregate
+//! correctly instead of splitting one merchant across several names.
 use anyhow::Result;
 use chrono::NaiveDateTime;
 use rusqlite::{params, Connection, Row};
@@ -26,6 +31,7 @@ pub struct MerchantAliasesRow {
     pub created_at: Option<NaiveDateTime>,
 }
 
+/// Insert a canonical merchant entity.
 pub fn insert(conn: &Connection, merchant: &MerchantsRow) -> Result<()> {
     conn.execute(
         "INSERT INTO merchants (
@@ -44,6 +50,7 @@ pub fn insert(conn: &Connection, merchant: &MerchantsRow) -> Result<()> {
     Ok(())
 }
 
+/// Update a merchant's canonical details.
 pub fn update(conn: &Connection, merchant: &MerchantsRow) -> Result<()> {
     conn.execute(
         "UPDATE merchants SET
@@ -64,6 +71,7 @@ pub fn update(conn: &Connection, merchant: &MerchantsRow) -> Result<()> {
     Ok(())
 }
 
+/// Fetch one merchant.
 pub fn select_by_id(conn: &Connection, id: &str) -> Result<Option<MerchantsRow>> {
     let mut stmt = conn.prepare("SELECT * FROM merchants WHERE id = ?1 AND is_deleted = 0")?;
     let mut rows = stmt.query([id])?;
@@ -74,9 +82,11 @@ pub fn select_by_id(conn: &Connection, id: &str) -> Result<Option<MerchantsRow>>
     }
 }
 
-/// Looks up a merchant by a raw alias string, normalizing it the same way
-/// aliases are stored (uppercased) so callers can pass either raw or
-/// already-normalized strings.
+/// Resolves a raw descriptor to its merchant via the alias table.
+///
+/// The mechanism that collapses the many descriptor forms one merchant appears
+/// under into a single entity, so analytics aggregate correctly instead of
+/// splitting one merchant across several spellings.
 pub fn select_by_alias(conn: &Connection, alias: &str) -> Result<Option<MerchantsRow>> {
     let mut stmt = conn.prepare(
         "SELECT m.* FROM merchants m
@@ -91,6 +101,7 @@ pub fn select_by_alias(conn: &Connection, alias: &str) -> Result<Option<Merchant
     }
 }
 
+/// All live merchants.
 pub fn select_all(conn: &Connection) -> Result<Vec<MerchantsRow>> {
     let mut stmt = conn.prepare("SELECT * FROM merchants WHERE is_deleted = 0")?;
     let rows = stmt.query_map([], row_to_merchant)?;
@@ -102,6 +113,7 @@ pub fn select_all(conn: &Connection) -> Result<Vec<MerchantsRow>> {
     Ok(merchants)
 }
 
+/// Soft-delete a merchant, preserving the transactions that reference it.
 pub fn soft_delete(conn: &Connection, id: &str) -> Result<()> {
     conn.execute(
         "UPDATE merchants SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
@@ -110,6 +122,7 @@ pub fn soft_delete(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Maps a result row onto a merchant record.
 fn row_to_merchant(row: &Row) -> rusqlite::Result<MerchantsRow> {
     Ok(MerchantsRow {
         id: row.get("id")?,
@@ -122,8 +135,10 @@ fn row_to_merchant(row: &Row) -> rusqlite::Result<MerchantsRow> {
     })
 }
 
-// Aliases
-
+/// Records that a raw descriptor maps to a merchant.
+///
+/// Each new alias makes future extractions of that descriptor resolve without
+/// needing normalisation or the LLM.
 pub fn insert_alias(conn: &Connection, alias: &MerchantAliasesRow) -> Result<()> {
     conn.execute(
         "INSERT INTO merchant_aliases (
@@ -143,6 +158,7 @@ pub fn insert_alias(conn: &Connection, alias: &MerchantAliasesRow) -> Result<()>
     Ok(())
 }
 
+/// All descriptor forms known for a merchant.
 pub fn select_aliases_by_merchant_id(
     conn: &Connection,
     merchant_entity_id: &str,
@@ -157,11 +173,13 @@ pub fn select_aliases_by_merchant_id(
     Ok(aliases)
 }
 
+/// Removes an alias, used when a mapping proves wrong.
 pub fn delete_alias(conn: &Connection, id: &str) -> Result<()> {
     conn.execute("DELETE FROM merchant_aliases WHERE id = ?1", params![id])?;
     Ok(())
 }
 
+/// Maps a result row onto an alias record.
 fn row_to_alias(row: &Row) -> rusqlite::Result<MerchantAliasesRow> {
     Ok(MerchantAliasesRow {
         id: row.get("id")?,

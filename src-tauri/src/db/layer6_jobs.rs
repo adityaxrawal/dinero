@@ -1,6 +1,8 @@
-//! Durable mirror of the in-memory Layer 6 job channel (see migration
-//! `20260101000057_layer6_pending_jobs`'s doc comment for why this exists).
-
+//! Durable queue for pending LLM extraction jobs.
+//!
+//! Persisted rather than held in memory so that work in flight when the app
+//! quits is replayed at the next launch instead of being lost. Rows are deleted
+//! only once the job has genuinely completed.
 use anyhow::Result;
 use rusqlite::{params, Connection};
 
@@ -12,6 +14,10 @@ pub struct PendingLayer6Job {
     pub internal_date_seconds: Option<i64>,
 }
 
+/// Persists a pending LLM extraction job.
+///
+/// Written before the job is queued, so work in flight when the app exits is
+/// replayed at the next launch rather than lost.
 pub fn insert(conn: &Connection, job: &PendingLayer6Job) -> Result<()> {
     conn.execute(
         "INSERT INTO layer6_pending_jobs (
@@ -28,13 +34,13 @@ pub fn insert(conn: &Connection, job: &PendingLayer6Job) -> Result<()> {
     Ok(())
 }
 
+/// Removes a job once it has genuinely completed.
 pub fn delete(conn: &Connection, id: &str) -> Result<()> {
     conn.execute("DELETE FROM layer6_pending_jobs WHERE id = ?1", params![id])?;
     Ok(())
 }
 
-/// Read at startup to replay anything left over from a restart that
-/// happened while jobs were still in flight (`queues::replay_pending_layer6_jobs`).
+/// Outstanding jobs, replayed at startup.
 pub fn select_all(conn: &Connection) -> Result<Vec<PendingLayer6Job>> {
     let mut stmt = conn.prepare(
         "SELECT id, observation_id, bank_name, body_text, internal_date_seconds \

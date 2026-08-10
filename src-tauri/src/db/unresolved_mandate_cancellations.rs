@@ -1,11 +1,15 @@
+//! Mandate cancellations seen without a matching mandate.
+//!
+//! Recorded rather than discarded: the cancellation notice can arrive before the
+//! mandate it refers to has been ingested, so keeping it allows the two to be
+//! reconciled once the other half appears.
 use anyhow::Result;
 use rusqlite::{params, Connection};
 
-/// Mirrors unprocessed_statements' blocking-on-user-input shape (Doc 18
-/// §4.16-4.21): a mandate cancellation email that couldn't be matched to
-/// exactly one active recurring_payments row (zero or multiple candidates)
-/// is never guessed at -- logged here instead
-/// (dinero-docs/design-archive/specs/2026-07-18-mandate-tracking-design.md §5).
+/// Records a cancellation notice with no matching mandate yet.
+///
+/// Kept rather than discarded because the notice can arrive before the mandate
+/// it refers to has been ingested, and the two are reconciled once both exist.
 pub fn insert_unresolved(
     conn: &Connection,
     raw_signal: &str,

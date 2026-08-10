@@ -1,11 +1,19 @@
+//! Tamper-evident audit log.
+//!
+//! Each row chains to its predecessor by hash, so `verify_chain` can detect
+//! whether history was altered after the fact. Detection, not prevention: a
+//! writer with database access could rewrite the chain wholesale, but no
+//! individual row can be quietly edited without breaking the links after it.
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// Genesis value for the first row's `prev_hash` (Document 18 §4.21):
-/// `'0'.repeat(64)`.
+/// The chain's starting hash, used as the predecessor of the first row.
+///
+/// A fixed all-zero value, so an empty log has a well-defined origin and
+/// verification needs no special case for the first entry.
 fn genesis_hash() -> String {
     "0".repeat(64)
 }
@@ -23,9 +31,13 @@ pub struct AuditLogRow {
     pub created_at: DateTime<Utc>,
 }
 
-/// Document 18 §4.21: `SHA256(prev_hash || id || actor_type || actor_id ||
-/// action || resource_type || resource_id || before_json || after_json ||
-/// created_at)`, computed at write time.
+/// Computes a row's hash over its content and its predecessor's hash.
+///
+/// Including the previous hash is what forms the chain: editing any earlier row
+/// invalidates every hash after it, so tampering cannot be confined to one entry.
+///
+/// Every field participates, and absent values hash as an empty string so the
+/// input is deterministic regardless of which optional fields are set.
 fn compute_row_hash(prev_hash: &str, row: &AuditLogRow) -> String {
     let mut hasher = Sha256::new();
     hasher.update(prev_hash.as_bytes());
@@ -49,10 +61,6 @@ fn compute_row_hash(prev_hash: &str, row: &AuditLogRow) -> String {
             .unwrap_or_default()
             .as_bytes(),
     );
-    // SQLite's DATETIME storage truncates to whole-second precision, so the
-    // hash must be computed over that same truncated representation --
-    // hashing the full-precision in-memory value would never reproduce the
-    // same digest once the row is read back from the DB.
     hasher.update(
         row.created_at
             .format("%Y-%m-%d %H:%M:%S")
@@ -62,14 +70,10 @@ fn compute_row_hash(prev_hash: &str, row: &AuditLogRow) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// Verifies the full `prev_hash`/`row_hash` chain in insertion order,
-/// detecting whether any row has been edited or deleted out-of-band after
-/// being written (Document 18 §4.21's tamper-evidence design) — a guarantee
-/// the immutability trigger alone can't provide, since that trigger only
-/// guards the IPC/rusqlite mutation path, not direct SQLite file access.
-/// Returns `Ok(true)` if the chain is intact, `Ok(false)` on the first break
-/// found (a row's stored `row_hash` doesn't match recomputation, or its
-/// `prev_hash` doesn't match the preceding row's `row_hash`).
+/// Recomputes the chain and reports whether it is intact.
+///
+/// Walks rows in order, deriving each hash from the last. A mismatch means the
+/// log was altered after it was written.
 pub fn verify_chain(conn: &Connection) -> Result<bool> {
     let mut stmt = conn.prepare(
         "SELECT id, actor_type, actor_id, action, resource_type, resource_id, before_json, after_json, created_at, prev_hash, row_hash
@@ -106,10 +110,7 @@ pub fn verify_chain(conn: &Connection) -> Result<bool> {
     Ok(true)
 }
 
-/// Computes and stores the `prev_hash`/`row_hash` tamper-evidence chain
-/// (Document 18 §4.21) — always computed here, never accepted from the
-/// caller, since `AuditLogRow` itself has no hash fields for a caller to
-/// tamper with in the first place.
+/// Append an entry, linking it to the current chain head.
 pub fn insert(conn: &Connection, row: &AuditLogRow) -> Result<()> {
     let prev_hash: String = conn
         .query_row(
@@ -141,6 +142,7 @@ pub fn insert(conn: &Connection, row: &AuditLogRow) -> Result<()> {
     Ok(())
 }
 
+/// Fetch one audit entry.
 pub fn get(conn: &Connection, id: &str) -> Result<Option<AuditLogRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, actor_type, actor_id, action, resource_type, resource_id, before_json, after_json, created_at
@@ -164,6 +166,7 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<AuditLogRow>> {
     Ok(row)
 }
 
+/// All audit entries in chain order.
 pub fn fetch_all(
     conn: &Connection,
     resource_type_filter: Option<String>,

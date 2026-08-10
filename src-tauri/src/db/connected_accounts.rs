@@ -1,3 +1,8 @@
+//! Gmail accounts connected for ingestion.
+//!
+//! Stores account identity and sync bookkeeping only. OAuth tokens live in the
+//! OS keychain, never in the database, so a leaked database file cannot be used
+//! to read anyone's mail.
 use anyhow::Result;
 use chrono::NaiveDateTime;
 use rusqlite::{params, Connection, Row};
@@ -14,6 +19,7 @@ pub struct ConnectedAccountsRow {
     pub updated_at: Option<NaiveDateTime>,
 }
 
+/// Record a newly connected Gmail account.
 pub fn insert_account(conn: &Connection, account: &ConnectedAccountsRow) -> Result<()> {
     conn.execute(
         "INSERT INTO connected_accounts (
@@ -33,6 +39,7 @@ pub fn insert_account(conn: &Connection, account: &ConnectedAccountsRow) -> Resu
     Ok(())
 }
 
+/// Update an account's sync bookkeeping.
 pub fn update_account(conn: &Connection, account: &ConnectedAccountsRow) -> Result<()> {
     let count = conn.execute(
         "UPDATE connected_accounts SET
@@ -55,6 +62,7 @@ pub fn update_account(conn: &Connection, account: &ConnectedAccountsRow) -> Resu
     Ok(())
 }
 
+/// Fetch one account.
 pub fn get_account(conn: &Connection, id: &str) -> Result<Option<ConnectedAccountsRow>> {
     let mut stmt = conn.prepare("SELECT * FROM connected_accounts WHERE id = ?1")?;
     let mut rows = stmt.query([id])?;
@@ -65,6 +73,7 @@ pub fn get_account(conn: &Connection, id: &str) -> Result<Option<ConnectedAccoun
     }
 }
 
+/// All connected accounts.
 pub fn get_all_accounts(conn: &Connection) -> Result<Vec<ConnectedAccountsRow>> {
     let mut stmt = conn.prepare("SELECT * FROM connected_accounts")?;
     let rows = stmt.query_map([], row_to_account)?;
@@ -76,11 +85,16 @@ pub fn get_all_accounts(conn: &Connection) -> Result<Vec<ConnectedAccountsRow>> 
     Ok(accounts)
 }
 
+/// Remove an account record.
+///
+/// The OAuth grant is revoked separately; deleting this row alone would leave a
+/// working token behind in the keychain.
 pub fn delete_account(conn: &Connection, id: &str) -> Result<()> {
     conn.execute("DELETE FROM connected_accounts WHERE id = ?1", params![id])?;
     Ok(())
 }
 
+/// Maps a result row onto an account record.
 fn row_to_account(row: &Row) -> rusqlite::Result<ConnectedAccountsRow> {
     Ok(ConnectedAccountsRow {
         id: row.get("id")?,

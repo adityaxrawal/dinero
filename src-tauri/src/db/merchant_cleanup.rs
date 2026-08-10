@@ -1,20 +1,9 @@
-//! Issue #12: persistence for the user-triggered LLM merchant/category pass.
+//! Backs the AI merchant-normalisation runs.
 //!
-//! Three responsibilities: pick the work queue (low-confidence merchants),
-//! apply one LLM answer atomically across the four places it has to land, and
-//! put any of it back.
-//!
-//! Applying a correction touches more than the transaction row, and all of it
-//! has to happen together or the pass teaches the pipeline something it will
-//! then contradict:
-//!
-//! 1. `merchants`/`merchant_aliases` -- so normalization resolves this raw
-//!    string without the LLM next time.
-//! 2. `transactions` -- the visible fix: display name, entity link, category.
-//! 3. `field_rules` -- so the *extraction* layer stops producing the bad
-//!    string in the first place.
-//! 4. `merchant_llm_corrections` -- the undo log that makes 1-3 reversible.
-
+//! Selects candidates, applies corrections, and -- critically -- retains enough
+//! per-change history to revert them. The pass rewrites merchant names in bulk,
+//! so being able to undo an individual bad correction is what makes running it
+//! safe.
 use anyhow::Result;
 use chrono::Utc;
 use rusqlite::{params, Connection};
@@ -24,15 +13,12 @@ use crate::extraction::merchant_confidence::{score_merchant, LOW_CONFIDENCE_THRE
 use crate::extraction::merchant_llm::MerchantResolution;
 use crate::extraction::merchant_normalizer::strip_noise_tokens;
 
-/// One transaction whose merchant the LLM should re-read.
 #[derive(Debug, Clone)]
 pub struct CleanupCandidate {
     pub transaction_id: String,
     pub observation_id: Option<String>,
     pub bank_name: String,
-    /// What the parser produced -- the string being questioned.
     pub current_merchant: String,
-    /// Sanitized email body, when retention still has it.
     pub body: Option<String>,
     pub amount: Option<f64>,
     pub currency: Option<String>,
@@ -42,13 +28,13 @@ pub struct CleanupCandidate {
     pub merchant_entity_id: Option<String>,
     pub merchant_display_name: Option<String>,
     pub merchant_normalized_name: Option<String>,
-    /// Heuristic score that put it in the queue, surfaced to the UI.
     pub confidence: f64,
 }
 
-/// The closed category list the LLM is constrained to, newest-safe: read from
-/// the database rather than hardcoded, so a user-created category is offered
-/// too and a deleted one never is.
+/// The category vocabulary offered to the model.
+///
+/// Constraining the model to existing categories stops it inventing new ones
+/// that would fragment the user's spending breakdown.
 pub fn category_names(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt =
         conn.prepare("SELECT name FROM categories WHERE is_deleted = 0 ORDER BY name")?;
@@ -56,6 +42,7 @@ pub fn category_names(conn: &Connection) -> Result<Vec<String>> {
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// Resolves a category name back to its id.
 fn category_id_for_name(conn: &Connection, name: &str) -> Option<String> {
     conn.query_row(
         "SELECT id FROM categories WHERE name = ?1 AND is_deleted = 0",
@@ -65,19 +52,8 @@ fn category_id_for_name(conn: &Connection, name: &str) -> Option<String> {
     .ok()
 }
 
-/// Every transaction whose merchant scores below
-/// [`LOW_CONFIDENCE_THRESHOLD`], worst first.
-///
-/// The queue is *derived*, never stored — which is what makes the pass
-/// resumable for free. A transaction the previous run already fixed now
-/// resolves to a user-sourced merchant, scores above the threshold, and is
-/// simply absent here; an interrupted run resumes by being started again.
+/// Selects transactions whose merchant names are worth normalising.
 pub fn select_candidates(conn: &Connection, limit: usize) -> Result<Vec<CleanupCandidate>> {
-    // One row per transaction. The `MAX(o.raw_payload_json IS NOT NULL)`
-    // aggregate is doing real work, not just being selected: SQLite resolves
-    // the other bare columns from whichever row produced that maximum, so a
-    // transaction with several observations contributes the one that still
-    // has an email body -- the only one worth sending to the model.
     let mut stmt = conn.prepare(
         "SELECT t.id,
                 o.id                        AS observation_id,
@@ -121,13 +97,6 @@ pub fn select_candidates(conn: &Connection, limit: usize) -> Result<Vec<CleanupC
             .clone()
             .or_else(|| normalized.clone())
             .unwrap_or_default();
-        // Once the LLM has ruled on a merchant, *its* confidence is the
-        // merchant's confidence -- the heuristic was only ever a proxy for
-        // "has anything actually read this email?", and now something has.
-        // Without this the row would be re-queued forever: the underlying
-        // observation still records the weak layer (`nlp`) that originally
-        // produced the bad name, and correcting the transaction does not
-        // rewrite history on the observation.
         let established = user_sourced == 1 || alias_count > 1;
         let confidence = llm_confidence.unwrap_or_else(|| {
             score_merchant(
@@ -161,23 +130,17 @@ pub fn select_candidates(conn: &Connection, limit: usize) -> Result<Vec<CleanupC
 
     let mut out: Vec<CleanupCandidate> = rows
         .filter_map(|r| r.ok())
-        // An already-corrected transaction is never re-queued, even if the
-        // model's own confidence was low. The LLM has had its turn; asking
-        // again would spend inference re-deriving the same answer every run.
-        // Reverting the correction puts it back in scope.
         .filter(|(_, _, corrected)| !corrected)
         .filter(|(c, conf, _)| *conf < LOW_CONFIDENCE_THRESHOLD && !c.current_merchant.is_empty())
         .map(|(c, _, _)| c)
         .collect();
 
-    // Worst first, so an interrupted run has still fixed the worst offenders.
     out.sort_by(|a, b| a.confidence.total_cmp(&b.confidence));
     out.truncate(limit);
     Ok(out)
 }
 
-/// The email body lives under `raw_payload_json`'s `"body"` key -- same shape
-/// `reconciliation::audit` reads for its template hash.
+/// Extracts the message body from a raw payload, as context for the model.
 fn body_from_payload(raw: &str) -> Option<String> {
     serde_json::from_str::<serde_json::Value>(raw)
         .ok()?
@@ -186,16 +149,14 @@ fn body_from_payload(raw: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// `true` when the parser's output is close enough to the merchant's real
-/// name that aliasing it is safe.
+/// Decides whether two merchant strings are close enough to alias together.
 ///
-/// This gate matters a great deal. Aliasing "SWIGGY LIMITE" to Swiggy is
-/// exactly right -- it *is* the merchant, just truncated. Aliasing "USING
-/// YOUR" to Swiggy would be a disaster: that fragment appears in every bank's
-/// boilerplate, and the alias table is consulted before anything else, so one
-/// bad row would silently relabel unrelated transactions across every bank
-/// forever. When the parser grabbed the wrong span entirely, the synthesized
-/// pattern rule (keyed to that one email shape) is the safe fix instead.
+/// Aliasing is a durable claim that two descriptors mean the same merchant, so
+/// the bar is deliberately high. Noise tokens are stripped first, then a
+/// containment check handles the common case of one string being a truncation of
+/// the other, with Jaro-Winkler similarity as the fallback -- it weights matching
+/// prefixes, which suits merchant names that share a leading brand and differ in
+/// their trailing branch or terminal codes.
 fn safe_to_alias(parser_output: &str, merchant_in_email: &str) -> bool {
     let a = strip_noise_tokens(parser_output);
     let b = strip_noise_tokens(merchant_in_email);
@@ -208,11 +169,7 @@ fn safe_to_alias(parser_output: &str, merchant_in_email: &str) -> bool {
     strsim::jaro_winkler(&a, &b) >= 0.80
 }
 
-/// Points `alias_normalized` at `merchant_id`, replacing any existing owner.
-///
-/// `merchant_aliases.alias_normalized` is UNIQUE, so a plain insert would
-/// fail for a string some earlier pass already claimed -- and re-pointing is
-/// the correct outcome anyway, since this answer is newer and user-triggered.
+/// Records a descriptor-to-merchant alias.
 fn upsert_alias(
     conn: &Connection,
     merchant_id: &str,
@@ -240,13 +197,11 @@ fn upsert_alias(
     Ok(())
 }
 
-/// Finds or creates the canonical merchant for `name`, marking it
-/// `source = 'user'`.
+/// Resolves a model-supplied name to a canonical merchant, creating one if needed.
 ///
-/// The `source` write is load-bearing, not cosmetic: `score_merchant` treats
-/// a user-sourced merchant as established, so this is what stops a
-/// freshly-created merchant (which has only one alias) from scoring low again
-/// and being re-queued on every subsequent run.
+/// Normalises first and refuses an empty result, since a name that reduces to
+/// nothing would otherwise create an unnamed merchant entity that could never be
+/// matched again.
 fn resolve_canonical_merchant(conn: &Connection, name: &str) -> Result<(String, String)> {
     let normalized = strip_noise_tokens(name);
     if normalized.is_empty() {
@@ -279,9 +234,10 @@ fn resolve_canonical_merchant(conn: &Connection, name: &str) -> Result<(String, 
     Ok((id, normalized))
 }
 
-/// Applies one validated LLM answer, recording everything needed to undo it.
+/// Applies one merchant correction and records it for undo.
 ///
-/// Caller supplies `run_id` so a whole pass can be reverted as a unit.
+/// Each change is logged individually, which is what makes a bulk pass safe: a
+/// single bad correction can be reverted without undoing the whole run.
 pub fn apply_correction(
     conn: &Connection,
     run_id: &str,
@@ -290,8 +246,6 @@ pub fn apply_correction(
 ) -> Result<()> {
     let (merchant_id, normalized) = resolve_canonical_merchant(conn, &resolution.merchant_name)?;
 
-    // The verbatim span always earns an alias: it genuinely names the
-    // merchant, so it is safe on any future email.
     let span_normalized = strip_noise_tokens(&resolution.merchant_in_email);
     if !span_normalized.is_empty() {
         upsert_alias(
@@ -303,8 +257,6 @@ pub fn apply_correction(
         )?;
     }
 
-    // The parser's own output earns one only if it actually resembles the
-    // merchant -- see `safe_to_alias`.
     let parser_normalized = strip_noise_tokens(&candidate.current_merchant);
     if !parser_normalized.is_empty()
         && parser_normalized != span_normalized
@@ -321,14 +273,6 @@ pub fn apply_correction(
 
     let new_category_id = category_id_for_name(conn, &resolution.category);
 
-    // Teach the extraction layer, when there is still a body to learn from.
-    //
-    // Routed through the shared synthesis + storage path rather than this
-    // module's own writer: activating immediately is safe here for exactly the
-    // reason it is safe there -- the model's span was verified to occur in the
-    // body, and synthesis refuses to return a pattern that cannot re-extract it
-    // from the very email it was built from. Two implementations of that
-    // guarantee would be two places for it to quietly stop holding.
     let learned_rule_id = candidate.body.as_deref().and_then(|body| {
         let pattern = crate::extraction::rule_synthesis::synthesize_span_regex(
             body,
@@ -408,7 +352,6 @@ pub fn apply_correction(
     Ok(())
 }
 
-/// Summary of one run, for the Settings panel.
 #[derive(Debug, serde::Serialize)]
 pub struct RunSummary {
     pub run_id: String,
@@ -417,6 +360,7 @@ pub struct RunSummary {
     pub started_at: Option<String>,
 }
 
+/// Summary statistics for a cleanup run.
 pub fn run_summary(conn: &Connection, run_id: &str) -> Result<RunSummary> {
     let (applied, reverted, started_at) = conn.query_row(
         "SELECT
@@ -441,11 +385,6 @@ pub fn run_summary(conn: &Connection, run_id: &str) -> Result<RunSummary> {
     })
 }
 
-/// One merchant the run rewrote, as the Settings panel shows it: what the
-/// parser had, what the model replaced it with, and the category that came
-/// along. `reverted` rows are kept in the list rather than filtered out —
-/// "this was undone" is exactly what someone scanning their own history needs
-/// to see.
 #[derive(Debug, serde::Serialize)]
 pub struct RunChange {
     pub correction_id: String,
@@ -458,24 +397,17 @@ pub struct RunChange {
     pub reverted: bool,
 }
 
-/// A past run, newest first, with the corrections it wrote.
 #[derive(Debug, serde::Serialize)]
 pub struct RunDetail {
     pub run_id: String,
     pub started_at: Option<String>,
     pub applied: i64,
     pub reverted: i64,
-    /// Distinct banks the run touched, for the collapsed one-line summary.
     pub banks: Vec<String>,
     pub changes: Vec<RunChange>,
 }
 
-/// Every cleanup run that still has correction rows, newest first.
-///
-/// Runs are not stored anywhere of their own — `merchant_llm_corrections` *is*
-/// the record, so a run exists exactly as long as its corrections do. That is
-/// also why `revert_run` can never be unreachable: the rows it needs are the
-/// same rows this reads.
+/// Past cleanup runs, each still revertible.
 pub fn list_runs(conn: &Connection, limit: usize) -> Result<Vec<RunDetail>> {
     let run_ids: Vec<(String, Option<String>)> = {
         let mut stmt = conn.prepare(
@@ -544,11 +476,7 @@ pub fn list_runs(conn: &Connection, limit: usize) -> Result<Vec<RunDetail>> {
     Ok(out)
 }
 
-/// Restores one correction's previous values and retires the rule it taught.
-///
-/// The learned rule is set `inactive` rather than deleted so the history of
-/// what was tried survives; `select_live_by_bank` ignores it either way,
-/// which is what actually matters for extraction.
+/// Reverts one correction to the merchant name it replaced.
 pub fn revert_correction(conn: &Connection, correction_id: &str) -> Result<()> {
     struct Previous {
         tx_id: String,
@@ -595,9 +523,6 @@ pub fn revert_correction(conn: &Connection, correction_id: &str) -> Result<()> {
     )?;
 
     if let Some(rule_id) = prev.rule_id {
-        // `revert` sets it inactive and logs the reversal, rather than
-        // deleting: the history of what was tried is what makes the whole
-        // no-approval design auditable.
         let _ =
             crate::db::field_rules::revert(conn, &rule_id, "merchant cleanup correction reverted");
     }
@@ -609,7 +534,7 @@ pub fn revert_correction(conn: &Connection, correction_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Reverts every still-applied correction from one run. Returns the count.
+/// Reverts every correction from a run.
 pub fn revert_run(conn: &Connection, run_id: &str) -> Result<usize> {
     let ids: Vec<String> = {
         let mut stmt = conn.prepare(

@@ -1,3 +1,8 @@
+//! Single-row table holding local user preferences.
+//!
+//! Settings that must survive a restart and that the Rust side needs to read
+//! directly -- notably the selected LLM model -- rather than living in frontend
+//! storage the backend cannot see.
 use anyhow::Result;
 use chrono::NaiveDateTime;
 use rusqlite::{params, Connection, Row};
@@ -16,6 +21,7 @@ pub struct LocalProfileRow {
     pub updated_at: Option<NaiveDateTime>,
 }
 
+/// Create the local profile row.
 pub fn insert(conn: &Connection, profile: &LocalProfileRow) -> Result<()> {
     conn.execute(
         "INSERT INTO local_profile (
@@ -35,6 +41,7 @@ pub fn insert(conn: &Connection, profile: &LocalProfileRow) -> Result<()> {
     Ok(())
 }
 
+/// Update profile preferences.
 pub fn update(conn: &Connection, profile: &LocalProfileRow) -> Result<()> {
     let count = conn.execute(
         "UPDATE local_profile SET
@@ -60,6 +67,7 @@ pub fn update(conn: &Connection, profile: &LocalProfileRow) -> Result<()> {
     Ok(())
 }
 
+/// Fetch the profile.
 pub fn select_by_id(conn: &Connection, id: i64) -> Result<Option<LocalProfileRow>> {
     let mut stmt = conn.prepare("SELECT * FROM local_profile WHERE id = ?1")?;
     let mut rows = stmt.query([id])?;
@@ -70,6 +78,7 @@ pub fn select_by_id(conn: &Connection, id: i64) -> Result<Option<LocalProfileRow
     }
 }
 
+/// Maps a result row onto the profile.
 fn row_to_profile(row: &Row) -> rusqlite::Result<LocalProfileRow> {
     Ok(LocalProfileRow {
         id: row.get("id")?,
@@ -84,11 +93,10 @@ fn row_to_profile(row: &Row) -> rusqlite::Result<LocalProfileRow> {
     })
 }
 
-/// `llm_model` (migration `20260101000019_local_profile_onboarding_fields`)
-/// was only ever written, via `onboarding_save_preferences`'s raw SQL — not
-/// modeled on `LocalProfileRow`, and nothing anywhere ever read it back.
-/// `extraction/ladder.rs`'s `Layer6LlmLayer` needs exactly this: which
-/// catalog model id the user actually selected.
+/// The user's selected LLM model, if one is set.
+///
+/// Stored server-side rather than in frontend storage because the Rust inference
+/// path needs to read it directly.
 pub fn get_llm_model(conn: &Connection) -> Result<Option<String>> {
     let result: rusqlite::Result<Option<String>> = conn.query_row(
         "SELECT llm_model FROM local_profile WHERE id = 1",
@@ -102,10 +110,7 @@ pub fn get_llm_model(conn: &Connection) -> Result<Option<String>> {
     }
 }
 
-/// Settings' model picker writes here directly — a single-column update,
-/// deliberately not routed through `onboarding_save_preferences` (which
-/// would require resending every other onboarding field just to change
-/// one).
+/// Persists the selected LLM model.
 pub fn set_llm_model(conn: &Connection, model_id: &str) -> Result<()> {
     conn.execute(
         "UPDATE local_profile SET llm_model = ?1 WHERE id = 1",
@@ -114,9 +119,7 @@ pub fn set_llm_model(conn: &Connection, model_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Clears the active model back to "unset" — used when the previously
-/// active model was deleted and no other downloaded model is available to
-/// take its place.
+/// Clears the model selection, reverting to the hardware recommendation.
 pub fn clear_llm_model(conn: &Connection) -> Result<()> {
     conn.execute("UPDATE local_profile SET llm_model = NULL WHERE id = 1", [])?;
     Ok(())

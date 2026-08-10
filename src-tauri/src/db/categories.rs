@@ -1,3 +1,8 @@
+//! Spending category taxonomy.
+//!
+//! Categories are soft-deleted rather than removed: historical transactions
+//! reference them, and a hard delete would orphan those rows and silently
+//! rewrite past spending breakdowns.
 use anyhow::Result;
 use chrono::NaiveDateTime;
 use rusqlite::{params, Connection, Row};
@@ -13,13 +18,11 @@ pub struct CategoriesRow {
     pub monthly_budget_minor: Option<i64>,
     pub is_deleted: bool,
     pub created_at: Option<NaiveDateTime>,
-    /// Doc 30 TASK-API-007 / migration 20260101000039: not part of Document
-    /// 18 §4.9's original 8-field schema, added back via migration per
-    /// Aditya's decision resolving that Doc18/Doc30 conflict.
     pub color: Option<String>,
     pub icon: Option<String>,
 }
 
+/// Insert a spending category.
 pub fn insert(conn: &Connection, category: &CategoriesRow) -> Result<()> {
     conn.execute(
         "INSERT INTO categories (
@@ -41,6 +44,7 @@ pub fn insert(conn: &Connection, category: &CategoriesRow) -> Result<()> {
     Ok(())
 }
 
+/// Rename a category or change its budget.
 pub fn update(conn: &Connection, category: &CategoriesRow) -> Result<()> {
     let existing =
         select_by_id(conn, &category.id)?.ok_or_else(|| anyhow::anyhow!("Category not found"))?;
@@ -77,6 +81,7 @@ pub fn update(conn: &Connection, category: &CategoriesRow) -> Result<()> {
     Ok(())
 }
 
+/// Fetch one category.
 pub fn select_by_id(conn: &Connection, id: &str) -> Result<Option<CategoriesRow>> {
     let mut stmt = conn.prepare("SELECT * FROM categories WHERE id = ?1 AND is_deleted = 0")?;
     let mut rows = stmt.query([id])?;
@@ -87,6 +92,7 @@ pub fn select_by_id(conn: &Connection, id: &str) -> Result<Option<CategoriesRow>
     }
 }
 
+/// All live categories.
 pub fn select_all(conn: &Connection) -> Result<Vec<CategoriesRow>> {
     let mut stmt =
         conn.prepare("SELECT * FROM categories WHERE is_deleted = 0 ORDER BY name ASC")?;
@@ -99,15 +105,10 @@ pub fn select_all(conn: &Connection) -> Result<Vec<CategoriesRow>> {
     Ok(categories)
 }
 
-/// Doc 30 TASK-API-007: "for user categories, reassigns linked transactions
-/// to 'Others,' either automatically with a confirmation flag or requiring
-/// explicit reassignment first." Implements the first option: if any
-/// non-deleted transactions still reference this category and
-/// `confirm_reassign` is false, the delete is rejected with the linked
-/// count so the caller can re-invoke with confirmation; if true, they're
-/// reassigned to the seeded `cat_others` system category (migration
-/// 20260101000040) before the category itself is soft-deleted. Returns the
-/// number of transactions reassigned.
+/// Soft-delete a category.
+///
+/// Historical transactions reference it, so hard deletion would orphan them and
+/// retroactively rewrite past spending breakdowns.
 pub fn soft_delete(conn: &Connection, id: &str, confirm_reassign: bool) -> Result<usize> {
     let cat = select_by_id(conn, id)?.ok_or_else(|| anyhow::anyhow!("Category not found"))?;
 
@@ -141,6 +142,7 @@ pub fn soft_delete(conn: &Connection, id: &str, confirm_reassign: bool) -> Resul
     Ok(linked_count as usize)
 }
 
+/// Maps a result row onto a category record.
 fn row_to_category(row: &Row) -> rusqlite::Result<CategoriesRow> {
     Ok(CategoriesRow {
         id: row.get("id")?,

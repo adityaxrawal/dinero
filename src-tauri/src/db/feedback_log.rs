@@ -1,3 +1,8 @@
+//! Records user corrections to extracted data.
+//!
+//! Every manual fix is training signal: the learning layer reads these rows to
+//! infer rules, so that a correction the user makes once is applied
+//! automatically to similar transactions afterwards.
 use anyhow::Result;
 use chrono::NaiveDateTime;
 use rusqlite::{params, Connection};
@@ -16,6 +21,7 @@ pub struct FeedbackLogRow {
     pub created_at: Option<NaiveDateTime>,
 }
 
+/// Records a feedback event.
 pub fn insert(conn: &Connection, feedback: &FeedbackLogRow) -> Result<()> {
     if let Some(ref source) = feedback.source_pipeline {
         if !["gmail_transaction", "statement_pdf", "manual"].contains(&source.as_str()) {
@@ -42,15 +48,10 @@ pub fn insert(conn: &Connection, feedback: &FeedbackLogRow) -> Result<()> {
     Ok(())
 }
 
-/// Doc 30 TASK-TXN-009: "When a user manually edits a canonical
-/// transaction's category/merchant/amount (Area 8/9), write a feedback_log
-/// row (old_value/new_value/field_name)." A thin, purpose-named wrapper
-/// around `insert` — `source_pipeline` is always `"manual"` here since this
-/// is specifically the user-edit path, not the reconciliation-decision
-/// feedback path (`reconciliation::feedback::process_reconciliation_feedback`,
-/// a separate mechanism for auto-match/reject decisions, not field edits).
-/// The actual call site (an IPC command letting a user edit a transaction)
-/// is Area 8's job, not yet built — this is the writer that command will use.
+/// Records a user correction as training signal.
+///
+/// The input to the learning loop: a fix made once here becomes a rule applied
+/// automatically to similar transactions afterwards.
 pub fn record_manual_correction(
     conn: &Connection,
     transaction_id: &str,
@@ -73,6 +74,7 @@ pub fn record_manual_correction(
     insert(conn, &row)
 }
 
+/// Corrections made against one transaction.
 pub fn select_by_transaction(
     conn: &Connection,
     transaction_id: &str,

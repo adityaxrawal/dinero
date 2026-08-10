@@ -1,21 +1,29 @@
+//! Canonical transactions -- the ledger the user actually sees.
+//!
+//! One row per real-world payment, derived from one or more observations.
+//! Amounts are integer minor units so arithmetic stays exact, and deletion is
+//! soft: removed rows must not reappear when the same source is ingested again,
+//! and the user may want them back.
 use anyhow::Result;
 use chrono::{Datelike, NaiveDate, NaiveDateTime};
 use rusqlite::{params, Connection, Row};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+/// One canonical ledger row.
+///
+/// Almost every field is optional because extraction is best-effort: a
+/// transaction recovered from a terse SMS-style alert may carry little beyond an
+/// amount, and forcing defaults would fabricate data the bank never sent.
+///
+/// `amount_minor` is authoritative; the `amount` float exists for legacy reads
+/// and must not be used for arithmetic.
 pub struct TransactionsRow {
     pub id: String,
     pub unique_event_id: Option<String>,
     pub instrument_id: Option<String>,
     pub instrument_type: Option<String>,
     pub direction: Option<String>,
-    /// Read-only. Since migration 058 (audit_05 #4) this is a VIRTUAL generated
-    /// column (`amount_minor / 100.0`) -- SQLite computes it, so it can never
-    /// diverge from `amount_minor`. Populate `amount_minor` on writes; anything
-    /// set here is ignored by `insert_transaction`/`update_transaction` and
-    /// overwritten by the database on the next read. Never use it for
-    /// arithmetic: `amount_minor` is the exact integer value.
     pub amount: Option<f64>,
     pub amount_minor: Option<i64>,
     pub currency: Option<String>,
@@ -41,25 +49,16 @@ pub struct TransactionsRow {
     pub transaction_subtype: Option<String>,
     pub emi_group_id: Option<String>,
     pub category_id: Option<String>,
-    /// Display-only transaction rail/channel (`"upi"`, `"imps"`, ...) --
-    /// see `extraction::ladder::detect_channel`. Distinct from
-    /// `transaction_subtype` (refund/emi_installment classification):
-    /// a refund can itself be UPI or IMPS, so the two are independent tags.
     pub channel: Option<String>,
     pub is_deleted: bool,
     pub created_at: Option<NaiveDateTime>,
     pub updated_at: Option<NaiveDateTime>,
-    /// Document 19 §8.3 editable field; added by migration 038 -- Document
-    /// 18 §4.3's schema never had this column despite Document 19 already
-    /// documenting it as editable (Aditya's decision, 2026-07-16).
     pub notes: Option<String>,
 }
 
+/// Insert a new canonical transaction.
 pub fn insert_transaction(conn: &Connection, tx: &TransactionsRow) -> Result<()> {
     conn.execute(
-        // `amount` is omitted deliberately (audit_05 #4): it is a generated
-        // column as of migration 058, so SQLite derives it from `amount_minor`
-        // and rejects any attempt to write it.
         "INSERT INTO transactions (
             id, unique_event_id, instrument_id, instrument_type, direction, amount_minor,
             currency, authorization_time, best_event_time, event_time_confidence, best_posting_date,
@@ -85,10 +84,12 @@ pub fn insert_transaction(conn: &Connection, tx: &TransactionsRow) -> Result<()>
     Ok(())
 }
 
+/// Overwrite an existing transaction by id.
+///
+/// Writes the whole row, so callers must pass a fully populated record rather
+/// than a partial one -- a partial would blank the fields it omitted.
 pub fn update_transaction(conn: &Connection, tx: &TransactionsRow) -> Result<()> {
     let count = conn.execute(
-        // `amount` is omitted deliberately (audit_05 #4) -- generated column,
-        // see `insert_transaction` above.
         "UPDATE transactions SET
             unique_event_id = ?2, instrument_id = ?3, instrument_type = ?4, direction = ?5,
             amount_minor = ?6, currency = ?7, authorization_time = ?8, best_event_time = ?9,
@@ -115,6 +116,7 @@ pub fn update_transaction(conn: &Connection, tx: &TransactionsRow) -> Result<()>
     Ok(())
 }
 
+/// Fetch one transaction by id, including soft-deleted rows.
 pub fn get_transaction(conn: &Connection, id: &str) -> Result<Option<TransactionsRow>> {
     let mut stmt = conn.prepare("SELECT * FROM transactions WHERE id = ?1 AND is_deleted = 0")?;
     let mut rows = stmt.query([id])?;
@@ -125,8 +127,12 @@ pub fn get_transaction(conn: &Connection, id: &str) -> Result<Option<Transaction
     }
 }
 
+/// Soft-delete a transaction by setting its deleted flag.
+///
+/// Never a hard delete: ingestion is idempotent against the fingerprint of a
+/// live row, so removing the row entirely would let the next scan re-create the
+/// transaction the user just deleted.
 pub fn delete_transaction(conn: &Connection, id: &str) -> Result<()> {
-    // Soft delete
     let count = conn.execute(
         "UPDATE transactions SET is_deleted = 1 WHERE id = ?1 AND is_deleted = 0",
         params![id],
@@ -137,6 +143,7 @@ pub fn delete_transaction(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// One page of the ledger, newest first, excluding deleted rows.
 pub fn get_paginated_transactions(
     conn: &Connection,
     limit: i64,
@@ -152,6 +159,7 @@ pub fn get_paginated_transactions(
     Ok(transactions)
 }
 
+/// Free-text search across merchant and reference fields.
 pub fn search_transactions(
     conn: &Connection,
     query: &str,
@@ -161,6 +169,11 @@ pub fn search_transactions(
     search_transactions_with_filters(conn, query, None, limit, offset)
 }
 
+/// Search combined with the ledger's structured filters.
+///
+/// The WHERE clause is assembled from whichever filters were supplied, with every
+/// value bound as a parameter rather than interpolated -- the search term is user
+/// input reaching SQL, so string-building the query would be an injection route.
 pub fn search_transactions_with_filters(
     conn: &Connection,
     query: &str,
@@ -171,7 +184,6 @@ pub fn search_transactions_with_filters(
     let trimmed = query.trim();
     let like_pattern = format!("%{trimmed}%");
 
-    // Clean numeric extraction (remove currency symbols like ₹, $, commas, etc.)
     let clean_num_str: String = trimmed
         .chars()
         .filter(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
@@ -186,7 +198,6 @@ pub fn search_transactions_with_filters(
         _ => (0i64, 0.0f64, 0i64),
     };
 
-    // Sanitize FTS5 query string to avoid syntax errors on special characters like &, /, :, ₹, $, etc.
     let clean_fts: String = trimmed
         .chars()
         .filter(|c| c.is_alphanumeric() || c.is_whitespace())
@@ -283,6 +294,10 @@ pub fn search_transactions_with_filters(
     Ok(transactions)
 }
 
+/// Maps a result row onto TransactionsRow.
+///
+/// Column order here must track the table definition; these are positional reads,
+/// so a schema change that reorders columns silently mis-assigns fields.
 fn row_to_transaction(row: &Row) -> rusqlite::Result<TransactionsRow> {
     Ok(TransactionsRow {
         id: row.get("id")?,
@@ -323,6 +338,11 @@ fn row_to_transaction(row: &Row) -> rusqlite::Result<TransactionsRow> {
     })
 }
 
+/// Finds a transaction matching on every distinguishing attribute at once.
+///
+/// The reconciliation fast path. Agreement on instrument, amount, currency,
+/// direction *and* reference id leaves no realistic ambiguity, so a hit here can
+/// be merged without scoring.
 pub fn find_exact_match(
     conn: &Connection,
     instrument_id: &str,
@@ -352,19 +372,15 @@ pub fn find_exact_match(
     }
 }
 
-/// audit_03 #3: `currency` is part of the predicate, matching its sibling
-/// `find_exact_match` above. Without it, `amount_minor` alone decided
-/// equality, so a ₹500.00 and a $500.00 debit on the same instrument within
-/// the window were indistinguishable candidates and could be auto-merged into
-/// one transaction. `amount_minor` is a bare integer — it carries no unit, so
-/// comparing it across currencies is meaningless.
+/// Finds plausible matches for an observation within a time window.
 ///
-/// This also aligns the query with the index that already exists for it:
-/// `idx_transactions_instrument_event` is
-/// `(instrument_id, amount_minor, currency, direction, best_event_time)`, and
-/// migration 022's own comment says it was created because this function
-/// "quer[ies] exactly on (instrument_id, amount_minor, currency, direction,
-/// ...)" — which it did not, until now.
+/// Used when no exact match exists. Amount, currency, instrument and direction
+/// must agree exactly; only timing is allowed to differ, because the same payment
+/// is timestamped differently by an authorisation alert and a statement posting.
+///
+/// The window is applied symmetrically in SQL via `datetime` arithmetic, which
+/// keeps the comparison in the database rather than over-fetching and filtering
+/// in Rust.
 pub fn find_candidates_within_window(
     conn: &Connection,
     instrument_id: &str,
@@ -404,13 +420,18 @@ pub fn find_candidates_within_window(
     Ok(transactions)
 }
 
+/// Finds the original charge a refund most likely reverses.
+///
+/// Constrained deliberately: same instrument, a debit, at least as large as the
+/// refund (partial refunds are common, refunds exceeding the charge are not), and
+/// within the preceding 30 days. Ordered most-recent-first, so a repeated charge
+/// to the same merchant links to the one actually being reversed.
 pub fn find_parent_for_refund(
     conn: &Connection,
     instrument_id: &str,
     refund_amount_minor: i64,
     refund_event_time_utc: &NaiveDateTime,
 ) -> Result<Option<TransactionsRow>> {
-    // Search backward 30 days for debits >= refund amount
     let mut stmt = conn.prepare(
         "SELECT * FROM transactions 
          WHERE instrument_id = ?1 AND direction = 'debit' AND amount_minor >= ?2 AND is_deleted = 0
@@ -432,10 +453,11 @@ pub fn find_parent_for_refund(
     }
 }
 
-/// Doc 30 TASK-TXN-011: prior occurrences for the same instrument + merchant
-/// entity, oldest first, for recurring-payment interval detection. Excludes
-/// the transaction currently being evaluated (`exclude_transaction_id`) so a
-/// canonical-update re-run doesn't count itself.
+/// Prior debits to the same merchant on the same instrument.
+///
+/// Feeds recurring-payment detection and anomaly comparison. Excludes the
+/// transaction under consideration so it cannot match itself, and orders oldest
+/// first so intervals can be measured across the series.
 pub fn find_prior_occurrences_for_merchant(
     conn: &Connection,
     instrument_id: &str,
@@ -460,6 +482,9 @@ pub fn find_prior_occurrences_for_merchant(
     Ok(transactions)
 }
 
+/// Average spend with a merchant over the trailing 30 days.
+///
+/// The baseline an unusually large charge is judged against.
 pub fn get_trailing_30_day_merchant_average(
     conn: &Connection,
     merchant_entity_id: &str,
@@ -480,33 +505,21 @@ pub fn get_trailing_30_day_merchant_average(
 
     match avg {
         Ok(val) => Ok(val),
-        Err(_) => Ok(0.0), // No past transactions
+        Err(_) => Ok(0.0),
     }
 }
 
-/// Doc 18 §4.6: a canonical transaction sitting in an *open* ambiguity cluster
-/// is not yet known to be a real distinct transaction, so it must not be
-/// counted in any dashboard aggregate — counting it would double-count the
-/// event it may turn out to be a duplicate of.
-///
-/// audit_05 #3: this predicate was written out four times, once in each
-/// `dashboard_summary` aggregate. The audit framed that as a cost (four
-/// independent joins per dashboard load) but the sharper problem is that four
-/// hand-copied definitions of "which transactions are provisional" can drift,
-/// and the one that drifts silently reports a wrong number. One definition now.
-/// Interpolated rather than parameterised because it is a fixed SQL fragment
-/// with no bound values — the surrounding queries keep their own `?n` params.
 const EXCLUDE_OPEN_CLUSTER_MEMBERS: &str = "AND id NOT IN (
                SELECT m.canonical_transaction_id FROM reconciliation_cluster_members m
                JOIN reconciliation_clusters c ON c.id = m.cluster_id
                WHERE c.cluster_status = 'open' AND m.canonical_transaction_id IS NOT NULL
            )";
 
+/// Total debits so far this calendar month, for budget utilisation.
 pub fn get_global_spend_current_month(
     conn: &Connection,
     current_date_utc: &NaiveDateTime,
 ) -> Result<f64> {
-    // Scaffold: assume current_date_utc has a year/month, we query from start of month
     let start_of_month = format!(
         "{}-{:02}-01 00:00:00",
         current_date_utc.date().year(),
@@ -526,15 +539,12 @@ pub fn get_global_spend_current_month(
         stmt.query_row(params![start_of_month, current_time_str], |row| row.get(0));
 
     match sum {
-        Ok(val) => Ok(val as f64 / 100.0), // Convert minor to major for threshold check (assuming minor is cents/paise)
+        Ok(val) => Ok(val as f64 / 100.0),
         Err(_) => Ok(0.0),
     }
 }
 
-/// Doc 30 TASK-API-006 / Document 19 §11.1: mirrors `get_global_spend_current_month`
-/// for `direction = 'credit'` -- `dashboard_summary`'s additive `income` field
-/// needs the same amount_minor-based, ambiguous-cluster-excluded aggregation
-/// as spend, not the ad-hoc float `amount` scan it used before this task.
+/// Total credits so far this calendar month.
 pub fn get_global_income_current_month(
     conn: &Connection,
     current_date_utc: &NaiveDateTime,
@@ -563,9 +573,7 @@ pub fn get_global_income_current_month(
     }
 }
 
-/// Doc 30 TASK-API-006 / Document 19 §11.1's `recent_transactions_count`:
-/// same month-scoped, ambiguous-cluster-excluded window as spend/income,
-/// but counting rows regardless of direction.
+/// Number of transactions this calendar month.
 pub fn count_transactions_current_month(
     conn: &Connection,
     current_date_utc: &NaiveDateTime,
@@ -591,6 +599,7 @@ pub fn count_transactions_current_month(
     .map_err(anyhow::Error::from)
 }
 
+/// Month-to-date spend for one category, for per-category budgets.
 pub fn get_category_spend_current_month(
     conn: &Connection,
     category_id: &str,
@@ -624,18 +633,10 @@ pub fn get_category_spend_current_month(
 
 #[cfg(test)]
 mod candidate_search_tests {
-    //! Doc 30 TASK-DEDUP-003: Implement Candidate Generation (Windowed Search).
-    //! Direct DB-level tests for `find_candidates_within_window` — the
-    //! bounded-candidate-set query `reconciliation::engine::fetch_candidates`
-    //! wraps for the reconciliation engine.
     use super::*;
 
     fn setup_test_db() -> Connection {
         let conn = crate::db::test_helpers::setup_test_db();
-        // Disable foreign keys for unit tests that test query logic in
-        // isolation, without needing real `instruments` rows to satisfy
-        // `transactions.instrument_id`'s FK — mirrors the same pattern
-        // `reconciliation::engine_tests::setup_test_db` already uses.
         conn.execute("PRAGMA foreign_keys = OFF;", []).unwrap();
         conn
     }
@@ -656,9 +657,6 @@ mod candidate_search_tests {
         .unwrap();
     }
 
-    /// Doc 30 TASK-DEDUP-003 acceptance test: only same-instrument,
-    /// same-direction rows are returned — a matching amount/time on a
-    /// different instrument or opposite direction must never appear.
     #[test]
     fn test_candidate_search_filters_by_instrument_and_direction() {
         let conn = setup_test_db();
@@ -697,11 +695,6 @@ mod candidate_search_tests {
         assert_eq!(results[0].id, "match");
     }
 
-    /// audit_03 #3: `amount_minor` is a bare integer with no unit attached, so
-    /// a ₹500.00 debit and a $500.00 debit on the same instrument are both
-    /// `50000` and were previously indistinguishable candidates — the window
-    /// query filtered instrument/amount/direction/time but never currency, so
-    /// reconciliation could auto-merge two genuinely unrelated transactions.
     #[test]
     fn test_candidate_search_filters_by_currency() {
         let conn = setup_test_db();
@@ -713,8 +706,6 @@ mod candidate_search_tests {
             "debit",
             "2026-06-10 12:00:00",
         );
-        // Same instrument, same amount_minor, same direction, same minute --
-        // differing only in currency.
         conn.execute(
             "INSERT INTO transactions (id, instrument_id, amount_minor, currency, direction, best_event_time, is_deleted) \
              VALUES ('usd_decoy', 'inst_1', 50000, 'USD', 'debit', '2026-06-10 12:00:00', 0)",
@@ -730,21 +721,16 @@ mod candidate_search_tests {
         assert_eq!(inr.len(), 1, "a ₹500 debit must not match a $500 debit");
         assert_eq!(inr[0].id, "inr_match");
 
-        // Symmetric: searching in USD must find only the USD row.
         let usd = find_candidates_within_window(&conn, "inst_1", 50000, "USD", "debit", &anchor, 3)
             .unwrap();
         assert_eq!(usd.len(), 1);
         assert_eq!(usd[0].id, "usd_decoy");
 
-        // A currency present on neither row matches nothing.
         let eur = find_candidates_within_window(&conn, "inst_1", 50000, "EUR", "debit", &anchor, 3)
             .unwrap();
         assert!(eur.is_empty());
     }
 
-    /// Doc 30 TASK-DEDUP-003 acceptance test: the +/-3-day window boundary —
-    /// a candidate exactly at the edge is included, one day further out is
-    /// excluded.
     #[test]
     fn test_candidate_search_date_window_boundary() {
         let conn = setup_test_db();
@@ -755,7 +741,7 @@ mod candidate_search_tests {
             1000,
             "debit",
             "2026-06-13 12:00:00",
-        ); // +3 days exactly
+        );
         seed_transaction(
             &conn,
             "outside_window",
@@ -763,7 +749,7 @@ mod candidate_search_tests {
             1000,
             "debit",
             "2026-06-14 12:00:00",
-        ); // +4 days
+        );
 
         let anchor =
             NaiveDateTime::parse_from_str("2026-06-10 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
@@ -776,9 +762,6 @@ mod candidate_search_tests {
         assert!(!ids.contains(&"outside_window"));
     }
 
-    /// Doc 30 TASK-DEDUP-003 acceptance test: a genuinely new transaction
-    /// (no prior row shares instrument+amount+direction within the window)
-    /// returns an empty candidate set, not an error.
     #[test]
     fn test_candidate_search_returns_empty_for_new_transaction() {
         let conn = setup_test_db();
@@ -803,17 +786,7 @@ mod candidate_search_tests {
 
 #[cfg(test)]
 mod merchant_index_tests {
-    //! audit_03 #8: post-processing's per-transaction merchant lookups.
 
-    /// An index that the planner declines to use is the same as no index, and
-    /// nothing else in the suite would notice — these queries return correct
-    /// results either way, just slowly, and only on a database large enough
-    /// that no test fixture would reproduce it.
-    ///
-    /// So assert on the plan, not the timing: both merchant-scoped queries in
-    /// the post-processing path must resolve through
-    /// `idx_transactions_merchant_entity_event` rather than scanning
-    /// `transactions`.
     #[test]
     fn merchant_scoped_post_processing_queries_use_the_index() {
         let conn = crate::db::test_helpers::setup_test_db();
@@ -830,9 +803,6 @@ mod merchant_index_tests {
             rows.join(" | ")
         };
 
-        // `get_trailing_30_day_merchant_average` — the worse of the two: it
-        // filters on merchant_entity_id alone, so before this index it was a
-        // full scan of `transactions` on every spend-anomaly evaluation.
         let avg_plan = plan_for(
             "SELECT AVG(amount_minor) FROM transactions
              WHERE merchant_entity_id = 'm1' AND direction = 'debit' AND is_deleted = 0
@@ -844,8 +814,6 @@ mod merchant_index_tests {
             "trailing-30-day average must not scan transactions; plan was: {avg_plan}"
         );
 
-        // `find_prior_occurrences_for_merchant` — recurring-payment interval
-        // detection, run after every canonical write.
         let priors_plan = plan_for(
             "SELECT * FROM transactions
              WHERE instrument_id = 'i1' AND merchant_entity_id = 'm1' AND direction = 'debit'

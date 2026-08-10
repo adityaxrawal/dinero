@@ -1,3 +1,8 @@
+//! Imported statement documents and their processing state.
+//!
+//! Rows are inserted queued and progress through parsing, so a statement is
+//! tracked from the moment it arrives -- including one that fails, which stays
+//! visible and retryable rather than disappearing.
 use anyhow::Result;
 use chrono::{NaiveDate, NaiveDateTime};
 use rusqlite::{params, Connection, Row};
@@ -24,14 +29,10 @@ pub struct StatementsRow {
     pub updated_at: Option<NaiveDateTime>,
 }
 
-/// Doc 18 §4.7: "A row is written with parse_status = 'queued' immediately
-/// upon intake, before any parsing begins... this is what makes crash
-/// recovery possible (Document 16 §14.5)" — regardless of entry point
-/// (manual upload or Gmail-attachment). `billing_period_start`/`_end` are
-/// NOT NULL in this schema, so a placeholder (today's date, in both fields)
-/// is used until the real metadata extraction overwrites it via `update()`;
-/// this is purely a bookkeeping placeholder, never read as a real value
-/// while `parse_status = 'queued'`.
+/// Records a statement as queued, before parsing begins.
+///
+/// Inserting up front means a statement is tracked from arrival, so one that
+/// fails during parsing remains visible and retryable rather than vanishing.
 pub fn insert_queued(
     conn: &Connection,
     id: &str,
@@ -55,6 +56,10 @@ pub fn insert_queued(
     Ok(())
 }
 
+/// Insert a fully populated statement row.
+///
+/// Used where the statement's metadata is already known, as opposed to
+/// `insert_queued`, which records one before parsing has established any of it.
 pub fn insert(conn: &Connection, stmt: &StatementsRow) -> Result<()> {
     conn.execute(
         "INSERT INTO statements (
@@ -74,6 +79,7 @@ pub fn insert(conn: &Connection, stmt: &StatementsRow) -> Result<()> {
     Ok(())
 }
 
+/// Update a statement's metadata or processing state.
 pub fn update(conn: &Connection, stmt: &StatementsRow) -> Result<()> {
     let count = conn.execute(
         "UPDATE statements SET
@@ -106,6 +112,7 @@ pub fn update(conn: &Connection, stmt: &StatementsRow) -> Result<()> {
     Ok(())
 }
 
+/// Fetch one statement.
 pub fn select_by_id(conn: &Connection, id: &str) -> Result<Option<StatementsRow>> {
     let mut db_stmt = conn.prepare("SELECT * FROM statements WHERE id = ?1")?;
     let mut rows = db_stmt.query([id])?;
@@ -116,6 +123,7 @@ pub fn select_by_id(conn: &Connection, id: &str) -> Result<Option<StatementsRow>
     }
 }
 
+/// One page of statement history.
 pub fn select_all_paginated(
     conn: &Connection,
     limit: i64,
@@ -132,9 +140,8 @@ pub fn select_all_paginated(
     Ok(statements)
 }
 
+/// Soft-delete a statement, preserving the entries derived from it.
 pub fn soft_delete(conn: &Connection, id: &str) -> Result<()> {
-    // Note: `statements` has no `is_deleted` column (Document 18 §4.7 omits
-    // one), so this is a hard delete despite the function name.
     let count = conn.execute("DELETE FROM statements WHERE id = ?1", params![id])?;
     if count == 0 {
         return Err(anyhow::anyhow!("Statement not found"));
@@ -142,6 +149,7 @@ pub fn soft_delete(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Maps a result row onto a statement record.
 fn row_to_statement(row: &Row) -> rusqlite::Result<StatementsRow> {
     Ok(StatementsRow {
         id: row.get("id")?,
