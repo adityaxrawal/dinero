@@ -1,3 +1,6 @@
+/**
+ * Loads licence status and exposes refresh and deactivate actions.
+ */
 import { useState, useEffect } from 'react';
 import { API, LicenseStatusResponse } from '@/lib/ipc';
 import { confirmAction } from '@/lib/confirmDialog';
@@ -6,6 +9,7 @@ import { errorMessage } from '@/lib/utils';
 const DEACTIVATE_WARNING =
   "Deactivate this device's license? Paid features will be unavailable here until you reactivate.";
 
+/** Loads licence status with refresh and deactivate actions. */
 export function useLicenseStatus() {
   const [licenseStatus, setLicenseStatus] = useState<LicenseStatusResponse | null>(null);
   const [isLoadingLicense, setIsLoadingLicense] = useState(true);
@@ -13,13 +17,16 @@ export function useLicenseStatus() {
   const [isDeactivating, setIsDeactivating] = useState(false);
   const [licenseActionError, setLicenseActionError] = useState<string | null>(null);
 
+  /** Loads the current status. */
   const loadLicenseStatus = async () => {
     setIsLoadingLicense(true);
     try {
       const status = await API.licensing.getStatus();
       setLicenseStatus(status);
     } catch {
-      // Ignore initial load error
+      // Left as null rather than surfacing an error. The settings screen treats
+      // an unknown status as "nothing to show" and keeps rendering; a failed
+      // status lookup must not block access to the rest of settings.
     } finally {
       setIsLoadingLicense(false);
     }
@@ -29,6 +36,7 @@ export function useLicenseStatus() {
     loadLicenseStatus();
   }, []);
 
+  /** Re-validates against the licensing service. */
   const handleRefreshLicense = async () => {
     setIsRefreshingLicense(true);
     setLicenseActionError(null);
@@ -42,6 +50,7 @@ export function useLicenseStatus() {
     }
   };
 
+  /** Deactivates this device after confirmation. */
   const handleDeactivateLicense = async () => {
     if (!(await confirmAction(DEACTIVATE_WARNING, 'Deactivate License'))) return;
 

@@ -1,3 +1,9 @@
+/**
+ * Manual transaction entry.
+ *
+ * The escape hatch for payments no automated source captured -- cash, or a bank
+ * that sends no alerts.
+ */
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -23,6 +29,12 @@ import type { useCreateTransaction } from './useCreateTransaction';
 type Draft = ReturnType<typeof useCreateTransaction>;
 type Instruments = React.ComponentProps<typeof InstrumentPicker>['instruments'];
 
+/**
+ * Manual transaction entry.
+ *
+ * The escape hatch for payments no automated source captured -- cash, or a bank
+ * that sends no alerts.
+ */
 export default function CreateTransactionModal({
   draft,
   instruments,

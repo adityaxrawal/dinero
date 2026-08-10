@@ -1,11 +1,15 @@
+/**
+ * Renders the licence call-to-action for the current state.
+ *
+ * Wording and action both come from the shared CTA resolver, so every surface
+ * offering a billing action stays consistent.
+ */
 import { Button } from '@/components/ui/button';
 import { getLicenseCta } from '@/lib/licenseCta';
 import type { LicenseStatusResponse } from '@/lib/ipc';
 import type { PlanId } from './useLicenseActivation';
 
-/** Doc 30 TASK-BILL-010: state-appropriate primary CTA. The decision itself
- *  lives in src/lib/licenseCta.ts so it stays unit-testable; this only maps
- *  the three actions onto buttons. */
+/** Renders the licence CTA for the current state, from the shared resolver. */
 export default function LicenseCtaButton({
   status,
   isCheckingOut,

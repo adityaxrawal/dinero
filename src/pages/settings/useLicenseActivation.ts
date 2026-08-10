@@ -1,3 +1,6 @@
+/**
+ * Drives licence activation and its pending state.
+ */
 import { useState } from 'react';
 import { API } from '@/lib/ipc';
 import { errorMessage } from '@/lib/utils';
@@ -9,6 +12,7 @@ interface UseLicenseActivationArgs {
   setError: (message: string | null) => void;
 }
 
+/** Drives licence activation and its pending state. */
 export function useLicenseActivation({ reload, setError }: UseLicenseActivationArgs) {
   const [showActivateForm, setShowActivateForm] = useState(false);
   const [activateEmail, setActivateEmail] = useState('');
@@ -18,6 +22,7 @@ export function useLicenseActivation({ reload, setError }: UseLicenseActivationA
   const [isActivating, setIsActivating] = useState(false);
   const [isCheckingOut, setIsCheckingOut] = useState(false);
 
+  /** Activates using a manually entered key. */
   const handleActivateLicense = async () => {
     setIsActivating(true);
     setError(null);
@@ -40,12 +45,7 @@ export function useLicenseActivation({ reload, setError }: UseLicenseActivationA
     }
   };
 
-  // Doc 30 TASK-BILL-002/010: "Subscribe now"/"Reactivate subscription" CTAs
-  // -- opens Razorpay hosted checkout in the system browser (never renders
-  // card-entry fields in this app, keeping it entirely out of PCI-DSS
-  // scope) and, once the browser redirect confirms payment, activates
-  // automatically. Superseded by the manual paste-in form only as a
-  // fallback if checkout can't be opened (e.g. no default browser configured).
+  /** Starts the purchase flow. */
   const handleSubscribeNow = async (planId: PlanId) => {
     const email = activateEmail.trim();
     if (!email) {

@@ -1,3 +1,6 @@
+/**
+ * Preference capture during onboarding.
+ */
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
@@ -12,6 +15,7 @@ import StatementPrefPicker from './StatementPrefPicker';
 
 type Prefs = ReturnType<typeof useOnboardingPreferences>;
 
+/** Preference capture during onboarding. */
 export default function PreferencesStep({ prefs }: { prefs: Prefs }) {
   return (
     <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4">

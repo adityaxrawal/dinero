@@ -6,27 +6,28 @@ import { useGlobalState } from '@/lib/GlobalStateContext';
 import type { ScanProgressPayload } from '@/lib/ipc';
 import { scanProgressPercent } from './scanProgressPercent';
 
+/**
+ * Final onboarding step: pick a date range and kick off the first Gmail scan.
+ *
+ * Renders one of three states driven by the shared scan status -- the range
+ * picker, live progress, or a completion summary. The scan itself is owned by
+ * the global scan state, not by this screen, which is what allows "Continue in
+ * Background": the user reaches the dashboard while the scan keeps running.
+ */
 interface HistoricalScanScreenProps {
   onDone: () => void;
 }
 
-// TASK-GMAIL-007's validation ceiling — a scan range may not reach further
-// back than 2 years.
+// Ceiling on how far back a first scan may reach. Older mail is rarely useful
+// and a wider window makes the initial scan disproportionately long.
 const MAX_YEARS_BACK = 2;
 
+/** Date as YYYY-MM-DD, the form the backend and the range picker both expect. */
 function isoDate(d: Date): string {
   return d.toISOString().split('T')[0];
 }
 
-/**
- * TASK-FE-006 (Doc 30): shown after a successful Gmail connection (only
- * `GmailConsentScreen`'s success path reaches this screen — a Statement-Only
- * user who skips Gmail entirely has no account to scan and never sees it).
- * Reuses `GlobalStateContext`'s existing scan state/`handleStartScan` (the
- * same machinery Settings' manual "Sync Now" already drives) rather than
- * duplicating the `scan_progress`/`scan_completed`/`scan_failed` listener
- * wiring a second time.
- */
+/** Live progress, with the option to leave the scan running and move on. */
 function ScanRunning({
   progress,
   onDone,
@@ -52,6 +53,8 @@ function ScanRunning({
           style={{ width: `${pct}%` }}
         />
       </div>
+      {/* Total renders as an ellipsis until the backend finishes counting the
+          mailbox, rather than briefly claiming a total of zero. */}
       <p className="text-xs text-muted-foreground">
         {progress?.processed ?? 0} of {progress?.total ?? '…'} messages processed
       </p>
@@ -66,6 +69,7 @@ function ScanRunning({
   );
 }
 
+/** Completion summary: what the scan actually found, then on to the app. */
 function ScanComplete({
   progress,
   onDone,
@@ -87,6 +91,7 @@ function ScanComplete({
   );
 }
 
+/** Final onboarding step: pick a range and start the first scan. */
 export default function HistoricalScanScreen({ onDone }: HistoricalScanScreenProps) {
   const {
     scanStartDate,
@@ -100,22 +105,22 @@ export default function HistoricalScanScreen({ onDone }: HistoricalScanScreenPro
     refreshConnectedAccounts,
   } = useGlobalState();
 
+  // Default to the last three months -- long enough to be useful immediately,
+  // short enough that the first scan finishes quickly. Also refreshes the
+  // account list, since Gmail was connected on the preceding screen. Runs once
+  // on mount; the empty dependency list is intentional, as re-running would
+  // overwrite a range the user had already adjusted.
   useEffect(() => {
-    // Doc30's default (last 3 months) differs from GlobalStateContext's own
-    // default (last 1 month, tuned for the Settings manual-sync use case) —
-    // reset to the onboarding-specific default every time this screen mounts.
     const end = new Date();
     const start = new Date();
     start.setMonth(start.getMonth() - 3);
     setScanStartDate(isoDate(start));
     setScanEndDate(isoDate(end));
-    // The Gmail account just connected in the previous step; refresh now
-    // rather than waiting for GlobalStateContext's 3s poll, so handleStartScan
-    // doesn't race an empty connectedAccounts list.
     refreshConnectedAccounts();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Picker bounds: no further back than the cap, and never into the future.
   const minDate = isoDate(
     new Date(new Date().setFullYear(new Date().getFullYear() - MAX_YEARS_BACK))
   );

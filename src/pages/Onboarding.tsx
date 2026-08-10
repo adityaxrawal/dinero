@@ -1,3 +1,6 @@
+/**
+ * The account-setup phase of onboarding, after welcome and disclosure.
+ */
 import { useNavigate } from 'react-router-dom';
 import {
   Card,
@@ -14,6 +17,7 @@ import { useOnboardingSteps, TOTAL_STEPS } from './onboarding/useOnboardingSteps
 import PreferencesStep from './onboarding/PreferencesStep';
 import OnboardingFooter from './onboarding/OnboardingFooter';
 
+/** The account-setup phase of onboarding. */
 export default function Onboarding() {
   const navigate = useNavigate();
   const prefs = useOnboardingPreferences();
@@ -27,15 +31,11 @@ export default function Onboarding() {
       <Card className="w-full max-w-lg shadow-2xl">
         <CardHeader>
           <div className="flex items-center justify-between mb-1">
-            {/* TASK-FE-004: "Welcome to Dinero" now belongs to the dedicated
-                WelcomeScreen shown before this component (OnboardingFlow) —
-                this step is the preferences setup that follows it. */}
             <CardTitle className="text-2xl">Set Up Your Preferences</CardTitle>
             <span className="text-xs text-muted-foreground" aria-label={stepLabel}>
               {stepLabel}
             </span>
           </div>
-          {/* Step progress bar */}
           <div
             className="w-full h-1.5 bg-secondary/80 rounded-full overflow-hidden"
             role="progressbar"
@@ -57,10 +57,6 @@ export default function Onboarding() {
         <CardContent>
           {step === 1 && <PreferencesStep prefs={prefs} />}
 
-          {/* TASK-FE-006: the historical scan needs a real, already-connected
-              Gmail account_id to scan — it moved here, after Gmail consent
-              (step 3), superseding the old months-count dropdown that used
-              to sit here and never actually triggered a scan. */}
           {step === 2 && (
             <GmailConsentScreen
               loading={flow.loading}
@@ -75,10 +71,6 @@ export default function Onboarding() {
           {step === 4 && <LicenseActivationScreen onContinue={() => navigate('/')} />}
         </CardContent>
 
-        {/* TASK-FE-006/007: steps 3 (HistoricalScanScreen) and 4
-            (LicenseActivationScreen) own their own actions inline — a Back
-            button there would imply un-connecting Gmail or un-starting the
-            trial, neither of which is a real action. */}
         {step < 3 && (
           <OnboardingFooter
             step={step}

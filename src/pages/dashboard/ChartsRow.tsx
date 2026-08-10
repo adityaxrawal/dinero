@@ -1,3 +1,6 @@
+/**
+ * Row of dashboard charts.
+ */
 import { Loader2 } from 'lucide-react';
 import type { SpendTrendGranularity } from '@/lib/ipc';
 import type { CategoryChartSlice } from '@/components/dashboard/groupCategoriesForChart';
@@ -8,6 +11,7 @@ type Data = ReturnType<typeof useDashboardData>;
 
 const GRANULARITIES: SpendTrendGranularity[] = ['daily', 'weekly', 'monthly'];
 
+/** Loading indicator while chart data resolves. */
 function Spinner({ className }: { className: string }) {
   return (
     <div className={`${className} flex items-center justify-center`}>
@@ -16,6 +20,7 @@ function Spinner({ className }: { className: string }) {
   );
 }
 
+/** Switches the trend chart between daily, weekly and monthly. */
 function GranularityToggle({
   value,
   onChange,
@@ -49,6 +54,12 @@ function GranularityToggle({
   );
 }
 
+/**
+ * Legend for the category donut.
+ *
+ * Carries direct labels because several palette slots fall below the contrast
+ * threshold, so colour alone is not sufficient to identify a slice.
+ */
 function CategoryLegend({
   slices,
   onSelect,
@@ -86,6 +97,7 @@ function CategoryLegend({
   );
 }
 
+/** Row of dashboard charts. */
 export default function ChartsRow({
   data,
   onCategoryClick,

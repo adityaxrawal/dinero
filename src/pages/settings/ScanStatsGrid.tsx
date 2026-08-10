@@ -1,11 +1,14 @@
+/**
+ * Counters for what a scan has found so far.
+ */
 import { Mail, ScanLine, CheckCircle, FileText, Ban, AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ScanProgressPayload } from '@/lib/ipc';
 
-/** The payload is typed as all-numbers, but it crosses the Tauri IPC boundary
- *  as JSON — a missing counter still renders as 0 rather than blank. */
+/** Formats a counter, defaulting to zero when absent. */
 const count = (value?: number | null) => value ?? 0;
 
+/** Counters for what a scan has found so far. */
 export default function ScanStatsGrid({ progress }: { progress: ScanProgressPayload }) {
   const errors = count(progress.errors);
   const tiles = [

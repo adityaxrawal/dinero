@@ -1,3 +1,6 @@
+/**
+ * Active filter chips, each individually removable.
+ */
 import { SlidersHorizontal } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
@@ -14,6 +17,7 @@ const CHIP =
 const CHIP_ACTIVE = 'bg-[#064E3B] text-[#F8E7C9]';
 const CHIP_IDLE = 'bg-[#064E3B]/5 text-[#064E3B] hover:bg-[#064E3B]/10';
 
+/** Dropdown backing one filter chip. */
 function ChipSelect({
   value,
   onChange,
@@ -44,6 +48,7 @@ function ChipSelect({
   );
 }
 
+/** Active filter chips, each individually removable. */
 export default function FilterChips({
   instrumentId,
   onInstrumentChange,

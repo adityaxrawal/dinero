@@ -1,5 +1,9 @@
+/**
+ * Headline KPI tiles at the top of the dashboard.
+ */
 import { TrendingUp, TrendingDown, ArrowUpRight, ArrowDownRight } from 'lucide-react';
 
+/** One headline figure. */
 function KpiTile({
   label,
   value,
@@ -48,6 +52,7 @@ function KpiTile({
   );
 }
 
+/** Utilisation bar against the spending limit. */
 function LimitBar({ spent, limit }: { spent: number; limit: number }) {
   const pct = limit > 0 ? Math.min(100, (spent / limit) * 100) : 0;
   const color = pct > 90 ? '#ef4444' : pct > 75 ? '#f59e0b' : '#064E3B';
@@ -87,6 +92,7 @@ function LimitBar({ spent, limit }: { spent: number; limit: number }) {
 const RED = '#ef4444';
 const GREEN = '#10b981';
 
+/** Headline KPI tiles. */
 export default function KpiRow({
   spend,
   income,

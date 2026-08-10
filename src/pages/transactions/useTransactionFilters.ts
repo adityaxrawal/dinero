@@ -1,14 +1,16 @@
+/**
+ * Filter state for the transaction feed, including URL synchronisation.
+ */
 import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import type { TransactionListFilters } from '@/lib/ipc';
 
 export const ALL = '__all__';
 
+/** Filter state for the feed, synchronised with the URL. */
 export function useTransactionFilters() {
   const [searchParams] = useSearchParams();
 
-  // Initialise filters from URL params (deep-link support from dashboard
-  // categories / instrument detail)
   const [filters, setFilters] = useState<TransactionListFilters>(() => {
     const category = searchParams.get('category');
     const instrument = searchParams.get('instrument');
@@ -21,8 +23,8 @@ export function useTransactionFilters() {
   const [searchQuery, setSearchQuery] = useState('');
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Global shortcut to focus search input (Cmd+K / Ctrl+K)
   useEffect(() => {
+    /** Focuses the search box on Cmd/Ctrl+K. */
     const handleCmdK = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();

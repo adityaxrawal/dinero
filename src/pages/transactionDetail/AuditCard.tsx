@@ -1,3 +1,6 @@
+/**
+ * Audit trail for a transaction: what changed, when, and why.
+ */
 import { useState } from 'react';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -6,6 +9,7 @@ import type { useTransactionForm } from '@/components/transactions/useTransactio
 
 type Tx = NonNullable<ReturnType<typeof useTransactionForm>['tx']>;
 
+/** Audit trail: what changed, when, and why. */
 export default function AuditCard({ tx }: { tx: Tx }) {
   const [isOpen, setIsOpen] = useState(false);
 

@@ -1,3 +1,6 @@
+/**
+ * Actions available on the transaction detail page.
+ */
 import { Save, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -12,6 +15,7 @@ interface DetailActionsProps {
   onViewSource: () => void;
 }
 
+/** Actions available on the transaction detail page. */
 export default function DetailActions({
   isDirty,
   isSaving,

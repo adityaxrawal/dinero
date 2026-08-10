@@ -1,3 +1,9 @@
+/**
+ * Displays and restores the database recovery phrase.
+ *
+ * The only way back into an encrypted database if the keychain entry is lost, so
+ * it is presented with the weight that implies.
+ */
 import { useState } from 'react';
 import { KeyRound, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -8,10 +14,16 @@ import { confirmAction } from '@/lib/confirmDialog';
 const WARNING =
   "Only use this if you anticipate losing both your Mac and your Keychain. Anyone who has this 24-word phrase can decrypt your financial data on any computer — it bypasses this Mac's hardware-bound protection entirely. Keep it as secure as your data itself.";
 
+/**
+ * Displays and restores the database recovery phrase.
+ *
+ * The only way back into an encrypted database if the keychain entry is lost.
+ */
 export default function RecoveryPhraseSection() {
   const [recoveryPhrase, setRecoveryPhrase] = useState<string | null>(null);
   const [isFetchingPhrase, setIsFetchingPhrase] = useState(false);
 
+  /** Reveals the phrase, which is fetched only on explicit request. */
   const handleViewRecoveryPhrase = async () => {
     if (!(await confirmAction(WARNING, 'Secure Backup Recovery Phrase'))) return;
 

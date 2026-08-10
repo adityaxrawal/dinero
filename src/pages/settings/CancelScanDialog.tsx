@@ -1,3 +1,6 @@
+/**
+ * Confirmation for cancelling a scan, warning that progress is kept but stopped.
+ */
 import { XCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -9,9 +12,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 
-/** In-app confirm for cancelling a running scan. Deliberately a React Dialog
- *  rather than a native `ask()` — a native dialog renders outside React's tree
- *  and was found to overlap/garble the button in the Tauri webview. */
+/** Confirms cancelling a scan, noting that progress is kept. */
 export default function CancelScanDialog({
   open,
   onOpenChange,

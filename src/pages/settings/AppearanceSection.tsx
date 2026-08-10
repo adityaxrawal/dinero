@@ -1,8 +1,12 @@
+/**
+ * Appearance settings.
+ */
 import { Palette } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import MenuBarExtraSettings from '@/components/settings/MenuBarExtraSettings';
 import SectionHeading from '@/components/settings/SectionHeading';
 
+/** Appearance settings. */
 export default function AppearanceSection() {
   return (
     <div className="animate-in fade-in duration-300 space-y-12">

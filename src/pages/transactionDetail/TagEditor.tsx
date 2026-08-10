@@ -1,3 +1,6 @@
+/**
+ * Tag editing for a transaction, with autocomplete over existing tags.
+ */
 import { Plus, X } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -17,6 +20,7 @@ interface TagEditorProps {
   onRemoveTag: (tag: string) => void;
 }
 
+/** Tag editing with autocomplete over existing tags. */
 export default function TagEditor({
   tags,
   availableTags,

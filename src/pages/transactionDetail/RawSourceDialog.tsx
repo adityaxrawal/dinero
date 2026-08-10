@@ -1,3 +1,9 @@
+/**
+ * Shows the raw source payload behind a transaction.
+ *
+ * The deepest level of provenance -- what the bank actually sent, before any
+ * extraction or normalisation.
+ */
 import {
   Dialog,
   DialogContent,
@@ -8,6 +14,7 @@ import {
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { JsonViewer } from '@/components/ui/JsonViewer';
 
+/** Renders the raw payload body. */
 function SourceBody({ isLoading, data }: { isLoading: boolean; data: unknown }) {
   if (isLoading) return <>Loading...</>;
   if (!data) return <>No data</>;
@@ -22,6 +29,12 @@ function SourceBody({ isLoading, data }: { isLoading: boolean; data: unknown }) 
   );
 }
 
+/**
+ * Shows the raw source payload behind a transaction.
+ *
+ * The deepest level of provenance: what the bank actually sent, before any
+ * extraction or normalisation.
+ */
 export default function RawSourceDialog({
   open,
   onOpenChange,

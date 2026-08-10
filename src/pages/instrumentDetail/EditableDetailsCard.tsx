@@ -1,3 +1,6 @@
+/**
+ * Editable instrument fields on the detail page.
+ */
 import { Save, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -8,10 +11,12 @@ import type { useInstrumentForm } from '@/components/instruments/useInstrumentFo
 
 type Form = ReturnType<typeof useInstrumentForm>;
 
+/** Formats a monetary field, or a dash when absent. */
 function money(value: number | null | undefined): string {
   return value != null ? `₹${value.toFixed(2)}` : '—';
 }
 
+/** Editable instrument fields. */
 export default function EditableDetailsCard({
   form,
   inst,

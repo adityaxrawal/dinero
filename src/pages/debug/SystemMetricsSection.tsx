@@ -1,3 +1,6 @@
+/**
+ * System metrics panel on the debug screen.
+ */
 import {
   Database,
   FileText,
@@ -14,6 +17,7 @@ const TILE =
 const PANEL =
   'bg-[#F3EBDD]/90 backdrop-blur-md border border-[#064E3B]/10 rounded-2xl p-6 shadow-[0_2px_10px_rgba(6,78,59,0.03)]';
 
+/** One metric with its value. */
 function MetricTile({
   label,
   icon,
@@ -42,6 +46,7 @@ function MetricTile({
   );
 }
 
+/** A single formatted figure. */
 function Figure({ children }: { children: React.ReactNode }) {
   return (
     <div>
@@ -52,6 +57,12 @@ function Figure({ children }: { children: React.ReactNode }) {
   );
 }
 
+/**
+ * Distribution of values across categories.
+ *
+ * Used for the extraction-layer breakdown, which shows how much traffic reaches
+ * the expensive LLM layer versus being handled by cheap rules.
+ */
 function DistributionPanel({
   title,
   entries,
@@ -88,6 +99,7 @@ function DistributionPanel({
   );
 }
 
+/** Grid layout for the metric tiles. */
 function MetricsGrid({ metrics, ram }: { metrics: DebugMetrics; ram: number | null }) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 lg:gap-6">
@@ -122,6 +134,7 @@ function MetricsGrid({ metrics, ram }: { metrics: DebugMetrics; ram: number | nu
   );
 }
 
+/** System metrics panel. */
 export default function SystemMetricsSection({
   metrics,
   ram,

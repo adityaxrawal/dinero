@@ -1,15 +1,17 @@
 /**
- * TASK-FE-005 / TASK-AUTH-001: the 5-minute loopback-listener timeout
- * (browser closed without completing, or the user never finishes) surfaces
- * to the frontend as `AppError::Auth("Authentication error: oauth_timeout")`
- * — give it a specific, actionable message rather than a generic failure
- * string. Extracted as a pure function so the mapping is unit-testable
- * without driving the real OAuth flow.
+ * Turn a raw OAuth failure into text worth showing during onboarding.
+ *
+ * Only the timeout case is rewritten, because it is both the most common
+ * failure -- the consent window sits open in an external browser until it
+ * expires -- and the least self-explanatory in its raw form. Other messages are
+ * passed through, since they usually carry a real reason from Google that is
+ * more useful than any generic sentence would be.
  */
 export function mapOauthError(rawMessage: string | undefined | null): string {
   const msg = rawMessage || '';
   if (msg.includes('oauth_timeout')) {
     return 'Connection timed out, try again.';
   }
+  // Final fallback covers a rejection that carried no message at all.
   return msg || 'Failed to connect Gmail. Please try again.';
 }

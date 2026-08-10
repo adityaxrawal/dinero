@@ -1,3 +1,6 @@
+/**
+ * Loads and combines the queries backing the dashboard.
+ */
 import { useState } from 'react';
 import { useDashboardSummary } from '@/hooks/queries/useDashboardSummary';
 import { useTransactionsList } from '@/hooks/queries/useTransactionsList';
@@ -11,11 +14,13 @@ import { computeMonthOverMonthDelta } from '@/components/dashboard/computeMonthO
 import { groupCategoriesForChart } from '@/components/dashboard/groupCategoriesForChart';
 import type { SpendTrendGranularity } from '@/lib/ipc';
 
+/** Current month as YYYY-MM, the key the category query expects. */
 function currentMonthString(): string {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 }
 
+/** Loads and combines the dashboard's independent queries. */
 export function useDashboardData() {
   const [granularity, setGranularity] = useState<SpendTrendGranularity>('daily');
 

@@ -1,8 +1,12 @@
+/**
+ * Privacy section: disclosure and network activity.
+ */
 import PrivacySettings from '@/components/settings/PrivacySettings';
 import StatementPasswordSettings from '@/components/settings/StatementPasswordSettings';
 import LifecycleSettings from '@/components/settings/LifecycleSettings';
 import RecoveryPhraseSection from './RecoveryPhraseSection';
 
+/** Privacy section: disclosure and network activity. */
 export default function PrivacySection() {
   return (
     <div className="animate-in fade-in duration-300 space-y-12">

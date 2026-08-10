@@ -1,3 +1,6 @@
+/**
+ * Transaction metadata: reference, channel, timestamps.
+ */
 import { CheckCircle2 } from 'lucide-react';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
@@ -12,6 +15,7 @@ type Form = ReturnType<typeof useTransactionForm>;
 
 const FIELD_LABEL = 'text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70';
 
+/** Merchant row, showing raw and normalised names. */
 function MerchantRow({ form, originalName }: { form: Form; originalName: string }) {
   return (
     <div className="space-y-1.5">
@@ -39,6 +43,7 @@ function MerchantRow({ form, originalName }: { form: Form; originalName: string 
   );
 }
 
+/** Transaction metadata: reference, channel, timestamps. */
 export default function MetadataCard({
   form,
   originalName,

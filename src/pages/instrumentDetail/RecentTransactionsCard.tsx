@@ -1,3 +1,6 @@
+/**
+ * Recent transactions for the instrument being viewed.
+ */
 import { Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -7,6 +10,7 @@ import type { useInstrumentForm } from '@/components/instruments/useInstrumentFo
 type Form = ReturnType<typeof useInstrumentForm>;
 type Transaction = Form['recentTransactions'][number];
 
+/** One transaction row within the card. */
 function TransactionRow({ tx }: { tx: Transaction }) {
   const isDebit = tx.direction === 'debit';
   const amount = Math.abs(tx.amount).toLocaleString(undefined, { minimumFractionDigits: 2 });
@@ -35,6 +39,7 @@ function TransactionRow({ tx }: { tx: Transaction }) {
   );
 }
 
+/** Recent transactions for this instrument. */
 export default function RecentTransactionsCard({
   form,
   onViewAll,

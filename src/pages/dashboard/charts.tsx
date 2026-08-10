@@ -1,3 +1,9 @@
+/**
+ * Chart components for the dashboard.
+ *
+ * Colours come from the shared palette rather than being chosen per chart, which
+ * is what keeps series distinguishable and accessible across every chart.
+ */
 import {
   LineChart,
   Line,
@@ -14,7 +20,6 @@ import type { SpendTrendPoint } from '@/lib/ipc';
 import type { CategoryChartSlice } from '@/components/dashboard/groupCategoriesForChart';
 import { SEQUENTIAL_LINE_COLOR } from '@/components/dashboard/chartPalette';
 
-/** Recharts' `ValueType`, restated so this file needs no deep `recharts/types/...` import. */
 type RechartsValue = string | number | readonly (string | number)[] | undefined;
 
 const TOOLTIP_STYLE = {
@@ -25,8 +30,10 @@ const TOOLTIP_STYLE = {
   color: '#0d2b22',
 };
 
+/** Formats an amount as rupees for chart axes and tooltips. */
 const rupees = (value: RechartsValue) => `₹ ${Number(value).toLocaleString()}`;
 
+/** Spend-over-time line chart. */
 export function TrendChart({ data }: { data: SpendTrendPoint[] }) {
   if (!data || data.length === 0) {
     return (
@@ -73,16 +80,12 @@ export function TrendChart({ data }: { data: SpendTrendPoint[] }) {
   );
 }
 
-/**
- * Recharts types a `Pie` click argument loosely; depending on where the click
- * lands the slice data arrives either nested under `payload` or flat, which is
- * why the handler below reads both.
- */
 interface DonutSliceClick {
   category_id?: string;
   payload?: { category_id?: string };
 }
 
+/** Category breakdown donut, with direct labels. */
 export function CategoryDonut({
   slices,
   onSliceClick,

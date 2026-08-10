@@ -1,3 +1,6 @@
+/**
+ * Manual licence activation, for when the automatic flow cannot complete.
+ */
 import { Button } from '@/components/ui/button';
 import type { useLicenseActivation } from './useLicenseActivation';
 
@@ -5,8 +8,7 @@ const FIELD_CLASS =
   'w-full px-3 py-2 rounded-lg border text-[13px] font-medium bg-[#F8E7C9]/50 border-[#064E3B]/20 text-[#064E3B] focus:border-[#064E3B] focus:ring-1 focus:ring-[#064E3B]';
 const INPUT_CLASS = `${FIELD_CLASS} placeholder:text-[#064E3B]/40`;
 
-/** Fallback for when the hosted Razorpay checkout can't be opened — takes the
- *  confirmation Razorpay already issued. Never collects card details. */
+/** Manual licence activation, for when the automatic flow cannot complete. */
 export default function ManualActivationForm({
   activation,
 }: {

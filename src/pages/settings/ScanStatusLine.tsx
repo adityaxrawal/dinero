@@ -1,3 +1,6 @@
+/**
+ * One-line summary of current scan status.
+ */
 import { Loader2, XCircle, AlertCircle } from 'lucide-react';
 import type { ScanProgressPayload } from '@/lib/ipc';
 import type { ScanStatus } from '@/lib/GlobalStateContext';
@@ -14,6 +17,7 @@ const STATUS_MESSAGE: Partial<Record<ScanStatus, string>> = {
   cancelled: 'Scan cancelled.',
 };
 
+/** One-line summary of the current scan status. */
 export default function ScanStatusLine({
   scanStatus,
   scanProgress,

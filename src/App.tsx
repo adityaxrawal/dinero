@@ -16,27 +16,31 @@ import { useResumeFromSleepRefetch } from './hooks/useResumeFromSleepRefetch';
 import { syncLlmState } from './lib/syncLlmState';
 import './App.css';
 
+/** Payload of the backend's `update_available` event. */
 interface UpdateAvailablePayload {
   version: string;
   current_version: string;
   notes: string | null;
 }
 
-// TASK-FE-003: mounted once, inside QueryClientProvider, so
-// useIpcQueryInvalidation can reach the client via useQueryClient(). Renders
-// nothing — a component is needed only because a hook can't be called from
-// the same component that creates the provider wrapping it.
+/**
+ * Headless component that connects backend events to frontend reactions.
+ *
+ * Renders nothing -- it exists purely to own effects that must live inside the
+ * React tree (and inside QueryClientProvider, since cache invalidation needs
+ * the client). Keeping them here rather than in App means these subscriptions
+ * mount once and survive every navigation.
+ */
 function IpcEventBridge() {
+  // Backend events invalidate the matching React Query caches.
   useIpcQueryInvalidation();
+  // Refetches after the machine wakes, where cached data may be badly stale.
   useResumeFromSleepRefetch();
 
+  // Deep links from OS notification clicks. The hash is assigned directly
+  // rather than routed through the router, because this fires from outside
+  // React and has no access to a navigate function.
   useEffect(() => {
-    // TASK-DESK-002: clicking a native notification foregrounds the app and
-    // deep-links to the relevant view. Uses `window.location.hash` directly
-    // rather than `useNavigate()` -- this component is mounted outside
-    // `RouterProvider` (see below), so no router context is available here,
-    // but the hash router (Doc 30 TASK-FE-001) picks up a hash change from
-    // anywhere, React or not.
     let unlisten: (() => void) | undefined;
     onAction((notification) => {
       const route = notification.extra?.deep_link;
@@ -51,17 +55,15 @@ function IpcEventBridge() {
     return () => unlisten?.();
   }, []);
 
+  // Update availability, surfaced as a toast with a direct install action.
   useEffect(() => {
-    // TASK-DESK-005: a non-intrusive "Update Now" / "Remind Me Later"
-    // prompt -- never a forced-restart popup. Implemented as a toast with
-    // a single action button (shadcn's Toast only supports one): clicking
-    // it installs; not clicking it *is* "Remind Me Later" -- the next
-    // scheduled check (~6h) or manual menu trigger re-prompts if the
-    // update is still available, so no separate snooze state is needed.
     let unlisten: (() => void) | undefined;
 
+    /** Subscribes to update-available events, if the Tauri bus exists. */
     const setup = async () => {
       let listen;
+      // Imported dynamically inside a try so the effect degrades quietly in a
+      // plain browser or test environment, where no Tauri event bus exists.
       try {
         const m = await import('@tauri-apps/api/event');
         listen = m.listen;
@@ -90,6 +92,8 @@ function IpcEventBridge() {
       unlisten = handle;
     };
 
+    // The async setup is fired and its unlisten captured on completion; the
+    // cleanup tolerates unmounting before setup resolved.
     setup().catch((e) => console.error('Failed to listen for update_available', e));
     return () => unlisten?.();
   }, []);
@@ -97,10 +101,22 @@ function IpcEventBridge() {
   return null;
 }
 
+/**
+ * Root component: assembles the provider stack and the app-wide event wiring.
+ *
+ * Provider order below is deliberate and load-bearing. The error boundary is
+ * outermost so it can catch a failure in any provider beneath it; toasts sit
+ * outside React Query so an error toast can still be shown when a query
+ * provider throws; and the router is innermost, since every route depends on
+ * everything above it.
+ */
 function App() {
+  // Session and navigation logging, giving backend logs the route context that
+  // makes a later error entry interpretable.
   useEffect(() => {
     logger.info('Dinero Frontend Application initialized', { route: window.location.hash || '#/' });
 
+    /** Logs each route change, giving backend logs navigation context. */
     const handleHashChange = () => {
       logger.info(`Route changed: ${window.location.hash || '#/'}`);
     };
@@ -108,6 +124,9 @@ function App() {
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, []);
 
+  // Reconcile the saved local-LLM model against this machine's hardware. Runs
+  // once at startup and is intentionally not awaited -- the UI must not block
+  // on an optional subsystem.
   useEffect(() => {
     syncLlmState();
   }, []);

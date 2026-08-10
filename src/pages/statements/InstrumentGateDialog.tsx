@@ -1,3 +1,9 @@
+/**
+ * Asks which instrument an unattributable statement belongs to.
+ *
+ * Raised by the backend when identification fails. Pre-filled with whatever
+ * extraction did recover, so the user confirms rather than starting blank.
+ */
 import { AlertTriangle, CreditCard } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -22,6 +28,12 @@ import type { useInstrumentGate } from './useInstrumentGate';
 
 type Gate = ReturnType<typeof useInstrumentGate>;
 
+/**
+ * Asks which instrument an unattributable statement belongs to.
+ *
+ * Pre-filled with whatever extraction recovered, so the user confirms rather
+ * than starting from blank.
+ */
 export default function InstrumentGateDialog({ gate }: { gate: Gate }) {
   const {
     instrumentModalOpen,

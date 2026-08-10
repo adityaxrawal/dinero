@@ -1,3 +1,6 @@
+/**
+ * Licence and subscription section of settings.
+ */
 import { CreditCard, Loader2 } from 'lucide-react';
 import SectionHeading from '@/components/settings/SectionHeading';
 import { useLicenseStatus } from './useLicenseStatus';
@@ -7,6 +10,7 @@ import LicenseStatusGrid from './LicenseStatusGrid';
 import LicenseActions from './LicenseActions';
 import ManualActivationForm from './ManualActivationForm';
 
+/** Licence and subscription section. */
 export default function LicenseSection() {
   const license = useLicenseStatus();
   const activation = useLicenseActivation({

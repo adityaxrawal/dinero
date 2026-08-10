@@ -1,3 +1,6 @@
+/**
+ * Full-page view of one payment instrument.
+ */
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -11,17 +14,7 @@ import SavedPasswordsCard from './instrumentDetail/SavedPasswordsCard';
 import RecentTransactionsCard from './instrumentDetail/RecentTransactionsCard';
 import StatementHistoryCard from './instrumentDetail/StatementHistoryCard';
 
-/**
- * TASK-FE-011 (Doc 30): instrument-scoped transaction history (reusing the
- * TASK-FE-009 infinite-list infra filtered by instrument_id), statement
- * history, and a "forget saved password" action. Editable fields limited to
- * full_identifier/billing_cycle_day/bank_ifsc — issuer_name/masked_identifier
- * are identity fields the backend has never accepted post-creation
- * (Document 15 §2.8's resolve_instrument() matching key); the pre-existing
- * page's edit form offered them anyway despite the backend silently
- * discarding them, a gap explicitly flagged back in TASK-API-002 as this
- * task's to fix.
- */
+/** Full-page view of one payment instrument. */
 export default function InstrumentDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -42,6 +35,7 @@ export default function InstrumentDetail() {
     );
   }
 
+  /** Forgets a saved statement password for this instrument. */
   const handleForgetPassword = (passwordId: string) => {
     form.forgetPassword.mutate(passwordId, {
       onSuccess: () => toast({ title: 'Saved password forgotten' }),
@@ -50,8 +44,6 @@ export default function InstrumentDetail() {
   };
 
   return (
-    // AppLayout's <main> is overflow-hidden -- every routed page owns its
-    // own scroll container, or content past the viewport is unreachable.
     <div className="flex-1 h-full overflow-y-auto">
       <div className="space-y-6 animate-in fade-in duration-300 max-w-3xl mx-auto p-6 lg:p-10">
         <Button

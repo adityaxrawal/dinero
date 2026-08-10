@@ -1,10 +1,12 @@
+/**
+ * State and submission for the instrument gate dialog.
+ */
 import { useCallback, useEffect, useState } from 'react';
 import { API } from '@/lib/ipc';
 import { getErrorMessage } from '@/lib/errorMapping';
 import { useGlobalState } from '@/lib/GlobalStateContext';
 
-/** The Statement Instrument Gate: which account a statement belongs to, asked
- *  only when the parser could not work it out. */
+/** State and submission for the instrument gate dialog. */
 export function useInstrumentGate(refresh: () => void) {
   const {
     instrumentModalOpen,
@@ -34,9 +36,6 @@ export function useInstrumentGate(refresh: () => void) {
     setIsSubmitting(true);
     setError(null);
     try {
-      // Resumes the same synchronous stage_parse_pipeline as the password
-      // path — reuses pendingInstrumentStatementId as the draft id, so the
-      // review modal can open directly with it, no event race.
       const result = await API.statements.confirmInstrument(
         pendingInstrumentStatementId,
         issuer.trim(),

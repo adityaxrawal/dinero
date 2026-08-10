@@ -10,15 +10,21 @@ import {
 import { ShieldOff } from 'lucide-react';
 import { NETWORK_DISCLOSURE_TABLE } from '@/constants/privacy';
 
+/**
+ * Second onboarding screen: every outbound network call, disclosed up front.
+ *
+ * Shown before Gmail is connected, so the user sees exactly what leaves the
+ * machine before granting any access. The table is rendered from the shared
+ * privacy constants rather than written inline here, which keeps this screen
+ * and the settings disclosure from drifting apart.
+ *
+ * Continuing records a consent event in the parent flow.
+ */
 interface NetworkDisclosureScreenProps {
   onContinue: () => void;
 }
 
-// TASK-FE-004 (Doc 30): must be shown before any network-enabled feature is
-// reachable, and requires an explicit "Continue" click — never a timed
-// auto-advance. Renders Document 01 §10.4's disclosure table verbatim (via
-// NETWORK_DISCLOSURE_TABLE, the same source of truth the Gmail consent
-// screen and Settings → Privacy → Network Activity render from).
+/** Discloses every outbound network call before Gmail is connected. */
 export default function NetworkDisclosureScreen({ onContinue }: NetworkDisclosureScreenProps) {
   return (
     <div className="flex h-screen w-screen items-center justify-center bg-background p-4">

@@ -1,12 +1,16 @@
+/**
+ * Loads the raw source payload for a transaction on demand.
+ */
 import { useState } from 'react';
 import { API } from '@/lib/ipc';
 
-/** The "View Raw Source" dialog: fetched on demand, never with the page. */
+/** Loads the raw source payload on demand. */
 export function useRawSource(id: string | undefined) {
   const [isOpen, setIsOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [data, setData] = useState<unknown>(null);
 
+  /** Opens the dialog, fetching the payload if not already loaded. */
   const open = async () => {
     if (!id) return;
     setIsOpen(true);

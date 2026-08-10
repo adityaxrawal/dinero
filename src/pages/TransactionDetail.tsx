@@ -1,3 +1,6 @@
+/**
+ * Full-page view of one transaction, with provenance and audit trail.
+ */
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -12,11 +15,7 @@ import InstrumentCard from './transactionDetail/InstrumentCard';
 import AuditCard from './transactionDetail/AuditCard';
 import RawSourceDialog from './transactionDetail/RawSourceDialog';
 
-/**
- * TASK-FE-010 (Doc 30): full editable field display (category, merchant
- * display name, tags, notes), SourceEvidencePanel, EmiInstallmentTimeline
- * (only when emi_group_id present). Replaces the TASK-FE-009 placeholder.
- */
+/** Full-page transaction view with provenance and audit trail. */
 export default function TransactionDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -27,9 +26,6 @@ export default function TransactionDetail() {
   const { detail, tx } = form;
   if (!id) return null;
 
-  // isLoading must be checked before the detail/tx guard: both are undefined
-  // while the query is in flight, so guarding first made this spinner
-  // unreachable and rendered a blank page for the whole load.
   if (form.isLoading) {
     return (
       <div
@@ -45,12 +41,6 @@ export default function TransactionDetail() {
   if (!detail || !tx) return null;
 
   return (
-    // AppLayout's <main> is overflow-hidden, so every routed page owns its
-    // own scroll container -- this page's content can exceed the viewport
-    // (Correction section + Save/Delete buttons below Provenance), and
-    // without this wrapper that overflow was silently clipped with no way
-    // to reach it at all. mx-auto centers the fixed max-w-3xl column
-    // instead of it pinning to the left edge on a wide window.
     <div className="flex-1 h-full overflow-y-auto">
       <div className="space-y-6 animate-in fade-in duration-300 max-w-3xl mx-auto p-6 lg:p-10">
         <Button

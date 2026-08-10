@@ -1,3 +1,6 @@
+/**
+ * Form state and submission for manual transaction creation.
+ */
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { API } from '@/lib/ipc';
@@ -5,6 +8,7 @@ import { queryKeys } from '@/lib/queryKeys';
 import { getErrorToast } from '@/lib/errorMapping';
 import { useToast } from '@/hooks/use-toast';
 
+/** Form state and submission for manual transaction creation. */
 export function useCreateTransaction() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -17,6 +21,7 @@ export function useCreateTransaction() {
   const [instrumentId, setInstrumentId] = useState('');
   const [isCreating, setIsCreating] = useState(false);
 
+  /** Validates and creates the transaction. */
   const submit = async () => {
     const amountValue = parseFloat(amount);
     if (isNaN(amountValue) || amountValue <= 0 || !merchant.trim() || !instrumentId) return;

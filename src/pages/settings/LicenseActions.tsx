@@ -1,3 +1,6 @@
+/**
+ * Licence actions: subscribe, manage billing, reactivate.
+ */
 import { Loader2, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import type { LicenseStatusResponse } from '@/lib/ipc';
@@ -5,13 +8,13 @@ import type { useLicenseStatus } from './useLicenseStatus';
 import type { useLicenseActivation } from './useLicenseActivation';
 import LicenseCtaButton from './LicenseCtaButton';
 
-/// Doc 30 TASK-BILL-010: "Manage billing" delegates to Razorpay's hosted
-/// customer portal, never rendered inside this app.
+/** Opens the billing portal in the system browser. */
 const handleManageBilling = async () => {
   const { openUrl } = await import('@tauri-apps/plugin-opener');
   await openUrl('https://dashboard.razorpay.com/customer-portal');
 };
 
+/** Licence actions: subscribe, manage billing, reactivate. */
 export default function LicenseActions({
   status,
   license,

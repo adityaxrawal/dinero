@@ -1,8 +1,12 @@
+/**
+ * Start and cancel controls for a mail scan.
+ */
 import { Loader2, ScanLine } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useGlobalState } from '@/lib/GlobalStateContext';
 import CancelScanButton from './CancelScanButton';
 
+/** Start and cancel controls for a mail scan. */
 export default function ScanControls({ hasAccount }: { hasAccount: boolean }) {
   const { scanStatus, scanStartDate, scanEndDate, handleStartScan, resetScan } = useGlobalState();
   const isFinished =

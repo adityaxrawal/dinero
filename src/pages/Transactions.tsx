@@ -1,3 +1,6 @@
+/**
+ * The main ledger: filterable, searchable, infinitely scrolling transaction feed.
+ */
 import { useMemo } from 'react';
 import { useInstrumentsList } from '@/hooks/queries/useInstrumentsList';
 import { useCategoriesList } from '@/hooks/queries/useCategoriesList';
@@ -12,6 +15,7 @@ import FilterChips from './transactions/FilterChips';
 import TransactionFeedList from './transactions/TransactionFeedList';
 import CreateTransactionModal from './transactions/CreateTransactionModal';
 
+/** Prompt shown when no transaction is selected. */
 function EmptyInspector() {
   return (
     <div className="flex-1 flex flex-col items-center justify-center h-full opacity-40 gap-3">
@@ -26,6 +30,7 @@ function EmptyInspector() {
   );
 }
 
+/** The main ledger: filterable, searchable, infinite feed. */
 export default function Transactions() {
   const { data: instruments = [] } = useInstrumentsList();
   const { data: categories = [] } = useCategoriesList();
@@ -44,7 +49,6 @@ export default function Transactions() {
 
   return (
     <div className="flex h-full w-full overflow-hidden select-none">
-      {/* ── Column 2: Master List (Feed) ─────────────────────────────────── */}
       <div
         className="flex-shrink-0 flex flex-col h-full border-r border-[#064E3B]/15 bg-[#F8E7C9]"
         style={{ width: '340px' }}
@@ -82,7 +86,6 @@ export default function Transactions() {
         </div>
       </div>
 
-      {/* ── Column 3: Inspector Panel ──────────────────────────────────── */}
       <div className="flex-1 h-full bg-[#F8E7C9] relative overflow-hidden flex flex-col">
         {selectedTxId ? (
           <TransactionInspector

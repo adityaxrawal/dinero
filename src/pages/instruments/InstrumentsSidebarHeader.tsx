@@ -1,3 +1,6 @@
+/**
+ * Header and actions for the instruments sidebar.
+ */
 import { Plus, Landmark, Search, X, CreditCard, Wallet, Smartphone } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { InstrumentRecord } from '@/lib/ipc';
@@ -12,10 +15,11 @@ const PILLS: { id: CategoryFilter; label: string; icon: React.ReactNode }[] = [
   { id: 'upi_vpa', label: 'UPI', icon: <Smartphone className="w-3 h-3" /> },
 ];
 
+/** Count shown in the header pill. */
 const pillCount = (instruments: InstrumentRecord[], id: CategoryFilter) =>
   id === 'all' ? instruments.length : instruments.filter((i) => i.instrument_type === id).length;
 
-/** Title bar, portfolio totals, search box and category pills. */
+/** Header and actions for the instruments sidebar. */
 export default function InstrumentsSidebarHeader({
   instruments,
   metrics,
@@ -54,7 +58,6 @@ export default function InstrumentsSidebarHeader({
         </button>
       </div>
 
-      {/* Quick Portfolio Stats Banner */}
       <div className="bg-[#064E3B]/[0.06] rounded-xl p-2.5 border border-[#064E3B]/10 flex justify-between items-center text-[11px] font-mono">
         <div>
           <span className="text-[#064E3B]/60 font-medium block text-[9px] uppercase tracking-wider">
@@ -75,7 +78,6 @@ export default function InstrumentsSidebarHeader({
         </div>
       </div>
 
-      {/* Search Bar */}
       <div className="relative">
         <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-[#064E3B]/50" />
         <input
@@ -96,7 +98,6 @@ export default function InstrumentsSidebarHeader({
         )}
       </div>
 
-      {/* Category Filter Pills */}
       <div className="grid grid-cols-4 gap-1">
         {PILLS.map((pill) => {
           const count = pillCount(instruments, pill.id);

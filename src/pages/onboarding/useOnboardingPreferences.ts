@@ -1,22 +1,20 @@
+/**
+ * Collects and persists onboarding preferences.
+ */
 import { useState, useEffect } from 'react';
 import { API, type LlmModelInfo } from '@/lib/ipc';
 
 export type StatementPref = 'auto' | 'manual';
 
-// TASK-FE-006: the real scan range is now chosen on HistoricalScanScreen
-// (a date-range picker, not a months count) after Gmail connects — this
-// fixed default only feeds the separate `historicalScanMonths` backend
-// preference field, unrelated to what actually gets scanned.
 const SCAN_RANGE = '3';
 
+/** Collects and persists onboarding preferences. */
 export function useOnboardingPreferences() {
   const [timezone, setTimezone] = useState(Intl.DateTimeFormat().resolvedOptions().timeZone);
   const [monthlyLimit, setMonthlyLimit] = useState('50000');
   const [limitError, setLimitError] = useState<string | null>(null);
   const [statementPref, setStatementPref] = useState<StatementPref>('auto');
 
-  // Doc 16 §12.3: the 5-tier model catalog, fetched from the backend — not
-  // hardcoded here, so this can never drift from src-tauri's own list again.
   const [availableModels, setAvailableModels] = useState<LlmModelInfo[]>([]);
   const [llmConfig, setLlmConfig] = useState('gemma4_e4b');
 
@@ -25,13 +23,12 @@ export function useOnboardingPreferences() {
       .getAvailableModels()
       .then((models) => {
         setAvailableModels(models);
-        // Default to the lowest-tier (broadest-compatibility) model.
         if (models.length > 0) setLlmConfig(models[0].id);
       })
       .catch((err) => console.error('Failed to fetch LLM model catalog:', err));
   }, []);
 
-  /** True when step 1's spending limit is a usable number. */
+  /** Rejects a spending limit that is not a positive number. */
   const validateLimit = () => {
     const parsed = parseFloat(monthlyLimit);
     if (isNaN(parsed) || parsed <= 0) {
@@ -42,12 +39,7 @@ export function useOnboardingPreferences() {
     return true;
   };
 
-  // G19 fix: previously these choices only lived in browser localStorage —
-  // never persisted to `local_profile`, so they didn't survive a
-  // reinstall/reset and `monthlyLimit` in particular never reached the same
-  // row Settings → Spending Limits reads from. Best-effort: a persistence
-  // hiccup here shouldn't block the user from finishing onboarding, since
-  // Settings still offers a normal way to set these afterward.
+  /** Saves the collected preferences. */
   const persist = async () => {
     localStorage.setItem('dinero_onboarded', 'true');
     localStorage.setItem('dinero_monthly_limit', monthlyLimit);

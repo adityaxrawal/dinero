@@ -1,8 +1,12 @@
+/**
+ * Pipeline health panel on the debug screen.
+ */
 import { Server, Settings, Pause, Play } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useDebugMetrics } from './useDebugMetrics';
 
+/** Pause/resume control for one queue. */
 function PipelineControlCard({
   icon: Icon,
   title,
@@ -61,6 +65,7 @@ function PipelineControlCard({
 
 type Debug = ReturnType<typeof useDebugMetrics>;
 
+/** Pipeline health and queue controls. */
 export default function PipelineSection({ debug }: { debug: Debug }) {
   const { pipelineState } = debug;
 

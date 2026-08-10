@@ -1,7 +1,11 @@
+/**
+ * Navigation footer for the onboarding steps.
+ */
 import { Loader2, Mail } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { CardFooter } from '@/components/ui/card';
 
+/** Navigation footer for the onboarding steps. */
 export default function OnboardingFooter({
   step,
   loading,
@@ -27,7 +31,7 @@ export default function OnboardingFooter({
           Back
         </Button>
       ) : (
-        <div aria-hidden="true" /> // Spacer
+        <div aria-hidden="true" />
       )}
 
       {step === 1 ? (

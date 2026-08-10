@@ -1,3 +1,6 @@
+/**
+ * Settings screen, composed from the individual section components.
+ */
 import { useSearchParams } from 'react-router-dom';
 import { Palette, CreditCard, Gauge, Shield, Users, Settings as SettingsIcon } from 'lucide-react';
 import { PageSidebar } from '@/components/layout/PageSidebar';
@@ -29,17 +32,17 @@ const SECTION_CONTENT: Record<SettingsSection, React.ComponentType> = {
   appearance: AppearanceSection,
 };
 
+/** Settings screen, composed from its section components. */
 export default function Settings() {
   const [searchParams, setSearchParams] = useSearchParams();
   const currentSection = (searchParams.get('section') as SettingsSection) || 'budgets';
+  /** Switches the visible settings section. */
   const setSection = (section: SettingsSection) => setSearchParams({ section });
 
-  // An unrecognised ?section= renders an empty pane, as it always has.
   const SectionContent = SECTION_CONTENT[currentSection];
 
   return (
     <div className="flex h-full w-full overflow-hidden">
-      {/* ── Column 2: Navigation (Settings) ─────────────────────────────────── */}
       <PageSidebar
         title="Settings"
         sections={SETTINGS_SECTIONS}
@@ -47,7 +50,6 @@ export default function Settings() {
         onSelectSection={setSection}
       />
 
-      {/* ── Column 3: Content Area ────────────────────────────────────────── */}
       <div className="flex-1 h-full bg-[#F8E7C9] relative overflow-y-auto p-8 lg:p-12 text-[#064E3B]">
         <div className="max-w-3xl mx-auto space-y-12">{SectionContent && <SectionContent />}</div>
       </div>

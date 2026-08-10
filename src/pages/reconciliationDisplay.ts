@@ -1,14 +1,9 @@
 /**
- * Display helpers for the reconciliation queue, extracted from
- * Reconciliation.tsx so they can be tested directly — same precedent as
- * gmailParsing.ts and evidenceDescription.ts. These decide what an
- * unassigned Gmail alert *looks* like in the list; none of them touch IPC
- * or React.
+ * Display helpers shared by the reconciliation screens.
  */
 import { cleanTextForReader } from '@/components/common/gmailParsing';
 import type { UnassignedTransactionRecord } from '@/lib/ipc';
 
-// Body-text fingerprint -> display name, checked in order.
 const BANK_FINGERPRINTS: [pattern: RegExp, name: string][] = [
   [/HDFC/i, 'HDFC Bank'],
   [/IndusInd/i, 'IndusInd Bank'],
@@ -23,7 +18,7 @@ const ISSUE_LABELS: Record<string, string> = {
   issuer_name_not_found: 'Unknown Card/Bank',
 };
 
-/** The Gmail payload is an opaque JSON blob; pull out the fields we display. */
+/** Parses an alert payload, tolerating malformed JSON. */
 export function readAlertPayload(rawJson: unknown, fallbackText: string) {
   const empty = { name: '', subject: '', html: '', text: fallbackText };
   if (!rawJson || typeof rawJson !== 'string') return empty;
@@ -40,28 +35,37 @@ export function readAlertPayload(rawJson: unknown, fallbackText: string) {
   }
 }
 
-/** "IndusInd Bank <alerts@indusind.com>" -> "IndusInd Bank" */
+/**
+ * Removes the angle-bracketed address from a display name.
+ *
+ * Also strips surrounding quotes, which senders add around names containing
+ * commas.
+ */
 export function stripAddressFromName(name: string): string {
   if (!name.includes('<')) return name;
-  // Trim before unquoting: senders are usually written `"HDFC Bank" <a@b>`,
-  // so the closing quote is not the last character until the space between
-  // it and the angle bracket is gone. Stripping first left a stray `"`.
   return name.split('<')[0].trim().replace(/^["']|["']$/g, '');
 }
 
-/** Falls back to fingerprinting the body when the sender name says nothing. */
+/**
+ * Resolves a usable bank name, falling back to body fingerprints.
+ *
+ * Forwarded and relayed alerts frequently lose their original sender name, so a
+ * generic placeholder is replaced by matching the body against known bank
+ * fingerprints.
+ */
 export function resolveBankName(name: string, body: string): string {
   const isGeneric = !name || name === 'Bank Alert' || name === 'Bank / Service Alert';
   if (!isGeneric) return name;
   return BANK_FINGERPRINTS.find(([pattern]) => pattern.test(body))?.[1] || 'Bank Alert';
 }
 
-// Note: en-IN grouping (₹1,00,000), which lib/formatMoney.ts does not apply.
+/** Formats minor units as rupees, or null when absent. */
 export const formatRupees = (amountMinor: number | null | undefined): string | null =>
   amountMinor == null
     ? null
     : `₹${(amountMinor / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+/** Assembles the display fields for an unassigned transaction. */
 export function getUnassignedDisplayInfo(item: UnassignedTransactionRecord) {
   const payload = readAlertPayload(item.raw_payload_json, item.body_snippet || '');
   const senderName = stripAddressFromName(payload.name || item.merchant_raw || '');
@@ -69,7 +73,6 @@ export function getUnassignedDisplayInfo(item: UnassignedTransactionRecord) {
   const bodyText = cleanTextForReader(payload.html, payload.text);
   const name = resolveBankName(senderName, bodyText);
 
-  // Snippets often repeat the bank name they open with — drop the echo.
   const trimmedBody = bodyText.startsWith(name) ? bodyText.slice(name.length).trim() : bodyText;
 
   return {

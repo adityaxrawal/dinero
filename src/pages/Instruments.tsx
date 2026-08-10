@@ -1,3 +1,6 @@
+/**
+ * Lists all payment instruments with portfolio-level totals.
+ */
 import { useState, useMemo, useEffect } from 'react';
 import { Loader2, Landmark } from 'lucide-react';
 import { useInstrumentsList } from '@/hooks/queries/useInstrumentsList';
@@ -11,6 +14,7 @@ import InstrumentsSidebarHeader, {
   type CategoryFilter,
 } from './instruments/InstrumentsSidebarHeader';
 
+/** Lists instruments with portfolio-level totals. */
 export default function Instruments() {
   const { data: instruments = [], isLoading } = useInstrumentsList();
   const [addModalOpen, setAddModalOpen] = useState(false);
@@ -18,7 +22,6 @@ export default function Instruments() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedFilter, setSelectedFilter] = useState<CategoryFilter>('all');
 
-  // Auto select first instrument if none selected and instruments exist
   useEffect(() => {
     if (!selectedInstId && instruments.length > 0) {
       setSelectedInstId(instruments[0].id);
@@ -29,12 +32,10 @@ export default function Instruments() {
 
   const filteredInstruments = useMemo(() => {
     return instruments.filter((i) => {
-      // Filter by type pill
       if (selectedFilter !== 'all' && i.instrument_type !== selectedFilter) {
         return false;
       }
 
-      // Filter by search query
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase().trim();
         const matchesName = i.issuer_name.toLowerCase().includes(q);
@@ -61,7 +62,6 @@ export default function Instruments() {
 
   return (
     <div className="flex h-full w-full overflow-hidden">
-      {/* ── Master List (Accounts) ─────────────────────────────────── */}
       <div
         className="flex-shrink-0 flex flex-col h-full border-r border-[#064E3B]/20 shadow-xs"
         style={{ width: '340px', backgroundColor: 'var(--bg-canvas)' }}
@@ -76,7 +76,6 @@ export default function Instruments() {
           onAdd={() => setAddModalOpen(true)}
         />
 
-        {/* List items */}
         <div className="flex-1 overflow-y-auto">
           {isLoading ? (
             <div className="flex flex-col items-center justify-center h-40 gap-2">
@@ -128,7 +127,6 @@ export default function Instruments() {
         </div>
       </div>
 
-      {/* ── Inspector Panel Canvas ─────────────────────────────────── */}
       <div className="flex-1 h-full bg-[#F8E7C9] relative overflow-hidden flex flex-col justify-center">
         {selectedInstId ? (
           <div className="w-full h-full flex flex-col">

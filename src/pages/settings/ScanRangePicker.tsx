@@ -1,6 +1,10 @@
+/**
+ * Date-range picker bounding a historical scan.
+ */
 import { DateRangePicker } from '@/components/ui/date-picker';
 import { useGlobalState } from '@/lib/GlobalStateContext';
 
+/** Date-range picker bounding a historical scan. */
 export default function ScanRangePicker({ disabled }: { disabled: boolean }) {
   const { scanStartDate, setScanStartDate, scanEndDate, setScanEndDate } = useGlobalState();
 

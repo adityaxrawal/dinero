@@ -1,14 +1,18 @@
+/**
+ * Banner describing the current licence state.
+ */
 import { AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { LicenseStatusResponse } from '@/lib/ipc';
 
+/** Grace-period message, escalating as the deadline nears. */
 function graceMessage(daysRemaining: number | null | undefined): string {
   const window =
     daysRemaining != null ? ` (${daysRemaining} day${daysRemaining === 1 ? '' : 's'} remaining)` : '';
   return `Your subscription is in its grace period${window} — refresh once your payment is resolved.`;
 }
 
-/** Only rendered for the two states that need a warning; returns null otherwise. */
+/** Banner describing the current licence state. */
 export default function LicenseStateBanner({ status }: { status: LicenseStatusResponse }) {
   const isLocked = status.state === 'LOCKED';
   if (!isLocked && status.state !== 'GRACE') return null;

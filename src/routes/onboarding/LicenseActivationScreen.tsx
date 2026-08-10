@@ -3,17 +3,27 @@ import { Button } from '@/components/ui/button';
 import { CheckCircle2 } from 'lucide-react';
 import { useLicenseStore } from '@/stores/useLicenseStore';
 
+/**
+ * Onboarding step covering trial or subscription status.
+ *
+ * Adapts to what the user already has: someone with an active or grace-period
+ * subscription is confirmed rather than sold to, while everyone else sees their
+ * trial terms. Hydrates the license store on mount because onboarding can run
+ * before the app-wide hydration has completed.
+ */
 interface LicenseActivationScreenProps {
   onContinue: () => void;
 }
 
+/**
+ * Format an ISO date for display, or null if it is missing or unparseable.
+ *
+ * Returning null rather than a placeholder lets the caller omit the whole
+ * sentence, instead of rendering one with "Invalid Date" inside it.
+ */
 function formatDate(iso: string | null): string | null {
   if (!iso) return null;
   const parsed = new Date(iso);
-  // An unparseable date renders as the literal string "Invalid Date" here
-  // rather than throwing, so the guard has to be explicit -- the try/catch
-  // this replaced could never fire, and let "Trial ends on Invalid Date"
-  // through to the screen.
   if (Number.isNaN(parsed.getTime())) return null;
   return parsed.toLocaleDateString(undefined, {
     year: 'numeric',
@@ -22,20 +32,7 @@ function formatDate(iso: string | null): string | null {
   });
 }
 
-/**
- * TASK-FE-007 (Doc 30): the 14-day trial auto-starts with no user action
- * needed — it's derived server-side from `local_profile.created_at`
- * (`licensing::gate::trial_days_remaining`), not a transition this screen
- * triggers. This screen just confirms it via `useLicenseStore`.
- *
- * Doc30's "Already have a license key?" secondary path doesn't match the
- * real backend: `license_activate` (Document 19 §14.2) takes Razorpay
- * payment-confirmation fields, not a license key, and no Razorpay checkout
- * flow exists yet (Area 12/BILL is unbuilt). That activation form already
- * exists in Settings → License (against the same real IPC contract) — this
- * screen points there rather than duplicating a form with nothing real to
- * submit until checkout exists. Revisit when Area 12 ships.
- */
+/** Trial or subscription status, adapted to what the user already holds. */
 export default function LicenseActivationScreen({ onContinue }: LicenseActivationScreenProps) {
   const { state, hydrated, expiryDate, hydrate } = useLicenseStore();
 
@@ -43,6 +40,8 @@ export default function LicenseActivationScreen({ onContinue }: LicenseActivatio
     hydrate();
   }, [hydrate]);
 
+  // GRACE counts as paid here: the subscription exists and payment merely needs
+  // attention, so presenting a purchase prompt would be wrong.
   const alreadyPaid = state === 'ACTIVE' || state === 'GRACE';
   const trialEndsOn = formatDate(expiryDate);
 

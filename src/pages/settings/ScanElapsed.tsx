@@ -1,6 +1,10 @@
+/**
+ * Elapsed-time display for a running scan.
+ */
 import { formatDuration } from '@/lib/scanTiming';
 import type { ScanStatus } from '@/lib/GlobalStateContext';
 
+/** Elapsed time for a running scan, ticking once a second. */
 export default function ScanElapsed({
   scanStatus,
   elapsedSeconds,

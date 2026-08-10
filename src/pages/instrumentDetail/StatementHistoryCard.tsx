@@ -1,3 +1,6 @@
+/**
+ * Statement history for this instrument.
+ */
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { formatCustomDate } from '@/lib/formatCustomDate';
@@ -5,6 +8,7 @@ import type { useInstrumentForm } from '@/components/instruments/useInstrumentFo
 
 type Statements = ReturnType<typeof useInstrumentForm>['instrumentStatements'];
 
+/** Statement history for this instrument. */
 export default function StatementHistoryCard({ statements }: { statements: Statements }) {
   return (
     <Card>

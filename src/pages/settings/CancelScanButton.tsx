@@ -1,9 +1,13 @@
+/**
+ * Button to cancel an in-progress scan.
+ */
 import { useState, useEffect } from 'react';
 import { Loader2, XCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useGlobalState } from '@/lib/GlobalStateContext';
 import CancelScanDialog from './CancelScanDialog';
 
+/** Cancels an in-progress scan, with confirmation. */
 export default function CancelScanButton() {
   const { scanStatus, handleCancelScan } = useGlobalState();
 
@@ -13,7 +17,9 @@ export default function CancelScanButton() {
   }, [scanStatus]);
 
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+  /** Opens the confirmation dialog. */
   const handleCancelClick = () => setCancelDialogOpen(true);
+  /** Requests cancellation after confirmation. */
   const handleConfirmCancelScan = async () => {
     setCancelDialogOpen(false);
     setIsCancelling(true);

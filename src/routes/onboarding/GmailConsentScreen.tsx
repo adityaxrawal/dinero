@@ -1,6 +1,17 @@
 import { AlertCircle, ShieldCheck } from 'lucide-react';
 import { BETA_PROGRAM_DISCLOSURE, OUTBOUND_CHANNEL_DISCLOSURE } from '@/constants/privacy';
 
+/**
+ * Gmail consent step: states the exact scope requested before OAuth begins.
+ *
+ * Three disclosures stack here for different reasons -- the literal scope
+ * string so the request is unambiguous, the beta-program caveats so Google's
+ * "unverified app" warning is expected rather than alarming, and the outbound
+ * channel list so consent is informed by what actually leaves the machine.
+ *
+ * Skipping is offered because Gmail is optional: statements can be uploaded by
+ * hand, and the app remains useful without any mailbox access.
+ */
 interface GmailConsentScreenProps {
   loading: boolean;
   oauthError: string | null;
@@ -8,19 +19,7 @@ interface GmailConsentScreenProps {
   onSkip: () => void;
 }
 
-/**
- * TASK-FE-005 (Doc 30): renders the full Gmail consent text (scopes, beta
- * "Testing" mode constraints, outbound-channels disclosure — Document 01
- * §10.4/TASK-AUTH-002's exact wording via the shared privacy constants).
- * Purely presentational — the parent (`Onboarding.tsx`'s step wizard) still
- * owns the "I Understand, Continue to Google" submit action in its shared
- * `CardFooter` (same placement as every other step's Continue button) and
- * the `auth_google_start` call / loading / error state driving `loading`
- * and `oauthError` here. `oauthError` distinguishes the 5-minute
- * loopback-listener timeout (TASK-AUTH-001) from any other OAuth failure —
- * that distinction is made by the parent's catch block, this component just
- * displays whatever message it's given.
- */
+/** Gmail consent step, stating the exact scope requested before OAuth begins. */
 export default function GmailConsentScreen({
   loading,
   oauthError,
@@ -53,9 +52,6 @@ export default function GmailConsentScreen({
         </ul>
       </div>
 
-      {/* F12 fix: beta/"Testing" OAuth mode constraints, surfaced before
-          Gmail authorization rather than only in a separate onboarding
-          guide doc. */}
       <div
         className="bg-amber-500/10 border border-amber-500/30 p-4 rounded-md text-left"
         aria-label="Beta program disclosure"
@@ -73,8 +69,6 @@ export default function GmailConsentScreen({
         </ul>
       </div>
 
-      {/* Doc 01 §10.4: presented verbatim on the onboarding consent screen,
-          before Gmail authorization. */}
       <div
         className="bg-secondary/50 p-4 rounded-md text-left"
         aria-label="Outbound network channels disclosure"
@@ -102,8 +96,6 @@ export default function GmailConsentScreen({
         </div>
       )}
 
-      {/* G2 fix: statement-only users previously had no way to finish
-          onboarding without connecting Gmail. */}
       {showSkip && (
         <button
           type="button"

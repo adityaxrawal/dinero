@@ -1,3 +1,6 @@
+/**
+ * Saved statement passwords for this instrument.
+ */
 import { KeyRound } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -5,6 +8,7 @@ import type { useInstrumentForm } from '@/components/instruments/useInstrumentFo
 
 type Passwords = ReturnType<typeof useInstrumentForm>['instrumentPasswords'];
 
+/** Saved statement passwords for this instrument. */
 export default function SavedPasswordsCard({
   passwords,
   onForget,

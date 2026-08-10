@@ -1,3 +1,6 @@
+/**
+ * The instrument a transaction is attributed to.
+ */
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { InstrumentSelect } from '@/components/instruments/InstrumentSelect';
 import { TransactionAmountBalance } from '@/components/transactions/TransactionAmountBalance';
@@ -5,6 +8,7 @@ import type { useTransactionForm } from '@/components/transactions/useTransactio
 
 type Form = ReturnType<typeof useTransactionForm>;
 
+/** The instrument this transaction is attributed to. */
 export default function InstrumentCard({
   form,
   tx,

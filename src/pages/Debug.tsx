@@ -1,3 +1,9 @@
+/**
+ * Developer diagnostics screen.
+ *
+ * Its route is compiled out of release builds, so this is unreachable in a
+ * shipped application.
+ */
 import { useSearchParams } from 'react-router-dom';
 import { SidebarNavItem } from '@/components/ui/sidebar-nav-item';
 import { Server, Activity, AlertCircle, Link, Shield, Gauge } from 'lucide-react';
@@ -17,20 +23,19 @@ const TABS = [
   { id: 'reconciliation', label: 'Reconciliation', icon: <Link size={16} /> },
   { id: 'audit', label: 'Audit Log', icon: <Shield size={16} /> },
   { id: 'system', label: 'System Health', icon: <Server size={16} /> },
-  // F15 fix: distinguishes locally-verifiable metrics from the
-  // out-of-repo Licensing Backend admin surface.
   { id: 'release-readiness', label: 'Release Readiness', icon: <Gauge size={16} /> },
 ];
 
+/** Developer diagnostics screen, compiled out of release builds. */
 export default function Debug() {
   const [searchParams, setSearchParams] = useSearchParams();
   const activeTab = searchParams.get('section') || 'pipeline';
+  /** Switches the visible diagnostics tab. */
   const setActiveTab = (section: string) => setSearchParams({ section });
   const debug = useDebugMetrics();
 
   return (
     <div className="flex h-full w-full overflow-hidden">
-      {/* ── Column 2: Navigation (Debug) ─────────────────────────────────── */}
       <div
         className="flex-shrink-0 flex flex-col h-full border-r border-[#064E3B]/20"
         style={{ width: '320px', backgroundColor: 'var(--bg-canvas)' }}
@@ -54,7 +59,6 @@ export default function Debug() {
         </div>
       </div>
 
-      {/* ── Column 3: Content Area ────────────────────────────────────────── */}
       <div className="flex-1 h-full bg-[#F8E7C9] relative overflow-y-auto p-8 lg:p-12 text-[#064E3B]">
         <div className="max-w-4xl mx-auto space-y-12">
           {activeTab === 'pipeline' && <PipelineSection debug={debug} />}

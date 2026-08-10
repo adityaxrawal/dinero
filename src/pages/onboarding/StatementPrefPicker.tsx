@@ -1,3 +1,6 @@
+/**
+ * Statement-handling preference picker.
+ */
 import { Mail, ShieldCheck, Check } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { Label } from '@/components/ui/label';
@@ -19,6 +22,7 @@ const SELECTED = [
 const UNSELECTED =
   'border-border bg-background text-foreground hover:border-[#064E3B]/35 hover:bg-[#064E3B]/[0.04]';
 
+/** One selectable statement-handling preference. */
 function PrefOption({
   icon: Icon,
   title,
@@ -40,7 +44,6 @@ function PrefOption({
       onClick={onSelect}
       className={[BASE, selected ? SELECTED : UNSELECTED].join(' ')}
     >
-      {/* Checkmark badge — visible only when selected */}
       <span
         aria-hidden="true"
         className={[
@@ -72,6 +75,7 @@ function PrefOption({
   );
 }
 
+/** Statement-handling preference picker. */
 export default function StatementPrefPicker({
   value,
   onChange,

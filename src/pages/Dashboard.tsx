@@ -1,3 +1,10 @@
+/**
+ * The dashboard: headline figures, spend trends, and items needing attention.
+ *
+ * The landing screen, so it composes several independent queries rather than one
+ * aggregate -- each panel loads and refreshes on its own and a slow one cannot
+ * hold up the rest.
+ */
 import { useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
@@ -8,6 +15,7 @@ import KpiRow from './dashboard/KpiRow';
 import AttentionRail from './dashboard/AttentionRail';
 import ChartsRow from './dashboard/ChartsRow';
 
+/** Time-of-day greeting for the dashboard header. */
 function formatGreeting(): string {
   const h = new Date().getHours();
   if (h < 12) return 'Good morning';
@@ -15,6 +23,7 @@ function formatGreeting(): string {
   return 'Good evening';
 }
 
+/** Greeting, date range and last-synced indicator. */
 function DashboardHeader() {
   const now = new Date();
   return (
@@ -41,6 +50,7 @@ function DashboardHeader() {
   );
 }
 
+/** The dashboard: KPIs, charts, and items needing attention. */
 export default function Dashboard() {
   const navigate = useNavigate();
   const data = useDashboardData();

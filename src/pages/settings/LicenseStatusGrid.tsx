@@ -1,6 +1,10 @@
+/**
+ * Grid of licence details: plan, interval, expiry.
+ */
 import { cn } from '@/lib/utils';
 import type { LicenseStatusResponse } from '@/lib/ipc';
 
+/** One labelled cell of the status grid. */
 function Cell({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
@@ -12,11 +16,13 @@ function Cell({ label, children }: { label: string; children: React.ReactNode })
   );
 }
 
+/** Colour tone for a licence state. */
 function stateTone(status: LicenseStatusResponse): string {
   if (status.state === 'LOCKED') return 'text-red-600';
   return status.is_active ? 'text-emerald-600' : 'text-[#064E3B]';
 }
 
+/** Grid of licence details: plan, interval, expiry. */
 export default function LicenseStatusGrid({ status }: { status: LicenseStatusResponse }) {
   const isTrial = status.state === 'TRIAL' || status.state === 'TRIALING';
   const showRemaining = status.days_remaining != null && status.state !== 'GRACE';

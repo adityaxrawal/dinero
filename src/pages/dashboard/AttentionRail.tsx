@@ -1,3 +1,6 @@
+/**
+ * Rail of items needing attention: stale clusters, failed statements, alerts.
+ */
 import { useNavigate } from 'react-router-dom';
 import { AlertCircle, AlertTriangle, Calendar, ChevronRight, GitMerge } from 'lucide-react';
 import { classifyBillUrgency } from '@/components/dashboard/classifyBillUrgency';
@@ -5,6 +8,7 @@ import type { useDashboardData } from './useDashboardData';
 
 type Data = ReturnType<typeof useDashboardData>;
 
+/** One item needing attention. */
 function AttentionCard({
   icon,
   iconBg,
@@ -58,6 +62,7 @@ function AttentionCard({
   );
 }
 
+/** One upcoming bill, colour-coded by urgency. */
 function BillCard({
   bill,
   onClick,
@@ -87,6 +92,7 @@ function BillCard({
   );
 }
 
+/** Rail of items needing attention: stale clusters, failures, bills. */
 export default function AttentionRail({ data }: { data: Data }) {
   const navigate = useNavigate();
   const { pending, urgentBills, clusters, summary } = data;

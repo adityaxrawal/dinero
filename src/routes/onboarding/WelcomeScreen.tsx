@@ -9,13 +9,18 @@ import {
 } from '@/components/ui/card';
 import { ShieldCheck, Zap, LayoutGrid, RefreshCw } from 'lucide-react';
 
+/**
+ * First onboarding screen: what the app does, before asking for anything.
+ *
+ * Purely presentational and stateless -- the parent flow owns which phase is
+ * showing, so this only reports that the user wants to proceed.
+ */
 interface WelcomeScreenProps {
   onContinue: () => void;
 }
 
-// TASK-FE-004 (Doc 30): app introduction and value proposition, first screen
-// of the onboarding flow. Grounded in Document 01 §6.1/§6.2's vision
-// statement and core value propositions — not freely invented marketing copy.
+// Selling points, rendered as a uniform icon/title/description list. Kept as
+// data rather than repeated markup so the layout stays consistent across them.
 const VALUE_PROPS = [
   {
     icon: Zap,
@@ -43,6 +48,7 @@ const VALUE_PROPS = [
   },
 ];
 
+/** First onboarding screen: what the app does, before asking for anything. */
 export default function WelcomeScreen({ onContinue }: WelcomeScreenProps) {
   return (
     <div className="flex h-screen w-screen items-center justify-center bg-background p-4">

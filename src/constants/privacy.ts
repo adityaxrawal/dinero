@@ -1,8 +1,17 @@
-// Doc 01 §10.4 "Network Communication Disclosure" — the app's exact, complete
-// list of outbound network destinations. Must be presented verbatim on the
-// onboarding consent screen (before Gmail authorization), in the Privacy
-// Policy, and linked from Settings → Privacy → Network Activity — this
-// constant is the single source of truth all three surfaces render from.
+/**
+ * User-facing disclosures of every network destination this app contacts.
+ *
+ * This is the single source of truth behind the privacy screens, and it exists
+ * because the app's core promise is that financial data stays on the device.
+ * Each entry names a destination, exactly what is transmitted to it, and how
+ * often -- phrased so that what is *not* sent is as clear as what is.
+ *
+ * Treat this as a contract rather than as copy: adding an outbound request
+ * anywhere in the codebase means adding it here too, otherwise the disclosure
+ * silently becomes untrue.
+ */
+
+/** Prose bullet form, used where the disclosure is read as a list. */
 export const OUTBOUND_CHANNEL_DISCLOSURE = [
   'Gmail API — OAuth access token only; no email content is ever sent (every polling cycle)',
   'Licensing Backend — license key, device fingerprint hash, subscription status only. It never receives your transactions, balances, or any other financial data (on launch and periodic validation)',
@@ -12,22 +21,19 @@ export const OUTBOUND_CHANNEL_DISCLOSURE = [
   'No third-party analytics or crash-reporting services',
 ];
 
-// F12 fix: Dinero's Google OAuth client is currently in Google's "Testing"
-// publishing status (not yet verified) — previously these constraints were
-// only documented in Beta_Onboarding_Guide.md, a file most users never open.
-// Presented verbatim on the onboarding consent screen, before Gmail
-// authorization, alongside the outbound-channels disclosure above.
-// TASK-FE-004: the same Doc 01 §10.4 disclosure, structured as its original
-// 5-row table (Destination / Data Sent / When) rather than the flattened
-// string array above (which exists for the `disclosure_text` audit column —
-// a single verbatim string — not for rendering a real table). Every row is
-// "Financial Data? Never" by construction of §10.4 itself.
+/** One row of the tabular disclosure: where, what, and how often. */
 export interface NetworkDisclosureRow {
   destination: string;
   dataSent: string;
   when: string;
 }
 
+/**
+ * The same disclosures in structured form, for rendering as a table.
+ *
+ * Kept alongside the prose list above rather than derived from it, since the two
+ * are worded for different presentations. They must be updated together.
+ */
 export const NETWORK_DISCLOSURE_TABLE: NetworkDisclosureRow[] = [
   {
     destination: 'Gmail API',
@@ -57,6 +63,13 @@ export const NETWORK_DISCLOSURE_TABLE: NetworkDisclosureRow[] = [
   },
 ];
 
+/**
+ * Consequences of the Google integration still being in unverified Testing mode.
+ *
+ * Shown before Gmail sign-in so the "unverified app" warning, the 100-account
+ * cap, and the 7-day refresh-token expiry are expected rather than alarming.
+ * These entries become removable once Google verification completes.
+ */
 export const BETA_PROGRAM_DISCLOSURE = [
   'This app\'s Google integration is in a beta "Testing" mode and has not completed Google\'s app verification — Google will show an "unverified app" warning during sign-in. This is expected; proceeding is safe, and no data leaves your device except as listed below.',
   'Only the first 100 Google accounts to connect can use Gmail sign-in while the app is in Testing mode.',

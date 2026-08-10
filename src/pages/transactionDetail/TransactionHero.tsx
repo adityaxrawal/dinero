@@ -1,3 +1,6 @@
+/**
+ * Headline amount, merchant and date for the transaction detail page.
+ */
 import {
   ArrowDownLeft,
   ArrowUpRight,
@@ -12,6 +15,7 @@ import type { useTransactionForm } from '@/components/transactions/useTransactio
 
 type Form = ReturnType<typeof useTransactionForm>;
 
+/** Editable amount field. */
 function AmountInput({
   amountStr,
   setAmountStr,
@@ -49,6 +53,7 @@ function AmountInput({
   );
 }
 
+/** Switches between debit and credit. */
 function DirectionToggle({ isDebit, onToggle }: { isDebit: boolean; onToggle: () => void }) {
   return (
     <button
@@ -72,6 +77,7 @@ function DirectionToggle({ isDebit, onToggle }: { isDebit: boolean; onToggle: ()
   );
 }
 
+/** Headline amount, merchant and date. */
 export default function TransactionHero({
   tx,
   category,

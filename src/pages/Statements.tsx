@@ -1,3 +1,6 @@
+/**
+ * Statement management: upload, processing history, and the retry queue.
+ */
 import { useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
@@ -22,14 +25,13 @@ const SECTIONS = [
   { id: 'history', label: 'Processing History', icon: FileSearch },
 ] as const;
 
+/** Statement upload, history and the retry queue. */
 export default function Statements() {
   const [searchParams, setSearchParams] = useSearchParams();
-  // Narrowed rather than cast: `PageSidebar` is generic over the section union,
-  // and an unrecognised `?section=` now falls back to 'upload' instead of
-  // matching none of the panels below and rendering a blank page.
   const sectionParam = searchParams.get('section');
   const currentSection: StatementsSection =
     sectionParam === 'queue' || sectionParam === 'history' ? sectionParam : 'upload';
+  /** Switches the visible statements section. */
   const setSection = (section: StatementsSection) => setSearchParams({ section });
 
   const { openPasswordModal } = useGlobalState();
@@ -42,7 +44,6 @@ export default function Statements() {
 
   return (
     <div className="flex h-full w-full overflow-hidden">
-      {/* ── Column 2: Navigation (Statements) ─────────────────────────────────── */}
       <PageSidebar
         title="Statements"
         sections={SECTIONS}
@@ -50,7 +51,6 @@ export default function Statements() {
         onSelectSection={setSection}
       />
 
-      {/* ── Column 3: Content Area ────────────────────────────────────────── */}
       <div className="flex-1 h-full bg-[#F8E7C9] relative overflow-y-auto p-8 lg:p-12 text-[#064E3B]">
         <div className="max-w-3xl mx-auto space-y-8">
           {currentSection === 'upload' && (
@@ -86,7 +86,6 @@ export default function Statements() {
 
       <StatementReviewModal />
 
-      {/* Statement Instrument Gate Confirmation Modal */}
       <InstrumentGateDialog gate={gate} />
     </div>
   );

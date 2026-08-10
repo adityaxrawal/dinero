@@ -1,6 +1,10 @@
+/**
+ * Connected-accounts section of settings.
+ */
 import ConnectedAccountsSettings from '@/components/settings/ConnectedAccountsSettings';
 import MailScanSection from './MailScanSection';
 
+/** Connected-accounts section. */
 export default function AccountsSection() {
   return (
     <div className="animate-in fade-in duration-300 space-y-12">

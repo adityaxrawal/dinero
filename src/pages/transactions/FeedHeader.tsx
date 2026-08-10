@@ -1,5 +1,9 @@
+/**
+ * Header of the transaction feed: search, filters, and export.
+ */
 import { Download, Plus, Search, X } from 'lucide-react';
 
+/** Feed header: search, filters and export. */
 export default function FeedHeader({
   total,
   searchQuery,

@@ -1,3 +1,6 @@
+/**
+ * One transaction row in the feed.
+ */
 import { cn } from '@/lib/utils';
 
 interface RowTransaction {
@@ -7,6 +10,7 @@ interface RowTransaction {
   direction: string | null;
 }
 
+/** One transaction row in the feed. */
 export default function TransactionRow({
   tx,
   isSelected,
@@ -38,7 +42,6 @@ export default function TransactionRow({
       )}
       onClick={onSelect}
     >
-      {/* Merchant Avatar Icon */}
       <div
         className={cn(
           'w-8 h-8 rounded-lg flex items-center justify-center text-[13px] font-bold shrink-0 transition-colors',

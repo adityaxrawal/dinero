@@ -1,10 +1,21 @@
+/**
+ * Assembles the transaction feed: pagination, filters, and search.
+ *
+ * Switches between the paginated list and search results depending on whether a
+ * query is active, so the feed has one interface regardless of source.
+ */
 import { useEffect, useMemo, useRef } from 'react';
 import type { TransactionListFilters } from '@/lib/ipc';
 import { useTransactionsInfiniteList } from '@/hooks/queries/useTransactionsInfiniteList';
 import { useTransactionSearch } from '@/hooks/queries/useTransactionSearch';
 import { groupByDateLabel } from './groupByDate';
 
-/** The feed itself: paged list, or search results while a query is active. */
+/**
+ * Assembles the transaction feed: pagination, filters and search.
+ *
+ * Switches between the paginated list and search results depending on whether a
+ * query is active, so the feed presents one interface regardless of source.
+ */
 export function useTransactionsFeed(
   filters: TransactionListFilters,
   searchQuery: string,
@@ -24,7 +35,6 @@ export function useTransactionsFeed(
 
   const { hasNextPage, isFetchingNextPage, fetchNextPage } = infinite;
 
-  // Infinite scroll sentinel
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (isSearching || !hasNextPage) return;

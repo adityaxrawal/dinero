@@ -1,3 +1,6 @@
+/**
+ * Mail scanning controls and progress.
+ */
 import { ScanLine } from 'lucide-react';
 import SectionHeading from '@/components/settings/SectionHeading';
 import { useGlobalState } from '@/lib/GlobalStateContext';
@@ -5,6 +8,7 @@ import ScanRangePicker from './ScanRangePicker';
 import ScanProgressPanel from './ScanProgressPanel';
 import ScanControls from './ScanControls';
 
+/** Mail scanning controls and progress. */
 export default function MailScanSection() {
   const { scanStatus, scanProgress, scanStartedAt, scanFinishedAt, scanError, connectedAccounts } =
     useGlobalState();

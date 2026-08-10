@@ -1,9 +1,10 @@
+/**
+ * Budget and spending-limit configuration.
+ */
 import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-/**
- * Redirection page. Spending limits are now managed in Settings > Budgets.
- */
+/** Budget and spending-limit configuration. */
 export default function SpendingLimits() {
   const navigate = useNavigate();
 

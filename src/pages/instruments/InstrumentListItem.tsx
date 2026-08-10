@@ -1,8 +1,11 @@
+/**
+ * One instrument in the list, with its balance and cycle summary.
+ */
 import { instrumentIcon } from '@/components/instruments/instrumentTypes';
 import { cn } from '@/lib/utils';
 import type { InstrumentRecord } from '@/lib/ipc';
 
-/** One account row in the master list, with its balance preview. */
+/** One instrument in the list, with balance and cycle summary. */
 export default function InstrumentListItem({
   inst,
   isSelected,
@@ -55,7 +58,6 @@ export default function InstrumentListItem({
         </div>
       </div>
 
-      {/* Balance Preview Pill */}
       <div className="text-right shrink-0">
         <span
           className={cn(

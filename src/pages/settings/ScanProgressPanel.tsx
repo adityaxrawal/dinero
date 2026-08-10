@@ -1,3 +1,6 @@
+/**
+ * Live progress panel for a running scan.
+ */
 import { cn } from '@/lib/utils';
 import { estimateEtaSeconds } from '@/lib/scanTiming';
 import { useNowTicker } from '@/hooks/useNowTicker';
@@ -20,6 +23,7 @@ interface ScanProgressPanelProps {
   scanError: string | null;
 }
 
+/** Live progress panel for a running scan. */
 export default function ScanProgressPanel({
   scanStatus,
   scanProgress,

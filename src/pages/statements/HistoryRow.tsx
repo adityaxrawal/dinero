@@ -1,11 +1,13 @@
+/**
+ * One statement in the processing history.
+ */
 import { AlertTriangle, ChevronRight, FileText, Trash2 } from 'lucide-react';
 import { formatCustomDate } from '@/lib/formatCustomDate';
 import type { useStatementsList } from '@/hooks/queries/useStatementsList';
 
 type Statement = NonNullable<ReturnType<typeof useStatementsList>['data']>[number];
 
-/** A recognised statement reads as "HDFC Credit Card •••4321", not as a
- *  filename — the filename is only the fallback when the parser found neither. */
+/** Readable name for a statement, falling back to its filename. */
 function displayStatementName(stmt: Statement): string {
   if (stmt.issuer_name && stmt.masked_identifier) {
     const typeLabel = stmt.instrument_type === 'bank_account' ? 'Bank Account' : 'Credit Card';
@@ -14,6 +16,7 @@ function displayStatementName(stmt: Statement): string {
   return stmt.file_name;
 }
 
+/** Pill showing the statement's processing status. */
 function StatusPill({ status }: { status: string }) {
   const isProcessed = status === 'parsed';
   const isFailed = status === 'failed';
@@ -35,6 +38,7 @@ function StatusPill({ status }: { status: string }) {
   );
 }
 
+/** One statement in the processing history. */
 export default function HistoryRow({
   stmt,
   onViewPdf,
@@ -46,11 +50,6 @@ export default function HistoryRow({
   onDeletePdf: () => void;
   onViewTransactions: () => void;
 }) {
-  // `statements.parse_status` (src-tauri/migrations/
-  // 20260101000025_statements_source_type_and_checks.sql) is CHECK-constrained
-  // to 'queued' | 'processing' | 'parsed' | 'failed'. Password-required/
-  // OCR-fallback statements live in `unprocessed_statements` (surfaced
-  // separately in the Action Needed queue) and never reach this table.
   const isProcessed = stmt.status === 'parsed';
   const name = displayStatementName(stmt);
   const hasPdf = isProcessed && stmt.pdf_available;

@@ -1,3 +1,9 @@
+/**
+ * Aggregates instrument balances into portfolio totals.
+ *
+ * Credit and debit instruments are summed differently: a credit card balance is
+ * money owed, not money held, so treating them alike would misstate net worth.
+ */
 import type { InstrumentRecord } from '@/lib/ipc';
 
 export interface PortfolioMetrics {
@@ -8,11 +14,10 @@ export interface PortfolioMetrics {
 }
 
 /**
- * Portfolio totals for the accounts sidebar. Credit balances are stored
- * negative (money owed) and shown as a positive "spent" figure, so they are
- * summed by absolute value and kept out of the bank-balance total rather than
- * netting against it -- a card with ₹20k outstanding must not read as ₹20k of
- * available cash.
+ * Aggregates instrument balances into portfolio totals.
+ *
+ * Credit and debit instruments are summed differently: a credit card balance is
+ * money owed, not money held, so treating them alike would misstate net worth.
  */
 export function portfolioMetrics(instruments: InstrumentRecord[]): PortfolioMetrics {
   let totalBankBalance = 0;

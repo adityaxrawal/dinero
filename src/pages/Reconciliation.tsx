@@ -1,3 +1,9 @@
+/**
+ * The reconciliation work queue: unresolved clusters and unassigned transactions.
+ *
+ * Two distinct problems share this screen because both are the same kind of task
+ * -- something the pipeline could not decide alone and needs a person for.
+ */
 import { useState, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ShieldAlert, HelpCircle, Loader2, CheckCircle2, Layers } from 'lucide-react';
@@ -15,8 +21,6 @@ const ROW_CLASS =
 const ROW_SELECTED = 'bg-[#064E3B] text-[#F8E7C9] border-[#064E3B] shadow-sm';
 const ROW_IDLE = 'bg-white/60 hover:bg-white text-[#064E3B] border-[#064E3B]/10 hover:border-[#064E3B]/20';
 
-// Selected rows invert to the dark treatment, so every element swaps palette at
-// once. Keeping them in one lookup avoids repeating the condition per element.
 const CLUSTER_TONES = {
   selected: {
     row: ROW_SELECTED,
@@ -34,6 +38,7 @@ const CLUSTER_TONES = {
   },
 };
 
+/** One unresolved cluster in the queue list. */
 function ClusterListItem({
   cluster,
   isSelected,
@@ -74,6 +79,7 @@ function ClusterListItem({
   );
 }
 
+/** One unassigned transaction in the queue list. */
 function UnassignedListItem({
   item,
   isSelected,
@@ -141,10 +147,12 @@ function UnassignedListItem({
   );
 }
 
+/** Shown when a queue section has nothing left to resolve. */
 function EmptyQueueNotice({ message }: { message: string }) {
   return <p className="text-[12px] text-center p-4 text-[#064E3B]/60">{message}</p>;
 }
 
+/** Switches between the clusters and unassigned queues, with counts. */
 function SectionTabs({
   sections,
   currentSection,
@@ -188,6 +196,7 @@ function SectionTabs({
   );
 }
 
+/** Loading indicator for the queue list. */
 function QueueStatus({ isLoading }: { isLoading: boolean }) {
   if (isLoading) {
     return (
@@ -208,6 +217,7 @@ function QueueStatus({ isLoading }: { isLoading: boolean }) {
   );
 }
 
+/** The queue column, rendering whichever section is selected. */
 function QueueList({
   currentSection,
   clusters,
@@ -257,6 +267,7 @@ function QueueList({
   );
 }
 
+/** The inspector column, showing the selected item's resolution UI. */
 function InspectorPane({
   currentSection,
   clusters,
@@ -301,6 +312,7 @@ function InspectorPane({
   return <InspectorPlaceholder currentSection={currentSection} />;
 }
 
+/** Prompt shown when nothing is selected yet. */
 function InspectorPlaceholder({ currentSection }: { currentSection: string }) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center h-full opacity-30">
@@ -314,9 +326,21 @@ function InspectorPlaceholder({ currentSection }: { currentSection: string }) {
   );
 }
 
+/**
+ * The reconciliation work queue.
+ *
+ * Two-column layout: a queue of items needing a decision, and an inspector for
+ * whichever is selected. Clusters and unassigned transactions share the screen
+ * because both are the same kind of task -- something the pipeline could not
+ * resolve alone.
+ *
+ * Both underlying queries always refetch on mount, so the queue never presents
+ * work the user has already dealt with.
+ */
 export default function Reconciliation() {
   const [searchParams, setSearchParams] = useSearchParams();
   const currentSection = searchParams.get('section') || 'clusters';
+  /** Switches between the clusters and unassigned queues. */
   const setSection = (section: string) => setSearchParams({ section });
 
   const { data: clusters = [], isLoading: clustersLoading } = useReconciliationClusters();
@@ -345,12 +369,10 @@ export default function Reconciliation() {
 
   return (
     <div className="flex h-full w-full overflow-hidden">
-      {/* ── Column 2: Master List (Reconciliation) ─────────────────────────────────── */}
       <div
         className="flex-shrink-0 flex flex-col h-full border-r border-[#064E3B]/20"
         style={{ width: '320px', backgroundColor: 'var(--bg-canvas)' }}
       >
-        {/* Header bar */}
         <div className="flex flex-col gap-3 px-4 py-3 flex-shrink-0 border-b border-[#064E3B]/10">
           <div className="flex items-center justify-between">
             <h1 className="text-[14px] font-semibold text-[#064E3B] tracking-tight">
@@ -361,7 +383,6 @@ export default function Reconciliation() {
           <SectionTabs sections={SECTIONS} currentSection={currentSection} onSelect={setSection} />
         </div>
 
-        {/* List items */}
         <div className="flex-1 overflow-y-auto px-1 py-2">
           {isLoading || allCaughtUp ? (
             <QueueStatus isLoading={isLoading} />
@@ -381,7 +402,6 @@ export default function Reconciliation() {
         </div>
       </div>
 
-      {/* ── Column 3: Inspector Panel ─────────────────────────────────── */}
       <div className="flex-1 h-full bg-[#F8E7C9] relative overflow-hidden flex flex-col justify-center">
         <InspectorPane
           currentSection={currentSection}

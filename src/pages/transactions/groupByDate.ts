@@ -1,3 +1,6 @@
+/**
+ * Groups transactions into date sections for the feed.
+ */
 import { formatRelativeDate } from '@/lib/utils';
 
 export interface DateGroup<T> {
@@ -5,9 +8,7 @@ export interface DateGroup<T> {
   items: T[];
 }
 
-/** Consecutive runs sharing a relative date label ("Today", "Yesterday", …).
- *  Runs, not a keyed bucket: the list arrives already sorted, and a same-label
- *  run appearing twice would mean the sort broke, which should stay visible. */
+/** Groups transactions under date headings for the feed. */
 export function groupByDateLabel<T extends { date: string }>(items: T[]): DateGroup<T>[] {
   const groups: DateGroup<T>[] = [];
   let currentLabel = '';

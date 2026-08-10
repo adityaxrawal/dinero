@@ -1,3 +1,6 @@
+/**
+ * The virtualised, infinitely scrolling transaction list.
+ */
 import { Loader2 } from 'lucide-react';
 import type { useTransactionsFeed } from './useTransactionsFeed';
 import TransactionRow from './TransactionRow';
@@ -15,6 +18,7 @@ interface TransactionFeedListProps {
   instrumentById: Map<string, { issuer_name: string }>;
 }
 
+/** Loads the next page as the user reaches the end. */
 function LoadMore({
   sentinelRef,
   isFetching,
@@ -45,6 +49,7 @@ function LoadMore({
   );
 }
 
+/** The infinitely scrolling transaction list. */
 export default function TransactionFeedList({
   feed,
   isSearching,
@@ -73,6 +78,7 @@ export default function TransactionFeedList({
     );
   }
 
+  /** Builds the props for one row, including selection state. */
   const rowProps = (tx: Transaction) => ({
     categoryName: categoryNameById.get(tx.category) || tx.category || 'Uncategorized',
     instrumentName: tx.instrument_id ? instrumentById.get(tx.instrument_id)?.issuer_name : undefined,

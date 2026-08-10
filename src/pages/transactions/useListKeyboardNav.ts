@@ -1,10 +1,17 @@
+/**
+ * Keyboard navigation for the transaction list.
+ *
+ * Makes the ledger traversable without a mouse, which matters for a list users
+ * scan in bulk.
+ */
 import { useState, useEffect } from 'react';
 
-/** Arrow / j / k selection over the feed. Ignores keys typed into a field. */
+/** Keyboard navigation for the transaction list, so it is traversable without a mouse. */
 export function useListKeyboardNav<T extends { id: string }>(items: T[]) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   useEffect(() => {
+    /** Moves the selection with the arrow keys and opens on Enter. */
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       if (

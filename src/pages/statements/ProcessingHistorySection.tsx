@@ -1,3 +1,6 @@
+/**
+ * Processing history section of the statements screen.
+ */
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { FileSearch } from 'lucide-react';
@@ -11,6 +14,7 @@ import HistoryRow from './HistoryRow';
 
 type Statement = NonNullable<ReturnType<typeof useStatementsList>['data']>[number];
 
+/** The list of processed statements. */
 function HistoryList({
   loading,
   history,
@@ -56,11 +60,13 @@ function HistoryList({
   );
 }
 
+/** Processing history section of the statements screen. */
 export default function ProcessingHistorySection({ refresh }: { refresh: () => void }) {
   const { toast } = useToast();
   const { data: history = [], isLoading } = useStatementsList();
   const [viewingPdfStatementId, setViewingPdfStatementId] = useState<string | null>(null);
 
+  /** Deletes a stored statement PDF after confirmation. */
   const handleDeletePdf = async (stmt: Statement) => {
     try {
       await API.statements.deletePdf(stmt.id);
