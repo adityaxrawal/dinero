@@ -1,11 +1,31 @@
-/** @type {import('tailwindcss').Config} */
+/**
+ * Tailwind design-system configuration for the Dinero UI.
+ *
+ * The colour palette is split into two deliberately different halves. The first
+ * group (background, card, primary, destructive and friends) resolves through
+ * `hsl(var(--token))` CSS custom properties rather than literal values, which is
+ * what lets the shadcn/Radix primitives be re-themed at runtime by swapping the
+ * variables defined in the global stylesheet. The second group (emerald-ink,
+ * champagne, and the success/warning/danger trio) are fixed brand hex values
+ * that must stay constant no matter which theme is active.
+ *
+ * Everything sits under `extend`, so Tailwind's stock scales remain available;
+ * these entries add to the defaults rather than replacing them. The `spacing`
+ * and `fontSize` blocks intentionally list only the steps this app actually
+ * uses, which keeps the generated stylesheet small and the visual rhythm
+ * consistent.
+ */
 export default {
+  // Dark mode toggles via a `dark` class on an ancestor element, not the OS
+  // media query -- the app drives it explicitly rather than following the system.
   darkMode: ['class'],
+
+  // Files Tailwind scans to decide which utilities to emit. Anything outside
+  // this glob gets its classes stripped from the production build.
   content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
   theme: {
     extend: {
       colors: {
-        /* ── shadcn/ui semantic tokens (mapped to HSL CSS vars) ── */
         background: 'hsl(var(--background))',
         foreground: 'hsl(var(--foreground))',
         card: {
@@ -40,7 +60,8 @@ export default {
         input: 'hsl(var(--input))',
         ring: 'hsl(var(--ring))',
 
-        /* ── Dinero Brand Tokens (use as `emerald-ink`, `champagne`) ── */
+        // Fixed brand colours below this line -- these are literal values on
+        // purpose, so they do not shift when the themeable tokens above change.
         'emerald-ink': {
           DEFAULT: '#064E3B',
           hover: '#053d2f',
@@ -54,7 +75,8 @@ export default {
           card: '#fdf6ed',
         },
 
-        /* ── Semantic status (Doc 14 §4.3) ── */
+        // Reserved status roles. These carry meaning in the UI and are never
+        // reused as arbitrary chart or decoration colours.
         success: '#10b981',
         warning: '#f59e0b',
         danger: '#ef4444',
@@ -64,6 +86,9 @@ export default {
         sans: ['"Inter"', '-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'sans-serif'],
       },
 
+      // Small/medium/large derive from a single --radius variable so the whole
+      // corner treatment can be retuned from one place; xl and 2xl are fixed
+      // sizes used by larger surfaces such as modals and cards.
       borderRadius: {
         lg: 'var(--radius)',
         md: 'calc(var(--radius) - 2px)',
@@ -92,6 +117,10 @@ export default {
         12: '3rem',
       },
 
+      // Keyframes are declared here and bound to named utilities in the
+      // `animation` block below. The accordion pair reads its target height
+      // from a Radix-provided variable, since the collapsed height is only
+      // known at runtime.
       keyframes: {
         'accordion-down': {
           from: { height: '0' },
@@ -123,6 +152,9 @@ export default {
         'slide-in-left': 'slide-in-left 0.2s ease-out',
       },
 
+      // Shadows are tinted with the emerald brand colour rather than neutral
+      // black, so elevation reads as part of the palette. `emerald` is a focus
+      // ring rather than a drop shadow -- two stacked spreads, no blur.
       boxShadow: {
         card: '0 1px 3px rgba(6,78,59,0.06), 0 1px 2px rgba(6,78,59,0.04)',
         'card-hover': '0 4px 12px rgba(6,78,59,0.10), 0 2px 4px rgba(6,78,59,0.06)',
