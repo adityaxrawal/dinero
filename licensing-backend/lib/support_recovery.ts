@@ -1,10 +1,11 @@
-// Doc 30 TASK-OPS-006, Doc 43 §3 action 7: "a scripted recovery flow for
-// legitimate cases ... self-describing so the operator chooses the least
-// invasive recovery first (refresh, rebind, restore backup, full local
-// reset)." A pure decision table so the ordering is independently testable
-// (`test_support_flow_uses_least_invasive_recovery_first`) rather than left
-// implicit in a runbook document only a human reads.
-
+/**
+ * Maps a support case to an ordered recovery plan.
+ *
+ * The organising idea is escalating invasiveness: a refresh costs the user
+ * nothing, whereas a full local reset destroys their local data. Steps are
+ * therefore always attempted least-destructive first, and INVASIVENESS_ORDER is
+ * what encodes that ranking so a plan can never be assembled out of order.
+ */
 export type SupportCaseType =
   | 'stuck_grace_or_locked'
   | 'lost_or_replaced_device'
@@ -18,9 +19,6 @@ export interface RecoveryStep {
   description: string;
 }
 
-/// Doc 30's own explicit invasiveness ordering. Every case's recommended
-/// steps must appear in this relative order (a later-in-this-array action
-/// must never be recommended before an earlier one that also applies).
 export const INVASIVENESS_ORDER: RecoveryAction[] = [
   'refresh',
   'rebind',
@@ -51,10 +49,12 @@ const STEP: Record<RecoveryAction, RecoveryStep> = {
   },
 };
 
-/// Recommends the ordered recovery steps for a support case, least invasive
-/// first. Only the steps that actually apply to the case are included --
-/// e.g. a corrupted local database has nothing to do with device binding,
-/// so `refresh`/`rebind` are never recommended for it.
+/**
+ * Returns an ordered recovery plan for a support case.
+ *
+ * Ordered least-destructive first: a refresh costs the user nothing, whereas a
+ * full local reset destroys their local data.
+ */
 export function recommendRecovery(caseType: SupportCaseType): RecoveryStep[] {
   switch (caseType) {
     case 'stuck_grace_or_locked':

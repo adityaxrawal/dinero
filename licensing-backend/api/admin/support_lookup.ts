@@ -1,13 +1,15 @@
+/**
+ * Admin support lookup: the full licensing picture for one account.
+ *
+ * Assembles subscription state, device binding and recent audit history so a
+ * support agent can diagnose a case in one request rather than several.
+ *
+ * Read-only by design. The two endpoints that can actually change a user's
+ * binding live separately and each demand a written reason, which keeps
+ * investigation and intervention distinct in the audit trail.
+ */
 import { withRequestLogging } from '../../lib/request_logging';
 import { handleAdminSupportError } from '../../lib/api_helpers';
-// Doc 30 TASK-OPS-006, Doc 43 §3 action 7: "Look up an account by redacted
-// email or license key, view activation/validation/refresh history."
-// Internal-only endpoint, admin-key-authenticated, read-only. Reuses the
-// existing accounts/license_tokens/licensing_audit_log tables -- this
-// backend holds identity/billing data only, never financial content, so
-// there is nothing further to redact in the history itself, but the email
-// in the response is still masked (see maskEmail) since even the one
-// authenticated admin has no operational need for the full address here.
 import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
@@ -59,6 +61,13 @@ export interface SupportLookupResult {
   recommended_recovery?: ReturnType<typeof recommendRecovery>;
 }
 
+/**
+ * Assembles the full licensing picture for one account.
+ *
+ * Read-only by design: the two endpoints that can actually change a binding live
+ * separately and each demand a written reason, which keeps investigation and
+ * intervention distinct in the audit trail.
+ */
 export async function lookupSupportAccount(
   db: SupportLookupDb,
   input: SupportLookupInput
@@ -101,6 +110,9 @@ export async function lookupSupportAccount(
   };
 }
 
+/**
+ * HTTP entry point: validates the request, delegates, and maps errors to statuses.
+ */
 async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     assertAdminAuthorized(req.headers.authorization);

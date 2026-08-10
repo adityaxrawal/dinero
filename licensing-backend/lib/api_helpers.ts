@@ -1,9 +1,19 @@
+/**
+ * Shared request-handling helpers for the licensing endpoints.
+ *
+ * Each endpoint repeats the same opening moves -- reject non-POST, check the
+ * required fields are present, resolve the device to its token and current
+ * subscription -- so those live here rather than being restated per route.
+ */
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { LicensingApiError, sendApiError } from './errors';
 
 /**
- * Validates that the request is a POST and contains all required body fields.
- * Returns true if valid, false if an error response was sent.
+ * Gate a request on method and required body fields.
+ *
+ * Writes the error response itself and returns false, so callers can guard with
+ * a single early return rather than threading a validation result. Note the
+ * check is truthiness-based, so an empty string or a zero is treated as absent.
  */
 export function requirePostWithFields(
   req: VercelRequest,
@@ -25,17 +35,22 @@ export function requirePostWithFields(
   return true;
 }
 
-/**
- * The two Prisma delegate methods this helper calls, structurally typed so it
- * accepts both the real client and the test doubles. `args`/result stay open —
- * Prisma's own generated argument and payload types vary per call shape, and
- * only `accountId` is read off the result here.
- */
 interface FindDelegate {
   findFirst(args: Record<string, unknown>): Promise<{ accountId: string } | null>;
   findUnique?(args: Record<string, unknown>): Promise<{ accountId: string } | null>;
 }
 
+/**
+ * Resolve a device fingerprint to its license token and latest subscription.
+ *
+ * A device with no token is an immediate LICENSE_INVALID -- the caller is
+ * claiming an entitlement that was never issued.
+ *
+ * The subscription is fetched separately and ordered newest-first because an
+ * account accumulates rows over time through renewals, cancellations and
+ * re-subscriptions; only the most recent one describes current entitlement. It
+ * may legitimately be null, which is the state during a trial.
+ */
 export async function getTokenAndSubscription(
   db: {
     licenseToken: FindDelegate;
@@ -62,6 +77,12 @@ export async function getTokenAndSubscription(
   return { token, subscription };
 }
 
+/**
+ * Error responder for the admin support routes.
+ *
+ * Maps a missing record to 404 and everything else to 400, so support tooling
+ * can distinguish "no such account" from "the request was malformed".
+ */
 export function handleAdminSupportError(res: VercelResponse, e: unknown) {
   sendApiError(res, e, { statusFor: (code) => (code === 'NOT_FOUND' ? 404 : 400) });
 }

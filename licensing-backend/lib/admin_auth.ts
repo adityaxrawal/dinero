@@ -1,10 +1,20 @@
-// Every "internal admin-authenticated endpoint" (Doc 30 TASK-BILL-001/006/007)
-// shares this one check. Placeholder infra: a single bearer token from env,
-// no separate admin-user table -- appropriate for a solo-operator backend
-// (Doc 17 §5 solo-developer operating context); revisit if/when a real
-// admin-user model is ever needed.
+/**
+ * Bearer-token guard for the admin endpoints.
+ *
+ * A missing ADMIN_API_TOKEN is treated as an internal error rather than a
+ * rejection, which is the important distinction: an unconfigured server must
+ * fail closed and loudly, not silently deny every request as if the caller were
+ * at fault.
+ */
 import { LicensingApiError } from './errors';
 
+/**
+ * Rejects a request lacking the admin bearer token.
+ *
+ * An unconfigured token is an internal error rather than a rejection: the server
+ * must fail closed and loudly, not silently deny every caller as if they were at
+ * fault.
+ */
 export function assertAdminAuthorized(authorizationHeader: string | undefined): void {
   const expected = process.env.ADMIN_API_TOKEN;
   if (!expected) {

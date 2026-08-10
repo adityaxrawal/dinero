@@ -1,7 +1,19 @@
+/**
+ * Token refresh: renews a still-legitimate license without re-validating fully.
+ *
+ * The lighter counterpart to validate, for a client whose token has expired or
+ * is close to it. Three checks gate the renewal:
+ *
+ *   - The old token's signature must verify, though expiry is ignored -- an
+ *     expired token is precisely what is being refreshed.
+ *   - Its device_id must match the caller, so a token copied to another machine
+ *     cannot be renewed there.
+ *   - It must not be too stale. Beyond that window the client is sent to
+ *     validate instead, which re-checks the subscription from scratch.
+ *
+ * A failed signature check is audited, since it is one of the fraud signals.
+ */
 import { withRequestLogging } from '../../lib/request_logging';
-// Doc 30 TASK-LIC-008: POST /api/license/refresh-token
-// Obtains a freshly-signed JWT without full re-activation, used as a
-// currently-valid JWT approaches expiry to minimize user-visible friction.
 import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
@@ -21,10 +33,6 @@ export interface RefreshResult {
   expires_at: string;
 }
 
-/// Doc 30 TASK-LIC-008: "Rejects refresh attempts for JWTs already past a
-/// hard maximum staleness window (e.g. expired >48 hours ago), forcing a
-/// full validate call instead so long-offline scenarios always get an
-/// authoritative status check rather than perpetual refresh chaining."
 const MAX_STALENESS_MS = 48 * 60 * 60 * 1000;
 
 export type RefreshDb = {
@@ -33,23 +41,19 @@ export type RefreshDb = {
   licensingAuditLog?: AuditWriter;
 };
 
+/**
+ * Verify an existing token and issue its replacement.
+ */
 export async function refreshLicenseToken(
   db: RefreshDb,
   input: RefreshInput,
   publicKeyPem: string,
   privateKeyPem: string
 ): Promise<RefreshResult> {
-  // Signature must still be valid; expiration is deliberately NOT enforced
-  // here -- a token approaching or just past its exp is exactly the normal
-  // case this endpoint exists for. Staleness is checked explicitly below.
   let claims;
   try {
     claims = verifyLicenseJwt(input.jwt, publicKeyPem, { ignoreExpiration: true });
   } catch (e) {
-    // Doc 30 TASK-LIC-009: a failed signature verification is one of the
-    // three backend-observable fraud signals -- logged here (the only place
-    // an incoming JWT's signature is checked) so fraud_detection.ts's scan
-    // has a real producer, not just a theoretical event type.
     if (e instanceof JwtVerificationError && db.licensingAuditLog) {
       await logAuditEvent(db.licensingAuditLog, {
         eventType: 'jwt_verification_failed',
@@ -59,6 +63,8 @@ export async function refreshLicenseToken(
     throw e;
   }
 
+  // Binding check: the token must belong to the device presenting it. Without
+  // this, a leaked token could be refreshed indefinitely from anywhere.
   if (claims.device_id !== input.device_id) {
     throw new LicensingApiError(
       'DEVICE_MISMATCH',
@@ -66,6 +72,9 @@ export async function refreshLicenseToken(
     );
   }
 
+  // Staleness is measured from expiry, not issuance. A long-dormant install
+  // must go through full validation rather than quietly renewing a token that
+  // predates a cancellation.
   const nowMs = Date.now();
   const staleness = nowMs - claims.exp * 1000;
   if (staleness > MAX_STALENESS_MS) {
@@ -75,8 +84,8 @@ export async function refreshLicenseToken(
     );
   }
 
-  // Called for its validation side effect too: it throws LICENSE_INVALID when
-  // no token is bound to this device. Only the subscription is read here.
+  // Refreshable states only. past_due is included deliberately -- that is the
+  // grace period, where access continues while payment is retried.
   const { subscription } = await getTokenAndSubscription(db, input.device_id);
   if (!subscription || !['trialing', 'active', 'past_due'].includes(subscription.status)) {
     throw new LicensingApiError('LICENSE_INVALID', 'Subscription is no longer refreshable');
@@ -97,6 +106,9 @@ export async function refreshLicenseToken(
   return { status: 'refreshed', jwt: newJwt, expires_at: expiresAt.toISOString() };
 }
 
+/**
+ * HTTP entry point: validates the request, delegates, and maps errors to statuses.
+ */
 async function handler(req: VercelRequest, res: VercelResponse) {
   if (!requirePostWithFields(req, res, ['jwt', 'device_id'])) return;
   const { jwt: currentJwt, device_id } = req.body;

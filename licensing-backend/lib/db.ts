@@ -1,7 +1,11 @@
-// Doc 30 TASK-LIC-001: single Prisma client instance, reused across
-// serverless invocations within the same warm lambda (Vercel's documented
-// pattern -- a fresh client per invocation exhausts Neon's connection limit
-// under load).
+/**
+ * Prisma client singleton and account lookup.
+ *
+ * The global cache exists because of serverless development reloads: each hot
+ * reload would otherwise construct a new PrismaClient and open another
+ * connection pool until the database refuses new connections. Production skips
+ * the global, since each cold start legitimately gets its own client.
+ */
 import type { PrismaClient, Account } from '@prisma/client';
 import { PrismaClient as PrismaClientCtor } from '@prisma/client';
 
@@ -15,9 +19,9 @@ if (process.env.NODE_ENV !== 'production') {
   global.__dineroPrisma = prisma;
 }
 
-// Doc 30 TASK-BILL-002: both license activation and order creation
-// find-or-create the account the same way -- there is no separate signup
-// step, the first Razorpay payment or order request IS the signup.
+/**
+ * Returns the account for an email, creating it if absent.
+ */
 export async function findOrCreateAccount(
   db: { account: Pick<PrismaClient['account'], 'findUnique' | 'create'> },
   email: string

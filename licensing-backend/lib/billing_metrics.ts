@@ -1,6 +1,13 @@
-// Doc 30 TASK-BILL-007: measurement methodology behind Document 01 §9's
-// business metrics. Aggregate-only -- never per-account-identifiable
-// breakdowns, consistent with the minimal-PII posture.
+/**
+ * Revenue and retention metrics computed from subscription rows.
+ *
+ * Read by the admin metrics endpoint. Every function takes a narrowed database
+ * shape rather than the full client, which keeps them callable with a small fake
+ * in tests and makes each one's data access explicit in its signature.
+ *
+ * Rates return 0 rather than NaN on an empty denominator, so a new deployment
+ * with no subscriptions yet reports zeroes instead of broken numbers.
+ */
 import type { PrismaClient } from '@prisma/client';
 
 export type MetricsDb = {
@@ -8,11 +15,16 @@ export type MetricsDb = {
   plan: Pick<PrismaClient['plan'], 'findUnique'>;
 };
 
-/// Distinct active accounts in the trailing 30-day window.
+/**
+ * Count of currently active paid subscriptions.
+ */
 export async function paidMau(db: Pick<MetricsDb, 'subscription'>): Promise<number> {
   return db.subscription.count({ where: { status: 'active' } });
 }
 
+/**
+ * Proportion of trials started in the window that are now active.
+ */
 export async function trialToPaidConversionRate(
   db: Pick<MetricsDb, 'subscription'>,
   windowDays: number
@@ -26,6 +38,9 @@ export async function trialToPaidConversionRate(
   return converted / trialsStarted;
 }
 
+/**
+ * Cancellations in the last 30 days over the active base.
+ */
 export async function monthlyChurnRate(db: Pick<MetricsDb, 'subscription'>): Promise<number> {
   const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
   const activeAtStart = await db.subscription.count({ where: { status: 'active' } });
@@ -36,9 +51,12 @@ export async function monthlyChurnRate(db: Pick<MetricsDb, 'subscription'>): Pro
   return churnedThisMonth / activeAtStart;
 }
 
-/// `paid_mau() x plan.amount_minor / 100` -- Doc 30's exact formula.
-/// Extensible to multi-plan sums for future tiers: sums per distinct
-/// `planId` among active subscriptions rather than assuming a single price.
+/**
+ * Monthly recurring revenue across active subscriptions.
+ *
+ * Plan prices are cached per id, so a few hundred subscriptions on a handful of
+ * plans do not produce a query each.
+ */
 export async function mrr(db: MetricsDb): Promise<number> {
   const activeSubs = await db.subscription.findMany({ where: { status: 'active' } });
   let total = 0;

@@ -1,12 +1,15 @@
+/**
+ * Admin action: release a device binding on a user's behalf.
+ *
+ * The manual counterpart to self-service deactivation, for cases where the user
+ * cannot perform it themselves -- a lost, stolen or dead machine that can no
+ * longer make the call.
+ *
+ * A reason is mandatory and rejected if absent. This is a privileged action that
+ * unbinds a paid license, so every use must leave an explanation in the audit
+ * log attributable to a support decision.
+ */
 import { withRequestLogging } from '../../lib/request_logging';
-// Doc 30 TASK-OPS-006, Doc 43 §3 action 5: "Force-unbind a device from a
-// license (lost/replaced Mac)... admin override of normal license_deactivate."
-// Reuses the exact clearing effect `deactivateLicense` (api/license/
-// deactivate.ts) already performs, keyed by account email rather than
-// device_id -- the whole point of this endpoint is the case where the admin
-// does NOT have the old device_id (it's gone/replaced), only the account's
-// email from a support ticket. Every call requires a human-readable reason
-// and is fully audited (Doc 42 §10, Doc 43 §7).
 import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
@@ -36,6 +39,13 @@ export type ResetBindingDb = {
   licensingAuditLog: AuditWriter;
 };
 
+/**
+ * Releases a device binding on the user's behalf.
+ *
+ * For a lost or dead machine that can no longer deactivate itself. A reason is
+ * mandatory, since this unbinds a paid licence and every use must leave an
+ * attributable explanation in the audit log.
+ */
 export async function resetDeviceBinding(
   db: ResetBindingDb,
   input: ResetBindingInput
@@ -71,6 +81,9 @@ export async function resetDeviceBinding(
   return { status: 'binding_reset' };
 }
 
+/**
+ * HTTP entry point: validates the request, delegates, and maps errors to statuses.
+ */
 async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     assertAdminAuthorized(req.headers.authorization);

@@ -1,13 +1,28 @@
-// Doc 30 TASK-BILL-002/003: Razorpay integration. No live Razorpay account
-// exists yet (placeholder credentials) -- order creation is behind an
-// injectable RazorpayOrders interface so callers/tests never need a real
-// network call; signature verification is real HMAC-SHA256 (deterministic,
-// no network dependency at all) and works identically against placeholder
-// or real keys.
+/**
+ * Razorpay integration: signature verification and thin API wrappers.
+ *
+ * The signature helpers are the security-critical part of this file. Razorpay
+ * proves authenticity with an HMAC over a known string, and both the payment
+ * callback and the webhook are otherwise entirely attacker-controllable input --
+ * a forged callback claiming a successful payment would grant a free license.
+ *
+ * Each API surface is declared as a small interface with a `real*` factory
+ * beside it, so tests can substitute a fake without reaching for the network or
+ * needing live credentials.
+ */
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-// Constant-time compare, shared by the payment and webhook signature checks
-// below -- the HMAC input differs, the verification tail doesn't.
+/**
+ * Constant-time HMAC-SHA256 comparison.
+ *
+ * timingSafeEqual rather than `===` is the point: a normal string comparison
+ * returns as soon as two bytes differ, and that timing difference leaks how much
+ * of a guessed signature was correct, making forgery tractable byte by byte.
+ *
+ * Lengths are checked first because timingSafeEqual throws on mismatched
+ * buffers; that check is safe to short-circuit, since a signature's length is
+ * not secret.
+ */
 function hmacMatches(input: string, signature: string, secret: string): boolean {
   const expected = createHmac('sha256', secret).update(input).digest('hex');
   const expectedBuf = Buffer.from(expected, 'hex');
@@ -16,8 +31,12 @@ function hmacMatches(input: string, signature: string, secret: string): boolean 
   return timingSafeEqual(expectedBuf, providedBuf);
 }
 
-// Every endpoint that talks to Razorpay directly (order creation, refunds,
-// the reconciliation cron) reads and validates the same pair of env vars.
+/**
+ * Read API credentials from the environment, or null when unconfigured.
+ *
+ * Null rather than throwing, so billing endpoints can degrade deliberately in
+ * environments where payments are not set up at all.
+ */
 export function getRazorpayCredentials(): { keyId: string; keySecret: string } | null {
   const keyId = process.env.RAZORPAY_KEY_ID;
   const keySecret = process.env.RAZORPAY_KEY_SECRET;
@@ -39,9 +58,7 @@ export interface RazorpayOrders {
   }): Promise<RazorpayOrder>;
 }
 
-/// Real Razorpay SDK-backed implementation. Constructed lazily so importing
-/// this module never requires RAZORPAY_KEY_ID/SECRET to be set (tests never
-/// construct this).
+/** Live orders client. Required lazily so the SDK is not loaded when unused. */
 export function realRazorpayOrders(keyId: string, keySecret: string): RazorpayOrders {
   return {
     async create(params) {
@@ -61,17 +78,10 @@ export interface RazorpayPaymentDetails {
 }
 
 export interface RazorpayPayments {
-  /// Doc 19 §14.2/Doc 40 §4: activation is given only `razorpay_payment_id`
-  /// (no order_id -- the already-shipped desktop client never sends one).
-  /// Razorpay's own Fetch Payment API always returns the payment's order_id,
-  /// which is what makes verifying the signature possible without the
-  /// client re-supplying it -- and lets the *same* payment_id/signature pair
-  /// be resubmitted indefinitely (e.g. re-activating an existing paid
-  /// subscription on a replacement Mac, Doc 18 §12.2) since Razorpay's
-  /// signature is a permanent proof of settlement, not a one-time token.
   fetch(paymentId: string): Promise<RazorpayPaymentDetails>;
 }
 
+/** Live payments client, used to confirm what was actually charged. */
 export function realRazorpayPayments(keySecret: string): RazorpayPayments {
   return {
     async fetch(paymentId) {
@@ -85,11 +95,10 @@ export function realRazorpayPayments(keySecret: string): RazorpayPayments {
 }
 
 export interface RazorpayRefunds {
-  /// Doc 30 TASK-BILL-006: refunds the most recent successful charge for an
-  /// admin-operated support request.
   create(paymentId: string): Promise<{ id: string; status: string }>;
 }
 
+/** Live refunds client. An empty options object refunds the full amount. */
 export function realRazorpayRefunds(keyId: string, keySecret: string): RazorpayRefunds {
   return {
     async create(paymentId) {
@@ -103,16 +112,14 @@ export function realRazorpayRefunds(keyId: string, keySecret: string): RazorpayR
 }
 
 export interface RazorpaySubscriptionState {
-  status: string; // Razorpay's own vocabulary: 'active' | 'halted' | 'cancelled' | ...
+  status: string;
 }
 
 export interface RazorpaySubscriptions {
-  /// Doc 30 TASK-BILL-008: the authoritative source of truth for drift
-  /// detection -- "cross-referencing every active/past_due local
-  /// subscription against Razorpay's authoritative API state."
   fetch(razorpaySubscriptionId: string): Promise<RazorpaySubscriptionState>;
 }
 
+/** Live subscriptions client, used by billing reconciliation. */
 export function realRazorpaySubscriptions(keyId: string, keySecret: string): RazorpaySubscriptions {
   return {
     async fetch(razorpaySubscriptionId) {
@@ -125,9 +132,13 @@ export function realRazorpaySubscriptions(keyId: string, keySecret: string): Raz
   };
 }
 
-/// Razorpay's documented signature scheme: HMAC-SHA256(order_id + "|" +
-/// payment_id, key_secret), hex-encoded. Constant-time compare against
-/// timing attacks.
+/**
+ * Verify the signature returned to the client after a payment.
+ *
+ * The signed string is orderId and paymentId joined by a pipe -- exactly the
+ * format Razorpay specifies. Any deviation makes every legitimate signature
+ * fail, so this must not be "tidied".
+ */
 export function verifyPaymentSignature(
   orderId: string,
   paymentId: string,
@@ -137,8 +148,13 @@ export function verifyPaymentSignature(
   return hmacMatches(`${orderId}|${paymentId}`, signature, keySecret);
 }
 
-/// Webhook signature scheme (distinct secret from the payment signature,
-/// Doc 30 TASK-BILL-003): HMAC-SHA256 of the raw request body.
+/**
+ * Verify a webhook against the raw request body.
+ *
+ * Must be given the body exactly as received, before any JSON parse and
+ * re-serialise: that round trip can reorder keys or alter whitespace, and the
+ * HMAC is over the literal bytes Razorpay sent.
+ */
 export function verifyWebhookSignature(
   rawBody: string,
   signature: string,

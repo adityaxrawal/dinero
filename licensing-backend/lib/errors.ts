@@ -1,5 +1,13 @@
-// Doc 19 §4 Error Catalog -- the subset the Licensing Backend itself raises.
-// Desktop-side codes (GMAIL_*, STATEMENT_*, etc.) never apply here.
+/**
+ * Error taxonomy and the shared API error response shape.
+ *
+ * LicensingApiError carries a machine-readable code so the desktop client can
+ * branch on the failure rather than parse prose. The send helper enforces one
+ * rule throughout: known errors surface their code and message, while anything
+ * unrecognised collapses to a generic 500. That asymmetry is deliberate -- an
+ * unexpected exception may carry stack traces or database detail, and this is
+ * the boundary where that stops.
+ */
 export type LicensingErrorCode =
   | 'VALIDATION_ERROR'
   | 'NOT_FOUND'
@@ -21,13 +29,16 @@ export class LicensingApiError extends Error {
   }
 }
 
-// Every handler's catch block ends the same way: a LicensingApiError maps to
-// its declared status (400 by default, a few endpoints special-case one code
-// to a sharper status), anything else is a 500 with no details leaked.
 interface VercelResponseLike {
   status(code: number): { json(body: unknown): void };
 }
 
+/**
+ * Writes an error response, revealing detail only for known error types.
+ *
+ * The asymmetry is deliberate: an unrecognised exception may carry a stack trace
+ * or database detail, and this is the boundary where that stops.
+ */
 export function sendApiError(
   res: VercelResponseLike,
   e: unknown,

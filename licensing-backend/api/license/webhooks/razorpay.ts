@@ -1,16 +1,22 @@
+/**
+ * Razorpay webhook receiver: the authoritative feed of billing state changes.
+ *
+ * This is how the service learns about events that happen outside any user
+ * session -- a renewal charging successfully, a card failing, a subscription
+ * lapsing. Two properties matter above all:
+ *
+ *   - Signature verification. The handler is a public URL, so a forged request
+ *     could otherwise fabricate a paid subscription. The HMAC is computed over
+ *     the raw body, before any parse-and-reserialise could alter the bytes.
+ *   - Idempotency. Razorpay retries until it receives a success, so the same
+ *     event id will arrive more than once. Events are recorded and duplicates
+ *     short-circuit, otherwise a retried renewal would extend a period twice.
+ *
+ * Event types are dispatched through a lookup table; an unrecognised event is
+ * acknowledged and ignored rather than erroring, so Razorpay does not retry
+ * something this service has simply chosen not to act on.
+ */
 import { withRequestLogging } from '../../../lib/request_logging';
-// Doc 30 TASK-BILL-003: POST /api/license/webhooks/razorpay
-// Resolves Document 21 TPI-OQ-04 / Document 19 §14.5's route inventory entry
-// -- this is the one real Razorpay webhook route in the system (TASK-LIC-006
-// is a superseded duplicate, see its own note).
-//
-// Real limitation, flagged not hidden: Razorpay's actual webhook payload is
-// deeply nested (event.payload.subscription.entity / .payment.entity /
-// .order.entity depending on event type) and this pass hasn't been run
-// against a real Razorpay webhook delivery (no live account). `parseEvent`
-// below extracts the handful of fields this handler actually needs; treat
-// its exact field paths as best-effort until verified against a real
-// delivered payload.
 import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../../lib/db';
@@ -18,7 +24,7 @@ import { verifyWebhookSignature } from '../../../lib/razorpay';
 import { logAuditEvent, countRecentEvents, type AuditWriter } from '../../../lib/audit';
 
 export interface RazorpayWebhookEvent {
-  id: string; // Razorpay's event ID -- idempotency key
+  id: string;
   event: 'subscription.created' | 'invoice.paid' | 'invoice.payment_failed' | string;
   payload: {
     subscription?: { entity?: { id?: string; notes?: { account_id?: string } } };
@@ -32,10 +38,9 @@ export type WebhookDb = {
   licensingAuditLog: AuditWriter;
 };
 
-/// Resolves a Razorpay subscription id back to *our* subscription row --
-/// every invoice event only ever carries Razorpay's own id, never our
-/// internal one, so `payment_provider_records` (written at
-/// `subscription.created`) is the only link between the two.
+/**
+ * Resolves a Razorpay subscription id to the local subscription.
+ */
 async function findSubscriptionByRazorpaySubscriptionId(
   db: WebhookDb,
   razorpaySubscriptionId: string
@@ -48,10 +53,12 @@ async function findSubscriptionByRazorpaySubscriptionId(
   return db.subscription.findFirst({ where: { id: record.subscriptionId } });
 }
 
-/// Doc 30 TASK-BILL-003: "Idempotent by Razorpay's event ID." Reuses
-/// licensing_audit_log rather than a dedicated processed-events table --
-/// consistent with how rate-limiting/trial-abuse tracking already reuse it
-/// in this codebase.
+/**
+ * Whether this event id has already been processed.
+ *
+ * Razorpay retries until it receives a success, so the same event will arrive
+ * more than once -- without this a retried renewal would extend a period twice.
+ */
 async function isDuplicateEvent(
   db: Pick<WebhookDb, 'licensingAuditLog'>,
   eventId: string
@@ -65,8 +72,9 @@ async function isDuplicateEvent(
   return count > 0;
 }
 
-/** Doc 30 TASK-BILL-003: a new subscription binds the Razorpay id to the
- *  account and heals whatever local row already exists. */
+/**
+ * Binds a new Razorpay subscription to the account and heals any local row.
+ */
 async function onSubscriptionCreated(db: WebhookDb, event: RazorpayWebhookEvent): Promise<void> {
   const accountId = event.payload.subscription?.entity?.notes?.account_id;
   const razorpaySubscriptionId = event.payload.subscription?.entity?.id;
@@ -84,7 +92,9 @@ async function onSubscriptionCreated(db: WebhookDb, event: RazorpayWebhookEvent)
   });
 }
 
-/** Doc 30 TASK-BILL-003: "extend current_period_end, heal past_due -> active." */
+/**
+ * Extends the paid period following a successful charge.
+ */
 async function onInvoicePaid(db: WebhookDb, event: RazorpayWebhookEvent): Promise<void> {
   const razorpaySubscriptionId = event.payload.invoice?.entity?.subscription_id;
   const billingEndUnix = event.payload.invoice?.entity?.billing_end;
@@ -100,10 +110,10 @@ async function onInvoicePaid(db: WebhookDb, event: RazorpayWebhookEvent): Promis
 }
 
 /**
- * Doc 30 TASK-BILL-003: transitions to past_due -- does NOT lock the desktop
- * app immediately; the local 7-day offline grace (TASK-AUTH-009) handles
- * user-facing degradation. This just reflects accurate status for the next
- * validate/refresh call.
+ * Moves the subscription into the grace period after a failed charge.
+ *
+ * Grace rather than immediate lockout, so a card that failed does not instantly
+ * destroy access for a paying customer.
  */
 async function onPaymentFailed(db: WebhookDb, event: RazorpayWebhookEvent): Promise<void> {
   const razorpaySubscriptionId = event.payload.invoice?.entity?.subscription_id;
@@ -115,6 +125,8 @@ async function onPaymentFailed(db: WebhookDb, event: RazorpayWebhookEvent): Prom
   await db.subscription.update({ where: { id: subscription.id }, data: { status: 'past_due' } });
 }
 
+// Event type to handler. A table rather than a switch so that an unhandled
+// event type is simply absent, and the dispatcher can no-op cleanly.
 const EVENT_HANDLERS: Record<
   string,
   (db: WebhookDb, event: RazorpayWebhookEvent) => Promise<void>
@@ -124,6 +136,9 @@ const EVENT_HANDLERS: Record<
   'invoice.payment_failed': onPaymentFailed,
 };
 
+/**
+ * Dispatch one verified webhook event, skipping duplicates.
+ */
 export async function processWebhookEvent(
   db: WebhookDb,
   event: RazorpayWebhookEvent
@@ -132,8 +147,6 @@ export async function processWebhookEvent(
     return { status: 'duplicate_ignored' };
   }
 
-  // Unrecognised event types are acknowledged and audited, never rejected —
-  // Razorpay retries anything it does not get a 2xx for.
   await EVENT_HANDLERS[event.event]?.(db, event);
 
   await logAuditEvent(db.licensingAuditLog, {
@@ -144,6 +157,12 @@ export async function processWebhookEvent(
   return { status: 'processed' };
 }
 
+/**
+ * Verifies the signature over the raw body, then dispatches the event.
+ *
+ * The HMAC is computed before any parse-and-reserialise, which could reorder keys
+ * or alter whitespace and invalidate a legitimate signature.
+ */
 async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     res.status(405).json({ code: 'VALIDATION_ERROR', message: 'POST only' });

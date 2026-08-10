@@ -1,22 +1,23 @@
-// Corrected during TASK-BILL-002 (real conflict found and resolved, see
-// Doc 30 changelog): this system has no user-facing "license_key" concept
-// at all -- activation is a direct Razorpay payment confirmation, and
-// device_id is the sole lookup key everywhere. `hashLicenseKey` was removed
-// along with the license-key model it belonged to; only the masking helper
-// (still needed for DEVICE_ALREADY_BOUND rejections) remains.
-
-/// Doc 30 TASK-LIC-002: "surfacing only the bound device's masked identifier,
-/// never the other device's full UUID" on a DEVICE_ALREADY_BOUND rejection.
+/**
+ * Redaction helpers for values that must not appear whole in logs.
+ *
+ * Device fingerprints and email addresses both identify a user, so anything
+ * written to an operational log passes through here first. Each keeps just
+ * enough of the original to correlate entries during support work, without
+ * being reversible to the underlying identity.
+ */
 export function maskDeviceFingerprint(fingerprint: string): string {
   if (fingerprint.length <= 8) return '****';
   return `${fingerprint.slice(0, 4)}...${fingerprint.slice(-4)}`;
 }
 
-/// Doc 30 TASK-OPS-006 / Doc 43 §3 action 7: a support lookup result must
-/// never surface a full email in its response body, even to the one
-/// authenticated admin -- only enough to confirm the operator found the
-/// right account. `u***r@example.com` keeps the first/last character of the
-/// local part; anything shorter than that just masks the whole local part.
+/**
+ * Masks an email, keeping the first and last local characters and the domain.
+ *
+ * Enough to correlate log entries during support work, not enough to recover the
+ * address. Very short local parts are masked entirely, since one character either
+ * side would reveal the whole thing.
+ */
 export function maskEmail(email: string): string {
   const at = email.indexOf('@');
   if (at <= 0) return '***';

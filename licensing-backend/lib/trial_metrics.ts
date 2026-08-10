@@ -1,6 +1,12 @@
-// Doc 30 TASK-LIC-007: conversion-funnel metrics feeding the weekly review
-// against Doc 01 BG-05's >=30%-within-90-days target. Aggregate-only --
-// never per-user breakdowns (minimal-PII posture, Doc 30 TASK-BILL-007).
+/**
+ * Trial conversion funnel, reconstructed from the audit log.
+ *
+ * Derived from events rather than subscription state because the funnel is
+ * inherently historical: it must count trials that expired without converting,
+ * which by definition leave no active row behind. Each stage corresponds to one
+ * audit event type, listed together below so the funnel's shape is visible in
+ * one place.
+ */
 import type { AuditWriter } from './audit';
 
 export interface ConversionFunnelSummary {
@@ -19,6 +25,13 @@ const FUNNEL_EVENT_TYPES = {
   expired: 'trial_expired_unconverted',
 } as const;
 
+/**
+ * Reconstructs the trial funnel from audit events.
+ *
+ * Derived from events rather than subscription state because the funnel must
+ * count trials that expired without converting, which by definition leave no
+ * active row behind.
+ */
 export async function computeConversionFunnel(
   db: AuditWriter,
   windowDays: number

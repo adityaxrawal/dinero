@@ -1,16 +1,24 @@
+/**
+ * License activation: exchanges a verified Razorpay payment for a signed token.
+ *
+ * The most security-sensitive endpoint in the service, since a flaw here grants
+ * a free license. It proceeds through four gates in a deliberate order:
+ *
+ *   1. Rate limiting, counted per email over the audit log, which bounds
+ *      brute-force attempts against signature verification.
+ *   2. Payment verification. The payment is fetched from Razorpay and its
+ *      signature checked -- crucially, the order id comes from Razorpay's own
+ *      record rather than from the request, so a caller cannot supply a
+ *      matching id/signature pair of their own construction.
+ *   3. Device binding. A license already bound elsewhere is refused.
+ *   4. Issue and record. The subscription and token are written and a signed
+ *      JWT is returned.
+ *
+ * The core logic is exported separately from the HTTP handler and takes its
+ * database and Razorpay client as parameters, so the whole flow is testable
+ * without a live payment provider.
+ */
 import { withRequestLogging } from '../../lib/request_logging';
-// Doc 30 TASK-LIC-002, Doc 19 §14.2: POST /api/license/activate
-//
-// Corrected during TASK-BILL-002 (real conflict found and resolved, see
-// Doc 30 changelog): activation is a direct Razorpay payment confirmation,
-// not a redeemable "license_key" -- matches the already-shipped, tested
-// desktop client (src-tauri/src/licensing/client.rs::ActivateRequest)
-// exactly: { email, razorpay_payment_id, razorpay_signature, device_id,
-// billing_interval }, no license_key field anywhere.
-//
-// Default export is the thin Vercel Serverless entrypoint; `activateLicense`
-// (named export) carries all real logic against the narrow ActivateDb
-// interface and is unit-tested with zero HTTP/Vercel/live-DB dependency.
 import type { Prisma, PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma, findOrCreateAccount } from '../../lib/db';
@@ -41,12 +49,16 @@ export interface ActivateResult {
   expires_at: string;
 }
 
+// Billing interval to plan. An unrecognised interval is rejected rather than
+// defaulted, so a malformed request can never silently buy the cheaper plan.
 const PLAN_BY_BILLING_INTERVAL: Record<string, { planId: string; billingInterval: string }> = {
   monthly: { planId: 'desktop_pro_monthly', billingInterval: 'monthly' },
   annual: { planId: 'desktop_pro_annual', billingInterval: 'annual' },
 };
 
-const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+// Five attempts per hour per email. Generous for genuine retries, restrictive
+// enough to make signature guessing impractical.
+const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
 const RATE_LIMIT_MAX_ATTEMPTS = 5;
 
 export type ActivateDb = {
@@ -56,6 +68,12 @@ export type ActivateDb = {
   licensingAuditLog: AuditWriter;
 };
 
+/**
+ * Run the activation flow and return the issued token.
+ *
+ * Throws LicensingApiError with a specific code at each gate, which the handler
+ * maps to a status. Every outcome is written to the audit log.
+ */
 export async function activateLicense(
   db: ActivateDb,
   input: ActivateInput,
@@ -63,8 +81,9 @@ export async function activateLicense(
   razorpayKeySecret: string,
   razorpayPayments: RazorpayPayments
 ): Promise<ActivateResult> {
-  // Doc 30 TASK-LIC-002: "rate-limit activation attempts per key (e.g.
-  // 5/hour)" -- rate-limited per email now, since there's no license key.
+  // The attempt is recorded before anything is validated, so that failed and
+  // abandoned attempts are counted too -- the rate limit below reads this log,
+  // and only logging successes would make it trivially bypassable.
   await logAuditEvent(db.licensingAuditLog, {
     eventType: 'activation_attempt',
     payload: { email: input.email, device_id: input.device_id } as Prisma.InputJsonValue,
@@ -79,8 +98,9 @@ export async function activateLicense(
     throw new LicensingApiError('RATE_LIMITED', 'Too many activation attempts for this account');
   }
 
-  // Doc 40 §4: "The backend independently verifies the payment signature
-  // server-side... before ever trusting the client-supplied success claim."
+  // The order id is taken from Razorpay's record of the payment, never from the
+  // request body. This is what stops a caller pairing an arbitrary order id with
+  // a signature they generated themselves.
   const payment = await razorpayPayments.fetch(input.razorpay_payment_id);
   const signatureValid = verifyPaymentSignature(
     payment.orderId,
@@ -102,17 +122,14 @@ export async function activateLicense(
 
   const account = await findOrCreateAccount(db, input.email);
 
-  // Doc 19 §14.2 backend enforcement: "looks up existing device bindings for
-  // this license... if the device_id matches an existing binding
-  // (re-activation on same Mac), refreshes and reissues the JWT; otherwise,
-  // creates a new binding." accountId isn't unique on this table (a device
-  // can be rebound over time, leaving historical rows), so this takes the
-  // most recent one.
   const currentBinding = await db.licenseToken.findFirst({
     where: { accountId: account.id },
     orderBy: { createdAt: 'desc' },
   });
 
+  // One device per license. Re-activating on the same device is permitted and
+  // idempotent; a different device is refused. The existing fingerprint is
+  // masked in the message so the response cannot enumerate a user's machines.
   if (currentBinding?.deviceFingerprint && currentBinding.deviceFingerprint !== input.device_id) {
     throw new LicensingApiError(
       'DEVICE_ALREADY_BOUND',
@@ -120,6 +137,8 @@ export async function activateLicense(
     );
   }
 
+  // Token lifetime matches the JWT default: short enough to bound a revoked
+  // subscription, long enough to survive a spell offline.
   const now = new Date();
   const expiresAt = new Date(now.getTime() + 48 * 60 * 60 * 1000);
 
@@ -127,6 +146,9 @@ export async function activateLicense(
     where: { accountId: account.id },
     orderBy: { createdAt: 'desc' },
   });
+  // Only create a subscription if none exists. A returning customer re-
+  // activating already has one, and a second row would corrupt the billing
+  // history and the metrics derived from it.
   if (!existingSubscription) {
     await db.subscription.create({
       data: {
@@ -139,6 +161,9 @@ export async function activateLicense(
     });
   }
 
+  // Upsert keyed on the fingerprint, so re-activation refreshes the existing
+  // token in place. Clearing revokedAt is what makes this the reactivation path
+  // for a previously deactivated device.
   await db.licenseToken.upsert({
     where: { deviceFingerprint: input.device_id },
     update: { jwtIssuedAt: now, jwtExpiresAt: expiresAt, revokedAt: null },
@@ -176,6 +201,12 @@ export async function activateLicense(
   };
 }
 
+/**
+ * HTTP wrapper: validate the request, load secrets, delegate, map errors.
+ *
+ * Missing server configuration returns 500 rather than a validation error --
+ * the request was fine; the deployment is not.
+ */
 async function handler(req: VercelRequest, res: VercelResponse) {
   const required = ['email', 'razorpay_payment_id', 'razorpay_signature', 'device_id', 'billing_interval'];
   if (!requirePostWithFields(req, res, required)) return;
@@ -203,4 +234,5 @@ async function handler(req: VercelRequest, res: VercelResponse) {
   }
 }
 
+// Wrapped so every activation attempt emits a correlated, timed log line.
 export default withRequestLogging('license/activate', handler);

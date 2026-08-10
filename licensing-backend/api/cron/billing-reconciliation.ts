@@ -1,12 +1,19 @@
+/**
+ * Scheduled entry point for billing reconciliation.
+ *
+ * A thin HTTP wrapper invoked by the platform's cron scheduler; the work itself
+ * lives in the jobs module so it can be tested and invoked independently of the
+ * scheduling mechanism.
+ */
 import { withRequestLogging } from '../../lib/request_logging';
-// Doc 30 TASK-BILL-008: Vercel Cron entrypoint (see vercel.json's `crons`).
-// Vercel signs cron requests with a bearer token matching CRON_SECRET --
-// verified here so this endpoint can't be triggered by an arbitrary caller.
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
 import { runBillingReconciliation } from '../../jobs/billing_reconciliation';
 import { realRazorpaySubscriptions, getRazorpayCredentials } from '../../lib/razorpay';
 
+/**
+ * Scheduled entry point invoked by the platform's cron.
+ */
 async function handler(req: VercelRequest, res: VercelResponse) {
   const cronSecret = process.env.CRON_SECRET;
   if (cronSecret && req.headers.authorization !== `Bearer ${cronSecret}`) {

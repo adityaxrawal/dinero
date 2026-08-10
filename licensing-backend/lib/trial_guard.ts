@@ -1,7 +1,15 @@
-// Doc 30 TASK-BILL-009: extends TASK-LIC-007's device-fingerprint check with
-// the combined email+device guard, and the "OS reinstall on the same
-// physical Mac" carve-out -- a returning device with an existing paid
-// subscription is continuity, not abuse, and must not be blocked.
+/**
+ * Decides whether a device and account may begin a new free trial.
+ *
+ * The abuse this prevents is trial farming -- reinstalling, or signing up with a
+ * fresh email, to obtain unlimited free periods. Guarding on either identity
+ * alone is insufficient, so both are checked: the account records whether its
+ * trial was used, and the device is matched against prior trial_started events.
+ *
+ * The decision is a pure function over three pre-fetched facts, deliberately
+ * separated from the database access that gathers them, so the policy itself is
+ * testable in isolation and easy to reason about.
+ */
 import type { AuditWriter } from './audit';
 import { countRecentEvents } from './audit';
 
@@ -13,17 +21,22 @@ export type TrialGuardDecision =
 
 export interface TrialGuardInput {
   accountTrialUsed: boolean;
-  /// The subscription status found on the account bound to this device
-  /// fingerprint, if any -- `null` if this device has never been bound to
-  /// any account's subscription at all.
   deviceBoundSubscriptionStatus: string | null;
   deviceHasPriorTrialStartedEvent: boolean;
 }
 
+/**
+ * Apply the eligibility policy.
+ *
+ * Order matters. The returning-device check runs first so that an existing
+ * paying customer reinstalling is recognised rather than accused of farming --
+ * a device already bound to a non-trial subscription is a legitimate user, and
+ * must never be told it has exhausted a trial.
+ *
+ * Device reuse is then checked before account reuse, since it is the harder
+ * signal to fake: a new email is free, a new machine is not.
+ */
 export function decideTrialEligibility(input: TrialGuardInput): TrialGuardDecision {
-  // Doc 30 TASK-BILL-009: "a returning user on the same Mac is recognized as
-  // already-registered and granted a fresh JWT for their existing
-  // (non-trial) subscription state -- this is continuity, not abuse."
   if (input.deviceBoundSubscriptionStatus && input.deviceBoundSubscriptionStatus !== 'trialing') {
     return {
       outcome: 'recognized_returning_device',
@@ -40,15 +53,19 @@ export function decideTrialEligibility(input: TrialGuardInput): TrialGuardDecisi
   return { outcome: 'allow_new_trial' };
 }
 
-/// Doc 30 TASK-BILL-009: "Logs distinguish 'blocked repeat trial attempt'
-/// from 'recognized returning device with existing paid subscription.'"
+/**
+ * Record a non-trivial guard outcome.
+ *
+ * Allowed trials are intentionally not logged -- they are the common case, and
+ * recording them would bury the blocks that actually warrant attention.
+ */
 export async function logTrialGuardDecision(
   db: AuditWriter,
   deviceId: string,
   decision: TrialGuardDecision
 ): Promise<void> {
   const { logAuditEvent } = await import('./audit');
-  if (decision.outcome === 'allow_new_trial') return; // start-trial.ts itself logs the real trial_started event
+  if (decision.outcome === 'allow_new_trial') return;
   await logAuditEvent(db, {
     eventType:
       decision.outcome === 'recognized_returning_device'
@@ -59,8 +76,16 @@ export async function logTrialGuardDecision(
   });
 }
 
-/// Helper for callers that only have raw audit-log access (matches
-/// start-trial.ts's existing device-history check style).
+/**
+ * Whether this device has ever started a trial.
+ *
+ * Uses an effectively unbounded window, because trial eligibility is a lifetime
+ * property: a trial taken years ago still counts. Note this scans the full
+ * trial_started history in application code, which is acceptable only while
+ * that table stays small.
+ *
+ * ponytail: full-history scan, add a device index if trial volume grows
+ */
 export async function deviceHasPriorTrialStartedEvent(
   db: AuditWriter,
   deviceId: string

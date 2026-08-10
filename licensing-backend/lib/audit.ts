@@ -1,10 +1,19 @@
-// Doc 17 §4.2: licensing_audit_log -- immutable log of signup, trial-start,
-// validation, and billing events. Every mutating operation in this backend
-// writes here; nothing here is ever updated or deleted in application code.
+/**
+ * Append-only audit trail for licensing events.
+ *
+ * Every activation, deactivation and binding change is recorded here. The log
+ * serves two purposes: it is the evidence trail for support investigations, and
+ * it is the substrate the fraud heuristics count against -- which is why the
+ * read helper below filters by time window rather than fetching everything.
+ */
 import type { Prisma, PrismaClient } from '@prisma/client';
 
 export type AuditWriter = Pick<PrismaClient['licensingAuditLog'], 'create' | 'findMany'>;
 
+/**
+ * Record one event. Optional fields are normalised so a row never carries
+ * undefined, keeping the stored shape consistent across event types.
+ */
 export async function logAuditEvent(
   db: AuditWriter,
   params: {
@@ -24,12 +33,16 @@ export async function logAuditEvent(
   });
 }
 
-/// Doc 30 TASK-LIC-002: "rate-limit activation attempts per key (e.g. 5/hour)
-/// against brute-force key enumeration." Reuses licensing_audit_log rather
-/// than a new table -- every attempt (success or failure) is logged as
-/// 'activation_attempt' before the rate-limit check itself runs, so a
-/// distributed brute-force pattern is visible in the same audit trail
-/// TASK-LIC-009's fraud monitoring already reads.
+/**
+ * Count events of a type within a window that satisfy a payload predicate.
+ *
+ * The predicate runs in application code rather than SQL because the payload is
+ * an opaque JSON column with no queryable structure. That means the window rows
+ * are loaded before filtering, so this stays cheap only while the window is
+ * short -- it is sized for fraud checks over minutes, not analytics over months.
+ *
+ * ponytail: in-memory payload filter, push into a JSON query if windows grow
+ */
 export async function countRecentEvents(
   db: AuditWriter,
   eventType: string,

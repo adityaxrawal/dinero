@@ -1,6 +1,13 @@
+/**
+ * Issues a refund against an account's most recent successful charge.
+ *
+ * The payment to refund is resolved from stored records rather than accepted
+ * from the caller, so the endpoint cannot be pointed at an arbitrary payment id.
+ * Each precondition -- account exists, subscription exists, a refundable charge
+ * exists -- fails with its own NOT_FOUND rather than a single opaque error, so
+ * support can tell which one was missing.
+ */
 import { withRequestLogging } from '../../lib/request_logging';
-// Doc 30 TASK-BILL-006: internal admin-operated endpoint. No self-service
-// refund UI in v1.0 (the 14-day trial already de-risks purchase, Doc 03).
 import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
@@ -27,6 +34,12 @@ export type RefundDb = {
   licensingAuditLog: AuditWriter;
 };
 
+/**
+ * Refunds the account's most recent successful charge.
+ *
+ * The payment is resolved from stored records rather than accepted from the
+ * caller, so the endpoint cannot be pointed at an arbitrary payment id.
+ */
 export async function refundAccount(
   db: RefundDb,
   input: RefundInput,
@@ -68,6 +81,9 @@ export async function refundAccount(
   return { status: 'refunded' };
 }
 
+/**
+ * HTTP entry point: validates the request, delegates, and maps errors to statuses.
+ */
 async function handler(req: VercelRequest, res: VercelResponse) {
   if (!requirePostWithFields(req, res, ['account_id', 'reason'])) return;
   try {

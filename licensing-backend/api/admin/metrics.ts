@@ -1,6 +1,11 @@
+/**
+ * Admin metrics endpoint: billing and trial-funnel figures in one response.
+ *
+ * Behind the admin bearer token. Aggregates only -- no per-user rows are
+ * returned, so the operational dashboard never becomes a way to browse
+ * individual customer data.
+ */
 import { withRequestLogging } from '../../lib/request_logging';
-// Doc 30 TASK-BILL-007: internal admin-authenticated reporting endpoint.
-// Aggregate figures only -- never per-account breakdowns.
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
 import { assertAdminAuthorized } from '../../lib/admin_auth';
@@ -12,6 +17,9 @@ import {
   mrr,
 } from '../../lib/billing_metrics';
 
+/**
+ * HTTP entry point: validates the request, delegates, and maps errors to statuses.
+ */
 async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     assertAdminAuthorized(req.headers.authorization);

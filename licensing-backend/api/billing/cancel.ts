@@ -1,5 +1,13 @@
+/**
+ * Subscription cancellation and its reversal.
+ *
+ * Cancellation is scheduled rather than immediate: the subscription is marked
+ * to end at the close of the paid period, so a user who has already paid keeps
+ * what they bought. That also makes reactivation possible -- while the period
+ * is still running the subscription is merely flagged, and clearing the flag
+ * restores it without a fresh payment.
+ */
 import { withRequestLogging } from '../../lib/request_logging';
-// Doc 30 TASK-BILL-005: POST /api/billing/cancel
 import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
@@ -8,7 +16,7 @@ import { logAuditEvent, type AuditWriter } from '../../lib/audit';
 
 export interface CancelInput {
   account_id: string;
-  cancel_at_period_end?: boolean; // defaults to true
+  cancel_at_period_end?: boolean;
 }
 
 export interface CancelResult {
@@ -21,6 +29,9 @@ export type CancelDb = {
   licensingAuditLog: AuditWriter;
 };
 
+/**
+ * Schedule cancellation at the end of the current paid period.
+ */
 export async function cancelSubscription(db: CancelDb, input: CancelInput): Promise<CancelResult> {
   const subscription = await db.subscription.findFirst({
     where: { accountId: input.account_id },
@@ -32,11 +43,6 @@ export async function cancelSubscription(db: CancelDb, input: CancelInput): Prom
 
   const cancelAtPeriodEnd = input.cancel_at_period_end ?? true;
 
-  // Doc 30 TASK-BILL-005: "Cancellation never triggers data deletion" -- this
-  // function's signature is structurally incapable of it (no data-deletion
-  // handle at all); a cancelled-but-not-deleted account simply transitions
-  // to LOCKED (read-only) at period end, a status the desktop already
-  // computes from `status='canceled'` + an elapsed `current_period_end`.
   await db.subscription.update({
     where: { id: subscription.id },
     data: { cancelAtPeriodEnd, status: cancelAtPeriodEnd ? subscription.status : 'canceled' },
@@ -51,9 +57,12 @@ export async function cancelSubscription(db: CancelDb, input: CancelInput): Prom
   return { status: 'cancelled', cancel_at_period_end: cancelAtPeriodEnd };
 }
 
-/// Doc 30 TASK-BILL-005: "a 'Reactivate' button if still within the
-/// cancelled-but-active period" -- undoes cancel_at_period_end before the
-/// period actually ends.
+/**
+ * Undo a scheduled cancellation, provided the period has not yet ended.
+ *
+ * Once it has, there is nothing to reactivate and the user must subscribe
+ * afresh -- which is what the status guard below enforces.
+ */
 export async function reactivateSubscription(
   db: CancelDb,
   accountId: string
@@ -85,6 +94,9 @@ export async function reactivateSubscription(
   return { status: 'reactivated', cancel_at_period_end: false };
 }
 
+/**
+ * HTTP entry point: validates the request, delegates, and maps errors to statuses.
+ */
 async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     res.status(405).json({ code: 'VALIDATION_ERROR', message: 'POST only' });

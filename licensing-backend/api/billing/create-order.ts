@@ -1,12 +1,12 @@
+/**
+ * Creates a Razorpay order, the first step of a purchase.
+ *
+ * The amount is read from the plan record server-side and never taken from the
+ * request. That is the essential property: a client-supplied price would let a
+ * caller order the paid plan for a rupee. The email is attached to the order's
+ * notes so the subsequent activation can be tied back to an account.
+ */
 import { withRequestLogging } from '../../lib/request_logging';
-// Doc 30 TASK-BILL-002: POST /api/billing/create-order
-//
-// Keyed on `email`, not `account_id` (adapted during TASK-BILL-002's larger
-// activate-model correction, see Doc 30 changelog): the desktop app has no
-// server-side account_id to send at checkout time for a brand-new
-// subscriber (an `accounts` row is only ever find-or-created at activation,
-// mirroring activate.ts's own pattern) -- create-order does the same
-// find-or-create so a first-time purchaser never needs one in advance.
 import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma, findOrCreateAccount } from '../../lib/db';
@@ -35,6 +35,13 @@ export type CreateOrderDb = {
   account: Pick<PrismaClient['account'], 'findUnique' | 'create'>;
 };
 
+/**
+ * Creates a Razorpay order for a plan.
+ *
+ * The amount is read from the plan record server-side and never taken from the
+ * request -- a client-supplied price would let a caller buy the paid plan for a
+ * rupee.
+ */
 export async function createOrder(
   db: CreateOrderDb,
   razorpay: RazorpayOrders,
@@ -42,6 +49,8 @@ export async function createOrder(
   razorpayKeyId: string
 ): Promise<CreateOrderResult> {
   const plan = await db.plan.findUnique({ where: { id: input.plan_id } });
+  // Inactive plans are refused as well as unknown ones -- a retired plan id
+  // must not remain purchasable just because the row still exists.
   if (!plan || !plan.isActive) {
     throw new LicensingApiError('NOT_FOUND', 'Unknown or inactive plan');
   }
@@ -62,6 +71,9 @@ export async function createOrder(
   };
 }
 
+/**
+ * HTTP entry point: validates the request, delegates, and maps errors to statuses.
+ */
 async function handler(req: VercelRequest, res: VercelResponse) {
   if (!requirePostWithFields(req, res, ['email', 'plan_id'])) return;
   const { email, plan_id } = req.body;

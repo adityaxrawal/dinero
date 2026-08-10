@@ -1,5 +1,13 @@
-// Doc 30 TASK-BILL-001: seeds both established plans (Doc 03 §3). Run via
-// `npx prisma db seed` once a real Neon connection is configured.
+/**
+ * Seeds the subscription plans a fresh database needs to function.
+ *
+ * Written as upserts rather than inserts so the script is idempotent and safe to
+ * re-run against an existing database -- a redeploy must not fail on plans that
+ * already exist, nor duplicate them.
+ *
+ * Prices are integer minor units (paise), matching the convention used
+ * throughout the codebase to keep money arithmetic exact.
+ */
 import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
@@ -25,14 +33,15 @@ export const SEED_PLANS = [
   },
 ];
 
+/**
+ * Upserts the seed plans, idempotently.
+ */
 async function main() {
   for (const plan of SEED_PLANS) {
     await prisma.plan.upsert({ where: { id: plan.id }, update: plan, create: plan });
   }
 }
 
-// Guarded so importing SEED_PLANS (e.g. from tests) never triggers a real
-// DB connection attempt -- only running this file directly (`prisma db seed`) does.
 if (require.main === module) {
   main()
     .catch((e) => {

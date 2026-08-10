@@ -1,10 +1,14 @@
+/**
+ * Device deactivation: releases the license binding so another machine can claim it.
+ *
+ * The user-facing escape hatch from one-device-per-license. Without it, a lost
+ * or replaced machine would strand the license permanently and force every
+ * hardware change through support.
+ *
+ * Deactivation revokes the token rather than deleting the row, so the audit
+ * trail of what was bound when survives.
+ */
 import { withRequestLogging } from '../../lib/request_logging';
-// Doc 30 TASK-LIC-004: POST /api/license/deactivate
-//
-// Corrected during TASK-BILL-002 (real conflict found and resolved, see
-// Doc 30 changelog): matches the already-shipped desktop client exactly --
-// reuses the same `{ device_id }` shape as validate (`ValidateRequest` is
-// literally reused for both calls in `licensing/client.rs`), no license_key.
 import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
@@ -32,6 +36,9 @@ export type DeactivateDb = {
   licensingAuditLog: AuditWriter;
 };
 
+/**
+ * Revoke this device's token and record the deactivation.
+ */
 export async function deactivateLicense(
   db: DeactivateDb,
   input: DeactivateInput,
@@ -46,11 +53,6 @@ export async function deactivateLicense(
   }
 
   const now = new Date();
-  // Clears the device binding (frees the license for a future activation
-  // from a different hardware UUID) and marks the currently-issued JWT
-  // revoked -- offline verification still trusts the signature until `exp`
-  // (the hybrid model's known tradeoff), but the *next* validate/refresh
-  // call will find no matching bound device and reject.
   await db.licenseToken.update({
     where: { id: token.id },
     data: { deviceFingerprint: null, revokedAt: now, deviceBoundAt: null },
@@ -62,8 +64,6 @@ export async function deactivateLicense(
     deviceFingerprint: input.device_id,
   });
 
-  // Doc 30 TASK-LIC-004: "sends a confirmation email to the registered
-  // address as a security signal against unauthorized deactivation."
   await emailSender.send({
     to: token.account.email,
     subject: 'Your Dinero license was deactivated',
@@ -73,6 +73,9 @@ export async function deactivateLicense(
   return { status: 'deactivated' };
 }
 
+/**
+ * HTTP entry point: validates the request, delegates, and maps errors to statuses.
+ */
 async function handler(req: VercelRequest, res: VercelResponse) {
   if (!requirePostWithFields(req, res, ['device_id'])) return;
   const { device_id } = req.body;

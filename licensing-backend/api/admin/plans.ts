@@ -1,6 +1,11 @@
+/**
+ * Admin plan management: list plans and edit their pricing or availability.
+ *
+ * Plans are data rather than code so pricing can change without a deploy. Since
+ * the purchase flow reads its amount from these rows, this endpoint is
+ * effectively the price control for the product and is admin-gated accordingly.
+ */
 import { withRequestLogging } from '../../lib/request_logging';
-// Doc 30 TASK-BILL-001: internal admin-authenticated endpoint toggling
-// is_active / adjusting price. Every change logged to licensing_audit_log.
 import type { Prisma, PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
@@ -19,10 +24,19 @@ export type PlansDb = {
   licensingAuditLog: AuditWriter;
 };
 
+/**
+ * Lists plans, optionally only the active ones.
+ */
 export async function listPlans(db: Pick<PlansDb, 'plan'>, activeOnly: boolean) {
   return db.plan.findMany({ where: activeOnly ? { isActive: true } : undefined });
 }
 
+/**
+ * Updates a plan's price or availability.
+ *
+ * Effectively the product's price control, since the purchase flow reads its
+ * amount from these rows -- hence the admin gate on the handler.
+ */
 export async function updatePlan(db: PlansDb, input: UpdatePlanInput) {
   const before = await db.plan.findUnique({ where: { id: input.plan_id } });
   if (!before) {
@@ -46,6 +60,9 @@ export async function updatePlan(db: PlansDb, input: UpdatePlanInput) {
   return after;
 }
 
+/**
+ * HTTP entry point: validates the request, delegates, and maps errors to statuses.
+ */
 async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     if (req.method === 'GET') {

@@ -1,11 +1,11 @@
+/**
+ * Liveness probe for uptime monitoring.
+ *
+ * Checks database reachability rather than merely returning 200, so a deployment
+ * that is running but cannot reach its database reports unhealthy instead of
+ * appearing fine while failing every real request.
+ */
 import { withRequestLogging } from '../lib/request_logging';
-// Doc 30 TASK-OPS-003: GET /api/health
-//
-// A synthetic-check-friendly endpoint for uptime monitors — deliberately the
-// one Licensing Backend endpoint requiring no auth, since its whole point is
-// to be pollable by an external monitor with zero account access. Response
-// body is limited to status/latency metadata only: never an account email,
-// license key, device fingerprint, or any other identity/billing field.
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../lib/db';
 
@@ -18,6 +18,13 @@ export type HealthDb = {
   $queryRaw<T = unknown>(query: TemplateStringsArray): Promise<T>;
 };
 
+/**
+ * Checks database reachability.
+ *
+ * Verifies the dependency rather than merely returning 200, so a deployment that
+ * is running but cannot reach its database reports unhealthy instead of looking
+ * fine while failing every real request.
+ */
 export async function checkHealth(db: HealthDb): Promise<HealthResult> {
   const start = Date.now();
   try {
@@ -28,6 +35,9 @@ export async function checkHealth(db: HealthDb): Promise<HealthResult> {
   }
 }
 
+/**
+ * HTTP entry point: validates the request, delegates, and maps errors to statuses.
+ */
 async function handler(req: VercelRequest, res: VercelResponse) {
   const result = await checkHealth(prisma);
   res.status(result.status === 'ok' ? 200 : 503).json(result);

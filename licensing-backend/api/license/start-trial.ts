@@ -1,26 +1,18 @@
+/**
+ * Starts a free trial, subject to the anti-farming eligibility rules.
+ *
+ * The endpoint's real work is deciding whether a trial is warranted at all. That
+ * policy lives in the trial guard and is evaluated here against three facts: the
+ * account's own trial history, whether the device is already bound to a
+ * subscription, and whether the device has ever started a trial before.
+ *
+ * There are four outcomes, and the ordering of the branches below matters. A
+ * recognised returning device is handled first and is not a rejection -- an
+ * existing customer reinstalling receives a token for the subscription they
+ * already hold, rather than being told their trial is used up. Only then are the
+ * two blocking cases considered, and finally the genuine new trial.
+ */
 import { withRequestLogging } from '../../lib/request_logging';
-// Doc 30 TASK-LIC-007: POST /api/license/start-trial
-// Issued automatically during onboarding (TASK-FE-007), no credit card required.
-//
-// Corrected during TASK-BILL-002 (real conflict found and resolved, see
-// Doc 30 changelog): no license_key -- device_id is the binding key, matching
-// the corrected activate/validate/deactivate model. Real finding surfaced
-// while resolving this: the already-shipped desktop trial gate
-// (src-tauri/src/licensing/gate.rs::trial_days_remaining) computes the
-// 14-day window purely from local_profile.created_at, entirely offline,
-// with no call to this endpoint at all -- meaning TASK-BILL-009's "one
-// trial per hardware UUID" is currently unenforceable (deleting and
-// reinstalling the app resets the local timestamp with nothing server-side
-// to catch it). This endpoint is still the right place to close that gap --
-// wiring it in as a best-effort, fire-and-forget registration call at first
-// launch (offline trial countdown stays local; only the abuse-tracking
-// registration needs a network round-trip) is flagged as follow-up desktop
-// work, not done in this pass.
-//
-// Device-guard logic extracted to lib/trial_guard.ts (TASK-BILL-009): a
-// device already bound to an existing non-trial subscription is recognized
-// as returning, not blocked as abuse -- re-issues a JWT for the existing
-// subscription instead of starting a second trial.
 import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
@@ -48,7 +40,11 @@ export type StartTrialResult =
       billing_interval: string;
     };
 
+// Trial length, mirrored in the seeded plan records. The two must agree, or
+// the advertised and enforced trial periods diverge.
 const TRIAL_DAYS = 14;
+// Trials run on the monthly plan; converting later is a billing change rather
+// than a plan migration.
 const TRIAL_PLAN_ID = 'desktop_pro_monthly';
 
 export type StartTrialDb = {
@@ -58,13 +54,14 @@ export type StartTrialDb = {
   licensingAuditLog: AuditWriter;
 };
 
+/**
+ * Evaluate eligibility and, if permitted, create the trial subscription.
+ */
 export async function startTrial(
   db: StartTrialDb,
   input: StartTrialInput,
   privateKeyPem: string
 ): Promise<StartTrialResult> {
-  // Doc 30 TASK-BILL-009: is this device already bound to an account with a
-  // real (non-trial) subscription? That's continuity, not abuse.
   const existingBinding = await db.licenseToken.findUnique({
     where: { deviceFingerprint: input.device_id },
   });
@@ -79,6 +76,8 @@ export async function startTrial(
 
   let account = await db.account.findUnique({ where: { email: input.email } });
 
+  // All three inputs are gathered before the policy runs, keeping the decision
+  // itself a pure function over already-known facts.
   const decision = decideTrialEligibility({
     accountTrialUsed: account?.trialUsed ?? false,
     deviceBoundSubscriptionStatus,
@@ -89,6 +88,9 @@ export async function startTrial(
   });
   await logTrialGuardDecision(db.licensingAuditLog, input.device_id, decision);
 
+  // Checked first, and deliberately so: this is a paying customer reinstalling,
+  // not an abuse attempt. They are handed a token for their existing
+  // subscription instead of being refused a trial they no longer need.
   if (decision.outcome === 'recognized_returning_device') {
     const boundSub = await db.subscription.findFirst({
       where: { accountId: existingBinding!.accountId },
@@ -120,6 +122,8 @@ export async function startTrial(
     throw new LicensingApiError('VALIDATION_ERROR', 'This account has already used its trial');
   }
 
+  // Only now is an account created. Doing it earlier would leave an orphaned
+  // account row behind for every blocked trial attempt.
   if (!account) {
     account = await db.account.create({ data: { email: input.email } });
   }
@@ -170,6 +174,9 @@ export async function startTrial(
   return { status: 'trial_started', jwt: jwtToken, trial_ends_at: trialEndsAt.toISOString() };
 }
 
+/**
+ * HTTP entry point: validates the request, delegates, and maps errors to statuses.
+ */
 async function handler(req: VercelRequest, res: VercelResponse) {
   if (!requirePostWithFields(req, res, ['email', 'device_id'])) return;
   const { email, device_id } = req.body;

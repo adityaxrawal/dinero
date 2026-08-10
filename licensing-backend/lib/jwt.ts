@@ -1,31 +1,32 @@
-// Doc 30 TASK-LIC-005 (claim shape corrected during a real conflict found
-// while implementing this task): RS256 signing/verification. Claim shape
-// matches Doc 22 §10.3 / Doc 19 §14.2 exactly -- the shape already built
-// into the desktop app's verifier, src-tauri/src/licensing/jwt.rs's
-// LicenseClaims { sub, device_id, plan, billing_interval, exp }. Doc 30's
-// original text for this task described a different, PII-free shape
-// (license_key/hardware_uuid/state instead of sub/device_id/billing_interval)
-// that directly contradicted the already-shipped, tested desktop verifier --
-// resolved in favor of Doc 22 (the declared domain owner for JWT/device-
-// binding design) per Aditya's decision; Doc 30 itself corrected to match.
+/**
+ * License token signing and verification.
+ *
+ * Tokens are RS256-signed, which is what allows the desktop app to verify a
+ * license offline: it holds only the public key and can therefore check
+ * authenticity without contacting the server or holding any signing secret.
+ *
+ * The claim set is intentionally minimal, and assertNoExcessClaims enforces that
+ * as a hard check -- every claim is readable by anyone holding the token, so
+ * nothing beyond what entitlement actually requires belongs in it.
+ */
 import jwt from 'jsonwebtoken';
 
 export interface LicenseJwtClaims {
-  /** The account's email — Doc 22 §10.3 accepts this as the JWT's identity
-   * claim; the token lives in the desktop app's encrypted SQLite (Doc 18
-   * §4.22), not in transit or in Keychain, so this is not a bare-text
-   * exposure risk the way an unencrypted store would be. */
   sub: string;
   device_id: string;
   plan: string;
   billing_interval: string;
 }
 
+// The complete permitted claim set, including the two JWT registered claims.
+// Anything outside this is a leak of information the token has no need to carry.
 const ALLOWED_CLAIM_KEYS = new Set(['sub', 'device_id', 'plan', 'billing_interval', 'exp', 'iat']);
 
-/// Doc 30 TASK-LIC-002/003: 24-72h expiry, requiring periodic revalidation.
-const DEFAULT_EXPIRY_SECONDS = 48 * 60 * 60; // 48h, midpoint of the 24-72h band
+// Two days. Long enough that a briefly offline machine keeps working, short
+// enough that a revoked subscription stops being honoured reasonably soon.
+const DEFAULT_EXPIRY_SECONDS = 48 * 60 * 60;
 
+/** Sign a claim set into a license token with the given private key. */
 export function signLicenseJwt(
   claims: LicenseJwtClaims,
   privateKeyPem: string,
@@ -39,11 +40,19 @@ export interface VerifiedLicenseJwt extends LicenseJwtClaims {
   exp: number;
 }
 
+/** Distinct error type so callers can tell a bad token from a server fault. */
 export class JwtVerificationError extends Error {}
 
-/// Verifies signature + standard claims (exp/iat). Does NOT check
-/// device_id match or subscription status -- callers (activate/validate/
-/// refresh) do that against their own request context.
+/**
+ * Verify a token and return its claims.
+ *
+ * The algorithm is pinned to RS256 rather than read from the token header --
+ * without that, a token could declare `alg: none` or a symmetric algorithm and
+ * bypass signature checking entirely.
+ *
+ * `ignoreExpiration` supports grace-period handling, where an expired but
+ * otherwise valid token still needs to be inspected.
+ */
 export function verifyLicenseJwt(
   token: string,
   publicKeyPem: string,
@@ -64,9 +73,13 @@ export function verifyLicenseJwt(
   return decoded as VerifiedLicenseJwt;
 }
 
-/// Doc 30 TASK-LIC-005 acceptance (corrected): claims never include anything
-/// beyond sub/device_id/plan/billing_interval/exp/iat -- static guard so a
-/// future edit adding a stray field (full_name, address, ...) fails loudly.
+/**
+ * Fail if a claim set carries anything beyond the allowed keys.
+ *
+ * A guard against accidental data exposure: JWT payloads are merely base64
+ * encoded, not encrypted, so any field added here becomes readable by anyone
+ * who obtains the token.
+ */
 export function assertNoExcessClaims(claims: Record<string, unknown>): void {
   const excess = Object.keys(claims).filter((k) => !ALLOWED_CLAIM_KEYS.has(k));
   if (excess.length > 0) {

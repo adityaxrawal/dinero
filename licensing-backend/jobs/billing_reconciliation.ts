@@ -1,14 +1,19 @@
-// Doc 30 TASK-BILL-008: monthly scheduled job (Vercel Cron) cross-referencing
-// every active/past_due local subscription against Razorpay's authoritative
-// state, correcting drift (a missed webhook leaving local status stale).
-// Backstop for "if webhooks fail silently, users may be incorrectly LOCKED"
-// beyond what the user's manual "Refresh License" already covers.
+/**
+ * Reconciles local subscription state against Razorpay's records.
+ *
+ * A safety net for missed webhooks. Webhook delivery can fail permanently -- an
+ * outage, a deploy at the wrong moment, exhausted retries -- and the result is a
+ * subscription frozen in a stale state: a user who cancelled still being billed
+ * as active, or one who paid still locked out.
+ *
+ * This job periodically asks Razorpay for the true status of each subscription
+ * and corrects any divergence, so the system is eventually consistent with the
+ * payment provider regardless of what was delivered.
+ */
 import type { PrismaClient } from '@prisma/client';
 import { logAuditEvent, type AuditWriter } from '../lib/audit';
 import type { RazorpaySubscriptions } from '../lib/razorpay';
 
-/// Razorpay's subscription-status vocabulary mapped to ours. Anything
-/// unrecognized is left untouched rather than guessed.
 const RAZORPAY_TO_LOCAL_STATUS: Record<string, string> = {
   active: 'active',
   halted: 'past_due',
@@ -28,6 +33,13 @@ export type ReconciliationDb = {
   licensingAuditLog: AuditWriter;
 };
 
+/**
+ * Reconciles local subscription state against Razorpay's records.
+ *
+ * The safety net for permanently failed webhooks, which would otherwise leave a
+ * subscription frozen -- a cancelled user still billed as active, or a paying one
+ * still locked out.
+ */
 export async function runBillingReconciliation(
   db: ReconciliationDb,
   razorpay: RazorpaySubscriptions
@@ -53,7 +65,7 @@ export async function runBillingReconciliation(
     try {
       remote = await razorpay.fetch(record.razorpaySubscriptionId);
     } catch {
-      continue; // Razorpay API unreachable this cycle -- skip, don't guess.
+      continue;
     }
 
     const expectedLocalStatus = RAZORPAY_TO_LOCAL_STATUS[remote.status];
@@ -61,8 +73,6 @@ export async function runBillingReconciliation(
 
     drifted++;
     await db.subscription.update({ where: { id: sub.id }, data: { status: expectedLocalStatus } });
-    // Doc 30 TASK-BILL-008: "Any detected drift is auto-corrected... and
-    // logged... flagged for review, never applied silently without a trace."
     await logAuditEvent(db.licensingAuditLog, {
       accountId: sub.accountId,
       eventType: 'billing_reconciliation_correction',
@@ -79,6 +89,3 @@ export async function runBillingReconciliation(
   return { checked: subscriptions.length, drifted, corrected };
 }
 
-// Vercel Cron entrypoint lives at api/cron/billing-reconciliation.ts (Vercel
-// Cron triggers an HTTP path under api/, not an arbitrary module export) --
-// it imports runBillingReconciliation from here.

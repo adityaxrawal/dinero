@@ -1,11 +1,14 @@
+/**
+ * Admin action: mint a fresh license token for an account.
+ *
+ * The recovery path when a user holds a valid subscription but no usable token
+ * -- corrupted local state, a failed restore, a token lost to a reinstall.
+ *
+ * Like binding resets, a reason is mandatory. The subscription is re-checked
+ * before issuing, so this can restore access that was already paid for but never
+ * grant entitlement that does not exist.
+ */
 import { withRequestLogging } from '../../lib/request_logging';
-// Doc 30 TASK-OPS-006: "reissuing a token after a hardware change." Unlike
-// the self-service /api/license/refresh-token, this does not require a
-// currently-valid JWT from the requesting device at all -- it exists
-// specifically for the case where the old device is gone (replaced Mac,
-// reinstalled OS wiping the old install) and the user has no token left to
-// refresh with. Binds a new device_id directly and issues a fresh JWT.
-// Requires a reason and is fully audited, same as support_reset_binding.
 import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
@@ -47,6 +50,12 @@ export type ReissueTokenDb = {
   licensingAuditLog: AuditWriter;
 };
 
+/**
+ * Mints a fresh token for an account that holds a valid subscription.
+ *
+ * The subscription is re-checked before issuing, so this restores access already
+ * paid for but cannot grant entitlement that does not exist.
+ */
 export async function reissueToken(
   db: ReissueTokenDb,
   input: ReissueTokenInput,
@@ -128,6 +137,9 @@ export async function reissueToken(
   return { status: 'reissued', jwt: newJwt, expires_at: expiresAt.toISOString() };
 }
 
+/**
+ * HTTP entry point: validates the request, delegates, and maps errors to statuses.
+ */
 async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     assertAdminAuthorized(req.headers.authorization);

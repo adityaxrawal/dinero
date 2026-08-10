@@ -1,10 +1,14 @@
-// Doc 30 TASK-OPS-007: "Standardized structured logs across desktop and
-// Licensing Backend code paths (request ID, endpoint, status, latency,
-// redacted identifiers only)." Deliberately logs only these four fields --
-// never the request body, response body, or any header -- so there is
-// nothing to redact after the fact: an account email, license JWT, or
-// Razorpay payment id can never end up in a log line in the first place,
-// which is a stronger guarantee than logging-then-redacting.
+/**
+ * Wraps an endpoint so every request emits one structured log line.
+ *
+ * The correlation id is generated per request and returned in the X-Request-Id
+ * header before the handler runs, so a user reporting a failure can quote an id
+ * that appears in the logs.
+ *
+ * Logging happens in a `finally`, which is what makes it unconditional: a
+ * handler that throws is still recorded, with whatever status the framework
+ * settled on. The line is JSON so it can be queried by field rather than grepped.
+ */
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { randomUUID } from 'crypto';
 
@@ -15,12 +19,9 @@ interface RequestLogLine {
   latency_ms: number;
 }
 
-/// Wraps a Vercel handler so every call logs exactly one structured JSON
-/// line (via `console.log`, which Vercel's platform captures and retains --
-/// this backend has no separate log file of its own to rotate). The
-/// `X-Request-Id` response header lets a user's own support ticket be
-/// correlated back to a specific log line without exposing anything about
-/// the account itself.
+/**
+ * Wraps a handler so every request emits one correlated, timed log line.
+ */
 export function withRequestLogging(
   endpoint: string,
   handler: (req: VercelRequest, res: VercelResponse) => Promise<void> | void
