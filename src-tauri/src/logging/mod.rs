@@ -1,15 +1,13 @@
-//! Dedicated Multi-Category Logging System for Dinero.
+//! Logging infrastructure, with redaction applied at the writer.
 //!
-//! Provides daily rolling, write-time PII redacting, multi-target log files:
-//! - `logs/backend.log`: Rust backend execution, DB, ingestion, extraction, lifecycle.
-//! - `logs/frontend.log`: React UI, component states, navigation, renderer errors.
-//! - `logs/api_calls.log`: Frontend <-> Backend Tauri IPC commands.
-//! - `logs/network.log`: Outbound HTTP/HTTPS requests, OAuth, downloads.
-//! - `logs/llm_calls.log`: Every LLM sidecar request/response — model, call type, attempt,
-//!   prompt/output char counts, wall-clock duration, outcome. Full prompt and output
-//!   bodies are gated at TRACE (`RUST_LOG=llm_calls=trace`); metadata always at INFO.
-//! - `logs/combined.log`: Master chronological log stream.
-
+//! Redaction sits in the writer rather than at call sites, which is what makes it
+//! reliable: a log statement written anywhere in the codebase cannot bypass it by
+//! forgetting to sanitise. Financial data will otherwise reach logs simply
+//! because it is what this application handles.
+//!
+//! Logs are categorised into separate files so a diagnostic bundle can include
+//! the relevant category without carrying everything, and old files are pruned so
+//! they cannot grow without bound.
 pub mod llm_logger;
 
 use regex::Regex;
@@ -19,14 +17,8 @@ use std::path::Path;
 use tracing_appender::non_blocking::NonBlocking;
 use tracing_subscriber::fmt::writer::MakeWriter;
 
-/// Default retention window for log files (15 days), overridable via `DINERO_LOG_RETENTION_DAYS`.
 pub const DEFAULT_LOG_RETENTION_DAYS: u64 = 15;
 
-/// The log categories `CategorizedLogWriters::init` opens one file per, per
-/// app launch. Single source of truth for both the writers and
-/// `prune_old_logs` -- these drifting apart is exactly what made retention a
-/// silent no-op (audit_09 #4). `app-logs` is legacy-only, kept so old installs
-/// still get swept.
 const LOG_CATEGORY_BASENAMES: [&str; 7] = [
     "backend",
     "frontend",
@@ -37,7 +29,7 @@ const LOG_CATEGORY_BASENAMES: [&str; 7] = [
     "app-logs",
 ];
 
-/// Deletes rotated log files older than the retention window.
+/// Deletes log files past the retention window, bounding disk use.
 pub fn prune_old_logs(log_dir: &Path) {
     let retention_days = std::env::var("DINERO_LOG_RETENTION_DAYS")
         .ok()
@@ -61,16 +53,6 @@ pub fn prune_old_logs(log_dir: &Path) {
         let path = entry.path();
         let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
-        // audit_09 #4: these patterns used to be `starts_with("backend.log")`
-        // and friends -- the *old* naming scheme. `CategorizedLogWriters::init`
-        // writes `<IST timestamp>_<category>.md` (e.g.
-        // `2026-08-01_09-15-42_backend.md`), so nothing the app actually
-        // produces ever matched and pruning was a no-op in production: six new
-        // files per launch, never deleted. The unit test passed because it
-        // constructed files under the legacy names.
-        //
-        // Both schemes are matched so existing installs get their old files
-        // cleaned up too.
         let is_target_log = LOG_CATEGORY_BASENAMES.iter().any(|base| {
             file_name.ends_with(&format!("_{base}.md"))
                 || file_name.starts_with(&format!("{base}.log"))
@@ -102,7 +84,10 @@ pub fn prune_old_logs(log_dir: &Path) {
     }
 }
 
-/// Masks sensitive patterns (emails, 16-digit card numbers, rupee amounts, passwords/tokens, 6+ digit OTPs).
+/// Redacts sensitive values from a log line.
+///
+/// Applied at the writer rather than at call sites, which is what makes it
+/// reliable: no log statement anywhere can bypass it by forgetting to sanitise.
 pub fn redact(text: &str) -> String {
     let email_re = Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}").unwrap();
     let card_re = Regex::new(r"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b").unwrap();
@@ -118,19 +103,20 @@ pub fn redact(text: &str) -> String {
     text.into_owned()
 }
 
-/// Writer wrapper that applies write-time PII redaction.
 #[derive(Clone)]
 pub struct RedactingWriter<W: Write> {
     inner: W,
 }
 
 impl<W: Write> RedactingWriter<W> {
+    /// Wraps a writer so everything passing through it is redacted.
     pub fn new(inner: W) -> Self {
         Self { inner }
     }
 }
 
 impl<W: Write> Write for RedactingWriter<W> {
+    /// Redacts the buffer, then writes it to the inner writer.
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match std::str::from_utf8(buf) {
             Ok(s) => {
@@ -142,24 +128,26 @@ impl<W: Write> Write for RedactingWriter<W> {
         }
     }
 
+    /// Flushes the inner writer.
     fn flush(&mut self) -> std::io::Result<()> {
         self.inner.flush()
     }
 }
 
-/// Composite writer writing to both a category-specific log file and the combined log file.
 pub struct MultiWrite {
     target_writer: NonBlocking,
     combined_writer: NonBlocking,
 }
 
 impl Write for MultiWrite {
+    /// Writes to every underlying sink.
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let _ = self.target_writer.write_all(buf);
         let _ = self.combined_writer.write_all(buf);
         Ok(buf.len())
     }
 
+    /// Flushes every underlying sink.
     fn flush(&mut self) -> std::io::Result<()> {
         let _ = self.target_writer.flush();
         let _ = self.combined_writer.flush();
@@ -167,7 +155,6 @@ impl Write for MultiWrite {
     }
 }
 
-/// Categorized log writers for routing tracing events by target name.
 #[derive(Clone)]
 pub struct CategorizedLogWriters {
     backend: NonBlocking,
@@ -179,6 +166,10 @@ pub struct CategorizedLogWriters {
 }
 
 impl CategorizedLogWriters {
+    /// Initialises the categorised log writers and returns their guards.
+    ///
+    /// The guards must be kept alive for the process's lifetime; dropping them early
+    /// truncates the logs.
     pub fn init(base_log_dir: &Path) -> (Self, Vec<tracing_appender::non_blocking::WorkerGuard>) {
         let logs_folder = base_log_dir.join("logs");
         if let Err(e) = fs::create_dir_all(&logs_folder) {
@@ -190,7 +181,7 @@ impl CategorizedLogWriters {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default();
-        let secs = now.as_secs() + 19800; // IST (UTC+5:30)
+        let secs = now.as_secs() + 19800;
         let days = secs / 86400;
         let (y, mo, d) = llm_logger::epoch_days_to_ymd(days);
         let h = (secs / 3600) % 24;
@@ -210,9 +201,6 @@ impl CategorizedLogWriters {
         let (network_w, g4) = tracing_appender::non_blocking(RedactingWriter::new(
             tracing_appender::rolling::never(&logs_folder, format!("{}_network.md", ts_prefix)),
         ));
-        // Dedicated LLM call log: one entry per sidecar request/response,
-        // including model ID, call type, attempt, duration, outcome, and
-        // full prompt/output bodies in structured Markdown format.
         let (llm_calls_w, g5) = tracing_appender::non_blocking(RedactingWriter::new(
             tracing_appender::rolling::never(&logs_folder, format!("{}_llm_calls.md", ts_prefix)),
         ));
@@ -229,7 +217,6 @@ impl CategorizedLogWriters {
             combined: combined_w,
         };
 
-        // Seed the direct writer for rich Markdown LLM call blocks
         let llm_log_path = logs_folder.join(format!("{}_llm_calls.md", ts_prefix));
         crate::logging::llm_logger::init_direct_writer(llm_log_path);
 
@@ -240,6 +227,7 @@ impl CategorizedLogWriters {
 impl<'a> MakeWriter<'a> for CategorizedLogWriters {
     type Writer = MultiWrite;
 
+    /// The default writer, used when no category matches.
     fn make_writer(&'a self) -> Self::Writer {
         MultiWrite {
             target_writer: self.backend.clone(),
@@ -247,13 +235,13 @@ impl<'a> MakeWriter<'a> for CategorizedLogWriters {
         }
     }
 
+    /// Routes a log event to the writer for its target category.
     fn make_writer_for(&'a self, meta: &tracing::Metadata<'_>) -> Self::Writer {
         let target = meta.target();
         let target_writer = match target {
             "frontend" => self.frontend.clone(),
             "api_calls" => self.api_calls.clone(),
             "network" => self.network.clone(),
-            // LLM call logs go to their own file; they also appear in combined.
             "llm_calls" => self.llm_calls.clone(),
             _ => self.backend.clone(),
         };
@@ -312,20 +300,12 @@ mod tests {
             std::env::temp_dir().join(format!("dinero_log_retention_{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
 
-        // audit_09 #4: the names here must be the ones
-        // `CategorizedLogWriters::init` actually writes
-        // (`<IST timestamp>_<category>.md`). This test previously used only
-        // the legacy `backend.log.<date>` scheme, so it kept passing while
-        // pruning silently matched nothing in production.
         let old_file = dir.join("2020-01-01_08-00-00_backend.md");
         let recent_file = dir.join("2026-07-22_08-00-00_backend.md");
-        // Every other category must be swept too, not just `backend`.
         let old_llm_file = dir.join("2020-01-01_08-00-00_llm_calls.md");
         let old_combined_file = dir.join("2020-01-01_08-00-00_combined.md");
-        // Legacy naming still has to be cleaned up on upgraded installs.
         let old_legacy_file = dir.join("backend.log.2020-01-01");
         let unrelated_file = dir.join("not-a-log-file.txt");
-        // A Markdown file that is not one of ours must survive.
         let unrelated_md = dir.join("README.md");
 
         for f in [
@@ -350,8 +330,6 @@ mod tests {
         ] {
             fs::File::open(f).unwrap().set_modified(far_past).unwrap();
         }
-        // Age the non-log files too, so surviving proves the name filter is
-        // doing the work rather than the age check.
         for f in [&unrelated_file, &unrelated_md] {
             fs::File::open(f).unwrap().set_modified(far_past).unwrap();
         }

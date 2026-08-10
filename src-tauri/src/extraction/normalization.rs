@@ -1,8 +1,19 @@
+//! Normalises an extracted observation into storable form.
+//!
+//! Applies the conventions the rest of the system relies on -- amounts as
+//! integer minor units, timestamps as epoch values, masked identifiers reduced
+//! to a consistent shape so the same card matches itself across banks that print
+//! it differently.
 use crate::db::transaction_observations::TransactionObservationsRow;
 use crate::extraction::ladder::ExtractionResult;
 use chrono::{TimeZone, Utc};
 use uuid::Uuid;
 
+/// Normalises an extracted observation into storable form.
+///
+/// Applies the conventions the rest of the system depends on: integer minor units
+/// for money, epoch timestamps, and canonicalised identifiers. Doing it once here
+/// means downstream code never has to guess which representation it received.
 pub fn normalize_observation(
     raw: ExtractionResult,
     source_pipeline: &str,
@@ -10,17 +21,14 @@ pub fn normalize_observation(
     raw_body: Option<&str>,
     email_meta: Option<&crate::ingestion::message_processor::EmailMetadata>,
 ) -> TransactionObservationsRow {
-    // 1. Amount Minor Normalization
     let amount_minor = raw.amount_minor;
 
-    // 2. Currency Normalization
     let currency = raw
         .currency
         .clone()
         .map(|c| c.to_uppercase())
         .unwrap_or_else(|| "INR".to_string());
 
-    // 3. Direction Normalization
     let direction = raw
         .direction
         .clone()
@@ -34,24 +42,13 @@ pub fn normalize_observation(
         })
         .unwrap_or_else(|| "debit".to_string());
 
-    // 4. Timestamp Normalization (UTC to IST storage per schema rule)
-    // raw.event_time is an i64 Unix timestamp (UTC).
-    // We convert it to a NaiveDateTime representing the local time (IST).
     let event_time = raw.event_time.map(|ts| {
         let dt_utc = Utc.timestamp_opt(ts, 0).unwrap();
         let ist_offset = chrono::FixedOffset::east_opt(5 * 3600 + 30 * 60).unwrap();
         dt_utc.with_timezone(&ist_offset).naive_local()
     });
 
-    // 5. Merchant Raw
     let merchant_raw = raw.merchant_raw.clone();
-
-    // Doc 30 TASK-TXN-008: fingerprint is deliberately NOT computed here.
-    // It must be keyed on the *resolved* instrument_id (plus
-    // connected_accounts.id), neither of which this function has access to
-    // — instrument resolution happens downstream, after this row is built
-    // (`ingestion::queues::process_transaction_job`), which is where
-    // `extraction::fingerprint::compute_fingerprint` is actually called.
 
     let raw_payload_json = raw_body.map(|b| {
         let mut payload = serde_json::json!({
@@ -86,11 +83,6 @@ pub fn normalize_observation(
         amount_minor,
         currency: Some(currency),
         event_time,
-        // `apply_date_cross_check` (extraction::ladder) only ever sets this
-        // on a genuinely ambiguous DD/MM-vs-MM/DD date -- `None` for every
-        // other case (unambiguous parse, or ambiguous with no decisive
-        // anchor signal either way), matching Doc 30 TASK-TXN-004's
-        // fallback-only framing for Gmail's internalDate.
         event_time_confidence: raw.date_cross_check_flag.clone(),
         posting_date: None,
         merchant_raw,
@@ -98,33 +90,17 @@ pub fn normalize_observation(
         reference_id: raw.reference_id,
         original_amount_minor: raw.original_amount_minor,
         original_currency: raw.original_currency,
-        // Doc 30 TASK-TXN-013: previously hardcoded None -- no layer ever
-        // populated ExtractionResult.exchange_rate before this task added
-        // the field and the currency_handler that fills it.
         exchange_rate: raw.exchange_rate,
         balance_after_transaction: raw.balance_after.map(|a| a as f64 / 100.0),
         timezone_at_ingestion: None,
         fingerprint: None,
         extraction_method: Some(raw.extraction_method),
-        // Doc 30 TASK-TXN-001 added this field to ExtractionResult
-        // (Layer 5/6 LLM sets 0.7 per FRS §6.3); TASK-TXN-009's "insert...
-        // with all fields" means it must actually flow through, not be
-        // silently dropped here.
         confidence_score: raw.confidence_score,
         raw_payload_json,
-        // No document anywhere defines a versioning scheme for bank-template
-        // parsers (flagged, not guessed, at TASK-TXN-001 and TASK-TXN-003
-        // already) -- still true here, left unpopulated.
         parser_version: None,
-        // Doc 30 TASK-TXN-012: populated by the extraction ladder when EMI
-        // language was detected in the source body -- previously always
-        // silently dropped here (ExtractionResult didn't even carry these
-        // fields until this task added them).
         emi_total_installments: raw.emi_total_installments,
         emi_installment_number: raw.emi_installment_number,
         emi_original_amount_minor: raw.emi_original_amount_minor,
-        // Display-only rail/channel (`detect_channel`, extraction::ladder) --
-        // metadata pass-through, same as the EMI fields above.
         channel: raw.channel,
         is_deleted: false,
         created_at: Some(Utc::now().naive_utc()),
@@ -132,23 +108,11 @@ pub fn normalize_observation(
     }
 }
 
-/// Cleans and normalizes masked identifiers (card last digits, bank account last digits).
+/// Reduces a masked account identifier to a consistent form.
 ///
-/// Ensures only ending digits (e.g. "1234" or "34") are extracted and retained, stripping out
-/// prefixes such as "XXXX", "XXXXXX", "****", spaces, dashes, or full masked string representations.
-/// UPI VPAs (containing '@') are preserved as-is.
-///
-/// Examples:
-/// - "XXXX1234" -> "1234"
-/// - "XXXXXX1234" -> "1234"
-/// - "1234" -> "1234"
-/// - "XXXX34" -> "34"
-/// - "XXXX 1234" -> "1234"
-/// - "XXXX XXXX 1234" -> "1234"
-/// - "**** **** **** 1234" -> "1234"
-/// - "XX-1234" -> "1234"
-/// - "5268XXXXXXXXXX64" -> "64"
-/// - "user@upi" -> "user@upi"
+/// Banks print the same card as `XX1234`, `****1234` and `...1234`. Without
+/// canonicalisation the same account would key several distinct instruments, and
+/// attribution would fragment across them.
 pub fn clean_masked_identifier(raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -158,14 +122,6 @@ pub fn clean_masked_identifier(raw: &str) -> String {
         return trimmed.to_string();
     }
 
-    // Issue #8: when the input carries a mask, the identifier is whatever
-    // follows the *last* mask character — not the last four digits overall.
-    // HDFC prints its card number as `5268XXXXXXXXXX64`, masking all but a
-    // leading BIN and a two-digit tail; taking the last four digits of
-    // "526864" yields "6864", a number that appears on no card. That value
-    // then flows into `metadata_extractor`'s `masked_identifier` and
-    // `resolve_or_create_instrument`, so every statement from such a card
-    // resolved to a fabricated instrument identity.
     let after_mask: String = trimmed
         .rfind(['X', 'x', '*'])
         .map(|i| {
@@ -210,23 +166,11 @@ mod tests {
         assert_eq!(clean_masked_identifier("user@upi"), "user@upi");
         assert_eq!(clean_masked_identifier("  XXXX 5678  "), "5678");
         assert_eq!(clean_masked_identifier(""), "");
-        // Issue #8: HDFC masks all but a leading BIN and a two-digit tail.
-        // Concatenating every digit and taking the last four gave "6864" —
-        // two digits of the BIN welded to the real tail.
         assert_eq!(clean_masked_identifier("5268XXXXXXXXXX64"), "64");
         assert_eq!(clean_masked_identifier("6529XXXXXXXXXX56"), "56");
-        // Mask present but no trailing digits — fall back to the last four
-        // rather than returning nothing.
         assert_eq!(clean_masked_identifier("1234XXXX"), "1234");
     }
 
-    /// Doc 30 TASK-TXN-008: fingerprint computation moved out of this
-    /// function entirely (it needs the resolved `instrument_id`, which
-    /// isn't known yet at this point in the pipeline) -- see
-    /// `extraction::fingerprint` for the real fingerprint tests
-    /// (`test_fingerprint_deterministic_for_same_inputs`,
-    /// `test_fingerprint_differs_across_accounts`,
-    /// `test_fingerprint_time_bucketing`).
     #[test]
     fn test_normalize_observation_leaves_fingerprint_unset() {
         let raw = ExtractionResult {
@@ -338,10 +282,6 @@ mod tests {
             serde_json::from_str(&obs.raw_payload_json.unwrap()).unwrap();
 
         assert_eq!(payload["body"], "Plain text body");
-        // audit_03 #7: this assertion is what proves the Evidence tab's HTML
-        // comes from `email_meta.html`. `TransactionJob` used to carry a
-        // second copy in its own `raw_html` field, claiming to be the source;
-        // it never was, and removing it changes nothing here.
         assert_eq!(payload["html"], "<p>HTML</p>");
         assert_eq!(payload["subject"], "Payment successful");
         assert_eq!(payload["date"], "Jan 3, 2026");
@@ -356,12 +296,10 @@ mod tests {
     #[test]
     fn test_timestamp_normalization_to_ist() {
         let raw = ExtractionResult {
-            // UTC time: 2024-01-01 10:00:00 UTC
             event_time: Some(1704103200),
             ..Default::default()
         };
         let obs = normalize_observation(raw, "test_pipeline", "msg_123", None, None);
-        // IST time should be UTC + 5:30 -> 2024-01-01 15:30:00
         assert_eq!(
             obs.event_time
                 .unwrap()

@@ -1,3 +1,7 @@
+//! Extracts standing-instruction and auto-debit mandate details.
+//!
+//! Mandates announce future recurring charges. Capturing them lets an upcoming
+//! debit be anticipated rather than only recognised after the money has left.
 use regex::Regex;
 use std::sync::OnceLock;
 
@@ -20,23 +24,11 @@ static AMOUNT_RE: OnceLock<Regex> = OnceLock::new();
 static MANDATE_ID_RE: OnceLock<Regex> = OnceLock::new();
 static CARD_LAST4_RE: OnceLock<Regex> = OnceLock::new();
 
-/// Extracts mandate-lifecycle fields from a mandate registration/cancellation
-/// email body. `merchant` is the only mandatory field (mirrors Gate 3's
-/// precision-over-recall discipline, Doc 12 §6.2) -- returns `None` entirely
-/// if it can't be found, same "reject rather than guess" posture as every
-/// other gate in this pipeline
-/// (dinero-docs/design-archive/specs/2026-07-18-mandate-tracking-design.md §4.3).
+/// Extracts standing-instruction details from a mandate notification.
+///
+/// Mandates announce charges that have not happened yet, which is what allows a
+/// future debit to be anticipated rather than merely recognised afterwards.
 pub fn extract_mandate_fields(bank_name: &str, body: &str) -> Option<MandateExtraction> {
-    // Reuses GenericRegexLayer's merchant-keyword convention
-    // (ladder.rs GENERIC_MERCHANT_RE_STRICT), but with the colon *required*
-    // (`:` not `:?`) -- found via a real-body test failure: mandate emails'
-    // boilerplate text uses "merchant" as an ordinary English word before
-    // the real label ("...registering for a recurring e-Mandate at
-    // merchant platform using your..."), which the optional-colon version
-    // matched first (leftmost), well before the actual "Merchant:
-    // ScribdInc" label later in the body. The real label is always
-    // colon-terminated in every template seen; the boilerplate usage never
-    // is, so requiring the colon disambiguates them.
     let merchant_re = MERCHANT_RE.get_or_init(|| {
         Regex::new(r"(?i)\b(?:merchant name|merchant):\s+([A-Za-z0-9\s*]{2,40}?)(?:\s+description\b|\s+on\b|[,.\n\-]|$)").unwrap()
     });
@@ -99,20 +91,7 @@ pub fn extract_mandate_fields(bank_name: &str, body: &str) -> Option<MandateExtr
     })
 }
 
-/// Bank-specific mandate extraction, from the same
-/// `assets/bank_templates/*.json` files Layer 2 uses -- the patterns whose
-/// `txn_type` is `"mandate"`.
-///
-/// Mandate emails never reach the extraction ladder (`message_processor`
-/// routes `MandateRegistration`/`MandateCancellation` here directly), so
-/// without this the per-bank templates would have no effect on them at all
-/// and every bank would share the one global regex set in
-/// [`extract_mandate_fields`]. Callers try this first and fall back to that
-/// global path, so a bank with no mandate pattern behaves exactly as before.
-///
-/// Same "reject rather than guess" posture as [`extract_mandate_fields`]:
-/// `merchant` is mandatory, so a pattern that matches without producing one
-/// yields `None` and lets the fallback try.
+/// Applies a bank-specific mandate template, where one exists.
 pub fn bank_mandate_template(bank_name: &str, body: &str) -> Option<MandateExtraction> {
     let patterns = crate::extraction::ladder::bank_templates().get(bank_name)?;
 
@@ -136,17 +115,11 @@ pub fn bank_mandate_template(bank_name: &str, body: &str) -> Option<MandateExtra
         return Some(MandateExtraction {
             merchant: Some(merchant),
             cadence: group(p.cadence_group).map(|c| c.to_lowercase()),
-            // `amount_group` is the mandate's *limit*, not a settled amount --
-            // this is why `BankTemplateLayer` skips `mandate` patterns rather
-            // than booking one as a transaction.
             max_limit_amount: caps
                 .get(p.amount_group)
                 .and_then(|m| m.as_str().replace(',', "").parse::<f64>().ok())
                 .map(|f| (f * 100.0).round() as i64),
             external_mandate_id: group(p.reference_group),
-            // Both values are from the `instruments.type` CHECK enum in
-            // migrations/20260101000001_initial_core_schema.sql -- never a
-            // free-form label.
             instrument_type: Some(
                 if body.to_lowercase().contains("credit card") {
                     "credit_card"
@@ -196,10 +169,6 @@ mod tests {
 
     #[test]
     fn test_extract_mandate_fields_bare_merchant_word_in_boilerplate_not_matched() {
-        // Regression test for the leftmost-match bug: "at merchant platform"
-        // (ordinary English, no colon) must not be captured as the
-        // merchant, even though it appears before the real "Merchant:
-        // ScribdInc" label.
         let body = "Thank you for registering for a recurring e-Mandate at merchant platform using your SBI Credit Card. Merchant: ScribdInc";
         let result = extract_mandate_fields("SBI Card", body).unwrap();
         assert_eq!(result.merchant, Some("ScribdInc".to_string()));

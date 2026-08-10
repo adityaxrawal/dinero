@@ -1,41 +1,19 @@
-//! Issue #12: the LLM half of the user-triggered "Normalize with LLM" pass.
+//! LLM-assisted merchant identification and categorisation.
 //!
-//! Prompt construction, grammar-constrained output schema, validation, and
-//! -- the part that makes the *learning* half real -- synthesis of a working
-//! merchant regex from the email the LLM just read.
-//!
-//! The model is asked for two different merchant strings, which is the whole
-//! trick here:
-//!
-//! * `merchant_in_email` -- the exact substring of the body that names the
-//!   counterparty. Verifiable against the source (so a hallucination is
-//!   detectable) and, crucially, *locatable*, which is what lets
-//!   [`crate::extraction::rule_synthesis::synthesize_span_regex`] anchor a real
-//!   pattern around it.
-//! * `merchant_name` -- the canonical display name, which frequently does
-//!   **not** appear in the body at all ("RAZ*SWIGGY BANGALORE" -> "Swiggy").
-//!
-//! Asking for only the canonical name would make the answer unverifiable and
-//! unanchorable; asking for only the verbatim span would leave the truncation
-//! problem unsolved.
-
+//! Used where deterministic normalisation cannot resolve a descriptor. Prompt
+//! construction, the response schema, and validation live together here so the
+//! contract with the model stays consistent, and validation rejects output the
+//! schema alone would let through.
 use serde::Deserialize;
 
-/// What the model returns, before validation.
 #[derive(Debug, Deserialize)]
 pub struct MerchantLlmOutput {
-    /// Verbatim span from the email body naming the counterparty.
     pub merchant_in_email: Option<String>,
-    /// Canonical display name; need not appear in the body.
     pub merchant_name: Option<String>,
-    /// Must be one of the category names supplied in the prompt.
     pub category: Option<String>,
-    /// The model's own confidence, surfaced to the user and stored alongside
-    /// the correction.
     pub confidence: Option<f64>,
 }
 
-/// A validated, usable answer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MerchantResolution {
     pub merchant_in_email: String,
@@ -44,10 +22,10 @@ pub struct MerchantResolution {
     pub confidence: f64,
 }
 
-/// Grammar-constrained output shape. `category` is an `enum` of the caller's
-/// closed list, so the sampler physically cannot emit a category that isn't
-/// in the database -- this is why no post-hoc "did it invent a category"
-/// repair path is needed.
+/// Schema for merchant normalisation, restricted to existing categories.
+///
+/// Constraining the category set at the schema level stops the model inventing
+/// new categories, which would fragment the user's spending breakdown.
 pub fn merchant_cleanup_schema(categories: &[String]) -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -61,8 +39,6 @@ pub fn merchant_cleanup_schema(categories: &[String]) -> serde_json::Value {
     })
 }
 
-/// The transaction context sent alongside the body, so the model can tell a
-/// refund from a purchase and a counterparty from the user's own bank.
 pub struct TransactionContext<'a> {
     pub bank_name: &'a str,
     pub current_merchant: &'a str,
@@ -72,6 +48,7 @@ pub struct TransactionContext<'a> {
     pub event_time: Option<&'a str>,
 }
 
+/// Builds the merchant-resolution prompt from a transaction and its source text.
 pub fn generate_prompt(ctx: &TransactionContext, body: &str, categories: &[String]) -> String {
     let amount = ctx
         .amount
@@ -129,13 +106,12 @@ pub fn generate_prompt(ctx: &TransactionContext, body: &str, categories: &[Strin
     )
 }
 
-/// Validates one raw completion against the source body and the closed
-/// category list.
+/// Validates a model response against the message it came from.
 ///
-/// Returns `None` for every failure mode -- unparseable, no merchant found,
-/// a `merchant_in_email` that does not actually occur in the body (the
-/// hallucination guard), or a category outside the list. A rejected answer
-/// leaves the transaction untouched rather than writing a guess.
+/// Checks the proposed name is grounded in the actual body rather than invented,
+/// and that the category is one that exists. Returning None rejects the
+/// suggestion outright -- keeping the raw descriptor is better than adopting a
+/// plausible-sounding fabrication.
 pub fn validate(raw_output: &str, body: &str, categories: &[String]) -> Option<MerchantResolution> {
     let json_text = crate::extraction::llm::LlmEngine::extract_json_block(raw_output)?;
     let parsed: MerchantLlmOutput = serde_json::from_str(json_text).ok()?;
@@ -149,9 +125,6 @@ pub fn validate(raw_output: &str, body: &str, categories: &[String]) -> Option<M
         return None;
     }
 
-    // Hallucination guard: the span the model claims to have copied must
-    // really be there. This is what makes it safe to synthesize an
-    // immediately-active pattern rule from the answer.
     if crate::extraction::rule_synthesis::find_ignore_case(body, &in_email).is_none() {
         tracing::debug!(
             merchant_in_email = %in_email,
@@ -200,7 +173,6 @@ mod tests {
         assert_eq!(r.confidence, 0.95);
     }
 
-    /// The guard that makes immediate rule activation safe.
     #[test]
     fn rejects_a_span_that_is_not_in_the_body() {
         let raw = r#"{"merchant_in_email": "ZOMATO", "merchant_name": "Zomato",

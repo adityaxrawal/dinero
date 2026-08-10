@@ -1,10 +1,9 @@
-//! Doc 30 TASK-TXN-007: Merchant Normalization Pipeline.
+//! Turns raw bank descriptors into canonical merchant names.
 //!
-//! Cleans a raw merchant string (uppercase, strip noise tokens), then
-//! resolves it to a canonical merchant name via exact alias match, fuzzy
-//! match against known merchants (>= 0.92 similarity), or auto-creates a
-//! new merchant + alias if neither matches.
-
+//! Descriptors arrive padded with acquirer codes, terminal ids and reference
+//! numbers. Noise stripping removes those, and the plausibility check is the
+//! safety valve: if what remains does not look like a merchant name, the raw
+//! value is kept rather than a confident guess substituted for it.
 use anyhow::Result;
 use chrono::Utc;
 use deadpool_sqlite::Pool;
@@ -15,25 +14,16 @@ use uuid::Uuid;
 
 use crate::db::merchants::{self, MerchantAliasesRow, MerchantsRow};
 
-/// Doc 30: exact alias/fuzzy match must beat this similarity score, high
-/// enough to avoid incorrectly merging distinct merchants (e.g. "SWIGGY" vs
-/// "SWIGGYINSTAMART" must never collapse into one entity).
 const FUZZY_MATCH_THRESHOLD: f64 = 0.92;
 
 static TRAILING_DIGITS_RE: OnceLock<Regex> = OnceLock::new();
 static WHITESPACE_RE: OnceLock<Regex> = OnceLock::new();
 
-/// Doc 30: "Uppercase and strip noise tokens (transaction-reference
-/// suffixes, POS terminal codes, city/location suffixes like `*BANGALORE`,
-/// trailing numeric codes)."
+/// Removes acquirer codes, terminal ids and padding from a raw descriptor.
 ///
-/// Real bank statement merchant strings consistently use `*` as the
-/// separator between the merchant's own name and everything noisy appended
-/// after it (POS terminal ID, city, order reference) — e.g.
-/// `AMAZON PAY*ORDER4821`, `SWIGGY*BANGALORE`, `UBER *TRIP HELP.UBER.COM` —
-/// so stripping from the first `*` onward covers both named noise
-/// categories in one rule. A separate pass strips a trailing numeric code
-/// for merchants that append one without a `*` separator at all.
+/// Bank descriptors carry routing detail alongside the merchant name. Stripping
+/// it is what allows the same merchant, written differently by two banks, to
+/// converge on one canonical entity.
 pub fn strip_noise_tokens(merchant_raw: &str) -> String {
     let upper = merchant_raw.to_uppercase();
 
@@ -50,39 +40,13 @@ pub fn strip_noise_tokens(merchant_raw: &str) -> String {
         .to_string()
 }
 
-/// A never-before-seen raw string is only trusted enough to become a
-/// permanent `merchants` row if it looks like a brand name, not a fragment
-/// of sentence boilerplate lifted from the wrong part of an email body
-/// (e.g. SBI's "Dear Cardholder, This is to inform you that, Rs.245.43
-/// spent..." mis-anchoring on "inform you that" instead of the merchant
-/// after "at"). A genuine post-`strip_noise_tokens` merchant string is a
-/// proper-noun/brand token that essentially never collides with common
-/// English function words, so reject any candidate where half or more of
-/// its tokens are such stopwords.
-///
 /// ponytail: naive stopword-fraction heuristic, not real NLP/NER. It now
-/// shares one vocabulary with the extraction-time gate (see below), but it
-/// still can't tell a truncated real brand ("RAZ", "CAS", "ING") from a real
-/// three-letter one. Issue #12's user-triggered LLM merchant pass is the
-/// intended upgrade path for that residue.
-///
-/// The word list lives in [`crate::extraction::lexicon::MERCHANT_STOPWORDS`],
-/// shared with [`is_stopword_only_merchant`]. These two predicates apply
-/// deliberately different *thresholds* to the same vocabulary -- the
-/// extraction-time gate rejects only an all-stopword candidate (it runs
-/// before better layers get their turn, so it must be conservative), while
-/// this one rejects at half, because it guards the far more damaging
-/// "auto-create a permanent merchants row" step. Previously each kept its own
-/// hardcoded copy of the list, and they had drifted: this one lacked
-/// "block"/"call"/"customer", that one lacked "spent"/"debited"/"credited",
-/// and neither had any banking nouns at all.
 pub fn is_plausible_merchant_name(cleaned: &str) -> bool {
     let tokens: Vec<&str> = cleaned.split_whitespace().collect();
     if tokens.is_empty() {
         return false;
     }
 
-    // Shape rule, not vocabulary -- see `MIN_MERCHANT_NAME_LEN`.
     if cleaned
         .trim()
         .chars()
@@ -104,14 +68,6 @@ pub fn is_plausible_merchant_name(cleaned: &str) -> bool {
     stopword_count * 2 < tokens.len()
 }
 
-/// Payment gateways/aggregators that prefix, rather than follow, the real
-/// merchant in a card descriptor. Uppercase; matched against the token
-/// immediately before the first `*`.
-///
-/// `RAZ` is deliberately present alongside `RAZORPAY`: banks truncate the
-/// descriptor to a fixed width, so the same Razorpay charge arrives as
-/// `RAZ*YULU`, `RAZORPAY*SWIGGY LIMITE`, or `RAZORPAY*SW` depending on how
-/// much room was left.
 const PAYMENT_AGGREGATORS: &[&str] = &[
     "PAYU",
     "PAYTM",
@@ -140,16 +96,15 @@ const PAYMENT_AGGREGATORS: &[&str] = &[
     "WWW",
 ];
 
-/// Splits a `*`-separated descriptor and returns the side that holds the real
-/// merchant name.
+/// Extracts the real merchant from an aggregator-prefixed descriptor.
 ///
-/// The default is the left side, which is right for the common shape where a
-/// merchant appends its own noise: `AMAZON PAY*ORDER4821`, `SWIGGY*BANGALORE`.
-/// But payment gateways invert it -- `PPSL*SWIGGY`, `RAZ*YULU`,
-/// `PAYU*SWIGGY LIMITED` -- and blindly keeping the left side there discards
-/// the actual merchant and keeps the processor. In the real corpus that
-/// collapsed ~164 transactions onto six meaningless names: every Swiggy order
-/// placed through Paytm's gateway became "PPSL", every Yulu ride "RAZ".
+/// Payment aggregators prefix their own name onto the merchant, as in
+/// `RAZORPAY*ACME STORE`. Without this every such payment would be attributed to
+/// the aggregator, collapsing many distinct merchants into one.
+///
+/// Only the token immediately before the star is tested, so a star appearing in
+/// a genuine merchant name does not trigger the split. The tail is cut at any
+/// further star, since some descriptors chain several segments.
 fn split_on_aggregator_star(upper: &str) -> &str {
     let Some((head, tail)) = upper.split_once('*') else {
         return upper;
@@ -157,41 +112,30 @@ fn split_on_aggregator_star(upper: &str) -> &str {
     let head_trimmed = head.trim();
     let tail_trimmed = tail.trim();
 
-    // Only override when the prefix is a *known* gateway and there is an
-    // actual name after it -- an unrecognised prefix keeps the original
-    // left-side behaviour rather than guessing.
     let head_last_token = head_trimmed
         .split_whitespace()
         .last()
         .unwrap_or(head_trimmed);
     if PAYMENT_AGGREGATORS.contains(&head_last_token) && !tail_trimmed.is_empty() {
-        // The tail may carry its own trailing noise (`SWIGGY*BANGALORE` after
-        // `PAYU*`), so keep only up to the next `*`.
         return tail_trimmed.split('*').next().unwrap_or(tail_trimmed);
     }
     head_trimmed
 }
 
-/// Runs the full pipeline: clean -> exact alias match -> fuzzy match ->
-/// create-new-merchant-if-none. Returns `(merchant_entity_id,
-/// normalized_name)`. Synchronous over an already-open `&Connection` since
-/// the real production caller (`post_processing::run_post_processing`) runs
-/// deep inside a `conn.interact()` blocking closure alongside the rest of
-/// the reconciliation pipeline, with no async/pool access at that point.
+/// Resolves a descriptor to a canonical merchant, consulting known aliases.
+///
+/// Checks the alias table before attempting to normalise, so a mapping already
+/// learned is reused rather than re-derived.
 pub fn normalize_merchant_sync(conn: &Connection, merchant_raw: &str) -> Result<(String, String)> {
     let cleaned = strip_noise_tokens(merchant_raw);
     if cleaned.is_empty() {
         return Ok((String::new(), cleaned));
     }
 
-    // 1. Exact alias match.
     if let Some(m) = merchants::select_by_alias(conn, &cleaned)? {
         return Ok((m.id, m.normalized_name));
     }
 
-    // 2. Fuzzy match against existing merchants, highest score wins, must
-    //    clear the threshold. Merchant counts are small enough (hundreds,
-    //    not millions) for in-memory scoring to be cheap.
     let all_merchants = merchants::select_all(conn)?;
 
     let mut best: Option<(f64, MerchantsRow)> = None;
@@ -204,8 +148,6 @@ pub fn normalize_merchant_sync(conn: &Connection, merchant_raw: &str) -> Result<
     }
 
     if let Some((score, m)) = best {
-        // Seed an alias so this exact raw string resolves via the fast exact
-        // path next time, without needing to re-run fuzzy matching.
         let alias = MerchantAliasesRow {
             id: Uuid::new_v4().to_string(),
             merchant_entity_id: m.id.clone(),
@@ -220,20 +162,10 @@ pub fn normalize_merchant_sync(conn: &Connection, merchant_raw: &str) -> Result<
         return Ok((m.id, m.normalized_name));
     }
 
-    // 3. No match at all -- before trusting a brand-new name forever, reject
-    //    boilerplate-shaped fragments so they can't be learned and reused
-    //    (the "seeded once, wrong forever" bug: a garbage string, once
-    //    auto-created here, would otherwise exact-match itself on every
-    //    future occurrence). Fall through as "no merchant identified"
-    //    rather than raising an error, since this is an expected outcome
-    //    for noisy extraction, not a failure.
     if !is_plausible_merchant_name(&cleaned) {
         return Ok((String::new(), String::new()));
     }
 
-    // Auto-discover a new merchant, plus an alias for faster future exact
-    // matches (Doc 15 §2 principle 8's "discovered once, reused thereafter"
-    // pattern, applied to merchants the same way it applies to instruments).
     let new_id = Uuid::new_v4().to_string();
     let now = Some(Utc::now().naive_utc());
     let merchant_row = MerchantsRow {
@@ -262,9 +194,7 @@ pub fn normalize_merchant_sync(conn: &Connection, merchant_raw: &str) -> Result<
     Ok((new_id, cleaned))
 }
 
-/// Async/pool-based wrapper around [`normalize_merchant_sync`] for callers
-/// that only have a `&Pool`, not an open `&Connection`. Returns just the
-/// canonical `normalized_name`.
+/// Async wrapper over the synchronous normaliser, for pooled callers.
 pub async fn normalize_merchant(pool: &Pool, merchant_raw: &str) -> Result<String> {
     let conn = pool.get().await?;
     let merchant_raw = merchant_raw.to_string();
@@ -305,10 +235,6 @@ mod tests {
         Pool::builder(mgr).build().unwrap()
     }
 
-    // -----------------------------------------------------------------
-    // Doc 30 TASK-TXN-007 acceptance tests
-    // -----------------------------------------------------------------
-
     #[test]
     fn test_noise_token_stripping() {
         assert_eq!(strip_noise_tokens("Amazon Pay*Order4821"), "AMAZON PAY");
@@ -321,12 +247,6 @@ mod tests {
         assert_eq!(strip_noise_tokens("Uber *Trip Help.Uber.Com"), "UBER");
     }
 
-    /// Counts rows in `merchants` -- used to assert *relative* changes
-    /// (created 0 vs 1 new row) since `dummy_migrated_pool()` already ships
-    /// real seed data (migration `20260101000030`: Amazon, Swiggy, Uber,
-    /// Starbucks, Netflix + aliases), so an absolute count of 1 would be
-    /// wrong, and reusing one of those 5 names in a manually-inserted test
-    /// fixture collides with the seed's `UNIQUE(normalized_name)` row.
     async fn merchant_count(pool: &Pool) -> i64 {
         let conn = pool.get().await.unwrap();
         conn.interact(|c| {
@@ -337,10 +257,6 @@ mod tests {
         .unwrap()
     }
 
-    /// Doc 30 TASK-TXN-007 acceptance test. Uses the real seed data
-    /// (`migration 20260101000030`'s `alias_amz2`: raw `"Amazon Pay India"`
-    /// -> normalized `"AMAZON PAY INDIA"`, pointing at merchant `"AMAZON"`)
-    /// rather than a hand-rolled fixture, so no setup step is needed at all.
     #[tokio::test]
     async fn test_exact_alias_match() {
         let pool = dummy_migrated_pool().await;
@@ -357,10 +273,6 @@ mod tests {
         );
     }
 
-    /// Doc 30 TASK-TXN-007 acceptance test. `"NETFLIXX"` (one extra
-    /// character) against the seeded `"NETFLIX"` is well above the 0.92
-    /// Jaro-Winkler threshold and has no alias registered yet -- must fall
-    /// through to the fuzzy path, not create a duplicate merchant.
     #[tokio::test]
     async fn test_fuzzy_match_above_threshold() {
         let pool = dummy_migrated_pool().await;
@@ -375,10 +287,6 @@ mod tests {
         );
     }
 
-    /// Doc 30 TASK-TXN-007 acceptance test. `"NETFLIX CINEMAS"` against the
-    /// seeded `"NETFLIX"` is a genuinely distinct business (a hypothetical
-    /// unrelated theater chain, not the streaming service) -- well below
-    /// 0.92 similarity -- and must not be merged into the existing entity.
     #[tokio::test]
     async fn test_fuzzy_match_below_threshold_creates_new_merchant() {
         let pool = dummy_migrated_pool().await;
@@ -419,10 +327,6 @@ mod tests {
         );
     }
 
-    /// Regression test for the "garbage merchant, learned once, reused
-    /// forever" bug: SBI Card's mis-anchored extraction lifting "inform you
-    /// that" out of "Dear Cardholder, This is to inform you that, Rs.245.43
-    /// spent..." must never become a permanent merchant.
     #[tokio::test]
     async fn test_boilerplate_fragment_is_rejected_not_learned() {
         let pool = dummy_migrated_pool().await;
@@ -453,8 +357,6 @@ mod tests {
         assert!(is_plausible_merchant_name("BRAND NEW CAFE"));
     }
 
-    /// The anti-merchant list, checked against the actual garbage the real
-    /// corpus produced (counts are occurrences across 38,269 emails).
     #[test]
     fn test_generic_fragments_from_real_corpus_are_rejected() {
         for (name, count) in [
@@ -469,7 +371,6 @@ mod tests {
             ("VPA 8127696200@PZ", 12),
             ("ZERO PROCESSING FEE", 1),
             ("EDGE CSB BANK CREDIT CARD", 22),
-            // Too short to be a name -- the shape rule, not the word list.
             ("X", 1),
             ("YS", 1),
             ("NK", 12),
@@ -483,9 +384,6 @@ mod tests {
         }
     }
 
-    /// The other half of the contract: expanding the blocklist with banking
-    /// nouns must not start rejecting real merchants that merely *contain*
-    /// one. Every string here was a genuine merchant in the same corpus.
     #[test]
     fn test_real_merchants_still_accepted() {
         for name in [
@@ -499,8 +397,7 @@ mod tests {
             "WWW OLACABS COM",
             "ZOMATOLIMITED",
             "VIDYARTHI BHAVAN COUNTER 2",
-            "ADITYA RAWAL", // a person is a valid counterparty for P2P
-            // Contains blocklisted nouns but is not predominantly them.
+            "ADITYA RAWAL",
             "STANDARD CHARTERED BANK",
             "AMAZON PAY INDIA",
             "PAYTM SERVICES PRIVATE LIMITED",
@@ -512,7 +409,6 @@ mod tests {
         }
     }
 
-    /// Payment-gateway descriptors put the real merchant *after* the `*`.
     #[test]
     fn test_aggregator_prefix_keeps_the_real_merchant() {
         assert_eq!(strip_noise_tokens("PPSL*SWIGGY"), "SWIGGY");
@@ -523,22 +419,16 @@ mod tests {
             "SWIGGY LIMITE"
         );
         assert_eq!(strip_noise_tokens("Cashfree*SW"), "SW");
-        // Real bodies carry the gateway inline: "at Payu*Swiggy Food on ..."
         assert_eq!(strip_noise_tokens("Payu*Swiggy Food"), "SWIGGY FOOD");
 
-        // The ordinary merchant-then-noise shape must be untouched.
         assert_eq!(strip_noise_tokens("AMAZON PAY*ORDER4821"), "AMAZON PAY");
         assert_eq!(strip_noise_tokens("SWIGGY*BANGALORE"), "SWIGGY");
         assert_eq!(strip_noise_tokens("UBER *TRIP HELP.UBER.COM"), "UBER");
-        // An unrecognised prefix keeps the previous left-side behaviour
-        // rather than guessing which side is the merchant.
         assert_eq!(strip_noise_tokens("NETFLIX*SUBSCRIPTION"), "NETFLIX");
     }
 
     #[tokio::test]
     async fn test_empty_pool_does_not_panic_on_unmigrated_schema() {
-        // Sanity check only: dummy_pool() (unmigrated) should surface a
-        // clean Err, not panic, if ever called against a schema-less DB.
         let pool = dummy_pool();
         let result = normalize_merchant(&pool, "Some Merchant").await;
         assert!(result.is_err());

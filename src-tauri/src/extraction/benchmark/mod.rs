@@ -1,30 +1,12 @@
-// Doc 30 TASK-TXN-014: Extraction Accuracy Benchmark Harness.
-//
-// The real corpus-loading / field-comparison logic already lived in
-// `phase10_quality_gates_tests.rs` (test_nfr_003/004/005) before this task
-// and is correct -- it runs the real 6-layer extraction ladder against the
-// real Document 34 §5 corpus and enforces the Document 34 §10.2 thresholds.
-// What was missing, per Doc 30's task text, is (a) a per-layer contribution
-// breakdown (which of the 6 layers produced each correct/incorrect field)
-// and (b) a structured JSON report a CI job can gate on and diff across
-// runs. This module is that reusable, corpus-independent reporting layer;
-// `phase10_quality_gates_tests.rs` feeds it real per-sample results.
-//
-// Doc 30 also names `src-tauri/tests/benchmark_corpus.rs` as a file for
-// this task. The existing corpus tests were deliberately left in place in
-// `phase10_quality_gates_tests.rs` rather than relocated into a new
-// integration-test binary: they already run correctly, are already wired
-// into `.github/workflows/benchmark.yml` via `cargo test
-// phase10_quality_gates`, and moving a working, CI-wired test for no
-// functional gain would be exactly the kind of gratuitous churn the master
-// prompt's principles warn against. Effort went into the actually-missing
-// capability instead.
-
+//! Measures extraction accuracy against the synthetic benchmark corpus.
+//!
+//! Tracks which ladder layer contributed each field, which is what makes the
+//! cost/accuracy trade-off visible: a change that improves accuracy by pushing
+//! everything to the LLM layer is a regression in the terms that matter here.
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// Document 34 §10.2 quality-gate thresholds.
 pub const ACCURACY_GATE_THRESHOLD_PCT: f64 = 95.0;
 pub const FALSE_POSITIVE_GATE_THRESHOLD_PCT: f64 = 0.1;
 
@@ -35,6 +17,7 @@ pub struct LayerStats {
 }
 
 impl LayerStats {
+    /// Accuracy as a percentage of fields correctly extracted.
     pub fn accuracy_pct(&self) -> f64 {
         if self.total == 0 {
             0.0
@@ -44,22 +27,22 @@ impl LayerStats {
     }
 }
 
-/// Accumulates per-extraction-layer correct/total field counts as a
-/// benchmark run compares each sample's actual result against its
-/// ground-truth label. Keyed by `ExtractionResult::extraction_method`
-/// (e.g. "learned_patterns", "bank_templates", "generic_regex", "nlp",
-/// "layer5_statement_crossref", "llm_layer6") plus a synthetic
-/// `"no_extraction"` bucket for samples where every layer returned nothing.
 #[derive(Debug, Default)]
 pub struct LayerContributionTracker {
     per_layer: BTreeMap<String, LayerStats>,
 }
 
 impl LayerContributionTracker {
+    /// An empty tracker with no layer recorded yet.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Records one field outcome against the layer that produced it.
+    ///
+    /// Attributing results per layer is what makes the cost/accuracy trade-off
+    /// visible -- accuracy bought by escalating everything to the LLM is a regression
+    /// in the terms that matter here, not an improvement.
     pub fn record(&mut self, extraction_method: Option<&str>, field_correct: bool) {
         let key = extraction_method.unwrap_or("no_extraction").to_string();
         let entry = self.per_layer.entry(key).or_default();
@@ -69,13 +52,15 @@ impl LayerContributionTracker {
         }
     }
 
+    /// Consumes the tracker into per-layer statistics.
+    ///
+    /// A BTreeMap so layers report in a stable order and successive runs are directly
+    /// comparable.
     pub fn into_breakdown(self) -> BTreeMap<String, LayerStats> {
         self.per_layer
     }
 }
 
-/// A single quality-gate metric (extraction accuracy, or false-positive
-/// rate) as reported for one benchmark run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricResult {
     pub value_pct: f64,
@@ -85,6 +70,7 @@ pub struct MetricResult {
 }
 
 impl MetricResult {
+    /// Builds a metric result from its counts.
     pub fn new(
         value_pct: f64,
         threshold_pct: f64,
@@ -105,16 +91,6 @@ impl MetricResult {
     }
 }
 
-/// Structured JSON report for one benchmark metric run (Doc 30 TASK-TXN-014:
-/// "output a structured JSON report the CI job can gate on; track results
-/// over time"). Kept scoped to a single metric per report file, since the
-/// underlying corpus tests execute as separate, independently-parallelized
-/// `cargo test` cases -- one shared mutable file across concurrent test
-/// threads would race. `.github/workflows/benchmark.yml` uploads each
-/// report as a CI artifact, which is what gives "track results over time":
-/// GitHub retains one artifact set per run, so historical comparison is a
-/// matter of diffing artifacts across nightly runs, not something this
-/// process needs to maintain state for itself.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenchmarkReport {
     pub metric: String,
@@ -124,6 +100,7 @@ pub struct BenchmarkReport {
 }
 
 impl BenchmarkReport {
+    /// Assembles the full benchmark report from its metrics and layer breakdown.
     pub fn new(
         metric: &str,
         result: MetricResult,
@@ -137,15 +114,12 @@ impl BenchmarkReport {
         }
     }
 
+    /// Serialises the report for storage and diffing between runs.
     pub fn to_json_pretty(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
     }
 
-    /// Best-effort write. Report generation must never flip a passing test
-    /// to a failure just because the filesystem is read-only or the target
-    /// directory can't be created in some CI sandbox -- the gate is the
-    /// `assert!` on `result.gate_passed` still living in the test itself;
-    /// this is a side artifact, not the pass/fail mechanism.
+    /// Writes the report to disk.
     pub fn write_to_path(&self, path: &Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -155,10 +129,7 @@ impl BenchmarkReport {
     }
 }
 
-/// Where to write a benchmark report for the given metric name. Honors
-/// `BENCHMARK_REPORT_DIR` (set by `.github/workflows/benchmark.yml`) so CI
-/// can control the artifact-upload location; falls back to
-/// `target/benchmark/` for local runs.
+/// Path of the report file for a benchmark metric.
 pub fn report_path(metric: &str) -> std::path::PathBuf {
     let dir =
         std::env::var("BENCHMARK_REPORT_DIR").unwrap_or_else(|_| "target/benchmark".to_string());

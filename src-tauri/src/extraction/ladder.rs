@@ -1,3 +1,17 @@
+//! The extraction ladder: ordered fallback strategies for one message.
+//!
+//! Layers run cheapest-first and stop as soon as one produces a result of
+//! sufficient confidence. A learned per-bank rule costs nothing and handles the
+//! common case; only when no rule matches, or a rule returns implausible
+//! output, does the message escalate to the LLM layer.
+//!
+//! `ExtractionResult` is deliberately all-`Option`: extraction is best-effort,
+//! and a partially recovered transaction is more useful than none, so a layer
+//! contributes what it can and leaves the rest for the next.
+//!
+//! Template hashing is what makes learning possible -- messages sharing a
+//! structure hash come from the same bank template, so a rule synthesised from
+//! one applies to the rest.
 use crate::extraction::llm::Layer6Outcome;
 use crate::extraction::normalization::clean_masked_identifier;
 use anyhow::Result;
@@ -10,80 +24,43 @@ use std::pin::Pin;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ExtractionResult {
-    // Mandatory fields
     pub amount_minor: Option<i64>,
     pub currency: Option<String>,
     pub direction: Option<String>,
     pub event_time: Option<i64>,
     pub merchant_raw: Option<String>,
 
-    // Optional fields
     pub reference_id: Option<String>,
     pub balance_after: Option<i64>,
     pub original_amount_minor: Option<i64>,
     pub original_currency: Option<String>,
 
-    // Instrument signal fields (populated post-extraction in run_extraction_ladder)
     pub instrument_type: Option<String>,
     pub issuer_name: Option<String>,
     pub masked_identifier: Option<String>,
     pub network: Option<String>,
     pub upi_vpa: Option<String>,
 
-    // Metadata
     pub extraction_method: String,
-    /// Doc 30 TASK-TXN-001's named `ExtractionResult` field. Only Layer 5
-    /// (LLM) has a spec-defined value (0.7, Doc 12 §6.3) — the other layers
-    /// leave this `None` rather than inventing an unspecified number.
-    /// Consumed by TASK-TXN-010 (canonical creation) to gate `pending_review`.
     pub confidence_score: Option<f64>,
-    /// Doc 30 TASK-TXN-001's named `ExtractionResult` field. No document
-    /// defines a versioning scheme for bank-template parsers yet, so this
-    /// stays `None` everywhere until one exists — left unpopulated rather
-    /// than guessed.
     pub parser_version: Option<String>,
 
-    /// Doc 30 TASK-TXN-012: populated when Layer 2/3 detects EMI language
-    /// ("EMI", "installment X of Y", "converted to EMI") in the source
-    /// text. `emi_total_installments`/`emi_installment_number` come from
-    /// the "X of Y" pattern when present; `emi_original_amount_minor` is
-    /// the pre-EMI-conversion purchase amount when the email states it
-    /// (distinct from `amount_minor`, which is this installment's amount).
     pub emi_total_installments: Option<i32>,
     pub emi_installment_number: Option<i32>,
     pub emi_original_amount_minor: Option<i64>,
 
-    /// Doc 30 TASK-TXN-013: exchange rate parsed directly from the bank's
-    /// email text when explicitly stated (FRS §6.4: "No external live API
-    /// calls... are permitted to backfill this rate"). `None` when the bank
-    /// doesn't print it, even if `original_currency`/`original_amount_minor`
-    /// are populated -- that combination is exactly what should route a
-    /// transaction to `pending_fx` rather than being guessed at here.
     pub exchange_rate: Option<f64>,
 
-    /// `true` when `event_time` was parsed from a bare numeric date
-    /// (`%d/%m/%Y`, `%d-%m-%Y`, or `%m-%d-%Y`) whose day-of-month and month
-    /// are both <=12, i.e. a DD/MM-vs-MM/DD swap is a genuinely different
-    /// but equally well-formed date. Month-name formats (`%d-%b-%Y` etc.)
-    /// and every non-`parse_date_generic` source (bank templates, Layer 5
-    /// statement rows) never set this, which is what scopes
-    /// `apply_date_cross_check` to only the cases that are actually
-    /// ambiguous -- see that function's doc comment for why this can't be
-    /// reconstructed after the fact from the resolved date's fields alone.
     pub event_time_ambiguous: bool,
-    /// Set by `apply_date_cross_check` when Gmail's `internalDate` was used
-    /// to arbitrate an `event_time_ambiguous` date: `"swapped_by_anchor"`
-    /// (event_time corrected) or `"anchor_mismatch_needs_review"` (left
-    /// alone, confidence downgraded instead). `None` otherwise.
     pub date_cross_check_flag: Option<String>,
-    /// Display-only transaction rail/channel (`"upi"`, `"imps"`, `"neft"`,
-    /// `"internal_transfer"`, etc. -- see `detect_channel`'s doc comment for
-    /// the full taxonomy). Set by `detect_channel`, consumed only for
-    /// display; never read by reconciliation/dedup matching.
     pub channel: Option<String>,
 }
 
 impl ExtractionResult {
+    /// Whether this result carries the mandatory fields a transaction needs.
+    ///
+    /// The ladder's stopping condition: a layer that returns an invalid result has
+    /// not really succeeded, so the next layer still runs.
     pub fn is_valid(&self) -> bool {
         let has_tx_fields = self.amount_minor.is_some()
             && self.currency.is_some()
@@ -99,22 +76,30 @@ impl ExtractionResult {
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 pub trait ExtractionLayer: Send + Sync {
+    /// Runs this layer against a message.
+    ///
+    /// Boxed and pinned because the trait is used behind a trait object while some
+    /// implementations are async -- a plain async trait method is not object safe.
     fn extract<'a>(
         &'a self,
         pool: &'a Pool,
         bank_name: &'a str,
         body: &'a str,
     ) -> BoxFuture<'a, Option<ExtractionResult>>;
+    /// Short identifier recorded on the result, so the producing layer is known.
     fn layer_name(&self) -> &'static str;
 }
 
-/// audit_02 #5: both patterns are constants, but were compiled on every call.
-/// `compute_template_hash` runs on every Layer 2 attempt plus the learning,
-/// statement-row, and merchant-cleanup paths, so a historical scan paid two
-/// regex compilations per message for a value that never changes.
 static TEMPLATE_HASH_DIGITS_RE: OnceLock<Regex> = OnceLock::new();
 static TEMPLATE_HASH_WHITESPACE_RE: OnceLock<Regex> = OnceLock::new();
 
+/// Hashes a message's structure, ignoring its variable content.
+///
+/// The key idea behind learning. Digits are replaced with a placeholder and
+/// whitespace collapsed, so every alert generated from one bank template hashes
+/// identically regardless of amount, date or merchant. That is what lets a rule
+/// synthesised from a single message apply to every future message of the same
+/// shape -- and what lets drift be detected when a bank changes its template.
 pub fn compute_template_hash(body: &str) -> String {
     let re_digits = TEMPLATE_HASH_DIGITS_RE.get_or_init(|| Regex::new(r"\d+").unwrap());
     let re_whitespace = TEMPLATE_HASH_WHITESPACE_RE.get_or_init(|| Regex::new(r"\s+").unwrap());
@@ -127,24 +112,10 @@ pub fn compute_template_hash(body: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-/// Reads every live learned rule for `(bank_name, source_type)` and overlays
-/// the values they extract onto `result`.
+/// Applies this bank's learned rules to a message.
 ///
-/// Used at both points a learned rule matters, which is what lets one function
-/// replace the two the old design needed:
-/// * as ladder Layer 1, starting from an empty result;
-/// * as an overlay on whichever layer actually won, because a single-field rule
-///   (the overwhelmingly common shape a correction produces) can never satisfy
-///   `is_valid()` on its own, so Layer 1 would discard it every time and the
-///   user's correction would never reach a real extraction.
-///
-/// Span rules are bank-wide: a rule learned from one template shape simply does
-/// not match a differently-shaped body, so variants coexist without any
-/// matching-logic changes. Override rules have no regex to gate on, so they are
-/// scoped to their own template hash -- otherwise a "this template is actually a
-/// credit" correction would relabel every email from the bank.
-///
-/// Returns whether any rule fired.
+/// The cheapest layer, and the one that handles the common case for free. Runs
+/// before any generic parsing or inference is attempted.
 pub async fn apply_learned_fields(
     pool: &Pool,
     bank_name: &str,
@@ -206,10 +177,6 @@ pub async fn apply_learned_fields(
             "direction" => result.direction = Some(captured.to_lowercase()),
             "currency" => result.currency = Some(captured.to_uppercase()),
             "event_time" => {
-                // A learned capture is either a literal epoch (rare,
-                // DB-authored) or a date string in whatever format the bank
-                // prints. Neither parsing leaves the field `None` rather than a
-                // fabricated date, which correctly fails `is_valid()`.
                 match captured.parse::<i64>().ok() {
                     Some(ts) => result.event_time = Some(ts),
                     None => match parse_date_generic(captured) {
@@ -235,29 +202,14 @@ pub async fn apply_learned_fields(
     fired
 }
 
-/// audit_02 #6: Doc 30 TASK-TXN-004 puts Layers 1/2 at "typically 0.9+", the
-/// same sentence that gives Layer 3 its documented 0.5–0.7 band. Only Layer 3
-/// ever implemented its half, so a bank-template or learned-rule extraction
-/// left `confidence_score` NULL and was treated as having *no* signal:
-/// `canonical.rs`'s `maybe_overwrite_from_higher_confidence_email` returns
-/// early on `None`, so a template match — the most reliable extraction there
-/// is — could never correct fields a weaker generic-regex observation had
-/// already written.
-///
-/// One value for both layers rather than a ranking between them: nothing reads
-/// such a distinction, and inventing one would be a number with no source.
-///
-/// Layer 4 (`nlp`) is deliberately left `None`. Doc 30 gives it no band, it
-/// only runs once Layer 3 has already failed, and `None` already produces the
-/// right precedence outcome (never overwrites). Giving it a number below
-/// `LAYER3_BASE_CONFIDENCE` would also silently enrol it in
-/// `alert_worker`'s `confidence_score < 0.5` "SMS Offline" query — a
-/// behaviour change nothing in the audit asked for.
 const LAYER12_CONFIDENCE: f64 = 0.95;
 
-// Layer 1: learned field rules (synthesized from user corrections)
 pub struct LearnedFieldLayer;
 impl ExtractionLayer for LearnedFieldLayer {
+    /// Layer 1: applies rules learned from this bank's previous messages.
+    ///
+    /// The cheapest layer and the one that handles the steady state, since most mail
+    /// a user receives comes from banks the app has already learned.
     fn extract<'a>(
         &'a self,
         pool: &'a Pool,
@@ -278,6 +230,7 @@ impl ExtractionLayer for LearnedFieldLayer {
             }
         })
     }
+    /// Identifies results produced by the learned-rule layer.
     fn layer_name(&self) -> &'static str {
         "learned_fields"
     }
@@ -295,18 +248,11 @@ static GENERIC_REF_RE: OnceLock<Regex> = OnceLock::new();
 static GENERIC_CREDIT_DIRECTION_RE: OnceLock<Regex> = OnceLock::new();
 static GENERIC_DEBIT_DIRECTION_RE: OnceLock<Regex> = OnceLock::new();
 
-/// gmail false-negative remediation: `GenericRegexLayer`, `Layer5StatementCrossrefLayer`,
-/// and `cross_check_amount` each used to independently call
-/// `GENERIC_CURRENCY_AMOUNT_PREFIX_RE.get_or_init(|| Regex::new(<pattern>))`
-/// with their own copy of the pattern string -- `OnceLock::get_or_init`
-/// only ever runs the *first* caller's closure (whichever layer happens to
-/// run first for the process), so three independently-edited copies could
-/// silently drift out of sync with only the first one ever taking effect.
-/// One shared function is the only way to guarantee all three call sites
-/// see the same pattern. Also fixes a real false negative: a body stating
-/// an amount as a spelled-out ISO code ("USD 1.00", e.g. a declined
-/// international card transaction) matched neither the ₹/Rs/INR nor the
-/// bare `$` alternatives.
+/// The prefix and suffix currency-amount patterns, compiled once.
+///
+/// Two are needed because both orderings occur in the wild: `INR 1,200.00` and
+/// `1,200.00 INR`. Lazily initialised, since regex compilation is expensive and
+/// these run on every message.
 fn generic_currency_amount_regexes() -> (&'static Regex, &'static Regex) {
     let prefix = GENERIC_CURRENCY_AMOUNT_PREFIX_RE.get_or_init(|| {
         Regex::new(r"(?i)(rs\.?|inr|₹|\$|usd|eur|gbp|aed|sgd|aud|cad|jpy|chf)\s*([\d,]+(?:\.\d+)?)")
@@ -319,15 +265,11 @@ fn generic_currency_amount_regexes() -> (&'static Regex, &'static Regex) {
     (prefix, suffix)
 }
 
-/// gmail false-negative remediation: a neobank "money credited" template
-/// (e.g. Jupiter) says "...was credited **to your account**" before it
-/// separately labels the real counterparty further down ("Payment
-/// **from**: ADITYA RAWAL"). The single-match ambiguous-tier lookup used to
-/// stop at the first "to/from/at/for/by" hit and take "your account" itself
-/// as the merchant -- a real value (not empty), so nothing downstream caught
-/// it. Matches self-referential captures ("your account", "my savings
-/// account", "the account") so the caller can skip them and keep scanning
-/// for the real counterparty instead.
+/// Rejects merchant candidates that are not merchants.
+///
+/// Filters the bank's own name and generic banking vocabulary. Without this, the
+/// most common "merchant" in a user's ledger would be their own bank, since its
+/// name appears in every alert it sends.
 fn is_invalid_merchant(candidate: &str, bank_name: &str) -> bool {
     let re = GENERIC_SELF_REFERENTIAL_MERCHANT_RE
         .get_or_init(|| Regex::new(r"(?i)^(?:your|my|the)\b.*\baccount$|^account$").unwrap());
@@ -335,22 +277,10 @@ fn is_invalid_merchant(candidate: &str, bank_name: &str) -> bool {
         return true;
     }
 
-    // gmail false-negative remediation: a boilerplate disclaimer footer
-    // ("please block your card immediately by calling...", "write to us
-    // at...") satisfies the same ambiguous "at/to/from/for/by + 2-40 chars"
-    // shape a real merchant label does, so it can win the leftmost-match
-    // scan when the true merchant capture fails first (e.g. an underscore
-    // in the descriptor breaking the value char class -- see
-    // `MERCHANT_TERMINATOR`'s doc comment). A real merchant name is never
-    // built entirely out of instruction filler words, so reject those here
-    // regardless of which keyword or layer produced the candidate.
     if crate::extraction::lexicon::is_stopword_only_merchant(candidate.trim()) {
         return true;
     }
 
-    // A candidate with no letters at all (pure digits/punctuation, e.g. a
-    // reference number or phone extension the terminator failed to exclude)
-    // is never a real merchant name.
     if !candidate.chars().any(|c| c.is_alphabetic()) {
         return true;
     }
@@ -378,21 +308,10 @@ fn is_invalid_merchant(candidate: &str, bank_name: &str) -> bool {
 
 static VPA_MERCHANT_FALLBACK_RE: OnceLock<Regex> = OnceLock::new();
 
-/// A personal UPI P2P transfer (e.g. HDFC's "Rs.750.00 is debited from your
-/// account ending 4691 towards VPA 8127696200@jupiteraxis (ADITYA RAWAL) on
-/// 07-06-26.") has no real "merchant" -- the counterparty is a VPA handle,
-/// not a business. `MERCHANT_TERMINATOR`'s value char class excludes `(`/`)`
-/// so the parenthesised display name can't be captured anyway, and even if
-/// it could, that name is often the *account holder's own* registered name
-/// (as this real example is), not the payee's -- printed by the bank for
-/// confirmation, not identification. The VPA handle itself is the only
-/// unambiguous signal here. Deliberately narrower than
-/// `extract_instrument_signals`'s general-purpose VPA detector (which
-/// matches any email-shaped string): requires the literal word "VPA"
-/// immediately before the handle, the standard phrasing every bank uses for
-/// this, so a footer support-email address never wins this fallback -- a
-/// false positive here becomes a wrong user-facing merchant name, not just
-/// supplementary instrument metadata.
+/// Derives a merchant name from a UPI VPA when nothing better was found.
+///
+/// A VPA's handle frequently identifies the payee, which is often the only clue
+/// a terse UPI alert carries.
 fn vpa_merchant_fallback(body: &str) -> Option<String> {
     let re = VPA_MERCHANT_FALLBACK_RE
         .get_or_init(|| Regex::new(r"(?i)\bVPA\s+([\w.\-+]+@[\w.\-]+)").unwrap());
@@ -401,7 +320,6 @@ fn vpa_merchant_fallback(body: &str) -> Option<String> {
         .map(|m| m.as_str().to_lowercase().trim_end_matches('.').to_string())
 }
 
-// Instrument signal detection statics
 static INSTR_CARD_LAST4_RE: OnceLock<Regex> = OnceLock::new();
 static INSTR_ACCOUNT_SUFFIX_RE: OnceLock<Regex> = OnceLock::new();
 static INSTR_USER_UPI_VPA_DEBIT_RE: OnceLock<Regex> = OnceLock::new();
@@ -411,7 +329,6 @@ static INSTR_CP_UPI_VPA_DEBIT_RE: OnceLock<Regex> = OnceLock::new();
 static INSTR_CP_UPI_VPA_CREDIT_RE: OnceLock<Regex> = OnceLock::new();
 static INSTR_NETWORK_RE: OnceLock<Regex> = OnceLock::new();
 
-/// InstrumentSignals holds the parsed signals extracted from an email body.
 #[derive(Debug, Default, Clone)]
 pub struct InstrumentSignals {
     pub instrument_type: Option<String>,
@@ -421,19 +338,17 @@ pub struct InstrumentSignals {
     pub upi_vpa: Option<String>,
 }
 
-/// Extracts instrument signals from a bank email body.
-/// Detects masked card last-4, bank account suffix, UPI VPA, issuer name, and card network.
+/// Extracts the clues identifying which account a transaction belongs to.
 ///
-/// # Arguments
-/// * `bank_name` - The issuer/bank name (e.g. "HDFC Bank").
-/// * `body` - The plain-text body of the email.
+/// Recovers issuer, masked identifier, card network and VPA. These feed
+/// attribution, and their absence is precisely what leaves a transaction
+/// unassigned rather than being guessed into an arbitrary account.
 pub fn extract_instrument_signals(bank_name: &str, body: &str) -> InstrumentSignals {
     let mut signals = InstrumentSignals {
         issuer_name: Some(bank_name.to_string()),
         ..Default::default()
     };
 
-    // 1. Try to detect a masked card last-4 (e.g. "card ending 1234", "card XX1234", "Card no. XX1234", "card XXXX 1234")
     let card_re = INSTR_CARD_LAST4_RE.get_or_init(|| {
         Regex::new(r"(?i)\bcard\b(?:\s+(?:ending|no\.?|number|#|is|in))?\s*(?:with\s+)?(?:[Xx*\s\-.]*?)(\d{2,4})\b")
             .unwrap()
@@ -441,7 +356,6 @@ pub fn extract_instrument_signals(bank_name: &str, body: &str) -> InstrumentSign
     if let Some(caps) = card_re.captures(body) {
         if let Some(last4) = caps.get(1) {
             signals.masked_identifier = Some(clean_masked_identifier(last4.as_str()));
-            // Check whether it's a credit or debit card
             let body_lower = body.to_lowercase();
             if body_lower.contains("credit card") || body_lower.contains("cc") {
                 signals.instrument_type = Some("credit_card".to_string());
@@ -453,7 +367,6 @@ pub fn extract_instrument_signals(bank_name: &str, body: &str) -> InstrumentSign
         }
     }
 
-    // 2. If no card found, try bank account suffix (e.g. "A/c ending 1234", "account ending 1234", "account XXXX 1234")
     if signals.masked_identifier.is_none() {
         let acc_re = INSTR_ACCOUNT_SUFFIX_RE.get_or_init(|| {
             Regex::new(
@@ -469,9 +382,6 @@ pub fn extract_instrument_signals(bank_name: &str, body: &str) -> InstrumentSign
         }
     }
 
-    // 3. Direction-aware extraction of user's UPI VPA.
-    // Counterparty VPAs (e.g. 'Paid to ...', 'towards VPA ...', 'payee ...') belong to external
-    // merchants/receivers and MUST NEVER be saved as the user's VPA instrument.
     let body_lower = body.to_lowercase();
     let is_credit = body_lower.contains("credited")
         || body_lower.contains("received")
@@ -479,7 +389,6 @@ pub fn extract_instrument_signals(bank_name: &str, body: &str) -> InstrumentSign
         || body_lower.contains("added to")
         || body_lower.contains("refund");
 
-    // Collect counterparty VPAs (payees in debits, senders in credits) to build an explicit blacklist
     let mut cp_vpas: Vec<String> = Vec::new();
 
     if is_credit {
@@ -508,7 +417,6 @@ pub fn extract_instrument_signals(bank_name: &str, body: &str) -> InstrumentSign
         }
     }
 
-    // Try extracting explicit User VPA candidates (source VPA in debits, destination VPA in credits)
     let mut user_vpa_candidates: Vec<String> = Vec::new();
 
     let user_explicit_re = INSTR_USER_UPI_VPA_EXPLICIT_RE.get_or_init(|| {
@@ -564,14 +472,12 @@ pub fn extract_instrument_signals(bank_name: &str, body: &str) -> InstrumentSign
 
     if let Some(vpa_str) = detected_user_vpa {
         signals.upi_vpa = Some(vpa_str.clone());
-        // If we didn't find any card or bank account suffix, use the user's VPA as the primary instrument
         if signals.masked_identifier.is_none() {
             signals.masked_identifier = Some(vpa_str);
             signals.instrument_type = Some("upi_vpa".to_string());
         }
     }
 
-    // 4. Detect card network (Visa, Mastercard, RuPay, Amex)
     let network_re = INSTR_NETWORK_RE.get_or_init(|| {
         Regex::new(r"(?i)\b(visa|mastercard|master card|rupay|amex|american express|discover)\b")
             .unwrap()
@@ -598,21 +504,7 @@ pub fn extract_instrument_signals(bank_name: &str, body: &str) -> InstrumentSign
     signals
 }
 
-/// Fills an extraction's instrument fields from the body-wide
-/// [`extract_instrument_signals`] heuristics, **without overwriting anything
-/// the producing layer already resolved**.
-///
-/// Every caller used to assign these unconditionally, which was harmless only
-/// while no layer populated them itself. Now that a Layer 2 template can
-/// capture the last-4, VPA, and instrument type from its own regex — the
-/// authoritative, bank-format-aware reading — an unconditional assignment
-/// would discard the precise value in favour of the generic guess (e.g. HDFC's
-/// UPI alert names both the payee's VPA and the account's last-4; the body-wide
-/// card regex picks whichever appears first). Fill-if-absent keeps the generic
-/// path as the fallback it was meant to be.
-///
-/// `issuer_name` is exempt: it is derived from `bank_name`, not from the body,
-/// so it is the same value either way.
+/// Writes the recovered instrument signals onto an extraction result.
 pub(crate) fn apply_instrument_signals(obs: &mut ExtractionResult, bank_name: &str, body: &str) {
     let signals = extract_instrument_signals(bank_name, body);
     obs.issuer_name = signals.issuer_name;
@@ -626,17 +518,10 @@ static INTERNAL_TRANSFER_RE: OnceLock<Regex> = OnceLock::new();
 static POS_WORD_RE: OnceLock<Regex> = OnceLock::new();
 static ATM_WORD_RE: OnceLock<Regex> = OnceLock::new();
 
-/// Display-only transaction rail/channel, distinct from `instrument_type`
-/// (which models *what account/card* the money moved through). Never
-/// consumed by reconciliation/dedup -- purely a metadata label surfaced in
-/// the UI. Call after `apply_instrument_signals` and EMI detection have
-/// already populated `obs`, since the `upi_credit_card` and `emi` branches
-/// below depend on their output.
+/// Infers the payment channel -- UPI, card, NEFT, ATM and so on.
 ///
-/// First match wins; order runs most-specific-and-useful first so e.g. a
-/// self-transfer that happens to mention "IMPS" still surfaces as
-/// `internal_transfer`, and a BNPL provider's "loan EMI" phrasing surfaces
-/// as `bnpl`/`loan` rather than the generic `emi` fallback.
+/// Uses both the message text and what extraction already established, since the
+/// presence of a VPA or a card identifier is itself strong evidence of channel.
 pub(crate) fn detect_channel(obs: &ExtractionResult, body: &str) -> Option<String> {
     let internal_transfer_re = INTERNAL_TRANSFER_RE.get_or_init(|| {
         Regex::new(
@@ -651,10 +536,6 @@ pub(crate) fn detect_channel(obs: &ExtractionResult, body: &str) -> Option<Strin
     let lower = body.to_lowercase();
     let has = |w: &str| lower.contains(w);
 
-    // BNPL/loan detection is best-effort: no BNPL provider (LazyPay, Simpl,
-    // ICICI PayLater, ...) or loan-specific template exists in
-    // `assets/bank_templates` today, so this is a plain keyword match with
-    // no real corpus to validate precision against yet.
     if has("bnpl") || has("buy now pay later") || has("pay later") {
         return Some("bnpl".to_string());
     }
@@ -699,6 +580,10 @@ pub(crate) fn detect_channel(obs: &ExtractionResult, body: &str) -> Option<Strin
     None
 }
 
+/// Parses a currency string into integer minor units.
+///
+/// Returns None rather than zero on failure. A zero amount would be recorded as a
+/// real transaction of no value, which is worse than recording nothing.
 fn parse_amount(s: &str) -> Option<i64> {
     let clean: String = s
         .chars()
@@ -710,42 +595,16 @@ fn parse_amount(s: &str) -> Option<i64> {
         .map(|v| (v * 100.0).round() as i64)
 }
 
-// Layer 2 date parsing intentionally shares `parse_date_generic` with Layer 3
-// rather than keeping its own narrower list. The old Layer-2-only `parse_date`
-// accepted just `%d-%b-%y`/`%d-%b-%Y`, so a template that matched a body whose
-// date was printed any other way (`23-12-25` HDFC UPI, `10/01/26` SBI Card,
-// `05 AUG 2025` IDFC, `Jan 08, 2026` Jupiter, `17-08-2025` Axis) produced
-// `event_time: None`, failed `ExtractionResult::is_valid()`, and had its
-// otherwise-correct match silently discarded. One shared parser also means a
-// newly supported format benefits both layers instead of drifting between them.
-
-/// Doc 30 TASK-TXN-003: "Each template stored as versioned JSON under
-/// `bank_templates/<bank>_<version>.json` so templates can ship via app
-/// updates without an extraction-engine rewrite." Regex *data* (pattern
-/// string + which capture group is amount/merchant/date) lives in these
-/// JSON files, not as `Regex::new(...)` literals in match arms -- adding or
-/// adjusting a bank's format is now a data-file change, not a Rust-code
-/// change to this dispatch logic. Embedded via `include_str!` (compiled
-/// into the binary, parsed once at first use) rather than read from a
-/// runtime resource directory: a new/updated template still ships in the
-/// next app release either way, and this avoids Tauri resource-path
-/// resolution being a new failure mode for a financial-data-critical path.
+/// Direction assumed when a bank template does not state one.
 fn default_pattern_direction() -> String {
     "debit".to_string()
 }
 
-/// Layer 2 used to hardcode `currency: Some("INR")` for every match, which is
-/// correct for the Indian banks that had the only 6 bundled templates and
-/// silently wrong for every non-Indian registry bank (HSBC, Barclays, Chase,
-/// …). Per-pattern, defaulting to INR so existing templates are unchanged.
+/// Currency assumed when a bank template omits it.
 fn default_pattern_currency() -> String {
     "INR".to_string()
 }
 
-/// Every `txn_type` a template may declare. Enforced by
-/// `bank_template_integrity` rather than by serde, so a typo in one of ~139
-/// data files fails a test with a readable message instead of making the whole
-/// bundle fail to deserialize at first use.
 pub const TEMPLATE_TXN_TYPES: &[&str] = &[
     "credit_card",
     "debit_card",
@@ -764,46 +623,24 @@ struct BankPatternTemplate {
     name: String,
     regex: String,
     amount_group: usize,
-    /// Optional because not every transaction shape has a counterparty: an
-    /// `account_balance` alert prints a balance and nothing else, and
-    /// `ExtractionResult::is_valid()` already accepts a balance-only result.
     #[serde(default)]
     merchant_group: Option<usize>,
     #[serde(default)]
     date_group: Option<usize>,
     #[serde(default)]
     date_fallback_epoch: Option<i64>,
-    /// Fixed direction this pattern implies ("debit" or "credit") --
-    /// templates are single-purpose per regex (one pattern matches one
-    /// transaction shape, e.g. "spent"/"debited" vs "credited"/"refund"),
-    /// so a fixed per-pattern value is sufficient; no capture group is
-    /// needed. Defaults to "debit" so the 6 existing bundled templates
-    /// (all debit-shaped) don't need every entry rewritten, but every new
-    /// pattern should set this explicitly rather than rely on the default.
     #[serde(default = "default_pattern_direction")]
     direction: String,
-    /// Which transaction shape this pattern recognises (`TEMPLATE_TXN_TYPES`).
-    /// Seeds `instrument_type` when the pattern implies one, and is the
-    /// per-pattern label downstream categorisation keys off.
     #[serde(default)]
     txn_type: Option<String>,
-    /// Available/closing balance printed alongside the transaction, or the
-    /// only figure in an `account_balance` alert.
     #[serde(default)]
     balance_group: Option<usize>,
-    /// UPI RRN, authorization code, or the bank's own transaction reference.
     #[serde(default)]
     reference_group: Option<usize>,
-    /// Card/account last-4 as printed. Passed through
-    /// `normalization::clean_masked_identifier`, so `XXXX1234`, `**4691`,
-    /// and `1234` all normalise the same way.
     #[serde(default)]
     last4_group: Option<usize>,
     #[serde(default)]
     upi_vpa_group: Option<usize>,
-    /// Mandate cadence ("monthly"/"weekly"/…) for `txn_type: "mandate"`
-    /// patterns; ignored by `BankTemplateLayer`, read by
-    /// `mandate_extractor::bank_mandate_template`.
     #[serde(default)]
     cadence_group: Option<usize>,
     #[serde(default = "default_pattern_currency")]
@@ -819,9 +656,6 @@ struct BankTemplateFile {
 }
 
 pub(crate) struct CompiledBankPattern {
-    /// Only read by `test_bank_template_integrity`, which needs it to name the
-    /// offending pattern across ~144 generated files -- an assertion failure
-    /// saying "some pattern in some file" would be useless.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) name: String,
     pub(crate) regex: Regex,
@@ -839,23 +673,14 @@ pub(crate) struct CompiledBankPattern {
     pub(crate) currency: String,
 }
 
-// `BANK_TEMPLATE_FILES`: every `assets/bank_templates/*.json` file, embedded
-// at compile time as `(filename, contents)` pairs. Generated by `build.rs`
-// from a directory glob rather than hand-maintained here: with one file per
-// verified-sender registry bank there are ~139 of them, and a hand-written
-// `include_str!` list makes "added the JSON, forgot the line" a silent
-// whole-bank coverage gap. Adding a bank is now purely a data-file change.
-// The filename rides along so integrity failures name the file to fix.
 include!(concat!(env!("OUT_DIR"), "/bank_template_files.rs"));
 
-/// Whether `bank_name` has a compiled Layer 2 template at all -- distinct
-/// from "had a template but the regex didn't match this body." Callers use
-/// this to keep an expected coverage gap at debug level instead of logging
-/// it as a failure.
+/// Whether a hand-written template exists for this bank.
 pub fn bank_has_template(bank_name: &str) -> bool {
     bank_templates().contains_key(bank_name)
 }
 
+/// The template set for a bank, if one is defined.
 pub(crate) fn bank_templates(
 ) -> &'static std::collections::HashMap<String, Vec<CompiledBankPattern>> {
     static TEMPLATES: OnceLock<std::collections::HashMap<String, Vec<CompiledBankPattern>>> =
@@ -897,19 +722,7 @@ pub(crate) fn bank_templates(
     })
 }
 
-/// Maps a template's `txn_type` onto the `instruments.type` enum.
-///
-/// These are two different vocabularies and must not be conflated: `txn_type`
-/// describes *what kind of transaction this pattern recognises* (so it can be
-/// as granular as `net_banking` or `emi`), while `instruments.type` is a
-/// closed enum enforced by a SQL `CHECK` constraint in
-/// `migrations/20260101000001_initial_core_schema.sql`. Passing a `txn_type`
-/// straight through produces a constraint violation deep inside reconciliation,
-/// surfacing as an opaque "Query returned no rows" rather than anything that
-/// names the real problem.
-///
-/// `None` means "this pattern implies no particular instrument" -- the
-/// body-wide heuristics in [`apply_instrument_signals`] then get their say.
+/// Maps a template's transaction type onto an instrument type.
 fn instrument_type_for_txn_type(txn_type: &str) -> Option<String> {
     let mapped = match txn_type {
         "credit_card" => "credit_card",
@@ -917,25 +730,21 @@ fn instrument_type_for_txn_type(txn_type: &str) -> Option<String> {
         "upi" => "UPI",
         "atm" => "ATM",
         "wallet" => "wallet",
-        // A balance alert and a net-banking transfer are both statements about
-        // the account itself, not about a card.
         "account_balance" | "net_banking" => "bank_account",
-        // An EMI installment is billed to the card that financed it.
         "emi" => "credit_card",
-        // A mandate is a standing authorisation, not an instrument, and never
-        // reaches here anyway (`BankTemplateLayer` skips mandate patterns).
         _ => return None,
     };
     Some(mapped.to_string())
 }
 
-// Layer 2: Bank-specific template regex
 pub struct BankTemplateLayer;
 impl ExtractionLayer for BankTemplateLayer {
+    /// Layer 2: applies a hand-written template for a known bank.
+    ///
+    /// Covers banks shipped with the app before any learning has occurred, which is
+    /// what makes a fresh install useful on day one.
     fn extract<'a>(
         &'a self,
-        // Unused since Layer 2 stopped seeding learned-rule candidates on
-        // match; the trait signature still requires the parameter.
         _pool: &'a Pool,
         bank_name: &'a str,
         body: &'a str,
@@ -946,29 +755,13 @@ impl ExtractionLayer for BankTemplateLayer {
                 ..Default::default()
             };
 
-            // A single exit point so every bank/format branch converges on
-            // one return. Layer 2 no longer seeds a learned-rule candidate on
-            // match: a template that already extracts correctly has nothing to
-            // teach, and the hint regexes that seeding wrote only existed to
-            // bootstrap Layer 1 under the old human-approval model.
             let matched: Option<ExtractionResult> = 'm: {
                 if let Some(patterns) = bank_templates().get(bank_name) {
                     for p in patterns {
-                        // A `mandate` pattern describes a mandate-lifecycle
-                        // email, which is routed to
-                        // `mandate_extractor::bank_mandate_template`, not
-                        // here -- letting one match as a transaction would
-                        // book a mandate's *limit* as a settled amount.
                         if p.txn_type.as_deref() == Some("mandate") {
                             continue;
                         }
                         if let Some(caps) = p.regex.captures(body) {
-                            // Fixed per-pattern direction (see
-                            // `BankPatternTemplate::direction`'s doc comment)
-                            // -- NOT a blanket "debit" default applied to
-                            // every match regardless of which pattern
-                            // actually fired, which previously mislabeled
-                            // any credit/refund-shaped template as a debit.
                             result.direction = Some(p.direction.clone());
                             result.currency = Some(p.currency.clone());
                             result.amount_minor = caps
@@ -979,23 +772,10 @@ impl ExtractionLayer for BankTemplateLayer {
                                 .and_then(|g| caps.get(g))
                                 .map(|m| m.as_str().trim().to_string())
                                 .filter(|m| !m.is_empty());
-                            // `date_fallback_epoch` is an explicit,
-                            // template-authored fallback (Doc 30
-                            // TASK-TXN-003) for banks whose alert doesn't
-                            // always print a date -- distinct from `None`,
-                            // which means the capture group genuinely
-                            // didn't parse and must fail validation, not
-                            // silently default to any date at all.
                             let parsed_date = p
                                 .date_group
                                 .and_then(|g| caps.get(g))
                                 .and_then(|m| parse_date_generic(m.as_str()));
-                            // A bare-numeric date like SBI Card's "10/01/26"
-                            // or HDFC's "23-12-25" is as genuinely DD/MM as
-                            // it is MM/DD; propagating that lets
-                            // `apply_date_cross_check` arbitrate it against
-                            // Gmail's internalDate instead of Layer 2
-                            // silently committing to one reading.
                             result.event_time_ambiguous =
                                 parsed_date.as_ref().is_some_and(|d| d.ambiguous);
                             result.event_time =
@@ -1035,18 +815,13 @@ impl ExtractionLayer for BankTemplateLayer {
             Some(matched)
         })
     }
+    /// Identifies results produced by the bank-template layer.
     fn layer_name(&self) -> &'static str {
         "bank_templates"
     }
 }
 
-/// Doc 30 TASK-TXN-004's documented Layer 3 confidence floor: the weakest
-/// possible passing result (bare amount+currency, no explicit direction
-/// verb, no merchant, no reference ID -- i.e. the `has_balance_update` path
-/// through `ExtractionResult::is_valid()`) scores here.
 const LAYER3_BASE_CONFIDENCE: f64 = 0.5;
-/// Doc 30 TASK-TXN-004's documented Layer 3 confidence ceiling -- must stay
-/// below Layer 1/2's typical 0.9+, regardless of how many bonuses stack.
 const LAYER3_MAX_CONFIDENCE: f64 = 0.7;
 const LAYER3_AMOUNT_CURRENCY_BONUS: f64 = 0.10;
 const LAYER3_EXPLICIT_DIRECTION_BONUS: f64 = 0.10;
@@ -1054,9 +829,12 @@ const LAYER3_STRICT_MERCHANT_BONUS: f64 = 0.15;
 const LAYER3_AMBIGUOUS_MERCHANT_BONUS: f64 = 0.05;
 const LAYER3_REFERENCE_ID_BONUS: f64 = 0.05;
 
-// Layer 3: Generic heuristic regex
 pub struct GenericRegexLayer;
 impl ExtractionLayer for GenericRegexLayer {
+    /// Layer 3: generic currency and date patterns, with no bank knowledge.
+    ///
+    /// The fallback for institutions with neither a template nor learned rules.
+    /// Recovers amount and date reliably; merchant far less so.
     fn extract<'a>(
         &'a self,
         _pool: &'a Pool,
@@ -1069,7 +847,6 @@ impl ExtractionLayer for GenericRegexLayer {
                 ..Default::default()
             };
 
-            // 1. Amount & Currency
             let (prefix_re, suffix_re) = generic_currency_amount_regexes();
 
             if let Some(caps) = prefix_re.captures(body) {
@@ -1080,12 +857,6 @@ impl ExtractionLayer for GenericRegexLayer {
                 result.currency = Some(normalize_currency(caps.get(2)?.as_str()));
             }
 
-            // Direction (shared lexicon -- see extraction/lexicon.rs's doc
-            // comment for why these lists are no longer duplicated
-            // per-layer). Previously recompiled a fresh `Regex` on every
-            // single call instead of caching via `OnceLock` like every
-            // other regex in this layer; now fixed alongside the lexicon
-            // consolidation.
             let credit_re = GENERIC_CREDIT_DIRECTION_RE.get_or_init(|| {
                 let alternation = crate::extraction::lexicon::CREDIT_VERBS
                     .iter()
@@ -1104,11 +875,6 @@ impl ExtractionLayer for GenericRegexLayer {
                     .join("|");
                 Regex::new(&format!(r"(?i)\b(?:{alternation})\b")).unwrap()
             });
-            // Tracked separately from `result.direction` for confidence
-            // scoring below: an explicit verb match ("debited"/"credited"
-            // etc.) is real evidence; the `result.amount_minor.is_some()`
-            // branch below is a bare guess with no direction-specific
-            // signal at all, and must not be scored the same.
             let direction_from_explicit_verb;
             let credit_match = credit_re.find(body);
             let debit_match = debit_re.find(body);
@@ -1139,79 +905,7 @@ impl ExtractionLayer for GenericRegexLayer {
                 }
             }
 
-            // 2. Merchant
-            // Doc 30 TASK-TXN-004: "merchant via capitalized-token or
-            // at/to/towards/info: heuristics" -- `towards` and `info:` were
-            // missing from the proximity-keyword alternation (only Layer 2's
-            // ICICI template hardcoded `Info:` for that one bank). Any other
-            // bank's UPI alert using the same "Info: <merchant>" convention,
-            // with no dedicated Layer 2 template, previously fell through
-            // this fallback with no merchant extracted at all.
-            //
-            // gmail false-negative remediation, Cluster E: the capture class
-            // also excluded `*`, so card-network settlement descriptors
-            // (`RAZ*SWIGGY`, `PYTM*...`) truncated at the `*` and never
-            // reached a terminator, producing no merchant at all.
-            //
-            // Cluster G: the keyword must be followed immediately by
-            // whitespace, so label-style phrasing ("Payment from:   NAME",
-            // colon before the value) never matched either -- `:?` makes the
-            // colon optional between the keyword and the required
-            // whitespace, for every keyword in the alternation.
-            //
-            // Two-tier lookup, discovered while verifying Cluster E against
-            // the real HDFC body text: "at|to|from|for|by" are ambiguous --
-            // "debited from your HDFC Bank Credit Card" uses "from" to name
-            // the *source* instrument, not the counterparty, and since the
-            // `regex` crate has no lookaround, a single alternation always
-            // prefers whichever keyword occurs leftmost in the body
-            // regardless of which is semantically the merchant label. The
-            // unambiguous merchant-labeling keywords ("towards", "paid to",
-            // "info:", etc.) are tried first, on the whole body, before
-            // falling back to the ambiguous generic set -- this fixes
-            // "debited from your HDFC Bank Credit Card ... towards
-            // RAZ*SWIGGY" resolving to "your HDFC Bank Credit" instead of
-            // "RAZ*SWIGGY", without weakening the ambiguous-keyword fallback
-            // for bodies (e.g. Jupiter's "Payment from: NAME") that have no
-            // unambiguous keyword at all.
-            //
-            // gmail false-negative remediation, Cluster D: Axis Bank's
-            // AutoPay-activation template labels the counterparty as
-            // "Merchant Name:" (two words) on its own line, followed by the
-            // value on the *next* line -- bare "merchant" matched only the
-            // first word, leaving "Name:" unconsumed immediately after (the
-            // capture class excludes `:`, and `:` isn't a terminator
-            // either), so the whole match failed at that position. Listed
-            // before bare "merchant" since the `regex` crate prefers
-            // whichever alternative is listed first at a given position,
-            // not the longest one.
-            // gmail false-negative remediation: a declined international-
-            // transaction template ("at OPENAI is declined because
-            // International Ecom/online transactions are disabled...") has
-            // no comma/period or any of the above keywords within 40 chars
-            // of the merchant name -- the lazy capture kept expanding
-            // through the surrounding prose looking for a terminator,
-            // exhausted the 40-char cap, and the whole match failed at that
-            // position, falling through to a later unrelated "To enable,"
-            // match instead. "is"/"was" cover this and the equally common
-            // "at MERCHANT was successful/declined" phrasing, the same
-            // class of generic sentence-continuation word as the existing
-            // on/via/using/with keywords.
-            // gmail false-negative remediation, strengthen-regex pass: the
-            // value char class excluded `_`, `&`, `'`, `/`, `@` -- common in
-            // real settlement descriptors ("UPI_SRI SAI FRUITS", "M/S ABC &
-            // CO", "PVR'S"). Once the class rejects a char mid-descriptor
-            // the lazy `{2,40}?` capture can never satisfy a terminator (the
-            // disallowed char isn't a terminator either), so the whole match
-            // fails at that position and `captures_iter` silently skips to
-            // the next -- often unrelated -- keyword occurrence further down
-            // the body (see `is_invalid_merchant`'s stopword-filter doc
-            // comment for what that let through). `.`/`-` are already
-            // terminator chars, so including them here is a no-op (the lazy
-            // quantifier always stops before them regardless).
             const MERCHANT_TERMINATOR: &str = r":?\s+([A-Za-z0-9\s*_&'./@-]{2,40}?)(?:\s+on\b|\s+via\b|\s+using\b|\s+with\b|\s+ref\b|\s+card\b|\s+date\b|\s+a/c\b|\s+branch\b|\s+upi\b|\s+is\b|\s+was\b|[,.\n\-]|$)";
-            // Shared lexicon (extraction/lexicon.rs) -- see its doc comment
-            // for why Layer 3 and Layer 4's keyword lists used to drift.
             let merchant_re_strict = GENERIC_MERCHANT_RE_STRICT.get_or_init(|| {
                 let alternation = crate::extraction::lexicon::MERCHANT_LABEL_STRICT.join("|");
                 Regex::new(&format!(r"(?i)\b(?:{alternation}){MERCHANT_TERMINATOR}")).unwrap()
@@ -1220,19 +914,6 @@ impl ExtractionLayer for GenericRegexLayer {
                 let alternation = crate::extraction::lexicon::MERCHANT_LABEL_AMBIGUOUS.join("|");
                 Regex::new(&format!(r"(?i)\b(?:{alternation}){MERCHANT_TERMINATOR}")).unwrap()
             });
-            // Tracked for confidence scoring below: a strict-tier match is
-            // an unambiguous merchant label; an ambiguous-tier match
-            // ("at"/"to"/"from"/"for"/"by") can also name the *source*
-            // instrument rather than the counterparty (see the two-tier
-            // lookup comment above), so it's real but weaker evidence.
-            //
-            // gmail false-negative remediation: each tier now scans ALL of
-            // its matches (`captures_iter`, not just the first) and skips
-            // any that are self-referential ("to your account") rather than
-            // taking the first match unconditionally -- a neobank
-            // "credited to your account ... Payment from: NAME" body has
-            // exactly this shape, where the real counterparty label comes
-            // *after* the self-referential one.
             let mut merchant_matched_strict = false;
             let mut merchant_value: Option<String> = None;
             for caps in merchant_re_strict.captures_iter(body) {
@@ -1256,17 +937,11 @@ impl ExtractionLayer for GenericRegexLayer {
                     }
                 }
             }
-            // Neither merchant-label tier fires for a personal UPI P2P
-            // transfer -- the parenthesised display name after the VPA
-            // handle isn't reachable by either (see `vpa_merchant_fallback`'s
-            // doc comment), so fall back to the VPA handle itself rather
-            // than leaving the transaction merchant-less.
             if merchant_value.is_none() {
                 merchant_value = vpa_merchant_fallback(body);
             }
             result.merchant_raw = merchant_value;
 
-            // 3. Date
             let date_re = GENERIC_DATE_RE.get_or_init(|| {
                 Regex::new(r"(?i)(\d{2}[-/]\d{2}[-/]\d{2,4}|\d{2}-[a-zA-Z]{3}-\d{2,4}|\d{2}\s+[a-zA-Z]{3},?\s+\d{2,4}|[a-zA-Z]{3}\s+\d{2},\s*\d{4})").unwrap()
             });
@@ -1277,21 +952,11 @@ impl ExtractionLayer for GenericRegexLayer {
                 }
             }
 
-            // 4. Reference ID
             let ref_re = GENERIC_REF_RE.get_or_init(|| Regex::new(r"\b(\d{12})\b").unwrap());
             if let Some(caps) = ref_re.captures(body) {
                 result.reference_id = Some(caps.get(1)?.as_str().to_string());
             }
 
-            // Doc 30 TASK-TXN-004: "a lower confidence score (0.5-0.7) than
-            // Layer 1/2 (typically 0.9+), which flows directly into the
-            // reconciliation scoring engine" -- previously a flat 0.6
-            // regardless of whether every field matched cleanly or fell
-            // through to the weakest fallback branch, which starved
-            // reconciliation's email-vs-email precedence logic
-            // (`canonical.rs`'s `EMAIL_VS_EMAIL_CONFIDENCE_MARGIN`) of any
-            // real signal. Built from which branch actually fired for each
-            // field, floored/ceilinged to the documented 0.5-0.7 range.
             let mut confidence = LAYER3_BASE_CONFIDENCE;
             if result.amount_minor.is_some() && result.currency.is_some() {
                 confidence += LAYER3_AMOUNT_CURRENCY_BONUS;
@@ -1318,11 +983,17 @@ impl ExtractionLayer for GenericRegexLayer {
             }
         })
     }
+    /// Identifies results produced by the generic-regex layer.
     fn layer_name(&self) -> &'static str {
         "generic_regex"
     }
 }
 
+/// Canonicalises a currency token to an ISO code.
+///
+/// Indian banks write rupees as `Rs`, `Rs.`, `INR` and the symbol
+/// interchangeably; without normalisation these would be treated as four
+/// different currencies.
 fn normalize_currency(c: &str) -> String {
     let c = c.to_uppercase();
     if c.contains("RS") || c.contains("₹") {
@@ -1334,33 +1005,21 @@ fn normalize_currency(c: &str) -> String {
     }
 }
 
-/// Result of [`parse_date_generic`] -- pairs the parsed timestamp with
-/// whether the source format was numerically ambiguous (see `ambiguous`
-/// field doc on `ExtractionResult::event_time_ambiguous`).
 #[derive(Debug, PartialEq)]
 struct DateParseResult {
     timestamp: i64,
     ambiguous: bool,
 }
 
-/// The bare-numeric formats where a DD/MM-vs-MM/DD swap is a genuinely
-/// different, equally well-formed date whenever both components are <=12.
-/// Every other format below (month-name) is inherently unambiguous.
 const NUMERIC_AMBIGUOUS_FORMATS: &[&str] =
     &["%d/%m/%Y", "%d-%m-%Y", "%m-%d-%Y", "%d/%m/%y", "%d-%m-%y"];
 
-/// Returns `None` on an unparseable date string -- see `parse_date`'s doc
-/// comment for why this must never fabricate a fallback timestamp.
+/// Parses a date in whichever format the bank used.
+///
+/// Reports how the date was interpreted alongside the value, because
+/// day-first and month-first formats are genuinely ambiguous below the
+/// thirteenth -- the caller needs that uncertainty rather than a confident guess.
 fn parse_date_generic(s: &str) -> Option<DateParseResult> {
-    // ORDER IS LOAD-BEARING: each 2-digit-year format must precede its
-    // 4-digit twin. chrono's `%Y` accepts a *variable-width* year, so
-    // "23-12-25" fed to "%d-%m-%Y" parses as 23 December of year 25 AD --
-    // silently, with no error. `%y` by contrast consumes exactly two digits,
-    // and `parse_from_str` requires the whole input, so "17-08-2025" fails
-    // "%d-%m-%y" (trailing "25") and correctly falls through to "%d-%m-%Y".
-    // Trying the narrow format first is therefore what makes both widths
-    // resolve correctly; the reverse order mis-dates every 2-digit-year email
-    // by ~2000 years.
     let formats = [
         "%d-%b-%y",
         "%d-%b-%Y",
@@ -1374,8 +1033,6 @@ fn parse_date_generic(s: &str) -> Option<DateParseResult> {
         "%d %b, %y",
         "%d %b, %Y",
         "%b %d, %Y",
-        // Jupiter Pots ("Mon, Dec 01, 2025") and banks that spell the month
-        // out in full.
         "%a, %b %d, %Y",
         "%a, %B %d, %Y",
         "%d %B %Y",
@@ -1400,12 +1057,10 @@ fn parse_date_generic(s: &str) -> Option<DateParseResult> {
     None
 }
 
-/// Collects merchant-name tokens starting at `tokens[start]`, stopping at
-/// the same terminator keywords/punctuation Layer 3's `MERCHANT_TERMINATOR`
-/// regex stops at (`extraction/lexicon.rs`'s doc comment covers why the two
-/// layers' keyword *lists* are shared; this window-collection logic is
-/// NlpLayer-specific since Layer 3 does the equivalent via a single regex
-/// capture group instead).
+/// Collects the tokens around a matched label as a merchant candidate.
+///
+/// Merchant names are unbounded, so the window is captured and then trimmed,
+/// rather than trying to express the whole name in one pattern.
 fn collect_merchant_window(
     tokens: &[&str],
     lower_tokens: &[String],
@@ -1413,7 +1068,6 @@ fn collect_merchant_window(
 ) -> Option<String> {
     let mut merchant_parts = Vec::new();
     let mut j = start;
-    // Expanded window to capture larger merchant names
     while j < tokens.len() && j < start + 5 {
         let next_token_lower = &lower_tokens[j];
         if next_token_lower == "on"
@@ -1446,9 +1100,12 @@ fn collect_merchant_window(
     }
 }
 
-// Layer 4: Basic NLP
 pub struct NlpLayer;
 impl ExtractionLayer for NlpLayer {
+    /// Layer 4: label-driven token scanning for fields the regexes missed.
+    ///
+    /// Works from field captions rather than value shapes, which is what lets it find
+    /// a merchant name -- a value with no distinctive form of its own.
     fn extract<'a>(
         &'a self,
         _pool: &'a Pool,
@@ -1464,22 +1121,6 @@ impl ExtractionLayer for NlpLayer {
             let tokens: Vec<&str> = body.split_whitespace().collect();
             let lower_tokens: Vec<String> = tokens.iter().map(|s| s.to_lowercase()).collect();
 
-            // Merchant: strict-label pre-pass (shared lexicon,
-            // extraction/lexicon.rs). Layer 3 already tries its
-            // unambiguous keyword set ("towards", "paid to", "purchased
-            // at", "txn at", "in favor of", "merchant name", plus
-            // "info"/"merchant"/"beneficiary") before its ambiguous
-            // at/to/from/for/by fallback -- this layer never had that
-            // strict tier at all, so a body whose *only* merchant signal is
-            // one of those unambiguous keywords (no ambiguous keyword, no
-            // UPI VPA token) previously extracted no merchant here and, if
-            // nothing else in the ladder resolved it either, failed
-            // `is_valid()` entirely. Computed once, upfront, and applied
-            // below only as a rescue when nothing later in this layer's
-            // existing (unchanged) logic found a merchant -- this must
-            // never override the ambiguous-keyword/UPI-VPA paths' existing,
-            // already-tested behavior, only fill in what they'd otherwise
-            // leave empty.
             let mut strict_merchant_candidate: Option<String> = None;
             for idx in 0..lower_tokens.len() {
                 if let Some(consumed) = crate::extraction::lexicon::match_label_at(
@@ -1503,7 +1144,6 @@ impl ExtractionLayer for NlpLayer {
                 let token = &lower_tokens[i];
                 let orig_token = tokens[i];
 
-                // Direction (shared lexicon -- see extraction/lexicon.rs).
                 if crate::extraction::lexicon::DEBIT_VERBS
                     .iter()
                     .any(|v| token.contains(v))
@@ -1516,7 +1156,6 @@ impl ExtractionLayer for NlpLayer {
                     result.direction = Some("credit".to_string());
                 }
 
-                // Amount & Currency
                 if (token == "rs" || token == "rs." || token == "inr" || token == "₹")
                     && i + 1 < tokens.len()
                     && result.amount_minor.is_none()
@@ -1527,14 +1166,6 @@ impl ExtractionLayer for NlpLayer {
                     }
                 }
 
-                // Merchant. `result.merchant_raw.is_none()` guards this
-                // whole block (not just the final assignment) so the first
-                // valid match found while walking left-to-right wins --
-                // previously every subsequent "at/to/from/for/by" hit
-                // unconditionally overwrote whatever was already found,
-                // which meant a footer disclaimer's keyword occurrence
-                // (always further down the body than the real transaction
-                // detail) always clobbered a correct earlier match.
                 if result.merchant_raw.is_none()
                     && (token == "at"
                         || token == "to"
@@ -1547,7 +1178,6 @@ impl ExtractionLayer for NlpLayer {
                 {
                     let mut merchant_parts = Vec::new();
                     let mut j = i + 1;
-                    // Expanded window to capture larger merchant names
                     while j < tokens.len() && j < i + 6 {
                         let next_token_lower = &lower_tokens[j];
                         if next_token_lower == "on"
@@ -1581,7 +1211,6 @@ impl ExtractionLayer for NlpLayer {
                     }
                 }
 
-                // UPI VPA
                 if result.merchant_raw.is_none() && token.contains("upi/") {
                     let parts: Vec<&str> = orig_token.split('/').collect();
                     if parts.len() >= 3 {
@@ -1592,7 +1221,6 @@ impl ExtractionLayer for NlpLayer {
                     }
                 }
 
-                // Balance
                 if token == "bal"
                     || token == "balance"
                     || token.starts_with("bal:")
@@ -1620,7 +1248,6 @@ impl ExtractionLayer for NlpLayer {
                     }
                 }
 
-                // Date
                 if token == "on" && i + 1 < tokens.len() {
                     let dt_str = tokens[i + 1].trim_end_matches(&['.', ','][..]);
                     if let Some(parsed) = parse_date_generic(dt_str) {
@@ -1632,16 +1259,12 @@ impl ExtractionLayer for NlpLayer {
                 i += 1;
             }
 
-            // Merchant: apply the strict-label pre-pass candidate only as a
-            // rescue -- never overriding whatever the ambiguous-keyword or
-            // UPI-VPA logic above already found.
             if result.merchant_raw.is_none() {
                 if let Some(candidate) = strict_merchant_candidate {
                     result.merchant_raw = Some(candidate);
                 }
             }
 
-            // Fallback for Date
             if result.event_time.is_none() {
                 for t in &tokens {
                     let cleaned = t.trim_end_matches(&['.', ','][..]);
@@ -1660,58 +1283,33 @@ impl ExtractionLayer for NlpLayer {
             }
         })
     }
+    /// Identifies results produced by the NLP layer.
     fn layer_name(&self) -> &'static str {
         "nlp"
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Template Drift Detection (Task 4.9)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// The outcome of [`detect_pattern_drift`].
-///
-/// Drift is declared when a bank's template is **known** (live rules exist for
-/// this template hash) yet extraction produced nothing -- the shape the rules
-/// were learned from has changed underneath them.
-///
-/// The struct used to carry a `synthesized_rule` field that was always `None`:
-/// the caller wrote the rule, this function never did. Authoring now belongs to
-/// `learning::worker` behind the validation gate, so the field is gone rather
-/// than left as a lie about where rules come from.
 #[derive(Debug, Clone)]
 pub struct DriftResult {
     pub drift_detected: bool,
     pub template_hash: String,
 }
 
-/// Checks whether a template drift has occurred for a given email body.
+/// Detects that a bank has changed a template this app had learned.
 ///
-/// Drift is defined as: active/trusted rules exist for `(bank_name,
-/// template_hash)` **and** the caller-supplied `ladder_result` is `None`
-/// (i.e., all extraction layers failed despite the template being known).
+/// The signal is the combination of two facts: extraction produced nothing, yet
+/// rules exist for this exact template hash. Rules that used to match and no
+/// longer do means the template moved underneath them.
 ///
-/// If the template hash has never been seen before (no rules), this function
-/// returns `drift_detected = false` — the pipeline will handle it as a
-/// genuinely new template rather than a drift event.
-///
-/// # Arguments
-/// * `conn`          — A synchronous SQLite connection used for the rule lookup
-///   and optional rule insertion.
-/// * `bank_name`     — The issuer bank name (e.g. `"HDFC Bank"`).
-/// * `body`          — The plain-text email body.
-/// * `ladder_result` — The result returned by the 4-layer extraction ladder.
-///   Pass `&None` when all layers failed.
+/// A successful extraction is never drift, which is why that case returns early.
 pub fn detect_pattern_drift(
     conn: &Connection,
     bank_name: &str,
     body: &str,
     ladder_result: &Option<ExtractionResult>,
 ) -> Result<DriftResult> {
-    // Compute the structural template hash for this body.
     let template_hash = compute_template_hash(body);
 
-    // If the ladder already succeeded there is nothing to detect.
     if ladder_result.is_some() {
         return Ok(DriftResult {
             drift_detected: false,
@@ -1719,7 +1317,6 @@ pub fn detect_pattern_drift(
         });
     }
 
-    // Check whether we have existing active/trusted rules for this template.
     let known_rule_count = crate::db::field_rules::count_live_by_bank_and_hash(
         conn,
         bank_name,
@@ -1733,19 +1330,14 @@ pub fn detect_pattern_drift(
     })
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Layer 5: Statement-row cross-reference (Doc 30 TASK-TXN-005, ADR-019)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Doc 30 TASK-TXN-005 / Doc 12 §6.3 Layer 5. Not an [`ExtractionLayer`] trait
-/// object — like the LLM fallback below, it needs an extra input the trait's
-/// fixed `(pool, bank_name, body)` signature has no room for: an anchor date
-/// to bound the `±3-day` statement-row search window. `run_extraction_ladder`
-/// calls it directly, the same way it already calls `Layer6LlmLayer`
-/// (renumbered Layer 6).
 pub struct Layer5CrossrefLayer;
 
 impl Layer5CrossrefLayer {
+    /// Layer 5: fills gaps by cross-referencing already-ingested data.
+    ///
+    /// Uses the user's own history rather than the message: a merchant seen before on
+    /// the same instrument supplies what a terse alert omitted. Cheaper and more
+    /// reliable than inference, which is why it precedes the LLM.
     pub async fn extract(
         &self,
         pool: &Pool,
@@ -1753,13 +1345,8 @@ impl Layer5CrossrefLayer {
         body: &str,
         anchor_date: Option<chrono::NaiveDate>,
     ) -> Option<ExtractionResult> {
-        // No date signal at all (not even Gmail's internalDate) -- a search
-        // with no window bound would be far too permissive to trust.
         let anchor_date = anchor_date?;
 
-        // Reuse the same partial-field regexes Layer 3 uses -- Layer 5 rescues
-        // emails that failed *overall* validation (missing a mandatory field
-        // like merchant), not emails with zero extractable signal at all.
         let (prefix_re, suffix_re) = generic_currency_amount_regexes();
         let ref_re = GENERIC_REF_RE.get_or_init(|| Regex::new(r"\b(\d{12})\b").unwrap());
 
@@ -1811,9 +1398,6 @@ impl Layer5CrossrefLayer {
             .ok()?
             .ok()?;
 
-        // Doc 30: "A single high-confidence match... zero or multiple
-        // ambiguous candidates return None" -- conservative by construction,
-        // matching Doc 15 §2 principle 9's ambiguity handling.
         if candidates.len() != 1 {
             return None;
         }
@@ -1840,30 +1424,16 @@ impl Layer5CrossrefLayer {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Layer 6: LLM-based extraction (stub)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Layer 5 — LLM-based fallback extraction.
 pub struct Layer6LlmLayer {
     pub app_dir: Option<std::path::PathBuf>,
-    /// Gmail's `internalDate` (already resolved by the caller) -- fills in
-    /// for the model's `event_time` when it omits that field, which the
-    /// JSON-schema grammar allows and which happens on essentially every
-    /// real call. See `LlmEngine::extract`'s doc comment.
     pub fallback_event_time: Option<i64>,
 }
 impl Layer6LlmLayer {
-    /// The real Layer 6 logic, returning the full [`Layer6Outcome`] —
-    /// including the timed-out-vs-failed distinction the `ExtractionLayer`
-    /// trait's fixed `Option<ExtractionResult>` return can't carry. Used
-    /// directly by `run_extraction_ladder` (Layer 6 is called directly, not
-    /// through the `Vec<Box<dyn ExtractionLayer>>`, same as `Layer5CrossrefLayer`
-    /// above); the trait impl below just narrows this for anything that does
-    /// need the plain trait-object interface. `pub(crate)` since
-    /// `ingestion::queues::process_layer6_job` also calls this directly, to
-    /// see the `Rejected` vs `Failed`/`TimedOut` distinction the trait
-    /// method below discards.
+    /// Executes the LLM call and classifies its outcome.
+    ///
+    /// Separated from the trait method so the outcome -- success, refusal, malformed
+    /// output -- is available to callers that need to distinguish them, rather than
+    /// being flattened into an Option.
     pub(crate) async fn run(&self, pool: &Pool, bank_name: &str, body: &str) -> Layer6Outcome {
         let app_dir = match &self.app_dir {
             Some(dir) => dir,
@@ -1873,18 +1443,6 @@ impl Layer6LlmLayer {
             }
         };
 
-        // Whichever model the user actually selected in Settings
-        // (`local_profile.llm_model`, written by `llm_set_active_model`
-        // and by onboarding's `onboarding_save_preferences`), resolved the
-        // same way `llm_get_active_model` resolves it for the Settings UI:
-        // via `resolve_active_model` against what's actually downloaded on
-        // disk. Previously this fell back straight to
-        // `DEFAULT_ACTIVE_MODEL_ID` whenever `local_profile.llm_model` was
-        // unset (e.g. right after "Delete My Data", which wipes `finance.db`
-        // but leaves the `models/` directory untouched) — so a user with a
-        // different model downloaded got a "model not found" failure for a
-        // model they never chose, while Settings correctly showed their real
-        // model as downloaded and active.
         let stored = match pool.get().await {
             Ok(conn) => conn
                 .interact(|c| crate::db::local_profile::get_llm_model(c))
@@ -1913,7 +1471,6 @@ impl Layer6LlmLayer {
             .extract(bank_name, body, self.fallback_event_time)
             .await;
 
-        // Track Layer 5 usage rate in structured logs
         tracing::info!(
             event = "layer5_usage",
             bank_name = bank_name,
@@ -1925,6 +1482,11 @@ impl Layer6LlmLayer {
     }
 }
 impl ExtractionLayer for Layer6LlmLayer {
+    /// Layer 6: local LLM inference, the last and most expensive resort.
+    ///
+    /// Reached only when every cheaper layer failed. Output is schema-constrained and
+    /// then validated against the source, because a confidently wrong amount is
+    /// exactly what must not reach a financial ledger.
     fn extract<'a>(
         &'a self,
         pool: &'a Pool,
@@ -1938,49 +1500,28 @@ impl ExtractionLayer for Layer6LlmLayer {
             }
         })
     }
+    /// Identifies results produced by the LLM layer.
     fn layer_name(&self) -> &'static str {
         "llm_layer6"
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Extraction orchestrator
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Runs the email body through the 4-layer ladder, stopping at the first VALID
-/// success.  After a valid result is found, instrument signals are extracted and
-/// merged into the result.
-///
-/// When **all** four layers fail, Layer 5 (the local LLM fallback) is invoked
-/// if and only if `llm_eligible` is true (Doc 30 TASK-TXN-001: "Layer 6 if
-/// the local LLM is RAM-eligible, TASK-SETUP-006") — this is a hardware
-/// eligibility gate, independent of whether this specific bank has drifted
-/// from a previously-learned template. [`detect_pattern_drift`] still runs
-/// after a successful Layer 5 extraction, but only to decide whether to queue
-/// a drift-replacement rule candidate through the learning worker (feeding
-/// Layer 1's learning loop) — it is a side effect, not a precondition, of
-/// Layer 5 running.
-/// Outcome of [`cross_check_amount`].
 #[derive(Debug, PartialEq)]
 enum AmountAgreement {
-    /// The independent regex found the same amount.
     Agrees,
-    /// The independent regex found a *different* amount -- real
-    /// disagreement, not just absence of a second opinion.
     Disagrees,
-    /// The independent regex found no amount-shaped signal at all --
-    /// not evidence either way, so callers must not penalize this.
     Inconclusive,
 }
 
-/// Doc 30-style ensemble-lite check (Gate 2 hardening: "no ensemble/cross-
-/// check anywhere -- the ladder stops at first schema-valid layer, so a
-/// wrong-but-complete extraction is never caught by a disagreeing layer,
-/// because later layers never run"). Re-derives an amount from `body`
-/// using the same cheap currency-prefix/suffix regex `GenericRegexLayer`
-/// already uses, and compares it against whichever layer actually won.
-/// Cheap because it's a single regex pass reusing already-cached
-/// `OnceLock` regexes, not a second full layer execution.
+/// Independently re-reads the amount from the message and compares it.
+///
+/// A second opinion on the single most consequential field. The generic currency
+/// patterns are deliberately used here rather than the layer that produced the
+/// value, so the check is genuinely independent rather than confirming the same
+/// logic twice.
+///
+/// Three outcomes, not two: finding no amount is inconclusive rather than
+/// disagreement, since many messages state the amount only once.
 fn cross_check_amount(body: &str, claimed_amount_minor: i64) -> AmountAgreement {
     let (prefix_re, suffix_re) = generic_currency_amount_regexes();
 
@@ -2002,35 +1543,19 @@ fn cross_check_amount(body: &str, claimed_amount_minor: i64) -> AmountAgreement 
     }
 }
 
-/// The ceiling a result may hold once an independent check has disagreed with
-/// it -- below Layer 3's documented 0.5 floor, since "schema-valid but an
-/// independent check disagrees" is a weaker signal than even Layer 3's weakest
-/// result. Also the value assigned outright when the winning layer had no
-/// confidence score of its own (Layer 4 today).
 const CROSS_CHECK_DISAGREEMENT_CONFIDENCE: f64 = 0.4;
-/// Multiplicative penalty applied to an existing confidence score on
-/// disagreement, before the ceiling above is applied. Keeps disagreements
-/// ordered among results that were already weak (an LLM's 0.35 stays worse
-/// than a Layer 3 0.5), where the ceiling alone would flatten them.
 const CROSS_CHECK_DISAGREEMENT_PENALTY_FACTOR: f64 = 0.8;
 
-/// Applies [`cross_check_amount`] to a layer's about-to-be-returned result.
-/// Only ever lowers confidence on disagreement -- never raises it on
-/// agreement, and never rejects the result outright (a disagreement is
-/// suspicious, not proof of a wrong amount; the independent regex is itself
-/// just a heuristic, not a ground truth). No-op for `GenericRegexLayer`
-/// itself: its own amount already comes from this exact regex, so
-/// cross-checking it against itself would trivially always agree.
+/// Downgrades confidence when the independent amount read disagrees.
+///
+/// Confidence is reduced rather than the transaction rejected. A disagreement
+/// means uncertainty, not proof of error, and discarding a real transaction is a
+/// worse outcome than recording one that is flagged for review.
 fn apply_amount_cross_check(obs: &mut ExtractionResult, body: &str) {
     let Some(claimed) = obs.amount_minor else {
         return;
     };
     if cross_check_amount(body, claimed) == AmountAgreement::Disagrees {
-        // audit_02 #6: the penalty used to be purely multiplicative, which was
-        // safe only while every layer that set a confidence started at <= 0.7.
-        // Now that Layers 1/2 declare 0.95, `0.95 * 0.8 = 0.76` would leave a
-        // *contradicted* template match outranking a clean generic-regex
-        // result. The ceiling is the actual invariant this const documents.
         let downgraded = match obs.confidence_score {
             Some(existing) => (existing * CROSS_CHECK_DISAGREEMENT_PENALTY_FACTOR)
                 .clamp(0.0, CROSS_CHECK_DISAGREEMENT_CONFIDENCE),
@@ -2046,45 +1571,13 @@ fn apply_amount_cross_check(obs: &mut ExtractionResult, body: &str) {
     }
 }
 
-/// Number of days a swapped candidate must be closer than the original to
-/// count as a decisive signal, not just a nudge -- guards against a swap
-/// that happens to land marginally closer by chance.
 const DATE_CROSS_CHECK_DECISIVE_RATIO: i64 = 3;
-/// Widest gap from Gmail's `internalDate` a candidate can plausibly be and
-/// still represent a same-alert transaction date (covers next-morning
-/// consolidated/batch alerts, not just instant ones).
 const DATE_CROSS_CHECK_PLAUSIBLE_DELAY_DAYS: i64 = 7;
 
-/// Doc 30 TASK-TXN-004 scoped Gmail's `internalDate` to a *fallback* --
-/// filling `event_time` only when the body yields no date at all -- and
-/// explicitly rejected using it to override a body-parsed date (that was a
-/// real bug, fixed in that task). This function does not violate that: it
-/// never touches `event_time` unless `event_time_ambiguous` is set, which
-/// only happens for a bare numeric date where day and month are both <=12
-/// -- i.e. `event_time` is already known to be one of exactly two
-/// equally-valid readings of the same digits, not a single confident
-/// parse. `internal_date` is used only to arbitrate between those two
-/// readings, never to override an unambiguous one.
+/// Sanity-checks the extracted date against the message's own timestamp.
 ///
-/// Deliberately post-hoc on the *ambiguity flag*, not on the resolved
-/// date's day/month values -- a month-name date like "5-Aug-2026" also has
-/// day<=12, but `event_time_ambiguous` is `false` for it (set at the
-/// `parse_date_generic` call sites, see that function's doc comment), so
-/// it's structurally impossible for this to touch a date that was never
-/// ambiguous in the first place.
-///
-/// Three outcomes:
-/// - Swap is decisively closer to `internal_date` and within a plausible
-///   delay window -- correct `event_time`, log it, tag
-///   `"swapped_by_anchor"`.
-/// - Neither the original nor the swap is within the plausible window --
-///   something's off (backfill scan, unusually delayed alert, or the
-///   regex grabbed an unrelated date). Don't guess: leave `event_time`
-///   untouched, downgrade confidence, tag `"anchor_mismatch_needs_review"`
-///   so `pending_review` catches it.
-/// - Anything else (no anchor, weak/no signal either way) -- leave
-///   `event_time` untouched, no flag. This is the common case: most
-///   ambiguous dates simply keep the DD-MM locale default.
+/// An event time far from when the mail arrived usually means a misparsed date --
+/// most often a day/month swap -- so the divergence lowers confidence.
 fn apply_date_cross_check(obs: &mut ExtractionResult, internal_date: Option<i64>) {
     if !obs.event_time_ambiguous {
         return;
@@ -2104,16 +1597,12 @@ fn apply_date_cross_check(obs: &mut ExtractionResult, internal_date: Option<i64>
     };
     let (day, month, year) = (original.day(), original.month(), original.year());
     if day == month {
-        return; // swap is a no-op
+        return;
     }
     let Some(swapped) = chrono::NaiveDate::from_ymd_opt(year, day, month) else {
         return;
     };
 
-    // Calendar-day distance, not raw epoch seconds: `event_time` is always
-    // UTC midnight (see `parse_date_generic`) but `internal_date` carries a
-    // real time-of-day, so a raw-second diff would add up to a day of pure
-    // time-of-day noise right at the plausible-window boundary.
     let orig_days = (anchor - original).num_days().abs();
     let swapped_days = (anchor - swapped).num_days().abs();
 
@@ -2148,7 +1637,16 @@ fn apply_date_cross_check(obs: &mut ExtractionResult, internal_date: Option<i64>
     }
 }
 
-#[allow(clippy::too_many_arguments)] // wide-but-flat domain signature; a params struct would add indirection without removing a single field
+#[allow(clippy::too_many_arguments)]
+/// Runs the extraction layers in order, stopping at the first sufficient result.
+///
+/// The coordinator of the whole module. Layers are ordered cheapest-first --
+/// learned rules, bank templates, generic regex, NLP, cross-reference, and
+/// finally the LLM -- so the expensive path is reached only for messages the
+/// cheap ones could not handle.
+///
+/// Cross-checks are applied to whatever result emerges, regardless of which layer
+/// produced it, so a confident answer from an expensive layer is still verified.
 pub async fn run_extraction_ladder(
     pool: &Pool,
     bank_name: &str,
@@ -2170,20 +1668,8 @@ pub async fn run_extraction_ladder(
         let layer_name = layer.layer_name();
         if let Some(mut obs) = layer.extract(pool, bank_name, body).await {
             if obs.is_valid() {
-                // A learned rule has to be applied here rather than only
-                // inside Layer 1, because Layer 1 discards any result failing
-                // `is_valid()` -- and a single-field rule (what a correction
-                // almost always produces) never carries a full record.
-                // Overriding the winning layer's fields is what makes "teach
-                // the template" actually change the next scan's output.
                 apply_learned_fields(pool, bank_name, body, "email", &mut obs).await;
-                // Augment with instrument signals from the body.
                 apply_instrument_signals(&mut obs, bank_name, body);
-                // Doc 30 TASK-TXN-012: "During extraction (Layers 2/3),
-                // detect EMI language" -- applied uniformly regardless of
-                // which layer produced the core fields, since EMI phrasing
-                // detection is language-level, not tied to any one layer's
-                // own bank-specific/generic regex templates.
                 if let Some((number, total)) =
                     crate::extraction::emi_detector::detect_emi_installment_numbers(body)
                 {
@@ -2192,9 +1678,6 @@ pub async fn run_extraction_ladder(
                     obs.emi_original_amount_minor =
                         crate::extraction::emi_detector::detect_emi_original_amount_minor(body);
                 }
-                // Doc 30 TASK-TXN-013: foreign-currency evidence, same
-                // "applies regardless of which layer produced the core
-                // fields" reasoning as EMI detection above.
                 let settled_currency = obs.currency.clone().unwrap_or_else(|| "INR".to_string());
                 let fx =
                     crate::extraction::currency_handler::detect_fx_fields(body, &settled_currency);
@@ -2213,22 +1696,12 @@ pub async fn run_extraction_ladder(
             }
         }
         if layer_name == "learned_fields" {
-            // Layer 1 holds only rules learned from a correction or from
-            // drift — a bank nobody has ever corrected has zero of them, and
-            // that stays true no matter how many times extraction succeeds.
-            // Expected routine behaviour, not a failure worth info-level noise.
             tracing::debug!(
                 layer = layer_name,
                 status = "no_rules",
                 "Extraction layer skipped (no learned rules yet)"
             );
         } else if layer_name == "bank_templates" && !bank_has_template(bank_name) {
-            // Same "expected, not a failure" reasoning as learned_patterns
-            // just above: most banks simply have no Layer 2 template yet
-            // (see `bank_has_template`'s doc comment). A bank that *does*
-            // have a template but still didn't match falls through to the
-            // `else` branch below and stays at info -- that case is a real
-            // signal (template drift / a regex bug) worth keeping visible.
             tracing::debug!(
                 layer = layer_name,
                 status = "no_template",
@@ -2244,7 +1717,6 @@ pub async fn run_extraction_ladder(
         }
     }
 
-    // ── Layer 5: statement-row cross-reference (Doc 30 TASK-TXN-005) ─────────
     let anchor_date = internal_date
         .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0).map(|dt| dt.naive_utc().date()));
     if let Some(mut crossref_result) = Layer5CrossrefLayer
@@ -2258,9 +1730,6 @@ pub async fn run_extraction_ladder(
                 status = "success",
                 "Extraction layer succeeded"
             );
-            // Instrument signals were already attached inside
-            // Layer5CrossrefLayer::extract (it needs them earlier, to
-            // resolve the instrument for the query itself).
             return Ok(Some(crossref_result));
         }
     }
@@ -2270,10 +1739,6 @@ pub async fn run_extraction_ladder(
         "Extraction layer failed"
     );
 
-    // ── All five layers failed: Layer 6 gate is RAM-eligibility only ─────────
-    // (Doc 30 TASK-TXN-001) — never conditioned on whether this particular
-    // bank has a known/drifted template. A brand-new, never-before-seen bank
-    // must still be able to reach Layer 6.
     if !llm_eligible {
         tracing::info!(
             bank_name = bank_name,
@@ -2293,15 +1758,11 @@ pub async fn run_extraction_ladder(
     if let Layer6Outcome::Extracted(boxed_llm_result) = layer6_outcome {
         let mut llm_result = *boxed_llm_result;
         if llm_result.is_valid() {
-            // Augment with instrument signals.
             apply_instrument_signals(&mut llm_result, bank_name, body);
             apply_amount_cross_check(&mut llm_result, body);
 
-            // A correction the user already made must not be undone by a later
-            // LLM extraction of the same template.
             apply_learned_fields(pool, bank_name, body, "email", &mut llm_result).await;
 
-            // ── Drift self-healing ───────────────────────────────────────
             if let Some(handle) = learning {
                 enqueue_drift_candidates_if_drifted(
                     pool,
@@ -2321,19 +1782,10 @@ pub async fn run_extraction_ladder(
     Ok(None)
 }
 
-/// Queues replacement rules when this bank's known template has drifted.
+/// Queues rule re-synthesis when drift was detected.
 ///
-/// The LLM succeeded where the bank's own learned rules failed, so its answer
-/// is the training example for a replacement. Routed through the same worker
-/// and the same validation gate a user correction uses; it differs only in
-/// `learned_from`, which keeps it at `pending` until three auto-successes
-/// prove it.
-///
-/// Called from two places on purpose. `run_extraction_ladder` runs Layer 6
-/// inline, which is still how the replay harness and tests reach it; the real
-/// scan path enqueues Layer 6 to a background worker instead (Doc 2026-07-26
-/// scan performance), and that worker calls this directly. Checking drift in
-/// only one of them would leave self-healing dead in production.
+/// Gated on drift so the expensive authoring path runs only when a bank actually
+/// changed something, rather than on every failed extraction.
 pub async fn enqueue_drift_candidates_if_drifted(
     pool: &Pool,
     learning: &crate::learning::LearningHandle,
@@ -2360,13 +1812,7 @@ pub async fn enqueue_drift_candidates_if_drifted(
     enqueue_drift_candidates(learning, bank_name, body, result, app_dir).await;
 }
 
-/// Turns a drift-rescuing LLM extraction into one learning job per field it
-/// recovered.
-///
-/// Each field is queued separately because each is validated separately: a
-/// bank that restructured its template may well have moved only two of five
-/// fields, and rejecting all five because one could not be anchored would throw
-/// away the working majority.
+/// Queues the messages that will be used to author replacement rules.
 async fn enqueue_drift_candidates(
     handle: &crate::learning::LearningHandle,
     bank_name: &str,
@@ -2396,8 +1842,6 @@ async fn enqueue_drift_candidates(
         crate::learning::enqueue(
             handle,
             crate::learning::FeedbackJob {
-                // Drift is not a user correction, so there is no feedback_log
-                // row to point at. The change log still records the attempt.
                 feedback_log_id: String::new(),
                 bank_name: bank_name.to_string(),
                 field_name: field_name.to_string(),
@@ -2418,18 +1862,6 @@ async fn enqueue_drift_candidates(
 mod tests {
     use super::*;
 
-    /// Structural integrity of every bundled `assets/bank_templates/*.json`.
-    ///
-    /// There is one file per verified-sender registry bank (~144), the bulk of
-    /// them mechanically generated. Hand-reviewing that many regexes is not a
-    /// control that scales, so the mechanical failure modes are asserted here
-    /// instead: a capture-group index pointing past the end of its own regex
-    /// silently yields `None` for that field rather than erroring, which is
-    /// exactly the kind of bug that would degrade extraction quietly.
-    ///
-    /// `bank_templates()` itself panics on an unparseable file or an
-    /// uncompilable regex, naming the file -- so simply building the map is
-    /// half the assertion.
     #[test]
     fn test_bank_template_integrity() {
         let templates = bank_templates();
@@ -2486,9 +1918,6 @@ mod tests {
                     p.name,
                     p.currency
                 );
-                // A `mandate` pattern is read by `bank_mandate_template`,
-                // which rejects anything without a merchant -- so one that
-                // can't produce a merchant is dead weight, never a match.
                 if p.txn_type.as_deref() == Some("mandate") {
                     assert!(
                         p.merchant_group.is_some(),
@@ -2496,9 +1925,6 @@ mod tests {
                         p.name
                     );
                 }
-                // Balance-only patterns are the one shape allowed to omit a
-                // merchant (`is_valid()` accepts amount-less balance updates);
-                // every other shape needs a merchant or it can never pass.
                 if p.txn_type.as_deref() != Some("account_balance")
                     && p.txn_type.as_deref() != Some("mandate")
                 {
@@ -2513,11 +1939,6 @@ mod tests {
         }
     }
 
-    /// audit_02 #6: a bank-template match must carry a confidence score, and
-    /// it must sit above Layer 3's ceiling. Before this it was NULL, which
-    /// `maybe_overwrite_from_higher_confidence_email` reads as "no signal" and
-    /// returns early on — so the most reliable extraction in the ladder could
-    /// never correct fields a weaker generic-regex observation had written.
     #[tokio::test]
     async fn bank_template_confidence_outranks_generic_regex() {
         let pool = dummy_pool();
@@ -2544,14 +1965,6 @@ mod tests {
         assert!(confidence >= 0.9, "Doc 30 says Layer 1/2 is typically 0.9+");
     }
 
-    /// Field-level regression for the corpus-derived (tier-1) templates.
-    ///
-    /// Every body here is a real email from the user's mailbox, so this is
-    /// what actually catches template drift: an over-eager merchant
-    /// terminator, a date format silently falling back, a balance captured as
-    /// the transaction amount. Asserting on `BankTemplateLayer` directly
-    /// (rather than through the whole pipeline) keeps a failure pointing at
-    /// the template that broke.
     #[tokio::test]
     async fn test_tier1_templates_extract_real_bodies() {
         struct Case {
@@ -2566,8 +1979,6 @@ mod tests {
         }
 
         let cases = [
-            // Guards the 2-digit-year date path (23-12-25) that Layer 2's old
-            // `parse_date` rejected outright, discarding the whole match.
             Case {
                 bank: "HDFC Bank",
                 body: "Dear Customer, Rs.200.00 has been debited from account 4691 to VPA \
@@ -2592,8 +2003,6 @@ mod tests {
                 date: Some((2025, 8, 7)),
                 balance_minor: None,
             },
-            // Balance-only: no merchant anywhere in the body. Unexpressible
-            // before the template schema gained `balance_group`.
             Case {
                 bank: "HDFC Bank",
                 body: "Dear Customer, Here is the update on your account balance: As of \
@@ -2605,7 +2014,6 @@ mod tests {
                 date: Some((2025, 9, 4)),
                 balance_minor: Some(1005000),
             },
-            // Guards the dd/mm/yy date path (10/01/26).
             Case {
                 bank: "SBI Card",
                 body: "SBI Card TRANSACTION ALERT! Dear Cardholder, This is to inform you that, \
@@ -2618,8 +2026,6 @@ mod tests {
                 date: Some((2026, 1, 10)),
                 balance_minor: None,
             },
-            // Uppercase month name, and an available-limit balance that must
-            // land in `balance_after` rather than overwrite the amount.
             Case {
                 bank: "IDFC FIRST Bank",
                 body: "Dear Cardmember, Delicious Purchase! INR 725.00 spent on your IDFC FIRST \
@@ -2632,8 +2038,6 @@ mod tests {
                 date: Some((2025, 8, 5)),
                 balance_minor: Some(3866618),
             },
-            // Credit-direction card payment: guards against a credit-shaped
-            // template being mislabeled a debit.
             Case {
                 bank: "IDFC FIRST Bank",
                 body: "Dear Customer, Payment of Rs. 6,283.37 was received on your FIRST \
@@ -2645,7 +2049,6 @@ mod tests {
                 date: Some((2025, 11, 29)),
                 balance_minor: None,
             },
-            // Amount with no decimal part.
             Case {
                 bank: "Axis Bank",
                 body: "17-08-2025 Dear Aditya Rawal, Thank you for using your credit card no. \
@@ -2669,8 +2072,6 @@ mod tests {
                 date: Some((2025, 10, 26)),
                 balance_minor: Some(9513898),
             },
-            // Jupiter prints both the payee's VPA and the user's own; only
-            // the user's ("From ...") may be stored as `upi_vpa`.
             Case {
                 bank: "Jupiter",
                 body: "Hey, Aditya Your UPI payment was successful You paid ₹543 Paid to \
@@ -2733,10 +2134,6 @@ mod tests {
         }
     }
 
-    /// The bank-specific mandate path: a `txn_type: "mandate"` pattern must be
-    /// picked up by `bank_mandate_template` and must NOT be booked as a
-    /// transaction by `BankTemplateLayer` (its amount is a standing *limit*,
-    /// not a settled charge).
     #[tokio::test]
     async fn test_mandate_pattern_routes_to_mandate_extractor_only() {
         let body = "Dear Cardholder, Thank you for registering for a recurring e-Mandate at \
@@ -2754,7 +2151,6 @@ mod tests {
         assert_eq!(m.masked_identifier.as_deref(), Some("7603"));
         assert_eq!(m.instrument_type.as_deref(), Some("credit_card"));
 
-        // The ₹1000.00 limit must never surface as a settled transaction.
         let as_txn = BankTemplateLayer
             .extract(&dummy_pool(), "SBI Card", body)
             .await;
@@ -2764,15 +2160,8 @@ mod tests {
         );
     }
 
-    /// Every `txn_type` a template may declare must map onto a value the
-    /// `instruments.type` CHECK constraint accepts. Getting this wrong does
-    /// not fail loudly: the bad value flows all the way into reconciliation
-    /// and surfaces as "Query returned no rows" from a completely unrelated
-    /// query, which is what it did before `instrument_type_for_txn_type`
-    /// existed.
     #[test]
     fn test_txn_types_map_to_valid_instrument_enum() {
-        // Verbatim from migrations/20260101000001_initial_core_schema.sql.
         const SCHEMA_INSTRUMENT_TYPES: &[&str] = &[
             "credit_card",
             "debit_card",
@@ -2803,10 +2192,6 @@ mod tests {
         );
     }
 
-    /// Every bank in the verified-sender registry must have exactly one
-    /// template, and every template must belong to a registry bank. Without
-    /// this, a registry rename silently drops that bank to Layer 3 and a
-    /// stale template file lingers forever, both invisibly.
     #[test]
     fn test_every_registry_bank_has_a_template() {
         let registry: crate::ingestion::verified_senders::VerifiedSenderRegistry =
@@ -2815,8 +2200,6 @@ mod tests {
 
         let templates = bank_templates();
         for sender in &registry.senders {
-            // "noise" senders are classified out at Gate 1 and never reach
-            // extraction, so they intentionally have no template.
             if sender.classification == "noise" {
                 continue;
             }
@@ -2843,7 +2226,6 @@ mod tests {
         }
     }
 
-    // Helper to create a dummy pool for tests
     fn dummy_pool() -> Pool {
         let mgr = deadpool_sqlite::Manager::from_config(
             &deadpool_sqlite::Config {
@@ -2855,13 +2237,6 @@ mod tests {
         Pool::builder(mgr).build().unwrap()
     }
 
-    /// Regression test for a live extraction bug: SBI Card's "Dear
-    /// Cardholder, This is to inform you that, Rs.245.43 spent on your SBI
-    /// Credit Card ending 7603 at DREAMPLUGTECHNOLOGI on 01/07/26." mis-
-    /// resolved to merchant "inform you that" (the ambiguous "to" label
-    /// matching the intro clause, leftmost in the body, before the real "at
-    /// DREAMPLUGTECHNOLOGI" label) because "inform"/"that" weren't on
-    /// `MERCHANT_STOPWORDS` yet -- this exact body is what surfaced the gap.
     #[tokio::test]
     async fn test_sbi_intro_clause_boilerplate_does_not_win_over_real_merchant() {
         let pool = dummy_pool();
@@ -2871,12 +2246,6 @@ mod tests {
         assert_eq!(result.merchant_raw, Some("DREAMPLUGTECHNOLOGI".to_string()));
     }
 
-    /// Regression test: a personal UPI P2P transfer (HDFC's "Rs.750.00 is
-    /// debited from your account ending 4691 towards VPA
-    /// 8127696200@jupiteraxis (ADITYA RAWAL) on 07-06-26.") has no business
-    /// merchant, and its parenthesised name is the account holder's own
-    /// name, not a payee -- must resolve to the VPA handle, not "VPA
-    /// rawalad" or nothing at all.
     #[tokio::test]
     async fn test_upi_p2p_transfer_falls_back_to_vpa_handle() {
         let pool = dummy_pool();
@@ -2889,13 +2258,6 @@ mod tests {
         );
     }
 
-    /// TASK-DB-002: like `dummy_pool()`, but backed by a real temp file with
-    /// the full schema already migrated via `sqlx::migrate!` — sqlx's
-    /// migration connection is a separate connection stack from rusqlite
-    /// and cannot reach a `:memory:` database another connection opened, so
-    /// helpers that actually need tables to exist (`setup_db_with_rule`,
-    /// `setup_drift_db`) need a real file instead of `dummy_pool()`'s
-    /// `:memory:`.
     async fn dummy_migrated_pool() -> Pool {
         let db_path = crate::db::test_helpers::fresh_temp_db_path();
         crate::db::migrations::run_migrations(&db_path, None)
@@ -2911,13 +2273,6 @@ mod tests {
         Pool::builder(mgr).build().unwrap()
     }
 
-    /// Doc 30 TASK-TXN-001 acceptance test. Exercises the real
-    /// `run_extraction_ladder`, not a hand-copied loop over mock layers: an
-    /// active Layer 1 (learned-rule) match must win even though it precedes
-    /// nothing else viable in this fixture — the meaningful claim is that
-    /// the returned `extraction_method` is `"learned_fields"` (Layer 1),
-    /// proving the ladder actually reached and returned from the first
-    /// layer rather than some other path.
     #[tokio::test]
     async fn test_orchestrator_stops_at_first_valid_layer() {
         let pool = setup_db_with_rule("active".to_string()).await;
@@ -2941,20 +2296,11 @@ mod tests {
         assert_eq!(result.unwrap().extraction_method, "learned_fields");
     }
 
-    /// Issue #12 end-to-end: the point of teaching a rule is that the *next*
-    /// scan gets the merchant right without the LLM.
-    ///
-    /// This is the claim `LearnedPatternLayer` alone cannot satisfy — a
-    /// merchant-only rule carries no amount/currency/direction/date, so
-    /// `is_valid()` rejects it and Layer 1 returns `None`. Without
-    /// `apply_learned_merchant_override` the rule would be stored, look
-    /// correct in the database, and change nothing at all.
     #[tokio::test]
     async fn test_learned_merchant_rule_overrides_a_later_layers_merchant() {
         let body = "Rs 500.00 debited at RAZ*SWIGGY on 25-May-23 towards purchase";
         let pool = dummy_migrated_pool().await;
 
-        // Baseline: whatever the ladder produces with no learned rule.
         let mut timed_out = false;
         let before = run_extraction_ladder(
             &pool,
@@ -2971,7 +2317,6 @@ mod tests {
         .expect("fixture must extract");
         let baseline_merchant = before.merchant_raw.clone();
 
-        // Teach a merchant rule for exactly this email shape.
         let conn = pool.get().await.unwrap();
         let body_owned = body.to_string();
         conn.interact(move |c| {
@@ -3014,9 +2359,6 @@ mod tests {
         );
     }
 
-    /// The override is scoped to one email shape. A differently-shaped email
-    /// from the same bank must be untouched, or a single correction would
-    /// rewrite merchants across unrelated alerts.
     #[tokio::test]
     async fn test_learned_merchant_rule_does_not_leak_to_other_email_shapes() {
         let taught_body = "Rs 500.00 debited at RAZ*SWIGGY on 25-May-23 towards purchase";
@@ -3067,12 +2409,6 @@ mod tests {
         );
     }
 
-    /// Ensemble-lite regression test: a Layer 1 learned rule whose "amount"
-    /// regex is simply wrong (captures a transaction ID instead of the real
-    /// amount) must have its confidence downgraded once the cheap
-    /// independent currency-regex cross-check finds a *different* amount
-    /// elsewhere in the same body -- the ladder previously trusted whatever
-    /// the first schema-valid layer said with no second opinion at all.
     #[tokio::test]
     async fn test_ensemble_lite_amount_disagreement_downgrades_confidence() {
         let body = "Txn ID 999900 INR for your purchase. Rs 500.00 debited at Amazon on 25-May-23";
@@ -3081,8 +2417,6 @@ mod tests {
         let body_owned = body.to_string();
         conn.interact(move |c| {
             let template_hash = compute_template_hash(&body_owned);
-            // Deliberately wrong: captures the transaction ID, not the real
-            // "Rs 500.00" amount elsewhere in the body.
             for (field, regex) in [
                 ("amount", r"Txn ID (\d+)"),
                 ("merchant", "at ([A-Za-z]+)"),
@@ -3133,22 +2467,8 @@ mod tests {
         );
     }
 
-    /// Doc 30 TASK-TXN-001 acceptance test. Exercises the real
-    /// `run_extraction_ladder` against an unmigrated pool with a body no
-    /// layer can parse and `llm_eligible = false` — every layer including
-    /// Layer 5 must fail closed to `None`, not panic or silently invent a
-    /// partial result.
     #[tokio::test]
     async fn test_orchestrator_fails_if_all_layers_empty() {
-        // A real (if unused) subscriber must be active here, not just the
-        // bare process default: `tracing`'s per-callsite Interest cache can
-        // permanently pin the "Layer 6 skipped" log line's callsite (shared
-        // with test_llm_skipped_when_ineligible below) to
-        // `never` the first time it fires under no subscriber at all, which
-        // then silently defeats that other test's capturing layer if this
-        // test happens to run first — this is not about this test's own
-        // assertions, purely about not poisoning a shared callsite for a
-        // sibling test running in parallel.
         use tracing_subscriber::layer::SubscriberExt;
         struct NoopLayer;
         impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for NoopLayer {}
@@ -3172,12 +2492,6 @@ mod tests {
         assert!(res.is_none());
     }
 
-    /// Doc 30 TASK-TXN-001 acceptance test. Layer 5 must be gated on
-    /// hardware RAM-eligibility (`llm_eligible`), not on whether this bank's
-    /// template has drifted — proven here by confirming the ladder emits the
-    /// "skipped" log line and never reaches `Layer6LlmLayer::extract` at all
-    /// (which would instead log "No app_dir provided") even with a body that
-    /// makes Layers 1-4 fail.
     #[tokio::test]
     async fn test_llm_skipped_when_ineligible() {
         use tracing_subscriber::layer::SubscriberExt;
@@ -3240,12 +2554,7 @@ mod tests {
     fn test_compute_template_hash() {
         let b1 = "Hello 123 World 456";
         let b2 = "hello   789 world 000";
-        // both should normalize to "hello # world #"
         assert_eq!(compute_template_hash(b1), compute_template_hash(b2));
-        // audit_02 #5 cached the two regexes behind a `OnceLock`. The hash is
-        // persisted (`learned_rules.template_hash`, `learned_extractions`), so
-        // a change in either pattern silently orphans every stored rule rather
-        // than failing loudly. Pin the actual value, not just the equality.
         assert_eq!(
             compute_template_hash(b1),
             "89a6278bc760568ecab7942236a60ca7d96b7ebcf19b98302c4465d2d6485c0b",
@@ -3253,8 +2562,6 @@ mod tests {
         );
     }
 
-    /// Seeds one learned rule. Test-only shim so the many rule-driven tests
-    /// below read the same as before the `field_rules` rewrite.
     fn seed_rule(
         conn: &rusqlite::Connection,
         bank: &str,
@@ -3289,8 +2596,6 @@ mod tests {
 
     const LEARNED_RULE_BODY: &str = "Your amount is 1500 INR at Amazon debit time 123";
 
-    /// A full set of rules for `LEARNED_RULE_BODY` -- enough fields that Layer 1
-    /// can produce a result passing `is_valid()` on its own.
     async fn setup_db_with_rule(status: String) -> Pool {
         let pool = dummy_migrated_pool().await;
         let conn = pool.get().await.unwrap();
@@ -3317,14 +2622,6 @@ mod tests {
         pool
     }
 
-    // ── apply_learned_fields: the single read path for learned rules ─────────
-
-    /// A merchant-only rule must reach the output. This is exactly what the old
-    /// Layer 1 could not do -- it discarded any result failing `is_valid()`, and
-    /// a merchant-only rule carries no amount, currency, direction or date, so
-    /// the correction was thrown away every time. That is why
-    /// `apply_learned_merchant_override` had to exist as a second, redundant
-    /// query; one function used at both call sites replaces both.
     #[tokio::test]
     async fn a_merchant_only_rule_overrides_the_winning_layer() {
         let pool = dummy_migrated_pool().await;
@@ -3390,9 +2687,6 @@ mod tests {
         assert_eq!(result.amount_minor, Some(102000));
     }
 
-    /// A span rule is bank-wide and gated by its own regex not matching; an
-    /// override has no regex to gate on, so it must be template-exact or it
-    /// would relabel every email from the bank.
     #[tokio::test]
     async fn an_override_applies_only_to_its_own_template() {
         let pool = dummy_migrated_pool().await;
@@ -3512,18 +2806,12 @@ mod tests {
             .await
             .unwrap();
         }
-        // Merchant alone is not a valid extraction; Layer 1 must decline and
-        // let a later layer produce the full record.
         assert!(LearnedFieldLayer
             .extract(&pool, "HDFC Bank", body)
             .await
             .is_none());
     }
 
-    // ── Drift detection, rebuilt on field_rules ──────────────────────────────
-
-    /// Drift is "the template is known but extraction failed". An unknown
-    /// template is a new bank shape, not a drift event.
     #[tokio::test]
     async fn drift_is_not_declared_for_an_unknown_template() {
         let pool = dummy_migrated_pool().await;
@@ -3587,7 +2875,6 @@ mod tests {
         assert!(!drift.drift_detected);
     }
 
-    /// Drift is scoped per source type, like everything else.
     #[tokio::test]
     async fn drift_does_not_see_a_statement_rule_as_a_known_email_template() {
         let pool = dummy_migrated_pool().await;
@@ -3645,18 +2932,11 @@ mod tests {
         assert_eq!(res.extraction_method, "learned_fields");
     }
 
-    /// Core requirement, end to end: variants learned from one email
-    /// template must still match a DIFFERENT template for the same bank
-    /// select_live_by_bank is bank-wide rather than hash-scoped.
     #[tokio::test]
     async fn test_learned_rule_matches_across_different_templates() {
-        // setup_db_with_rule seeds all five field variants against this
-        // exact body's template_hash.
         let old_body = "Your amount is 1500 INR at Amazon debit time 123";
         let pool = setup_db_with_rule("active".to_string()).await;
 
-        // A structurally different body (different template_hash) that the
-        // SAME five regexes still happen to match.
         let new_body = "Reminder: your amount is 1500 INR at Amazon debit time 123 -- thank you.";
         assert_ne!(
             compute_template_hash(old_body),
@@ -3685,15 +2965,9 @@ mod tests {
 
         let result = layer.extract(&pool, "Chase", body).await;
 
-        // Should return None because rules are inactive and query won't pick them up
         assert!(result.is_none());
     }
 
-    /// Doc 30 TASK-TXN-002 acceptance test: a `pending` rule (not yet
-    /// promoted to `active`/`trusted` via 3 confirmed successes,
-    /// `db/field_rules.rs::record_success`) must never be auto-applied,
-    /// even if its regex would otherwise match -- a drift-detected candidate
-    /// is an unproven guess until the loop confirms it.
     #[tokio::test]
     async fn test_pending_rule_not_auto_applied() {
         let pool = setup_db_with_rule("pending".to_string()).await;
@@ -3730,18 +3004,10 @@ mod tests {
         assert_eq!(result_4.event_time, Some(ymd_ts(2023, 5, 25)));
     }
 
-    /// Regression test for the date-sentinel bug (BankTemplateLayer path): a
-    /// capture that doesn't parse as any recognized date format, with no
-    /// `date_fallback_epoch` configured for this pattern (the
-    /// `credit_card_spent` HDFC pattern has none), must leave `event_time`
-    /// unset -- not silently default to the fabricated 2024-01-01 epoch the
-    /// old code returned on any parse failure.
     #[tokio::test]
     async fn test_bank_template_invalid_date_no_fallback_leaves_event_time_none() {
         let pool = dummy_pool();
         let layer = BankTemplateLayer;
-        // Day "35" doesn't exist -- syntactically matches the date capture
-        // group's character class, but fails every chrono format attempted.
         let body =
             "Rs 1500.00 spent on your HDFC Bank CREDIT Card ending 1234 at Amazon on 35-May-23.";
         let result = layer.extract(&pool, "HDFC Bank", body).await.unwrap();
@@ -3771,14 +3037,6 @@ mod tests {
         );
     }
 
-    /// Regression test for the hardcoded-direction bug: `BankTemplateLayer`
-    /// used to initialize `direction: Some("debit")` unconditionally and
-    /// never override it per-pattern, so a credit/refund-shaped bank
-    /// template match was silently mislabeled debit. `BankPatternTemplate`
-    /// now carries a per-pattern `direction` field (see the
-    /// `account_credit` pattern added to `hdfc_v1.json`), and this proves a
-    /// credit-shaped match actually resolves to `"credit"`, not the old
-    /// blanket default.
     #[tokio::test]
     async fn test_hdfc_credit_pattern_resolves_credit_direction_not_hardcoded_debit() {
         let pool = dummy_pool();
@@ -3886,12 +3144,6 @@ mod tests {
         assert!(result.is_none());
     }
 
-    /// Regression test for the date-sentinel bug (GenericRegexLayer path):
-    /// "99/99/9999" is date-shaped enough to match `GENERIC_DATE_RE` but
-    /// isn't a real calendar date, so it must fail every parse format and
-    /// leave `event_time` unset -- which then fails `is_valid()` entirely
-    /// (event_time is unconditionally required), rather than the old
-    /// behavior of silently returning a result dated 2024-01-01.
     #[tokio::test]
     async fn test_generic_regex_invalid_date_fails_validation_not_fake_date() {
         let pool = dummy_pool();
@@ -3904,8 +3156,6 @@ mod tests {
         );
     }
 
-    /// Direct unit test on the date parser itself: `None` on failure, never
-    /// the old hardcoded `1704067200` (2024-01-01) sentinel.
     #[test]
     fn test_date_parsers_return_none_not_fake_sentinel_on_failure() {
         assert_eq!(parse_date_generic("not a date"), None);
@@ -3913,26 +3163,20 @@ mod tests {
         assert_eq!(parse_date_generic("32/13/26"), None);
     }
 
-    /// Every date format that appears in a bundled Layer 2 template must
-    /// actually parse -- the shape that used to break Layer 2 silently, since
-    /// its old private `parse_date` accepted only `%d-%b-%y`/`%d-%b-%Y` and
-    /// every other real bank format returned `None`, failing `is_valid()` and
-    /// discarding an otherwise-correct match. Each string here is copied from
-    /// a real email body in the corpus.
     #[test]
     fn test_real_bank_date_formats_parse() {
         for (input, y, m, d) in [
-            ("23-12-25", 2025, 12, 23),         // HDFC UPI alert
-            ("10/01/26", 2026, 1, 10),          // SBI Card transaction alert
-            ("08-JAN-26", 2026, 1, 8),          // HDFC balance notification
-            ("30-JUL-2025", 2025, 7, 30),       // HDFC deposit alert
-            ("05 AUG 2025", 2025, 8, 5),        // IDFC FIRST debit alert
-            ("29 Nov 2025", 2025, 11, 29),      // IDFC FIRST payment received
-            ("17-08-2025", 2025, 8, 17),        // Axis Bank credit card
-            ("07 Jan, 2026", 2026, 1, 7),       // HDFC credit card
-            ("Jan 08, 2026", 2026, 1, 8),       // Jupiter UPI
-            ("Mon, Dec 01, 2025", 2025, 12, 1), // Jupiter Pots
-            ("29-Dec-25", 2025, 12, 29),        // Slice UPI credit
+            ("23-12-25", 2025, 12, 23),
+            ("10/01/26", 2026, 1, 10),
+            ("08-JAN-26", 2026, 1, 8),
+            ("30-JUL-2025", 2025, 7, 30),
+            ("05 AUG 2025", 2025, 8, 5),
+            ("29 Nov 2025", 2025, 11, 29),
+            ("17-08-2025", 2025, 8, 17),
+            ("07 Jan, 2026", 2026, 1, 7),
+            ("Jan 08, 2026", 2026, 1, 8),
+            ("Mon, Dec 01, 2025", 2025, 12, 1),
+            ("29-Dec-25", 2025, 12, 29),
         ] {
             let parsed = parse_date_generic(input)
                 .unwrap_or_else(|| panic!("real bank date {input:?} must parse"));
@@ -3953,49 +3197,30 @@ mod tests {
             .timestamp()
     }
 
-    /// `parse_date_generic`'s `ambiguous` flag must only be `true` for the
-    /// bare-numeric formats when both components are <=12 -- day>12 numeric
-    /// dates and month-name dates are both structurally unambiguous, even
-    /// though the latter can also have day<=12.
     #[test]
     fn test_parse_date_generic_ambiguous_flag() {
-        // day=25 > 12 -- only %d/%m/%Y can possibly match, unambiguous.
         let unambiguous_numeric = parse_date_generic("25/05/2023").unwrap();
         assert!(!unambiguous_numeric.ambiguous);
 
-        // Month-name format -- inherently unambiguous even though day=5<=12.
         let month_name = parse_date_generic("05-Aug-2026").unwrap();
         assert!(!month_name.ambiguous);
 
-        // Both day=2 and month=7 are <=12 -- genuinely two valid readings.
         let ambiguous = parse_date_generic("02-07-2026").unwrap();
         assert!(ambiguous.ambiguous);
         assert_eq!(ambiguous.timestamp, ymd_ts(2026, 7, 2));
 
-        // day==month -- swap would be a no-op, not meaningfully ambiguous.
         let noop_swap = parse_date_generic("05-05-2026").unwrap();
         assert!(!noop_swap.ambiguous);
     }
 
-    /// Regression lock for the provenance-blindness bug: `event_time_ambiguous:
-    /// false` (the default for every non-numeric-ambiguous parse -- bank
-    /// templates, Layer 5 statement rows, month-name dates) must make
-    /// `apply_date_cross_check` a guaranteed no-op, even when the resolved
-    /// date's day/month values would otherwise look swappable and the anchor
-    /// decisively favors the swap. Without this the cross-check would
-    /// silently corrupt already-correct dates (~40% of all calendar days
-    /// have day<=12).
     #[test]
     fn test_apply_date_cross_check_noop_when_not_flagged_ambiguous() {
-        let original_ts = ymd_ts(2026, 8, 5); // "5 August" -- e.g. from a month-name bank template
+        let original_ts = ymd_ts(2026, 8, 5);
         let mut obs = ExtractionResult {
             event_time: Some(original_ts),
             event_time_ambiguous: false,
             ..Default::default()
         };
-        // Anchor sits exactly on the swapped reading ("5 May") -- if the
-        // function looked at day/month values instead of the flag, this
-        // would trigger a swap.
         let anchor = Some(ymd_ts(2026, 5, 5));
 
         apply_date_cross_check(&mut obs, anchor);
@@ -4004,13 +3229,8 @@ mod tests {
         assert_eq!(obs.date_cross_check_flag, None);
     }
 
-    /// Decisive case: swap lands within the plausible-delay window and is
-    /// clearly closer to the anchor than the original -- auto-correct.
     #[test]
     fn test_apply_date_cross_check_decisive_swap() {
-        // Body-parsed as "2 July 2026" (DD-MM default), but the email
-        // arrived 7 Feb 2026 -- the swapped reading ("7 Feb") lands exactly
-        // on the anchor, the original is ~5 months off.
         let original_ts = ymd_ts(2026, 7, 2);
         let mut obs = ExtractionResult {
             event_time: Some(original_ts),
@@ -4028,20 +3248,14 @@ mod tests {
         );
     }
 
-    /// Weak signal: original is only a couple of days from the anchor
-    /// (well within plausible range) and the swap isn't decisively closer
-    /// -- keep the DD-MM locale default untouched, no flag. This is the
-    /// common case for a correctly-parsed ambiguous date.
     #[test]
     fn test_apply_date_cross_check_weak_signal_untouched() {
-        let original_ts = ymd_ts(2026, 7, 2); // "2 July"
+        let original_ts = ymd_ts(2026, 7, 2);
         let mut obs = ExtractionResult {
             event_time: Some(original_ts),
             event_time_ambiguous: true,
             ..Default::default()
         };
-        // Anchor 1 day after the original -- entirely plausible as-is, and
-        // nowhere near the swapped reading ("7 Feb").
         let anchor = Some(ymd_ts(2026, 7, 3));
 
         apply_date_cross_check(&mut obs, anchor);
@@ -4050,22 +3264,15 @@ mod tests {
         assert_eq!(obs.date_cross_check_flag, None);
     }
 
-    /// Neither candidate is plausible relative to the anchor (e.g. a
-    /// historical backfill scan, or the regex grabbed an unrelated date) --
-    /// don't guess which one is right. Leave `event_time` untouched, flag
-    /// for review, and downgrade confidence so `pending_review`-style gates
-    /// can catch it.
     #[test]
     fn test_apply_date_cross_check_both_implausible_flags_for_review() {
-        let original_ts = ymd_ts(2026, 7, 2); // "2 July"
+        let original_ts = ymd_ts(2026, 7, 2);
         let mut obs = ExtractionResult {
             event_time: Some(original_ts),
             event_time_ambiguous: true,
             confidence_score: Some(0.6),
             ..Default::default()
         };
-        // Anchor 3 months later -- both "2 July" and "7 Feb" are far outside
-        // the plausible-delay window.
         let anchor = Some(ymd_ts(2026, 10, 2));
 
         apply_date_cross_check(&mut obs, anchor);
@@ -4078,8 +3285,6 @@ mod tests {
         assert!(obs.confidence_score.unwrap() <= CROSS_CHECK_DISAGREEMENT_CONFIDENCE);
     }
 
-    /// No anchor at all (e.g. Gmail's `internalDate` was unavailable) --
-    /// nothing to arbitrate with, must be a no-op.
     #[test]
     fn test_apply_date_cross_check_no_anchor_is_noop() {
         let original_ts = ymd_ts(2026, 7, 2);
@@ -4095,8 +3300,6 @@ mod tests {
         assert_eq!(obs.date_cross_check_flag, None);
     }
 
-    /// Doc 30 TASK-TXN-004 acceptance test: generic currency-prefixed amount
-    /// regex, proximate to a debit/credit verb.
     #[tokio::test]
     async fn test_generic_amount_extraction() {
         let pool = dummy_pool();
@@ -4113,28 +3316,16 @@ mod tests {
         );
     }
 
-    /// Regression test for the "fake precision" bug: Layer 3 used to report
-    /// a flat `0.6` regardless of which regex branch actually matched or
-    /// how many fields resolved cleanly. This proves the score now varies:
-    /// a weak extraction (amount-implied direction, ambiguous-tier
-    /// merchant, no reference ID) scores strictly lower than a strong one
-    /// (explicit direction verb, strict-tier merchant, reference ID
-    /// present), which scores at the documented ceiling.
     #[tokio::test]
     async fn test_generic_confidence_varies_by_field_strength() {
         let pool = dummy_pool();
         let layer = GenericRegexLayer;
 
-        // Strong: explicit "paid to" (strict-tier merchant label) verb +
-        // reference ID present.
         let strong_body =
             "You have paid Rs 1,500.50 paid to Zomato via UPI on 25/05/2023. Ref: 123456789012.";
         let strong = layer.extract(&pool, "Any Bank", strong_body).await.unwrap();
         assert_eq!(strong.confidence_score, Some(LAYER3_MAX_CONFIDENCE));
 
-        // Weak: amount+currency present, no explicit direction verb (the
-        // amount-implies-debit fallback fires instead), ambiguous-tier
-        // merchant only, no reference ID.
         let weak_body = "Rs 500.00 at Zomato on 25/05/2023.";
         let weak = layer.extract(&pool, "Any Bank", weak_body).await.unwrap();
         assert!(
@@ -4153,8 +3344,6 @@ mod tests {
         );
     }
 
-    /// Doc 30 TASK-TXN-004 acceptance test: direction via keyword proximity
-    /// ("debited"/"spent"/"paid" vs. "credited"/"received").
     #[tokio::test]
     async fn test_generic_direction_keyword_proximity() {
         let pool = dummy_pool();
@@ -4169,8 +3358,6 @@ mod tests {
         assert_eq!(credit_result.direction, Some("credit".to_string()));
     }
 
-    /// Doc 30 TASK-TXN-004 acceptance test: merchant via capitalized-token or
-    /// "at"/"to"/"towards"/"info:" heuristics.
     #[tokio::test]
     async fn test_generic_merchant_heuristic() {
         let pool = dummy_pool();
@@ -4180,8 +3367,6 @@ mod tests {
         assert_eq!(result.merchant_raw, Some("Zomato".to_string()));
     }
 
-    /// Doc 30 TASK-TXN-004 acceptance test: "towards" is a required
-    /// proximity keyword, not just "at"/"to"/"from"/"for".
     #[tokio::test]
     async fn test_generic_merchant_heuristic_towards() {
         let pool = dummy_pool();
@@ -4191,11 +3376,6 @@ mod tests {
         assert_eq!(result.merchant_raw, Some("Swiggy".to_string()));
     }
 
-    /// Doc 30 TASK-TXN-004 acceptance test: "Info: <merchant>" is a common
-    /// Indian UPI alert convention -- previously only hardcoded into
-    /// Layer 2's ICICI template, so any *other* bank using the same
-    /// convention with no dedicated Layer 2 template fell through this
-    /// fallback with no merchant extracted at all.
     #[tokio::test]
     async fn test_generic_merchant_heuristic_info_colon() {
         let pool = dummy_pool();
@@ -4205,10 +3385,6 @@ mod tests {
         assert_eq!(result.merchant_raw, Some("Starbucks Coffee".to_string()));
     }
 
-    /// gmail false-negative remediation, Cluster E: card-network settlement
-    /// descriptors (`RAZ*SWIGGY`) contain `*`, which the merchant capture
-    /// class previously excluded, truncating the match before any
-    /// terminator was reached and yielding no merchant at all.
     #[tokio::test]
     async fn test_generic_merchant_heuristic_asterisk_descriptor() {
         let pool = dummy_pool();
@@ -4219,11 +3395,6 @@ mod tests {
         assert_eq!(result.amount_minor, Some(259000));
     }
 
-    /// gmail false-negative remediation, Cluster F: IDFC FIRST Bank's debit
-    /// template uses a space-separated "DD Mon YYYY" date ("23 MAY 2026"),
-    /// which no prior date-regex alternative covered -- `is_valid()`
-    /// requires `event_time`, so the whole extraction was discarded even
-    /// though amount/direction/merchant all matched.
     #[tokio::test]
     async fn test_generic_date_space_separated_day_month_year() {
         let pool = dummy_pool();
@@ -4235,12 +3406,6 @@ mod tests {
         assert!(result.event_time.is_some());
     }
 
-    /// gmail false-negative remediation, Cluster G: Jupiter's
-    /// Federal-Bank-Savings "Money credited" template labels the
-    /// counterparty as "Payment from:" (colon immediately after the
-    /// keyword, before the mandatory whitespace the regex required) and
-    /// dates as "Month DD, YYYY" ("May 30, 2026"), neither of which any
-    /// prior pattern covered.
     #[tokio::test]
     async fn test_generic_merchant_heuristic_colon_label_and_month_first_date() {
         let pool = dummy_pool();
@@ -4253,11 +3418,6 @@ mod tests {
         assert!(result.event_time.is_some());
     }
 
-    /// gmail false-negative remediation, Cluster D: Axis Bank's AutoPay
-    /// activation confirmation labels the counterparty "Merchant Name:"
-    /// (two words) on its own line, with the value on the *next* line.
-    /// Aditya's decision: capture this as a real ₹0.00 debit despite no
-    /// funds moving, since it's a dated pipeline event he wants visible.
     #[tokio::test]
     async fn test_generic_merchant_heuristic_two_word_label_next_line() {
         let pool = dummy_pool();
@@ -4270,13 +3430,6 @@ mod tests {
         assert!(result.event_time.is_some());
     }
 
-    /// gmail false-negative remediation, Cluster H: a neobank "money
-    /// credited" template (Jupiter, Federal Bank Savings) says "...was
-    /// credited **to your account**" before separately labeling the real
-    /// counterparty further down ("Payment **from**: NAME"). The single-
-    /// match ambiguous-tier lookup used to stop at the first "to/from/at/
-    /// for/by" hit and take "your account" itself as the merchant, since it
-    /// was a non-empty capture and nothing downstream caught it.
     #[tokio::test]
     async fn test_generic_merchant_skips_self_referential_account() {
         let pool = dummy_pool();
@@ -4287,17 +3440,6 @@ mod tests {
         assert_eq!(result.amount_minor, Some(1700000));
     }
 
-    /// Regression test for the real YES Bank body that produced a wrong
-    /// "block your" merchant (and, via `TransactionRecord`/`CanonicalTransaction`
-    /// never carrying `direction` to the list UI, a debit spend rendering
-    /// green/positive). Two independent bugs, both fixed here:
-    /// 1. The settlement descriptor uses an underscore ("UPI_SRI SAI FRUITS
-    ///    AND") which the old `[A-Za-z0-9\s*]` capture class rejected,
-    ///    failing the "at ..." match entirely and letting `captures_iter`
-    ///    fall through to the footer's "To **block your** card" phrase,
-    ///    which satisfies the same ambiguous "to" + terminator shape.
-    /// 2. "has been spent" must resolve `direction` to "debit", not fall
-    ///    through to the no-explicit-verb branch.
     #[tokio::test]
     async fn test_generic_regex_underscore_merchant_and_disclaimer_footer() {
         let pool = dummy_pool();
@@ -4312,12 +3454,6 @@ mod tests {
         assert_eq!(result.amount_minor, Some(9100));
     }
 
-    /// A merchant descriptor made entirely of instruction/disclaimer filler
-    /// words ("to block your card") must never be accepted even when it's
-    /// the *only* ambiguous-keyword match in the body (no real merchant
-    /// label present at all) -- `is_invalid_merchant`'s stopword filter must
-    /// reject it outright rather than merely being outcompeted by an
-    /// earlier real match.
     #[tokio::test]
     async fn test_generic_merchant_rejects_stopword_only_disclaimer_capture() {
         let pool = dummy_pool();
@@ -4325,20 +3461,11 @@ mod tests {
         let body =
             "INR 250.00 debited. To block your card, SMS BLOCK to 9876543210 or call our helpline.";
         let result = layer.extract(&pool, "Yes Bank", body).await;
-        // No valid merchant anywhere in the body -- must not fabricate
-        // "block your" as the merchant, even though `is_valid()` then fails
-        // this layer entirely (a later layer or pending-review is the
-        // correct outcome, not a wrong merchant).
         if let Some(r) = result {
             assert_ne!(r.merchant_raw, Some("block your".to_string()));
         }
     }
 
-    /// gmail false-negative remediation, Cluster H: a declined
-    /// international-card-transaction template states the amount in a
-    /// spelled-out ISO currency code ("USD 1.00") rather than ₹/Rs/INR/$ --
-    /// none of which the amount regex recognized, so extraction found
-    /// nothing at all despite every other field being present.
     #[tokio::test]
     async fn test_generic_amount_recognizes_spelled_out_iso_currency_code() {
         let pool = dummy_pool();
@@ -4349,14 +3476,6 @@ mod tests {
         assert_eq!(result.currency, Some("USD".to_string()));
     }
 
-    /// gmail false-negative remediation, Cluster H: same body as above --
-    /// "at OPENAI is declined because International Ecom/online
-    /// transactions are disabled..." has no comma/period or any prior
-    /// terminator keyword within 40 chars of the merchant name, so the
-    /// lazy capture kept expanding through the surrounding prose looking
-    /// for one, exhausted the cap, and the whole match failed at that
-    /// position -- falling through to an unrelated later "To enable," match
-    /// instead of the real merchant.
     #[tokio::test]
     async fn test_generic_merchant_terminates_before_declined_prose() {
         let pool = dummy_pool();
@@ -4366,28 +3485,18 @@ mod tests {
         assert_eq!(result.merchant_raw, Some("OPENAI".to_string()));
     }
 
-    /// Doc 30 TASK-TXN-004 acceptance test: when Layer 3's own date regex
-    /// finds nothing, Gmail's `internalDate` fills in as a fallback — but
-    /// must never override a date the extraction layer already found (the
-    /// bug this test guards against: the caller previously overwrote
-    /// `event_time` unconditionally, discarding a more precise in-body date
-    /// in favor of the email's arrival timestamp).
     #[test]
     fn test_generic_date_fallback_to_internal_date() {
         use crate::ingestion::message_processor::MessageProcessor;
 
-        // No internal_date at all -> no fallback value.
         assert_eq!(MessageProcessor::internal_date_fallback(&None), None);
 
-        // A valid internalDate (epoch millis as a string) converts to epoch
-        // seconds -- this is the fallback path itself.
         let internal_date = Some("1700000000000".to_string());
         assert_eq!(
             MessageProcessor::internal_date_fallback(&internal_date),
             Some(1_700_000_000)
         );
 
-        // Malformed internalDate must not panic -- fails closed to None.
         let malformed = Some("not-a-number".to_string());
         assert_eq!(MessageProcessor::internal_date_fallback(&malformed), None);
     }
@@ -4431,15 +3540,6 @@ mod tests {
         assert_eq!(result.extraction_method, "nlp");
     }
 
-    /// New capability test (shared lexicon consolidation): NlpLayer
-    /// previously had zero support for Layer 3's unambiguous merchant-label
-    /// keywords ("towards", "paid to", "purchased at", "in favor of",
-    /// etc.) -- a body whose only merchant signal is one of those, with no
-    /// ambiguous at/to/from/for/by keyword and no UPI VPA token present,
-    /// previously extracted no merchant here at all and failed
-    /// `is_valid()` entirely (no merchant, no balance_after). The
-    /// strict-label pre-pass rescue fixes this without touching the
-    /// existing ambiguous/UPI-VPA paths' behavior (both still pass above).
     #[tokio::test]
     async fn test_nlp_strict_label_rescue_finds_merchant_ambiguous_tier_would_miss() {
         let pool = dummy_pool();
@@ -4454,14 +3554,6 @@ mod tests {
         assert_eq!(result.amount_minor, Some(50000));
     }
 
-    /// Regression test (strengthen-regex pass): the ambiguous-keyword
-    /// merchant block used to have no `result.merchant_raw.is_none()` guard,
-    /// so it unconditionally overwrote any already-found merchant on every
-    /// subsequent "at/to/from/for/by" hit -- a disclaimer footer's keyword
-    /// occurrence (always later in the body than the real transaction line)
-    /// always won, clobbering the correct earlier match. Also verifies
-    /// `is_invalid_merchant`'s stopword filter now applies inside NlpLayer
-    /// (previously only Layer 3 called it).
     #[tokio::test]
     async fn test_nlp_first_valid_merchant_not_overwritten_by_later_disclaimer() {
         let pool = dummy_pool();
@@ -4471,10 +3563,6 @@ mod tests {
 
         assert_eq!(result.merchant_raw, Some("Amazon".to_string()));
     }
-
-    // -----------------------------------------------------------------------
-    // Tests for extract_instrument_signals (Task 4.7)
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_instrument_signals_credit_card_last4() {
@@ -4497,35 +3585,27 @@ mod tests {
 
     #[test]
     fn test_instrument_signals_edge_cases() {
-        // XXXX1234
         let s1 = extract_instrument_signals("Bank", "card ending XXXX1234");
         assert_eq!(s1.masked_identifier, Some("1234".to_string()));
 
-        // XXXXXX1234
         let s2 = extract_instrument_signals("Bank", "card ending XXXXXX1234");
         assert_eq!(s2.masked_identifier, Some("1234".to_string()));
 
-        // 1234
         let s3 = extract_instrument_signals("Bank", "card ending 1234");
         assert_eq!(s3.masked_identifier, Some("1234".to_string()));
 
-        // XXXX34 (2 digits)
         let s4 = extract_instrument_signals("Bank", "card ending XXXX34");
         assert_eq!(s4.masked_identifier, Some("34".to_string()));
 
-        // XXXX 1234
         let s5 = extract_instrument_signals("Bank", "account XXXX 1234");
         assert_eq!(s5.masked_identifier, Some("1234".to_string()));
 
-        // XXXX XXXX 1234
         let s6 = extract_instrument_signals("Bank", "card ending XXXX XXXX 1234");
         assert_eq!(s6.masked_identifier, Some("1234".to_string()));
 
-        // **** **** **** 1234
         let s7 = extract_instrument_signals("Bank", "card ending **** **** **** 1234");
         assert_eq!(s7.masked_identifier, Some("1234".to_string()));
 
-        // XX-1234
         let s8 = extract_instrument_signals("Bank", "account no. XX-1234");
         assert_eq!(s8.masked_identifier, Some("1234".to_string()));
     }
@@ -4560,7 +3640,6 @@ mod tests {
 
     #[test]
     fn test_instrument_signals_no_match_returns_only_issuer() {
-        // A body with no card/account/VPA patterns
         let body = "Newsletter from your bank. No transaction details.";
         let signals = extract_instrument_signals("SBI", body);
         assert!(signals.masked_identifier.is_none());
@@ -4593,7 +3672,6 @@ mod tests {
     #[tokio::test]
     async fn test_ladder_augments_result_with_instrument_signals() {
         let pool = dummy_pool();
-        // Use BankTemplateLayer body that will match HDFC credit card pattern
         let body =
             "Rs 1500.00 spent on your HDFC Bank CREDIT Card ending 1234 at Amazon on 25-May-23.";
         let mut layer6_timed_out = false;
@@ -4611,20 +3689,12 @@ mod tests {
         .unwrap();
         assert!(result.is_some());
         let obs = result.unwrap();
-        // Extraction succeeded
         assert_eq!(obs.amount_minor, Some(150000));
-        // Instrument signals populated by run_extraction_ladder
         assert_eq!(obs.masked_identifier, Some("1234".to_string()));
         assert_eq!(obs.instrument_type, Some("credit_card".to_string()));
         assert_eq!(obs.issuer_name, Some("HDFC Bank".to_string()));
     }
 
-    // -----------------------------------------------------------------------
-    // Tests for Layer5CrossrefLayer (Doc 30 TASK-TXN-005)
-    // -----------------------------------------------------------------------
-
-    /// Seeds a migrated DB with one instrument, one statement, and the given
-    /// `statement_entries` rows for it. Returns the pool.
     async fn setup_crossref_db(
         entries: Vec<crate::db::statement_entries::StatementEntriesRow>,
     ) -> Pool {
@@ -4680,8 +3750,6 @@ mod tests {
         }
     }
 
-    /// Doc 30 TASK-TXN-005 acceptance test: a single unambiguous match
-    /// borrows the statement entry's complete, authoritative field set.
     #[tokio::test]
     async fn test_layer5_single_match_completes_extraction() {
         let anchor = chrono::NaiveDate::from_ymd_opt(2023, 5, 25).unwrap();
@@ -4694,8 +3762,6 @@ mod tests {
         )])
         .await;
 
-        // Body yields a partial amount (Rs 1500.00) but no merchant/date --
-        // exactly the "layers 1-4 failed overall" scenario Layer 5 rescues.
         let body = "Rs 1500.00 spent on your HDFC Bank credit card ending 1234.";
         let result = Layer5CrossrefLayer
             .extract(&pool, "HDFC Bank", body, Some(anchor))
@@ -4710,8 +3776,6 @@ mod tests {
         assert_eq!(obs.masked_identifier, Some("1234".to_string()));
     }
 
-    /// Doc 30 TASK-TXN-005 acceptance test: multiple candidates matching the
-    /// same partial fields must not be force-picked (Doc 15 §2 principle 9).
     #[tokio::test]
     async fn test_layer5_ambiguous_match_returns_none() {
         let anchor = chrono::NaiveDate::from_ymd_opt(2023, 5, 25).unwrap();
@@ -4733,12 +3797,9 @@ mod tests {
         );
     }
 
-    /// Doc 30 TASK-TXN-005 acceptance test: zero candidates (wrong window,
-    /// wrong instrument, or no statement processed yet) returns None.
     #[tokio::test]
     async fn test_layer5_no_match_returns_none() {
         let anchor = chrono::NaiveDate::from_ymd_opt(2023, 5, 25).unwrap();
-        // Entry is 10 days outside the anchor date -- well past the ±3-day window.
         let far_date = chrono::NaiveDate::from_ymd_opt(2023, 6, 10).unwrap();
         let pool = setup_crossref_db(vec![crossref_entry(
             "se_1",
@@ -4756,8 +3817,6 @@ mod tests {
         assert!(result.is_none());
     }
 
-    /// No anchor date at all (Gmail internalDate missing too) -- must not
-    /// attempt an unbounded search.
     #[tokio::test]
     async fn test_layer5_no_anchor_date_returns_none() {
         let pool = setup_crossref_db(vec![]).await;
@@ -4768,13 +3827,6 @@ mod tests {
         assert!(result.is_none());
     }
 
-    // -----------------------------------------------------------------------
-    // Tests for detect_pattern_drift (Task 4.9)
-    // -----------------------------------------------------------------------
-
-    /// Seeds an in-memory SQLite database with the full migrations schema and
-    /// inserts one active pattern rule for the given `(bank_name, template_hash)`.
-    /// Returns both the pool and the template hash that was registered.
     async fn setup_drift_db(bank_name: &str, body_to_register: &str) -> (Pool, String) {
         let pool = dummy_migrated_pool().await;
         let template_hash = compute_template_hash(body_to_register);
@@ -4798,26 +3850,12 @@ mod tests {
         (pool, template_hash)
     }
 
-    /// Verifies the core drift-detection scenario: a known HDFC template whose
-    /// active rule covers the *original* body structure; when a changed body
-    /// (different structural tokens → different hash) is presented and all
-    /// extraction layers return `None`, `detect_pattern_drift` must flag
-    /// `drift_detected = true`.
-    ///
-    /// Additionally asserts:
-    /// - When the body is unknown (no active rules), drift is `false`.
-    /// - When the ladder already succeeded (`ladder_result.is_some()`), drift
-    ///   is always `false` regardless of active rules.
     #[tokio::test]
     async fn test_drift_detected_for_changed_hdfc_template() {
-        // ── Setup: register active rules for the ORIGINAL HDFC template. ──────
         let original_body =
             "Rs 1500 spent on HDFC Bank CREDIT Card ending 1234 at Amazon on 25-May-23.";
         let (_pool, registered_hash) = setup_drift_db("HDFC Bank", original_body).await;
 
-        // ── Case 1: changed template (different structural shape → new hash). ──
-        // The bank has altered the email template; the new body has a different
-        // token structure so its template hash does NOT match the registered one.
         let changed_body =
             "HDFC Bank: Transaction of INR 1500 done at merchant Amazon on 25-May-2023. New format.";
         let changed_hash = compute_template_hash(changed_body);
@@ -4826,8 +3864,6 @@ mod tests {
             "Changed body must produce a different template hash to simulate drift"
         );
 
-        // The changed body has no rules registered → drift = false (new template).
-        // Use a fresh sync connection pointing at the same in-memory DB.
         let conn = crate::db::test_helpers::setup_test_db_async().await;
 
         let drift_new_template =
@@ -4839,11 +3875,6 @@ mod tests {
         );
         assert_eq!(drift_new_template.template_hash, changed_hash);
 
-        // ── Case 2: original body registered but extraction failed → drift. ───
-        // Simulate that the ORIGINAL body was seen before (rules exist for its
-        // hash) but now extraction returns None (the template has since changed
-        // in a way that doesn't alter the structural hash, e.g. amount format).
-        // We insert the rule directly into the sync conn.
         seed_rule(
             &conn,
             "HDFC Bank",
@@ -4853,7 +3884,6 @@ mod tests {
             "active",
         );
 
-        // Ladder result is None (all layers failed for the original body).
         let drift_known_template =
             detect_pattern_drift(&conn, "HDFC Bank", original_body, &None).unwrap();
         assert!(
@@ -4863,7 +3893,6 @@ mod tests {
         );
         assert_eq!(drift_known_template.template_hash, registered_hash);
 
-        // ── Case 3: ladder already succeeded → never flag as drift. ──────────
         let successful_result = Some(ExtractionResult {
             amount_minor: Some(150000),
             currency: Some("INR".to_string()),
@@ -4882,30 +3911,24 @@ mod tests {
         );
     }
 
-    // ── test_fx_transaction_extracted_correctly ────────────────────────────
     #[tokio::test]
     async fn test_fx_transaction_extracted_correctly() {
         let pool = dummy_pool();
         let layer = GenericRegexLayer;
         let body = "Acct XX1234 debited USD 50.00 (INR 4150.50) on 25-May-23 at Netflix.";
         let result = layer.extract(&pool, "Any Bank", body).await;
-        // Should pick the INR amount if possible, or correctly parse the foreign amount.
         assert!(result.is_some());
     }
 
-    // ── test_declined_transaction_rejected_or_flagged ──────────────────────
     #[tokio::test]
     async fn test_declined_transaction_rejected_or_flagged() {
         let pool = dummy_pool();
         let layer = GenericRegexLayer;
         let body = "Transaction of INR 500.00 at POS declined due to insufficient funds.";
         let result = layer.extract(&pool, "Any Bank", body).await;
-        // Implementation might reject this or flag as declined.
-        // We ensure that we don't crash, but ideally it returns None.
         assert!(result.is_none() || result.unwrap().amount_minor.unwrap_or(0) > 0);
     }
 
-    // ── test_multi_amount_format_picks_correct_amount ──────────────────────
     #[tokio::test]
     async fn test_multi_amount_format_picks_correct_amount() {
         let pool = dummy_pool();
@@ -4913,29 +3936,21 @@ mod tests {
         let body = "Spent INR 500.00. Available limit is INR 45,000.00.";
         let result = layer.extract(&pool, "Any Bank", body).await;
         if let Some(res) = result {
-            // Should pick the spent amount, not the limit
             assert_eq!(res.amount_minor, Some(50000));
         }
     }
 
-    // ── test_icici_upi_on_credit_card_regex ────────────────────────────────
     #[tokio::test]
     async fn test_icici_upi_on_credit_card_regex() {
         let pool = dummy_pool();
         let layer = BankTemplateLayer;
         let body = "Dear Customer, Credit Card XX1234 debited with INR 500.00 on 25-May-23. Info: UPI/1234567890/Amazon.";
         let result = layer.extract(&pool, "ICICI Bank", body).await;
-        // Since ICICI UPI is handled, it should extract properly for CC too.
         if let Some(res) = result {
             assert_eq!(res.amount_minor, Some(50000));
         }
     }
 
-    /// Regression test for the exact HDFC self-transfer email investigated
-    /// this session: no named payee, just two account numbers and "via
-    /// IMPS" -- `detect_channel` must recognize the "credited to the
-    /// account ending X" phrasing as an internal transfer, taking priority
-    /// over the plain "imps" keyword also present in the body.
     #[test]
     fn test_detect_channel_hdfc_imps_self_transfer() {
         let body =
@@ -5014,12 +4029,6 @@ mod tests {
         assert_eq!(detect_channel(&obs, body), None);
     }
 
-    /// Root-cause regression test (2026-07-31 audit, category B): IndusInd's
-    /// card-approval confirmation ("... is Approved") didn't match any of
-    /// the bank's existing patterns, which all expect "spent/debited/charged
-    /// on|from|via Credit Card ... at MERCHANT on DATE" -- this template
-    /// puts the date *before* the merchant instead ("for AMOUNT on DATE at
-    /// MERCHANT is Approved").
     #[tokio::test]
     async fn test_indusind_credit_card_txn_approved() {
         let pool = dummy_pool();
@@ -5036,14 +4045,6 @@ mod tests {
         assert_eq!(result.direction, Some("debit".to_string()));
     }
 
-    /// Root-cause regression test (2026-07-31 audit, category B): IndusInd's
-    /// credit-card bill-payment confirmation never prints the card's last 4
-    /// digits anywhere in the body (same shape as the Jupiter/CSB emails in
-    /// category A) -- the new `credit_card_bill_payment_thank_you` pattern
-    /// captures amount/date/a synthesized "IndusInd Bank Credit Card"
-    /// merchant from the surrounding fixed wording; instrument resolution
-    /// still depends on the single-instrument-by-issuer fallback since there
-    /// really is no masked identifier in the source to capture.
     #[tokio::test]
     async fn test_indusind_credit_card_bill_payment_thank_you() {
         let pool = dummy_pool();
@@ -5067,12 +4068,6 @@ mod tests {
         );
     }
 
-    /// Root-cause regression test (2026-07-31 audit, category C): HDFC's
-    /// "transfer to payee" NEFT debit confirmation names the payee directly
-    /// (no VPA, no account-number capture) but matched no existing pattern.
-    /// Also covers a literal "Self Transfer" payee name -- HDFC's own
-    /// wording for this case, which needs no placeholder rewriting since
-    /// it's already a meaningful label.
     #[tokio::test]
     async fn test_hdfc_neft_transfer_to_payee() {
         let pool = dummy_pool();
@@ -5101,11 +4096,6 @@ mod tests {
         assert_eq!(self_result.merchant_raw, Some("Self Transfer".to_string()));
     }
 
-    /// Root-cause regression test (2026-07-31 audit, category C): HDFC's
-    /// structured NEFT credit narration ("Cr-IFSC-NAME-...") never matched
-    /// any pattern expecting a plain merchant string. Also covers the
-    /// double-currency-prefix formatting quirk ("Rs.INR 10,000.00") seen in
-    /// this exact email.
     #[tokio::test]
     async fn test_hdfc_neft_credit_cr_ifsc_name() {
         let pool = dummy_pool();
@@ -5122,11 +4112,6 @@ mod tests {
         assert_eq!(result.direction, Some("credit".to_string()));
     }
 
-    /// Root-cause regression test (2026-07-31 audit, category C): the
-    /// "A2AINT01-COMPANY-Salary-Ref" structured-credit narration shape --
-    /// distinct from the "NEFT Cr-IFSC-NAME" shape above (one code segment
-    /// before the merchant instead of two), so it needs its own pattern
-    /// rather than a shared one.
     #[tokio::test]
     async fn test_hdfc_account_credit_ref_code_merchant() {
         let pool = dummy_pool();
@@ -5146,11 +4131,6 @@ mod tests {
         assert_eq!(result.direction, Some("credit".to_string()));
     }
 
-    /// Root-cause regression test (2026-07-31 audit, category C): a RuPay
-    /// credit card spend routed over UPI shows a VPA-like handle
-    /// ("paytm-81642725@ptys") immediately before the real merchant name --
-    /// no existing pattern separated the two, so the whole thing fell
-    /// through Gate 3 with no merchant at all.
     #[tokio::test]
     async fn test_hdfc_credit_card_debit_to_upi_handle() {
         let pool = dummy_pool();

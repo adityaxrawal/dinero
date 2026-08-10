@@ -1,3 +1,14 @@
+//! Local LLM model catalogue: download, deletion, and active-model selection.
+//!
+//! Models are large single-file GGUF downloads pulled once from Hugging Face and
+//! stored under the app data directory. Downloads are cancellable and tracked in
+//! a registry, since a partially written multi-gigabyte file must not be left
+//! behind or mistaken for a usable model.
+//!
+//! Selecting the active model reconciles what the user asked for against what is
+//! actually present on disk, so a stored preference naming a deleted model
+//! degrades to something available rather than failing at inference time.
+
 use anyhow::Result;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -9,18 +20,11 @@ use tokio::fs::{self, File};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
-/// Emitted to the frontend while a catalog model's `.gguf` downloads, so
-/// Settings' model picker can show a real progress bar instead of an
-/// indeterminate spinner for what's often a multi-GB, multi-minute
-/// download. `total_bytes` is `None` on the rare server that omits
-/// `Content-Length` — the frontend falls back to indeterminate in that case.
 #[derive(Debug, Clone, Serialize)]
 pub struct LlmDownloadProgress {
     pub model_id: String,
     pub bytes_downloaded: u64,
     pub total_bytes: Option<u64>,
-    /// EMA-smoothed (alpha=0.3) download rate in bytes/sec. `0.0` until the
-    /// first throttled emit interval has elapsed.
     pub bytes_per_sec: f64,
 }
 
@@ -28,8 +32,6 @@ pub struct LlmDownloadProgress {
 pub struct LlmModelInfo {
     pub id: String,
     pub name: String,
-    /// Ollama-style tag from Doc 16 §12.3's hardware matrix (e.g. `gemma4:e4b`)
-    /// — informational only; `id` (not this) is what's used for file paths.
     pub tag: String,
     pub tier: u8,
     pub min_ram_gb: f64,
@@ -44,35 +46,10 @@ pub struct DownloadState {
     pub model_id: String,
     pub bytes_downloaded: u64,
     pub total_bytes: Option<u64>,
-    pub status: String, // "downloading", "verifying", "ready", "failed"
+    pub status: String,
 }
 
-/// Doc 16 §12.3 "Dinero Local LLM Hardware Matrix" — the single, authoritative
-/// 5-tier catalog. Every field except `gguf_url`/`expected_sha256` is taken
-/// directly from that table.
-///
-/// Real artifacts, verified (not fabricated — see the prior revision's own
-/// warning about that exact mistake). Each `gguf_url` points at a real
-/// HuggingFace `resolve/main` path; each hash is the file's own git-lfs
-/// `oid` (HF's LFS storage is content-addressed by SHA-256, so the LFS
-/// pointer's `oid` *is* the file's real SHA-256 — read directly via
-/// `.../raw/main/<file>`, not computed by downloading and hashing multi-GB
-/// files locally). Quantization: Q4_K_M for the four dense tiers (closest
-/// available to Doc 16's `approx_size_gb` without materially degrading
-/// extraction-task accuracy), MXFP4_MOE for the one MoE tier (Unsloth's own
-/// recommended default quant for their MoE conversions). Retrieved
-/// 2026-07-19 from the `unsloth/*-GGUF` repos; re-verify if these ever need
-/// to change (a repo can rename/retag files upstream).
-///
-/// No separate `tokenizer_url` — GGUF embeds its own tokenizer vocab/merges
-/// (`tokenizer.ggml.*` metadata), and inference runs through `llama_sidecar`
-/// (llama.cpp's `llama-server`), which reads that directly. The Candle path
-/// this catalog previously targeted needed an external `tokenizer.json`;
-/// that requirement went away along with Candle itself (see
-/// `llama_sidecar.rs`'s module doc for why: no released `candle-transformers`
-/// version has a loader for either of these families' actual GGUF
-/// architectures — Gemma 4's own `"gemma4"` tag, Qwen3.6's
-/// Gated-DeltaNet-hybrid MoE).
+/// The model catalogue with its RAM requirements.
 pub fn get_available_models() -> Vec<LlmModelInfo> {
     vec![
         LlmModelInfo {
@@ -133,14 +110,13 @@ pub fn get_available_models() -> Vec<LlmModelInfo> {
     ]
 }
 
+/// Downloads a model, verifying its hash on completion.
 pub async fn download_model(
     app_dir: &Path,
     model_info: &LlmModelInfo,
     progress_app: Option<&AppHandle>,
     cancel_token: Option<CancellationToken>,
 ) -> Result<()> {
-    // Defensive: catches any future catalog entry that ships without a real
-    // artifact yet, same check that caught all 5 entries before this fix.
     if model_info.gguf_url.starts_with("PLACEHOLDER_") {
         anyhow::bail!(
             "Model '{}' has no real download URL configured yet (placeholder artifact, see llm_manager.rs)",
@@ -153,9 +129,6 @@ pub async fn download_model(
 
     let model_path = models_dir.join(format!("{}.gguf", model_info.id));
 
-    // Download GGUF — no separate tokenizer download needed, GGUF embeds
-    // its own vocab/merges and `llama_sidecar`'s `llama-server` reads that
-    // directly.
     download_file_with_hash(
         &model_info.gguf_url,
         &model_path,
@@ -168,7 +141,7 @@ pub async fn download_model(
     Ok(())
 }
 
-/// Deletes a downloaded model and its verification marker from disk.
+/// Deletes a downloaded model file.
 pub fn delete_model(app_dir: &Path, model_id: &str) -> Result<()> {
     let model_path = app_dir.join("models").join(format!("{}.gguf", model_id));
     let marker_path = verified_marker_path(&model_path);
@@ -177,11 +150,11 @@ pub fn delete_model(app_dir: &Path, model_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// `progress` — when `Some((app, model_id))`, emits throttled
-/// `llm_download_progress` events (~every 1MB, plus a final one) so the
-/// frontend can render a real percentage instead of an indeterminate
-/// spinner. `None` for callers that don't need progress UI (the
-/// `llama_sidecar` binary download, currently).
+/// Downloads a file, streaming to disk and verifying its hash.
+///
+/// Streamed rather than buffered because these are multi-gigabyte files that
+/// would not fit comfortably in memory. Cancellable mid-transfer, and the hash is
+/// checked before the result is treated as usable.
 pub(crate) async fn download_file_with_hash(
     url: &str,
     dest_path: &Path,
@@ -194,12 +167,6 @@ pub(crate) async fn download_file_with_hash(
 
     let client = Client::new();
 
-    // audit_06 #8: resume an interrupted download instead of restarting it.
-    // These files are 4–20 GB; on a metered or unstable connection, throwing
-    // away 18 GB because the last 2 failed is the difference between "usable"
-    // and "not". A partial is left on disk by design — a crash or network drop
-    // never reaches the `.verified` marker write below, so `get_model_path`
-    // already refuses to hand a partial to `llama-server`.
     let resume_from: u64 = match fs::metadata(dest_path).await {
         Ok(meta) if meta.len() > 0 => meta.len(),
         _ => 0,
@@ -211,11 +178,6 @@ pub(crate) async fn download_file_with_hash(
     }
     let mut res = request.send().await?.error_for_status()?;
 
-    // A server that honours the range answers 206 with the remainder. One that
-    // ignores it answers 200 with the *whole* file — appending that to our
-    // partial would produce a corrupt file that only the final hash check
-    // would catch, after another multi-GB download. So trust the status, not
-    // the request.
     let resuming = resume_from > 0 && res.status() == reqwest::StatusCode::PARTIAL_CONTENT;
     if resume_from > 0 && !resuming {
         tracing::info!(
@@ -225,9 +187,6 @@ pub(crate) async fn download_file_with_hash(
         );
     }
 
-    // `content_length()` is the length of *this response*, so on a resume it
-    // is the remainder, not the file. Progress and ETA are reported against
-    // the whole file, so add back what we already have.
     let total_bytes = res
         .content_length()
         .map(|len| len + if resuming { resume_from } else { 0 });
@@ -236,10 +195,6 @@ pub(crate) async fn download_file_with_hash(
     let mut downloaded: u64 = 0;
 
     let mut file = if resuming {
-        // Seed the hash with the bytes already on disk. The hasher is
-        // streaming, so a resumed download that skipped this would finish with
-        // a hash of only the tail and fail verification on a perfectly good
-        // file.
         let mut existing = File::open(dest_path).await?;
         let mut buf = vec![0u8; 1024 * 1024];
         loop {
@@ -321,7 +276,6 @@ pub(crate) async fn download_file_with_hash(
         );
     }
 
-    // Validate hash if expected_hash is a real (non-empty, non-placeholder) value.
     if !expected_hash.is_empty() && !expected_hash.starts_with("PLACEHOLDER_") {
         let actual_hash = format!("{:x}", hasher.finalize());
         if actual_hash != expected_hash {
@@ -332,11 +286,6 @@ pub(crate) async fn download_file_with_hash(
                 actual_hash
             ));
         }
-        // Marks this exact file as hash-verified so `get_model_path` can
-        // trust it on a cheap existence check instead of re-hashing a
-        // multi-GB file on every startup. A download interrupted by a
-        // crash/network drop never reaches this line, so a corrupt partial
-        // file is never marked verified even though it's left on disk.
         fs::write(verified_marker_path(dest_path), &actual_hash)
             .await
             .ok();
@@ -345,20 +294,21 @@ pub(crate) async fn download_file_with_hash(
     Ok(())
 }
 
+/// Path of the marker written once a download is verified.
+///
+/// Its presence is what distinguishes a complete verified model from a partial
+/// file left behind by an interrupted download.
 fn verified_marker_path(dest_path: &Path) -> PathBuf {
     let mut marker = dest_path.as_os_str().to_owned();
     marker.push(".verified");
     PathBuf::from(marker)
 }
 
-/// Per-model-id cancellation tokens for in-progress downloads. A download
-/// registers its token at start and unregisters it when it settles
-/// (success, error, or cancel alike) — a stale entry would otherwise cancel
-/// a *later* unrelated download of the same model id.
 #[derive(Default)]
 pub struct DownloadRegistry(std::sync::Mutex<std::collections::HashMap<String, CancellationToken>>);
 
 impl DownloadRegistry {
+    /// Registers a cancellation token for an in-flight download.
     pub fn register(&self, model_id: &str) -> CancellationToken {
         let token = CancellationToken::new();
         self.0
@@ -368,31 +318,20 @@ impl DownloadRegistry {
         token
     }
 
-    /// No-op if `model_id` isn't currently downloading (already finished,
-    /// or never started) — nothing for the caller to distinguish.
+    /// Cancels a download in progress.
     pub fn cancel(&self, model_id: &str) {
         if let Some(token) = self.0.lock().unwrap().get(model_id) {
             token.cancel();
         }
     }
 
+    /// Removes a download's token once it has finished.
     pub fn unregister(&self, model_id: &str) {
         self.0.lock().unwrap().remove(model_id);
     }
 }
 
-/// A model file that's just present on disk isn't necessarily usable --
-/// an interrupted/crashed download can leave a truncated `.gguf` that
-/// `llama-server` will only discover is broken once it's already spawned
-/// (`tensor data is not within the file bounds`), crashing Layer 6
-/// extraction for every email until someone notices. `download_file_with_hash`
-/// writes a `.verified` marker once a download's SHA-256 has actually been
-/// checked, so a marker's presence is trusted outright. Its absence doesn't
-/// necessarily mean corruption though -- installs from before this marker
-/// existed are real and shouldn't be forced through a redundant multi-GB
-/// redownload, so those fall back to a cheap size sanity check: a truncated
-/// download is drastically undersized (this app's real-world case was 302MB
-/// against an ~9GB model), not off by a few percent.
+/// Path of a downloaded model, if present and verified.
 pub fn get_model_path(app_dir: &Path, model_id: &str) -> Option<PathBuf> {
     let path = app_dir.join("models").join(format!("{}.gguf", model_id));
     if !path.exists() {
@@ -408,8 +347,6 @@ pub fn get_model_path(app_dir: &Path, model_id: &str) -> Option<PathBuf> {
         .find(|m| m.id == model_id)
         .map(|m| m.approx_size_gb * 1_000_000_000.0);
     let Some(expected_bytes) = expected_bytes else {
-        // Unknown model id (not in the current catalog) -- nothing to
-        // compare against, fall back to trusting existence as before.
         return Some(path);
     };
 
@@ -430,18 +367,12 @@ pub fn get_model_path(app_dir: &Path, model_id: &str) -> Option<PathBuf> {
     }
 }
 
-/// Default active model when `local_profile.llm_model` is unset — matches
-/// the frontend's own `localStorage.getItem('llm_model') || 'gemma4_12b'`
-/// default (`src/pages/Settings.tsx`), so an unconfigured backend and an
-/// unconfigured frontend agree on the same model without either side having
-/// to special-case "nothing chosen yet."
 pub const DEFAULT_ACTIVE_MODEL_ID: &str = "gemma4_12b";
 
-/// Resolves which model id should be considered "active" given what's
-/// actually downloaded. Never returns an id that isn't in `downloaded`.
-/// Order: keep the stored choice if it's still downloaded -> else the
-/// catalog default if it's downloaded -> else the lowest-tier downloaded
-/// model -> else `None` if nothing is downloaded at all.
+/// Reconciles the stored model preference against what is on disk.
+///
+/// A preference naming a deleted model degrades to something available, rather
+/// than failing later when inference is attempted.
 pub fn resolve_active_model(downloaded: &[String], stored: Option<&str>) -> Option<String> {
     if let Some(id) = stored {
         if downloaded.iter().any(|d| d == id) {
@@ -464,9 +395,6 @@ mod tests {
 
     #[test]
     fn catalog_ids_and_filenames_agree_with_ladder_layer() {
-        // Regression test for the exact bug this fix addresses: ladder.rs's
-        // Layer6LlmLayer must resolve to a real catalog id, never a
-        // hardcoded string that silently drifts from this list.
         let models = get_available_models();
         let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
         assert!(ids.contains(&DEFAULT_ACTIVE_MODEL_ID));
@@ -500,23 +428,15 @@ mod tests {
         dir
     }
 
-    /// Regression test for the field bug this fix addresses: a truncated
-    /// download (real-world case was 302MB against an ~9GB expected model)
-    /// left on disk with no `.verified` marker must not be handed to
-    /// `llama-server` as if it were usable.
     #[test]
     fn get_model_path_rejects_drastically_undersized_unverified_file() {
         let app_dir = temp_models_dir();
         let model_path = app_dir.join("models").join("gemma4_12b.gguf");
-        std::fs::write(&model_path, vec![0u8; 1024]).unwrap(); // far below ~9GB, no .verified marker
+        std::fs::write(&model_path, vec![0u8; 1024]).unwrap();
 
         assert!(get_model_path(&app_dir, "gemma4_12b").is_none());
     }
 
-    /// A `.verified` marker (written only after a real SHA-256 match --
-    /// see `download_file_with_hash`) must be trusted outright, even for a
-    /// file too small to pass the size heuristic on its own -- the marker
-    /// is stronger evidence than a size guess.
     #[test]
     fn get_model_path_trusts_verified_marker_regardless_of_size() {
         let app_dir = temp_models_dir();
@@ -527,9 +447,6 @@ mod tests {
         assert_eq!(get_model_path(&app_dir, "gemma4_12b"), Some(model_path));
     }
 
-    /// Installs from before the `.verified` marker existed are real,
-    /// correctly-downloaded models and must not be forced through a
-    /// redundant multi-GB redownload just because the marker is missing.
     #[test]
     fn get_model_path_accepts_correctly_sized_unmarked_legacy_file() {
         let app_dir = temp_models_dir();
@@ -540,9 +457,6 @@ mod tests {
             .unwrap()
             .approx_size_gb
             * 1_000_000_000.0) as u64;
-        // Sparse file via `set_len` -- a real multi-GB write here would make
-        // this test itself slow and disk-hungry; only the reported length
-        // matters to the size-heuristic under test, not real file content.
         let file = std::fs::File::create(&model_path).unwrap();
         file.set_len(approx_bytes).unwrap();
 
@@ -561,7 +475,6 @@ mod tests {
     #[test]
     fn resolve_active_model_falls_back_to_default_when_stored_is_gone() {
         let downloaded = vec!["gemma4_12b".to_string(), "qwen3_6_27b".to_string()];
-        // stored id was deleted; default ("gemma4_12b") is still downloaded
         assert_eq!(
             resolve_active_model(&downloaded, Some("gemma4_e4b")),
             Some("gemma4_12b".to_string())
@@ -571,8 +484,6 @@ mod tests {
     #[test]
     fn resolve_active_model_falls_back_to_lowest_tier_when_default_not_downloaded() {
         let downloaded = vec!["qwen3_6_27b".to_string(), "gemma4_31b".to_string()];
-        // stored id gone, default ("gemma4_12b") not downloaded either ->
-        // lowest tier among what's downloaded (qwen3_6_27b is tier 3, gemma4_31b is tier 5)
         assert_eq!(
             resolve_active_model(&downloaded, Some("gemma4_e4b")),
             Some("qwen3_6_27b".to_string())
@@ -595,12 +506,6 @@ mod tests {
         );
     }
 
-    /// audit_06 #8: models are 4-20 GB, so an interrupted download used to
-    /// throw away everything and start from zero. Resume is only safe if the
-    /// streaming hash is seeded from the bytes already on disk -- otherwise a
-    /// resumed download finishes with a hash of just the tail and fails
-    /// verification on a perfectly good file, which is worse than not
-    /// resuming at all.
     #[tokio::test]
     async fn interrupted_download_resumes_and_still_verifies() {
         let body: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
@@ -623,7 +528,6 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("dinero_resume_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let dest = dir.join("model.gguf");
-        // The partial a crash or network drop leaves behind.
         std::fs::write(&dest, &body[..already_have]).unwrap();
 
         download_file_with_hash(
@@ -650,10 +554,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A server that ignores `Range` answers 200 with the *whole* file.
-    /// Appending that to the partial would silently corrupt it, and only the
-    /// final hash would notice -- after another multi-GB transfer. The status
-    /// code, not the request, decides whether we append or start over.
     #[tokio::test]
     async fn server_ignoring_range_restarts_instead_of_appending() {
         let body: Vec<u8> = (0..2048u32).map(|i| (i % 97) as u8).collect();

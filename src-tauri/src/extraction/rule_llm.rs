@@ -1,17 +1,8 @@
-//! LLM fallback for rule authoring (design 2026-07-29).
+//! Uses the LLM to author extraction rules, not to extract values.
 //!
-//! Reached only when [`crate::extraction::rule_synthesis::synthesize`] cannot
-//! produce a self-consistent candidate — in practice when a bank has
-//! restructured its template enough that the corrected value no longer appears
-//! in any form the deterministic pass knows how to look for. The deterministic
-//! pass covers the large majority of real corrections ("one field's span
-//! moved") instantly and for free, so this path is the exception.
-//!
-//! The model's output earns no special trust: it goes through the identical
-//! [`crate::extraction::rule_synthesis::self_check`] a deterministic candidate
-//! does, and then the identical regression check. That gate — not the author —
-//! is what makes skipping human approval safe.
-
+//! The leverage here is one-off cost: a rule synthesised once from a single
+//! message then handles every future message sharing that template for free.
+//! Authored rules are validated and regression-checked before being trusted.
 use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 struct RuleLlmOutput {
@@ -19,9 +10,10 @@ struct RuleLlmOutput {
     capture_group: Option<u64>,
 }
 
-/// Grammar-constrained output shape. Both fields are required, so a
-/// half-answered completion is unrepresentable rather than something to repair
-/// after the fact.
+/// JSON schema constraining the model's rule-authoring output.
+///
+/// Forces a parseable structure, so the response can be validated as a rule
+/// rather than interpreted as prose.
 pub fn authoring_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -32,6 +24,7 @@ pub fn authoring_schema() -> serde_json::Value {
         "required": ["regex", "capture_group"]
     })
 }
+/// Builds the rule-authoring prompt from a message and its known values.
 pub fn generate_prompt(
     field_name: &str,
     bank_name: &str,
@@ -90,12 +83,11 @@ pub fn generate_prompt(
     )
 }
 
-/// Validates one raw completion against the source.
+/// Validates an authored rule before it is trusted.
 ///
-/// Returns `None` for every failure mode — unparseable, uncompilable, a capture
-/// group that does not exist, or a pattern that does not recover the corrected
-/// value from the exact source it was written for. A rejected answer writes no
-/// rule and leaves the user's correction untouched.
+/// A schema guarantees shape, not correctness. The rule is compiled and executed
+/// here, because a syntactically valid pattern can still fail to match or capture
+/// the wrong span.
 pub fn validate(
     raw_output: &str,
     field_name: &str,
@@ -112,9 +104,6 @@ pub fn validate(
 
     let payload = serde_json::json!({ "regex": regex, "capture_group": group });
 
-    // The identical gate a deterministic candidate faces. `needle_candidates`
-    // rather than `new_value` alone, because an amount or date rule correctly
-    // captures the *printed* form, not the stored one.
     let needles = crate::extraction::rule_synthesis::needle_candidates(field_name, new_value);
     if !crate::extraction::rule_synthesis::self_check(&payload, source, &needles) {
         tracing::debug!(
@@ -148,7 +137,6 @@ mod tests {
         );
     }
 
-    /// The guard that makes "the LLM wrote it" carry no extra trust.
     #[test]
     fn rejects_a_regex_that_recovers_the_wrong_span() {
         let raw = r#"{"regex": "ending\\s+(\\d+)", "capture_group": 1}"#;
@@ -179,7 +167,6 @@ mod tests {
         );
     }
 
-    /// An amount rule anchors on the printed form, not the stored minor units.
     #[test]
     fn accepts_an_amount_regex_matching_the_printed_form() {
         let raw = r#"{"regex": "INR\\s+([\\d,.]+)\\s+was", "capture_group": 1}"#;

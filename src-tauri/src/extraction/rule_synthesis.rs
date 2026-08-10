@@ -1,22 +1,13 @@
-//! Deterministic rule synthesis: turn "the answer for this field should have
-//! been X" into a regex that extracts X from this source and from the next
-//! source of the same shape (design 2026-07-29).
+//! Synthesises deterministic extraction rules from successful extractions.
 //!
-//! Generalized from `merchant_llm::synthesize_merchant_regex`, which proved the
-//! anchor-relax technique on merchant alone. Nothing about it was
-//! merchant-specific except the assumption that the corrected value appears
-//! verbatim in the source. For merchant that is true because the LLM is asked
-//! for a verbatim span; for every other field it is true only after formatting
-//! the stored value the way the bank prints it, which is what
-//! [`needle_candidates`] exists to do — a date stored as `2026-07-01` is
-//! printed `01/07/26`, and an amount stored as `102000` minor units is printed
-//! `1,020.00`.
+//! How the cheap path grows to cover more banks over time. Given a value known
+//! to be correct and the text it came from, this derives a regex that locates it
+//! and generalises to sibling messages.
 //!
-//! Pure: no DB, no IO, no async. The validation gate is a property of the
-//! output, not of who produced it, so an LLM-authored pattern runs through the
-//! identical [`self_check`] here.
-
-/// Fields whose value occupies a span of the source that can be anchored on.
+//! Two guards keep a synthesised rule honest. The self-check confirms the rule
+//! reproduces the value it was derived from, and the regression check confirms it
+//! does not break extractions that already worked -- without which a
+//! newly-learned rule could quietly degrade every message from that bank.
 pub const SPAN_FIELDS: &[&str] = &[
     "merchant",
     "amount",
@@ -26,28 +17,27 @@ pub const SPAN_FIELDS: &[&str] = &[
     "last4",
 ];
 
-/// Fields that are template-level literals in a bank template
-/// (`"direction": "debit"` is fixed per pattern object, not a capture group).
-/// There is no span to anchor, so a correction teaches a flat override keyed to
-/// the template hash instead.
+/// Fields a rule sets to a fixed value rather than capturing.
+///
+/// Direction and currency are properties of the template itself -- a bank's debit
+/// alert is always a debit -- so they are asserted, not extracted.
 pub const OVERRIDE_FIELDS: &[&str] = &["direction", "currency"];
 
-/// Longest span the synthesized regex will capture. Generous enough for
-/// "UTTAR PRADESH STATE ROAD TRANSPORT CORPORATION", short enough that a
-/// mis-anchored pattern cannot swallow a paragraph.
+// Upper bound on a captured span. Prevents a greedy pattern from swallowing the
+// rest of the message when the expected terminator is absent.
 const MAX_CAPTURE: usize = 80;
 
-/// How much literal text on each side of the value is baked into the anchor.
-/// Long enough to be specific to this template's phrasing, short enough to
-/// survive the small wording differences between two alerts of the same kind.
+// How much surrounding text anchors a synthesised pattern. Long enough to be
+// distinctive within the message, short enough to survive the minor wording
+// changes a bank makes without altering its template.
 const ANCHOR_CHARS: usize = 24;
 
-/// Case-insensitive search returning a byte range into `haystack`.
+/// Case-insensitive substring search returning byte offsets into the original.
 ///
-/// `to_lowercase` can change byte length (e.g. 'İ'), which would make an index
-/// into the lowered string invalid for the original — fall back to a
-/// case-sensitive search rather than slice at a wrong offset. These sources are
-/// ASCII in practice.
+/// The length comparison guards a real hazard: lowercasing can change a string's
+/// byte length for non-ASCII text, which would make offsets computed in the
+/// lowercased copy invalid against the original. In that case the search falls
+/// back to an exact match, where the offsets are trustworthy.
 pub fn find_ignore_case(haystack: &str, needle: &str) -> Option<std::ops::Range<usize>> {
     if needle.is_empty() {
         return None;
@@ -62,16 +52,12 @@ pub fn find_ignore_case(haystack: &str, needle: &str) -> Option<std::ops::Range<
         .map(|s| s..s + needle_lower.len())
 }
 
-/// Turns a literal chunk of source text into a regex fragment that still
-/// matches the *next* source of the same kind.
+/// Turns literal text into a pattern tolerant of the parts that vary.
 ///
-/// Two relaxations, both load-bearing: whitespace runs become `\s+` because
-/// HTML flattening produces wildly different blank-line counts between two
-/// renderings of one template; digit runs become `\d+` because the anchor
-/// otherwise bakes in this transaction's card digits or amount and never
-/// matches again. This mirrors `ladder::compute_template_hash`, which also
-/// collapses digits — so a rule keyed to a template hash stays consistent with
-/// the anchor built for it.
+/// Runs of whitespace become `\s+` and runs of digits `\d+`, so a pattern derived
+/// from one message still matches siblings that differ only in their numbers and
+/// spacing. Without this generalisation a synthesised rule would match exactly
+/// one message and nothing else.
 fn relax_literal(text: &str) -> String {
     let mut out = String::new();
     let mut chars = text.chars().peekable();
@@ -93,9 +79,11 @@ fn relax_literal(text: &str) -> String {
     out
 }
 
-/// Indian digit grouping: last three digits, then pairs. Banks print
-/// "1,020.00" and "12,34,567.00", never "1,234,567.00", so an anchor built
-/// against a Western-grouped needle would simply never be found.
+/// Re-groups an integer with Indian digit separators.
+///
+/// The Indian system groups the last three digits and then in pairs --
+/// 12,34,567 rather than 1,234,567 -- so a rule looking for a formatted amount
+/// must be able to construct the form the bank actually printed.
 fn indian_group(int_part: &str) -> String {
     let n = int_part.len();
     if n <= 3 {
@@ -115,17 +103,12 @@ fn indian_group(int_part: &str) -> String {
     format!("{},{}", groups.join(","), tail)
 }
 
-/// The ways a stored value might literally appear in the source, best first.
+/// Generates the textual forms a known value might appear as.
 ///
-/// The stored form and the printed form differ for exactly two field kinds:
-/// money (minor units in the DB, grouped decimals on the page) and dates (ISO
-/// in the DB, one of a dozen local formats on the page). Everything else is
-/// stored as it was read, so its only candidate is itself.
-///
-/// A field whose value is genuinely not present in any of these forms produces
-/// no candidate that [`find_ignore_case`] can locate, synthesis returns `None`,
-/// and the LLM fallback gets its turn. That is the intended division of labour,
-/// not a gap.
+/// Synthesis works backwards from a value known to be correct, but the message
+/// may render it differently -- an amount could be `1200`, `1,200.00` or
+/// `12,00.00`. Every plausible form is tried so the value can be located however
+/// the bank chose to print it.
 pub fn needle_candidates(field_name: &str, new_value: &str) -> Vec<String> {
     let v = new_value.trim();
     if v.is_empty() {
@@ -141,22 +124,15 @@ pub fn needle_candidates(field_name: &str, new_value: &str) -> Vec<String> {
             let decimal = format!("{}.{:02}", int_part, abs % 100);
             let grouped_int = indian_group(&int_part);
             let grouped_decimal = format!("{}.{:02}", grouped_int, abs % 100);
-            // Grouped-decimal first: it is the most specific, so it anchors
-            // most tightly when the bank prints it that way.
             let mut out = vec![grouped_decimal, decimal, grouped_int, int_part];
             out.dedup();
             out
         }
         "event_time" => {
-            // The stored value is "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DD"; only
-            // the date part is ever printed in a bank alert's transaction line.
             let date_part = v.split_whitespace().next().unwrap_or(v);
             let Ok(d) = chrono::NaiveDate::parse_from_str(date_part, "%Y-%m-%d") else {
                 return vec![v.to_string()];
             };
-            // Mirrors the format list `statements::row_extractor::parse_date`
-            // already accepts, so anything the parser can read back is a
-            // candidate here.
             [
                 "%d/%m/%Y",
                 "%d-%m-%Y",
@@ -180,13 +156,11 @@ pub fn needle_candidates(field_name: &str, new_value: &str) -> Vec<String> {
     }
 }
 
-/// Builds a regex anchored on the literal text surrounding `needle` inside
-/// `source`, with capture group 1 on the value itself.
+/// Builds a regex that captures the needle using its surrounding context.
 ///
-/// Returns `None` unless the finished pattern compiles *and* re-extracts the
-/// expected value from the very source it was built from. That self-check is
-/// what makes an immediately-active rule safe: a pattern that cannot reproduce
-/// its own training example is never stored.
+/// Anchors on the relaxed text either side rather than the value itself, since
+/// the value changes on every message and only the surrounding template is
+/// stable.
 pub fn synthesize_span_regex(source: &str, needle: &str) -> Option<String> {
     let span = find_ignore_case(source, needle)?;
 
@@ -207,15 +181,12 @@ pub fn synthesize_span_regex(source: &str, needle: &str) -> Option<String> {
     let prefix = relax_literal(&source[prefix_start..span.start]);
     let suffix = relax_literal(&source[span.end..suffix_end]);
 
-    // No anchor on either side would make the pattern match anything at all.
     if prefix.is_empty() && suffix.is_empty() {
         return None;
     }
 
     let pattern = format!("(?is){prefix}(.{{1,{MAX_CAPTURE}}}?){suffix}");
 
-    // Guards against an anchor whose own relaxation (a `\d+` that now also
-    // matches part of the value) shifts the capture.
     let re = regex::Regex::new(&pattern).ok()?;
     let recovered = re.captures(source)?.get(1)?.as_str().trim();
     if !recovered.eq_ignore_ascii_case(needle.trim()) {
@@ -230,18 +201,13 @@ pub fn synthesize_span_regex(source: &str, needle: &str) -> Option<String> {
     Some(pattern)
 }
 
-/// The whole deterministic pass for one corrected field.
+/// Synthesises a rule payload for one field from a known-correct value.
 ///
-/// Returns a `rule_payload_json` value — `{"regex", "capture_group"}` for a span
-/// field, `{"override_value"}` for direction/currency — or `None` when no
-/// self-consistent candidate exists, which is the signal to try the LLM.
+/// Returns None when no reliable pattern can be derived, which is the right
+/// outcome: no rule is better than one that will extract the wrong value.
 pub fn synthesize(field_name: &str, source: &str, new_value: &str) -> Option<serde_json::Value> {
     if OVERRIDE_FIELDS.contains(&field_name) {
         let v = new_value.trim();
-        // Closed vocabularies. An override is applied unconditionally to every
-        // email matching the template, so a typo here would silently relabel a
-        // whole template's worth of transactions — this is the one place a
-        // free-text value must not become a rule.
         let valid = match field_name {
             "direction" => ["debit", "credit"].contains(&v.to_lowercase().as_str()),
             "currency" => v.len() == 3 && v.chars().all(|c| c.is_ascii_alphabetic()),
@@ -270,37 +236,12 @@ pub fn synthesize(field_name: &str, source: &str, new_value: &str) -> Option<ser
     None
 }
 
-/// Runs a stored payload against a source, returning the raw captured text.
-///
-/// One function for both payload shapes so extraction, the self-check and the
-/// regression check can never disagree about what a rule means.
-/// Compiled learned-rule patterns, keyed by the pattern string itself.
-///
-/// audit_02 #2: `apply_payload` compiled a fresh `Regex`
-/// on every call. It is called once per live rule per message from Layer 1's
-/// `apply_learned_fields`, so a 10k-message scan against 30 active rules paid
-/// 300,000 compilations — and the corpus-replay validation gate below calls it
-/// again for every historical sample × every candidate rule. `Regex::new` is
-/// NFA construction, not a lookup.
-///
-/// Keyed on the pattern rather than a rule id because the same pattern reaches
-/// here from three places (Layer 1, `self_check`, the replay gate) that do not
-/// all have a rule id, and because two rules with identical patterns should
-/// share one program.
-///
 /// ponytail: unbounded map, but the keys are `field_rules` rows — bounded by
-/// how many rules a user has taught (tens), not by message volume. Add an LRU
-/// only if a real deployment ever shows it growing.
 static COMPILED_RULE_REGEXES: std::sync::OnceLock<
     std::sync::Mutex<std::collections::HashMap<String, regex::Regex>>,
 > = std::sync::OnceLock::new();
 
-/// Compiles `pattern` once and reuses it thereafter. `Regex` clones share the
-/// compiled program internally, so the clone is a refcount bump, not a rebuild.
-///
-/// An invalid pattern is not cached — it stays `None` and is retried. That is
-/// deliberate: caching failure would need a second map for a case the
-/// synthesis gate already prevents from ever being stored.
+/// Compiles a rule's pattern, returning None if it is invalid.
 fn compiled_rule_regex(pattern: &str) -> Option<regex::Regex> {
     let cache = COMPILED_RULE_REGEXES.get_or_init(|| std::sync::Mutex::new(Default::default()));
     let mut map = cache.lock().ok()?;
@@ -312,6 +253,7 @@ fn compiled_rule_regex(pattern: &str) -> Option<regex::Regex> {
     Some(re)
 }
 
+/// Runs a rule against text and returns what it captured.
 pub fn apply_payload(payload: &serde_json::Value, source: &str) -> Option<String> {
     if let Some(v) = payload.get("override_value").and_then(|v| v.as_str()) {
         return Some(v.to_string());
@@ -327,13 +269,10 @@ pub fn apply_payload(payload: &serde_json::Value, source: &str) -> Option<String
         .map(|m| m.as_str().to_string())
 }
 
-/// Mandatory gate step 1: the payload compiles and recovers the corrected
-/// value from the exact source it was built from.
+/// Verifies a fresh rule reproduces the value it was derived from.
 ///
-/// `expected_needles` is [`needle_candidates`]'s output rather than one string,
-/// because the pattern was anchored on whichever printed form was actually
-/// found — checking against only the stored form would reject every correct
-/// amount and date rule.
+/// The first of two guards. A rule that cannot re-extract its own source value is
+/// broken by construction and must never reach the live set.
 pub fn self_check(payload: &serde_json::Value, source: &str, expected_needles: &[String]) -> bool {
     let Some(recovered) = apply_payload(payload, source) else {
         return false;
@@ -344,21 +283,12 @@ pub fn self_check(payload: &serde_json::Value, source: &str, expected_needles: &
         .any(|n| recovered.eq_ignore_ascii_case(n.trim()))
 }
 
-/// Mandatory gate step 2: the candidate must not change any answer this bank's
-/// history has already settled on.
+/// Verifies a new rule does not break extractions that already worked.
 ///
-/// Three outcomes per sample, and only one of them is a failure:
-/// * the rule does not fire → fine. Rules for different template shapes coexist
-///   by not matching each other's sources; that is the whole reason
-///   `select_live_by_bank` is bank-wide rather than hash-scoped.
-/// * the rule fires and agrees → fine, and good evidence.
-/// * the rule fires and disagrees → reject the entire candidate. Old behaviour
-///   for that bank is left exactly as it was.
-///
-/// An empty corpus (new bank, or retention swept the bodies) returns `Ok`
-/// deliberately: the self-check has already proved the rule reproduces a real
-/// user correction, and refusing to learn from a bank with no history would
-/// mean never learning from a new bank at all.
+/// The second guard, and the more important one. Learning is only safe if it
+/// cannot regress: a rule that improves one message while silently corrupting a
+/// hundred others is a net loss, and this is what catches that before it goes
+/// live.
 pub fn regression_check(
     payload: &serde_json::Value,
     samples: &[(String, Option<String>)],
@@ -382,12 +312,10 @@ pub fn regression_check(
     Ok(())
 }
 
-/// Whether a freshly captured span means the same thing as a stored value.
+/// Compares a captured value against an accepted one, per field semantics.
 ///
-/// A plain string compare is wrong for exactly the two fields whose stored and
-/// printed forms differ — money and dates — and comparing those literally would
-/// reject every correct rule for them. Reuses [`needle_candidates`], so the
-/// comparison can never drift from the formats synthesis anchors on.
+/// Equality is field-dependent: amounts must agree numerically rather than as
+/// strings, since `1,200.00` and `1200` are the same amount written differently.
 fn values_agree(field_name: &str, captured: &str, accepted: &str) -> bool {
     if captured.eq_ignore_ascii_case(accepted) {
         return true;
@@ -408,12 +336,6 @@ mod tests {
                             ending 7603 at RAZ*SWIGGY LIMITE BANGALORE on 01/07/26. \
                             Not you? Call 18001234.";
 
-    /// audit_02 #2: `apply_payload` now serves its regexes from a process-wide
-    /// cache instead of recompiling per call. A cache that returned the wrong
-    /// program would silently mis-extract every learned field, so pin that
-    /// repeated calls agree, that two distinct patterns don't collide on one
-    /// entry, and that a pattern that fails to compile stays `None` rather
-    /// than poisoning the map.
     #[test]
     fn cached_rule_regexes_stay_distinct_and_repeatable() {
         let merchant = serde_json::json!({ "regex": r"at\s+(\S+)", "capture_group": 1 });
@@ -421,19 +343,15 @@ mod tests {
 
         let first = apply_payload(&merchant, SBI_BODY);
         assert_eq!(first.as_deref(), Some("RAZ*SWIGGY"));
-        // Second call takes the cached path -- must produce the identical answer.
         assert_eq!(apply_payload(&merchant, SBI_BODY), first);
 
-        // A different pattern must get its own program, not the cached one.
         assert_eq!(apply_payload(&last4, SBI_BODY).as_deref(), Some("7603"));
         assert_eq!(apply_payload(&merchant, SBI_BODY), first);
 
-        // Uncompilable pattern: `None`, and the cache still works afterwards.
         let broken = serde_json::json!({ "regex": r"(unclosed", "capture_group": 1 });
         assert_eq!(apply_payload(&broken, SBI_BODY), None);
         assert_eq!(apply_payload(&merchant, SBI_BODY), first);
 
-        // `override_value` short-circuits before any regex is involved.
         let override_rule = serde_json::json!({ "override_value": "Swiggy" });
         assert_eq!(
             apply_payload(&override_rule, SBI_BODY).as_deref(),
@@ -441,7 +359,6 @@ mod tests {
         );
     }
 
-    // ── The relaxation that makes a learned rule survive the next email ──────
     #[test]
     fn relax_literal_collapses_digits_and_whitespace() {
         assert_eq!(relax_literal("ending 7603 at"), r"ending\s+\d+\s+at");
@@ -489,7 +406,6 @@ mod tests {
         );
     }
 
-    // ── The guard that makes skipping human approval safe ────────────────────
     #[test]
     fn synthesis_refuses_a_value_absent_from_the_source() {
         assert!(synthesize_span_regex(SBI_BODY, "ZOMATO").is_none());
@@ -499,7 +415,6 @@ mod tests {
         );
     }
 
-    // ── Generalisation past merchant: the whole point of this module ─────────
     #[test]
     fn synthesizes_an_amount_rule_from_minor_units() {
         let payload = synthesize("amount", SBI_BODY, "24543").expect("must synthesize");
@@ -525,7 +440,6 @@ mod tests {
         );
     }
 
-    // ── Indian digit grouping is how banks actually print amounts ────────────
     #[test]
     fn amount_needles_cover_indian_grouping() {
         let needles = needle_candidates("amount", "102000");
@@ -560,7 +474,6 @@ mod tests {
         }
     }
 
-    // ── direction/currency have no span, so they get an override instead ─────
     #[test]
     fn direction_synthesizes_an_override_not_a_regex() {
         let payload = synthesize("direction", SBI_BODY, "credit").expect("must synthesize");
@@ -581,7 +494,6 @@ mod tests {
         assert!(synthesize("currency", SBI_BODY, "not-a-code").is_none());
     }
 
-    // ── The gate itself ──────────────────────────────────────────────────────
     #[test]
     fn self_check_rejects_a_pattern_that_recovers_the_wrong_span() {
         let payload = serde_json::json!({"regex": r"(?is)Rs\.(.{1,80}?)\s", "capture_group": 1});
@@ -617,7 +529,6 @@ mod tests {
         assert!(synthesize("category_id", SBI_BODY, "cat_1").is_none());
     }
 
-    // ── Gate step 2: a new rule must not change any settled answer ───────────
     #[test]
     fn regression_check_passes_when_no_samples_exist() {
         let payload = serde_json::json!({"regex": "at (.+) on", "capture_group": 1});
@@ -645,7 +556,6 @@ mod tests {
 
     #[test]
     fn regression_check_rejects_a_rule_that_rewrites_a_settled_answer() {
-        // Captures the amount where history says the merchant was "Amazon".
         let payload = serde_json::json!({"regex": r"Rs (\d+) at", "capture_group": 1});
         let samples = vec![(
             "Rs 100 at Amazon on 01/07/26".to_string(),
@@ -661,8 +571,6 @@ mod tests {
 
     #[test]
     fn regression_check_ignores_samples_the_rule_does_not_match() {
-        // A rule for one template shape simply does not fire on another; that
-        // is coexistence, not regression.
         let payload = serde_json::json!({"regex": r"spent at (.+?) using", "capture_group": 1});
         let samples = vec![(
             "Rs 100 at Amazon on 01/07/26".to_string(),
@@ -683,8 +591,6 @@ mod tests {
 
     #[test]
     fn regression_check_compares_amounts_in_minor_units() {
-        // History stores 24543 minor units; the rule captures the printed
-        // "245.43". These agree, and a naive string compare would say otherwise.
         let payload = serde_json::json!({"regex": r"Rs\.([\d.]+) ", "capture_group": 1});
         let samples = vec![(
             "Rs.245.43 spent today".to_string(),

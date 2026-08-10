@@ -1,24 +1,18 @@
-//! Sidecar process manager for `llama-server` (llama.cpp) — replaces the
-//! prior in-process Candle inference path in `extraction/llm.rs`, which had
-//! no working loader for any of the 5-tier catalog's actual GGUF
-//! architectures: Gemma 4's own `"gemma4"` architecture tag (`candle`'s
-//! newest quantized Gemma loader only covers `"gemma3"`), and Qwen3.6's
-//! Gated-DeltaNet-hybrid MoE design (not a standard transformer `candle` has
-//! any loader for at all). llama.cpp added real Gemma 4 support at launch
-//! (April 2026) and tracks new architectures far faster than `candle`'s
-//! bindings — this shells out to its own release binary instead of waiting
-//! on upstream `candle-transformers` support that doesn't exist yet.
+//! Manages the llama.cpp server subprocess used for local inference.
 //!
-//! Unlike `statements/sidecar` (spawn fresh, write stdin, read stdout,
-//! kill — per request), this process is long-lived: the dominant cost of
-//! LLM inference is loading multi-GB GGUF weights, not the completion
-//! itself, so re-spawning per email would blow past Doc 30's 10-second
-//! Layer 6 timeout on model load time alone, every single time. Started
-//! lazily on first use, kept warm across the whole app session, restarted
-//! only if the user changes the active model. A crash or OOM inside
-//! `llama-server` now stays isolated to that separate OS process — the same
-//! isolation rationale `bin/pdf_sidecar.rs` already established for
-//! pdfium, just applied here to inference instead of PDF parsing.
+//! The sidecar is a separate process rather than an in-process library, which
+//! keeps a crash or a runaway allocation inside inference from taking the whole
+//! application down with it. This module owns its full lifecycle: fetching the
+//! release binary, verifying it, starting it, waiting for health, and shutting
+//! it down.
+//!
+//! Two calibration passes exist because published hardware specifications do not
+//! predict real throughput. On startup the sidecar is measured under solo and
+//! burst load, and the results are used to reduce the parallel slot count until
+//! per-request latency stays within budget, and to derive a request timeout from
+//! observed latency rather than a guessed constant. This is the "leave the
+//! calibration knob" case: a machine that is thermally throttled, on battery, or
+//! sharing its GPU behaves nothing like the same model on paper.
 
 use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
@@ -30,47 +24,39 @@ use tokio::sync::{Mutex, Semaphore};
 
 const LLAMA_CPP_RELEASE_TAG: &str = "b10068";
 
-/// Runtime-configurable count of concurrent `/completion` requests
-/// `llama-server` will batch-process at once, set by the user in Settings
-/// (`llm_set_parallel_slots`, clamped 1-10). Starts at the original safe
-/// default of 1 — a historical scan started before Settings ever pushes a
-/// real value just runs single-slot, same as before this feature existed.
 static CURRENT_PARALLEL_SLOTS: AtomicUsize = AtomicUsize::new(1);
 
+/// Sets the parallel slot count the next server start will use.
 pub fn set_parallel_slots(n: usize) {
     CURRENT_PARALLEL_SLOTS.store(n.clamp(1, 10), Ordering::Relaxed);
 }
 
+/// The currently configured slot count.
 pub fn current_parallel_slots() -> usize {
     CURRENT_PARALLEL_SLOTS.load(Ordering::Relaxed)
 }
 
+// Context is allocated per slot, so the total scales with concurrency. This is
+// the main reason slot count is memory-bound.
 fn context_size_for(slots: usize) -> usize {
-    // llama-server splits its total context evenly across `--parallel`
-    // slots (`n_ctx_slot = n_ctx / n_parallel`), so this must scale with
-    // the slot count to keep each slot's own budget at the server's
-    // original single-slot default (2048) — otherwise more parallelism
-    // would silently truncate the email body in every prompt.
     2048 * slots
 }
 
-/// How long a fresh `llama-server` process gets to finish loading a
-/// multi-GB model before it's considered a failed startup and killed. Only
-/// applies to the one-time (per model, per app session) cold start, run in
-/// a background task — never blocks any single email's own Layer 6 call,
-/// which stays bounded by `LlmEngine::INFERENCE_TIMEOUT` regardless.
+// Startup can legitimately take a long time -- a multi-gigabyte model is being
+// mapped into memory -- so the timeout is generous and health is polled rather
+// than assumed after a fixed delay.
 const SERVER_STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Don't hammer a server that just failed to start (e.g. no network for the
-/// binary download) on every single email in a large scan.
+// After a failed start, back off before retrying. Without this a persistently
+// broken sidecar would be respawned in a tight loop.
 const FAILURE_COOLDOWN: Duration = Duration::from_secs(60);
 
-/// (release asset filename, its real SHA-256) — the SHA-256 is computed
-/// directly from the downloaded release asset (`shasum -a 256`), the same
-/// verify-don't-fabricate standard as `llm_manager::get_available_models`'s
-/// GGUF/tokenizer hashes. Re-verify if `LLAMA_CPP_RELEASE_TAG` ever changes.
+// Per-architecture release asset, pinned by name and SHA-256. The hash is what
+// makes the download trustworthy: the binary is fetched over plain HTTPS from a
+// third party and is then executed, so it is verified before it is ever run.
 #[cfg(target_arch = "aarch64")]
+/// Release asset and its SHA-256 for Apple Silicon.
 fn release_asset() -> (&'static str, &'static str) {
     (
         "llama-b10068-bin-macos-arm64.tar.gz",
@@ -78,6 +64,7 @@ fn release_asset() -> (&'static str, &'static str) {
     )
 }
 #[cfg(not(target_arch = "aarch64"))]
+/// Release asset and its SHA-256 for Intel.
 fn release_asset() -> (&'static str, &'static str) {
     (
         "llama-b10068-bin-macos-x64.tar.gz",
@@ -85,34 +72,31 @@ fn release_asset() -> (&'static str, &'static str) {
     )
 }
 
-/// Doc 16 §12.3's hardware-eligibility gate is RAM-based, not VRAM-based --
-/// on Apple Silicon that's not a reason to force CPU-only inference, since
-/// Metal's GPU layers share the same unified system RAM the gate already
-/// budgets against (there's no separate VRAM pool to exceed). Forcing
-/// `-ngl 0` on aarch64 meant every catalog tier (4B-35B params) had to
-/// decode 256 tokens CPU-only inside a 10s hard budget, which real-world
-/// logs show it essentially never met (0/50 successes; ~45/49 failures are
-/// wall-clock timeouts, see `extraction/llm.rs::INFERENCE_TIMEOUT`). Intel
-/// Macs have no such unified-memory GPU to offload to, so they keep the
-/// original CPU-only behavior.
+// Apple Silicon offloads every layer to the GPU via Metal; on Intel there is no
+// usable acceleration path, so inference stays on the CPU.
 #[cfg(target_arch = "aarch64")]
+/// Offload every layer to the GPU on Apple Silicon, via Metal.
 fn gpu_layers_arg() -> &'static str {
     "all"
 }
 #[cfg(not(target_arch = "aarch64"))]
+/// No GPU offload on Intel, where no usable acceleration path exists.
 fn gpu_layers_arg() -> &'static str {
     "0"
 }
 
-/// Doc 2026-07-26 mail scan performance: `--parallel N` on a single
-/// `llama-server` process batches N concurrent generations sharing the same
-/// GPU/memory-bandwidth budget — it does not multiply compute. This
-/// measures whether `requested_slots` concurrent completions actually stay
-/// within a tolerable slowdown of one solo completion on THIS machine, and
-/// steps down proportionally if not, rather than trusting the static
-/// RAM/CPU-derived recommendation blindly.
+// How much per-request slowdown under concurrency is acceptable before slots
+// are reduced. 1.5 means a request may take at most half again as long in a
+// burst as it does alone.
 const SLOWDOWN_BUDGET: f64 = 1.5;
 
+/// Reduce the requested slot count until measured contention fits the budget.
+///
+/// Compares solo latency against burst latency and scales slots down by the
+/// ratio of the budget to what was observed. Real hardware rarely sustains its
+/// nominal parallelism -- thermal limits, memory bandwidth and a shared GPU all
+/// bite -- so the count is derived from measurement rather than trusted from
+/// specification. Always leaves at least one slot.
 pub(crate) fn calibrate_effective_slots(
     requested_slots: usize,
     solo_latency: Duration,
@@ -131,30 +115,34 @@ pub(crate) fn calibrate_effective_slots(
     ((requested_slots as f64 * ratio).floor() as usize).clamp(1, requested_slots)
 }
 
+// Request timeout is derived from observed burst latency plus headroom, with a
+// floor so a fast machine does not end up with a timeout too tight to survive a
+// transient stall.
 const TIMEOUT_SAFETY_MARGIN: f64 = 1.5;
 const MIN_CALIBRATED_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Replaces the old fixed 60s `INFERENCE_TIMEOUT` constant with a value
-/// derived from what this machine actually measured, so a genuinely-slow
-/// (but working) completion under real concurrency isn't killed early and
-/// thrown into a wasted retry.
+/// Derive a request timeout from measured latency, never below the floor.
 pub(crate) fn calibrate_timeout(burst_latency: Duration) -> Duration {
     let scaled = Duration::from_secs_f64(burst_latency.as_secs_f64() * TIMEOUT_SAFETY_MARGIN);
     scaled.max(MIN_CALIBRATED_TIMEOUT)
 }
 
+/// Root directory for sidecar files.
 fn base_dir(app_dir: &Path) -> PathBuf {
     app_dir.join("llama_cpp")
 }
 
+/// Directory the release archive is extracted into.
 fn extracted_dir(app_dir: &Path) -> PathBuf {
     base_dir(app_dir).join(format!("llama-{LLAMA_CPP_RELEASE_TAG}"))
 }
 
+/// Path of the llama.cpp server binary.
 fn server_binary_path(app_dir: &Path) -> PathBuf {
     extracted_dir(app_dir).join("llama-server")
 }
 
+/// Shared HTTP client for sidecar requests.
 fn http_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(reqwest::Client::new)
@@ -172,11 +160,12 @@ struct SidecarState {
     child: Option<Child>,
     model_id: Option<String>,
     parallel_slots: usize,
-    effective_slots: usize,    // what calibration actually settled on
-    semaphore: Arc<Semaphore>, // sized to effective_slots, not parallel_slots
+    effective_slots: usize,
+    semaphore: Arc<Semaphore>,
     calibrated_timeout: Duration,
 }
 
+/// The process-wide sidecar state.
 fn state() -> &'static Mutex<SidecarState> {
     static STATE: OnceLock<Mutex<SidecarState>> = OnceLock::new();
     STATE.get_or_init(|| {
@@ -184,9 +173,6 @@ fn state() -> &'static Mutex<SidecarState> {
             state: ServerState::NotStarted,
             child: None,
             model_id: None,
-            // 0 can never equal a real requested slot count (always >= 1
-            // after clamping), so this can't accidentally "match" before a
-            // server has actually been spawned.
             parallel_slots: 0,
             effective_slots: 0,
             semaphore: Arc::new(Semaphore::new(1)),
@@ -195,10 +181,10 @@ fn state() -> &'static Mutex<SidecarState> {
     })
 }
 
-/// Whether an already-`Ready` server (running `current_model` at
-/// `current_slots`) already satisfies a request for `requested_model` at
-/// `requested_slots` — true means no restart needed. Pure so the four
-/// independent combinations are unit-testable without spawning a process.
+/// Whether the running server already matches the requested model and slots.
+///
+/// Avoids restarting a server that is already serving the right configuration,
+/// which would otherwise re-map a multi-gigabyte model for nothing.
 fn server_matches(
     current_model: Option<&str>,
     current_slots: usize,
@@ -208,12 +194,10 @@ fn server_matches(
     current_model == Some(requested_model) && current_slots == requested_slots
 }
 
-/// Downloads (if not already present) and extracts the llama.cpp release
-/// tarball. `LC_RPATH` in the shipped `llama-server` binary is
-/// `@loader_path` (verified via `otool -l`), so its `.dylib` dependencies
-/// resolve relative to wherever the binary itself sits — extracting the
-/// whole tarball intact and always invoking the binary by its full path is
-/// sufficient, no `DYLD_LIBRARY_PATH`/cwd tricks needed.
+/// Ensures the server binary is present, downloading and verifying if not.
+///
+/// The SHA-256 check is the security-critical part: this binary is fetched from a
+/// third party and then executed, so it is verified before it is ever run.
 async fn ensure_binary(app_dir: &Path) -> Result<PathBuf> {
     let binary_path = server_binary_path(app_dir);
     if binary_path.exists() {
@@ -247,12 +231,6 @@ async fn ensure_binary(app_dir: &Path) -> Result<PathBuf> {
     }
     let _ = tokio::fs::remove_file(&tarball_path).await;
 
-    // Best-effort Gatekeeper cleanup. Verified this specific release
-    // binary already ships ad-hoc linker-signed (`codesign -dv` shows
-    // flags=0x20002(adhoc,linker-signed)) and a programmatic HTTP download
-    // (unlike Safari/Mail) doesn't reliably set com.apple.quarantine
-    // either -- but clearing it if present costs nothing and avoids a rare
-    // Gatekeeper prompt silently blocking a background process spawn.
     let _ = Command::new("xattr")
         .arg("-dr")
         .arg("com.apple.quarantine")
@@ -279,6 +257,7 @@ async fn ensure_binary(app_dir: &Path) -> Result<PathBuf> {
     Ok(binary_path)
 }
 
+/// Polls the server's health endpoint.
 async fn health_check(port: u16) -> bool {
     http_client()
         .get(format!("http://127.0.0.1:{port}/health"))
@@ -289,6 +268,7 @@ async fn health_check(port: u16) -> bool {
         .unwrap_or(false)
 }
 
+/// Finds a free localhost port for the server.
 fn get_free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .and_then(|listener| listener.local_addr())
@@ -296,10 +276,10 @@ fn get_free_port() -> u16 {
         .unwrap_or(58121)
 }
 
-/// Spawns `llama-server` for `model_id` and polls `/health` until ready
-/// (or `SERVER_STARTUP_TIMEOUT` elapses). Runs as a detached background
-/// task — never awaited directly by a request in flight, so a cold model
-/// load never blocks any single email's Layer 6 budget.
+/// Starts the server and waits for it to become healthy.
+///
+/// Health is polled rather than assumed after a fixed delay, because startup time
+/// varies with model size and disk speed.
 async fn start_server_task(app_dir: PathBuf, model_id: String, slots: usize) {
     let port = get_free_port();
     let outcome: Result<Child> = async {
@@ -320,14 +300,6 @@ async fn start_server_task(app_dir: PathBuf, model_id: String, slots: usize) {
             .arg(slots.to_string())
             .arg("-ngl")
             .arg(gpu_layers_arg())
-            // `--host 127.0.0.1` already blocks remote network access, but
-            // llama-server's own CORS default (`--cors-origins`, unset here
-            // otherwise) is `*` -- any webpage open in the user's browser on
-            // this machine could otherwise call this port directly and have
-            // the response readable via CORS, a known localhost-app attack
-            // pattern. The only real caller is this process's own `reqwest`
-            // client (`complete()` below), which never sends an `Origin`
-            // header, so restricting this costs nothing functionally.
             .arg("--cors-origins")
             .arg("localhost")
             .kill_on_drop(true)
@@ -428,6 +400,7 @@ async fn start_server_task(app_dir: PathBuf, model_id: String, slots: usize) {
     }
 }
 
+/// Shuts the sidecar down.
 pub async fn shutdown() {
     let mut st = state().lock().await;
     if let Some(mut child) = st.child.take() {
@@ -436,11 +409,10 @@ pub async fn shutdown() {
     st.state = ServerState::NotStarted;
 }
 
-/// Returns the port a healthy, correctly-modeled server is already
-/// listening on, or an `Err` describing why not — never blocks waiting for
-/// a cold start; kicks one off in the background and reports "not ready
-/// yet" immediately so the caller (a single email's Layer 6 attempt) can
-/// fail fast rather than hang on someone else's multi-GB model load.
+/// Ensures a healthy server is running for the requested model.
+///
+/// Applies a cooldown after a failed start, so a persistently broken sidecar is
+/// not respawned in a tight loop.
 async fn ensure_server_ready(
     app_dir: &Path,
     model_id: &str,
@@ -493,27 +465,12 @@ struct CompletionResponse {
     content: String,
 }
 
-/// Runs one completion against the warm sidecar server, starting it first
-/// if necessary. The caller (`LlmEngine::extract`) wraps this whole call in
-/// its own `INFERENCE_TIMEOUT`; `ensure_server_ready` never blocks on a
-/// cold start and the completion slot below is `try_acquire`d rather than
-/// waited on, so nothing here can eat into that budget except the actual
-/// HTTP request.
-/// Doc 2026-07-28 mail scan performance: real scan logs showed Layer 6
-/// rejecting the model's output as "unparseable JSON" on essentially every
-/// first attempt, paying for a second full inference (self-correction retry)
-/// that often failed too — pure wasted latency for a syntax problem, not a
-/// content problem. `json_schema` has llama-server constrain decoding to
-/// this shape via grammar sampling, so the output is *always* syntactically
-/// valid JSON; `parse_json_to_result`'s field/source validation (the
-/// content-correctness check) still runs unchanged on top of it.
-/// The JSON schema used by Layer 6 extraction for grammar-constrained decoding.
-/// Exposed so `extraction/llm.rs` can pass it explicitly to
-/// `complete_with_schema_and_context` without duplicating the definition.
+/// The layer-6 extraction schema, exposed for tests.
 pub fn layer6_json_schema_pub() -> serde_json::Value {
     layer6_json_schema()
 }
 
+/// JSON schema constraining extraction output.
 fn layer6_json_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -524,25 +481,13 @@ fn layer6_json_schema() -> serde_json::Value {
             "merchant": {"type": ["string", "null"]},
             "event_time": {"type": ["integer", "null"]},
             "reference_id": {"type": ["string", "null"]},
-            // Was missing entirely: the prompt asks the model for a
-            // self-reported `confidence`, but the grammar built from this
-            // schema constrains the model to *only* the listed properties,
-            // so it had no way to emit one -- `confidence` silently defaulted
-            // to 0.0 on every call (see `parse_json_to_result`), which meant
-            // Layer 6's auto-resolve threshold could never be reached.
-            //
-            // 2026-07-30: made `required` -- with it merely a listed
-            // property, the model omitted it on 80/80 sampled real calls
-            // (unlike `event_time`, a fabricated confidence number can't
-            // corrupt the transaction itself; the fields it gates on --
-            // merchant/amount/reference -- already passed
-            // `validate_against_source` before confidence is ever read).
             "confidence": {"type": ["number", "null"]}
         },
         "required": ["confidence"]
     })
 }
 
+/// Issues a raw completion request to the server.
 async fn raw_complete(
     port: u16,
     model_id: impl AsRef<str>,
@@ -553,7 +498,6 @@ async fn raw_complete(
 ) -> Result<String> {
     let model_id = model_id.as_ref();
     let prompt = prompt.as_ref();
-    // Log the outgoing request before touching the wire.
     crate::logging::llm_logger::log_llm_request(model_id, &ctx, prompt);
     let request_start = Instant::now();
 
@@ -592,8 +536,6 @@ async fn raw_complete(
                         model_id,
                         &ctx,
                         duration_ms,
-                        // Outcome is classified at the extraction layer (run_completion);
-                        // at this level we only know the HTTP call succeeded.
                         crate::logging::llm_logger::LlmOutcome::Accepted,
                         Some(&parsed.content),
                     );
@@ -612,7 +554,6 @@ async fn raw_complete(
             }
         }
         Err(e) => {
-            // Distinguish timeout from other infra failures in the log.
             let outcome =
                 if e.to_string().contains("timeout") || e.to_string().contains("timed out") {
                     crate::logging::llm_logger::LlmOutcome::TimedOut
@@ -631,6 +572,7 @@ async fn raw_complete(
     }
 }
 
+/// Runs a completion with the default timeout.
 pub async fn complete(
     app_dir: &Path,
     model_id: &str,
@@ -646,9 +588,11 @@ pub async fn complete(
     raw_complete(port, model_id, prompt, timeout, None, ctx).await
 }
 
-/// Same as `complete`, but sources its timeout from this server's own
-/// calibration (Doc 2026-07-26 mail scan performance) instead of a caller-
-/// supplied fixed constant.
+/// Runs a completion using the calibrated timeout.
+///
+/// The timeout is derived from latency measured on this machine rather than a
+/// fixed constant, because a thermally throttled or battery-powered laptop
+/// performs nothing like the same model on paper.
 pub async fn complete_with_calibrated_timeout(
     app_dir: &Path,
     model_id: &str,
@@ -658,12 +602,7 @@ pub async fn complete_with_calibrated_timeout(
     complete_with_schema_and_context(app_dir, model_id, prompt, layer6_json_schema(), ctx).await
 }
 
-/// Same calibrated-timeout, semaphore-gated path as
-/// [`complete_with_calibrated_timeout`], but for callers that constrain the
-/// output to their own shape rather than Layer 6's extraction schema (issue
-/// #12's merchant/category pass). Grammar sampling is what makes the closed
-/// category list enforceable at the decoder rather than by rejecting bad
-/// answers after the fact.
+/// Runs a schema-constrained completion.
 pub async fn complete_with_schema(
     app_dir: &Path,
     model_id: &str,
@@ -674,10 +613,7 @@ pub async fn complete_with_schema(
     complete_with_schema_and_context(app_dir, model_id, prompt, schema, ctx).await
 }
 
-/// Internal: complete with a JSON schema constraint and an explicit call
-/// context for the LLM call log. Called by `extraction/llm.rs` and
-/// `extraction/rule_llm.rs` (via the learning path) when they want attributed
-/// log entries.
+/// Runs a schema-constrained completion with additional context.
 pub async fn complete_with_schema_and_context(
     app_dir: &Path,
     model_id: &str,
@@ -705,10 +641,6 @@ pub async fn complete_with_schema_and_context(
 mod tests {
     use super::server_matches;
 
-    /// Regression test for the fix above: a caller must never block on the
-    /// single completion slot. Blocking here is what made every queued
-    /// email in a concurrent batch burn its whole `INFERENCE_TIMEOUT`
-    /// waiting instead of failing over to the next ladder tier.
     #[test]
     fn second_completion_fails_fast_instead_of_queueing() {
         let sem = tokio::sync::Semaphore::new(1);
@@ -745,15 +677,12 @@ mod tests {
 
     #[test]
     fn calibrate_effective_slots_keeps_requested_when_burst_is_within_budget() {
-        // Burst only 1.2x slower than solo — well within the 1.5x budget.
         let result = calibrate_effective_slots(10, Duration::from_secs(5), Duration::from_secs(6));
         assert_eq!(result, 10);
     }
 
     #[test]
     fn calibrate_effective_slots_steps_down_when_burst_exceeds_budget() {
-        // Burst 3x slower than solo, budget is 1.5x — hardware can sustain
-        // roughly requested_slots * (1.5/3.0) = 5 slots, not 10.
         let result = calibrate_effective_slots(10, Duration::from_secs(5), Duration::from_secs(15));
         assert_eq!(result, 5);
     }
@@ -767,7 +696,6 @@ mod tests {
 
     #[test]
     fn calibrate_effective_slots_skips_calibration_at_slots_equal_one() {
-        // No burst to compare against when the user only asked for 1 slot.
         let result = calibrate_effective_slots(1, Duration::from_secs(5), Duration::from_secs(50));
         assert_eq!(result, 1);
     }
@@ -775,21 +703,17 @@ mod tests {
     #[test]
     fn calibrate_timeout_scales_with_measured_burst_latency() {
         let timeout = calibrate_timeout(Duration::from_secs(40));
-        assert_eq!(timeout, Duration::from_secs(60)); // 40 * 1.5
+        assert_eq!(timeout, Duration::from_secs(60));
     }
 
     #[test]
     fn calibrate_timeout_never_goes_below_the_floor() {
         let timeout = calibrate_timeout(Duration::from_secs(2));
-        assert_eq!(timeout, Duration::from_secs(20)); // floor, not 2*1.5=3
+        assert_eq!(timeout, Duration::from_secs(20));
     }
 
     #[test]
     fn server_state_defaults_have_no_calibration_yet() {
-        // A freshly-constructed SidecarState (before any server has started)
-        // must not claim a calibrated timeout of zero — that would make
-        // complete() time out instantly. Documents the required initial value
-        // so start_server_task's struct literal is held to it.
         let st = super::SidecarState {
             state: super::ServerState::NotStarted,
             child: None,

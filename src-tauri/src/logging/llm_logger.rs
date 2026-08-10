@@ -1,80 +1,22 @@
-//! Structured per-call logger for all LLM inference requests.
+//! Records LLM requests and responses for debugging extraction.
 //!
-//! Every invocation of `llama_sidecar::raw_complete` — regardless of caller
-//! (Layer 6 extraction, rule authoring, future consumers) — passes through
-//! [`log_llm_request`] before the HTTP hop and [`log_llm_response`] after it.
-//!
-//! ## Log file format — `logs/llm_calls.log.YYYY-MM-DD`
-//!
-//! Each request/response pair is rendered as a self-contained block:
-//!
-//! ```text
-//! ┌─────────────────────────────────────────────────────────────────────────┐
-//! │  ▶ LLM REQUEST  [layer6_extraction]  attempt 1/2  2026-07-30 21:30:04  │
-//! ├─────────────────────────────────────────────────────────────────────────┤
-//! │  Model       : gemma4_e4b                                               │
-//! │  Prompt size : 2,805 chars                                              │
-//! ├─────────────────────────────────────────────────────────────────────────┤
-//! │  PROMPT BODY (first 500 chars):                                         │
-//! │  Extract the following fields from a bank transaction alert email …     │
-//! └─────────────────────────────────────────────────────────────────────────┘
-//!
-//! ┌─────────────────────────────────────────────────────────────────────────┐
-//! │  ◀ LLM RESPONSE [layer6_extraction]  attempt 1/2  2026-07-30 21:30:11  │
-//! ├─────────────────────────────────────────────────────────────────────────┤
-//! │  Model       : gemma4_e4b                                               │
-//! │  Duration    : 6,736 ms                                                 │
-//! │  Outcome     : ✓ ACCEPTED                                               │
-//! │  Output size : 139 chars                                                │
-//! ├─────────────────────────────────────────────────────────────────────────┤
-//! │  RAW OUTPUT:                                                            │
-//! │  {"amount": 1299.00, "currency": "INR", "direction": "debit", …}       │
-//! └─────────────────────────────────────────────────────────────────────────┘
-//! ```
-//!
-//! The prompt body and raw output are always written at INFO level (they are the
-//! *point* of this file). PII is redacted by the shared `RedactingWriter` pipeline
-//! before anything reaches disk, so the content is safe to store.
-//!
-//! ## Call types
-//!
-//! `call_type` on every block header:
-//! - `layer6_extraction` — email → transaction field extraction (Layer 6)
-//! - `rule_authoring`    — user correction → regex rule (learning worker)
-//! - `merchant_cleanup`  — merchant name / category resolution
-//! - `statement_row_extraction` — PDF statement row parsing
-//! - `sidecar`           — calibration warmup / unclassified
-//!
-//! ## Outcome values
-//!
-//! - `✓ ACCEPTED`            — parsed JSON passed source validation
-//! - `✗ REJECTED (json)`     — model output was not parseable JSON
-//! - `✗ REJECTED (validation)` — JSON valid but field values not in source text
-//! - `⚠ TIMED OUT`           — inference exceeded calibrated timeout
-//! - `✗ INFRA FAILED`        — sidecar down, HTTP error, or OOM
-
+//! Prompts contain message content by construction, so these logs are the most
+//! sensitive the app produces and are kept separate from general logging for that
+//! reason.
 use std::fmt::Write as FmtWrite;
 use std::io::Write as IoWrite;
 
-// ─── Public types ─────────────────────────────────────────────────────────────
-
-/// Identifies which subsystem triggered the LLM call, stamped on every log
-/// block header. Add new variants here as new LLM consumers are added.
 #[derive(Debug, Clone, Copy)]
 pub enum LlmCallType {
-    /// Layer 6 extraction: extracting transaction fields from an email body.
     Layer6Extraction,
-    /// Rule authoring: generating a regex from a user correction.
     RuleAuthoring,
-    /// Merchant cleanup / category resolution pass.
     MerchantCleanup,
-    /// Statement PDF row extraction.
     StatementRowExtraction,
-    /// Calibration warmup / unclassified.
     Sidecar,
 }
 
 impl LlmCallType {
+    /// Stable string form of the call type, for log output.
     pub fn as_str(self) -> &'static str {
         match self {
             LlmCallType::Layer6Extraction => "layer6_extraction",
@@ -85,6 +27,7 @@ impl LlmCallType {
         }
     }
 
+    /// Human label for the call type.
     fn label(self) -> &'static str {
         match self {
             LlmCallType::Layer6Extraction => "Email → Transaction Extraction",
@@ -96,7 +39,6 @@ impl LlmCallType {
     }
 }
 
-/// Outcome of one sidecar completion attempt.
 #[derive(Debug, Clone, Copy)]
 pub enum LlmOutcome {
     Accepted,
@@ -107,6 +49,7 @@ pub enum LlmOutcome {
 }
 
 impl LlmOutcome {
+    /// Stable string form of the outcome.
     pub fn as_str(self) -> &'static str {
         match self {
             LlmOutcome::Accepted => "accepted",
@@ -117,6 +60,7 @@ impl LlmOutcome {
         }
     }
 
+    /// Human label for the outcome.
     fn display_label(self) -> &'static str {
         match self {
             LlmOutcome::Accepted => "✓ ACCEPTED",
@@ -128,21 +72,15 @@ impl LlmOutcome {
     }
 }
 
-/// Contextual metadata carried from a call site down to `raw_complete` so
-/// every log block is fully attributed without global state.
 #[derive(Debug, Clone, Copy)]
 pub struct LlmCallContext {
-    /// Which subsystem is making this call.
     pub call_type: LlmCallType,
-    /// Attempt number within the same logical request (1 = first try,
-    /// 2 = self-correction retry, etc.).
     pub attempt: u8,
-    /// Total number of attempts expected for this call type (used for "1/2" rendering).
     pub max_attempts: u8,
 }
 
 impl LlmCallContext {
-    /// Convenience constructor.
+    /// Builds a call context for a given type and attempt number.
     pub fn new(call_type: LlmCallType, attempt: u8) -> Self {
         let max_attempts = match call_type {
             LlmCallType::Layer6Extraction => 2,
@@ -155,7 +93,7 @@ impl LlmCallContext {
         }
     }
 
-    /// Default context for calibration / unclassified callers.
+    /// A context for calls whose type is not known.
     pub fn unclassified() -> Self {
         Self {
             call_type: LlmCallType::Sidecar,
@@ -165,8 +103,8 @@ impl LlmCallContext {
     }
 }
 
+/// Current time in IST, for log timestamps.
 fn now_ist() -> String {
-    // Use std time formatted as YYYY-MM-DD HH:MM:SS IST (UTC+5:30)
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
@@ -179,8 +117,11 @@ fn now_ist() -> String {
     format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02} IST", y, mo, d, h, m, s)
 }
 
+/// Converts epoch days to a year/month/day triple.
+///
+/// Implemented directly rather than via a date library, so the logger has no
+/// dependency that could itself fail while logging a failure.
 pub(crate) fn epoch_days_to_ymd(days: u64) -> (u64, u64, u64) {
-    // Tomohiko Sakamoto's algorithm adapted for epoch days
     let mut y = 1970u64;
     let mut remaining = days;
     loop {
@@ -221,7 +162,7 @@ pub(crate) fn epoch_days_to_ymd(days: u64) -> (u64, u64, u64) {
     (y, mo, remaining + 1)
 }
 
-/// Write a rich multi-line block directly to a byte sink (the non-blocking writer).
+/// Writes the request block of an LLM log entry.
 fn write_request_block(sink: &mut dyn IoWrite, model_id: &str, ctx: &LlmCallContext, prompt: &str) {
     let ts = now_ist();
     let call_type_str = ctx.call_type.as_str();
@@ -254,6 +195,7 @@ fn write_request_block(sink: &mut dyn IoWrite, model_id: &str, ctx: &LlmCallCont
     let _ = sink.write_all(buf.as_bytes());
 }
 
+/// Writes the response block, including the outcome.
 fn write_response_block(
     sink: &mut dyn IoWrite,
     model_id: &str,
@@ -305,8 +247,8 @@ fn write_response_block(
     let _ = sink.write_all(buf.as_bytes());
 }
 
+/// Formats a number with thousands separators for readability.
 fn fmt_num(n: usize) -> String {
-    // Insert thousands separators
     let s = n.to_string();
     let mut result = String::new();
     for (i, c) in s.chars().rev().enumerate() {
@@ -318,14 +260,11 @@ fn fmt_num(n: usize) -> String {
     result.chars().rev().collect()
 }
 
-// ─── Public API (called from llama_sidecar::raw_complete) ─────────────────────
-
-/// Emitted once per sidecar call, *before* the HTTP request fires.
+/// Logs an outgoing LLM request.
 ///
-/// Writes a rich bordered block directly to the `llm_calls` writer. Also emits
-/// a compact `tracing::info!` event so the event appears in `combined.log`.
+/// Prompts contain message content by construction, which makes these the most
+/// sensitive logs the app produces -- hence their separate file.
 pub fn log_llm_request(model_id: &str, ctx: &LlmCallContext, prompt: &str) {
-    // Compact structured event → combined.log and backend.log
     let call_type = ctx.call_type.as_str();
     let attempt = ctx.attempt;
     let prompt_chars = prompt.len();
@@ -338,16 +277,10 @@ pub fn log_llm_request(model_id: &str, ctx: &LlmCallContext, prompt: &str) {
         "LLM request"
     );
 
-    // Rich block → llm_calls.log via the direct writer
-    // We use the global LLM_LOG_WRITER to bypass the tracing event formatter
-    // and write structured human-readable blocks directly.
     with_llm_writer(|w| write_request_block(w, model_id, ctx, prompt));
 }
 
-/// Emitted once per sidecar call, *after* the HTTP response (or error/timeout).
-///
-/// Writes a rich bordered block directly to the `llm_calls` writer. Also emits
-/// a compact `tracing::info!` event so the event appears in `combined.log`.
+/// Logs an LLM response and its outcome.
 pub fn log_llm_response(
     model_id: &str,
     ctx: &LlmCallContext,
@@ -355,7 +288,6 @@ pub fn log_llm_response(
     outcome: LlmOutcome,
     raw_output: Option<&str>,
 ) {
-    // Compact structured event → combined.log
     let call_type = ctx.call_type.as_str();
     let attempt = ctx.attempt;
     let outcome_str = outcome.as_str();
@@ -371,16 +303,8 @@ pub fn log_llm_response(
         "LLM response"
     );
 
-    // Rich block → llm_calls.log
     with_llm_writer(|w| write_response_block(w, model_id, ctx, duration_ms, outcome, raw_output));
 }
-
-// ─── Direct writer access ──────────────────────────────────────────────────────
-//
-// The rich blocks are written directly to the file, bypassing the tracing event
-// formatter (which would mangle the box-drawing characters into a single line).
-// We hold a global `Mutex<Option<File>>` that `CategorizedLogWriters::init`
-// seeds once. Callers that fire before init (tests) silently drop the write.
 
 use std::fs::OpenOptions;
 use std::sync::{Mutex, OnceLock};
@@ -388,8 +312,7 @@ use std::sync::{Mutex, OnceLock};
 static LLM_LOG_PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
 static LLM_LOG_WRITER: OnceLock<Mutex<std::fs::File>> = OnceLock::new();
 
-/// Called once by `CategorizedLogWriters::init` with the path of the
-/// current day's `llm_calls.log.*` file so rich blocks can be written directly.
+/// Initialises the direct writer for the LLM log.
 pub fn init_direct_writer(path: std::path::PathBuf) {
     let _ = LLM_LOG_PATH.set(path.clone());
     if let Ok(file) = OpenOptions::new().create(true).append(true).open(&path) {
@@ -397,16 +320,14 @@ pub fn init_direct_writer(path: std::path::PathBuf) {
     }
 }
 
+/// Runs a closure against the LLM log writer, if one is initialised.
 fn with_llm_writer<F: FnOnce(&mut dyn IoWrite)>(f: F) {
     if let Some(mutex) = LLM_LOG_WRITER.get() {
         if let Ok(mut guard) = mutex.lock() {
             f(&mut *guard);
         }
     }
-    // If the writer isn't initialised (tests, early startup) — silently drop.
 }
-
-// ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

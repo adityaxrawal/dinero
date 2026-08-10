@@ -1,10 +1,13 @@
-//! Doc 30 TASK-TXN-012: EMI Group Detection and Linking.
+//! Recognises instalment (EMI) transactions and links them into a group.
 //!
-//! Two halves: (1) detecting EMI language during extraction (Layers 2/3) and
-//! populating the observation's EMI fields; (2) on canonical creation/
-//! update, generating/reusing a shared `emi_group_id` and linking the
-//! parent (origination) transaction.
-
+//! An instalment plan appears as many separate charges that are really one
+//! purchase. Detecting the instalment number and original amount lets them be
+//! grouped, so the UI can show progress through a plan rather than a series of
+//! unexplained repeating charges.
+//!
+//! The group id is derived deterministically from the plan's own attributes, so
+//! instalments ingested weeks apart still land in the same group without needing
+//! to have seen each other.
 use anyhow::Result;
 use regex::Regex;
 use rusqlite::{params, Connection};
@@ -14,12 +17,7 @@ use std::sync::OnceLock;
 static EMI_INSTALLMENT_RE: OnceLock<Regex> = OnceLock::new();
 static EMI_ORIGINAL_AMOUNT_RE: OnceLock<Regex> = OnceLock::new();
 
-/// Doc 30: "detect EMI language ('EMI', 'installment X of Y', 'converted to
-/// EMI')". Returns `(installment_number, total_installments)` when an
-/// explicit "X of Y" pattern is found — without both numbers there is
-/// nothing meaningful to populate on `emi_installment_number`/
-/// `emi_total_installments`, so a bare "EMI" or "converted to EMI" mention
-/// with no numbers is deliberately not enough on its own.
+/// Extracts the instalment position and total, as in "3 of 12".
 pub fn detect_emi_installment_numbers(body: &str) -> Option<(i32, i32)> {
     let re = EMI_INSTALLMENT_RE.get_or_init(|| {
         Regex::new(r"(?i)(?:emi|installment)\s*(?:no\.?|number)?\s*(\d+)\s*(?:of|/|out of)\s*(\d+)")
@@ -34,9 +32,7 @@ pub fn detect_emi_installment_numbers(body: &str) -> Option<(i32, i32)> {
     Some((number, total))
 }
 
-/// Doc 30: "converted to EMI" often states the pre-conversion purchase
-/// amount separately from this installment's amount -- best-effort, may
-/// legitimately find nothing (the amount just isn't always restated).
+/// Extracts the plan's original purchase amount, where the message states it.
 pub fn detect_emi_original_amount_minor(body: &str) -> Option<i64> {
     let re = EMI_ORIGINAL_AMOUNT_RE.get_or_init(|| {
         Regex::new(r"(?i)converted\s+to\s+emi.{0,40}?(?:rs\.?|inr|₹)\s*([\d,]+(?:\.\d+)?)").unwrap()
@@ -51,13 +47,11 @@ pub fn detect_emi_original_amount_minor(body: &str) -> Option<i64> {
     Some((val * 100.0).round() as i64)
 }
 
-/// Doc 18 §4.2's exact, deterministic formula: `SHA-256(instrument_id || "|"
-/// || merchant_normalized || "|" || emi_original_amount_minor || "|" ||
-/// emi_total_installments)`. Deliberately not Doc 30's own looser paraphrase
-/// ("matched by instrument + emi_original_amount_minor + merchant-
-/// similarity") -- Document 18 is schema-authoritative (Doc 49 §6) and gives
-/// an exact formula needing no fuzzy matching at all: identical inputs
-/// always hash identically, so "similarity" isn't needed.
+/// Derives a stable identifier for an instalment plan.
+///
+/// Computed from the plan's own attributes rather than assigned, so instalments
+/// ingested weeks apart land in the same group without ever having seen each
+/// other. That determinism is what makes the grouping work at all.
 pub fn compute_emi_group_id(
     instrument_id: &str,
     merchant_normalized: &str,
@@ -73,11 +67,7 @@ pub fn compute_emi_group_id(
     format!("{:x}", hasher.finalize())
 }
 
-/// Doc 30 TASK-TXN-012: "On canonical creation/update, if EMI fields are
-/// populated, generate/reuse a shared `emi_group_id`... and set
-/// `transaction_subtype = 'emi_installment'`; link the parent purchase
-/// transaction (if separately captured) via `parent_transaction_id`."
-/// No-op if any of the three EMI inputs is missing -- nothing to group by.
+/// Attaches a transaction to its instalment group.
 pub fn link_emi_installment(
     conn: &Connection,
     transaction_id: &str,
@@ -96,18 +86,6 @@ pub fn link_emi_installment(
 
     let group_id = compute_emi_group_id(instrument_id, merchant_normalized, original_amount, total);
 
-    // Doc 30 TASK-TXN-012: parent-selection (the earliest other group
-    // member) and the link write are a single atomic statement -- a
-    // correlated subquery inside the same `UPDATE`, not a separate `SELECT`
-    // followed by a separate `UPDATE`. Two installment emails for the same
-    // EMI processed concurrently by two Transaction Queue workers could
-    // otherwise both `SELECT` before either `UPDATE` committed, both see
-    // zero existing group members, and both set `parent_transaction_id =
-    // NULL`. A single `UPDATE` has no such gap for another connection to
-    // interleave into, regardless of whether the caller itself is already
-    // inside a transaction. `COALESCE(subquery, parent_transaction_id)`
-    // preserves the original priority: prefer the freshly-computed parent
-    // if one is found, otherwise keep whatever was already linked.
     conn.execute(
         "UPDATE transactions SET
             emi_group_id = ?2,
@@ -126,26 +104,11 @@ pub fn link_emi_installment(
     Ok(())
 }
 
-/// Doc 30: "Exposes an aggregate query (consumed by Area 8) for total
-/// paid/remaining per EMI group." `total_expected` is left `None` -- neither
-/// `transactions` nor `transaction_observations` stores
-/// `emi_total_installments` on the canonical row (Document 18 §4.2 has no
-/// such column; it's a hash input only), so "remaining" can only be
-/// expressed as "count so far", not "count so far vs. total N" without
-/// re-deriving N from the original observation. Flagged rather than guessed.
 #[derive(serde::Serialize)]
 pub struct EmiGroupSummary {
     pub installments_paid: i64,
     pub total_paid_minor: i64,
-    /// TASK-FE-010: `EmiInstallmentTimeline` needs a denominator to show
-    /// "3 of 12 paid" — resolved from the EMI detector's own parsed
-    /// `emi_total_installments` field on whichever observation(s) reported
-    /// it (Doc30 TASK-TXN-012's "EMI 3 of 12" phrasing), not carried on
-    /// `EmiGroupSummary` before this task since nothing consumed it yet.
     pub total_installments: Option<i64>,
-    /// TASK-FE-010: the individual paid installments to actually render a
-    /// timeline with — the pre-existing `installments_paid`/`total_paid_minor`
-    /// aggregate alone can't draw "all installments," only a count and a sum.
     pub installments: Vec<EmiInstallmentDetail>,
 }
 
@@ -156,6 +119,10 @@ pub struct EmiInstallmentDetail {
     pub event_time: Option<chrono::NaiveDateTime>,
 }
 
+/// Summarises progress through an instalment plan.
+///
+/// Turns a series of otherwise unexplained repeating charges into one purchase
+/// with a visible schedule.
 pub fn get_emi_group_summary(conn: &Connection, emi_group_id: &str) -> Result<EmiGroupSummary> {
     let (count, total): (i64, i64) = conn.query_row(
         "SELECT COUNT(*), COALESCE(SUM(amount_minor), 0) FROM transactions \
@@ -213,7 +180,6 @@ mod tests {
             detect_emi_installment_numbers("This is a regular purchase, not an EMI."),
             None
         );
-        // Nonsensical (number > total) must not be accepted.
         assert_eq!(
             detect_emi_installment_numbers("installment 15 of 3 processed"),
             None
@@ -258,7 +224,6 @@ mod tests {
         ).unwrap();
     }
 
-    /// Doc 30 TASK-TXN-012 acceptance test.
     #[test]
     fn test_emi_group_id_shared_across_installments() {
         let conn = setup_db();
@@ -305,7 +270,6 @@ mod tests {
         assert!(!group1.is_empty());
     }
 
-    /// Doc 30 TASK-TXN-012 acceptance test.
     #[test]
     fn test_emi_parent_transaction_linked() {
         let conn = setup_db();
@@ -354,13 +318,11 @@ mod tests {
         assert_eq!(subtype, "emi_installment");
     }
 
-    /// Doc 30 TASK-TXN-012 acceptance test.
     #[test]
     fn test_non_emi_transaction_has_null_emi_group() {
         let conn = setup_db();
         insert_tx(&conn, "tx_1", "2026-01-15 10:00:00", 50000);
 
-        // No EMI fields provided -- must be a no-op.
         link_emi_installment(&conn, "tx_1", "inst_1", None, None, None).unwrap();
 
         let group: Option<String> = conn
@@ -373,10 +335,6 @@ mod tests {
         assert_eq!(group, None);
     }
 
-    /// TASK-FE-010 acceptance test: `EmiInstallmentTimeline` needs both a
-    /// denominator (`total_installments`, resolved from an observation's
-    /// parsed EMI phrasing) and the individual paid installments to render,
-    /// not just the pre-existing paid-count/sum aggregate.
     #[test]
     fn test_emi_group_summary_includes_total_installments_and_installment_list() {
         let conn = setup_db();
@@ -401,9 +359,6 @@ mod tests {
         )
         .unwrap();
 
-        // One of the two installments' source observation reported "3 of 12"
-        // -- the group-wide total should resolve from it even though only
-        // one observation carries it.
         conn.execute(
             "INSERT INTO transaction_observations (id, canonical_transaction_id, source_pipeline, emi_total_installments, is_deleted) \
              VALUES ('obs_1', 'tx_2', 'gmail_transaction', 12, 0)",
@@ -423,7 +378,6 @@ mod tests {
         assert_eq!(summary.total_paid_minor, 1_000_000);
         assert_eq!(summary.total_installments, Some(12));
         assert_eq!(summary.installments.len(), 2);
-        // Ordered by event time ascending.
         assert_eq!(summary.installments[0].transaction_id, "tx_1");
         assert_eq!(summary.installments[1].transaction_id, "tx_2");
         assert_eq!(summary.installments[0].amount_minor, 500000);
