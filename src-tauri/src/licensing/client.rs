@@ -1,7 +1,7 @@
 //! HTTP client for the licensing service.
 //!
 //! Sends only what entitlement requires -- licence key, device fingerprint,
-//! subscription status. No transaction, balance or merchant data is ever
+//! subscription status. No transaction, balance or payee data is ever
 //! included, which is the commitment the privacy disclosure makes about this
 //! channel.
 use anyhow::Result;
