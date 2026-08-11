@@ -63,12 +63,38 @@ pub enum ProcessResult {
 
 pub struct MessageProcessor;
 
+/// Longest snippet kept on an ignore record.
+///
+/// The "snippet" for a message whose body was fetched is the whole body, and an
+/// ignore record exists only so a rescan can skip the message cheaply -- storing
+/// entire message bodies there bloats the table and spreads the body text into a
+/// second place for no benefit.
+const IGNORED_SNIPPET_MAX_CHARS: usize = 500;
+
 /// The shared sender validator, built once.
 ///
 /// Holds the compiled registry, so it is not rebuilt per message during a scan.
 pub(crate) fn get_sender_validator() -> &'static SenderValidator {
     static VALIDATOR: OnceLock<SenderValidator> = OnceLock::new();
     VALIDATOR.get_or_init(SenderValidator::new)
+}
+
+/// Where the scan log for a decision is written.
+///
+/// Under the app data directory rather than the process working directory: a
+/// bundled application is launched with the working directory set somewhere it
+/// cannot write, where the append fails silently and the log the "view source"
+/// screen reads back never exists at all.
+pub fn scan_log_path(app_dir: Option<&std::path::Path>, decision: &str) -> std::path::PathBuf {
+    let name = if decision == "SELECTED" {
+        "email_scan_selected.log"
+    } else {
+        "email_scan_rejected.log"
+    };
+    match app_dir {
+        Some(dir) => dir.join(name),
+        None => std::path::PathBuf::from(name),
+    }
 }
 
 impl MessageProcessor {
@@ -151,12 +177,11 @@ impl MessageProcessor {
 
         let current_bank_name = match gate_result {
             SenderVerificationResult::VerifiedTransactionCandidate(bank_name)
-            | SenderVerificationResult::VerifiedStatementCandidate(bank_name) => {
-                bank_name
-            }
+            | SenderVerificationResult::VerifiedStatementCandidate(bank_name) => bank_name,
             SenderVerificationResult::VerifiedNoise => {
                 crate::ingestion::gmail_telemetry::gmail_telemetry().record_gate_rejection("gate1");
                 Self::append_to_scan_log(
+                    app_dir.as_deref(),
                     message_id,
                     "REJECTED",
                     "gate1_verified_noise",
@@ -175,6 +200,7 @@ impl MessageProcessor {
                 crate::ingestion::gmail_telemetry::gmail_telemetry().record_gate_rejection("gate1");
                 Self::log_rejection(pool, scan_batcher, message_id, &reason).await?;
                 Self::append_to_scan_log(
+                    app_dir.as_deref(),
                     message_id,
                     "REJECTED",
                     &reason,
@@ -207,8 +233,15 @@ impl MessageProcessor {
             } else {
                 Self::log_rejection(pool, scan_batcher, message_id, &reason).await?;
             }
-            Self::append_to_scan_log(message_id, "REJECTED", &reason, Some(&metadata_msg), None)
-                .await;
+            Self::append_to_scan_log(
+                app_dir.as_deref(),
+                message_id,
+                "REJECTED",
+                &reason,
+                Some(&metadata_msg),
+                None,
+            )
+            .await;
             tracing::info!("msg_id='{}' rejected by Gate 2a: {}", message_id, reason);
             return Ok(None);
         }
@@ -287,6 +320,7 @@ impl MessageProcessor {
                     let reason = format!("gate2_reject_{:?}", content_class);
                     Self::log_rejection(pool, scan_batcher, message_id, &reason).await?;
                     Self::append_to_scan_log(
+                        app_dir.as_deref(),
                         message_id,
                         "REJECTED",
                         &reason,
@@ -312,6 +346,7 @@ impl MessageProcessor {
                     )
                     .await;
                     Self::append_to_scan_log(
+                        app_dir.as_deref(),
                         message_id,
                         "REJECTED",
                         &reason,
@@ -324,6 +359,7 @@ impl MessageProcessor {
                 }
                 ContentClass::StatementEmail => {
                     Self::append_to_scan_log(
+                        app_dir.as_deref(),
                         message_id,
                         "SELECTED",
                         "statement_email",
@@ -356,6 +392,7 @@ impl MessageProcessor {
                     match mandate_fields {
                         Some(extraction) => {
                             Self::append_to_scan_log(
+                                app_dir.as_deref(),
                                 message_id,
                                 "SELECTED",
                                 "mandate_event",
@@ -378,6 +415,7 @@ impl MessageProcessor {
                             )
                             .await?;
                             Self::append_to_scan_log(
+                                app_dir.as_deref(),
                                 message_id,
                                 "REJECTED",
                                 "mandate_missing_merchant",
@@ -411,8 +449,6 @@ impl MessageProcessor {
                             obs.event_time = Self::internal_date_fallback(&full_msg.internal_date);
                         }
 
-                        Self::apply_balance_update_placeholder(&content_class, &mut obs);
-
                         if let Some(dest_account) =
                             Self::self_transfer_destination_account(obs.merchant_raw.as_deref())
                         {
@@ -434,8 +470,17 @@ impl MessageProcessor {
                             }
                         }
 
+                        // After the plausibility filter, not before it. The
+                        // placeholder exists to stand in for a merchant that is
+                        // missing, and a merchant the filter is about to discard
+                        // is missing -- running first meant a garbage merchant
+                        // suppressed the placeholder and then got nulled anyway,
+                        // leaving the observation with no counterparty at all.
+                        Self::apply_balance_update_placeholder(&content_class, &mut obs);
+
                         if Self::evaluate_mandatory_field_gate(&obs) {
                             Self::append_to_scan_log(
+                                app_dir.as_deref(),
                                 message_id,
                                 "SELECTED",
                                 "transaction_alert",
@@ -487,6 +532,7 @@ impl MessageProcessor {
                                 }
                             }
                             Self::append_to_scan_log(
+                                app_dir.as_deref(),
                                 message_id,
                                 "REJECTED",
                                 reason,
@@ -513,28 +559,42 @@ impl MessageProcessor {
                             "pending_llm_enrichment",
                         )
                         .await?;
-                        if let (Some((observation_id, unassigned_id)), Some(dir), Some(tx)) =
-                            (ids, app_dir.clone(), layer6_tx.as_ref())
-                        {
-                            let job = crate::ingestion::queues::Layer6Job {
-                                observation_id,
-                                unassigned_id,
-                                bank_name: current_bank_name.clone(),
-                                body_text: body_text.to_string(),
-                                app_dir: dir,
-                                internal_date_seconds,
+                        let enqueued =
+                            if let (Some((observation_id, unassigned_id)), Some(dir), Some(tx)) =
+                                (ids, app_dir.clone(), layer6_tx.as_ref())
+                            {
+                                let job = crate::ingestion::queues::Layer6Job {
+                                    observation_id,
+                                    unassigned_id,
+                                    bank_name: current_bank_name.clone(),
+                                    body_text: body_text.to_string(),
+                                    app_dir: dir,
+                                    internal_date_seconds,
+                                };
+                                crate::ingestion::queues::enqueue_layer6_job(pool, tx, job).await;
+                                true
+                            } else {
+                                false
                             };
-                            crate::ingestion::queues::enqueue_layer6_job(pool, tx, job).await;
-                        }
+                        // Only claim enrichment when a job really was queued. A
+                        // duplicate observation, a missing app directory or an
+                        // absent queue all land here having enqueued nothing,
+                        // and reporting them as pending leaves the scan counting
+                        // work that will never complete.
                         Self::append_to_scan_log(
+                            app_dir.as_deref(),
                             message_id,
-                            "PENDING",
+                            if enqueued { "PENDING" } else { "REJECTED" },
                             "pending_llm_enrichment",
                             Some(&full_msg),
                             Some(body_text),
                         )
                         .await;
-                        return Ok(Some(ProcessResult::EnqueuedForEnrichment));
+                        return Ok(if enqueued {
+                            Some(ProcessResult::EnqueuedForEnrichment)
+                        } else {
+                            None
+                        });
                     } else {
                         Self::log_rejection(pool, scan_batcher, message_id, "extraction_failed")
                             .await?;
@@ -548,6 +608,7 @@ impl MessageProcessor {
                         )
                         .await?;
                         Self::append_to_scan_log(
+                            app_dir.as_deref(),
                             message_id,
                             "REJECTED",
                             "extraction_failed",
@@ -560,8 +621,15 @@ impl MessageProcessor {
                 }
             }
         } else {
-            Self::append_to_scan_log(message_id, "REJECTED", "no_payload", Some(&full_msg), None)
-                .await;
+            Self::append_to_scan_log(
+                app_dir.as_deref(),
+                message_id,
+                "REJECTED",
+                "no_payload",
+                Some(&full_msg),
+                None,
+            )
+            .await;
         }
 
         Ok(None)
@@ -682,12 +750,15 @@ impl MessageProcessor {
             None => return SenderVerificationResult::UnverifiedReject("No payload".into()),
         };
 
-        let mut from_header = String::new();
-        for header in headers {
-            if header.name.eq_ignore_ascii_case("from") {
-                from_header = header.value.clone();
-            }
-        }
+        // First From header, not the last: `extract_sender_domain` and
+        // `header_value` both read the first, and a message carrying two From
+        // headers must not be verified against one domain while its reputation
+        // is recorded against the other.
+        let from_header = headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case("from"))
+            .map(|h| h.value.as_str())
+            .unwrap_or("");
 
         if from_header.trim().is_empty() {
             return SenderVerificationResult::UnverifiedReject(
@@ -695,10 +766,16 @@ impl MessageProcessor {
             );
         }
 
-        let (email, display_name) = Self::parse_from_header(&from_header);
+        let (email, display_name) = Self::parse_from_header(from_header);
 
-        let domain = email.rsplit('@').next().unwrap_or("").to_lowercase();
-        let approved_match = approved_senders.iter().find(|p| p.domain == domain);
+        let domain = Self::address_domain(&email).unwrap_or_default();
+        let approved_match = if domain.is_empty() {
+            None
+        } else {
+            approved_senders
+                .iter()
+                .find(|p| Self::normalize_domain(&p.domain) == domain)
+        };
 
         let verify_result = if let Some(approved) = approved_match {
             match approved.classification.as_str() {
@@ -728,8 +805,17 @@ impl MessageProcessor {
         domain: &str,
         overrides: &[crate::db::sender_bank_overrides::SenderBankOverride],
     ) -> SenderVerificationResult {
-        let domain = domain.trim().to_lowercase();
-        let Some(o) = overrides.iter().find(|o| o.domain == domain) else {
+        let domain = Self::normalize_domain(domain);
+        if domain.is_empty() {
+            return result;
+        }
+        // Both sides are normalised: the stored domain is whatever the user
+        // typed, so comparing it raw makes an override with stray capitals or
+        // surrounding whitespace silently never apply.
+        let Some(o) = overrides
+            .iter()
+            .find(|o| Self::normalize_domain(&o.domain) == domain)
+        else {
             return result;
         };
         match result {
@@ -743,21 +829,43 @@ impl MessageProcessor {
         }
     }
 
-    /// Extracts the sending domain from a message.
-    pub(crate) fn extract_sender_domain(msg: &Message) -> Option<String> {
-        let headers = msg.payload.as_ref()?.headers.as_ref()?;
-        let from_header = headers
-            .iter()
-            .find(|h| h.name.eq_ignore_ascii_case("from"))?
-            .value
-            .as_str();
-        let (email, _display_name) = Self::parse_from_header(from_header);
-        let domain = email.rsplit('@').next()?.trim().to_lowercase();
+    /// Canonical form of a domain, for comparing one against another.
+    pub(crate) fn normalize_domain(domain: &str) -> String {
+        domain
+            .trim()
+            .trim_matches(|c| c == '[' || c == ']')
+            .trim_end_matches('.')
+            .trim()
+            .to_lowercase()
+    }
+
+    /// The domain of an address, or `None` if it is not one well-formed address.
+    ///
+    /// Requiring exactly one `@` is what makes this safe to compare against the
+    /// approved-sender and override tables. Taking the text after the *last* `@`
+    /// instead would read `victim@evil.example@hdfcbank.net` as `hdfcbank.net`,
+    /// handing a verified verdict to an address the bank never sent.
+    pub(crate) fn address_domain(email: &str) -> Option<String> {
+        let (_local, domain) = email.trim().split_once('@')?;
+        if domain.contains('@') {
+            return None;
+        }
+        let domain = Self::normalize_domain(domain);
         if domain.is_empty() {
             None
         } else {
             Some(domain)
         }
+    }
+
+    /// Extracts the sending domain from a message.
+    pub(crate) fn extract_sender_domain(msg: &Message) -> Option<String> {
+        let from_header = Self::header_value(msg, "from");
+        if from_header.trim().is_empty() {
+            return None;
+        }
+        let (email, _display_name) = Self::parse_from_header(&from_header);
+        Self::address_domain(&email)
     }
 
     /// Parses an address and domain out of a header value.
@@ -778,17 +886,12 @@ impl MessageProcessor {
             trimmed = rest.trim();
         }
 
-        let first_addr = trimmed.split(',').next().unwrap_or(trimmed);
-        let raw_email =
-            if let (Some(start), Some(end)) = (first_addr.find('<'), first_addr.rfind('>')) {
-                if start < end {
-                    first_addr[start + 1..end].trim()
-                } else {
-                    first_addr.trim()
-                }
-            } else {
-                first_addr.trim()
-            };
+        // Angle brackets are honoured before splitting on a comma. A display
+        // name may legitimately contain one -- `"Doe, John" <j@d.example>` --
+        // and splitting first leaves `"Doe`, which has no address in it at all.
+        let raw_email = Self::first_angle_addr(trimmed)
+            .unwrap_or_else(|| trimmed.split(',').next().unwrap_or(trimmed))
+            .trim();
 
         let email_clean = raw_email
             .trim_matches(|c| c == '"' || c == '\'' || c == ' ')
@@ -797,17 +900,19 @@ impl MessageProcessor {
             return (None, None);
         }
 
-        let parts: Vec<&str> = email_clean.rsplitn(2, '@').collect();
-        if parts.len() == 2 {
-            let domain_raw = parts[0]
-                .trim_matches(|c| c == ']' || c == '[' || c == ' ')
-                .to_lowercase();
-            if !domain_raw.is_empty() {
-                return (Some(email_clean), Some(domain_raw));
-            }
-        }
+        let domain = Self::address_domain(&email_clean);
+        (Some(email_clean), domain)
+    }
 
-        (Some(email_clean), None)
+    /// The text inside the first `<...>` pair, if there is one.
+    ///
+    /// Bounded by the first `>` after the opening bracket rather than the last
+    /// one in the string, so a header listing several recipients yields the
+    /// first address instead of everything between the outermost brackets.
+    fn first_angle_addr(value: &str) -> Option<&str> {
+        let start = value.find('<')? + 1;
+        let end = value[start..].find('>')? + start;
+        Some(&value[start..end])
     }
 
     /// Whether a content class could plausibly describe a transaction.
@@ -832,6 +937,11 @@ impl MessageProcessor {
         snippet: &str,
         reason: &str,
     ) {
+        // Truncated here rather than at each call site: the gate-2 path passes
+        // the message body, which is the whole email once a body has been
+        // fetched, and an ignore record only has to identify the message.
+        let snippet: String = snippet.chars().take(IGNORED_SNIPPET_MAX_CHARS).collect();
+        let snippet = snippet.as_str();
         if let Some(batcher) = scan_batcher {
             batcher
                 .lock()
@@ -896,21 +1006,19 @@ impl MessageProcessor {
 
     /// Splits a From header into display name and address.
     fn parse_from_header(from: &str) -> (String, Option<String>) {
-        if let (Some(start), Some(end)) = (from.find('<'), from.rfind('>')) {
-            if start < end {
-                let email = from[start + 1..end].trim().to_string();
-                let name_part = from[..start].trim();
-                let display_name = if name_part.is_empty() {
-                    None
-                } else {
-                    Some(
-                        name_part
-                            .trim_matches(|c| c == '"' || c == ' ' || c == '\'')
-                            .to_string(),
-                    )
-                };
-                return (email, display_name);
-            }
+        if let Some(addr) = Self::first_angle_addr(from) {
+            let start = from.find('<').unwrap_or(0);
+            let name_part = from[..start].trim();
+            let display_name = if name_part.is_empty() {
+                None
+            } else {
+                Some(
+                    name_part
+                        .trim_matches(|c| c == '"' || c == ' ' || c == '\'')
+                        .to_string(),
+                )
+            };
+            return (addr.trim().to_string(), display_name);
         }
 
         (from.trim().to_string(), None)
@@ -977,13 +1085,18 @@ impl MessageProcessor {
                 let observation_id = observation_id.clone();
                 move |c| -> Result<bool> {
                     use crate::db::transaction_observations::InsertObservationOutcome;
+                    // One transaction around both inserts. The observation is
+                    // what makes a rescan treat the message as already seen, so
+                    // committing it without its unassigned row would hide the
+                    // message from the queue permanently.
+                    let tx = c.transaction()?;
                     let outcome =
                         crate::db::transaction_observations::insert_observation_idempotent(
-                            c, &obs_row,
+                            &tx, &obs_row,
                         )?;
-                    if let InsertObservationOutcome::Inserted = outcome {
+                    let inserted = if let InsertObservationOutcome::Inserted = outcome {
                         crate::db::unassigned_transactions::insert(
-                            c,
+                            &tx,
                             &crate::db::unassigned_transactions::UnassignedTransactionRow {
                                 id: unassigned_id,
                                 observation_id,
@@ -992,10 +1105,12 @@ impl MessageProcessor {
                                 created_at: None,
                             },
                         )?;
-                        Ok(true)
+                        true
                     } else {
-                        Ok(false)
-                    }
+                        false
+                    };
+                    tx.commit()?;
+                    Ok(inserted)
                 }
             })
             .await
@@ -1010,6 +1125,7 @@ impl MessageProcessor {
 
     /// Appends a line to the scan log, for diagnosing a scan after the fact.
     async fn append_to_scan_log(
+        app_dir: Option<&std::path::Path>,
         message_id: &str,
         decision: &str,
         reason: &str,
@@ -1020,12 +1136,21 @@ impl MessageProcessor {
         let mut subject = "N/A".to_string();
         let mut snippet = "N/A".to_string();
 
+        // Each field keeps its "N/A" unless the message actually carries one:
+        // `header_value` returns an empty string for a header that is absent,
+        // which would otherwise blank the placeholder out.
         if let Some(msg) = raw_msg {
-            if let Some(snip) = &msg.snippet {
+            if let Some(snip) = msg.snippet.as_ref().filter(|s| !s.is_empty()) {
                 snippet = snip.clone();
             }
-            from = Self::header_value(msg, "from");
-            subject = Self::header_value(msg, "subject");
+            let from_header = Self::header_value(msg, "from");
+            if !from_header.is_empty() {
+                from = from_header;
+            }
+            let subject_header = Self::header_value(msg, "subject");
+            if !subject_header.is_empty() {
+                subject = subject_header;
+            }
         }
 
         let timestamp = chrono::Utc::now().to_rfc3339();
@@ -1045,8 +1170,12 @@ impl MessageProcessor {
         if let Some(body) = body_text {
             s.push_str("--------------------------------------------------------------------------------\nBody Preview:\n");
             let preview: String = body.chars().take(500).collect();
+            // Compared against the preview's own length: `take(500)` counts
+            // characters, so a byte-length comparison marks any body with
+            // multi-byte characters as truncated when it was printed whole.
+            let truncated = preview.len() < body.len();
             s.push_str(&preview);
-            if body.len() > 500 {
+            if truncated {
                 s.push_str("... [TRUNCATED]\n");
             } else {
                 s.push('\n');
@@ -1056,12 +1185,7 @@ impl MessageProcessor {
             "================================================================================\n\n",
         );
 
-        let path_str = if decision == "SELECTED" {
-            "email_scan_selected.log"
-        } else {
-            "email_scan_rejected.log"
-        };
-        let path = std::path::PathBuf::from(path_str);
+        let path = scan_log_path(app_dir, decision);
         if let Ok(mut file) = tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)

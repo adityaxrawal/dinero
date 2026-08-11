@@ -24,9 +24,19 @@ pub enum ContentClass {
 pub struct ContentClassifier;
 
 /// Currency-amount pattern, compiled once.
+///
+/// Three shapes, because Indian bank templates use all of them: symbol-first
+/// (`₹300.00`), code-first with an optional period (`Rs. 500`, `INR. 0.00`), and
+/// amount-first (`0.00 INR`). The code-first arm anchors on a word boundary so
+/// the "rs" inside "hours 24" cannot pose as an amount.
 fn amount_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)(₹|rs\.?|inr)\s?[\d,]+(\.\d{1,2})?").unwrap())
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)(?:₹\s*[\d,]+(?:\.\d{1,2})?|\b(?:rs|inr)\.?\s*[\d,]+(?:\.\d{1,2})?|[\d,]+(?:\.\d{1,2})?\s*(?:₹|\b(?:rs|inr)\b))",
+        )
+        .unwrap()
+    })
 }
 
 /// Whether the content contains something shaped like a monetary amount.
@@ -34,43 +44,220 @@ fn has_amount_pattern(content: &str) -> bool {
     amount_regex().is_match(content)
 }
 
-pub const RESCUE_SUBJECT_TERMS: [&str; 12] = [
+/// Subject tokens for the Gmail rescue pass -- retrieval only, not classification.
+///
+/// Gmail reads `subject:(a b)` as "a AND b", so a phrase is never broader than
+/// its rarest word: `subject:(credited)` already returns every "money credited"
+/// subject, for a fraction of the query budget this list shares with the
+/// sender chunks. Single words where they are distinctive, phrases where each
+/// word alone would drag in the whole mailbox.
+///
+/// Precision is not this list's job -- the gates downstream do that. A phrase
+/// the classifier accepts but no token here can reach is a transaction that is
+/// never fetched at all, which `subject_terms_cover_classifier_phrases` guards.
+pub const RESCUE_SUBJECT_TERMS: &[&str] = &[
     "spent",
     "debited",
+    "debit of",
     "credited",
-    "transaction alert",
-    "payment of",
-    "purchase of",
-    "you paid",
-    "account update",
-    "money credited",
-    "payment received",
-    "upi payment",
+    "credit of",
+    "withdrawn",
+    "withdrawal",
+    "deducted",
+    "paid",
+    "payment",
+    "purchase",
+    "purchased",
+    "transaction",
+    "txn",
+    "transferred",
+    "transfer of",
+    "charged",
+    "swiped",
+    "card used",
+    "card was used",
+    "recharge successful",
+    "received",
+    "refund",
+    "refunded",
+    "reversal",
+    "reversed",
+    "deposited",
+    "money added",
     "available balance",
+    "available bal",
+    "avl balance",
+    "avl bal",
+    "account balance",
+    "a/c balance",
+    "closing balance",
+    "balance update",
+    "updated balance",
+    "balance in your account",
+    "account update",
+    "upi payment",
 ];
 
-/// Whether the content uses transaction language -- debited, spent, credited.
+/// Language for a transaction that has already settled.
 ///
 /// Required alongside an amount, because an amount alone appears in marketing and
 /// statements too. Both signals together are what distinguish a transaction.
-fn has_transaction_verb(content: &str) -> bool {
-    content.contains("spent")
-        || content.contains("debited")
-        || content.contains("credited")
-        || content.contains("transaction alert")
-        || content.contains("payment of")
-        || content.contains("purchase of")
-        || content.contains("you paid")
-}
+///
+/// Every entry is anchored to a neighbouring word on purpose. Bare "paid",
+/// "payment" or "transaction" would swallow "not paid yet", "payment due" and
+/// "report an unauthorised transaction", which is how a reminder ends up in the
+/// ledger as a charge.
+const TRANSACTION_VERBS: &[&str] = &[
+    // Debits.
+    "spent",
+    "debited",
+    "debit of",
+    "withdrawn",
+    "withdrawal of",
+    "deducted",
+    "you paid",
+    "you have paid",
+    "you've paid",
+    "paid to",
+    "bill paid",
+    "payment of",
+    "payment made",
+    "payment done",
+    "payment successful",
+    "payment was successful",
+    "purchase of",
+    "purchase at",
+    "purchased at",
+    "transaction of",
+    "transaction alert",
+    "transaction successful",
+    "transaction was successful",
+    "txn of",
+    "txn at",
+    "transferred to",
+    "money transferred",
+    "transfer of",
+    "charged to",
+    "has been charged",
+    "swiped at",
+    "card used at",
+    "card was used",
+    "recharge successful",
+    // Credits.
+    "credited",
+    "credit of",
+    "payment received",
+    "money received",
+    "amount received",
+    "funds received",
+    "you received",
+    "you have received",
+    "refund of",
+    "refunded",
+    "refund processed",
+    "reversal of",
+    "reversed",
+    "deposited",
+    "money added",
+];
+
+/// Language for an alert that reports a balance without a transaction.
+///
+/// Checked only after the transaction verbs, because `BalanceUpdate` overwrites
+/// the amount with zero downstream -- a real debit that also quotes the closing
+/// balance must never land here.
+const BALANCE_TERMS: &[&str] = &[
+    "available balance",
+    "available bal",
+    "avl balance",
+    "avl bal",
+    "account balance",
+    "a/c balance",
+    "closing balance",
+    "balance update",
+    "updated balance",
+    "balance in your account",
+    "account update",
+    "upi payment",
+];
+
+/// Phrases describing money that has not moved -- future tense or negated.
+///
+/// Removed from the text before any verb match rather than short-circuiting the
+/// whole message, so a mandate pre-debit notice ("Rs 199 will be debited on the
+/// 5th") stops reading as a settled debit while an alert that carries both a
+/// warning and a real charge keeps the real one.
+const UNSETTLED_PHRASES: &[&str] = &[
+    "be debited",
+    "be credited",
+    "be deducted",
+    "be charged",
+    "be withdrawn",
+    "be paid",
+    "be refunded",
+    "be reversed",
+    "be transferred",
+    "not debited",
+    "not been debited",
+    "not credited",
+    "not been credited",
+    "not received",
+    "not paid",
+    "not been paid",
+];
+
+/// Markers that a transaction was attempted and did not go through.
+///
+/// A declined charge quotes an amount and a debit verb exactly like a real one,
+/// so nothing else in this file can tell them apart.
+///
+/// ponytail: whole-message check, so bank boilerplate that merely explains what
+/// to do "if your payment failed" would also land here. Scope it to the
+/// sentence around the amount if that template turns up.
+const FAILURE_PHRASES: &[&str] = &[
+    "transaction failed",
+    "transaction has failed",
+    "transaction was unsuccessful",
+    "transaction declined",
+    "transaction was declined",
+    "payment failed",
+    "payment has failed",
+    "payment was unsuccessful",
+    "payment declined",
+    "debit failed",
+    "autopay failed",
+    "could not be processed",
+    "unable to process your payment",
+    "insufficient balance",
+    "insufficient funds",
+];
 
 /// Whether the message announces a cancelled standing instruction.
 fn is_mandate_cancellation(content: &str) -> bool {
-    content.contains("mandate cancelled")
-        || content.contains("mandate cancellation")
-        || content.contains("e-mandate cancellation")
-        || content.contains("mandate stands cancelled")
-        || content.contains("autopay deactivated")
-        || content.contains("autopay cancelled")
+    contains_any(
+        content,
+        &[
+            "mandate cancelled",
+            "mandate canceled",
+            "mandate cancellation",
+            "mandate stands cancelled",
+            "mandate has been cancelled",
+            "mandate revoked",
+            "mandate withdrawn",
+            "mandate deleted",
+            "mandate suspended",
+            "mandate terminated",
+            "autopay deactivated",
+            "autopay cancelled",
+            "autopay canceled",
+            "autopay stopped",
+            "autopay disabled",
+            "standing instruction cancelled",
+            "standing instruction has been cancelled",
+            "standing instruction revoked",
+            "subscription cancelled",
+        ],
+    )
 }
 
 /// Whether the message announces a newly registered mandate.
@@ -78,12 +265,43 @@ fn is_mandate_cancellation(content: &str) -> bool {
 /// Distinguished from a cancellation because they move a subscription in opposite
 /// directions, and confusing them would leave a cancelled charge still predicted.
 fn is_mandate_registration(content: &str) -> bool {
-    content.contains("mandate registered")
-        || content.contains("mandate set at merchant")
-        || content.contains("e-mandate created")
-        || content.contains("registration success")
-        || content.contains("autopay activated")
-        || content.contains("successful autopay transaction")
+    contains_any(
+        content,
+        &[
+            "mandate registered",
+            "mandate registration",
+            "mandate set at merchant",
+            "mandate created",
+            "mandate has been created",
+            "mandate approved",
+            "mandate authenticated",
+            "mandate activated",
+            "mandate is now active",
+            "registration success",
+            "autopay activated",
+            "autopay enabled",
+            "autopay set up",
+            "autopay setup",
+            "successful autopay transaction",
+            "standing instruction registered",
+            "standing instruction set",
+        ],
+    )
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|n| haystack.contains(n))
+}
+
+/// Strips future-tense and negated forms so only settled language remains.
+fn settled_text(content: &str) -> String {
+    let mut out = content.to_string();
+    for phrase in UNSETTLED_PHRASES {
+        if out.contains(phrase) {
+            out = out.replace(phrase, " ");
+        }
+    }
+    out
 }
 
 impl ContentClassifier {
@@ -128,7 +346,14 @@ impl ContentClassifier {
             return ContentClass::Marketing;
         }
 
-        let settled_transaction = has_amount_pattern(&content) && has_transaction_verb(&content);
+        let settled = settled_text(&content);
+
+        if contains_any(&settled, FAILURE_PHRASES) {
+            return ContentClass::Noise;
+        }
+
+        let has_verb = contains_any(&settled, TRANSACTION_VERBS);
+        let settled_transaction = has_amount_pattern(&content) && has_verb;
 
         if !settled_transaction
             && (subject_lower.contains("offer")
@@ -140,7 +365,7 @@ impl ContentClassifier {
             return ContentClass::Marketing;
         }
 
-        if !has_transaction_verb(&content)
+        if !has_verb
             && (subject_lower.contains("payment due")
                 || subject_lower.contains("due date")
                 || subject_lower.contains("reminder")
@@ -149,30 +374,14 @@ impl ContentClassifier {
             return ContentClass::Reminder;
         }
 
-        if subject_lower.contains("spent")
-            || subject_lower.contains("debited")
-            || subject_lower.contains("credited")
-            || subject_lower.contains("transaction alert")
-            || subject_lower.contains("payment of")
-            || subject_lower.contains("purchase of")
-        {
+        // Before the balance branch, and over the whole message rather than the
+        // subject alone: `BalanceUpdate` zeroes the amount downstream, so a debit
+        // whose subject only mentions the balance must still be caught here.
+        if has_verb {
             return ContentClass::TransactionAlert;
         }
 
-        if subject_lower.contains("account update")
-            || subject_lower.contains("money credited")
-            || subject_lower.contains("payment received")
-            || subject_lower.contains("upi payment")
-            || subject_lower.contains("available balance")
-        {
-            return ContentClass::BalanceUpdate;
-        }
-
-        if has_transaction_verb(&content) {
-            return ContentClass::TransactionAlert;
-        }
-
-        if content.contains("account update") || content.contains("available balance") {
+        if contains_any(&settled, BALANCE_TERMS) {
             return ContentClass::BalanceUpdate;
         }
 
@@ -184,5 +393,23 @@ impl ContentClassifier {
         }
 
         ContentClass::Unknown
+    }
+
+    /// Whether every phrase `classify` accepts can be reached by the rescue query.
+    ///
+    /// Exposed for the scan-query test: Gmail ANDs the words inside
+    /// `subject:(...)`, so a rescue token matches a subject containing a phrase
+    /// only when all of the token's words appear in that phrase.
+    pub fn phrases_unreachable_by(rescue_terms: &[&str]) -> Vec<&'static str> {
+        TRANSACTION_VERBS
+            .iter()
+            .chain(BALANCE_TERMS.iter())
+            .copied()
+            .filter(|phrase| {
+                !rescue_terms
+                    .iter()
+                    .any(|term| term.split(' ').all(|word| phrase.contains(word)))
+            })
+            .collect()
     }
 }

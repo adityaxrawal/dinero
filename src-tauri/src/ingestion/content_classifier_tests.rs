@@ -167,6 +167,112 @@ fn test_bare_paid_without_you_paid_not_treated_as_transaction_verb() {
 }
 
 #[test]
+fn test_balance_subject_does_not_swallow_a_real_debit() {
+    // BalanceUpdate overwrites amount_minor with 0 downstream
+    // (message_processor::apply_balance_update_placeholder), so a debit whose
+    // subject only mentions the balance must still reach TransactionAlert.
+    assert_eq!(
+        ContentClassifier::classify(
+            "Available balance update on your A/c XX7603",
+            "Rs. 500 debited. Available balance: Rs. 12,340.00"
+        ),
+        ContentClass::TransactionAlert
+    );
+}
+
+#[test]
+fn test_future_debit_notice_is_not_a_settled_transaction() {
+    // Pre-debit mandate notices quote an amount and the word "debited"; acting
+    // on them would book a charge that has not happened yet.
+    assert_eq!(
+        ContentClassifier::classify(
+            "Upcoming payment reminder",
+            "Rs. 199.00 will be debited from your account on 05-Sep towards Netflix."
+        ),
+        ContentClass::Reminder
+    );
+}
+
+#[test]
+fn test_warning_and_real_charge_in_one_mail_keeps_the_real_charge() {
+    // Stripping future forms must be per-phrase, not a whole-message veto.
+    assert_eq!(
+        ContentClassifier::classify(
+            "Transaction on your card",
+            "Rs. 750 debited at BIGBASKET. Rs. 199 will be debited on 05-Sep."
+        ),
+        ContentClass::TransactionAlert
+    );
+}
+
+#[test]
+fn test_failed_transaction_is_not_booked() {
+    assert_eq!(
+        ContentClassifier::classify(
+            "Payment update",
+            "Your payment of Rs. 2,500 to AMAZON failed due to insufficient balance."
+        ),
+        ContentClass::Noise
+    );
+}
+
+#[test]
+fn test_expanded_verbs_reach_transaction_alert() {
+    for (subject, body) in [
+        (
+            "ATM cash withdrawal",
+            "Rs. 5,000 withdrawn from ATM at Andheri",
+        ),
+        (
+            "Refund processed",
+            "Refund of Rs. 899 for order 123 has been processed",
+        ),
+        ("Salary", "INR. 85,000.00 deposited to your account"),
+        (
+            "Card transaction",
+            "Your card was used at SWIGGY for Rs 420",
+        ),
+        (
+            "Fund transfer",
+            "Transfer of Rs 1,200 transferred to RAHUL K",
+        ),
+        ("Netbanking", "Amount received: 0.00 INR from ACME LTD"),
+    ] {
+        assert_eq!(
+            ContentClassifier::classify(subject, body),
+            ContentClass::TransactionAlert,
+            "missed transaction phrasing in {body:?}"
+        );
+    }
+}
+
+#[test]
+fn test_negated_verbs_do_not_fabricate_a_transaction() {
+    assert_eq!(
+        ContentClassifier::classify(
+            "Important notice",
+            "Rs. 500 was not debited from your account."
+        ),
+        ContentClass::Noise
+    );
+}
+
+#[test]
+fn test_expanded_mandate_phrasings() {
+    assert_eq!(
+        ContentClassifier::classify(
+            "Standing instruction update",
+            "Your standing instruction has been cancelled for Merchant: ScribdInc"
+        ),
+        ContentClass::MandateCancellation
+    );
+    assert_eq!(
+        ContentClassifier::classify("AutoPay enabled", "AutoPay enabled for Merchant: Spotify"),
+        ContentClass::MandateRegistration
+    );
+}
+
+#[test]
 fn test_other_classes() {
     assert_eq!(
         ContentClassifier::classify("Payment Due Reminder", "Pay by 5th"),

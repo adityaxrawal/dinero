@@ -37,8 +37,20 @@ pub fn extract_body_and_attachments(part: &MessagePart) -> ExtractedMessage {
     };
     extract_recursive(part, &mut extracted);
 
-    if let (None, Some(html)) = (&extracted.text_body, &extracted.html_body) {
-        extracted.text_body = Some(sanitize_html(html));
+    // A blank text part counts as absent, not as the body. A bank alert is
+    // routinely sent as multipart/alternative whose text/plain half is empty or
+    // says only "view this in HTML"; treating that as the body left every later
+    // stage -- classification and the whole extraction ladder -- reading nothing
+    // while the real content sat unused in the HTML half.
+    let text_is_blank = extracted
+        .text_body
+        .as_deref()
+        .map(|t| t.trim().is_empty())
+        .unwrap_or(true);
+    if text_is_blank {
+        if let Some(html) = &extracted.html_body {
+            extracted.text_body = Some(sanitize_html(html));
+        }
     }
 
     if let Some(ref text) = extracted.text_body {
@@ -175,7 +187,6 @@ pub fn sanitize_plain_text(text: &str) -> String {
 
 /// Strips markup from HTML, leaving text for extraction.
 pub fn sanitize_html(html: &str) -> String {
-
     let mut text = html.to_string();
 
     let script_re = Regex::new(r"(?is)<script.*?>.*?</script>").unwrap();

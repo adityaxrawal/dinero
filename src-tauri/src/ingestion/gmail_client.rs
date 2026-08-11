@@ -40,11 +40,11 @@ struct QuotaState {
 
 impl QuotaLimiter {
     const MAX_BURST_UNITS: f64 = 30.0;
-/// Builds a token-bucket limiter at the given refill rate.
-///
-/// Burst capacity is capped separately from the refill rate, so a long idle period
-/// cannot accumulate enough tokens to fire a burst large enough to trip Gmail's
-/// own rate limiting.
+    /// Builds a token-bucket limiter at the given refill rate.
+    ///
+    /// Burst capacity is capped separately from the refill rate, so a long idle period
+    /// cannot accumulate enough tokens to fire a burst large enough to trip Gmail's
+    /// own rate limiting.
 
     fn new(units_per_sec: f64) -> Self {
         let burst_ceiling = units_per_sec.min(Self::MAX_BURST_UNITS);
@@ -57,11 +57,11 @@ impl QuotaLimiter {
             }),
         }
     }
-/// Waits until enough quota is available, then consumes it.
-///
-/// Tokens refill continuously from elapsed time rather than on a timer, so the
-/// limiter needs no background task. Loops rather than sleeping once, because
-/// several callers may wake to compete for the same refilled tokens.
+    /// Waits until enough quota is available, then consumes it.
+    ///
+    /// Tokens refill continuously from elapsed time rather than on a timer, so the
+    /// limiter needs no background task. Loops rather than sleeping once, because
+    /// several callers may wake to compete for the same refilled tokens.
 
     pub(crate) async fn acquire(&self, cost: f64) {
         loop {

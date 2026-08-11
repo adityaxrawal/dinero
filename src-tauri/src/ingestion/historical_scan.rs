@@ -1274,27 +1274,29 @@ mod tests {
     }
 
     #[test]
-    fn subject_terms_cover_classifier_rescue_phrases() {
-        use crate::ingestion::content_classifier::{ContentClass, ContentClassifier};
+    fn subject_terms_cover_classifier_phrases() {
+        use crate::ingestion::content_classifier::{ContentClassifier, RESCUE_SUBJECT_TERMS};
 
-        for term in crate::ingestion::content_classifier::RESCUE_SUBJECT_TERMS {
-            let class = ContentClassifier::classify(term, "");
-            assert!(
-                matches!(
-                    class,
-                    ContentClass::TransactionAlert | ContentClass::BalanceUpdate
-                ),
-                "RESCUE_SUBJECT_TERMS lists {term:?} but classify() returns {class:?}"
-            );
-        }
+        // The invariant that stops a transaction being lost outright: anything
+        // classify() would accept must be retrievable from an unknown sender.
+        let unreachable = ContentClassifier::phrases_unreachable_by(RESCUE_SUBJECT_TERMS);
+        assert!(
+            unreachable.is_empty(),
+            "classifier accepts phrases the rescue query can never fetch: {unreachable:?}"
+        );
 
         let q = build_rescue_subject_query("after:2026-01-01 before:2026-07-29");
-        for term in crate::ingestion::content_classifier::RESCUE_SUBJECT_TERMS {
+        for term in RESCUE_SUBJECT_TERMS {
             assert!(
                 q.contains(&format!("subject:({term})")),
                 "rescue query is missing {term:?}"
             );
         }
+        assert!(
+            q.len() <= MAX_SENDER_CLAUSE_CHARS,
+            "rescue query overshot the URL budget: {} chars",
+            q.len()
+        );
     }
 
     fn test_queue_handles() -> crate::ingestion::queues::QueueHandles {

@@ -124,6 +124,101 @@ fn test_metadata_gate_approved_pending_sender_verified() {
     );
 }
 
+/// A second `@` makes the trailing label not the sending domain. Reading it as
+/// one would let `victim@evil.example@hdfcbank.net` match an approved domain and
+/// collect a verified verdict, so it must be rejected instead.
+#[test]
+fn test_metadata_gate_rejects_address_with_two_at_signs() {
+    let msg = create_metadata_message(vec![
+        ("From", "<victim@evil.example@newfintech.example>"),
+        ("Subject", "Transaction Alert"),
+    ]);
+
+    let approved = vec![crate::db::sender_reputation::PendingSenderRow {
+        id: "id1".to_string(),
+        domain: "newfintech.example".to_string(),
+        bank_name: "New Fintech".to_string(),
+        classification: "transaction_candidate".to_string(),
+        status: "approved".to_string(),
+        reject_count: 0,
+    }];
+
+    match MessageProcessor::evaluate_metadata_gate(&msg, &approved, &[]) {
+        SenderVerificationResult::UnverifiedReject(_)
+        | SenderVerificationResult::SpoofReject(_) => {}
+        other => panic!("a two-`@` address must never verify, got {:?}", other),
+    }
+    assert_eq!(MessageProcessor::extract_sender_domain(&msg), None);
+}
+
+/// Two From headers must not verify against one domain while reputation is
+/// recorded against the other -- both readers take the first.
+#[test]
+fn test_metadata_gate_and_sighting_agree_on_first_from_header() {
+    let msg = create_metadata_message(vec![
+        ("From", "\"HDFC Bank\" <alerts@hdfcbank.net>"),
+        ("From", "<attacker@evil.example>"),
+        ("Subject", "Your Transaction"),
+    ]);
+
+    assert_eq!(
+        MessageProcessor::extract_sender_domain(&msg),
+        Some("hdfcbank.net".to_string())
+    );
+    assert_eq!(
+        MessageProcessor::evaluate_metadata_gate(&msg, &[], &[]),
+        SenderVerificationResult::VerifiedTransactionCandidate("HDFC Bank".to_string())
+    );
+}
+
+/// An override domain is whatever the user typed, so it must be normalised on
+/// both sides or it silently never applies.
+#[test]
+fn test_bank_override_matches_despite_case_and_whitespace() {
+    let overrides = vec![crate::db::sender_bank_overrides::SenderBankOverride {
+        id: "o1".to_string(),
+        domain: "  HDFCBank.NET ".to_string(),
+        bank_name: "HDFC Bank Ltd".to_string(),
+        display_name: None,
+        status: "active".to_string(),
+        created_at: None,
+    }];
+
+    assert_eq!(
+        MessageProcessor::apply_bank_override(
+            SenderVerificationResult::VerifiedTransactionCandidate("HDFC Bank".to_string()),
+            "hdfcbank.net",
+            &overrides,
+        ),
+        SenderVerificationResult::VerifiedTransactionCandidate("HDFC Bank Ltd".to_string())
+    );
+}
+
+/// A comma inside a quoted display name must not be mistaken for an address
+/// separator, and a multi-recipient header must yield its first address.
+#[test]
+fn test_extract_email_and_domain_handles_commas_and_multiple_addresses() {
+    assert_eq!(
+        MessageProcessor::extract_email_and_domain("\"Doe, John\" <j@d.example>"),
+        (
+            Some("j@d.example".to_string()),
+            Some("d.example".to_string())
+        )
+    );
+    assert_eq!(
+        MessageProcessor::extract_email_and_domain("<a@x.example>, <b@y.example>"),
+        (
+            Some("a@x.example".to_string()),
+            Some("x.example".to_string())
+        )
+    );
+    // Malformed: an address, but no domain that can be trusted for matching.
+    assert_eq!(
+        MessageProcessor::extract_email_and_domain("a@b.example@c.example"),
+        (Some("a@b.example@c.example".to_string()), None)
+    );
+}
+
 use crate::extraction::ladder::ExtractionResult;
 
 #[test]
