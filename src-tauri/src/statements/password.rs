@@ -408,7 +408,6 @@ pub async fn try_user_password(
     );
 
     if try_pdfium_unlock(pdf_bytes, password).await {
-
         let stmt_id = statement_id.to_string();
         let conn = pool.get().await?;
         conn.interact(move |c| {
@@ -495,7 +494,6 @@ mod tests {
 
     #[test]
     fn test_password_encrypted_before_storage() {
-
         let plaintext = "MyS3cr3tPDF!Pass";
         let key_bytes: [u8; 32] = [0x42u8; 32];
         let key = Key::<Aes256Gcm>::from_slice(&key_bytes);

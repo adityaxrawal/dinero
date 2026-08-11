@@ -235,6 +235,12 @@ pub async fn statements_upload(
             batch_progress.clone(),
         )
         .await;
+        // The tracker is seeded with the file count, but a duplicate, a
+        // password-protected file or a failed upload never becomes a queued job
+        // and so never records a completion of its own. Counting it here is what
+        // lets the batch reach its total instead of stalling a few short of it
+        // for the rest of the session.
+        let reaches_the_queue = matches!(&result, Ok(r) if r.status != "awaiting_password");
         results.push(match result {
             Ok(r) => r,
             Err(e) => UploadResult {
@@ -243,6 +249,12 @@ pub async fn statements_upload(
                 status: format!("error: {}", e),
             },
         });
+        if !reaches_the_queue {
+            if let Some(tracker) = &batch_progress {
+                let (parsed, total, eta_seconds) = tracker.record_skipped();
+                crate::ingestion::queues::emit_batch_progress(&app, parsed, total, eta_seconds);
+            }
+        }
     }
     Ok(serde_json::json!({ "results": results }))
 }
@@ -1170,18 +1182,14 @@ pub async fn statements_confirm_instrument(
     .await;
 
     match result {
-        Ok(PipelineOutcome::Staged(draft_id)) => {
-            Ok(serde_json::json!({
-                "status": "staged",
-                "draft_id": draft_id
-            }))
-        }
-        Ok(PipelineOutcome::BlockedAwaitingInstrument(unprocessed_id)) => {
-            Ok(serde_json::json!({
-                "status": "awaiting_instrument_confirmation",
-                "statement_id": unprocessed_id
-            }))
-        }
+        Ok(PipelineOutcome::Staged(draft_id)) => Ok(serde_json::json!({
+            "status": "staged",
+            "draft_id": draft_id
+        })),
+        Ok(PipelineOutcome::BlockedAwaitingInstrument(unprocessed_id)) => Ok(serde_json::json!({
+            "status": "awaiting_instrument_confirmation",
+            "statement_id": unprocessed_id
+        })),
         Err(e) => {
             tracing::error!(
                 "statements_confirm_instrument: pipeline failed for statement_id='{}': {}",
@@ -1327,12 +1335,10 @@ pub async fn statements_submit_password(
             .await;
 
             match pipeline_result {
-                Ok(PipelineOutcome::Staged(draft_id)) => {
-                    Ok(serde_json::json!({
-                        "status": "unlocked",
-                        "draft_id": draft_id
-                    }))
-                }
+                Ok(PipelineOutcome::Staged(draft_id)) => Ok(serde_json::json!({
+                    "status": "unlocked",
+                    "draft_id": draft_id
+                })),
                 Ok(PipelineOutcome::BlockedAwaitingInstrument(unprocessed_id)) => {
                     let conn = pool
                         .get()
@@ -1401,11 +1407,9 @@ pub async fn statements_submit_password(
                 "statement_id": statement_id
             }))
         }
-        _ => {
-            Err(crate::error::AppError::Unknown(
-                "Unexpected password resolution outcome".to_string(),
-            ))
-        }
+        _ => Err(crate::error::AppError::Unknown(
+            "Unexpected password resolution outcome".to_string(),
+        )),
     }
 }
 
@@ -1456,18 +1460,10 @@ pub async fn statements_retry_unprocessed(
 }
 
 enum RetryOutcome {
-    Unlocked {
-        draft_id: String,
-    },
-    AwaitingInstrument {
-        statement_id: String,
-    },
-    StillLocked {
-        filename: String,
-    },
-    BytesExpired {
-        filename: String,
-    },
+    Unlocked { draft_id: String },
+    AwaitingInstrument { statement_id: String },
+    StillLocked { filename: String },
+    BytesExpired { filename: String },
 }
 
 impl RetryOutcome {

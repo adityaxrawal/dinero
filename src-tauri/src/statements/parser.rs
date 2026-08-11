@@ -406,8 +406,7 @@ mod tests {
                     pr.total_pages
                 );
             }
-            Err(_) => {
-            }
+            Err(_) => {}
         }
     }
 

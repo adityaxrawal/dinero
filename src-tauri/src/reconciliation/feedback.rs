@@ -14,7 +14,6 @@ pub fn process_reconciliation_feedback(
     _observation_id: &str,
     rule_id_opt: Option<&str>,
 ) -> Result<()> {
-
     if let Some(rule_id) = rule_id_opt {
         match decision {
             DecisionType::AutoMatchedExact

@@ -1675,6 +1675,7 @@ pub async fn fetch_transaction_observations(
 #[tauri::command]
 pub async fn fetch_transaction_source_log(
     transaction_id: String,
+    app: tauri::AppHandle,
     pool: State<'_, deadpool_sqlite::Pool>,
 ) -> Result<String, crate::error::AppError> {
     crate::ipc::validation::validate_uuid("transaction_id", &transaction_id)?;
@@ -1712,8 +1713,13 @@ pub async fn fetch_transaction_source_log(
 
     use std::io::{BufRead, BufReader};
 
-    let file = std::fs::File::open("email_scan_selected.log").map_err(|e| {
-        crate::error::AppError::Io(format!("Could not open email_scan_selected.log: {}", e))
+    // Resolved through the writer's own helper, so reader and writer cannot
+    // drift apart over where the log lives.
+    let app_dir = app.path().app_data_dir().ok();
+    let log_path =
+        crate::ingestion::message_processor::scan_log_path(app_dir.as_deref(), "SELECTED");
+    let file = std::fs::File::open(&log_path).map_err(|e| {
+        crate::error::AppError::Io(format!("Could not open {}: {}", log_path.display(), e))
     })?;
     let reader = BufReader::new(file);
 
