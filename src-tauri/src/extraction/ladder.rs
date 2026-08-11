@@ -107,8 +107,13 @@ pub fn compute_template_hash(body: &str) -> String {
     let no_digits = re_digits.replace_all(&body_lower, "#");
     let normalized = re_whitespace.replace_all(&no_digits, " ");
 
+    // Trimmed, because collapsing runs of whitespace still leaves a single
+    // leading/trailing space when the body had any. MIME-to-text conversion
+    // varies that edge whitespace between two renderings of one bank template,
+    // and an unstable hash splits a template into several -- which orphans the
+    // overrides taught against it and hides drift behind a hash nothing matches.
     let mut hasher = Sha256::new();
-    hasher.update(normalized.as_bytes());
+    hasher.update(normalized.trim().as_bytes());
     format!("{:x}", hasher.finalize())
 }
 
@@ -127,7 +132,7 @@ pub async fn apply_learned_fields(
     let Ok(conn) = pool.get().await else {
         return false;
     };
-    let rules = match conn
+    let mut rules = match conn
         .interact(move |c| crate::db::field_rules::select_live_by_bank(c, &bank, &source))
         .await
     {
@@ -139,9 +144,26 @@ pub async fn apply_learned_fields(
     }
 
     let body_hash = compute_template_hash(body);
-    let mut fired = false;
 
-    for rule in rules {
+    // `select_live_by_bank` has no ORDER BY, so when several live variants exist
+    // for one field the winner would be whatever order SQLite happened to return
+    // -- the same message could extract differently between two runs. Rank them,
+    // then let the best variant per field be the only one applied.
+    rules.sort_by(|a, b| {
+        (b.template_hash == body_hash)
+            .cmp(&(a.template_hash == body_hash))
+            .then(b.confidence.total_cmp(&a.confidence))
+            .then(b.success_count.cmp(&a.success_count))
+            .then(a.id.cmp(&b.id))
+    });
+
+    let mut fired = false;
+    let mut applied_fields: Vec<&str> = Vec::new();
+
+    for rule in &rules {
+        if applied_fields.contains(&rule.field_name.as_str()) {
+            continue;
+        }
         let is_override = rule.rule_payload_json.get("override_value").is_some();
         if is_override && rule.template_hash != body_hash {
             continue;
@@ -173,23 +195,41 @@ pub async fn apply_learned_fields(
                 }
             }
             "reference_id" => result.reference_id = Some(captured.to_string()),
-            "last4" => result.masked_identifier = Some(clean_masked_identifier(captured)),
-            "direction" => result.direction = Some(captured.to_lowercase()),
-            "currency" => result.currency = Some(captured.to_uppercase()),
-            "event_time" => {
-                match captured.parse::<i64>().ok() {
-                    Some(ts) => result.event_time = Some(ts),
-                    None => match parse_date_generic(captured) {
-                        Some(parsed) => {
-                            result.event_time = Some(parsed.timestamp);
-                            result.event_time_ambiguous = parsed.ambiguous;
-                        }
-                        None => continue,
-                    },
+            "last4" => {
+                // A capture with neither a digit nor a VPA handle is a
+                // mis-synthesised rule, and `clean_masked_identifier` hands back
+                // such text unchanged. Written through, it becomes the key of a
+                // whole phantom instrument that no real card or account matches
+                // -- and it wins over the correctly-read digits, since
+                // `apply_instrument_signals` only fills fields still empty.
+                let cleaned = clean_masked_identifier(captured);
+                if !cleaned.contains('@') && !cleaned.chars().any(|c| c.is_ascii_digit()) {
+                    continue;
+                }
+                result.masked_identifier = Some(cleaned);
+            }
+            "direction" => match normalize_direction(captured) {
+                Some(d) => result.direction = Some(d),
+                None => continue,
+            },
+            "currency" => {
+                let normalized = normalize_currency(captured);
+                if normalized.len() == 3 && normalized.bytes().all(|b| b.is_ascii_uppercase()) {
+                    result.currency = Some(normalized);
+                } else {
+                    continue;
                 }
             }
+            "event_time" => match parse_learned_event_time(captured) {
+                Some((ts, ambiguous)) => {
+                    result.event_time = Some(ts);
+                    result.event_time_ambiguous = ambiguous;
+                }
+                None => continue,
+            },
             _ => continue,
         }
+        applied_fields.push(rule.field_name.as_str());
         fired = true;
         tracing::debug!(
             bank = bank_name,
@@ -200,6 +240,67 @@ pub async fn apply_learned_fields(
     }
 
     fired
+}
+
+/// Latest epoch second a learned rule may claim as an event time (2100-01-01).
+const MAX_PLAUSIBLE_EPOCH_SECONDS: i64 = 4_102_444_800;
+
+/// Earliest epoch second a learned rule may claim as an event time (2000-01-01).
+///
+/// The mirror of the ceiling, and just as necessary: without a floor, a rule that
+/// captures a short numeric token -- an authorisation code, an installment count,
+/// a truncated reference -- books the transaction in 1970 rather than being
+/// rejected, and a 1970 date is a wrong answer that still looks like a date.
+const MIN_PLAUSIBLE_EPOCH_SECONDS: i64 = 946_684_800;
+
+/// Canonicalises a learned direction capture to the two values the ledger allows.
+///
+/// A rule captures whatever wording its template used -- "debited", "Credited",
+/// "DR" -- but every consumer of `direction` compares against exactly "debit" or
+/// "credit", so an unnormalised capture is a value nothing downstream recognises.
+/// Unrecognised wording yields None so the field is left untouched rather than
+/// written as garbage; this mirrors what the statement path already does.
+fn normalize_direction(captured: &str) -> Option<String> {
+    let c = captured.trim().to_lowercase();
+    // "cr"/"dr" are the ledger abbreviations, and they have to match the whole
+    // capture. As prefixes they read a direction out of any word that merely
+    // begins with those two letters -- a rule capturing "Crest Hotel" books a
+    // credit, "Dropbox" a debit -- and a fabricated direction is worse than none,
+    // because the field then looks confidently populated.
+    let abbrev = c.trim_end_matches('.');
+    if abbrev == "cr" || c.contains("credit") || c.contains("received") {
+        return Some("credit".to_string());
+    }
+    if abbrev == "dr"
+        || c.contains("debit")
+        || c.contains("spent")
+        || c.contains("paid")
+        || c.contains("withdraw")
+    {
+        return Some("debit".to_string());
+    }
+    None
+}
+
+/// Reads a learned `event_time` capture as either an epoch or a formatted date.
+///
+/// A bare `parse::<i64>()` is not enough: bank reference numbers are long digit
+/// strings too, and one captured as an event time would book the transaction
+/// centuries away instead of being rejected.
+fn parse_learned_event_time(captured: &str) -> Option<(i64, bool)> {
+    if let Ok(n) = captured.parse::<i64>() {
+        if (MIN_PLAUSIBLE_EPOCH_SECONDS..=MAX_PLAUSIBLE_EPOCH_SECONDS).contains(&n) {
+            return Some((n, false));
+        }
+        // Millisecond epochs are read too, but only when the rescaled value is
+        // recent: a 12-digit reference number divided by 1000 lands in the 1980s,
+        // which is a wrong answer dressed up as a plausible one.
+        let as_seconds = n / 1000;
+        if (1_000_000_000..=MAX_PLAUSIBLE_EPOCH_SECONDS).contains(&as_seconds) {
+            return Some((as_seconds, false));
+        }
+    }
+    parse_date_generic(captured).map(|p| (p.timestamp, p.ambiguous))
 }
 
 const LAYER12_CONFIDENCE: f64 = 0.95;
@@ -248,19 +349,42 @@ static GENERIC_REF_RE: OnceLock<Regex> = OnceLock::new();
 static GENERIC_CREDIT_DIRECTION_RE: OnceLock<Regex> = OnceLock::new();
 static GENERIC_DEBIT_DIRECTION_RE: OnceLock<Regex> = OnceLock::new();
 
+/// Whether `needle` occurs in `haystack` as a whole word.
+///
+/// `contains` is the wrong test for short abbreviations: "cc" sits inside
+/// "account" and "success", "ecs" inside a name -- enough to label every debit
+/// card a credit card and to invent payment channels out of ordinary prose. Both
+/// arguments must already be lowercase.
+fn contains_word(haystack: &str, needle: &str) -> bool {
+    haystack.match_indices(needle).any(|(i, _)| {
+        let before = haystack[..i].chars().next_back();
+        let after = haystack[i + needle.len()..].chars().next();
+        !before.is_some_and(|c| c.is_alphanumeric() || c == '_')
+            && !after.is_some_and(|c| c.is_alphanumeric() || c == '_')
+    })
+}
+
 /// The prefix and suffix currency-amount patterns, compiled once.
 ///
 /// Two are needed because both orderings occur in the wild: `INR 1,200.00` and
 /// `1,200.00 INR`. Lazily initialised, since regex compilation is expensive and
 /// these run on every message.
+///
+/// The alphabetic codes are word-anchored: unanchored, `rs` matches inside
+/// "Cards 1234" and "Rewards 500", which turns a card number or a loyalty balance
+/// into the transaction amount.
 fn generic_currency_amount_regexes() -> (&'static Regex, &'static Regex) {
     let prefix = GENERIC_CURRENCY_AMOUNT_PREFIX_RE.get_or_init(|| {
-        Regex::new(r"(?i)(rs\.?|inr|₹|\$|usd|eur|gbp|aed|sgd|aud|cad|jpy|chf)\s*([\d,]+(?:\.\d+)?)")
-            .unwrap()
+        Regex::new(
+            r"(?i)(\brs\.?|\binr|₹|\$|\busd|\beur|\bgbp|\baed|\bsgd|\baud|\bcad|\bjpy|\bchf)\s*([\d,]+(?:\.\d+)?)",
+        )
+        .unwrap()
     });
     let suffix = GENERIC_CURRENCY_AMOUNT_SUFFIX_RE.get_or_init(|| {
-        Regex::new(r"(?i)([\d,]+(?:\.\d+)?)\s*(inr|rs\.?|₹|usd|eur|gbp|aed|sgd|aud|cad|jpy|chf)")
-            .unwrap()
+        Regex::new(
+            r"(?i)([\d,]+(?:\.\d+)?)\s*(inr\b|rs\.?\b|₹|usd\b|eur\b|gbp\b|aed\b|sgd\b|aud\b|cad\b|jpy\b|chf\b)",
+        )
+        .unwrap()
     });
     (prefix, suffix)
 }
@@ -349,29 +473,45 @@ pub fn extract_instrument_signals(bank_name: &str, body: &str) -> InstrumentSign
         ..Default::default()
     };
 
+    // The gap between the label and the digits admits a `.` only in the
+    // whitespace-free run immediately before them, which is where an ellipsis
+    // mask (`...1234`) lives. Allowed anywhere, a sentence-ending full stop
+    // bridges "your Credit Card. 25-May-23" and books "25" as the card's last
+    // four -- a fabricated identifier that keys a whole phantom instrument.
+    const MASK_GAP: &str = r"[Xx*\s\-]*?[Xx*\-.]*?";
     let card_re = INSTR_CARD_LAST4_RE.get_or_init(|| {
-        Regex::new(r"(?i)\bcard\b(?:\s+(?:ending|no\.?|number|#|is|in))?\s*(?:with\s+)?(?:[Xx*\s\-.]*?)(\d{2,4})\b")
-            .unwrap()
+        Regex::new(&format!(
+            r"(?i)\bcard\b(?:\s+(?:ending|no\.?|number|#|is|in))?\s*(?:with\s+)?{MASK_GAP}(\d{{2,4}})\b"
+        ))
+        .unwrap()
     });
     if let Some(caps) = card_re.captures(body) {
         if let Some(last4) = caps.get(1) {
             signals.masked_identifier = Some(clean_masked_identifier(last4.as_str()));
             let body_lower = body.to_lowercase();
-            if body_lower.contains("credit card") || body_lower.contains("cc") {
-                signals.instrument_type = Some("credit_card".to_string());
-            } else if body_lower.contains("debit card") || body_lower.contains("dc") {
-                signals.instrument_type = Some("debit_card".to_string());
+            // Spelled-out phrases decide before the abbreviations, and the
+            // abbreviations are matched as words: "cc" as a substring hits the
+            // "account" in every debit-card alert ever sent.
+            let kind = if body_lower.contains("credit card") {
+                "credit_card"
+            } else if body_lower.contains("debit card") {
+                "debit_card"
+            } else if contains_word(&body_lower, "cc") {
+                "credit_card"
+            } else if contains_word(&body_lower, "dc") {
+                "debit_card"
             } else {
-                signals.instrument_type = Some("credit_card".to_string());
-            }
+                "credit_card"
+            };
+            signals.instrument_type = Some(kind.to_string());
         }
     }
 
     if signals.masked_identifier.is_none() {
         let acc_re = INSTR_ACCOUNT_SUFFIX_RE.get_or_init(|| {
-            Regex::new(
-                r"(?i)\b(?:a/c|account|acct)\b(?:\s+(?:ending|no\.?|number|#|is|in))?\s*(?:with\s+)?(?:[Xx*\s\-.]*?)(\d{2,4})\b",
-            )
+            Regex::new(&format!(
+                r"(?i)\b(?:a/c|account|acct)\b(?:\s+(?:ending|no\.?|number|#|is|in))?\s*(?:with\s+)?{MASK_GAP}(\d{{2,4}})\b"
+            ))
             .unwrap()
         });
         if let Some(caps) = acc_re.captures(body) {
@@ -515,8 +655,6 @@ pub(crate) fn apply_instrument_signals(obs: &mut ExtractionResult, bank_name: &s
 }
 
 static INTERNAL_TRANSFER_RE: OnceLock<Regex> = OnceLock::new();
-static POS_WORD_RE: OnceLock<Regex> = OnceLock::new();
-static ATM_WORD_RE: OnceLock<Regex> = OnceLock::new();
 
 /// Infers the payment channel -- UPI, card, NEFT, ATM and so on.
 ///
@@ -535,37 +673,40 @@ pub(crate) fn detect_channel(obs: &ExtractionResult, body: &str) -> Option<Strin
 
     let lower = body.to_lowercase();
     let has = |w: &str| lower.contains(w);
+    // Abbreviations are matched as words -- as substrings they fire on ordinary
+    // prose and names, inventing a channel the message never mentioned. "upi" is
+    // the exception: it legitimately appears glued to a merchant, as in
+    // "UPI_RELIANCE BP MOBILI".
+    let has_word = |w: &str| contains_word(&lower, w);
 
-    if has("bnpl") || has("buy now pay later") || has("pay later") {
+    if has_word("bnpl") || has("buy now pay later") || has("pay later") {
         return Some("bnpl".to_string());
     }
     if has("loan account") || has("loan disbursed") || has("loan emi") {
         return Some("loan".to_string());
     }
-    if has("ecs") || has("nach") {
+    if has_word("ecs") || has_word("nach") {
         return Some("ecs_nach".to_string());
     }
     if has("upi") && obs.instrument_type.as_deref() == Some("credit_card") {
         return Some("upi_credit_card".to_string());
     }
-    if has("imps") {
+    if has_word("imps") {
         return Some("imps".to_string());
     }
-    if has("neft") {
+    if has_word("neft") {
         return Some("neft".to_string());
     }
-    if has("rtgs") {
+    if has_word("rtgs") {
         return Some("rtgs".to_string());
     }
     if has("upi") {
         return Some("upi".to_string());
     }
-    let pos_word_re = POS_WORD_RE.get_or_init(|| Regex::new(r"(?i)\bpos\b").unwrap());
-    if pos_word_re.is_match(body) {
+    if has_word("pos") {
         return Some("pos".to_string());
     }
-    let atm_word_re = ATM_WORD_RE.get_or_init(|| Regex::new(r"(?i)\batm\b").unwrap());
-    if atm_word_re.is_match(body) {
+    if has_word("atm") {
         return Some("atm".to_string());
     }
     if has("wallet") {
@@ -580,19 +721,38 @@ pub(crate) fn detect_channel(obs: &ExtractionResult, body: &str) -> Option<Strin
     None
 }
 
+/// Largest amount accepted, in minor units.
+///
+/// A float-to-int cast saturates instead of wrapping, so without a ceiling a long
+/// reference number misread as an amount is booked as `i64::MAX` paise -- a
+/// silently absurd figure in the ledger rather than a rejected extraction.
+const MAX_PLAUSIBLE_AMOUNT_MINOR: f64 = 1e15;
+
 /// Parses a currency string into integer minor units.
 ///
 /// Returns None rather than zero on failure. A zero amount would be recorded as a
 /// real transaction of no value, which is worse than recording nothing.
 fn parse_amount(s: &str) -> Option<i64> {
-    let clean: String = s
-        .chars()
-        .filter(|c| c.is_ascii_digit() || *c == '.')
-        .collect();
-    clean
-        .parse::<f64>()
-        .ok()
-        .map(|v| (v * 100.0).round() as i64)
+    // A dot straight after a letter belongs to the currency abbreviation, not to
+    // the figure: keeping the one in "Rs.2500.00" leaves ".2500.00", which has two
+    // decimal points and fails the whole parse, silently dropping the amount. A
+    // dot after a digit -- or at the very start, as in ".50" -- is the decimal
+    // point and must survive.
+    let mut digits_and_dots = String::with_capacity(s.len());
+    let mut prev: Option<char> = None;
+    for c in s.chars() {
+        if c.is_ascii_digit() || (c == '.' && !prev.is_some_and(char::is_alphabetic)) {
+            digits_and_dots.push(c);
+        }
+        prev = Some(c);
+    }
+    // Bank prose ends amounts with a full stop ("for Rs 706.00.") and the stray
+    // trailing dot fails the parse just as surely.
+    let minor = digits_and_dots.trim_end_matches('.').parse::<f64>().ok()? * 100.0;
+    if !minor.is_finite() || minor > MAX_PLAUSIBLE_AMOUNT_MINOR {
+        return None;
+    }
+    Some(minor.round() as i64)
 }
 
 /// Direction assumed when a bank template does not state one.
@@ -750,69 +910,75 @@ impl ExtractionLayer for BankTemplateLayer {
         body: &'a str,
     ) -> BoxFuture<'a, Option<ExtractionResult>> {
         Box::pin(async move {
-            let mut result = ExtractionResult {
-                extraction_method: "bank_templates".to_string(),
-                ..Default::default()
-            };
+            let patterns = bank_templates().get(bank_name)?;
+            let mut first_match: Option<ExtractionResult> = None;
 
-            let matched: Option<ExtractionResult> = 'm: {
-                if let Some(patterns) = bank_templates().get(bank_name) {
-                    for p in patterns {
-                        if p.txn_type.as_deref() == Some("mandate") {
-                            continue;
-                        }
-                        if let Some(caps) = p.regex.captures(body) {
-                            result.direction = Some(p.direction.clone());
-                            result.currency = Some(p.currency.clone());
-                            result.amount_minor = caps
-                                .get(p.amount_group)
-                                .and_then(|m| parse_amount(m.as_str()));
-                            result.merchant_raw = p
-                                .merchant_group
-                                .and_then(|g| caps.get(g))
-                                .map(|m| m.as_str().trim().to_string())
-                                .filter(|m| !m.is_empty());
-                            let parsed_date = p
-                                .date_group
-                                .and_then(|g| caps.get(g))
-                                .and_then(|m| parse_date_generic(m.as_str()));
-                            result.event_time_ambiguous =
-                                parsed_date.as_ref().is_some_and(|d| d.ambiguous);
-                            result.event_time =
-                                parsed_date.map(|d| d.timestamp).or(p.date_fallback_epoch);
-                            result.balance_after = p
-                                .balance_group
-                                .and_then(|g| caps.get(g))
-                                .and_then(|m| parse_amount(m.as_str()));
-                            result.reference_id = p
-                                .reference_group
-                                .and_then(|g| caps.get(g))
-                                .map(|m| m.as_str().trim().to_string())
-                                .filter(|r| !r.is_empty());
-                            result.masked_identifier = p
-                                .last4_group
-                                .and_then(|g| caps.get(g))
-                                .map(|m| clean_masked_identifier(m.as_str()))
-                                .filter(|d| !d.is_empty());
-                            result.upi_vpa = p
-                                .upi_vpa_group
-                                .and_then(|g| caps.get(g))
-                                .map(|m| m.as_str().trim().to_lowercase())
-                                .filter(|v| !v.is_empty());
-                            result.instrument_type =
-                                p.txn_type.as_deref().and_then(instrument_type_for_txn_type);
-                            break 'm Some(result);
-                        }
-                    }
+            for p in patterns {
+                if p.txn_type.as_deref() == Some("mandate") {
+                    continue;
                 }
+                let Some(caps) = p.regex.captures(body) else {
+                    continue;
+                };
 
-                None
-            };
+                // Built fresh per pattern: a shared accumulator would carry a
+                // previous pattern's fields into this one's result.
+                let mut result = ExtractionResult {
+                    extraction_method: "bank_templates".to_string(),
+                    confidence_score: Some(LAYER12_CONFIDENCE),
+                    direction: Some(p.direction.clone()),
+                    currency: Some(p.currency.clone()),
+                    ..Default::default()
+                };
+                result.amount_minor = caps
+                    .get(p.amount_group)
+                    .and_then(|m| parse_amount(m.as_str()));
+                result.merchant_raw = p
+                    .merchant_group
+                    .and_then(|g| caps.get(g))
+                    .map(|m| m.as_str().trim().to_string())
+                    .filter(|m| !m.is_empty());
+                let parsed_date = p
+                    .date_group
+                    .and_then(|g| caps.get(g))
+                    .and_then(|m| parse_date_generic(m.as_str()));
+                result.event_time_ambiguous = parsed_date.as_ref().is_some_and(|d| d.ambiguous);
+                result.event_time = parsed_date.map(|d| d.timestamp).or(p.date_fallback_epoch);
+                result.balance_after = p
+                    .balance_group
+                    .and_then(|g| caps.get(g))
+                    .and_then(|m| parse_amount(m.as_str()));
+                result.reference_id = p
+                    .reference_group
+                    .and_then(|g| caps.get(g))
+                    .map(|m| m.as_str().trim().to_string())
+                    .filter(|r| !r.is_empty());
+                result.masked_identifier = p
+                    .last4_group
+                    .and_then(|g| caps.get(g))
+                    .map(|m| clean_masked_identifier(m.as_str()))
+                    .filter(|d| !d.is_empty());
+                result.upi_vpa = p
+                    .upi_vpa_group
+                    .and_then(|g| caps.get(g))
+                    .map(|m| m.as_str().trim().to_lowercase())
+                    .filter(|v| !v.is_empty());
+                result.instrument_type =
+                    p.txn_type.as_deref().and_then(instrument_type_for_txn_type);
 
-            let mut matched = matched?;
-            matched.confidence_score = Some(LAYER12_CONFIDENCE);
+                // Stopping at the first pattern that merely *matched* threw the
+                // layer away whenever a loose pattern matched first and produced
+                // an unusable result -- the later, tighter pattern that would
+                // have completed the transaction never got to run.
+                if result.is_valid() {
+                    return Some(result);
+                }
+                if first_match.is_none() {
+                    first_match = Some(result);
+                }
+            }
 
-            Some(matched)
+            first_match
         })
     }
     /// Identifies results produced by the bank-template layer.
@@ -849,12 +1015,14 @@ impl ExtractionLayer for GenericRegexLayer {
 
             let (prefix_re, suffix_re) = generic_currency_amount_regexes();
 
+            // `?` here would abandon the whole layer on a group that did not
+            // participate, discarding the fields already recovered.
             if let Some(caps) = prefix_re.captures(body) {
-                result.currency = Some(normalize_currency(caps.get(1)?.as_str()));
-                result.amount_minor = parse_amount(caps.get(2)?.as_str());
+                result.currency = caps.get(1).map(|m| normalize_currency(m.as_str()));
+                result.amount_minor = caps.get(2).and_then(|m| parse_amount(m.as_str()));
             } else if let Some(caps) = suffix_re.captures(body) {
-                result.amount_minor = parse_amount(caps.get(1)?.as_str());
-                result.currency = Some(normalize_currency(caps.get(2)?.as_str()));
+                result.amount_minor = caps.get(1).and_then(|m| parse_amount(m.as_str()));
+                result.currency = caps.get(2).map(|m| normalize_currency(m.as_str()));
             }
 
             let credit_re = GENERIC_CREDIT_DIRECTION_RE.get_or_init(|| {
@@ -945,17 +1113,22 @@ impl ExtractionLayer for GenericRegexLayer {
             let date_re = GENERIC_DATE_RE.get_or_init(|| {
                 Regex::new(r"(?i)(\d{2}[-/]\d{2}[-/]\d{2,4}|\d{2}-[a-zA-Z]{3}-\d{2,4}|\d{2}\s+[a-zA-Z]{3},?\s+\d{2,4}|[a-zA-Z]{3}\s+\d{2},\s*\d{4})").unwrap()
             });
-            if let Some(caps) = date_re.captures(body) {
-                if let Some(parsed) = parse_date_generic(caps.get(1)?.as_str()) {
-                    result.event_time = Some(parsed.timestamp);
-                    result.event_time_ambiguous = parsed.ambiguous;
-                }
+            // The first date-shaped span is not necessarily a parseable date
+            // ("99/99/9999"); keep looking rather than giving up on the message.
+            if let Some(parsed) = date_re
+                .captures_iter(body)
+                .filter_map(|c| c.get(1))
+                .find_map(|m| parse_date_generic(m.as_str()))
+            {
+                result.event_time = Some(parsed.timestamp);
+                result.event_time_ambiguous = parsed.ambiguous;
             }
 
             let ref_re = GENERIC_REF_RE.get_or_init(|| Regex::new(r"\b(\d{12})\b").unwrap());
-            if let Some(caps) = ref_re.captures(body) {
-                result.reference_id = Some(caps.get(1)?.as_str().to_string());
-            }
+            result.reference_id = ref_re
+                .captures(body)
+                .and_then(|c| c.get(1))
+                .map(|m| m.as_str().to_string());
 
             let mut confidence = LAYER3_BASE_CONFIDENCE;
             if result.amount_minor.is_some() && result.currency.is_some() {
@@ -1038,6 +1211,12 @@ fn parse_date_generic(s: &str) -> Option<DateParseResult> {
         "%d %B %Y",
         "%d %B, %Y",
         "%B %d, %Y",
+        // Last, so "23-12-25" is still read day-first rather than as year 23.
+        // These are the shapes the learning path itself writes back as a
+        // corrected event_time, so without them a learned date rule can never
+        // re-apply.
+        "%Y-%m-%d",
+        "%Y-%m-%d %H:%M:%S",
     ];
 
     for fmt in formats {
@@ -1100,6 +1279,20 @@ fn collect_merchant_window(
     }
 }
 
+/// Pulls the payee out of a UPI narration such as `UPI/1234567890/AmazonPay`.
+///
+/// The whole narration is a worse merchant than the name inside it, and both the
+/// label scan and the token scan can surface it, so what counts as the payee is
+/// defined once here.
+fn upi_narration_payee(candidate: &str) -> Option<String> {
+    if !candidate.to_lowercase().contains("upi/") {
+        return None;
+    }
+    let parts: Vec<&str> = candidate.split('/').collect();
+    let payee = parts.get(2)?.trim_end_matches(&['.', ','][..]).trim();
+    (!payee.is_empty()).then(|| payee.to_string())
+}
+
 pub struct NlpLayer;
 impl ExtractionLayer for NlpLayer {
     /// Layer 4: label-driven token scanning for fields the regexes missed.
@@ -1131,6 +1324,7 @@ impl ExtractionLayer for NlpLayer {
                     if let Some(candidate) =
                         collect_merchant_window(&tokens, &lower_tokens, idx + consumed)
                     {
+                        let candidate = upi_narration_payee(&candidate).unwrap_or(candidate);
                         if !is_invalid_merchant(&candidate, bank_name) {
                             strict_merchant_candidate = Some(candidate);
                             break;
@@ -1139,21 +1333,32 @@ impl ExtractionLayer for NlpLayer {
                 }
             }
 
+            // A strict label ("towards X", "merchant: X") is the more reliable
+            // signal, so it wins outright rather than only filling in when the
+            // ambiguous "at/to/from" scan below found nothing -- which is the
+            // precedence Layer 3 already applies.
+            result.merchant_raw = strict_merchant_candidate;
+
             let mut i = 0;
             while i < tokens.len() {
                 let token = &lower_tokens[i];
                 let orig_token = tokens[i];
 
-                if crate::extraction::lexicon::DEBIT_VERBS
-                    .iter()
-                    .any(|v| token.contains(v))
-                {
-                    result.direction = Some("debit".to_string());
-                } else if crate::extraction::lexicon::CREDIT_VERBS
-                    .iter()
-                    .any(|v| token.contains(v))
-                {
-                    result.direction = Some("credit".to_string());
+                // First verb wins: read to the end and the closing disclaimer
+                // ("if this credit was not authorised...") flips the direction of
+                // a transaction the message already stated.
+                if result.direction.is_none() {
+                    if crate::extraction::lexicon::DEBIT_VERBS
+                        .iter()
+                        .any(|v| token.contains(v))
+                    {
+                        result.direction = Some("debit".to_string());
+                    } else if crate::extraction::lexicon::CREDIT_VERBS
+                        .iter()
+                        .any(|v| token.contains(v))
+                    {
+                        result.direction = Some("credit".to_string());
+                    }
                 }
 
                 if (token == "rs" || token == "rs." || token == "inr" || token == "₹")
@@ -1176,45 +1381,21 @@ impl ExtractionLayer for NlpLayer {
                         || token == "beneficiary")
                     && i + 1 < tokens.len()
                 {
-                    let mut merchant_parts = Vec::new();
-                    let mut j = i + 1;
-                    while j < tokens.len() && j < i + 6 {
-                        let next_token_lower = &lower_tokens[j];
-                        if next_token_lower == "on"
-                            || next_token_lower == "via"
-                            || next_token_lower == "bal"
-                            || next_token_lower.starts_with("ref")
-                            || next_token_lower == "balance"
-                            || next_token_lower == "with"
-                            || next_token_lower == "card"
-                            || next_token_lower == "date"
-                            || next_token_lower == "a/c"
-                            || next_token_lower == "branch"
-                            || next_token_lower == "upi"
-                        {
-                            break;
-                        }
-                        let cleaned = tokens[j].trim_end_matches(&['.', ',', ';', ':'][..]);
-                        if !cleaned.is_empty() {
-                            merchant_parts.push(cleaned);
-                        }
-                        if tokens[j].ends_with('.') || tokens[j].ends_with(',') {
-                            break;
-                        }
-                        j += 1;
-                    }
-                    if !merchant_parts.is_empty() {
-                        let candidate = merchant_parts.join(" ");
+                    // The same window the strict-label scan collects, and it must
+                    // stay the same: two copies of this loop drifted apart once
+                    // already, so the ambiguous tier stopped unwrapping the UPI
+                    // narration the strict tier did.
+                    if let Some(candidate) = collect_merchant_window(&tokens, &lower_tokens, i + 1)
+                    {
+                        let candidate = upi_narration_payee(&candidate).unwrap_or(candidate);
                         if !is_invalid_merchant(&candidate, bank_name) {
                             result.merchant_raw = Some(candidate);
                         }
                     }
                 }
 
-                if result.merchant_raw.is_none() && token.contains("upi/") {
-                    let parts: Vec<&str> = orig_token.split('/').collect();
-                    if parts.len() >= 3 {
-                        let candidate = parts[2].trim_end_matches(&['.', ','][..]).to_string();
+                if result.merchant_raw.is_none() {
+                    if let Some(candidate) = upi_narration_payee(orig_token) {
                         if !is_invalid_merchant(&candidate, bank_name) {
                             result.merchant_raw = Some(candidate);
                         }
@@ -1227,11 +1408,25 @@ impl ExtractionLayer for NlpLayer {
                     || token.starts_with("balance:")
                     || token == "avl"
                 {
+                    // "Bal:1000.00" carries the value in the same token; looking
+                    // only at the next one reads past it. First balance wins, as
+                    // everywhere else in this layer -- unguarded, a trailing
+                    // "Reward Bal: 0" overwrote the account balance already read.
+                    if result.balance_after.is_none() {
+                        if let Some((_, inline)) = orig_token.split_once(':') {
+                            if let Some(amt) = parse_amount(inline) {
+                                result.balance_after = Some(amt);
+                            }
+                        }
+                    }
                     let mut j = i + 1;
                     if token == "avl" && j < tokens.len() && lower_tokens[j] == "bal" {
                         j += 1;
                     }
-                    if j < tokens.len()
+                    // A run, not one token: "Avl Bal is Rs 100" puts two fillers
+                    // between the label and the figure, and skipping only one
+                    // leaves the parse pointed at "Rs".
+                    while j < tokens.len()
                         && (lower_tokens[j] == "rs"
                             || lower_tokens[j] == "rs."
                             || lower_tokens[j] == "inr"
@@ -1241,14 +1436,16 @@ impl ExtractionLayer for NlpLayer {
                     {
                         j += 1;
                     }
-                    if j < tokens.len() {
+                    if j < tokens.len() && result.balance_after.is_none() {
                         if let Some(amt) = parse_amount(tokens[j]) {
                             result.balance_after = Some(amt);
                         }
                     }
                 }
 
-                if token == "on" && i + 1 < tokens.len() {
+                // First date wins, for the same reason as direction: a later "on
+                // <date>" in the footer must not replace the transaction's own.
+                if token == "on" && i + 1 < tokens.len() && result.event_time.is_none() {
                     let dt_str = tokens[i + 1].trim_end_matches(&['.', ','][..]);
                     if let Some(parsed) = parse_date_generic(dt_str) {
                         result.event_time = Some(parsed.timestamp);
@@ -1257,12 +1454,6 @@ impl ExtractionLayer for NlpLayer {
                 }
 
                 i += 1;
-            }
-
-            if result.merchant_raw.is_none() {
-                if let Some(candidate) = strict_merchant_candidate {
-                    result.merchant_raw = Some(candidate);
-                }
             }
 
             if result.event_time.is_none() {
@@ -1329,6 +1520,14 @@ pub fn detect_pattern_drift(
         template_hash,
     })
 }
+
+/// Confidence for a result completed from a parsed statement.
+///
+/// High, and deliberately above the auto-resolve threshold: the fields come from
+/// the bank's own statement, matched uniquely on instrument, date window and
+/// amount or reference. Leaving it unset made every crossref result read as
+/// "unknown confidence", which downstream treats as not confident at all.
+const LAYER5_CONFIDENCE: f64 = 0.9;
 
 pub struct Layer5CrossrefLayer;
 
@@ -1419,6 +1618,7 @@ impl Layer5CrossrefLayer {
             network: signals.network.clone(),
             upi_vpa: signals.upi_vpa.clone(),
             extraction_method: "layer5_statement_crossref".to_string(),
+            confidence_score: Some(LAYER5_CONFIDENCE),
             ..Default::default()
         })
     }
@@ -1472,7 +1672,7 @@ impl Layer6LlmLayer {
             .await;
 
         tracing::info!(
-            event = "layer5_usage",
+            event = "layer6_usage",
             bank_name = bank_name,
             success = matches!(result, Layer6Outcome::Extracted(_)),
             "Layer 6 fallback utilized"
@@ -1555,7 +1755,13 @@ fn apply_amount_cross_check(obs: &mut ExtractionResult, body: &str) {
     let Some(claimed) = obs.amount_minor else {
         return;
     };
-    if cross_check_amount(body, claimed) == AmountAgreement::Disagrees {
+    // On a foreign-currency transaction the first currency-amount in the body is
+    // the foreign one, so checking only the settled amount marked every single FX
+    // transaction as a disagreement.
+    let foreign_agrees = obs
+        .original_amount_minor
+        .is_some_and(|orig| cross_check_amount(body, orig) == AmountAgreement::Agrees);
+    if !foreign_agrees && cross_check_amount(body, claimed) == AmountAgreement::Disagrees {
         let downgraded = match obs.confidence_score {
             Some(existing) => (existing * CROSS_CHECK_DISAGREEMENT_PENALTY_FACTOR)
                 .clamp(0.0, CROSS_CHECK_DISAGREEMENT_CONFIDENCE),
@@ -1637,6 +1843,48 @@ fn apply_date_cross_check(obs: &mut ExtractionResult, internal_date: Option<i64>
     }
 }
 
+/// Enriches and cross-checks whichever layer's result won.
+///
+/// One function rather than per-path copies, because the copies drifted: the
+/// crossref and LLM results were skipping channel, EMI, FX and the date sanity
+/// check entirely, and the LLM path ran its amount cross-check *before* learned
+/// rules could still change the amount, checking a value it then discarded.
+async fn finalize_result(
+    pool: &Pool,
+    bank_name: &str,
+    body: &str,
+    internal_date: Option<i64>,
+    obs: &mut ExtractionResult,
+) {
+    // Layer 1 is itself nothing but learned rules; re-running them would be a
+    // second query and a second round of identical log lines.
+    if obs.extraction_method != "learned_fields" {
+        apply_learned_fields(pool, bank_name, body, "email", obs).await;
+    }
+    apply_instrument_signals(obs, bank_name, body);
+    if let Some((number, total)) =
+        crate::extraction::emi_detector::detect_emi_installment_numbers(body)
+    {
+        obs.emi_installment_number = Some(number);
+        obs.emi_total_installments = Some(total);
+        obs.emi_original_amount_minor =
+            crate::extraction::emi_detector::detect_emi_original_amount_minor(body);
+    }
+    let settled_currency = obs.currency.clone().unwrap_or_else(|| "INR".to_string());
+    let fx = crate::extraction::currency_handler::detect_fx_fields(body, &settled_currency);
+    // Filled in, not overwritten: the LLM layer can report FX fields this
+    // regex-based detector does not see.
+    obs.original_amount_minor = obs
+        .original_amount_minor
+        .take()
+        .or(fx.original_amount_minor);
+    obs.original_currency = obs.original_currency.take().or(fx.original_currency);
+    obs.exchange_rate = obs.exchange_rate.take().or(fx.exchange_rate);
+    obs.channel = detect_channel(obs, body);
+    apply_amount_cross_check(obs, body);
+    apply_date_cross_check(obs, internal_date);
+}
+
 #[allow(clippy::too_many_arguments)]
 /// Runs the extraction layers in order, stopping at the first sufficient result.
 ///
@@ -1657,36 +1905,18 @@ pub async fn run_extraction_ladder(
     layer6_timed_out: &mut bool,
     learning: Option<&crate::learning::LearningHandle>,
 ) -> Result<Option<ExtractionResult>> {
-    let layers: Vec<Box<dyn ExtractionLayer>> = vec![
-        Box::new(LearnedFieldLayer),
-        Box::new(BankTemplateLayer),
-        Box::new(GenericRegexLayer),
-        Box::new(NlpLayer),
+    let layers: [&dyn ExtractionLayer; 4] = [
+        &LearnedFieldLayer,
+        &BankTemplateLayer,
+        &GenericRegexLayer,
+        &NlpLayer,
     ];
 
     for layer in layers {
         let layer_name = layer.layer_name();
         if let Some(mut obs) = layer.extract(pool, bank_name, body).await {
             if obs.is_valid() {
-                apply_learned_fields(pool, bank_name, body, "email", &mut obs).await;
-                apply_instrument_signals(&mut obs, bank_name, body);
-                if let Some((number, total)) =
-                    crate::extraction::emi_detector::detect_emi_installment_numbers(body)
-                {
-                    obs.emi_installment_number = Some(number);
-                    obs.emi_total_installments = Some(total);
-                    obs.emi_original_amount_minor =
-                        crate::extraction::emi_detector::detect_emi_original_amount_minor(body);
-                }
-                let settled_currency = obs.currency.clone().unwrap_or_else(|| "INR".to_string());
-                let fx =
-                    crate::extraction::currency_handler::detect_fx_fields(body, &settled_currency);
-                obs.original_amount_minor = fx.original_amount_minor;
-                obs.original_currency = fx.original_currency;
-                obs.exchange_rate = fx.exchange_rate;
-                obs.channel = detect_channel(&obs, body);
-                apply_amount_cross_check(&mut obs, body);
-                apply_date_cross_check(&mut obs, internal_date);
+                finalize_result(pool, bank_name, body, internal_date, &mut obs).await;
                 tracing::info!(
                     layer = layer_name,
                     status = "success",
@@ -1724,7 +1954,7 @@ pub async fn run_extraction_ladder(
         .await
     {
         if crossref_result.is_valid() {
-            apply_amount_cross_check(&mut crossref_result, body);
+            finalize_result(pool, bank_name, body, internal_date, &mut crossref_result).await;
             tracing::info!(
                 layer = "layer5_statement_crossref",
                 status = "success",
@@ -1758,10 +1988,7 @@ pub async fn run_extraction_ladder(
     if let Layer6Outcome::Extracted(boxed_llm_result) = layer6_outcome {
         let mut llm_result = *boxed_llm_result;
         if llm_result.is_valid() {
-            apply_instrument_signals(&mut llm_result, bank_name, body);
-            apply_amount_cross_check(&mut llm_result, body);
-
-            apply_learned_fields(pool, bank_name, body, "email", &mut llm_result).await;
+            finalize_result(pool, bank_name, body, internal_date, &mut llm_result).await;
 
             if let Some(handle) = learning {
                 enqueue_drift_candidates_if_drifted(
@@ -1796,10 +2023,13 @@ pub async fn enqueue_drift_candidates_if_drifted(
 ) {
     let b_name = bank_name.to_string();
     let body_owned = body.to_string();
-    let Ok(conn) = pool.get().await else { return };
-    let drift = conn
-        .interact(move |c| detect_pattern_drift(c, &b_name, &body_owned, &None))
-        .await;
+    let drift = {
+        let Ok(conn) = pool.get().await else { return };
+        conn.interact(move |c| detect_pattern_drift(c, &b_name, &body_owned, &None))
+            .await
+        // The pooled connection is released here rather than being held across
+        // the enqueue below, which needs no database of its own.
+    };
     let Ok(Ok(drift)) = drift else { return };
     if !drift.drift_detected {
         return;
@@ -2276,7 +2506,7 @@ mod tests {
     #[tokio::test]
     async fn test_orchestrator_stops_at_first_valid_layer() {
         let pool = setup_db_with_rule("active".to_string()).await;
-        let body = "Your amount is 1500 INR at Amazon debit time 123";
+        let body = "Your amount is 1500 INR at Amazon debit time 1700000000";
 
         let mut layer6_timed_out = false;
         let result = run_extraction_ladder(
@@ -2594,7 +2824,7 @@ mod tests {
         .unwrap();
     }
 
-    const LEARNED_RULE_BODY: &str = "Your amount is 1500 INR at Amazon debit time 123";
+    const LEARNED_RULE_BODY: &str = "Your amount is 1500 INR at Amazon debit time 1700000000";
 
     async fn setup_db_with_rule(status: String) -> Pool {
         let pool = dummy_migrated_pool().await;
@@ -2919,7 +3149,7 @@ mod tests {
     async fn test_learned_rule_applied_when_active() {
         let pool = setup_db_with_rule("active".to_string()).await;
         let layer = LearnedFieldLayer;
-        let body = "Your amount is 1500 INR at Amazon debit time 123";
+        let body = "Your amount is 1500 INR at Amazon debit time 1700000000";
 
         let result = layer.extract(&pool, "Chase", body).await;
 
@@ -2934,10 +3164,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_learned_rule_matches_across_different_templates() {
-        let old_body = "Your amount is 1500 INR at Amazon debit time 123";
+        let old_body = "Your amount is 1500 INR at Amazon debit time 1700000000";
         let pool = setup_db_with_rule("active".to_string()).await;
 
-        let new_body = "Reminder: your amount is 1500 INR at Amazon debit time 123 -- thank you.";
+        let new_body =
+            "Reminder: your amount is 1500 INR at Amazon debit time 1700000000 -- thank you.";
         assert_ne!(
             compute_template_hash(old_body),
             compute_template_hash(new_body),
@@ -2961,7 +3192,7 @@ mod tests {
     async fn test_inactive_rule_skipped() {
         let pool = setup_db_with_rule("inactive".to_string()).await;
         let layer = LearnedFieldLayer;
-        let body = "Your amount is 1500 INR at Amazon debit time 123";
+        let body = "Your amount is 1500 INR at Amazon debit time 1700000000";
 
         let result = layer.extract(&pool, "Chase", body).await;
 
@@ -2972,7 +3203,7 @@ mod tests {
     async fn test_pending_rule_not_auto_applied() {
         let pool = setup_db_with_rule("pending".to_string()).await;
         let layer = LearnedFieldLayer;
-        let body = "Your amount is 1500 INR at Amazon debit time 123";
+        let body = "Your amount is 1500 INR at Amazon debit time 1700000000";
 
         let result = layer.extract(&pool, "Chase", body).await;
 
@@ -4129,6 +4360,427 @@ mod tests {
             Some("THEMATHCOMPANY PRIVATE LIMITED".to_string())
         );
         assert_eq!(result.direction, Some("credit".to_string()));
+    }
+
+    #[test]
+    fn test_parse_amount_trailing_stop_and_implausible_values() {
+        assert_eq!(
+            parse_amount("706.00."),
+            Some(70600),
+            "bank prose ends the amount with a full stop; the stray dot must not \
+             fail the parse and drop the amount"
+        );
+        assert_eq!(parse_amount("1,020.00,"), Some(102000));
+        assert_eq!(
+            parse_amount("99999999999999999999"),
+            None,
+            "a float-to-int cast saturates, so an out-of-range figure must be \
+             rejected rather than booked as i64::MAX paise"
+        );
+        assert_eq!(
+            parse_amount(".50"),
+            Some(50),
+            "a leading dot is the decimal point"
+        );
+        assert_eq!(parse_amount("Ref"), None);
+        assert_eq!(
+            parse_amount("Rs.2500.00"),
+            Some(250000),
+            "the dot in \"Rs.\" is punctuation, not a decimal point; kept, it \
+             leaves \".2500.00\" and the whole figure is dropped"
+        );
+        assert_eq!(parse_amount("INR.1,020.00"), Some(102000));
+    }
+
+    #[tokio::test]
+    async fn test_nlp_balance_survives_a_currency_prefix_ending_in_a_dot() {
+        let pool = dummy_pool();
+        let body = "Rs 500.00 debited from HDFC Bank A/c ending 1234 at Amazon on 25-May-23 \
+                    Avl Bal Rs.2500.00";
+        let result = NlpLayer.extract(&pool, "HDFC Bank", body).await.unwrap();
+        assert_eq!(
+            result.balance_after,
+            Some(250000),
+            "\"Rs.2500.00\" is one token, so the prefix's full stop reaches \
+             parse_amount and silently dropped the balance"
+        );
+    }
+
+    #[test]
+    fn test_normalize_direction_abbreviations_are_not_prefixes() {
+        for w in ["Crest Hotel", "Cristiano", "Dropbox", "Drone Services"] {
+            assert_eq!(
+                normalize_direction(w),
+                None,
+                "{w:?} merely starts with cr/dr; a fabricated direction is worse \
+                 than none because the field then looks confidently populated"
+            );
+        }
+        assert_eq!(normalize_direction("CR.").as_deref(), Some("credit"));
+        assert_eq!(normalize_direction("dr.").as_deref(), Some("debit"));
+    }
+
+    #[test]
+    fn test_template_hash_ignores_edge_whitespace() {
+        assert_eq!(
+            compute_template_hash("Rs 500 spent at SWIGGY"),
+            compute_template_hash("\n  Rs 500 spent at SWIGGY  \n\n"),
+            "MIME-to-text conversion varies the edge whitespace between two \
+             renderings of one template; an unstable hash orphans the overrides \
+             taught against it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_learned_last4_rule_capturing_no_digits_is_dropped() {
+        let pool = dummy_migrated_pool().await;
+        let body = "Rs 500.00 spent on your Card ending 1234 at Amazon on 01/07/26";
+        {
+            let conn = pool.get().await.unwrap();
+            let b = body.to_string();
+            conn.interact(move |c| {
+                seed_rule(
+                    c,
+                    "HDFC Bank",
+                    "last4",
+                    &b,
+                    serde_json::json!({"regex": r"at\s+([A-Za-z]+)", "capture_group": 1}),
+                    "active",
+                )
+            })
+            .await
+            .unwrap();
+        }
+
+        let mut result = ExtractionResult::default();
+        let fired = apply_learned_fields(&pool, "HDFC Bank", body, "email", &mut result).await;
+
+        assert!(!fired);
+        assert_eq!(
+            result.masked_identifier, None,
+            "a last4 with no digits and no VPA handle keys a phantom instrument, \
+             and it would beat the correctly-read digits because \
+             apply_instrument_signals only fills fields still empty"
+        );
+    }
+
+    #[test]
+    fn test_currency_amount_regex_ignores_rs_inside_a_word() {
+        let (prefix_re, _) = generic_currency_amount_regexes();
+        let caps = prefix_re
+            .captures("Your Rewards 500 points. Rs 250.00 debited at Zomato.")
+            .expect("the real amount must still match");
+        assert_eq!(
+            parse_amount(caps.get(2).unwrap().as_str()),
+            Some(25000),
+            "unanchored, `rs` matches inside \"Rewards\" and a loyalty balance \
+             becomes the transaction amount"
+        );
+        assert!(
+            prefix_re
+                .captures("Cards 1234 and 5678 are active.")
+                .is_none(),
+            "a card number is not an amount"
+        );
+    }
+
+    #[test]
+    fn test_debit_card_not_misread_as_credit_card_via_account() {
+        let signals = extract_instrument_signals(
+            "HDFC Bank",
+            "Rs 500.00 spent on your Debit Card ending 1234 from your account on 25-May-23.",
+        );
+        assert_eq!(
+            signals.instrument_type,
+            Some("debit_card".to_string()),
+            "\"cc\" as a substring hits the \"account\" in every debit-card alert"
+        );
+    }
+
+    #[test]
+    fn test_detect_channel_does_not_invent_channels_from_ordinary_words() {
+        let obs = ExtractionResult::default();
+        assert_eq!(
+            detect_channel(&obs, "Ecstatic news! Rs 500 credited by Nachiket."),
+            None,
+            "\"ecs\" and \"nach\" as substrings invent a mandate channel out of prose"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_learned_direction_rule_is_normalized_to_the_two_ledger_values() {
+        let pool = dummy_migrated_pool().await;
+        let body = "Rs 500.00 was credited to your account on 01/07/26";
+        {
+            let conn = pool.get().await.unwrap();
+            let b = body.to_string();
+            conn.interact(move |c| {
+                seed_rule(
+                    c,
+                    "HDFC Bank",
+                    "direction",
+                    &b,
+                    serde_json::json!({"regex": "(credited)", "capture_group": 1}),
+                    "active",
+                );
+                seed_rule(
+                    c,
+                    "HDFC Bank",
+                    "currency",
+                    &b,
+                    serde_json::json!({"regex": r"(Rs)\s", "capture_group": 1}),
+                    "active",
+                );
+            })
+            .await
+            .unwrap();
+        }
+
+        let mut result = ExtractionResult::default();
+        apply_learned_fields(&pool, "HDFC Bank", body, "email", &mut result).await;
+
+        assert_eq!(
+            result.direction.as_deref(),
+            Some("credit"),
+            "every consumer compares direction against exactly \"debit\"/\"credit\", \
+             so the raw capture \"credited\" matches nothing downstream"
+        );
+        assert_eq!(
+            result.currency.as_deref(),
+            Some("INR"),
+            "\"Rs\" upper-cased is \"RS\", which is not an ISO code"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_learned_direction_rule_with_unrecognised_wording_is_dropped() {
+        let pool = dummy_migrated_pool().await;
+        let body = "Rs 500.00 transacted on your account on 01/07/26";
+        {
+            let conn = pool.get().await.unwrap();
+            let b = body.to_string();
+            conn.interact(move |c| {
+                seed_rule(
+                    c,
+                    "HDFC Bank",
+                    "direction",
+                    &b,
+                    serde_json::json!({"regex": "(transacted)", "capture_group": 1}),
+                    "active",
+                )
+            })
+            .await
+            .unwrap();
+        }
+
+        let mut result = ExtractionResult::default();
+        let fired = apply_learned_fields(&pool, "HDFC Bank", body, "email", &mut result).await;
+
+        assert!(!fired);
+        assert_eq!(
+            result.direction, None,
+            "an unrecognised capture must leave the field untouched rather than \
+             writing a value nothing downstream matches"
+        );
+    }
+
+    #[test]
+    fn test_normalize_direction_wordings() {
+        for w in ["credited", "CREDIT", "Cr", "credit", "received"] {
+            assert_eq!(normalize_direction(w).as_deref(), Some("credit"), "{w}");
+        }
+        for w in ["debited", "DEBIT", "Dr", "spent", "paid", "withdrawn"] {
+            assert_eq!(normalize_direction(w).as_deref(), Some("debit"), "{w}");
+        }
+        assert_eq!(normalize_direction("transacted"), None);
+        assert_eq!(normalize_direction(""), None);
+    }
+
+    #[tokio::test]
+    async fn test_nlp_first_balance_wins_over_a_later_reward_balance() {
+        let pool = dummy_pool();
+        let body = "Rs 500.00 debited from HDFC Bank A/c ending 1234 at Amazon on 25-May-23. \
+                    Bal: 1000.00. Reward Bal: 0.00";
+        let result = NlpLayer.extract(&pool, "HDFC Bank", body).await.unwrap();
+        assert_eq!(
+            result.balance_after,
+            Some(100000),
+            "a trailing rewards balance must not overwrite the account balance \
+             the message already stated"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_nlp_balance_reads_past_a_run_of_filler_tokens() {
+        let pool = dummy_pool();
+        let body =
+            "Rs 500.00 debited from HDFC Bank A/c ending 1234 at Amazon on 25-May-23 Avl Bal is Rs 2500.00";
+        let result = NlpLayer.extract(&pool, "HDFC Bank", body).await.unwrap();
+        assert_eq!(
+            result.balance_after,
+            Some(250000),
+            "skipping only one filler token leaves the parse pointed at \"Rs\""
+        );
+    }
+
+    #[test]
+    fn test_card_mask_does_not_bridge_a_sentence_boundary_into_a_date() {
+        let signals = extract_instrument_signals(
+            "HDFC Bank",
+            "Thank you for using your HDFC Bank Credit Card. Transaction on 25-May-23 at Amazon.",
+        );
+        assert_eq!(
+            signals.masked_identifier, None,
+            "a sentence-ending full stop is not a mask; \"25\" here would key a \
+             phantom instrument"
+        );
+
+        // The ellipsis mask the gap exists for must still work.
+        assert_eq!(
+            extract_instrument_signals("HDFC Bank", "card ending ...1234").masked_identifier,
+            Some("1234".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_learned_event_time_bounds_and_scales() {
+        assert_eq!(
+            parse_learned_event_time("123"),
+            None,
+            "a short numeric capture -- an auth code, an installment count -- \
+             must be rejected, not booked as a 1970 event time"
+        );
+        assert_eq!(parse_learned_event_time("0"), None);
+
+        assert_eq!(
+            parse_learned_event_time("1700000000"),
+            Some((1_700_000_000, false))
+        );
+        assert_eq!(
+            parse_learned_event_time("1700000000000"),
+            Some((1_700_000_000, false)),
+            "a millisecond epoch must be rescaled, not read as the year 55000"
+        );
+        assert_eq!(
+            parse_learned_event_time("533264925852"),
+            None,
+            "a UPI reference number is not a timestamp"
+        );
+        assert_eq!(
+            parse_learned_event_time("2026-03-30 00:00:00"),
+            Some((ymd_ts(2026, 3, 30), false)),
+            "this is the shape the learning path writes back as a corrected date"
+        );
+    }
+
+    #[test]
+    fn test_iso_dates_parse_without_breaking_day_first_dates() {
+        assert_eq!(
+            parse_date_generic("2026-03-30").map(|p| p.timestamp),
+            Some(ymd_ts(2026, 3, 30))
+        );
+        assert_eq!(
+            parse_date_generic("23-12-25").map(|p| p.timestamp),
+            Some(ymd_ts(2025, 12, 23)),
+            "ISO parsing must stay last, or this reads as year 23"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_nlp_footer_does_not_flip_direction_or_date() {
+        let pool = dummy_pool();
+        let body = "Rs 500.00 debited from HDFC Bank A/c ending 1234 at Amazon on 25-May-23 \
+                    Bal Rs 1000.00. If the amount is not credited back, report on 01-Jan-24.";
+        let result = NlpLayer.extract(&pool, "HDFC Bank", body).await.unwrap();
+        assert_eq!(
+            result.direction,
+            Some("debit".to_string()),
+            "a closing disclaimer must not flip the direction the message stated"
+        );
+        assert_eq!(result.event_time, Some(ymd_ts(2023, 5, 25)));
+    }
+
+    #[test]
+    fn test_fx_transaction_is_not_flagged_as_amount_disagreement() {
+        let body = "Acct XX1234 debited USD 50.00 (INR 4150.50) on 25-May-23 at Netflix.";
+        let mut obs = ExtractionResult {
+            amount_minor: Some(415050),
+            original_amount_minor: Some(5000),
+            confidence_score: Some(LAYER12_CONFIDENCE),
+            ..Default::default()
+        };
+        apply_amount_cross_check(&mut obs, body);
+        assert_eq!(
+            obs.confidence_score,
+            Some(LAYER12_CONFIDENCE),
+            "the first amount in an FX body is the foreign one; agreeing with it \
+             is agreement, not a disagreement to downgrade for"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_layer5_result_carries_a_confidence_score() {
+        let anchor = chrono::NaiveDate::from_ymd_opt(2023, 5, 25).unwrap();
+        let entry_date = chrono::NaiveDate::from_ymd_opt(2023, 5, 24).unwrap();
+        let pool = setup_crossref_db(vec![crossref_entry("se_1", entry_date, 150000, None)]).await;
+
+        let obs = Layer5CrossrefLayer
+            .extract(
+                &pool,
+                "HDFC Bank",
+                "Rs 1500.00 spent on your HDFC Bank credit card ending 1234.",
+                Some(anchor),
+            )
+            .await
+            .expect("the unique statement entry must complete the extraction");
+
+        assert_eq!(
+            obs.confidence_score,
+            Some(LAYER5_CONFIDENCE),
+            "an unset confidence reads downstream as not confident at all, so a \
+             statement-backed result would never auto-resolve"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_rule_authored_for_this_template_wins_over_another_live_variant() {
+        let pool = dummy_migrated_pool().await;
+        let this_shape = "Rs 500 spent at ALPHA STORE on 01/07/26";
+        let other_shape = "Rs 500 spent at BETA STORE on 01/07/26 -- thank you for banking.";
+
+        let conn = pool.get().await.unwrap();
+        let (a, b) = (this_shape.to_string(), other_shape.to_string());
+        conn.interact(move |c| {
+            seed_rule(
+                c,
+                "HDFC Bank",
+                "merchant",
+                &a,
+                serde_json::json!({"regex": r"at\s+(.{1,80}?)\s+on", "capture_group": 1}),
+                "active",
+            );
+            seed_rule(
+                c,
+                "HDFC Bank",
+                "merchant",
+                &b,
+                serde_json::json!({"regex": r"spent\s+at\s+(\S+)", "capture_group": 1}),
+                "active",
+            );
+        })
+        .await
+        .unwrap();
+        drop(conn);
+
+        let mut result = ExtractionResult::default();
+        apply_learned_fields(&pool, "HDFC Bank", this_shape, "email", &mut result).await;
+
+        assert_eq!(
+            result.merchant_raw.as_deref(),
+            Some("ALPHA STORE"),
+            "both variants match this body, so without a deterministic ranking the \
+             winner is whatever order SQLite happened to return"
+        );
     }
 
     #[tokio::test]

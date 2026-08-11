@@ -42,11 +42,18 @@ pub fn normalize_observation(
         })
         .unwrap_or_else(|| "debit".to_string());
 
-    let event_time = raw.event_time.map(|ts| {
-        let dt_utc = Utc.timestamp_opt(ts, 0).unwrap();
-        let ist_offset = chrono::FixedOffset::east_opt(5 * 3600 + 30 * 60).unwrap();
-        dt_utc.with_timezone(&ist_offset).naive_local()
-    });
+    // event_time is whatever extraction pulled out of a bank's prose, so an
+    // out-of-range value is bad input rather than an impossibility. Unwrapping one
+    // panicked the transaction-queue worker that called us, taking it out of the
+    // pool for the rest of the session; an unusable timestamp costs the field only.
+    let event_time = raw
+        .event_time
+        .and_then(|ts| Utc.timestamp_opt(ts, 0).single())
+        .map(|dt_utc| {
+            let ist_offset = chrono::FixedOffset::east_opt(5 * 3600 + 30 * 60)
+                .expect("IST offset is a valid fixed offset");
+            dt_utc.with_timezone(&ist_offset).naive_local()
+        });
 
     let merchant_raw = raw.merchant_raw.clone();
 
