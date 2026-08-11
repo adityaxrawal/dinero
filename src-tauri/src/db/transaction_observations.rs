@@ -11,6 +11,9 @@ use chrono::{NaiveDate, NaiveDateTime};
 use rusqlite::{params, Connection, Row};
 use serde::{Deserialize, Serialize};
 
+// Default exists for tests only, so a fixture can name the handful of columns it
+// cares about; production rows are always built field by field on purpose.
+#[cfg_attr(test, derive(Default))]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TransactionObservationsRow {
     pub id: String,

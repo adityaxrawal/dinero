@@ -3,9 +3,9 @@
 //! Held here rather than guessed into an arbitrary instrument, which would
 //! quietly corrupt per-account balances. They surface as a work queue for the
 //! user to resolve manually.
-use anyhow::Result;
+use anyhow::{bail, Result};
 use chrono::NaiveDateTime;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 const BODY_SNIPPET_MAX_CHARS: usize = 240;
@@ -41,28 +41,91 @@ pub fn insert(conn: &Connection, unassigned: &UnassignedTransactionRow) -> Resul
 }
 
 /// Update status as the user resolves or dismisses the entry.
+///
+/// The transition is conditional on the entry still being `open`, in one atomic
+/// statement. Resolving creates a real transaction first, so two resolvers
+/// racing on the same entry -- or a dismiss landing after a resolve, or a
+/// replayed Layer 6 job overruling the user -- must not silently overwrite each
+/// other: the loser is told, rather than booking a duplicate and reporting
+/// success. Re-applying the status an entry already holds stays a no-op so a
+/// retried job is harmless.
 pub fn update_status(conn: &Connection, id: &str, new_status: &str) -> Result<()> {
-    conn.execute(
-        "UPDATE unassigned_transactions SET status = ?1 WHERE id = ?2",
+    let changed = conn.execute(
+        "UPDATE unassigned_transactions SET status = ?1 WHERE id = ?2 AND status = 'open'",
         params![new_status, id],
     )?;
-    Ok(())
+    if changed > 0 {
+        return Ok(());
+    }
+    // Nothing moved: the entry is either gone or already left the queue. The
+    // re-read is only for the message -- the UPDATE above is what serialises.
+    match current_status(conn, id)? {
+        None => bail!("unassigned transaction '{id}' does not exist"),
+        Some(current) if current == new_status => Ok(()),
+        Some(current) => bail!(
+            "unassigned transaction '{id}' is already '{current}', refusing to overwrite with '{new_status}'"
+        ),
+    }
+}
+
+/// Close an entry on behalf of a background job, tolerating one that moved on.
+///
+/// A Layer 6 job runs for minutes, so by the time it lands the user may have
+/// already resolved or dismissed the entry -- and a cancelled scan may have
+/// deleted it outright. None of those are failures: the job has nothing left to
+/// do. `update_status` is right to shout at the user-facing resolve path, which
+/// books money before it writes, but a shout here is never seen and leaves the
+/// durable job row undeleted, so the whole LLM run replays at every launch and
+/// never converges. Returns whether this call is what moved the entry.
+pub fn settle_if_open(conn: &Connection, id: &str, new_status: &str) -> Result<bool> {
+    let changed = conn.execute(
+        "UPDATE unassigned_transactions SET status = ?1 WHERE id = ?2 AND status = 'open'",
+        params![new_status, id],
+    )?;
+    Ok(changed > 0)
+}
+
+/// Whether the entry is still queued.
+///
+/// Lets a background job check before doing irreversible work -- booking a
+/// transaction for an entry the user already dismissed overrules them with
+/// money.
+pub fn is_open(conn: &Connection, id: &str) -> Result<bool> {
+    Ok(current_status(conn, id)?.as_deref() == Some("open"))
 }
 
 /// Refine the recorded reason attribution failed.
+///
+/// Only meaningful while the entry is still queued: once resolved or dismissed
+/// the reason is history, so a late refinement is dropped rather than rewriting
+/// it. A missing id is still an error -- silently discarding it hides the bug.
 pub fn update_reason(conn: &Connection, id: &str, new_reason: &str) -> Result<()> {
-    conn.execute(
-        "UPDATE unassigned_transactions SET reason = ?1 WHERE id = ?2",
+    let changed = conn.execute(
+        "UPDATE unassigned_transactions SET reason = ?1 WHERE id = ?2 AND status = 'open'",
         params![new_reason, id],
     )?;
+    if changed == 0 && current_status(conn, id)?.is_none() {
+        bail!("unassigned transaction '{id}' does not exist");
+    }
     Ok(())
+}
+
+fn current_status(conn: &Connection, id: &str) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT status FROM unassigned_transactions WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()?)
 }
 
 /// Unresolved entries, for the reconciliation queue.
 pub fn select_open(conn: &Connection) -> Result<Vec<UnassignedTransactionRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, observation_id, reason, status, created_at \
-         FROM unassigned_transactions WHERE status = 'open' ORDER BY created_at DESC",
+         FROM unassigned_transactions WHERE status = 'open' \
+         ORDER BY created_at DESC, id DESC",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(UnassignedTransactionRow {
@@ -112,7 +175,7 @@ pub fn select_open_with_context(conn: &Connection) -> Result<Vec<UnassignedTrans
          FROM unassigned_transactions u \
          JOIN transaction_observations o ON o.id = u.observation_id \
          WHERE u.status = 'open' \
-         ORDER BY u.created_at DESC",
+         ORDER BY u.created_at DESC, u.id DESC",
     )?;
     let rows = stmt.query_map([], |row| {
         let raw_payload_json: Option<String> = row.get(11)?;
@@ -149,7 +212,21 @@ pub fn select_open_with_context(conn: &Connection) -> Result<Vec<UnassignedTrans
 fn extract_body_snippet(raw_payload_json: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(raw_payload_json).ok()?;
     let body = value.get("body")?.as_str()?;
-    let collapsed = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Collapse only as far as the cap. A multi-megabyte HTML mail must not be
+    // rebuilt in full, once per queue row, just to keep its first 240 chars --
+    // and a body with no whitespace at all is one single "word", so cap that
+    // too. Both bounds sit past the cap, so the result is byte-identical to
+    // collapsing everything and truncating afterwards.
+    let mut collapsed = String::new();
+    for word in body.split_whitespace() {
+        if !collapsed.is_empty() {
+            collapsed.push(' ');
+        }
+        collapsed.extend(word.chars().take(BODY_SNIPPET_MAX_CHARS + 1));
+        if collapsed.len() > BODY_SNIPPET_MAX_CHARS * 4 {
+            break; // 4 bytes/char max in UTF-8, so this is certainly past the cap
+        }
+    }
     if collapsed.is_empty() {
         return None;
     }

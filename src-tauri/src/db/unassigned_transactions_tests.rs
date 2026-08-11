@@ -1,6 +1,7 @@
 use crate::db::transaction_observations::{insert_observation, TransactionObservationsRow};
 use crate::db::unassigned_transactions::{
-    insert as insert_unassigned, select_open_with_context, update_status, UnassignedTransactionRow,
+    insert as insert_unassigned, is_open, select_open, select_open_with_context, settle_if_open,
+    update_reason, update_status, UnassignedTransactionRow,
 };
 use chrono::Utc;
 use rusqlite::Connection;
@@ -14,7 +15,9 @@ fn base_observation(id: &str) -> TransactionObservationsRow {
         id: id.to_string(),
         canonical_transaction_id: None,
         source_pipeline: Some("gmail_transaction".to_string()),
-        source_record_id: Some("rec_1".to_string()),
+        // Unique per observation: (source_pipeline, source_record_id) is a
+        // uniqueness key, so tests holding several observations at once collide.
+        source_record_id: Some(format!("rec_{id}")),
         source_message_id: Some("msg_123".to_string()),
         source_thread_id: None,
         statement_id: None,
@@ -251,4 +254,188 @@ fn test_select_open_with_context_handles_missing_raw_payload() {
     let results = select_open_with_context(&conn).unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].body_snippet, None);
+}
+
+fn open_entry(conn: &Connection, id: &str, obs_id: &str) {
+    insert_observation(conn, &base_observation(obs_id)).unwrap();
+    insert_unassigned(
+        conn,
+        &UnassignedTransactionRow {
+            id: id.to_string(),
+            observation_id: obs_id.to_string(),
+            reason: "extraction_failed".to_string(),
+            status: "open".to_string(),
+            created_at: None,
+        },
+    )
+    .unwrap();
+}
+
+fn status_of(conn: &Connection, id: &str) -> String {
+    conn.query_row(
+        "SELECT status FROM unassigned_transactions WHERE id = ?1",
+        rusqlite::params![id],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+/// Resolving books a real transaction *before* the status flips, so a status
+/// write that lands on an entry someone else already took must fail loudly --
+/// otherwise two racing resolvers each create a transaction and both report
+/// success, double-counting the money. Same for a dismiss arriving after a
+/// resolve: the resolution must not be silently un-done.
+#[test]
+fn test_update_status_refuses_to_overwrite_a_closed_entry() {
+    let conn = setup_db();
+    open_entry(&conn, "ua_race", "obs_race");
+
+    update_status(&conn, "ua_race", "resolved").unwrap();
+
+    let err = update_status(&conn, "ua_race", "ignored")
+        .expect_err("dismissing an already-resolved entry must not silently win");
+    assert!(err.to_string().contains("already 'resolved'"), "{err}");
+    assert_eq!(status_of(&conn, "ua_race"), "resolved");
+
+    // Replaying the same transition is a no-op, not an error.
+    update_status(&conn, "ua_race", "resolved").unwrap();
+    assert_eq!(status_of(&conn, "ua_race"), "resolved");
+}
+
+/// A Layer 6 job that finishes after the user dismissed the entry has nothing
+/// left to do. `update_status` reports that as an error, which nobody sees and
+/// which leaves the durable job row undeleted -- so the LLM run replayed at
+/// every launch, forever. `settle_if_open` converges instead: it reports that it
+/// did not move the entry, and leaves the user's decision standing.
+#[test]
+fn test_settle_if_open_converges_on_an_entry_the_user_already_closed() {
+    let conn = setup_db();
+    open_entry(&conn, "ua_settle", "obs_settle");
+
+    assert!(is_open(&conn, "ua_settle").unwrap());
+    assert!(settle_if_open(&conn, "ua_settle", "resolved").unwrap());
+    assert_eq!(status_of(&conn, "ua_settle"), "resolved");
+    assert!(!is_open(&conn, "ua_settle").unwrap());
+
+    // A late job must neither error nor overwrite the closed entry.
+    assert!(!settle_if_open(&conn, "ua_settle", "no_transaction_found").unwrap());
+    assert_eq!(status_of(&conn, "ua_settle"), "resolved");
+
+    // An entry deleted underneath the job (a cancelled scan sweeps its rows) is
+    // the same story -- nothing to do, not a failure to retry.
+    conn.execute("DELETE FROM unassigned_transactions", [])
+        .unwrap();
+    assert!(!settle_if_open(&conn, "ua_settle", "resolved").unwrap());
+    assert!(!is_open(&conn, "ua_settle").unwrap());
+    assert!(!is_open(&conn, "ua_never_existed").unwrap());
+}
+
+/// A write against an id that is not in the table changed nothing, so
+/// reporting `Ok` left the caller announcing "dismissed"/"resolved" for an
+/// entry that never moved.
+#[test]
+fn test_status_and_reason_writes_reject_unknown_ids() {
+    let conn = setup_db();
+    assert!(update_status(&conn, "ua_missing", "ignored").is_err());
+    assert!(update_reason(&conn, "ua_missing", "gate3_failed").is_err());
+}
+
+/// A late Layer 6 reason refinement for an entry the user already dealt with
+/// is dropped, not written back over the closed entry's history.
+#[test]
+fn test_update_reason_is_scoped_to_open_entries() {
+    let conn = setup_db();
+    open_entry(&conn, "ua_reason", "obs_reason");
+
+    update_reason(&conn, "ua_reason", "gate3_failed:low_confidence").unwrap();
+    update_status(&conn, "ua_reason", "ignored").unwrap();
+    update_reason(&conn, "ua_reason", "late_refinement").unwrap();
+
+    let reason: String = conn
+        .query_row(
+            "SELECT reason FROM unassigned_transactions WHERE id = ?1",
+            rusqlite::params!["ua_reason"],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(reason, "gate3_failed:low_confidence");
+}
+
+/// `created_at` defaults to `CURRENT_TIMESTAMP`, which is second-granular, so
+/// an ingest burst writes ties -- without a tiebreak the queue reordered
+/// itself between refreshes and rows moved under the user's cursor.
+#[test]
+fn test_open_queue_order_is_stable_across_created_at_ties() {
+    let conn = setup_db();
+    open_entry(&conn, "ua_a", "obs_a");
+    open_entry(&conn, "ua_b", "obs_b");
+    open_entry(&conn, "ua_c", "obs_c");
+    conn.execute(
+        "UPDATE unassigned_transactions SET created_at = '2026-01-01 00:00:00'",
+        [],
+    )
+    .unwrap();
+
+    let ids: Vec<String> = select_open(&conn)
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect();
+    assert_eq!(ids, vec!["ua_c", "ua_b", "ua_a"]);
+    let ctx_ids: Vec<String> = select_open_with_context(&conn)
+        .unwrap()
+        .into_iter()
+        .map(|r| r.id)
+        .collect();
+    assert_eq!(ctx_ids, ids, "both queue reads must agree on order");
+}
+
+/// The snippet is capped at 240 chars, so neither a huge body nor a body with
+/// no whitespace to split on may be materialised in full to produce it.
+#[test]
+fn test_body_snippet_is_bounded_for_pathological_bodies() {
+    let conn = setup_db();
+
+    let mut huge = base_observation("obs_huge");
+    huge.raw_payload_json =
+        Some(serde_json::json!({ "body": "word ".repeat(400_000) }).to_string());
+    insert_observation(&conn, &huge).unwrap();
+    insert_unassigned(
+        &conn,
+        &UnassignedTransactionRow {
+            id: "ua_huge".to_string(),
+            observation_id: "obs_huge".to_string(),
+            reason: "extraction_failed".to_string(),
+            status: "open".to_string(),
+            created_at: None,
+        },
+    )
+    .unwrap();
+
+    let mut unbroken = base_observation("obs_unbroken");
+    unbroken.raw_payload_json =
+        Some(serde_json::json!({ "body": "x".repeat(2_000_000) }).to_string());
+    insert_observation(&conn, &unbroken).unwrap();
+    insert_unassigned(
+        &conn,
+        &UnassignedTransactionRow {
+            id: "ua_unbroken".to_string(),
+            observation_id: "obs_unbroken".to_string(),
+            reason: "extraction_failed".to_string(),
+            status: "open".to_string(),
+            created_at: None,
+        },
+    )
+    .unwrap();
+
+    for detail in select_open_with_context(&conn).unwrap() {
+        let snippet = detail.body_snippet.expect("snippet must be present");
+        assert_eq!(
+            snippet.chars().count(),
+            241, // the 240-char cap plus the ellipsis
+            "snippet for {} must respect the cap: {snippet:?}",
+            detail.id
+        );
+        assert!(snippet.ends_with('…'));
+    }
 }
