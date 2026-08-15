@@ -27,8 +27,8 @@ fn test_llm_prompt_generation() {
         "Prompt must request merchant"
     );
     assert!(
-        prompt.contains("event_time: integer"),
-        "Prompt must request event_time"
+        prompt.contains("datetime: string"),
+        "Prompt must request datetime"
     );
 
     // Ensure no metadata instructions like user profile are present
@@ -55,7 +55,7 @@ Sure! Here is the extracted JSON:
   "currency": "USD",
   "direction": "debit",
   "merchant": "Amazon",
-  "event_time": 1704067200,
+  "datetime": "05-Jan-24",
   "reference_id": "9999"
 }
 ```
@@ -70,14 +70,14 @@ Have a nice day!
 
 #[test]
 fn test_llm_output_parsed_to_extraction_result() {
-    let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
+    let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy", None);
 
     let valid_json = r#"{
         "amount": 1500.50,
         "currency": "INR",
         "direction": "debit",
         "merchant": "Amazon",
-        "event_time": 1704067200,
+        "datetime": "05-Jan-24",
         "reference_id": "ABC123XYZ"
     }"#;
 
@@ -89,21 +89,21 @@ fn test_llm_output_parsed_to_extraction_result() {
     assert_eq!(result.currency, Some("INR".to_string()));
     assert_eq!(result.direction, Some("debit".to_string()));
     assert_eq!(result.merchant_raw, Some("Amazon".to_string()));
-    assert_eq!(result.event_time, Some(1704067200));
+    assert!(result.event_time.is_some());
     assert_eq!(result.reference_id, Some("ABC123XYZ".to_string()));
     assert_eq!(result.extraction_method, "llm_layer6");
 }
 
 #[test]
 fn test_llm_output_parsed_invalid_direction_normalized() {
-    let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
+    let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy", None);
 
     let json = r#"{
         "amount": 50.0,
         "currency": "USD",
         "direction": "DEBIT",
         "merchant": "Netflix",
-        "event_time": 1704067200
+        "datetime": "05-Jan-24"
     }"#;
 
     let result = engine
@@ -118,7 +118,7 @@ fn test_llm_output_parsed_invalid_direction_normalized() {
 
 #[test]
 fn test_llm_output_parsed_missing_mandatory_fields_rejected() {
-    let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
+    let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy", None);
 
     let json = r#"{
         "amount": 50.0,
@@ -127,7 +127,7 @@ fn test_llm_output_parsed_missing_mandatory_fields_rejected() {
 
     let result = engine.parse_json_to_result(json, None);
     assert!(
-        result.is_none(),
+        result.is_err(),
         "Output missing mandatory fields must be rejected"
     );
 }
@@ -139,7 +139,7 @@ async fn test_llm_extraction_falls_back_gracefully_on_oom() {
     // model file on disk to spawn against) rather than hanging or
     // crashing, and extract() maps that to a graceful None.
 
-    let engine = LlmEngine::new(&PathBuf::from("/does/not/exist"), "nonexistent-model");
+    let engine = LlmEngine::new(&PathBuf::from("/does/not/exist"), "nonexistent-model", None);
 
     let result = engine
         .extract("HDFC Bank", "You spent Rs 500 at Amazon.", None)
@@ -153,13 +153,13 @@ async fn test_llm_extraction_falls_back_gracefully_on_oom() {
 
 #[test]
 fn test_llm_output_parsed_with_hallucinated_json_rejected() {
-    let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
+    let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy", None);
 
     let json = r#"This is not JSON at all."#;
 
     let result = engine.parse_json_to_result(json, None);
     assert!(
-        result.is_none(),
-        "Invalid JSON output must be handled and rejected"
+        result.is_err(),
+        "Malformed JSON output must return None"
     );
 }

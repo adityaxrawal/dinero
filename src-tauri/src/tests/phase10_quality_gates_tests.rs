@@ -264,7 +264,7 @@ mod tests {
                 None,
                 &mut layer6_timed_out,
                 None,
-            )
+                &mut crate::logging::EmailTrace::new("test"))
             .await
             .ok()
             .flatten();
@@ -390,7 +390,7 @@ mod tests {
                 None,
                 &mut layer6_timed_out,
                 None,
-            )
+                &mut crate::logging::EmailTrace::new("test"))
             .await
             .ok()
             .flatten();

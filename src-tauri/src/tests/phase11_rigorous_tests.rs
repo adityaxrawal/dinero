@@ -133,7 +133,7 @@ mod tests {
         // app_dir and model id -- llama_sidecar's ensure_server_ready fails
         // fast (no model file on disk) rather than hanging, and
         // LlmEngine::extract MUST not crash the app, but return None.
-        let engine = LlmEngine::new(&PathBuf::from("/invalid/app_dir"), "nonexistent-model");
+        let engine = LlmEngine::new(&PathBuf::from("/invalid/app_dir"), "nonexistent-model", None);
 
         let result = engine
             .extract("HDFC Bank", "You spent Rs 500 at Amazon.", None)
@@ -175,8 +175,8 @@ mod tests {
             "Prompt must request merchant"
         );
         assert!(
-            prompt.contains("event_time: integer"),
-            "Prompt must request event_time"
+            prompt.contains("datetime: string"),
+            "Prompt must request datetime"
         );
         assert!(
             prompt.contains("reference_id: string"),
@@ -196,14 +196,14 @@ mod tests {
 
     #[test]
     fn test_11_2_parse_valid_json() {
-        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
+        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy", None);
 
         let valid_json = r#"{
             "amount": 1500.50,
             "currency": "INR",
             "direction": "debit",
             "merchant": "Amazon",
-            "event_time": 1704067200,
+            "datetime": "05-Jan-24",
             "reference_id": "ABC123XYZ"
         }"#;
 
@@ -215,14 +215,14 @@ mod tests {
         assert_eq!(result.currency, Some("INR".to_string()));
         assert_eq!(result.direction, Some("debit".to_string()));
         assert_eq!(result.merchant_raw, Some("Amazon".to_string()));
-        assert_eq!(result.event_time, Some(1704067200));
+        assert!(result.event_time.is_some());
         assert_eq!(result.reference_id, Some("ABC123XYZ".to_string()));
         assert_eq!(result.extraction_method, "llm_layer6");
     }
 
     #[test]
     fn test_11_2_parse_json_with_markdown_chatter() {
-        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
+        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy", None);
 
         let chatty_json = r#"
         Certainly! Here is the JSON you requested:
@@ -232,7 +232,7 @@ mod tests {
             "currency": "USD",
             "direction": "debit",
             "merchant": "Netflix",
-            "event_time": 1704067200,
+            "datetime": "05-Jan-24",
             "reference_id": "NET123"
         }
         ```
@@ -249,14 +249,14 @@ mod tests {
 
     #[test]
     fn test_11_2_parse_direction_normalization() {
-        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
+        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy", None);
 
         let json_credit = r#"{
             "amount": 100.0,
             "currency": "USD",
             "direction": "CREDIT",
             "merchant": "Refund",
-            "event_time": 1704067200
+            "datetime": "05-Jan-24"
         }"#;
 
         let result_credit = engine
@@ -273,7 +273,7 @@ mod tests {
             "currency": "USD",
             "direction": "DEBIT",
             "merchant": "Purchase",
-            "event_time": 1704067200
+            "datetime": "05-Jan-24"
         }"#;
 
         let result_debit = engine
@@ -304,30 +304,30 @@ mod tests {
             "currency": "USD",
             "direction": "UNKNOWN",
             "merchant": "Purchase",
-            "event_time": 1704067200
+            "datetime": "05-Jan-24"
         }"#;
 
         assert!(
-            engine.parse_json_to_result(json_unknown, None).is_none(),
-            "an unrecognised direction must be rejected, not silently booked as a debit"
+            engine.parse_json_to_result(json_unknown, None).is_err(),
+            "Output missing mandatory fields must be rejected, not silently booked as a debit"
         );
     }
 
     #[test]
     fn test_11_2_parse_missing_mandatory_fields_rejected() {
-        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
+        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy", None);
 
         let json_missing_currency = r#"{
             "amount": 50.0,
             "direction": "debit",
             "merchant": "Netflix",
-            "event_time": 1704067200
+            "datetime": "05-Jan-24"
         }"#;
 
         assert!(
             engine
                 .parse_json_to_result(json_missing_currency, None)
-                .is_none(),
+                .is_err(),
             "Output missing currency must be rejected"
         );
 
@@ -335,13 +335,13 @@ mod tests {
             "currency": "USD",
             "direction": "debit",
             "merchant": "Netflix",
-            "event_time": 1704067200
+            "datetime": "05-Jan-24"
         }"#;
 
         assert!(
             engine
                 .parse_json_to_result(json_missing_amount, None)
-                .is_none(),
+                .is_err(),
             "Output missing amount must be rejected"
         );
 
@@ -349,26 +349,26 @@ mod tests {
             "amount": 50.0,
             "currency": "USD",
             "merchant": "Netflix",
-            "event_time": 1704067200
+            "datetime": "05-Jan-24"
         }"#;
 
         assert!(
             engine
                 .parse_json_to_result(json_missing_direction, None)
-                .is_none(),
+                .is_err(),
             "Output missing direction must be rejected"
         );
     }
 
     #[test]
     fn test_11_2_parse_hallucinated_invalid_json_rejected() {
-        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
+        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy", None);
 
         let hallucinated_text = "I'm sorry, I cannot extract the information you requested.";
         let result = engine.parse_json_to_result(hallucinated_text, None);
         assert!(
-            result.is_none(),
-            "Completely hallucinated non-JSON output must return None"
+            result.is_err(),
+            "Hallucinated (invalid structure) JSON must return None"
         );
 
         let malformed_json = r#"{
@@ -377,6 +377,6 @@ mod tests {
             "merchant": "Netflix
         "#;
         let result2 = engine.parse_json_to_result(malformed_json, None);
-        assert!(result2.is_none(), "Malformed JSON output must return None");
+        assert!(result2.is_err(), "Malformed JSON output must return None");
     }
 }

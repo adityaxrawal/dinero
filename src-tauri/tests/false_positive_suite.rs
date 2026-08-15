@@ -189,7 +189,7 @@ async fn process_record(pool: &deadpool_sqlite::Pool, rec: &GoldenRecord) -> Pip
         None,
         &mut layer6_timed_out,
         None,
-    )
+        &mut dinero_app_lib::logging::EmailTrace::new("test"))
     .await
     .expect("run_extraction_ladder returned an Err, not a rejection");
     let Some(obs) = extracted else {

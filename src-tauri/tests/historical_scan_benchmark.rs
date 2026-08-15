@@ -38,11 +38,13 @@ fn test_lock() -> &'static Mutex<()> {
 }
 
 fn mock_app() -> AppHandle<tauri::test::MockRuntime> {
-    mock_builder()
+    use tauri::Manager;
+    let app = mock_builder()
         .build(mock_context(noop_assets()))
-        .unwrap()
-        .handle()
-        .clone()
+        .unwrap();
+    let handle = app.handle().clone();
+    handle.manage(dinero_app_lib::llm_pipeline::LlmPipeline::new());
+    handle
 }
 
 async fn migrated_pool(label: &str) -> deadpool_sqlite::Pool {
@@ -198,7 +200,7 @@ async fn test_1000_email_scan_p95_under_target() {
     let handles = spawn_queues(
         app.clone(),
         pool.clone(),
-        dinero_app_lib::learning::spawn_learning_worker(pool.clone()),
+        dinero_app_lib::learning::spawn_learning_worker(pool.clone(), dinero_app_lib::llm_pipeline::LlmPipeline::new()),
     );
     app.manage(handles);
 
@@ -312,7 +314,7 @@ async fn test_checkpoint_resume_after_interruption() {
     let handles = spawn_queues(
         app.clone(),
         pool.clone(),
-        dinero_app_lib::learning::spawn_learning_worker(pool.clone()),
+        dinero_app_lib::learning::spawn_learning_worker(pool.clone(), dinero_app_lib::llm_pipeline::LlmPipeline::new()),
     );
     app.manage(handles);
 
@@ -384,7 +386,7 @@ async fn test_quota_pause_and_resume_behavior() {
     let handles = spawn_queues(
         app.clone(),
         pool.clone(),
-        dinero_app_lib::learning::spawn_learning_worker(pool.clone()),
+        dinero_app_lib::learning::spawn_learning_worker(pool.clone(), dinero_app_lib::llm_pipeline::LlmPipeline::new()),
     );
     app.manage(handles);
 
@@ -481,7 +483,7 @@ async fn test_cancel_mid_flight_stops_before_processing_all_messages() {
     let handles = spawn_queues(
         app.clone(),
         pool.clone(),
-        dinero_app_lib::learning::spawn_learning_worker(pool.clone()),
+        dinero_app_lib::learning::spawn_learning_worker(pool.clone(), dinero_app_lib::llm_pipeline::LlmPipeline::new()),
     );
     app.manage(handles);
 
@@ -588,7 +590,7 @@ async fn test_cancel_is_not_blocked_by_a_stuck_in_flight_fetch() {
     let handles = spawn_queues(
         app.clone(),
         pool.clone(),
-        dinero_app_lib::learning::spawn_learning_worker(pool.clone()),
+        dinero_app_lib::learning::spawn_learning_worker(pool.clone(), dinero_app_lib::llm_pipeline::LlmPipeline::new()),
     );
     app.manage(handles);
 
