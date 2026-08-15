@@ -13,6 +13,7 @@ use deadpool_sqlite::Pool;
 use futures_util::FutureExt as _;
 use std::sync::Arc;
 use tauri::Emitter;
+use tauri::Manager;
 use tokio::sync::{mpsc, Mutex, Semaphore};
 
 pub struct TransactionJob {
@@ -138,6 +139,8 @@ pub struct Layer6Job {
 }
 
 pub(crate) const LAYER6_QUEUE_CAPACITY: usize = 256;
+
+pub static ACTIVE_LAYER6_JOBS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Persists an LLM job before queueing it.
 ///
@@ -371,48 +374,118 @@ pub fn spawn_queues<R: tauri::Runtime>(
     let (layer6_tx, layer6_rx) = mpsc::channel::<Layer6Job>(LAYER6_QUEUE_CAPACITY);
 
     spawn_transaction_workers(transaction_rx, pool.clone(), app.clone());
-    spawn_statement_dispatcher(statement_rx, pool.clone(), app);
+    spawn_statement_dispatcher(statement_rx, pool.clone(), app.clone());
     spawn_mandate_workers(mandate_rx, pool.clone(), transaction_tx.clone());
-    spawn_layer6_workers(layer6_rx, pool, learning);
+    let pipeline = app.state::<crate::llm_pipeline::LlmPipeline>().inner().clone();
+    spawn_layer6_workers(layer6_rx, pool, learning, pipeline);
 
-    QueueHandles {
+    let handles = QueueHandles {
         transaction_tx,
         statement_tx,
         mandate_tx,
         layer6_tx,
-    }
+    };
+
+    spawn_queue_monitor(app.clone(), handles.clone());
+
+    handles
 }
 
-/// Spawns the Layer 6 worker pool.
-///
-/// The pool is a fixed size because the sidecar already caps real inference
-/// concurrency with its own semaphore, sized from the slot count calibrated once
-/// the server is up. Sizing the pool from `current_parallel_slots()` here read
-/// that counter before anything had set it -- it still held its default of 1 --
-/// so Layer 6 ran single-file for the whole session, and a slot count the user
-/// raised later could not reach workers that were already spawned.
-// ponytail: fixed ceiling of 6 -- raise it if a machine can genuinely feed more.
-fn spawn_layer6_workers(
-    rx: mpsc::Receiver<Layer6Job>,
-    pool: Pool,
-    learning: crate::learning::LearningHandle,
+/// Spawns a monitor that reads the queue depths and reports them to the background task registry.
+fn spawn_queue_monitor<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    handles: QueueHandles,
 ) {
-    const LAYER6_WORKER_COUNT: usize = 6;
-    let rx = Arc::new(Mutex::new(rx));
-    for _ in 0..LAYER6_WORKER_COUNT {
-        let rx = Arc::clone(&rx);
-        let pool = pool.clone();
-        let learning = learning.clone();
-        tauri::async_runtime::spawn(async move {
-            loop {
-                let job = { rx.lock().await.recv().await };
-                match job {
-                    Some(job) => process_layer6_job(job, &pool, &learning).await,
-                    None => break,
+    tauri::async_runtime::spawn(async move {
+        use tauri::Manager;
+        let mut tx_peak = 0;
+        let mut layer6_peak = 0;
+
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+            let tx_queued = handles
+                .transaction_tx
+                .max_capacity()
+                .saturating_sub(handles.transaction_tx.capacity());
+            let layer6_queued = handles
+                .layer6_tx
+                .max_capacity()
+                .saturating_sub(handles.layer6_tx.capacity())
+                + ACTIVE_LAYER6_JOBS.load(std::sync::atomic::Ordering::Relaxed);
+
+            if let Some(registry) =
+                app.try_state::<crate::background_tasks::indicator::BackgroundTaskRegistry>()
+            {
+                if tx_queued > 0 {
+                    tx_peak = tx_peak.max(tx_queued);
+                    let processed = tx_peak.saturating_sub(tx_queued);
+                    registry.register_or_update(
+                        &app,
+                        "transaction_queue",
+                        "system",
+                        "Transaction Ingestion",
+                        processed as u64,
+                        tx_peak as u64,
+                        &format!("Processing transactions ({} pending)", tx_queued),
+                    );
+                } else if tx_peak > 0 {
+                    registry.deregister(
+                        &app,
+                        "transaction_queue",
+                        crate::background_tasks::indicator::TaskStatus::Completed,
+                        "Transaction Ingestion Complete",
+                    );
+                    tx_peak = 0;
+                }
+
+                if layer6_queued > 0 {
+                    layer6_peak = layer6_peak.max(layer6_queued);
+                    let processed = layer6_peak.saturating_sub(layer6_queued);
+                    registry.register_or_update(
+                        &app,
+                        "layer6_queue",
+                        "normalization",
+                        "AI Transaction Extraction",
+                        processed as u64,
+                        layer6_peak as u64,
+                        &format!("Extracting fields ({} pending)", layer6_queued),
+                    );
+                } else if layer6_peak > 0 {
+                    registry.deregister(
+                        &app,
+                        "layer6_queue",
+                        crate::background_tasks::indicator::TaskStatus::Completed,
+                        "AI Extraction Complete",
+                    );
+                    layer6_peak = 0;
                 }
             }
-        });
-    }
+        }
+    });
+}
+
+fn spawn_layer6_workers(
+    mut rx: mpsc::Receiver<Layer6Job>,
+    pool: Pool,
+    learning: crate::learning::LearningHandle,
+    pipeline: crate::llm_pipeline::LlmPipeline,
+) {
+    // We no longer manually constrain Layer 6 to a fixed size here.
+    // The central LlmPipeline manages concurrency via llama_sidecar's Semaphore.
+    // We just spawn a new task for each job as it arrives.
+    tauri::async_runtime::spawn(async move {
+        while let Some(job) = rx.recv().await {
+            let pool = pool.clone();
+            let learning = learning.clone();
+            let pipeline = pipeline.clone();
+            tauri::async_runtime::spawn(async move {
+                ACTIVE_LAYER6_JOBS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                process_layer6_job(job, &pool, &learning, pipeline).await;
+                ACTIVE_LAYER6_JOBS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            });
+        }
+    });
 }
 
 const LAYER6_AUTO_RESOLVE_CONFIDENCE_THRESHOLD: f64 = 0.75;
@@ -450,12 +523,14 @@ async fn process_layer6_job(
     job: Layer6Job,
     pool: &Pool,
     learning: &crate::learning::LearningHandle,
+    pipeline: crate::llm_pipeline::LlmPipeline,
 ) {
     use crate::extraction::llm::Layer6Outcome;
 
     let layer = crate::extraction::ladder::Layer6LlmLayer {
         app_dir: Some(job.app_dir.clone()),
         fallback_event_time: job.internal_date_seconds,
+        pipeline: Some(pipeline),
     };
     let result = layer.run(pool, &job.bank_name, &job.body_text).await;
     let completed = match result {
@@ -497,16 +572,28 @@ async fn process_layer6_job(
                 }
             }
         }
-        Layer6Outcome::Rejected => {
+        Layer6Outcome::Rejected | Layer6Outcome::TimedOut => {
             let mark_result: anyhow::Result<()> = async {
                 let unassigned_id = job.unassigned_id.clone();
                 let conn = pool.get().await?;
-                conn.interact(move |c| {
-                    crate::db::unassigned_transactions::settle_if_open(
-                        c,
-                        &unassigned_id,
-                        "no_transaction_found",
-                    )
+                conn.interact(move |c| -> anyhow::Result<()> {
+                    use rusqlite::OptionalExtension;
+                    let current_reason: Option<String> = c
+                        .query_row(
+                            "SELECT reason FROM unassigned_transactions WHERE id = ?1",
+                            rusqlite::params![unassigned_id],
+                            |row| row.get(0),
+                        )
+                        .optional()?;
+
+                    if current_reason.as_deref() == Some("pending_llm_enrichment") {
+                        crate::db::unassigned_transactions::update_reason(
+                            c,
+                            &unassigned_id,
+                            "extraction_failed",
+                        )?;
+                    }
+                    Ok(())
                 })
                 .await
                 .map_err(|e| anyhow::anyhow!("Interact error: {}", e))??;
@@ -517,16 +604,49 @@ async fn process_layer6_job(
                 Ok(()) => true,
                 Err(e) => {
                     tracing::error!(
-                        "Layer 6 background worker: failed to mark unassigned_id='{}' as no_transaction_found: {}",
+                        "Layer 6 background worker: failed to update reason for unassigned_id='{}': {}",
                         job.unassigned_id, e
                     );
                     false
                 }
             }
         }
-        Layer6Outcome::TimedOut | Layer6Outcome::Failed => {
+        Layer6Outcome::NotATransaction => {
+            let mark_result: anyhow::Result<()> = async {
+                let unassigned_id = job.unassigned_id.clone();
+                let conn = pool.get().await?;
+                conn.interact(move |c| -> anyhow::Result<()> {
+                    crate::db::unassigned_transactions::update_reason(
+                        c,
+                        &unassigned_id,
+                        "not_a_transaction",
+                    )?;
+                    crate::db::unassigned_transactions::update_status(
+                        c,
+                        &unassigned_id,
+                        "ignored",
+                    )?;
+                    Ok(())
+                })
+                .await
+                .map_err(|e| anyhow::anyhow!("Interact error: {}", e))??;
+                Ok(())
+            }
+            .await;
+            match mark_result {
+                Ok(()) => true,
+                Err(e) => {
+                    tracing::error!(
+                        "Layer 6 background worker: failed to ignore unassigned_id='{}': {}",
+                        job.unassigned_id, e
+                    );
+                    false
+                }
+            }
+        }
+        Layer6Outcome::Failed => {
             tracing::info!(
-                "Layer 6 background worker: no extraction for observation_id='{}' — leaving as unassigned",
+                "Layer 6 background worker: infra failure for observation_id='{}' — leaving for replay",
                 job.observation_id
             );
             false
@@ -573,8 +693,21 @@ async fn apply_layer6_success(
             return Ok(());
         }
 
-        let mut row = crate::db::transaction_observations::get_observation(c, &observation_id)?
-            .ok_or_else(|| anyhow::anyhow!("observation {} not found", observation_id))?;
+        let row_opt = crate::db::transaction_observations::get_observation(c, &observation_id)?;
+        // The observation can be absent when the user manually cleared the unassigned
+        // transaction while Layer 6 was still running. There is nothing left to do, but
+        // this is not an infrastructure failure — treat it as successfully completed so
+        // the persisted job row is deleted and the job is never replayed again.
+        let mut row = match row_opt {
+            Some(r) => r,
+            None => {
+                tracing::info!(
+                    "Layer 6 result for observation '{}' — observation no longer exists (cleared by user?); resolving job",
+                    observation_id
+                );
+                return Ok(());
+            }
+        };
 
         // A job replayed after a crash between the commit and the row's deletion
         // arrives here with the observation already promoted. Reconciling it a
@@ -636,29 +769,13 @@ async fn apply_layer6_success(
         row.extraction_method = Some("llm_layer6".to_string());
         row.confidence_score = enriched.confidence_score;
 
-        let instrument_id = match (
-            &enriched.instrument_type,
-            &enriched.issuer_name,
-            &enriched.masked_identifier,
-        ) {
-            (Some(itype), Some(iname), Some(masked)) => {
-                crate::db::instruments::get_or_create_instrument(
-                    c,
-                    itype,
-                    iname,
-                    masked,
-                    enriched.network.as_deref(),
-                )
-                .ok()
-            }
-            _ => enriched
-                .issuer_name
-                .as_deref()
-                .and_then(|iname| {
-                    crate::db::instruments::resolve_single_instrument_by_issuer(c, iname).ok()
-                })
-                .flatten(),
-        };
+        let instrument_id = crate::db::instruments::resolve_instrument(
+            c,
+            enriched.instrument_type.as_deref(),
+            enriched.issuer_name.as_deref(),
+            enriched.masked_identifier.as_deref(),
+            enriched.network.as_deref(),
+        ).unwrap_or(None);
         row.instrument_id = instrument_id.clone();
 
         let confident_enough = is_self_transfer
@@ -670,8 +787,20 @@ async fn apply_layer6_success(
         crate::db::transaction_observations::update_observation(c, &row)?;
 
         let has_instrument = instrument_id.is_some();
+        // A balance-update placeholder carries amount_minor = 0 and merchant_raw =
+        // "Balance Update". evaluate_gate3 sees both as present and would auto-reconcile
+        // it as a real ₹0 transaction. Guard against that: only promote observations
+        // whose amount is actually positive.
+        let has_nonzero_amount = row.amount_minor.map(|a| a > 0).unwrap_or(false);
         let ready_instrument_id = instrument_id.filter(|_| {
-            confident_enough && row.amount_minor.is_some() && row.merchant_raw.is_some()
+            has_nonzero_amount
+                && confident_enough
+                && crate::extraction::ladder::evaluate_gate3(
+                    row.amount_minor.is_some(),
+                    row.merchant_raw.is_some(),
+                    false, // LLM does not extract balance_after
+                    true,  // has_instrument is true within the filter closure
+                )
         });
         if let Some(instrument_id) = ready_instrument_id {
             let incoming_obs = crate::reconciliation::engine::IncomingObservation {
@@ -762,16 +891,13 @@ async fn process_mandate_job(
     if let Some(conn) = conn {
         let outcome = conn
             .interact(move |c| -> Option<String> {
-                let instrument_id = if let (Some(itype), Some(iname), Some(masked)) = (
-                    &extraction.instrument_type,
-                    &extraction.issuer_name,
-                    &extraction.masked_identifier,
-                ) {
-                    crate::db::instruments::get_or_create_instrument(c, itype, iname, masked, None)
-                        .ok()
-                } else {
-                    None
-                };
+                let instrument_id = crate::db::instruments::resolve_instrument(
+                    c,
+                    extraction.instrument_type.as_deref(),
+                    extraction.issuer_name.as_deref(),
+                    extraction.masked_identifier.as_deref(),
+                    None,
+                ).unwrap_or(None);
                 let merchant_entity_id = extraction
                     .merchant
                     .as_deref()
@@ -1053,22 +1179,19 @@ async fn process_transaction_job<R: tauri::Runtime>(
     let outcome = conn
         .interact(
             move |c| -> Option<(crate::reconciliation::audit::DecisionType, String)> {
-                if let (Some(ref itype), Some(ref iname), Some(ref masked)) =
-                    (instrument_type, issuer_name, masked_identifier)
-                {
-                    match crate::db::instruments::get_or_create_instrument(
-                        c,
-                        itype,
-                        iname,
-                        masked,
-                        network.as_deref(),
-                    ) {
-                        Ok(instr_id) => {
-                            row.instrument_id = Some(instr_id);
-                        }
-                        Err(e) => {
-                            tracing::warn!("Failed to resolve instrument: {}", e);
-                        }
+                match crate::db::instruments::resolve_instrument(
+                    c,
+                    instrument_type.as_deref(),
+                    issuer_name.as_deref(),
+                    masked_identifier.as_deref(),
+                    network.as_deref(),
+                ) {
+                    Ok(Some(instr_id)) => {
+                        row.instrument_id = Some(instr_id);
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::warn!("Failed to resolve instrument: {}", e);
                     }
                 }
 
@@ -1088,63 +1211,20 @@ async fn process_transaction_job<R: tauri::Runtime>(
                     ));
                 }
 
-                use crate::db::transaction_observations::InsertObservationOutcome;
-                match crate::db::transaction_observations::insert_observation_idempotent(c, &row) {
-                    Err(e) => {
-                        tracing::warn!("Observation insert failed: {}", e);
-                        None
+                let should_reconcile = row.instrument_id.is_some();
+                match crate::reconciliation::engine::ingest_observation(c, &row, should_reconcile) {
+                    Ok((_, Some(decision))) => {
+                        tracing::debug!(
+                            "Reconciliation decision for obs '{}': {:?}",
+                            row.id,
+                            decision
+                        );
+                        Some((decision, row.id.clone()))
                     }
-                    Ok(InsertObservationOutcome::DuplicateSkipped) => None,
-                    Ok(InsertObservationOutcome::Inserted) => {
-                        let incoming_obs = crate::reconciliation::engine::IncomingObservation {
-                            id: row.id.clone(),
-                            instrument_id: row
-                                .instrument_id
-                                .clone()
-                                .unwrap_or_else(|| "unknown".to_string()),
-                            amount_minor: row.amount_minor.unwrap_or(0),
-                            currency: row.currency.clone().unwrap_or_else(|| "INR".to_string()),
-                            direction: row.direction.clone().unwrap_or_else(|| "debit".to_string()),
-                            event_time: row
-                                .event_time
-                                .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-                                .unwrap_or_default(),
-                            reference_id: row.reference_id.clone(),
-                            merchant_raw: row.merchant_raw.clone(),
-                            source_pipeline: row
-                                .source_pipeline
-                                .clone()
-                                .unwrap_or_else(|| "unknown".to_string()),
-                            source_record_id: row.source_record_id.clone().unwrap_or_default(),
-                            emi_total_installments: row.emi_total_installments,
-                            emi_original_amount_minor: row.emi_original_amount_minor,
-                            fingerprint: row.fingerprint.clone(),
-                            confidence_score: row.confidence_score,
-                            event_time_confidence: row.event_time_confidence.clone(),
-                            channel: row.channel.clone(),
-                        };
-
-                        match crate::reconciliation::engine::reconcile_transactionally(
-                            c,
-                            &incoming_obs,
-                        ) {
-                            Ok(decision) => {
-                                tracing::debug!(
-                                    "Reconciliation decision for obs '{}': {:?}",
-                                    incoming_obs.id,
-                                    decision
-                                );
-                                Some((decision, incoming_obs.id.clone()))
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "Reconciliation failed for obs '{}': {}",
-                                    incoming_obs.id,
-                                    e
-                                );
-                                None
-                            }
-                        }
+                    Ok((_, None)) => None,
+                    Err(e) => {
+                        tracing::warn!("Observation ingest failed: {}", e);
+                        None
                     }
                 }
             },

@@ -167,7 +167,7 @@ fn test_metadata_gate_and_sighting_agree_on_first_from_header() {
     );
     assert_eq!(
         MessageProcessor::evaluate_metadata_gate(&msg, &[], &[]),
-        SenderVerificationResult::VerifiedTransactionCandidate("HDFC Bank".to_string())
+        SenderVerificationResult::SpoofReject("Multiple From headers detected (RFC 5322 violation, possible header smuggling)".into())
     );
 }
 
@@ -229,10 +229,11 @@ fn test_gate3_passes_with_amount_merchant_and_instrument() {
         instrument_type: Some("credit_card".to_string()),
         issuer_name: Some("HDFC Bank".to_string()),
         masked_identifier: Some("1234".to_string()),
+        event_time: Some(1710000000),
         extraction_method: "test".to_string(),
         ..Default::default()
     };
-    assert!(MessageProcessor::evaluate_mandatory_field_gate(&obs));
+    assert!(obs.passes_gate3());
 }
 
 #[test]
@@ -243,10 +244,11 @@ fn test_gate3_fails_without_instrument_signals() {
         instrument_type: None,
         issuer_name: None,
         masked_identifier: None,
+        event_time: Some(1710000000),
         extraction_method: "test".to_string(),
         ..Default::default()
     };
-    assert!(!MessageProcessor::evaluate_mandatory_field_gate(&obs));
+    assert!(!obs.passes_gate3());
     assert_eq!(
         MessageProcessor::gate3_failure_reason(&obs),
         "gate3_failed:missing_instrument"
@@ -259,10 +261,11 @@ fn test_gate3_balance_only_still_bypasses_instrument_requirement() {
     // exempt from every other mandatory field, instrument included.
     let obs = ExtractionResult {
         balance_after: Some(677300),
+        event_time: Some(1710000000),
         extraction_method: "test".to_string(),
         ..Default::default()
     };
-    assert!(MessageProcessor::evaluate_mandatory_field_gate(&obs));
+    assert!(obs.passes_gate3());
 }
 
 #[test]
@@ -270,10 +273,11 @@ fn test_gate3_fails_amount_only() {
     let obs = ExtractionResult {
         amount_minor: Some(1000),
         merchant_raw: None,
+        event_time: Some(1710000000),
         extraction_method: "test".to_string(),
         ..Default::default()
     };
-    assert!(!MessageProcessor::evaluate_mandatory_field_gate(&obs));
+    assert!(!obs.passes_gate3());
     assert_eq!(
         MessageProcessor::gate3_failure_reason(&obs),
         "gate3_failed:missing_counterparty"
@@ -283,12 +287,13 @@ fn test_gate3_fails_amount_only() {
 #[test]
 fn test_gate3_fails_merchant_only() {
     let obs = ExtractionResult {
+        event_time: Some(chrono::Utc::now().timestamp()),
         amount_minor: None,
         merchant_raw: Some("Amazon".to_string()),
         extraction_method: "test".to_string(),
         ..Default::default()
     };
-    assert!(!MessageProcessor::evaluate_mandatory_field_gate(&obs));
+    assert!(!obs.passes_gate3());
     assert_eq!(
         MessageProcessor::gate3_failure_reason(&obs),
         "gate3_failed:missing_amount"
@@ -718,9 +723,7 @@ async fn test_gate3_partial_extraction_salvaged_to_unassigned_queue() {
         // amount_minor deliberately left None -- this is the missing field.
         ..Default::default()
     };
-    assert!(!MessageProcessor::evaluate_mandatory_field_gate(
-        &partial_obs
-    ));
+    assert!(!partial_obs.passes_gate3());
     let reason = MessageProcessor::gate3_failure_reason(&partial_obs);
     assert_eq!(reason, "gate3_failed:missing_amount");
 

@@ -70,7 +70,7 @@ fn extract_recursive(part: &MessagePart, extracted: &mut ExtractedMessage) {
             if let Some(body) = &part.body {
                 if let Some(data) = &body.data {
                     if let Ok(decoded) = URL_SAFE.decode(data) {
-                        extracted.text_body = String::from_utf8(decoded).ok();
+                        extracted.text_body = Some(String::from_utf8_lossy(&decoded).into_owned());
                     }
                 }
             }
@@ -80,7 +80,7 @@ fn extract_recursive(part: &MessagePart, extracted: &mut ExtractedMessage) {
             if let Some(body) = &part.body {
                 if let Some(data) = &body.data {
                     if let Ok(decoded) = URL_SAFE.decode(data) {
-                        extracted.html_body = String::from_utf8(decoded).ok();
+                        extracted.html_body = Some(String::from_utf8_lossy(&decoded).into_owned());
                     }
                 }
             }

@@ -348,7 +348,29 @@ impl ContentClassifier {
 
         let settled = settled_text(&content);
 
-        if contains_any(&settled, FAILURE_PHRASES) {
+        // Only scan the first ~600 characters for failure phrases.
+        //
+        // Bank transactional alerts often append boilerplate footers such as
+        // "If your payment failed, please call us on..." after the actual alert
+        // content. Scanning the whole body would classify a genuine successful
+        // ₹X debit as Noise whenever that footer was present. The 600-char
+        // window covers the alert summary without reaching the disclaimer text
+        // that follows it.
+        let settled_head: &str = {
+            let char_count = settled.chars().count();
+            if char_count <= 600 {
+                &settled
+            } else {
+                // Safety: find the char boundary of the 600th character.
+                let byte_pos = settled
+                    .char_indices()
+                    .nth(600)
+                    .map(|(i, _)| i)
+                    .unwrap_or(settled.len());
+                &settled[..byte_pos]
+            }
+        };
+        if contains_any(settled_head, FAILURE_PHRASES) {
             return ContentClass::Noise;
         }
 
@@ -360,7 +382,10 @@ impl ContentClassifier {
                 || subject_lower.contains("exclusive")
                 || subject_lower.contains("apply now")
                 || subject_lower.contains("pre-approved")
-                || subject_lower.contains("cashback"))
+                || subject_lower.contains("cashback")
+                || subject_lower.contains("upgrade")
+                || subject_lower.contains("benefits")
+                || subject_lower.contains("biometric authentication"))
         {
             return ContentClass::Marketing;
         }

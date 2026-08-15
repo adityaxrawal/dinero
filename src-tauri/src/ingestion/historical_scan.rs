@@ -540,7 +540,18 @@ async fn run_scan<R: tauri::Runtime>(
     let client = GmailClient::new(access_token, pool.clone(), refresher);
 
     let mut state = if let Some(cp) = existing_checkpoint {
-        if cp.status == "paused" || cp.status == "failed" || cp.status == "cancelled" {
+        // Restore state from the checkpoint for paused, failed, cancelled, or
+        // in-progress runs. The "in_progress" case covers a crash: the app never
+        // updated the status to "paused" or "completed" before it exited, so the
+        // row is still "in_progress" at the next launch. Treating it like any other
+        // resumable status lets a post-crash restart continue from where it stopped
+        // rather than re-scanning the entire date range from scratch.
+        if cp.status == "paused"
+            || cp.status == "failed"
+            || cp.status == "cancelled"
+            || cp.status == "in_progress"
+        {
+
             serde_json::from_str::<ScanCheckpointState>(&cp.checkpoint_state_json).unwrap_or_else(
                 |_| ScanCheckpointState {
                     start_date: start_date.clone(),
@@ -1027,6 +1038,10 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
         if should_checkpoint(batch_count) {
             state.processed_count = processed_count;
 
+            if let Err(e) = scan_batcher.lock().await.flush(&pool).await {
+                tracing::warn!("scan_batcher flush failed (best-effort): {}", e);
+            }
+
             let key = account_id.clone();
             let (p, t, s, m, n, e, pe) = (
                 processed_count,
@@ -1045,10 +1060,6 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                         )
                     })
                     .await;
-            }
-
-            if let Err(e) = scan_batcher.lock().await.flush(&pool).await {
-                tracing::warn!("scan_batcher flush failed (best-effort): {}", e);
             }
 
             batch_count = 0;
@@ -1199,6 +1210,58 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
         final_payload,
     );
 
+    #[cfg(debug_assertions)]
+    {
+        if !was_cancelled {
+            if let Err(e) = export_unassigned_transactions_for_dev(&app, &pool).await {
+                tracing::warn!("Failed to export unassigned transactions for dev: {}", e);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(debug_assertions)]
+async fn export_unassigned_transactions_for_dev<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    pool: &deadpool_sqlite::Pool,
+) -> anyhow::Result<()> {
+    let unassigned = pool
+        .get()
+        .await?
+        .interact(|conn| crate::db::unassigned_transactions::select_open_with_context(conn))
+        .await
+        .map_err(|e| anyhow::anyhow!("Interact error: {}", e))??;
+
+    tracing::info!("DEV ONLY: export_unassigned_transactions_for_dev called, found {} unassigned transactions", unassigned.len());
+
+    if unassigned.is_empty() {
+        tracing::info!("DEV ONLY: No unassigned transactions to export");
+        return Ok(());
+    }
+
+    match app.path().app_data_dir() {
+        Ok(app_dir) => {
+            let file_path = app_dir.join("logs").join("unassigned_transactions_dump.json");
+            if let Some(parent) = file_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            
+            let json_data = serde_json::to_string_pretty(&unassigned)?;
+            std::fs::write(&file_path, json_data)?;
+            
+            tracing::info!(
+                "DEV ONLY: Exported {} unassigned transactions to {:?}",
+                unassigned.len(),
+                file_path
+            );
+        }
+        Err(e) => {
+            tracing::error!("DEV ONLY: Failed to get app_data_dir: {}", e);
+        }
+    }
+    
     Ok(())
 }
 

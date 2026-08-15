@@ -106,6 +106,33 @@ impl MessageProcessor {
     /// Returning "not financial" is a success, not a failure -- most of a mailbox is
     /// not financial, and counting that as an error would make the failure statistics
     /// meaningless.
+    async fn is_message_already_processed(pool: &Pool, message_id: &str) -> bool {
+        let msg_id_owned = message_id.to_string();
+        if let Ok(conn) = pool.get().await {
+            let exists = conn
+                .interact(move |c| -> Result<bool, rusqlite::Error> {
+                    let mut stmt = c.prepare_cached("SELECT 1 FROM ignored_messages WHERE message_id = ?1")?;
+                    if stmt.exists([&msg_id_owned])? {
+                        return Ok(true);
+                    }
+                    let mut stmt = c.prepare_cached("SELECT 1 FROM transaction_observations WHERE source_pipeline = 'gmail_transaction' AND source_record_id = ?1")?;
+                    if stmt.exists([&msg_id_owned])? {
+                        return Ok(true);
+                    }
+                    let mut stmt = c.prepare_cached("SELECT 1 FROM statements WHERE source_message_id = ?1")?;
+                    if stmt.exists([&msg_id_owned])? {
+                        return Ok(true);
+                    }
+                    Ok(false)
+                })
+                .await;
+            if let Ok(Ok(true)) = exists {
+                return true;
+            }
+        }
+        false
+    }
+
     pub async fn process_message(
         pool: &Pool,
         client: &GmailClient,
@@ -115,6 +142,21 @@ impl MessageProcessor {
         layer6_tx: Option<tokio::sync::mpsc::Sender<crate::ingestion::queues::Layer6Job>>,
         scan_batcher: Option<&ScanBatcherHandle>,
     ) -> Result<Option<ProcessResult>> {
+        let mut trace = crate::logging::EmailTrace::new(message_id);
+
+        if Self::is_message_already_processed(pool, message_id).await {
+            trace.info(format!(
+                "  ↳ ⏭️ Skipped: Email ID {} has already been processed or ignored.",
+                message_id
+            ));
+            return Ok(None);
+        }
+
+        trace.info(format!(
+            "  ↳ 📥 Fetching Metadata (Gate 1) for Email ID: {}",
+            message_id
+        ));
+
         let metadata_msg = client
             .fetch_message(message_id, FetchFormat::Metadata)
             .await?;
@@ -189,10 +231,14 @@ impl MessageProcessor {
                     None,
                 )
                 .await;
-                tracing::info!(
-                    "msg_id='{}' rejected by Gate 1: gate1_verified_noise",
-                    message_id
-                );
+                let metadata_subject = Self::header_value(&metadata_msg, "subject");
+                let metadata_snippet = metadata_msg.snippet.clone().unwrap_or_default();
+                trace.info(format!(
+                    "  ↳ ❌ Gate 1 Rejected (Verified Noise): Sender {:?} does not send actionable emails.",
+                    sender_domain
+                ));
+                trace.info(format!("       Rejected Subject: {}", metadata_subject));
+                trace.info(format!("       Rejected Snippet: {}", metadata_snippet));
                 return Ok(None);
             }
             SenderVerificationResult::UnverifiedReject(reason)
@@ -208,10 +254,22 @@ impl MessageProcessor {
                     None,
                 )
                 .await;
-                tracing::info!("msg_id='{}' rejected by Gate 1: {}", message_id, reason);
+                let metadata_subject = Self::header_value(&metadata_msg, "subject");
+                let metadata_snippet = metadata_msg.snippet.clone().unwrap_or_default();
+                trace.info(format!(
+                    "  ↳ ❌ Gate 1 Rejected: {}",
+                    reason
+                ));
+                trace.info(format!("       Rejected Subject: {}", metadata_subject));
+                trace.info(format!("       Rejected Snippet: {}", metadata_snippet));
                 return Ok(None);
             }
         };
+
+        trace.info(format!(
+            "  ↳ ✅ Gate 1 Passed: Identified Sender as '{}'. Evaluating fast Content Class...",
+            current_bank_name
+        ));
 
         let metadata_subject = Self::header_value(&metadata_msg, "subject");
         let metadata_snippet = metadata_msg.snippet.clone().unwrap_or_default();
@@ -242,9 +300,19 @@ impl MessageProcessor {
                 None,
             )
             .await;
-            tracing::info!("msg_id='{}' rejected by Gate 2a: {}", message_id, reason);
+            trace.info(format!(
+                "  ↳ ❌ Gate 2a Rejected: Subject/Snippet indicated '{:?}' rather than transactional content.",
+                fast_class
+            ));
+            trace.info(format!("       Rejected Subject: {}", metadata_subject));
+            trace.info(format!("       Rejected Snippet: {}", metadata_snippet));
             return Ok(None);
         }
+
+        trace.info(format!(
+            "  ↳ ✅ Gate 2a Passed: Content class is {:?}. Fetching full email body...",
+            fast_class
+        ));
 
         let full_msg = client.fetch_message(message_id, FetchFormat::Full).await?;
 
@@ -328,7 +396,12 @@ impl MessageProcessor {
                         Some(body_text),
                     )
                     .await;
-                    tracing::info!("msg_id='{}' rejected by Gate 2: {}", message_id, reason);
+                    trace.info(format!(
+                        "  ↳ ❌ Gate 2 Rejected: Full body analysis indicated '{:?}' rather than transactional content.",
+                        content_class
+                    ));
+                    trace.info(format!("       Rejected Subject: {}", subject));
+                    trace.info(format!("       Rejected Snippet: {}", email_meta.snippet));
                     return Ok(None);
                 }
                 ContentClass::Noise | ContentClass::Unknown => {
@@ -354,7 +427,12 @@ impl MessageProcessor {
                         Some(body_text),
                     )
                     .await;
-                    tracing::info!("msg_id='{}' rejected by Gate 2: {}", message_id, reason);
+                    trace.info(format!(
+                        "  ↳ ❌ Gate 2 Rejected: Full body analysis indicated '{:?}' rather than transactional content.",
+                        content_class
+                    ));
+                    trace.info(format!("       Rejected Subject: {}", subject));
+                    trace.info(format!("       Rejected Snippet: {}", email_meta.snippet));
                     return Ok(None);
                 }
                 ContentClass::StatementEmail => {
@@ -367,6 +445,7 @@ impl MessageProcessor {
                         Some(body_text),
                     )
                     .await;
+                    trace.info("  ↳ ✅ Gate 2 Passed: Full body confirmed as StatementEmail. Routing to Statement processing.");
                     return Ok(Some(ProcessResult::StatementEmail(
                         extracted,
                         Some(email_meta),
@@ -378,6 +457,10 @@ impl MessageProcessor {
                     } else {
                         MandateEventType::Cancellation
                     };
+                    trace.info(format!(
+                        "  ↳ ✅ Gate 2 Passed: Full body confirmed as {:?}. Extracting mandate fields...",
+                        event_type
+                    ));
                     let mandate_fields =
                         crate::extraction::mandate_extractor::bank_mandate_template(
                             &current_bank_name,
@@ -428,6 +511,10 @@ impl MessageProcessor {
                     }
                 }
                 ContentClass::TransactionAlert | ContentClass::BalanceUpdate => {
+                    trace.info(format!(
+                        "  ↳ ✅ Gate 2 Passed: Full body confirmed as {:?}. Running Extraction Ladder...",
+                        content_class
+                    ));
                     let internal_date_seconds =
                         Self::internal_date_fallback(&full_msg.internal_date);
                     let mut _layer6_timed_out_unused = false;
@@ -440,6 +527,7 @@ impl MessageProcessor {
                         internal_date_seconds,
                         &mut _layer6_timed_out_unused,
                         None,
+                        &mut trace,
                     )
                     .await
                     .unwrap_or(None);
@@ -478,7 +566,8 @@ impl MessageProcessor {
                         // leaving the observation with no counterparty at all.
                         Self::apply_balance_update_placeholder(&content_class, &mut obs);
 
-                        if Self::evaluate_mandatory_field_gate(&obs) {
+                        if obs.passes_gate3() {
+                            trace.info("  ↳ ✅ Gate 3 Passed: All mandatory fields present. Routing to Transaction Queue.");
                             Self::append_to_scan_log(
                                 app_dir.as_deref(),
                                 message_id,
@@ -497,6 +586,15 @@ impl MessageProcessor {
                             crate::ingestion::gmail_telemetry::gmail_telemetry()
                                 .record_gate_rejection("gate3");
                             let reason = Self::gate3_failure_reason(&obs);
+                            trace.info(format!(
+                                "  ↳ ❌ Gate 3 Failed: {}. Routing to Unassigned Queue.",
+                                reason
+                            ));
+                            trace.info("       Rejected Extraction Data:");
+                            let debug_str = format!("{:#?}", obs);
+                            for line in debug_str.lines() {
+                                trace.info(format!("         {}", line));
+                            }
                             Self::log_rejection(pool, scan_batcher, message_id, reason).await?;
                             let ids = Self::record_unassigned_transaction(
                                 pool,
@@ -691,31 +789,19 @@ impl MessageProcessor {
         }
     }
 
-    /// Gate 3: whether extraction recovered enough to record a transaction.
-    ///
-    /// Two ways to pass. Either the full trio of amount, counterparty and instrument
-    /// is present, or the message carries a balance -- a balance-only alert is
-    /// legitimate data even though it describes no transaction.
-    ///
-    /// Failing this gate is what routes an observation to the unassigned queue rather
-    /// than into the ledger.
-    pub(crate) fn evaluate_mandatory_field_gate(
-        obs: &crate::extraction::ladder::ExtractionResult,
-    ) -> bool {
-        let has_amount = obs.amount_minor.is_some();
-        let has_entity = obs.merchant_raw.is_some();
-        let has_balance = obs.balance_after.is_some();
-        let has_instrument = obs.instrument_type.is_some()
-            && obs.issuer_name.is_some()
-            && obs.masked_identifier.is_some();
-        (has_amount && has_entity && has_instrument) || has_balance
-    }
+    // evaluate_mandatory_field_gate has been moved to ExtractionResult::passes_gate3
 
     /// Names precisely which part of gate 3 failed.
     ///
     /// Ordered by dependency: a missing amount is reported before a missing
     /// counterparty, because the amount is the more fundamental absence. The specific
     /// reason drives the diagnosis the user is shown in the unassigned queue.
+    ///
+    /// IMPORTANT: the arms here must exactly mirror what `passes_gate3()` in
+    /// `ladder.rs` tests. Any field checked here that `passes_gate3` does not test
+    /// is a lie — it names a failure reason for an observation that actually passed
+    /// the gate. `event_time` and `confidence_score` are intentionally absent for
+    /// that reason.
     pub(crate) fn gate3_failure_reason(
         obs: &crate::extraction::ladder::ExtractionResult,
     ) -> &'static str {
@@ -731,6 +817,7 @@ impl MessageProcessor {
             (true, true, true) => "gate3_failed",
         }
     }
+
 
     /// Gate 2: verifies sender identity from message headers.
     ///
@@ -754,15 +841,28 @@ impl MessageProcessor {
         // `header_value` both read the first, and a message carrying two From
         // headers must not be verified against one domain while its reputation
         // is recorded against the other.
-        let from_header = headers
+        let from_headers: Vec<_> = headers
             .iter()
-            .find(|h| h.name.eq_ignore_ascii_case("from"))
-            .map(|h| h.value.as_str())
-            .unwrap_or("");
+            .filter(|h| h.name.eq_ignore_ascii_case("from"))
+            .collect();
+            
+        if from_headers.is_empty() {
+            return SenderVerificationResult::UnverifiedReject(
+                "Empty or missing From header".into(),
+            );
+        }
+        
+        if from_headers.len() > 1 {
+            return SenderVerificationResult::SpoofReject(
+                "Multiple From headers detected (RFC 5322 violation, possible header smuggling)".into(),
+            );
+        }
+
+        let from_header = from_headers[0].value.as_str();
 
         if from_header.trim().is_empty() {
             return SenderVerificationResult::UnverifiedReject(
-                "Empty or missing From header".into(),
+                "Empty From header".into(),
             );
         }
 
@@ -831,12 +931,15 @@ impl MessageProcessor {
 
     /// Canonical form of a domain, for comparing one against another.
     pub(crate) fn normalize_domain(domain: &str) -> String {
+        use unicode_normalization::UnicodeNormalization;
         domain
             .trim()
             .trim_matches(|c| c == '[' || c == ']')
             .trim_end_matches('.')
             .trim()
             .to_lowercase()
+            .nfkc()
+            .collect::<String>()
     }
 
     /// The domain of an address, or `None` if it is not one well-formed address.
@@ -1170,10 +1273,10 @@ impl MessageProcessor {
         if let Some(body) = body_text {
             s.push_str("--------------------------------------------------------------------------------\nBody Preview:\n");
             let preview: String = body.chars().take(500).collect();
-            // Compared against the preview's own length: `take(500)` counts
-            // characters, so a byte-length comparison marks any body with
-            // multi-byte characters as truncated when it was printed whole.
-            let truncated = preview.len() < body.len();
+            // Compare char counts, not byte lengths: `take(500)` counts characters,
+            // so a body with multi-byte characters has `body.len() > preview.len()`
+            // even when the full body fits in 500 chars, falsely marking it truncated.
+            let truncated = body.chars().count() > 500;
             s.push_str(&preview);
             if truncated {
                 s.push_str("... [TRUNCATED]\n");
@@ -1181,6 +1284,7 @@ impl MessageProcessor {
                 s.push('\n');
             }
         }
+
         s.push_str(
             "================================================================================\n\n",
         );

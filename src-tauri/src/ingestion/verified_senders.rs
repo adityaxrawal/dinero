@@ -111,13 +111,16 @@ impl SenderValidator {
         email_address: &str,
         display_name: Option<&str>,
     ) -> SenderVerificationResult {
-        let email_parts: Vec<&str> = email_address.split('@').collect();
-        if email_parts.len() != 2 {
-            return SenderVerificationResult::UnverifiedReject("Invalid email format".into());
-        }
+        let email_address = email_address.trim();
+        let (_local_part, domain_part) = match email_address.rsplit_once('@') {
+            Some((local, domain)) => (local, domain),
+            None => return SenderVerificationResult::UnverifiedReject("Invalid email format".into()),
+        };
 
-        let domain = email_parts[1].to_lowercase();
-        let display_name_lower = display_name.map(|d| d.to_lowercase());
+        use unicode_normalization::UnicodeNormalization;
+        let mut domain = domain_part.trim().trim_end_matches('.').to_lowercase();
+        domain = domain.nfkc().collect::<String>();
+        let display_name_lower = display_name.map(|d| d.trim().to_lowercase().nfkc().collect::<String>());
 
         if let Some(config) = self.registry.senders.iter().find(|s| s.domain == domain) {
             return match config.classification.as_str() {

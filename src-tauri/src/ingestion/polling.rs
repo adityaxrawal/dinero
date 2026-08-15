@@ -385,11 +385,25 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
 
         let data: HistoryResponse = response.json().await?;
 
+        if let Some(history_records) = &data.history {
+            tracing::info!(
+                target: "ingestion_extraction",
+                "\n=== Starting Sync for {:?} ===\nFound {} history records.",
+                account.email_address,
+                history_records.len()
+            );
+        }
+
         if let Some(history_records) = data.history {
             for record in history_records {
                 if let Some(messages_added) = record.messagesAdded {
                     for added in messages_added {
                         let msg_id = added.message.id;
+                        tracing::info!(
+                            target: "ingestion_extraction",
+                            "→ Discovered new message in inbox: [ID: {}]",
+                            msg_id
+                        );
                         match crate::ingestion::message_processor::MessageProcessor::process_message(
                             pool,
                             &gmail_client,
