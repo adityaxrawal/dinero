@@ -104,8 +104,7 @@ pub fn insert_observation_idempotent(
                 .map(|re| match re {
                     rusqlite::Error::SqliteFailure(err, Some(msg)) => {
                         err.code == rusqlite::ErrorCode::ConstraintViolation
-                            && msg.contains("source_pipeline")
-                            && msg.contains("source_record_id")
+                            && (msg.contains("source_pipeline") && msg.contains("source_record_id"))
                     }
                     _ => false,
                 })

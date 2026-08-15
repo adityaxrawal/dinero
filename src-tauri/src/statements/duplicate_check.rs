@@ -14,7 +14,6 @@ pub enum DuplicateCheckResult {
     NoDuplicate,
     DuplicateFileHash,
     DuplicateBillingCycle,
-    DuplicateSourceMessage,
 }
 
 /// Detects a byte-identical re-upload by content hash.
@@ -141,34 +140,6 @@ pub async fn check_billing_cycle_duplicate(
     }
 }
 
-/// Detects re-ingestion of the same source email.
-pub async fn check_source_message_duplicate(
-    source_message_id: &str,
-    pool: &deadpool_sqlite::Pool,
-) -> Result<DuplicateCheckResult> {
-    tracing::debug!(
-        "Checking source message duplicate for msg_id={}",
-        source_message_id
-    );
-    let conn = pool.get().await?;
-    let msg_id = source_message_id.to_string();
-    let count = conn
-        .interact(move |c| {
-            c.query_row(
-                "SELECT COUNT(*) FROM statements WHERE source_message_id = ?",
-                [&msg_id],
-                |row| row.get::<_, i64>(0),
-            )
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("DB interact error: {}", e))??;
-
-    if count > 0 {
-        Ok(DuplicateCheckResult::DuplicateSourceMessage)
-    } else {
-        Ok(DuplicateCheckResult::NoDuplicate)
-    }
-}
 
 /// Extracts a billing period from a statement filename.
 ///

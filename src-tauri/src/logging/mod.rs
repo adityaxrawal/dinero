@@ -19,7 +19,7 @@ use tracing_subscriber::fmt::writer::MakeWriter;
 
 pub const DEFAULT_LOG_RETENTION_DAYS: u64 = 15;
 
-const LOG_CATEGORY_BASENAMES: [&str; 7] = [
+const LOG_CATEGORY_BASENAMES: [&str; 8] = [
     "backend",
     "frontend",
     "api_calls",
@@ -27,6 +27,7 @@ const LOG_CATEGORY_BASENAMES: [&str; 7] = [
     "llm_calls",
     "combined",
     "app-logs",
+    "ingestion_extraction",
 ];
 
 /// Deletes log files past the retention window, bounding disk use.
@@ -163,6 +164,7 @@ pub struct CategorizedLogWriters {
     network: NonBlocking,
     llm_calls: NonBlocking,
     combined: NonBlocking,
+    ingestion_extraction: NonBlocking,
 }
 
 impl CategorizedLogWriters {
@@ -208,6 +210,10 @@ impl CategorizedLogWriters {
             tracing_appender::rolling::never(&logs_folder, format!("{}_combined.md", ts_prefix)),
         ));
 
+        let (ingestion_extraction_w, g7) = tracing_appender::non_blocking(RedactingWriter::new(
+            tracing_appender::rolling::never(&logs_folder, format!("{}_ingestion_extraction.md", ts_prefix)),
+        ));
+
         let writers = Self {
             backend: backend_w,
             frontend: frontend_w,
@@ -215,12 +221,13 @@ impl CategorizedLogWriters {
             network: network_w,
             llm_calls: llm_calls_w,
             combined: combined_w,
+            ingestion_extraction: ingestion_extraction_w,
         };
 
         let llm_log_path = logs_folder.join(format!("{}_llm_calls.md", ts_prefix));
         crate::logging::llm_logger::init_direct_writer(llm_log_path);
 
-        (writers, vec![g1, g2, g3, g4, g5, g6])
+        (writers, vec![g1, g2, g3, g4, g5, g6, g7])
     }
 }
 
@@ -243,6 +250,7 @@ impl<'a> MakeWriter<'a> for CategorizedLogWriters {
             "api_calls" => self.api_calls.clone(),
             "network" => self.network.clone(),
             "llm_calls" => self.llm_calls.clone(),
+            "ingestion_extraction" => self.ingestion_extraction.clone(),
             _ => self.backend.clone(),
         };
 
@@ -391,5 +399,38 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+/// A structured trace that accumulates log lines for a single email and emits them as a single block on drop.
+#[derive(Debug)]
+pub struct EmailTrace {
+    pub message_id: String,
+    pub lines: Vec<String>,
+}
+
+impl EmailTrace {
+    pub fn new(message_id: impl Into<String>) -> Self {
+        Self {
+            message_id: message_id.into(),
+            lines: Vec::new(),
+        }
+    }
+
+    pub fn info(&mut self, text: impl Into<String>) {
+        self.lines.push(text.into());
+    }
+}
+
+impl Drop for EmailTrace {
+    fn drop(&mut self) {
+        if self.lines.is_empty() {
+            return;
+        }
+        let mut report = format!("### Processing Email ID: `{}`\n", self.message_id);
+        for line in &self.lines {
+            report.push_str(&format!("- {}\n", line));
+        }
+        tracing::info!(target: "ingestion_extraction", "\n{}", report);
     }
 }

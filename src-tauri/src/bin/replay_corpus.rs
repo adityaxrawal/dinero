@@ -138,7 +138,7 @@ async fn main() {
             internal_date,
             &mut timed_out,
             None,
-        )
+            &mut dinero_app_lib::logging::EmailTrace::new("test"))
         .await
         .ok()
         .flatten();

@@ -35,12 +35,12 @@ pub struct BackgroundTaskRegistry {
     tasks: Mutex<HashMap<String, (TaskProgress, Instant)>>,
 }
 
-/// Progress percentage, guarding against a zero total.
 fn compute_progress_pct(current: u64, total: u64) -> f64 {
     if total == 0 {
         0.0
     } else {
-        ((current as f64 / total as f64) * 100.0).min(100.0)
+        let raw_pct = ((current as f64 / total as f64) * 100.0).min(100.0);
+        (raw_pct * 100.0).round() / 100.0
     }
 }
 
@@ -294,6 +294,12 @@ mod tests {
             compute_progress_pct(150, 100),
             100.0,
             "must clamp, never exceed 100%"
+        );
+
+        assert_eq!(
+            compute_progress_pct(1, 3),
+            33.33,
+            "must round to 2 decimal places"
         );
 
         assert_eq!(

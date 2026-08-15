@@ -34,11 +34,11 @@ pub(crate) enum Authored {
 }
 
 /// ponytail: single consumer; revisit only if a bulk re-correction feature ever
-pub fn spawn_learning_worker(pool: Pool) -> LearningHandle {
+pub fn spawn_learning_worker(pool: Pool, pipeline: crate::llm_pipeline::LlmPipeline) -> LearningHandle {
     let (tx, mut rx) = mpsc::channel::<FeedbackJob>(FEEDBACK_QUEUE_CAPACITY);
     tauri::async_runtime::spawn(async move {
         while let Some(job) = rx.recv().await {
-            process_feedback_job(job, &pool).await;
+            process_feedback_job(job, &pool, &pipeline).await;
         }
     });
     LearningHandle { tx }
@@ -55,7 +55,7 @@ pub async fn enqueue(handle: &LearningHandle, job: FeedbackJob) {
 ///
 /// Runs on the worker rather than inline, because synthesis can invoke the LLM
 /// and the user's edit must stay instant.
-pub(crate) async fn process_feedback_job(job: FeedbackJob, pool: &Pool) {
+pub(crate) async fn process_feedback_job(job: FeedbackJob, pool: &Pool, pipeline: &crate::llm_pipeline::LlmPipeline) {
     if job.source_text.trim().is_empty() || job.new_value.trim().is_empty() {
         tracing::debug!(
             field = %job.field_name,
@@ -72,7 +72,7 @@ pub(crate) async fn process_feedback_job(job: FeedbackJob, pool: &Pool) {
         &job.new_value,
     ) {
         Some(payload) => Authored::Deterministic(payload),
-        None => author_with_llm(&job, pool).await,
+        None => author_with_llm(&job, pool, pipeline).await,
     };
 
     let (payload, authored_by) = match authored {
@@ -188,7 +188,7 @@ pub(crate) async fn process_feedback_job(job: FeedbackJob, pool: &Pool) {
 }
 
 /// Authors a replacement rule using the LLM.
-async fn author_with_llm(job: &FeedbackJob, pool: &Pool) -> Authored {
+async fn author_with_llm(job: &FeedbackJob, pool: &Pool, pipeline: &crate::llm_pipeline::LlmPipeline) -> Authored {
     let Some(app_dir) = job.app_dir.as_deref() else {
         return Authored::None;
     };
@@ -228,21 +228,33 @@ async fn author_with_llm(job: &FeedbackJob, pool: &Pool) -> Authored {
         &existing,
     );
 
-    let raw = match crate::llama_sidecar::complete_with_schema_and_context(
-        app_dir,
-        &model_id,
-        &prompt,
-        crate::extraction::rule_llm::authoring_schema(),
-        crate::logging::llm_logger::LlmCallContext::new(
-            crate::logging::llm_logger::LlmCallType::RuleAuthoring,
-            1,
-        ),
-    )
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => {
+    let ctx = crate::logging::llm_logger::LlmCallContext::new(
+        crate::logging::llm_logger::LlmCallType::RuleAuthoring,
+        1,
+    );
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let req = crate::llm_pipeline::LlmRequest {
+        model_id: model_id.clone(),
+        prompt: prompt.clone(),
+        schema: Some(crate::extraction::rule_llm::authoring_schema()),
+        ctx,
+        app_dir: app_dir.to_path_buf(),
+        response_tx: tx,
+    };
+
+    if let Err(e) = pipeline.enqueue(req).await {
+        tracing::debug!(field = %job.field_name, "learning: pipeline error: {e}");
+        return Authored::None;
+    }
+
+    let raw = match rx.await {
+        Ok(Ok(raw)) => raw,
+        Ok(Err(e)) => {
             tracing::debug!(field = %job.field_name, "learning: LLM authoring failed: {e}");
+            return Authored::None;
+        }
+        Err(_) => {
+            tracing::debug!(field = %job.field_name, "learning: pipeline channel closed");
             return Authored::None;
         }
     };
@@ -345,7 +357,8 @@ mod tests {
     #[tokio::test]
     async fn a_user_correction_becomes_an_active_rule() {
         let pool = setup_pool().await;
-        process_feedback_job(job("merchant", "RAZ*SWIGGY LIMITE BANGALORE"), &pool).await;
+        let pipeline = crate::llm_pipeline::LlmPipeline::new();
+        process_feedback_job(job("merchant", "RAZ*SWIGGY LIMITE BANGALORE"), &pool, &pipeline).await;
 
         let conn = pool.get().await.unwrap();
         let rules = conn
@@ -368,7 +381,8 @@ mod tests {
         let pool = setup_pool().await;
         let mut j = job("merchant", "RAZ*SWIGGY LIMITE BANGALORE");
         j.learned_from = "drift_llm".to_string();
-        process_feedback_job(j, &pool).await;
+        let pipeline = crate::llm_pipeline::LlmPipeline::new();
+        process_feedback_job(j, &pool, &pipeline).await;
 
         let conn = pool.get().await.unwrap();
         let all = conn
@@ -386,7 +400,8 @@ mod tests {
     #[tokio::test]
     async fn a_value_absent_from_the_source_is_rejected_not_applied() {
         let pool = setup_pool().await;
-        process_feedback_job(job("merchant", "ZOMATO"), &pool).await;
+        let pipeline = crate::llm_pipeline::LlmPipeline::new();
+        process_feedback_job(job("merchant", "ZOMATO"), &pool, &pipeline).await;
 
         let conn = pool.get().await.unwrap();
         let (variants, rejections): (i64, i64) = conn
@@ -417,7 +432,8 @@ mod tests {
         let pool = setup_pool().await;
         let mut j = job("merchant", "SWIGGY");
         j.source_text = String::new();
-        process_feedback_job(j, &pool).await;
+        let pipeline = crate::llm_pipeline::LlmPipeline::new();
+        process_feedback_job(j, &pool, &pipeline).await;
 
         let conn = pool.get().await.unwrap();
         let variants: i64 = conn
@@ -431,7 +447,8 @@ mod tests {
     #[tokio::test]
     async fn an_amount_correction_learns_from_the_printed_form() {
         let pool = setup_pool().await;
-        process_feedback_job(job("amount", "24543"), &pool).await;
+        let pipeline = crate::llm_pipeline::LlmPipeline::new();
+        process_feedback_job(job("amount", "24543"), &pool, &pipeline).await;
 
         let conn = pool.get().await.unwrap();
         let rules = conn
@@ -449,7 +466,8 @@ mod tests {
     #[tokio::test]
     async fn a_direction_correction_writes_an_override() {
         let pool = setup_pool().await;
-        process_feedback_job(job("direction", "credit"), &pool).await;
+        let pipeline = crate::llm_pipeline::LlmPipeline::new();
+        process_feedback_job(job("direction", "credit"), &pool, &pipeline).await;
 
         let conn = pool.get().await.unwrap();
         let rules = conn
@@ -463,7 +481,8 @@ mod tests {
     #[tokio::test]
     async fn a_rule_is_scoped_to_its_bank_and_source_type() {
         let pool = setup_pool().await;
-        process_feedback_job(job("merchant", "RAZ*SWIGGY LIMITE BANGALORE"), &pool).await;
+        let pipeline = crate::llm_pipeline::LlmPipeline::new();
+        process_feedback_job(job("merchant", "RAZ*SWIGGY LIMITE BANGALORE"), &pool, &pipeline).await;
 
         let conn = pool.get().await.unwrap();
         let (other_bank, other_source) = conn

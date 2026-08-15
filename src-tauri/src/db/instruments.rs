@@ -288,6 +288,23 @@ pub fn get_or_create_instrument(
     let masked_identifier_cleaned = clean_masked_identifier(masked_identifier);
     let masked_identifier = masked_identifier_cleaned.as_str();
 
+    // 1. Initial SELECT to avoid write-path contention for existing instruments
+    let existing_id: rusqlite::Result<String> = conn.query_row(
+        "SELECT id FROM instruments
+         WHERE type = ?1
+           AND issuer_name = ?2
+           AND masked_identifier = ?3
+           AND is_deleted = 0
+         LIMIT 1",
+        rusqlite::params![instrument_type, issuer_name, masked_identifier],
+        |row| row.get(0),
+    );
+
+    if let Ok(id) = existing_id {
+        return Ok(id);
+    }
+
+    // 2. If it misses, attempt INSERT OR IGNORE
     let new_id = uuid::Uuid::new_v4().to_string();
     conn.execute(
         "INSERT OR IGNORE INTO instruments (
@@ -305,6 +322,7 @@ pub fn get_or_create_instrument(
         ],
     )?;
 
+    // 3. Final SELECT (handles the case where another worker inserted between our 1 and 2)
     let id: String = conn.query_row(
         "SELECT id FROM instruments
          WHERE type = ?1
@@ -339,6 +357,28 @@ pub fn resolve_single_instrument_by_issuer(
         .collect::<rusqlite::Result<Vec<String>>>()?;
     Ok(if ids.len() == 1 { ids.pop() } else { None })
 }
+
+/// Single instrument resolution path used by all ingestion pipelines.
+///
+/// Ensures exactly one instrument is yielded deterministically.
+pub fn resolve_instrument(
+    conn: &Connection,
+    instrument_type: Option<&str>,
+    issuer_name: Option<&str>,
+    masked_identifier: Option<&str>,
+    network: Option<&str>,
+) -> Result<Option<String>> {
+    match (instrument_type, issuer_name, masked_identifier) {
+        (Some(itype), Some(iname), Some(masked)) => {
+            get_or_create_instrument(conn, itype, iname, masked, network).map(Some)
+        }
+        (None, Some(iname), None) => {
+            resolve_single_instrument_by_issuer(conn, iname)
+        }
+        _ => Ok(None),
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

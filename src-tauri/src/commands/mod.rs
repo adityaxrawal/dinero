@@ -424,6 +424,7 @@ async fn llm_rows_for_unparsed_pages<R: tauri::Runtime>(
         return Vec::new();
     };
 
+    let pipeline = app.state::<crate::llm_pipeline::LlmPipeline>().inner().clone();
     crate::statements::row_llm::extract_unparsed_pages(
         pages,
         parser,
@@ -431,6 +432,7 @@ async fn llm_rows_for_unparsed_pages<R: tauri::Runtime>(
         &app_dir,
         &model_id,
         start_index,
+        Some(&pipeline),
     )
     .await
 }
@@ -740,7 +742,7 @@ pub async fn commit_staged_draft<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> anyhow::Result<String> {
     use crate::db::transaction_observations::{
-        insert_observation_idempotent, TransactionObservationsRow,
+        TransactionObservationsRow,
     };
     use crate::statements::{
         bill_classifier,
@@ -864,11 +866,7 @@ pub async fn commit_staged_draft<R: tauri::Runtime>(
                     created_at: None,
                     updated_at: None,
                 };
-                if let Err(e) = insert_observation_idempotent(c, &row) {
-                    tracing::warn!("Failed to insert observation row for '{}': {}", obs.id, e);
-                    continue;
-                }
-                if let Err(e) = crate::reconciliation::engine::reconcile_transactionally(c, obs) {
+                if let Err(e) = crate::reconciliation::engine::ingest_observation(c, &row, true) {
                     tracing::warn!("Reconciliation failed for obs '{}': {}", obs.id, e);
                 }
             }
@@ -2195,9 +2193,8 @@ pub(crate) async fn create_manual_transaction<R: tauri::Runtime>(
                 created_at: None,
                 updated_at: None,
             };
-            crate::db::transaction_observations::insert_observation(conn, &obs_row)?;
-
-            crate::reconciliation::engine::reconcile_transactionally(conn, &obs)
+            crate::reconciliation::engine::ingest_observation(conn, &obs_row, true).map(|res| res.1)
+                .map(|opt| opt.unwrap_or(crate::reconciliation::audit::DecisionType::NewCanonical))
         })
         .await
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
@@ -3037,28 +3034,40 @@ pub fn log_frontend_event(
     data: Option<String>,
 ) {
     let t = target.as_deref().unwrap_or("frontend");
-    let data_str = data.map(|d| format!(" | data: {}", d)).unwrap_or_default();
+    
+    let mut log_content = format!("\n### [{}] {}\n", level.to_uppercase(), message);
+    log_content.push_str(&format!("**Target**: `{}`\n", t));
+
+    if let Some(d) = data {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&d) {
+            let pretty = serde_json::to_string_pretty(&json).unwrap_or(d.clone());
+            log_content.push_str(&format!("```json\n{}\n```", pretty));
+        } else {
+            log_content.push_str(&format!("```\n{}\n```", d));
+        }
+    }
+
     match t {
         "api_calls" => match level.to_lowercase().as_str() {
-            "error" => tracing::error!(target: "api_calls", "{}{}", message, data_str),
-            "warn" => tracing::warn!(target: "api_calls", "{}{}", message, data_str),
-            "debug" => tracing::debug!(target: "api_calls", "{}{}", message, data_str),
-            "trace" => tracing::trace!(target: "api_calls", "{}{}", message, data_str),
-            _ => tracing::info!(target: "api_calls", "{}{}", message, data_str),
+            "error" => tracing::error!(target: "api_calls", "{}", log_content),
+            "warn" => tracing::warn!(target: "api_calls", "{}", log_content),
+            "debug" => tracing::debug!(target: "api_calls", "{}", log_content),
+            "trace" => tracing::trace!(target: "api_calls", "{}", log_content),
+            _ => tracing::info!(target: "api_calls", "{}", log_content),
         },
         "network" => match level.to_lowercase().as_str() {
-            "error" => tracing::error!(target: "network", "{}{}", message, data_str),
-            "warn" => tracing::warn!(target: "network", "{}{}", message, data_str),
-            "debug" => tracing::debug!(target: "network", "{}{}", message, data_str),
-            "trace" => tracing::trace!(target: "network", "{}{}", message, data_str),
-            _ => tracing::info!(target: "network", "{}{}", message, data_str),
+            "error" => tracing::error!(target: "network", "{}", log_content),
+            "warn" => tracing::warn!(target: "network", "{}", log_content),
+            "debug" => tracing::debug!(target: "network", "{}", log_content),
+            "trace" => tracing::trace!(target: "network", "{}", log_content),
+            _ => tracing::info!(target: "network", "{}", log_content),
         },
         _ => match level.to_lowercase().as_str() {
-            "error" => tracing::error!(target: "frontend", "{}{}", message, data_str),
-            "warn" => tracing::warn!(target: "frontend", "{}{}", message, data_str),
-            "debug" => tracing::debug!(target: "frontend", "{}{}", message, data_str),
-            "trace" => tracing::trace!(target: "frontend", "{}{}", message, data_str),
-            _ => tracing::info!(target: "frontend", "{}{}", message, data_str),
+            "error" => tracing::error!(target: "frontend", "{}", log_content),
+            "warn" => tracing::warn!(target: "frontend", "{}", log_content),
+            "debug" => tracing::debug!(target: "frontend", "{}", log_content),
+            "trace" => tracing::trace!(target: "frontend", "{}", log_content),
+            _ => tracing::info!(target: "frontend", "{}", log_content),
         },
     }
 }

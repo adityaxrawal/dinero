@@ -11,6 +11,7 @@ use anyhow::Result;
 use rusqlite::Connection;
 
 use serde::{Deserialize, Serialize};
+use crate::db::transaction_observations::TransactionObservationsRow;
 
 pub const BASE_VIABILITY_FLOOR: f64 = 0.55;
 pub const AMBIGUITY_MARGIN_THRESHOLD: f64 = 0.15;
@@ -102,6 +103,74 @@ fn to_canonical_candidate(r: crate::db::transactions::TransactionsRow) -> Canoni
         reference_id: r.reference_id,
         merchant_normalized_name: r.merchant_normalized_name,
         source_mix: r.source_mix,
+    }
+}
+
+/// The single shared reconciliation entry point.
+///
+/// Ensures the insertion of the observation and its canonicalization 
+/// occur atomically in the same transaction. A crash midway cannot leave 
+/// an observation half-merged.
+pub fn ingest_observation(
+    conn: &Connection,
+    row: &TransactionObservationsRow,
+    should_reconcile: bool,
+) -> Result<(crate::db::transaction_observations::InsertObservationOutcome, Option<DecisionType>)> {
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    
+    let insert_outcome = crate::db::transaction_observations::insert_observation_idempotent(conn, row);
+    
+    match insert_outcome {
+        Ok(crate::db::transaction_observations::InsertObservationOutcome::Inserted) => {
+            if !should_reconcile || row.instrument_id.is_none() {
+                conn.execute_batch("COMMIT")?;
+                return Ok((crate::db::transaction_observations::InsertObservationOutcome::Inserted, None));
+            }
+            
+            let incoming = IncomingObservation {
+                id: row.id.clone(),
+                instrument_id: row.instrument_id.clone().unwrap(),
+                amount_minor: row.amount_minor.unwrap_or(0),
+                currency: row.currency.clone().unwrap_or_else(|| "INR".to_string()),
+                direction: row.direction.clone().unwrap_or_else(|| "debit".to_string()),
+                event_time: row
+                    .event_time
+                    .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                    .unwrap_or_default(),
+                reference_id: row.reference_id.clone(),
+                merchant_raw: row.merchant_raw.clone(),
+                source_pipeline: row.source_pipeline.clone().unwrap_or_default(),
+                source_record_id: row.source_record_id.clone().unwrap_or_default(),
+                emi_total_installments: row.emi_total_installments,
+                emi_original_amount_minor: row.emi_original_amount_minor,
+                fingerprint: row.fingerprint.clone(),
+                confidence_score: row.confidence_score,
+                event_time_confidence: row.event_time_confidence.clone(),
+                channel: row.channel.clone(),
+            };
+            
+            match fetch_candidates(conn, &incoming).and_then(|candidates| reconcile(conn, &incoming, candidates)) {
+                Ok(decision) => {
+                    if let Err(e) = conn.execute_batch("COMMIT") {
+                        let _ = conn.execute_batch("ROLLBACK");
+                        return Err(e.into());
+                    }
+                    Ok((crate::db::transaction_observations::InsertObservationOutcome::Inserted, Some(decision)))
+                }
+                Err(e) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(e)
+                }
+            }
+        }
+        Ok(crate::db::transaction_observations::InsertObservationOutcome::DuplicateSkipped) => {
+            conn.execute_batch("COMMIT")?;
+            Ok((crate::db::transaction_observations::InsertObservationOutcome::DuplicateSkipped, None))
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
     }
 }
 
