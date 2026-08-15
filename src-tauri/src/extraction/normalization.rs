@@ -144,7 +144,7 @@ pub fn clean_masked_identifier(raw: &str) -> String {
 
     let digits: String = trimmed.chars().filter(|c| c.is_ascii_digit()).collect();
     if digits.is_empty() {
-        return trimmed.to_string();
+        return String::new();
     }
 
     if digits.len() > 4 {
