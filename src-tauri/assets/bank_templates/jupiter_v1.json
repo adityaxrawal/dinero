@@ -3,6 +3,17 @@
   "version": 1,
   "patterns": [
     {
+      "name": "upi_payment_successful_v2",
+      "regex": "(?is)payment\\s+was\\s+successful.*?Paid\\s+to\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+[a-zA-Z0-9.\\-]+@[a-zA-Z0-9.\\-]+\\s*.*?How\\s+much\\s*(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s*When\\s*((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))\\s*.*?Paid\\s+by\\s*.*?\\s*([\\w.\\-]+@[\\w.\\-]+)",
+      "amount_group": 2,
+      "direction": "debit",
+      "currency": "INR",
+      "merchant_group": 1,
+      "date_group": 3,
+      "upi_vpa_group": 4,
+      "txn_type": "upi"
+    },
+    {
       "name": "upi_payment_sent",
       "regex": "(?is)You\\s+paid\\s+(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s*Paid\\s+to\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s+[\\w.\\-]+@[\\w.\\-]+\\s*Date\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))\\s*From\\s+(?:\\S+\\s+)?([\\w.\\-]+@[\\w.\\-]+)",
       "amount_group": 1,
@@ -26,7 +37,7 @@
     },
     {
       "name": "pot_money_added",
-      "regex": "(?is)Pot\\s+Name\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s*Amount\\s+Added\\s+([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s*Amount\\s+added\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "regex": "(?is)Pot\\s+Name\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s*Amount\\s+[Aa]dded\\s*(?:INR|Rs\\.?|₹)?\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s*Amount\\s+added\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
       "amount_group": 2,
       "direction": "debit",
       "currency": "INR",
@@ -36,7 +47,7 @@
     },
     {
       "name": "pot_money_withdrawn",
-      "regex": "(?is)Pot\\s+Name\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s*Amount\\s+withdrawn\\s+([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s*Amount\\s+withdrawn\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "regex": "(?is)Pot\\s+Name\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s*Amount\\s+withdrawn\\s*(?:INR|Rs\\.?|₹)?\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s*Amount\\s+withdrawn\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
       "amount_group": 2,
       "direction": "credit",
       "currency": "INR",
@@ -188,6 +199,15 @@
       "reference_group": 4,
       "cadence_group": 3,
       "txn_type": "mandate"
+    },
+    {
+      "name": "quarterly_interest_credit",
+      "regex": "(?is)(?:Your\\s+quarterly\\s+interest\\s+of\\s*(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s*has\\s+been\\s+credited\\s+to\\s+your\\s+Federal\\s+Bank\\s+Savings\\s+Account\\s+-\\s*[Xx*\\s\\-]*(\\d{4})\\s+on\\s+Jupiter|(?:INR|Rs\\.?|₹)\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s*as\\s+Quarterly\\s+Interest\\s+is\\s+credited\\s+to\\s+your\\s+Federal\\s+Bank\\s+Account\\s+on\\s+Jupiter)",
+      "amount_group": 1,
+      "direction": "credit",
+      "currency": "INR",
+      "last4_group": 2,
+      "txn_type": "account_balance"
     }
   ]
 }
