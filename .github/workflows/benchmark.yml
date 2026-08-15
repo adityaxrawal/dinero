@@ -24,7 +24,7 @@ jobs:
     name: Reconciliation Regression Gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -54,10 +54,10 @@ jobs:
     name: Run Quality Gates
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Checkout Benchmark Corpus
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # TODO(corpus): replace with the real corpus repository.
           repository: your-org/dinero-benchmarks
