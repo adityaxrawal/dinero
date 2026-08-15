@@ -1,109 +1,88 @@
-# Logs
-logs
-/logs/
+# ==============================================================================
+# Dinero — Git Ignore Specification
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Dependencies & Build Outputs
+# ------------------------------------------------------------------------------
+node_modules/
+dist/
+dist-ssr/
+src-tauri/target/
+coverage/
+*.local
+
+# ------------------------------------------------------------------------------
+# Log Files & Debugging Diagnostics
+# ------------------------------------------------------------------------------
+logs/
 /src-tauri/logs/
 *.log
+*.log*
 app-logs.log*
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
-*.log*
 
-node_modules
-dist
-dist-ssr
-*.local
-
-# TASK-OPS-001: generated at release-build time by
-# scripts/verify_release_prerequisites.sh / generate_release_notes.sh --
-# never hand-authored, never committed.
-/release-metadata.json
-/release-notes.md
-
-# Secrets — Doc 33 §3 / Doc 24: never committed, live OAuth client credentials
+# ------------------------------------------------------------------------------
+# Environment Variables & Secrets
+# ------------------------------------------------------------------------------
 .env
 .env.*
 !.env.example
 
-# Editor directories and files
+# ------------------------------------------------------------------------------
+# IDE, OS & Tooling Metadata
+# ------------------------------------------------------------------------------
+.DS_Store
+.idea/
 .vscode/*
 !.vscode/extensions.json
-.idea
-.DS_Store
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+.codegraph/
+.fallow/
+.tokensave/
 
-# Docs
-dinero-docs
+# ------------------------------------------------------------------------------
+# Local Development Data & Internal Documentation
+# ------------------------------------------------------------------------------
+docs/
+/docs/
+dinero-docs/
+/dinero-docs/
+audit.md
+fix-log.md
+implementation-log.md
+/gmail_export/
+/real-test-data/
+*.db
 
-# data
-/real-test-data
+# ------------------------------------------------------------------------------
+# Generated Release Artifacts
+# ------------------------------------------------------------------------------
+/release-metadata.json
+/release-notes.md
 
-# Gmail export dataset — raw email/PII + OAuth token, never committed
-/gmail_export
-
-# Playwright test-run artifacts
-/test-results
-
-.codegraph
-.fallow
-.vscode
-
-# Local-only development files.
-#
-# NOTE (2026-08-01): this block used to also exclude everything the build and
-# the test suites actually need -- `/src-tauri/src/tests/`,
-# `commands/data_tests.rs`, `commands/debug.rs`, `/src/test/`, `/e2e/`,
-# `vitest.config.ts`, `playwright.config.ts`. The result was that the
-# repository did not compile from a clean checkout at all:
-# `commands/mod.rs` declares `pub mod debug;` unconditionally, and
-# `historical_scan.rs`/`polling.rs` read `SCAN_QUEUE_PAUSED`/`GMAIL_POLL_PAUSED`
-# from it on the live polling path, so `cargo build` failed with
-# "file not found for module `debug`". `cargo test` additionally lost the
-# phase8-11 suites and `data_tests.rs`; `npm test` lost its vitest config and
-# `src/test/setup.ts`.
-#
-# rust.yml has been running `cargo test --all-features` and react.yml
-# `pnpm test` on every push the whole time, so neither workflow can ever have
-# succeeded -- the same failure mode the /scripts/* note below already records
-# once, and the same one as the nightly benchmark job (audit_09 #8).
-#
-# Only machine-local scratch remains excluded. The former entries for
-# `dev_review.rs`, `bin.rs` and `test_shutdown.sh` are gone because those
-# files are gone -- an ignore rule for a file that no longer exists is a
-# rule nobody can evaluate.
+# ------------------------------------------------------------------------------
+# Playwright & E2E Testing Output
+# ------------------------------------------------------------------------------
+/test-results/
 /playwright-report/
+
+# ------------------------------------------------------------------------------
+# Local Scripts & CI Exceptions
+# ------------------------------------------------------------------------------
+# Ignore local-only tooling in /scripts/ while keeping CI-required scripts
 /scripts/*
-# TASK-QA-010/OPS-001/OPS-008 finding: these three scripts are genuine CI
-# dependencies -- release.yml runs security_hardening_check.sh and
-# notarize.sh on every tagged release push, ci.yml runs
-# verify_acceptance_criteria.py on every push/PR -- unlike the rest of
-# /scripts/ (local-only dev tooling: DMG signing prep, backup/restore,
-# rollback, that needs local credentials/interactive input CI never has).
-# All three were previously gitignored along with everything else in this
-# directory, meaning release.yml would have failed with "file not found" on
-# the very first real tagged release (neither script has ever actually been
-# in the repository despite being referenced by a workflow the whole time).
-# Git can't re-include a file whose parent directory is excluded via a
-# trailing-slash pattern (`/scripts/`), hence `/scripts/*` here instead --
-# the standard "ignore all but these" idiom.
 !/scripts/verify_acceptance_criteria.py
 !/scripts/security_hardening_check.sh
 !/scripts/notarize.sh
 !/scripts/verify_release_prerequisites.sh
 !/scripts/generate_release_notes.sh
 !/scripts/.placeholder_license_public.pem.sha256
-audit.md
-fix-log.md
-implementation-log.md
-README.md
-/docs/
-.tokensave
-*.db
-# Vitest coverage output (regenerate with `pnpm test:coverage`)
-coverage/
