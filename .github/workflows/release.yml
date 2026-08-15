@@ -57,7 +57,7 @@ jobs:
         run: ./scripts/generate_release_notes.sh "${{ github.ref_name }}" > release-notes.md
 
       - name: Build, Sign, and Notarize
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
