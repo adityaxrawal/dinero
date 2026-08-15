@@ -153,15 +153,18 @@ export interface DiagnosticCheck {
 function instrumentCheck(record: UnassignedTransactionRecord): DiagnosticCheck {
   const unmatched = record.reason === 'issuer_name_not_found';
   const noSignal = record.reason.includes('missing_instrument');
+  const extractionFailed = record.reason === 'extraction_failed';
   const value = unmatched
     ? 'Card/Account Unmatched in Settings'
     : noSignal
       ? 'No Card/Account Identifier in Email'
-      : 'Instrument Signal Matched';
+      : extractionFailed
+        ? 'Missing / Unparsed'
+        : 'Instrument Signal Matched';
   return {
     id: 'instrument',
     label: 'Instrument Resolution (Gate 4)',
-    passed: !unmatched && !noSignal,
+    passed: !unmatched && !noSignal && !extractionFailed,
     value,
   };
 }

@@ -124,7 +124,7 @@ describe('buildChecks', () => {
     expect(
       checkFor(record({ reason: 'gate3_failed:missing_instrument' }), 'instrument')
     ).toMatchObject({ passed: false, value: 'No Card/Account Identifier in Email' });
-    expect(checkFor(record(), 'instrument').passed).toBe(true);
+    expect(checkFor(record({ reason: '' }), 'instrument').passed).toBe(true);
   });
 });
 

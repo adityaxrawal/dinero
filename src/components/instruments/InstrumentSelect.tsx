@@ -2,12 +2,13 @@
  * Compact instrument dropdown for inline use.
  */
 import React, { useState, useMemo } from 'react';
-import { Pencil, Search, X, CreditCard, Landmark, Zap } from 'lucide-react';
-import { Select, SelectTrigger, SelectContent } from '@/components/ui/select';
+import { Pencil, Search, X, CreditCard, Landmark, Zap, Plus } from 'lucide-react';
+import { Select, SelectTrigger, SelectContent, SelectItem } from '@/components/ui/select';
 import { InfoRow } from '@/components/ui/InfoRow';
 import { instrumentIcon } from './instrumentTypes';
 import { getInstrumentTitle, getInstrumentSubtitle } from './instrumentLabels';
 import { InstrumentOptionGroup } from './instrumentSelectParts';
+import AddInstrumentModal from './AddInstrumentModal';
 
 interface InstrumentSelectProps {
   instrumentId: string;
@@ -27,6 +28,7 @@ export function InstrumentSelect({
   instruments,
 }: InstrumentSelectProps) {
   const [searchQuery, setSearchQuery] = useState('');
+  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const selectedInstrument = instruments.find((i) => i.id === instrumentId);
 
   const filtered = useMemo(() => {
@@ -58,12 +60,21 @@ export function InstrumentSelect({
     [filtered]
   );
 
+  const handleValueChange = (val: string) => {
+    if (val === 'CREATE_NEW') {
+      setIsAddModalOpen(true);
+    } else {
+      onInstrumentChange(val);
+    }
+  };
+
   return (
-    <InfoRow
-      icon={instrumentIcon(selectedInstrument?.instrument_type || '', 14)}
-      label="Instrument"
-    >
-      <Select value={instrumentId} onValueChange={onInstrumentChange}>
+    <>
+      <InfoRow
+        icon={instrumentIcon(selectedInstrument?.instrument_type || '', 14)}
+        label="Instrument"
+      >
+        <Select value={instrumentId} onValueChange={handleValueChange}>
         <SelectTrigger
           hideChevron
           className="border-none bg-transparent h-auto p-0 shadow-none hover:bg-transparent focus:ring-0 focus:outline-none data-[state=open]:ring-0 justify-end group font-normal text-right cursor-pointer"
@@ -143,8 +154,28 @@ export function InstrumentSelect({
               />
             </div>
           )}
+
+          <div className="border-t border-[#064E3B]/10 my-1 mt-2 mx-2" />
+          <SelectItem
+            value="CREATE_NEW"
+            hideCheckmark
+            className="py-2.5 px-2.5 my-1 mx-1 rounded-xl transition-all cursor-pointer select-none outline-none focus:bg-[#064E3B]/10 hover:bg-[#064E3B]/[0.05]"
+          >
+            <div className="flex items-center text-[#064E3B] font-bold text-[13px]">
+              <Plus className="w-4 h-4 mr-2" strokeWidth={3} />
+              Create Instrument
+            </div>
+          </SelectItem>
         </SelectContent>
       </Select>
     </InfoRow>
+    {isAddModalOpen && (
+      <AddInstrumentModal
+        open={isAddModalOpen}
+        onOpenChange={setIsAddModalOpen}
+        onSuccess={onInstrumentChange}
+      />
+    )}
+    </>
   );
 }

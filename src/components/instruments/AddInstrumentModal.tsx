@@ -34,6 +34,7 @@ import { INSTRUMENT_TYPES } from './instrumentTypes';
 interface AddInstrumentModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onSuccess?: (newInstrumentId: string) => void;
 }
 
 const EMPTY_FORM = {
@@ -46,7 +47,7 @@ const EMPTY_FORM = {
 };
 
 /** Dialog for registering a new payment instrument. */
-export default function AddInstrumentModal({ open, onOpenChange }: AddInstrumentModalProps) {
+export default function AddInstrumentModal({ open, onOpenChange, onSuccess }: AddInstrumentModalProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [form, setForm] = useState(EMPTY_FORM);
@@ -69,7 +70,7 @@ export default function AddInstrumentModal({ open, onOpenChange }: AddInstrument
     setFormError(null);
     setIsSaving(true);
     try {
-      await API.instruments.create(
+      const result = await API.instruments.create(
         form.instrumentType,
         form.issuerName,
         form.maskedIdentifier,
@@ -79,6 +80,9 @@ export default function AddInstrumentModal({ open, onOpenChange }: AddInstrument
       );
       toast({ title: 'Instrument added' });
       queryClient.invalidateQueries({ queryKey: queryKeys.instruments.all() });
+      if (onSuccess) {
+        onSuccess(result.id);
+      }
       close();
     } catch (err) {
       toast({ variant: 'destructive', ...getErrorToast(err) });
