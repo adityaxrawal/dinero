@@ -20,7 +20,7 @@ jobs:
           # frontend. Standardized on the pin already used to build releases.
           node-version: 20
       - name: Install pnpm
-        uses: pnpm/action-setup@v3
+        uses: pnpm/action-setup@v6
         with:
           version: 9
       - name: Get pnpm store directory
