@@ -61,7 +61,7 @@ tauri-plugin-notification = "2"
 aes-gcm = "0.10"
 strsim = "0.11"
 jsonwebtoken = "9"
-machine-uid = "0.5"
+machine-uid = "0.6"
 bip39 = "2"
 hex = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
