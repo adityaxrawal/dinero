@@ -46,7 +46,7 @@ pdfium-render = "0.8"
 regex = "1.10"
 chrono = "0.4"
 sha2 = "0.10"
-sysinfo = "0.30"
+sysinfo = "0.39"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 tracing-appender = "0.2"
