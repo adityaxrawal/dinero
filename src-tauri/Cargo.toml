@@ -76,6 +76,7 @@ unicode-security = "0.1.2"
 # for) while keeping layout/typography tags so the rendered email still
 # looks like the original.
 ammonia = "4"
+unicode-normalization = "0.1.25"
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }

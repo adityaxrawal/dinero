@@ -475,15 +475,16 @@ fn layer6_json_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "properties": {
+            "is_transaction": {"type": "boolean"},
             "amount": {"type": ["number", "null"]},
             "currency": {"type": ["string", "null"]},
             "direction": {"type": ["string", "null"]},
             "merchant": {"type": ["string", "null"]},
-            "event_time": {"type": ["integer", "null"]},
+            "datetime": {"type": ["string", "null"]},
             "reference_id": {"type": ["string", "null"]},
             "confidence": {"type": ["number", "null"]}
         },
-        "required": ["confidence"]
+        "required": ["is_transaction", "amount", "currency", "direction", "merchant", "datetime", "reference_id", "confidence"]
     })
 }
 
@@ -503,7 +504,7 @@ async fn raw_complete(
 
     let mut body = serde_json::json!({
         "prompt": prompt,
-        "n_predict": 256,
+        "n_predict": 512,
         "temperature": 0.0,
         "stream": false,
     });
@@ -621,17 +622,31 @@ pub async fn complete_with_schema_and_context(
     schema: serde_json::Value,
     ctx: crate::logging::llm_logger::LlmCallContext,
 ) -> Result<String> {
+    complete_with_optional_schema_and_context(app_dir, model_id, prompt, Some(schema), ctx).await
+}
+
+/// Runs a completion with an optional schema and context.
+pub async fn complete_with_optional_schema_and_context(
+    app_dir: &Path,
+    model_id: &str,
+    prompt: &str,
+    schema: Option<serde_json::Value>,
+    ctx: crate::logging::llm_logger::LlmCallContext,
+) -> Result<String> {
     let (port, semaphore, calibrated_timeout) = ensure_server_ready(app_dir, model_id).await?;
     let _permit = semaphore
         .acquire()
         .await
         .context("llama-server semaphore closed")?;
+    
+    let effective_timeout = calibrated_timeout.min(Duration::from_secs(150));
+    
     raw_complete(
         port,
         model_id,
         prompt,
-        calibrated_timeout,
-        Some(schema),
+        effective_timeout,
+        schema,
         ctx,
     )
     .await
