@@ -52,6 +52,7 @@ jobs:
     # already refuses to pass when BENCHMARK_CORPUS_DIR is unset under CI,
     # precisely so an unprovisioned corpus can never look like a green gate.
     name: Run Quality Gates
+    if: ${{ secrets.BENCHMARK_REPO_TOKEN != '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

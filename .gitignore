@@ -62,6 +62,7 @@ implementation-log.md
 /gmail_export/
 /real-test-data/
 *.db
+.claude/
 
 # ------------------------------------------------------------------------------
 # Generated Release Artifacts

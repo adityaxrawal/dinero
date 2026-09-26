@@ -8,6 +8,7 @@
 //! Every other platform gets a no-op implementation, so callers need no
 //! conditional compilation of their own.
 
+#[cfg(target_os = "macos")]
 use std::process::Command;
 
 #[cfg(target_os = "macos")]

@@ -5,7 +5,9 @@
 use std::path::{Path, PathBuf};
 use tauri::menu::{Menu, MenuBuilder, MenuItem};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
-use tauri::{ActivationPolicy, AppHandle, Manager, Runtime};
+#[cfg(target_os = "macos")]
+use tauri::ActivationPolicy;
+use tauri::{AppHandle, Manager, Runtime};
 
 pub const MENU_BAR_EXTRA_ID_OPEN_DASHBOARD: &str = "tray_open_dashboard";
 pub const MENU_BAR_EXTRA_ID_OPEN_REVIEW_QUEUE: &str = "tray_open_review_queue";
@@ -155,13 +157,20 @@ pub fn apply_menu_bar_extra_runtime_state<R: Runtime>(app: &AppHandle<R>, enable
 
 /// Shows or hides the dock icon.
 pub fn apply_dock_visibility<R: Runtime>(app: &AppHandle<R>, hide_dock_icon: bool) {
-    let policy = if hide_dock_icon {
-        ActivationPolicy::Accessory
-    } else {
-        ActivationPolicy::Regular
-    };
-    if let Err(e) = app.set_activation_policy(policy) {
-        tracing::warn!("Failed to set Dock activation policy: {}", e);
+    #[cfg(target_os = "macos")]
+    {
+        let policy = if hide_dock_icon {
+            ActivationPolicy::Accessory
+        } else {
+            ActivationPolicy::Regular
+        };
+        if let Err(e) = app.set_activation_policy(policy) {
+            tracing::warn!("Failed to set Dock activation policy: {}", e);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, hide_dock_icon);
     }
 }
 
