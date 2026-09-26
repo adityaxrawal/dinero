@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           # K5 fix: previously Node 22/pnpm 10 here vs Node 20/pnpm 9 in
           # rust.yml's build job — two divergent toolchain pins for the same
