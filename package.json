@@ -46,7 +46,7 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.12.1",
-    "@biomejs/biome": "^2.5.7",
+    "@biomejs/biome": "^2.5.8",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.62.1",
     "@tauri-apps/cli": "^2.11.4",
