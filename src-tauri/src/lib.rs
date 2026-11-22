@@ -508,6 +508,13 @@ pub fn run() {
                 let app_handle = app.handle().clone();
                 let app_dir = app_dir.clone();
                 tauri::async_runtime::spawn(async move {
+                    // A draft left `committing` by a crash goes back to review;
+                    // its derived ids make committing again safe (review H7).
+                    if let Ok(conn) = pool.get().await {
+                        let _ = conn
+                            .interact(|c| crate::db::statement_drafts::reset_stuck_committing(c))
+                            .await;
+                    }
                     crate::ingestion::queues::recover_queued_statements(
                         &app_handle,
                         &pool,

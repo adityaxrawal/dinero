@@ -738,18 +738,6 @@ pub async fn commit_staged_draft<R: tauri::Runtime>(
     pool: &deadpool_sqlite::Pool,
     app: &tauri::AppHandle<R>,
 ) -> anyhow::Result<String> {
-    use crate::db::transaction_observations::{
-        TransactionObservationsRow,
-    };
-    use crate::statements::{
-        bill_classifier,
-        metadata_extractor::{
-            resolve_or_create_instrument, write_statement_row, StatementMetadata,
-        },
-        observation_builder::build_all_observations,
-        row_extractor::map_rows_to_statement_entries,
-    };
-
     let conn = pool
         .get()
         .await
@@ -762,13 +750,51 @@ pub async fn commit_staged_draft<R: tauri::Runtime>(
         .map_err(|e| anyhow::anyhow!("DB error: {}", e))?
         .ok_or_else(|| anyhow::anyhow!("draft not found: {}", draft_id))?;
 
-    if draft.status != "pending_review" {
+    let draft_id_owned = draft_id.to_string();
+    let claimed = conn
+        .interact(move |c| crate::db::statement_drafts::claim_for_commit(c, &draft_id_owned))
+        .await
+        .map_err(|e| anyhow::anyhow!("Interact error: {}", e))?
+        .map_err(|e| anyhow::anyhow!("DB error: {}", e))?;
+    if !claimed {
         return Err(anyhow::anyhow!(
-            "draft '{}' is not pending_review (status='{}') — already committed or discarded",
+            "draft '{}' is not pending_review (status='{}') — already committed, being committed or discarded",
             draft_id,
             draft.status
         ));
     }
+    drop(conn);
+
+    // Any failure returns the draft to review. Ids are derived from the draft,
+    // so committing again rewrites the same rows and dedupe skips observations
+    // already booked (review H7).
+    let result = commit_claimed_draft(draft_id, &draft, edited_metadata, edited_rows, pool, app).await;
+    if result.is_err() {
+        if let Ok(conn) = pool.get().await {
+            let id = draft_id.to_string();
+            let _ = conn
+                .interact(move |c| crate::db::statement_drafts::update_status(c, &id, "pending_review"))
+                .await;
+        }
+    }
+    result
+}
+
+async fn commit_claimed_draft<R: tauri::Runtime>(
+    draft_id: &str,
+    draft: &crate::db::statement_drafts::StatementDraftRow,
+    edited_metadata: DraftMetadataUpdate,
+    edited_rows: Vec<crate::statements::row_extractor::StatementRow>,
+    pool: &deadpool_sqlite::Pool,
+    app: &tauri::AppHandle<R>,
+) -> anyhow::Result<String> {
+    use crate::db::transaction_observations::TransactionObservationsRow;
+    use crate::statements::{
+        bill_classifier,
+        metadata_extractor::{resolve_or_create_instrument, write_statement_row, StatementMetadata},
+        observation_builder::build_all_observations,
+        row_extractor::map_rows_to_statement_entries,
+    };
 
     let instrument_id = resolve_or_create_instrument(
         &edited_metadata.instrument_type,
@@ -792,9 +818,13 @@ pub async fn commit_staged_draft<R: tauri::Runtime>(
         statement_date: edited_metadata.statement_date,
     };
 
-    let fresh_stmt_id = uuid::Uuid::new_v4().to_string();
+    let derived_stmt_id = uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_OID,
+        format!("statement:{}", draft_id).as_bytes(),
+    )
+    .to_string();
     let stmt_id = write_statement_row(
-        &fresh_stmt_id,
+        &derived_stmt_id,
         &instrument_id,
         &edited_metadata.instrument_type,
         &meta,
@@ -804,6 +834,13 @@ pub async fn commit_staged_draft<R: tauri::Runtime>(
     .await?;
 
     let entry_ids = map_rows_to_statement_entries(&stmt_id, &edited_rows, pool).await;
+    if entry_ids.len() != edited_rows.len() {
+        return Err(anyhow::anyhow!(
+            "{} of {} statement rows could not be saved — the draft was kept for review",
+            edited_rows.len() - entry_ids.len(),
+            edited_rows.len()
+        ));
+    }
 
     if !edited_rows.is_empty() && !entry_ids.is_empty() {
         let observations =
@@ -814,7 +851,8 @@ pub async fn commit_staged_draft<R: tauri::Runtime>(
             .map_err(|e| anyhow::anyhow!("DB pool error: {}", e))?;
         let obs_cloned = observations.clone();
         let stmt_id_for_obs = stmt_id.clone();
-        conn.interact(move |c| {
+        let failed_rows = conn.interact(move |c| {
+            let mut failed = 0usize;
             for obs in &obs_cloned {
                 let fmt = "%Y-%m-%d %H:%M:%S";
                 let event_time = chrono::NaiveDateTime::parse_from_str(&obs.event_time, fmt)
@@ -865,11 +903,21 @@ pub async fn commit_staged_draft<R: tauri::Runtime>(
                 };
                 if let Err(e) = crate::reconciliation::engine::ingest_observation(c, &row, true) {
                     tracing::warn!("Reconciliation failed for obs '{}': {}", obs.id, e);
+                    failed += 1;
                 }
             }
+            failed
         })
         .await
         .map_err(|e| anyhow::anyhow!("Interact error: {}", e))?;
+        if failed_rows > 0 {
+            return Err(anyhow::anyhow!(
+                "{} of {} statement rows could not be booked — the draft was kept for review; \
+                 committing again finishes the rest",
+                failed_rows,
+                observations.len()
+            ));
+        }
 
         let obs_ids: Vec<String> = observations.into_iter().map(|o| o.id).collect();
         tokio::spawn(
@@ -4159,6 +4207,77 @@ mod tests {
         )
         .await;
         assert!(second.is_err());
+    }
+
+    /// Review H7: a double click (two concurrent commits) books once, and
+    /// re-committing a draft returned to review rewrites the same statement,
+    /// entries and observations instead of duplicating them.
+    #[tokio::test]
+    async fn test_commit_is_claimed_once_and_recommit_is_idempotent() {
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        seed_test_draft(&pool, "draft_h7", "inst_h7", "7777").await;
+
+        let (a, b) = tokio::join!(
+            commit_staged_draft("draft_h7", edited_metadata_fixture(), edited_rows_fixture(), &pool, app.handle()),
+            commit_staged_draft("draft_h7", edited_metadata_fixture(), edited_rows_fixture(), &pool, app.handle()),
+        );
+        assert_eq!([a.is_ok(), b.is_ok()].iter().filter(|ok| **ok).count(), 1);
+        let first_id = a.or(b).unwrap();
+
+        // Simulate a commit that failed part-way and was returned to review.
+        let conn = pool.get().await.unwrap();
+        conn.interact(|c| crate::db::statement_drafts::update_status(c, "draft_h7", "pending_review"))
+            .await
+            .unwrap()
+            .unwrap();
+        let second_id = commit_staged_draft(
+            "draft_h7",
+            edited_metadata_fixture(),
+            edited_rows_fixture(),
+            &pool,
+            app.handle(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(first_id, second_id, "statement id is derived from the draft");
+
+        let sid = second_id.clone();
+        let (stmts, entries, obs): (i64, i64, i64) = conn
+            .interact(move |c| {
+                let q = |sql: &str| c.query_row(sql, [&sid], |r| r.get::<_, i64>(0)).unwrap();
+                (
+                    q("SELECT COUNT(*) FROM statements WHERE id = ?1"),
+                    q("SELECT COUNT(*) FROM statement_entries WHERE statement_id = ?1"),
+                    q("SELECT COUNT(*) FROM transaction_observations WHERE statement_id = ?1"),
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!((stmts, entries, obs), (1, 1, 1));
+    }
+
+    #[test]
+    fn stuck_committing_drafts_return_to_review() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        conn.execute(
+            "INSERT INTO statement_drafts (id, origin, file_hash, rows_json, status)
+             VALUES ('d1', 'manual_upload', 'h', '[]', 'committing'),
+                    ('d2', 'manual_upload', 'h2', '[]', 'committed')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(crate::db::statement_drafts::reset_stuck_committing(&conn).unwrap(), 1);
+        let status = |id: &str| -> String {
+            conn.query_row("SELECT status FROM statement_drafts WHERE id = ?1", [id], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(status("d1"), "pending_review");
+        assert_eq!(status("d2"), "committed");
     }
 
     #[tokio::test]

@@ -782,14 +782,22 @@ pub async fn map_rows_to_statement_entries(
         .interact(move |c| {
             let mut ids: Vec<String> = Vec::new();
             for row in &rows_owned {
-                let entry_id = uuid::Uuid::new_v4().to_string();
+                // Derived from (statement, row) so re-committing the same
+                // statement rewrites the same entry instead of adding another,
+                // and observations keyed on the entry id dedupe (review H7).
+                let entry_id = uuid::Uuid::new_v5(
+                    &uuid::Uuid::NAMESPACE_OID,
+                    format!("statement_entry:{}:{}", stmt_id, row.row_index).as_bytes(),
+                )
+                .to_string();
                 let ref_id = row.reference_id.clone();
                 let result = c.execute(
                     "INSERT INTO statement_entries \
                      (id, statement_id, row_index, transaction_date, description_raw, \
                       merchant_raw, amount, amount_minor, currency, direction, reference_id, \
                       raw_row_json, created_at) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', datetime('now'))",
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', datetime('now')) \
+                     ON CONFLICT(id) DO NOTHING",
                     rusqlite::params![
                         entry_id,
                         stmt_id,

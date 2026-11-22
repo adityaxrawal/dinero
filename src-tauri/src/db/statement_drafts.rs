@@ -119,6 +119,26 @@ pub fn update_status(conn: &Connection, id: &str, status: &str) -> Result<()> {
     Ok(())
 }
 
+/// Atomically claims a pending draft for commit (pending_review -> committing).
+///
+/// Returns false if the draft was not pending, so two concurrent commits (a
+/// double click) cannot both proceed.
+pub fn claim_for_commit(conn: &Connection, id: &str) -> Result<bool> {
+    let n = conn.execute(
+        "UPDATE statement_drafts SET status = 'committing' WHERE id = ?1 AND status = 'pending_review'",
+        params![id],
+    )?;
+    Ok(n == 1)
+}
+
+/// Returns drafts left mid-commit by a crash to review; run at startup.
+pub fn reset_stuck_committing(conn: &Connection) -> Result<usize> {
+    Ok(conn.execute(
+        "UPDATE statement_drafts SET status = 'pending_review' WHERE status = 'committing'",
+        [],
+    )?)
+}
+
 /// Remove a draft once it has been settled.
 pub fn delete(conn: &Connection, id: &str) -> Result<bool> {
     let count = conn.execute("DELETE FROM statement_drafts WHERE id = ?1", params![id])?;
