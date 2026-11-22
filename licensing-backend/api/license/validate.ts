@@ -76,7 +76,7 @@ export async function validateLicense(
   // Server-side status is authoritative. Deriving the state here rather than
   // shipping the raw status keeps entitlement policy on the server, where a
   // modified client cannot reinterpret it.
-  const state = stateForSubscriptionStatus(subscription.status);
+  const state = stateForSubscriptionStatus(subscription.status, subscription.currentPeriodEnd);
   const now = new Date();
   const expiresAt = new Date(now.getTime() + LICENSE_TOKEN_TTL_MS);
 

@@ -37,7 +37,12 @@ export type ReissueTokenDb = {
     findFirst(args: {
       where: { accountId: string };
       orderBy: { createdAt: 'desc' };
-    }): Promise<{ planId: string; billingInterval: string; status: string } | null>;
+    }): Promise<{
+      planId: string;
+      billingInterval: string;
+      status: string;
+      currentPeriodEnd?: Date | null;
+    } | null>;
   };
   licenseToken: {
     findFirst(args: {
@@ -96,7 +101,7 @@ export async function reissueToken(
       device_id: input.new_device_id,
       plan: subscription.planId,
       billing_interval: subscription.billingInterval,
-      state: stateForSubscriptionStatus(subscription.status),
+      state: stateForSubscriptionStatus(subscription.status, subscription.currentPeriodEnd),
     },
     privateKeyPem
   );

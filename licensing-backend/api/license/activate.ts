@@ -213,7 +213,9 @@ export async function activateLicense(
   // for a previously deactivated device.
   await db.licenseToken.upsert({
     where: { deviceFingerprint: input.device_id },
-    update: { jwtIssuedAt: now, jwtExpiresAt: expiresAt, revokedAt: null },
+    // accountId moves too: a device that ran a device-only trial is bound to
+    // that trial's account and must follow the paying account (review M15).
+    update: { accountId: account.id, jwtIssuedAt: now, jwtExpiresAt: expiresAt, revokedAt: null },
     create: {
       accountId: account.id,
       deviceFingerprint: input.device_id,

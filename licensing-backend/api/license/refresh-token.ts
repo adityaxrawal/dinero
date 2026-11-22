@@ -105,7 +105,7 @@ export async function refreshLicenseToken(
       device_id: input.device_id,
       plan: subscription.planId,
       billing_interval: subscription.billingInterval,
-      state: stateForSubscriptionStatus(subscription.status),
+      state: stateForSubscriptionStatus(subscription.status, subscription.currentPeriodEnd),
     },
     privateKeyPem
   );

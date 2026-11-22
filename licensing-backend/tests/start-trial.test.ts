@@ -118,3 +118,55 @@ describe('test_os_reinstall_recognized_not_blocked_as_abuse (integration)', () =
     });
   });
 });
+
+// Review M15: the desktop app registers its trial at first launch by device
+// only; a reinstall or data reset gets the same trial back, and a lapsed
+// trial is signed as LOCKED.
+describe('device-only trials', () => {
+  it('starts a trial without an email, using a placeholder .invalid address', async () => {
+    const db = makeDb({});
+    const result = await startTrial(db, { device_id: 'device-Z' }, TEST_PRIVATE_KEY_PEM);
+    expect(result.status).toBe('trial_started');
+    const created = (db.account.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(created.data.email).toMatch(/^device-[0-9a-f]{24}@trial\.invalid$/);
+  });
+
+  it('a reset on a device bound to a running trial resumes it with the original end date', async () => {
+    const endsAt = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000);
+    const db = makeDb({
+      existingBinding: { accountId: 'acc_trial' },
+      boundSubscription: {
+        status: 'trialing',
+        planId: 'desktop_pro_monthly',
+        billingInterval: 'monthly',
+        currentPeriodEnd: endsAt,
+      },
+      priorDeviceTrialAuditRows: [
+        { eventType: 'trial_started', payload: { device_id: 'device-Z' }, createdAt: new Date() },
+      ],
+    });
+    const result = await startTrial(db, { device_id: 'device-Z' }, TEST_PRIVATE_KEY_PEM);
+    expect(result.status).toBe('trial_resumed');
+    expect((result as { trial_ends_at: string }).trial_ends_at).toBe(endsAt.toISOString());
+    expect(db.subscription.create).not.toHaveBeenCalled();
+  });
+
+  it('a lapsed trial is signed as LOCKED', async () => {
+    const { verifyLicenseJwt } = await import('../lib/jwt');
+    const { TEST_PUBLIC_KEY_PEM } = await import('./testKeys');
+    const db = makeDb({
+      existingBinding: { accountId: 'acc_trial' },
+      boundSubscription: {
+        status: 'trialing',
+        planId: 'desktop_pro_monthly',
+        billingInterval: 'monthly',
+        currentPeriodEnd: new Date(Date.now() - 1000),
+      },
+      priorDeviceTrialAuditRows: [
+        { eventType: 'trial_started', payload: { device_id: 'device-Z' }, createdAt: new Date() },
+      ],
+    });
+    const result = await startTrial(db, { device_id: 'device-Z' }, TEST_PRIVATE_KEY_PEM);
+    expect(verifyLicenseJwt(result.jwt, TEST_PUBLIC_KEY_PEM).state).toBe('LOCKED');
+  });
+});

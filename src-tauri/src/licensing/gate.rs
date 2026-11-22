@@ -28,7 +28,10 @@ pub async fn assert_write_allowed(pool: &deadpool_sqlite::Pool) -> Result<(), Ap
                 "Anonymous evaluation mode is read-only".to_string(),
             ));
         }
-        if state.subscription_status_cached == LicenseStatus::Trial {
+        // A trial the server never registered (offline first launch) falls
+        // back to the local window; a registered one is a signed licence like
+        // any other, and the server signs it LOCKED once it ends (M15).
+        if state.subscription_status_cached == LicenseStatus::Trial && state.license_jwt.is_empty() {
             return assert_within_trial_window(c);
         }
         // Only entitling states pass; Locked, Canceled and Expired used to be
@@ -84,4 +87,56 @@ pub fn trial_days_remaining(c: &rusqlite::Connection) -> Result<i64, AppError> {
 
     let elapsed_days = (Utc::now().naive_utc() - created_at).num_days();
     Ok(TRIAL_WINDOW_DAYS - elapsed_days)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::licensing::state::{upsert_license_state, LicenseStateRow};
+
+    async fn pool_with_trial(jwt: &str) -> deadpool_sqlite::Pool {
+        let dir = std::env::temp_dir().join(format!("dinero_gate_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pool = crate::db::init_db(dir.join("t.db")).await.unwrap();
+        let jwt = jwt.to_string();
+        pool.get()
+            .await
+            .unwrap()
+            .interact(move |c| {
+                c.execute("INSERT OR IGNORE INTO local_profile (id) VALUES (1)", []).unwrap();
+                let now = Utc::now();
+                upsert_license_state(
+                    c,
+                    &LicenseStateRow {
+                        id: 1,
+                        license_jwt: jwt,
+                        subscription_status_cached: LicenseStatus::Trial,
+                        plan_id_cached: None,
+                        current_period_end_cached: None,
+                        jwt_expires_at: now,
+                        last_server_validated_at: None,
+                        last_known_valid_time: now,
+                        device_fingerprint: None,
+                        source: "server_fresh".into(),
+                        billing_interval_cached: None,
+                    },
+                )
+                .unwrap();
+            })
+            .await
+            .unwrap();
+        pool
+    }
+
+    /// Review M15: an unregistered trial uses the local window; a registered
+    /// one must carry a valid signed token (the server signs it LOCKED once
+    /// the trial ends), so a forged or broken token does not pass.
+    #[tokio::test]
+    async fn trial_gate_uses_local_window_only_when_unregistered() {
+        assert!(assert_write_allowed(&pool_with_trial("").await).await.is_ok());
+        assert!(matches!(
+            assert_write_allowed(&pool_with_trial("not-a-real-token").await).await,
+            Err(AppError::LicenseLocked(_))
+        ));
+    }
 }

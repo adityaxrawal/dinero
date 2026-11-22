@@ -26,6 +26,14 @@ pub struct LicenseResponse {
     /// operation result ("validated"/"activated") and is not an entitlement.
     #[serde(default)]
     pub state: Option<String>,
+    /// Set by start-trial: when the server-registered trial ends.
+    #[serde(default)]
+    pub trial_ends_at: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct StartTrialRequest {
+    pub device_id: String,
 }
 
 #[derive(Deserialize)]
@@ -96,6 +104,20 @@ impl LicensingClient {
         res.error_for_status_ref()?;
         let data = res.json::<LicenseResponse>().await?;
         Ok(data)
+    }
+
+    /// Registers (or resumes) this device's trial with the server.
+    pub async fn start_trial(&self, req: StartTrialRequest) -> Result<LicenseResponse> {
+        let url = format!("{}/api/license/start-trial", self.base_url);
+        let builder = self.network.client().post(&url).json(&req);
+        let res = self.network.execute("licensing_backend", builder).await?;
+        if !res.status().is_success() {
+            if let Ok(body) = res.json::<LicensingErrorResponse>().await {
+                anyhow::bail!(body.code);
+            }
+            anyhow::bail!("Licensing Backend start-trial request failed");
+        }
+        Ok(res.json::<LicenseResponse>().await?)
     }
 
     /// Deactivates this device's binding.

@@ -72,7 +72,7 @@ describe('handler entrypoints — method guard', () => {
 describe('handler entrypoints — required fields', () => {
   it.each([
     ['license/validate', validateHandler, 'device_id'],
-    ['license/start-trial', startTrialHandler, 'email'],
+    ['license/start-trial', startTrialHandler, 'device_id'],
     ['billing/create-order', createOrderHandler, 'email'],
   ] as const)('%s rejects a body missing %s', async (_name, handler, field) => {
     const res = makeRes();

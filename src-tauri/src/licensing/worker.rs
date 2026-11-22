@@ -37,6 +37,42 @@ enum PollOutcome {
     Active(crate::licensing::state::LicenseStateRow),
 }
 
+/// Registers this device's trial with the server and stores the signed result.
+async fn register_server_trial(client: &LicensingClient, pool: &Pool) -> anyhow::Result<()> {
+    let device_id = crate::licensing::device::get_device_id()?;
+    let response = client
+        .start_trial(crate::licensing::client::StartTrialRequest { device_id: device_id.clone() })
+        .await?;
+    let claims = crate::licensing::jwt::verify_license_jwt(&response.jwt)?;
+    anyhow::ensure!(claims.device_id == device_id, "trial token is for a different device");
+    let status = crate::licensing::state_machine::server_status(&claims, response.state.as_deref());
+    let expires_at = chrono::DateTime::from_timestamp(claims.exp, 0).unwrap_or_else(Utc::now);
+    let trial_ends_at = response
+        .trial_ends_at
+        .as_deref()
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.with_timezone(&Utc));
+    let row = crate::licensing::state::LicenseStateRow {
+        id: 1,
+        license_jwt: response.jwt,
+        subscription_status_cached: status,
+        plan_id_cached: Some(claims.plan),
+        current_period_end_cached: trial_ends_at.or(Some(expires_at)),
+        jwt_expires_at: expires_at,
+        last_server_validated_at: Some(Utc::now()),
+        last_known_valid_time: Utc::now(),
+        device_fingerprint: Some(device_id),
+        source: "server_fresh".to_string(),
+        billing_interval_cached: Some(claims.billing_interval),
+    };
+    pool.get()
+        .await?
+        .interact(move |c| crate::licensing::state::upsert_license_state(c, &row))
+        .await
+        .map_err(|e| anyhow::anyhow!("interact error: {}", e))??;
+    Ok(())
+}
+
 /// Periodically revalidates the licence in the background.
 pub async fn start_background_validation<R: tauri::Runtime>(
     pool: Pool,
@@ -196,7 +232,16 @@ pub async fn start_background_validation<R: tauri::Runtime>(
                         }
                     }
                 }
-                Ok(Ok(PollOutcome::NoState)) | Ok(Ok(PollOutcome::ClockSkewLocked)) => {}
+                Ok(Ok(PollOutcome::NoState)) => {
+                    // First launch (or after a data reset): anchor the trial on
+                    // the server, so resetting data or the clock cannot restart
+                    // it. Offline, the local 14-day window applies until the
+                    // next attempt (review M15).
+                    if let Err(e) = register_server_trial(&client, &pool).await {
+                        tracing::warn!("Could not register trial with the server yet: {:#}", e);
+                    }
+                }
+                Ok(Ok(PollOutcome::ClockSkewLocked)) => {}
                 Ok(Err(e)) => tracing::error!("Error reading license state: {}", e),
                 Err(e) => tracing::error!("Pool interact error: {}", e),
             }

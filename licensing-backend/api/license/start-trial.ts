@@ -18,7 +18,8 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
 import { LicensingApiError, sendApiError } from '../../lib/errors';
 import { requirePostWithFields } from '../../lib/api_helpers';
-import { signLicenseJwt, stateForSubscriptionStatus } from '../../lib/jwt';
+import { createHash } from 'node:crypto';
+import { signLicenseJwt, stateForSubscriptionStatus, LICENSE_TOKEN_TTL_MS } from '../../lib/jwt';
 import { logAuditEvent, type AuditWriter } from '../../lib/audit';
 import {
   decideTrialEligibility,
@@ -27,12 +28,22 @@ import {
 } from '../../lib/trial_guard';
 
 export interface StartTrialInput {
-  email: string;
+  /** Optional: the desktop app registers its trial at first launch, by device. */
+  email?: string;
   device_id: string;
 }
 
+/**
+ * Placeholder address for a device-only trial account (accounts need a unique
+ * email). The .invalid TLD can never receive mail.
+ */
+export function deviceTrialEmail(deviceId: string): string {
+  const digest = createHash('sha256').update(deviceId).digest('hex').slice(0, 24);
+  return `device-${digest}@trial.invalid`;
+}
+
 export type StartTrialResult =
-  | { status: 'trial_started'; jwt: string; trial_ends_at: string }
+  | { status: 'trial_started' | 'trial_resumed'; jwt: string; trial_ends_at: string }
   | {
       status: 'existing_subscription_recognized';
       jwt: string;
@@ -62,6 +73,7 @@ export async function startTrial(
   input: StartTrialInput,
   privateKeyPem: string
 ): Promise<StartTrialResult> {
+  const email = input.email ?? deviceTrialEmail(input.device_id);
   const existingBinding = await db.licenseToken.findUnique({
     where: { deviceFingerprint: input.device_id },
   });
@@ -74,7 +86,7 @@ export async function startTrial(
     deviceBoundSubscriptionStatus = boundSub?.status ?? null;
   }
 
-  let account = await db.account.findUnique({ where: { email: input.email } });
+  let account = await db.account.findUnique({ where: { email } });
 
   // All three inputs are gathered before the policy runs, keeping the decision
   // itself a pure function over already-known facts.
@@ -113,6 +125,32 @@ export async function startTrial(
       billing_interval: boundSub!.billingInterval,
     };
   }
+  // A reinstall (or data reset) on a device still bound to its trial gets
+  // that same trial back, with its original end date, rather than a new one
+  // or an error. This is what stops a reset from restarting the trial.
+  if (decision.outcome === 'blocked_device_reused' && existingBinding) {
+    const boundSub = await db.subscription.findFirst({
+      where: { accountId: existingBinding.accountId },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (boundSub?.status === 'trialing' && boundSub.currentPeriodEnd) {
+      const jwtToken = signLicenseJwt(
+        {
+          sub: existingBinding.accountId,
+          device_id: input.device_id,
+          plan: boundSub.planId,
+          billing_interval: boundSub.billingInterval,
+          state: stateForSubscriptionStatus(boundSub.status, boundSub.currentPeriodEnd),
+        },
+        privateKeyPem
+      );
+      return {
+        status: 'trial_resumed',
+        jwt: jwtToken,
+        trial_ends_at: boundSub.currentPeriodEnd.toISOString(),
+      };
+    }
+  }
   if (decision.outcome === 'blocked_device_reused') {
     throw new LicensingApiError(
       'VALIDATION_ERROR',
@@ -126,7 +164,7 @@ export async function startTrial(
   // Only now is an account created. Doing it earlier would leave an orphaned
   // account row behind for every blocked trial attempt.
   if (!account) {
-    account = await db.account.create({ data: { email: input.email } });
+    account = await db.account.create({ data: { email } });
   }
 
   const now = new Date();
@@ -149,7 +187,7 @@ export async function startTrial(
       deviceFingerprint: input.device_id,
       deviceBoundAt: now,
       jwtIssuedAt: now,
-      jwtExpiresAt: new Date(now.getTime() + 48 * 60 * 60 * 1000),
+      jwtExpiresAt: new Date(now.getTime() + LICENSE_TOKEN_TTL_MS),
     },
   });
 
@@ -180,7 +218,7 @@ export async function startTrial(
  * HTTP entry point: validates the request, delegates, and maps errors to statuses.
  */
 async function handler(req: VercelRequest, res: VercelResponse) {
-  if (!requirePostWithFields(req, res, ['email', 'device_id'])) return;
+  if (!requirePostWithFields(req, res, ['device_id'])) return;
   const { email, device_id } = req.body;
   const privateKeyPem = process.env.JWT_PRIVATE_KEY_PEM;
   if (!privateKeyPem) {

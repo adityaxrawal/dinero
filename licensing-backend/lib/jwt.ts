@@ -28,10 +28,15 @@ export interface LicenseJwtClaims {
  * The default is LOCKED, which is the safe direction: an unrecognised status
  * (cancelled, halted, completed, expired) must never be read as granting access.
  */
-export function stateForSubscriptionStatus(subscriptionStatus: string): ServerLicenseState {
+export function stateForSubscriptionStatus(
+  subscriptionStatus: string,
+  currentPeriodEnd?: Date | null,
+  now: Date = new Date()
+): ServerLicenseState {
   switch (subscriptionStatus) {
     case 'trialing':
-      return 'TRIAL';
+      // Nothing flips a lapsed trial's status, so its end date decides (M15).
+      return currentPeriodEnd && currentPeriodEnd < now ? 'LOCKED' : 'TRIAL';
     case 'active':
       return 'ACTIVE';
     case 'past_due':

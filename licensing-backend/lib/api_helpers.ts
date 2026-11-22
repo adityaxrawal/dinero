@@ -58,9 +58,25 @@ export function requirePostWithFields(
   return true;
 }
 
+// Delegates are loosely typed so both Prisma clients and test fakes fit; the
+// helper's return type below states what callers actually get.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type LooseFind = (args: any) => Promise<any>;
 interface FindDelegate {
-  findFirst(args: Record<string, unknown>): Promise<{ accountId: string } | null>;
-  findUnique?(args: Record<string, unknown>): Promise<{ accountId: string } | null>;
+  findFirst?: LooseFind;
+  findUnique?: LooseFind;
+}
+
+export interface TokenRow {
+  accountId: string;
+  account?: { email: string };
+}
+
+export interface SubscriptionRow {
+  planId: string;
+  billingInterval: string;
+  status: string;
+  currentPeriodEnd?: Date | null;
 }
 
 /**
@@ -81,8 +97,12 @@ export async function getTokenAndSubscription(
   },
   deviceId: string,
   includeAccount: boolean = false
-) {
-  const method = includeAccount && db.licenseToken.findUnique ? db.licenseToken.findUnique : db.licenseToken.findFirst;
+): Promise<{ token: TokenRow; subscription: SubscriptionRow | null }> {
+  const method =
+    (includeAccount && db.licenseToken.findUnique) ||
+    db.licenseToken.findFirst ||
+    db.licenseToken.findUnique;
+  if (!method) throw new Error('licenseToken delegate has no find method');
   const token = await method({
     where: { deviceFingerprint: deviceId },
     ...(includeAccount ? { include: { account: true } } : {}),
@@ -92,7 +112,7 @@ export async function getTokenAndSubscription(
     throw new LicensingApiError('LICENSE_INVALID', 'No license bound to this device');
   }
 
-  const subscription = await db.subscription.findFirst({
+  const subscription = await db.subscription.findFirst!({
     where: { accountId: token.accountId },
     orderBy: { createdAt: 'desc' },
   });

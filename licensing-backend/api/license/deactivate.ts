@@ -68,6 +68,8 @@ export async function deactivateLicense(
     deviceFingerprint: input.device_id,
   });
 
+  // Device-only trial accounts have a placeholder .invalid address (M15).
+  if (token.account.email.endsWith('.invalid')) return { status: 'deactivated' };
   await emailSender.send({
     to: token.account.email,
     subject: 'Your Dinero license was deactivated',
