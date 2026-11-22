@@ -227,3 +227,15 @@ fn test_license_backend_contains_identity_only_fields() {
         );
     }
 }
+
+/// Integration tests must never key their databases from the real profile.
+#[cfg(debug_assertions)]
+#[test]
+fn test_integration_tests_use_isolated_dev_key() {
+    let path = dinero_app_lib::db::crypto::dev_base_key_path();
+    assert!(
+        !path.to_string_lossy().contains("Application Support"),
+        "integration test key path must be isolated, got {}",
+        path.display()
+    );
+}

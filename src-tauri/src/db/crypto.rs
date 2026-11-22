@@ -35,7 +35,11 @@ static DEV_BASE_KEY: OnceLock<String> = OnceLock::new();
 /// rebuild and each unsigned binary is treated as a different application. Falls
 /// back to a temp path when HOME is unset, as it is under some test runners.
 #[cfg(debug_assertions)]
-fn dev_base_key_path() -> std::path::PathBuf {
+pub fn dev_base_key_path() -> std::path::PathBuf {
+    if let Some(dir) = isolated_key_dir() {
+        let _ = std::fs::create_dir_all(&dir);
+        return dir.join("dinero_dev_base_key.txt");
+    }
     if let Ok(home) = std::env::var("HOME") {
         let dir = std::path::PathBuf::from(home)
             .join("Library")
@@ -46,6 +50,25 @@ fn dev_base_key_path() -> std::path::PathBuf {
     } else {
         std::env::temp_dir().join("dinero_dev_base_key.txt")
     }
+}
+
+/// Directory that replaces the real profile for the dev key, if any.
+///
+/// `DINERO_DEV_KEY_DIR` wins when set. Otherwise test binaries get a fixed
+/// temp directory, so no test can read, overwrite or delete the real profile's
+/// key. Cargo names every test binary `<name>-<16 hex hash>`, wherever it
+/// lands, while the app binary is plain `dinero-app`.
+#[cfg(debug_assertions)]
+fn isolated_key_dir() -> Option<std::path::PathBuf> {
+    if let Some(dir) = std::env::var_os("DINERO_DEV_KEY_DIR") {
+        return Some(dir.into());
+    }
+    let is_test_binary = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.file_stem().map(|s| s.to_string_lossy().into_owned()))
+        .and_then(|stem| stem.rsplit_once('-').map(|(_, h)| h.to_owned()))
+        .is_some_and(|h| h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit()));
+    (cfg!(test) || is_test_binary).then(|| std::env::temp_dir().join("dinero_test_profile"))
 }
 
 /// Development base key, read from disk or generated on first use.
@@ -65,7 +88,11 @@ pub fn get_or_create_base_key() -> Result<String> {
 
     let key = if let Ok(key) = std::fs::read_to_string(&persistent_path) {
         key
-    } else if let Ok(key) = std::fs::read_to_string(&temp_path) {
+    } else if let Some(key) = isolated_key_dir()
+        .is_none()
+        .then(|| std::fs::read_to_string(&temp_path).ok())
+        .flatten()
+    {
         let _ = std::fs::write(&persistent_path, &key);
         key
     } else {
@@ -73,7 +100,6 @@ pub fn get_or_create_base_key() -> Result<String> {
         OsRng.fill_bytes(&mut bytes);
         let new_key = hex::encode(bytes);
         let _ = std::fs::write(&persistent_path, &new_key);
-        let _ = std::fs::write(&temp_path, &new_key);
         new_key
     };
     Ok(DEV_BASE_KEY.get_or_init(|| key).clone())
@@ -371,6 +397,18 @@ pub fn try_migrate_hardware_uuid(
 #[cfg(test)]
 mod hardware_migration_tests {
     use super::*;
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn tests_never_use_the_real_profile_key() {
+        let path = dev_base_key_path();
+        assert!(
+            !path.to_string_lossy().contains("Application Support"),
+            "test key path must be isolated, got {}",
+            path.display()
+        );
+        assert!(path.starts_with(std::env::temp_dir()) || std::env::var_os("DINERO_DEV_KEY_DIR").is_some());
+    }
 
     #[test]
     fn derive_database_key_is_deterministic_per_hw_uuid() {
