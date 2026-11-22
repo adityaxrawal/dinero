@@ -19,11 +19,14 @@ use argon2::{
     password_hash::{PasswordHasher, SaltString},
     Argon2,
 };
+#[cfg(not(debug_assertions))]
 use keyring::Entry;
 use std::sync::OnceLock;
 use uuid::Uuid;
 
+#[cfg(not(debug_assertions))]
 const KEYCHAIN_SERVICE: &str = "com.dinero.app";
+#[cfg(not(debug_assertions))]
 const KEYCHAIN_USER: &str = "dinero-base-key";
 
 #[cfg(debug_assertions)]
@@ -252,14 +255,11 @@ fn base_key_from_phrase(phrase: &str) -> Result<String> {
     bytes_to_base_key(&bytes)
 }
 
-/// Confirms a candidate key actually opens the database before it is stored.
+/// Opens the database with a derived SQLCipher key, failing if it does not decrypt.
 ///
-/// Without this, a valid-looking but wrong phrase would overwrite the keychain
-/// entry and leave the real database permanently unopenable. Reading from
 /// sqlite_master is the cheapest operation that genuinely requires decryption --
 /// opening the file alone succeeds even with the wrong key.
-fn verify_key_decrypts(db_path: &std::path::Path, base_key: &str) -> Result<()> {
-    let db_key = derive_database_key_from_base_key(base_key)?;
+fn open_with_db_key(db_path: &std::path::Path, db_key: &str) -> Result<rusqlite::Connection> {
     let conn = rusqlite::Connection::open(db_path).context("Failed to open database file")?;
     conn.execute_batch(&format!("PRAGMA key = '{}';", db_key))?;
     conn.execute_batch(
@@ -270,23 +270,62 @@ fn verify_key_decrypts(db_path: &std::path::Path, base_key: &str) -> Result<()> 
     let _: i64 = conn
         .query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get(0))
         .context("Recovery phrase did not decrypt the database — it is likely incorrect")?;
-    Ok(())
+    Ok(conn)
 }
 
-/// Restores the base key from a recovery phrase and writes it to the keychain.
+/// Restores the base key from a recovery phrase.
 ///
-/// Verification precedes the write, so a failed recovery leaves the existing
-/// entry untouched.
+/// Tries this Mac's key first, then the key the database was last opened with
+/// on another Mac (the hardware UUID marker). In the second case the database
+/// is re-keyed for this Mac, after a backup copy is taken, since otherwise it
+/// would stay unopenable here (review H11). Verification precedes any write,
+/// so a failed recovery leaves the stored key untouched. The key is stored
+/// where this build reads it: the dev key file in debug, the Keychain in
+/// release.
 pub fn restore_base_key_from_phrase(phrase: &str, db_path: &std::path::Path) -> Result<String> {
     let base_key = base_key_from_phrase(phrase)?;
-    verify_key_decrypts(db_path, &base_key)?;
+    let current_uuid = get_hardware_uuid()?;
+    let current_key = derive_database_key_with_hw_uuid(&base_key, &current_uuid)?;
 
+    if open_with_db_key(db_path, &current_key).is_err() {
+        let app_dir = db_path.parent().unwrap_or(std::path::Path::new("."));
+        let old_uuid = std::fs::read_to_string(hw_uuid_marker_path(app_dir))
+            .map(|s| s.trim().to_string())
+            .ok()
+            .filter(|u| !u.is_empty() && *u != current_uuid)
+            .context("Recovery phrase did not decrypt the database — it is likely incorrect")?;
+        let old_key = derive_database_key_with_hw_uuid(&base_key, &old_uuid)?;
+        let conn = open_with_db_key(db_path, &old_key)?;
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        let backup = db_path.with_extension("db.pre-rekey.bak");
+        std::fs::copy(db_path, &backup).context("Failed to back up database before re-keying")?;
+        conn.execute_batch(&format!("PRAGMA rekey = '{}';", current_key))
+            .context("Failed to re-key the database for this Mac")?;
+        drop(conn);
+        open_with_db_key(db_path, &current_key).context("Re-keyed database did not reopen")?;
+        if let Err(e) = std::fs::write(hw_uuid_marker_path(app_dir), &current_uuid) {
+            tracing::warn!("Failed to update hardware UUID marker after re-key: {}", e);
+        }
+    }
+
+    store_base_key(&base_key)?;
+    Ok(base_key)
+}
+
+/// Stores the base key where `get_or_create_base_key` reads it.
+#[cfg(debug_assertions)]
+fn store_base_key(base_key: &str) -> Result<()> {
+    write_private_file(&dev_base_key_path(), base_key)
+        .context("Failed to write recovered base key to the dev key file")
+}
+
+#[cfg(not(debug_assertions))]
+fn store_base_key(base_key: &str) -> Result<()> {
     let entry =
         Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_USER).context("Failed to create keyring entry")?;
     entry
-        .set_password(&base_key)
-        .context("Failed to write recovered base key to Keychain")?;
-    Ok(base_key)
+        .set_password(base_key)
+        .context("Failed to write recovered base key to Keychain")
 }
 
 /// Removes the development key from both its current and legacy locations.
@@ -450,6 +489,51 @@ pub fn try_migrate_hardware_uuid(
 #[cfg(test)]
 mod hardware_migration_tests {
     use super::*;
+
+    /// Review H11: a database keyed on another Mac (marker holds the old
+    /// hardware UUID) is recovered with the phrase and re-keyed for this Mac,
+    /// keeping its data and a backup copy, even in WAL mode.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn recovery_rekeys_a_database_from_another_mac() {
+        let dir = std::env::temp_dir().join(format!("dinero_rekey_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("finance.db");
+        // Reuse the (isolated) test key so storing it changes nothing for other tests.
+        let base_key = get_or_create_base_key().unwrap();
+        let phrase = get_recovery_phrase().unwrap();
+
+        let old_key = derive_database_key_with_hw_uuid(&base_key, "old-mac-uuid").unwrap();
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(&format!("PRAGMA key = '{}';", old_key)).unwrap();
+            conn.execute_batch(
+                "PRAGMA cipher_page_size = 4096; PRAGMA kdf_iter = 256000;
+                 PRAGMA cipher_hmac_algorithm = HMAC_SHA512; PRAGMA journal_mode = WAL;
+                 CREATE TABLE t (v TEXT); INSERT INTO t VALUES ('kept');",
+            )
+            .unwrap();
+        }
+        std::fs::write(hw_uuid_marker_path(&dir), "old-mac-uuid").unwrap();
+
+        restore_base_key_from_phrase(&phrase, &db_path).unwrap();
+
+        let current_key = derive_database_key_from_base_key(&base_key).unwrap();
+        let conn = open_with_db_key(&db_path, &current_key).expect("opens with this Mac's key");
+        let v: String = conn.query_row("SELECT v FROM t", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, "kept");
+        assert!(dir.join("finance.db.pre-rekey.bak").exists());
+        assert_eq!(
+            std::fs::read_to_string(hw_uuid_marker_path(&dir)).unwrap(),
+            get_hardware_uuid().unwrap()
+        );
+        assert!(restore_base_key_from_phrase(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            &db_path
+        )
+        .is_err(), "a wrong phrase must not decrypt");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[cfg(unix)]
     #[test]
