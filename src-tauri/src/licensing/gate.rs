@@ -23,11 +23,6 @@ pub async fn assert_write_allowed(pool: &deadpool_sqlite::Pool) -> Result<(), Ap
             return assert_within_trial_window(c);
         };
 
-        if state.subscription_status_cached == LicenseStatus::Locked {
-            return Err(AppError::LicenseLocked(
-                "License is locked — all writes are blocked until it is refreshed".to_string(),
-            ));
-        }
         if state.subscription_status_cached == LicenseStatus::AnonymousEval {
             return Err(AppError::LicenseLocked(
                 "Anonymous evaluation mode is read-only".to_string(),
@@ -35,6 +30,14 @@ pub async fn assert_write_allowed(pool: &deadpool_sqlite::Pool) -> Result<(), Ap
         }
         if state.subscription_status_cached == LicenseStatus::Trial {
             return assert_within_trial_window(c);
+        }
+        // Only entitling states pass; Locked, Canceled and Expired used to be
+        // let through by a valid signature alone (review H2).
+        if !state.subscription_status_cached.is_entitled() {
+            return Err(AppError::LicenseLocked(format!(
+                "License is {} — writes are blocked until it is renewed or refreshed",
+                state.subscription_status_cached.as_str()
+            )));
         }
 
         let claims =

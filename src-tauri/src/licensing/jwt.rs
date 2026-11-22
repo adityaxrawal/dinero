@@ -15,6 +15,9 @@ pub struct LicenseClaims {
     pub plan: String,
     pub billing_interval: String,
     pub exp: i64,
+    /// Signed entitlement state; absent in tokens minted before it existed.
+    #[serde(default)]
+    pub state: Option<String>,
 }
 
 /// Verifies a licence token against the embedded public key.
@@ -96,6 +99,7 @@ NwIDAQAB
             plan: "full".into(),
             billing_interval: "monthly".into(),
             exp: chrono::Utc::now().timestamp() + 3600,
+            state: Some("ACTIVE".into()),
         }
     }
 
@@ -105,6 +109,7 @@ NwIDAQAB
         let jwt = sign_test_jwt(&claims);
         let verified = verify_license_jwt_with_key(&jwt, TEST_PUBLIC_KEY_PEM).unwrap();
         assert_eq!(verified.sub, "user@example.com");
+        assert_eq!(verified.state.as_deref(), Some("ACTIVE"));
         assert_eq!(verified.device_id, "device-abc");
         assert_eq!(verified.plan, "full");
     }

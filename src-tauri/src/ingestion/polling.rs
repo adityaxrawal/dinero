@@ -178,6 +178,14 @@ pub(crate) async fn poll_all_accounts<R: tauri::Runtime>(
     pool: &Pool,
     base_url: &str,
 ) -> anyhow::Result<()> {
+    // A lapsed licence stops new ingestion (reads stay available). The
+    // background poller never checked this before, so only manual actions
+    // were actually blocked.
+    if let Err(e) = crate::licensing::gate::assert_write_allowed(pool).await {
+        tracing::info!("Gmail polling skipped: {}", e);
+        return Ok(());
+    }
+
     let accounts: Vec<ConnectedAccountsRow> = {
         let conn = pool.get().await?;
         conn.interact(|c| connected_accounts::get_all_accounts(c))

@@ -48,6 +48,49 @@ pub fn transition(conn: &Connection, to: LicenseStatus) -> Result<()> {
     Ok(())
 }
 
+/// The entitlement a verified server response grants.
+///
+/// The signed `state` claim wins, so a tampered response body cannot upgrade
+/// itself; tokens minted before the claim existed fall back to the response's
+/// `state`. With neither, the result is Locked (fail closed). Review C4/H2.
+pub fn server_status(
+    claims: &crate::licensing::jwt::LicenseClaims,
+    response_state: Option<&str>,
+) -> LicenseStatus {
+    claims
+        .state
+        .as_deref()
+        .or(response_state)
+        .map(LicenseStatus::from_server_state)
+        .unwrap_or(LicenseStatus::Locked)
+}
+
+/// Records a verified server validation: token, status, expiry, timestamp.
+///
+/// The one place a server answer is written. A verified server response is
+/// authoritative, so it may move the licence to any state -- including out of
+/// Locked after a renewal -- unlike the local, time-driven transitions above.
+/// Errors are returned rather than dropped: a failed write here once meant the
+/// token was never refreshed and paying users were locked out after 48h.
+pub fn apply_server_validation(
+    conn: &Connection,
+    status: &LicenseStatus,
+    jwt: &str,
+    expires_at: chrono::DateTime<chrono::Utc>,
+) -> Result<()> {
+    let n = conn.execute(
+        "UPDATE license_state SET license_jwt = ?1, subscription_status_cached = ?2,
+             jwt_expires_at = ?3, current_period_end_cached = ?3,
+             last_server_validated_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+         WHERE id = 1",
+        rusqlite::params![jwt, status.as_str(), expires_at],
+    )?;
+    if n != 1 {
+        bail!("no license_state row to update");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,6 +116,62 @@ mod tests {
             },
         )
         .unwrap();
+    }
+
+    fn claims(state: Option<&str>) -> crate::licensing::jwt::LicenseClaims {
+        crate::licensing::jwt::LicenseClaims {
+            sub: "s".into(),
+            device_id: "d".into(),
+            plan: "p".into(),
+            billing_interval: "monthly".into(),
+            exp: 0,
+            state: state.map(String::from),
+        }
+    }
+
+    /// Review C4/H2: the signed claim decides; the body is only a fallback for
+    /// old tokens; nothing at all fails closed. "validated" (the old `status`
+    /// value) is never an entitlement.
+    #[test]
+    fn server_status_prefers_signed_claim_and_fails_closed() {
+        assert_eq!(server_status(&claims(Some("LOCKED")), Some("ACTIVE")), LicenseStatus::Locked);
+        assert_eq!(server_status(&claims(Some("ACTIVE")), None), LicenseStatus::Active);
+        assert_eq!(server_status(&claims(None), Some("PAST_DUE")), LicenseStatus::PastDue);
+        assert_eq!(server_status(&claims(None), Some("TRIAL")), LicenseStatus::Trial);
+        assert_eq!(server_status(&claims(None), None), LicenseStatus::Locked);
+        assert_eq!(server_status(&claims(Some("validated")), None), LicenseStatus::Locked);
+    }
+
+    /// Review C4: a successful validation is stored (the old raw write of
+    /// status "validated" violated the CHECK constraint and was dropped), and
+    /// a renewal can lift a Locked licence.
+    #[test]
+    fn apply_server_validation_stores_token_and_can_unlock() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        seed_state(&conn, LicenseStatus::Locked);
+        let exp = Utc::now() + chrono::Duration::days(7);
+        apply_server_validation(&conn, &LicenseStatus::Active, "new-jwt", exp).unwrap();
+        let st = get_license_state(&conn).unwrap().unwrap();
+        assert_eq!(st.subscription_status_cached, LicenseStatus::Active);
+        assert_eq!(st.license_jwt, "new-jwt");
+        assert_eq!(st.jwt_expires_at.timestamp(), exp.timestamp());
+
+        apply_server_validation(&conn, &LicenseStatus::Locked, "locked-jwt", exp).unwrap();
+        assert_eq!(
+            get_license_state(&conn).unwrap().unwrap().subscription_status_cached,
+            LicenseStatus::Locked
+        );
+    }
+
+    #[test]
+    fn only_entitling_statuses_permit_writes() {
+        use LicenseStatus::*;
+        for s in [Active, Grace, PastDue, Trial] {
+            assert!(s.is_entitled(), "{s:?}");
+        }
+        for s in [Locked, Canceled, Expired, AnonymousEval] {
+            assert!(!s.is_entitled(), "{s:?}");
+        }
     }
 
     #[test]

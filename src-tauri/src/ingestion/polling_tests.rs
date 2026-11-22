@@ -659,6 +659,54 @@ mod tests {
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
+    /// Licensing Q1: a locked licence stops background ingestion entirely.
+    #[tokio::test]
+    async fn test_locked_license_skips_polling() {
+        let mut server = mockito::Server::new_async().await;
+        let account_id = format!("acc_locked_{}", uuid::Uuid::new_v4());
+        write_dev_token(&account_id);
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let pool = init_db(temp_dir.join("test.db")).await.expect("DB init failed");
+        setup_account_for_poll(&pool, &account_id, Some("h1")).await;
+        let conn = pool.get().await.unwrap();
+        conn.interact(|c| {
+            let now = chrono::Utc::now();
+            crate::licensing::state::upsert_license_state(
+                c,
+                &crate::licensing::state::LicenseStateRow {
+                    id: 1,
+                    license_jwt: "jwt".into(),
+                    subscription_status_cached: crate::licensing::state::LicenseStatus::Locked,
+                    plan_id_cached: None,
+                    current_period_end_cached: None,
+                    jwt_expires_at: now,
+                    last_server_validated_at: None,
+                    last_known_valid_time: now,
+                    device_fingerprint: None,
+                    source: "server_fresh".into(),
+                    billing_interval_cached: None,
+                },
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+        let history = server
+            .mock("GET", mockito::Matcher::Any)
+            .expect(0)
+            .create_async()
+            .await;
+        let app = mock_builder().build(mock_context(tauri::test::noop_assets())).unwrap();
+        app.manage(crate::auth::session::SessionState::default());
+        app.manage(crate::security::incident_response::IncidentMonitor::default());
+        app.manage(test_queue_handles());
+        poll_all_accounts(&app.handle().clone(), &pool, &server.url()).await.unwrap();
+        history.assert_async().await;
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
     /// Doc 30 TASK-QA-005 acceptance:
     /// `test_polling_pauses_during_sleep_and_recovers_on_resume`. There is no
     /// custom sleep/wake-detection code anywhere in the polling loop, by

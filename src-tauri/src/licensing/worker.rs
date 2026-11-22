@@ -101,17 +101,27 @@ pub async fn start_background_validation<R: tauri::Runtime>(
                         match client.validate(req).await {
                             Ok(response) => {
                                 match crate::licensing::jwt::verify_license_jwt(&response.jwt) {
-                                    Ok(_claims) => {
+                                    Ok(claims) => {
                                         tracing::info!("License validation successful (JWT signature verified)");
-                                        let jwt_clone = response.jwt.clone();
-                                        let status_clone = response.status.clone();
-                                        let _ = conn.interact(move |c| {
-                                            c.execute(
-                                                "UPDATE license_state SET license_jwt = ?1, subscription_status_cached = ?2, last_server_validated_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
-                                                rusqlite::params![jwt_clone, status_clone],
-                                            )?;
-                                            Ok::<_, anyhow::Error>(())
-                                        }).await;
+                                        let status = crate::licensing::state_machine::server_status(
+                                            &claims,
+                                            response.state.as_deref(),
+                                        );
+                                        let jwt = response.jwt.clone();
+                                        let expires_at = chrono::DateTime::from_timestamp(claims.exp, 0)
+                                            .unwrap_or_else(Utc::now);
+                                        let write = conn
+                                            .interact(move |c| {
+                                                crate::licensing::state_machine::apply_server_validation(
+                                                    c, &status, &jwt, expires_at,
+                                                )
+                                            })
+                                            .await;
+                                        match write {
+                                            Ok(Ok(())) => {}
+                                            Ok(Err(e)) => tracing::error!("Failed to store license validation: {:#}", e),
+                                            Err(e) => tracing::error!("Failed to store license validation: {}", e),
+                                        }
                                     }
                                     Err(e) => {
                                         tracing::error!(

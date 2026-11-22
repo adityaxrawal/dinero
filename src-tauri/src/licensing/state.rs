@@ -34,6 +34,27 @@ impl LicenseStatus {
         }
     }
 
+    /// Maps the server's entitlement state onto a local status.
+    ///
+    /// Unknown values map to Locked: an unrecognised state must never grant
+    /// access.
+    pub fn from_server_state(state: &str) -> Self {
+        match state {
+            "TRIAL" => LicenseStatus::Trial,
+            "ACTIVE" => LicenseStatus::Active,
+            "PAST_DUE" => LicenseStatus::PastDue,
+            _ => LicenseStatus::Locked,
+        }
+    }
+
+    /// Whether this status permits writes (the trial window is checked separately).
+    pub fn is_entitled(&self) -> bool {
+        matches!(
+            self,
+            LicenseStatus::Active | LicenseStatus::Grace | LicenseStatus::PastDue | LicenseStatus::Trial
+        )
+    }
+
     /// Parses a stored status string back into its enum.
     pub fn parse_status(s: &str) -> Option<Self> {
         match s {

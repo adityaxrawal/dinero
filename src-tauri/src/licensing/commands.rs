@@ -191,7 +191,7 @@ pub async fn license_activate(
     let expires_at: DateTime<Utc> = DateTime::from_timestamp(claims.exp, 0)
         .ok_or_else(|| AppError::Auth("Invalid JWT expiry claim".to_string()))?;
 
-    let status = LicenseStatus::parse_status(&response.status).unwrap_or(LicenseStatus::Active);
+    let status = crate::licensing::state_machine::server_status(&claims, response.state.as_deref());
 
     let conn = pool.get().await.map_err(|e| AppError::Db(e.to_string()))?;
     let row = LicenseStateRow {
@@ -296,15 +296,12 @@ pub async fn license_refresh(
 
     let expires_at: DateTime<Utc> = DateTime::from_timestamp(claims.exp, 0)
         .ok_or_else(|| AppError::Auth("Invalid JWT expiry claim".to_string()))?;
-    let status = LicenseStatus::parse_status(&response.status).unwrap_or(LicenseStatus::Active);
+    let status = crate::licensing::state_machine::server_status(&claims, response.state.as_deref());
     let status_str = status.as_str();
 
     let conn = pool.get().await.map_err(|e| AppError::Db(e.to_string()))?;
     conn.interact(move |c| {
-        c.execute(
-            "UPDATE license_state SET license_jwt = ?1, subscription_status_cached = ?2, current_period_end_cached = ?3, jwt_expires_at = ?3, last_server_validated_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
-            rusqlite::params![response.jwt, status_str, expires_at],
-        )
+        crate::licensing::state_machine::apply_server_validation(c, &status, &response.jwt, expires_at)
     })
     .await
     .map_err(|e| AppError::Unknown(e.to_string()))?

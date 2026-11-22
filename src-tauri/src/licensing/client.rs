@@ -22,6 +22,10 @@ pub struct ActivateRequest {
 pub struct LicenseResponse {
     pub jwt: String,
     pub status: String,
+    /// Entitlement (TRIAL/ACTIVE/PAST_DUE/LOCKED). `status` is only the
+    /// operation result ("validated"/"activated") and is not an entitlement.
+    #[serde(default)]
+    pub state: Option<String>,
 }
 
 #[derive(Deserialize)]
