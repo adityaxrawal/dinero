@@ -131,7 +131,8 @@ model PaymentProviderRecord {
   /// Never a card/bank/UPI identifier — Razorpay-issued opaque references only.
   razorpayCustomerId     String? @map("razorpay_customer_id")
   razorpaySubscriptionId String? @map("razorpay_subscription_id")
-  razorpayPaymentId      String? @map("razorpay_payment_id")
+  /// Unique: one payment activates one account (review H1).
+  razorpayPaymentId      String? @unique @map("razorpay_payment_id")
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz

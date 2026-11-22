@@ -64,6 +64,8 @@ const RATE_LIMIT_MAX_ATTEMPTS = 5;
 
 export type ActivateDb = {
   account: Pick<PrismaClient['account'], 'findUnique' | 'create'>;
+  plan: Pick<PrismaClient['plan'], 'findUnique'>;
+  paymentProviderRecord: Pick<PrismaClient['paymentProviderRecord'], 'findFirst' | 'create'>;
   licenseToken: Pick<PrismaClient['licenseToken'], 'findFirst' | 'upsert'>;
   subscription: Pick<PrismaClient['subscription'], 'create' | 'findFirst'>;
   licensingAuditLog: AuditWriter;
@@ -121,7 +123,51 @@ export async function activateLicense(
     throw new LicensingApiError('VALIDATION_ERROR', 'Unknown billing_interval');
   }
 
+  // A valid signature only proves Razorpay saw the payment; it must also have
+  // gone through, for the full price of the plan being activated (review H1).
+  if (payment.status !== 'captured' && payment.status !== 'authorized') {
+    throw new LicensingApiError(
+      'PAYMENT_VERIFICATION_FAILED',
+      `Payment is not complete (status: ${payment.status})`
+    );
+  }
+  const plan = await db.plan.findUnique({ where: { id: planInfo.planId } });
+  if (!plan || payment.amount !== plan.amountMinor) {
+    throw new LicensingApiError(
+      'PAYMENT_VERIFICATION_FAILED',
+      'Payment amount does not match the selected plan'
+    );
+  }
+
   const account = await findOrCreateAccount(db, input.email);
+
+  // One payment activates one account. The same account re-activating with
+  // its own payment is fine; anyone else is refused. The UNIQUE column also
+  // stops two concurrent activations racing past this check.
+  const priorUse = await db.paymentProviderRecord.findFirst({
+    where: { razorpayPaymentId: input.razorpay_payment_id },
+  });
+  if (priorUse && priorUse.accountId !== account.id) {
+    throw new LicensingApiError(
+      'PAYMENT_VERIFICATION_FAILED',
+      'This payment has already been used to activate a license'
+    );
+  }
+  if (!priorUse) {
+    try {
+      await db.paymentProviderRecord.create({
+        data: { accountId: account.id, razorpayPaymentId: input.razorpay_payment_id },
+      });
+    } catch (e) {
+      if ((e as { code?: string }).code === 'P2002') {
+        throw new LicensingApiError(
+          'PAYMENT_VERIFICATION_FAILED',
+          'This payment has already been used to activate a license'
+        );
+      }
+      throw e;
+    }
+  }
 
   const currentBinding = await db.licenseToken.findFirst({
     where: { accountId: account.id },

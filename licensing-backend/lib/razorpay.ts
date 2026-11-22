@@ -74,6 +74,8 @@ export function realRazorpayOrders(keyId: string, keySecret: string): RazorpayOr
 export interface RazorpayPaymentDetails {
   orderId: string;
   amount: number;
+  /** Razorpay payment status: created | authorized | captured | refunded | failed. */
+  status: string;
   notes?: Record<string, string>;
 }
 
@@ -89,7 +91,12 @@ export function realRazorpayPayments(keySecret: string): RazorpayPayments {
       const Razorpay = require('razorpay');
       const client = new Razorpay({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: keySecret });
       const payment = await client.payments.fetch(paymentId);
-      return { orderId: payment.order_id, amount: payment.amount, notes: payment.notes };
+      return {
+        orderId: payment.order_id,
+        amount: payment.amount,
+        status: payment.status,
+        notes: payment.notes,
+      };
     },
   };
 }

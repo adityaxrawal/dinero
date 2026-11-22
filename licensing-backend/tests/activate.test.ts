@@ -19,7 +19,7 @@ const VALID_SIGNATURE = (() => {
 })();
 
 function fakeRazorpayPayments(orderId = ORDER_ID) {
-  return { fetch: vi.fn().mockResolvedValue({ orderId, amount: 29900 }) };
+  return { fetch: vi.fn().mockResolvedValue({ orderId, amount: 29900, status: 'captured' }) };
 }
 
 function makeDb(overrides: {
@@ -27,6 +27,7 @@ function makeDb(overrides: {
   currentBinding: Record<string, unknown> | null;
   existingSubscription?: Record<string, unknown> | null;
   auditRows?: { eventType: string; payload: unknown; createdAt: Date }[];
+  paymentRecord?: { accountId: string } | null;
 }): ActivateDb {
   const auditRows = overrides.auditRows ?? [];
   return {
@@ -36,6 +37,13 @@ function makeDb(overrides: {
         .fn()
         .mockResolvedValue({ id: 'acc_new', email: 'user@example.com', trialUsed: false }),
     } as unknown as ActivateDb['account'],
+    plan: {
+      findUnique: vi.fn().mockResolvedValue({ id: 'desktop_pro_monthly', amountMinor: 29900 }),
+    } as unknown as ActivateDb['plan'],
+    paymentProviderRecord: {
+      findFirst: vi.fn().mockResolvedValue(overrides.paymentRecord ?? null),
+      create: vi.fn().mockResolvedValue({}),
+    } as unknown as ActivateDb['paymentProviderRecord'],
     licenseToken: {
       findFirst: vi.fn().mockResolvedValue(overrides.currentBinding),
       upsert: vi.fn().mockResolvedValue({}),
@@ -218,4 +226,43 @@ describe('payment signature verification (real HMAC, no mock)', () => {
 
 it('LicensingApiError is the real thrown type', () => {
   expect(new LicensingApiError('LICENSE_INVALID', 'x')).toBeInstanceOf(LicensingApiError);
+});
+
+// Review H1: a payment must be complete, for the plan's price, and used once.
+describe('payment checks on activation', () => {
+  const account = { id: 'acc_1', email: 'user@example.com', trialUsed: false };
+  const run = (db: ActivateDb, payment: Record<string, unknown>) =>
+    activateLicense(db, baseInput, TEST_PRIVATE_KEY_PEM, RAZORPAY_KEY_SECRET, {
+      fetch: vi.fn().mockResolvedValue({ orderId: ORDER_ID, ...payment }),
+    });
+
+  it('rejects a payment that is not captured or authorized', async () => {
+    const db = makeDb({ account, currentBinding: null });
+    await expect(run(db, { amount: 29900, status: 'failed' })).rejects.toThrow(/not complete/);
+  });
+
+  it('rejects a payment whose amount does not match the plan', async () => {
+    const db = makeDb({ account, currentBinding: null });
+    await expect(run(db, { amount: 100, status: 'captured' })).rejects.toThrow(/amount/);
+  });
+
+  it('rejects a payment already used by another account', async () => {
+    const db = makeDb({ account, currentBinding: null, paymentRecord: { accountId: 'acc_other' } });
+    await expect(run(db, { amount: 29900, status: 'captured' })).rejects.toThrow(/already been used/);
+  });
+
+  it('allows the same account to re-activate with its own payment', async () => {
+    const db = makeDb({ account, currentBinding: null, paymentRecord: { accountId: 'acc_1' } });
+    const result = await run(db, { amount: 29900, status: 'captured' });
+    expect(result.status).toBe('activated');
+    expect(db.paymentProviderRecord.create).not.toHaveBeenCalled();
+  });
+
+  it('records the payment on first use', async () => {
+    const db = makeDb({ account, currentBinding: null });
+    await run(db, { amount: 29900, status: 'captured' });
+    expect(db.paymentProviderRecord.create).toHaveBeenCalledWith({
+      data: { accountId: 'acc_1', razorpayPaymentId: PAYMENT_ID },
+    });
+  });
 });
