@@ -87,3 +87,9 @@ implementation-log.md
 !/scripts/verify_release_prerequisites.sh
 !/scripts/generate_release_notes.sh
 !/scripts/.placeholder_license_public.pem.sha256
+
+# ------------------------------------------------------------------------------
+# Local Tooling Output (graphify knowledge graph, audit scratch)
+# ------------------------------------------------------------------------------
+/graphify-out/
+/tmp-arch-audit/
