@@ -179,6 +179,105 @@ pub(crate) async fn enqueue_layer6_job(pool: &Pool, tx: &mpsc::Sender<Layer6Job>
     }
 }
 
+/// Recovers statements left `queued` by a crash or quit before this launch.
+///
+/// The statement queue is in memory, so a `queued` row from an earlier run has
+/// no job behind it; and because a `statements` row exists for its message,
+/// dedupe would never let it be processed again. A row whose staged PDF still
+/// exists is re-enqueued (its password resolved as on first ingest); one
+/// without a PDF is deleted so the message can be reprocessed.
+pub async fn recover_queued_statements<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    pool: &Pool,
+    tx: &mpsc::Sender<StatementJob>,
+    app_dir: &std::path::Path,
+    launched_before: chrono::NaiveDateTime,
+) {
+    let cutoff = launched_before.format("%Y-%m-%d %H:%M:%S").to_string();
+    let rows: Vec<(String, Option<String>, String)> = match pool.get().await {
+        Ok(conn) => conn
+            .interact(move |c| -> rusqlite::Result<Vec<(String, Option<String>, String)>> {
+                let mut stmt = c.prepare(
+                    "SELECT id, file_hash, source_type FROM statements
+                     WHERE parse_status = 'queued' AND created_at < ?1",
+                )?;
+                let rows = stmt
+                    .query_map([cutoff], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                    .collect();
+                rows
+            })
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_default(),
+        Err(_) => return,
+    };
+    if rows.is_empty() {
+        return;
+    }
+    tracing::info!("Recovering {} statement(s) left queued before this launch", rows.len());
+
+    for (stmt_id, file_hash, source_type) in rows {
+        let bytes = crate::statements::pdf_storage::read_pdf(app_dir, &stmt_id)
+            .ok()
+            .flatten();
+        let Some(bytes) = bytes else {
+            tracing::warn!("Queued statement '{}' has no staged PDF — removing so it can be reprocessed", stmt_id);
+            delete_queued_statement(pool, &stmt_id).await;
+            continue;
+        };
+        let file_hash = file_hash.unwrap_or_else(|| {
+            use sha2::Digest;
+            format!("{:x}", sha2::Sha256::digest(&bytes))
+        });
+        let filename = "statement.pdf".to_string();
+        let password = match crate::statements::password::resolve_statement_password(
+            &stmt_id, &bytes, &filename, &file_hash, pool, app, None,
+        )
+        .await
+        {
+            Ok(crate::statements::password::StatementPasswordResolution::Proceed(p)) => p,
+            Ok(crate::statements::password::StatementPasswordResolution::PromptCreated) => {
+                // Same as first ingest: an awaiting-password entry now owns the
+                // staged PDF, and no statements row exists until it is unlocked.
+                delete_queued_statement(pool, &stmt_id).await;
+                continue;
+            }
+            Err(e) => {
+                tracing::error!("Password resolution failed for queued statement '{}': {}", stmt_id, e);
+                continue;
+            }
+        };
+        let origin = if source_type == "manual_upload" { "manual_upload" } else { "email_scan" };
+        let job = StatementJob {
+            filename,
+            file_hash,
+            stmt_id,
+            batch_progress: None,
+            password,
+            origin: origin.to_string(),
+        };
+        if tx.send(job).await.is_err() {
+            tracing::error!("Statement Queue closed during queued-statement recovery");
+            break;
+        }
+    }
+}
+
+async fn delete_queued_statement(pool: &Pool, stmt_id: &str) {
+    let id = stmt_id.to_string();
+    if let Ok(conn) = pool.get().await {
+        let _ = conn
+            .interact(move |c| {
+                c.execute(
+                    "DELETE FROM statements WHERE id = ?1 AND parse_status = 'queued'",
+                    rusqlite::params![id],
+                )
+            })
+            .await;
+    }
+}
+
 /// Re-queues LLM jobs left pending by a previous session.
 ///
 /// Runs at startup, which is what makes extraction survive a quit mid-scan.
@@ -2208,6 +2307,75 @@ mod layer6_tests {
 
         assert!(rx.recv().await.is_some());
 
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+}
+
+#[cfg(test)]
+mod queued_statement_recovery_tests {
+    use super::*;
+    use std::fs;
+    use tauri::test::{mock_builder, mock_context};
+
+    /// Review H6: a statement left `queued` by a crash is re-enqueued when its
+    /// staged PDF exists, released (row deleted) when it does not, and rows
+    /// created after launch are never touched.
+    #[tokio::test]
+    async fn queued_statements_from_before_launch_are_recovered_or_released() {
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+        let app = mock_builder().build(mock_context(tauri::test::noop_assets())).unwrap();
+
+        let conn = pool.get().await.unwrap();
+        conn.interact(|c| {
+            for id in ["with_pdf", "without_pdf", "fresh"] {
+                crate::db::statements::insert_queued(c, id, "gmail_email", Some(id), None).unwrap();
+            }
+            c.execute(
+                "UPDATE statements SET created_at = datetime('now', '-1 hour') WHERE id != 'fresh'",
+                [],
+            )
+            .unwrap();
+        })
+        .await
+        .unwrap();
+        let pdf = fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/statements/hdfc_plain.pdf"),
+        )
+        .unwrap();
+        crate::statements::pdf_storage::store_pdf(&temp_dir, "with_pdf", &pdf).unwrap();
+
+        let (tx, mut rx) = mpsc::channel::<StatementJob>(4);
+        let launched = chrono::Utc::now().naive_utc() - chrono::Duration::minutes(1);
+        recover_queued_statements(app.handle(), &pool, &tx, &temp_dir, launched).await;
+
+        let remaining: Vec<String> = conn
+            .interact(|c| {
+                let mut s = c.prepare("SELECT id FROM statements ORDER BY id").unwrap();
+                s.query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect()
+            })
+            .await
+            .unwrap();
+
+        // Password resolution needs the PDF sidecar. Where it can read the PDF
+        // the statement is re-enqueued; where it cannot (the PDF looks locked),
+        // it is handed to the awaiting-password flow like a first ingest.
+        if crate::statements::password::is_pdf_unencrypted(&pdf).await {
+            let job = rx.try_recv().expect("statement with a staged PDF must be re-enqueued");
+            assert_eq!(job.stmt_id, "with_pdf");
+            assert_eq!(job.origin, "email_scan");
+            assert_eq!(remaining, vec!["fresh".to_string(), "with_pdf".to_string()]);
+        } else {
+            assert_eq!(remaining, vec!["fresh".to_string()]);
+            assert!(
+                crate::statements::pdf_storage::read_pdf(&temp_dir, "with_pdf").unwrap().is_some(),
+                "the staged PDF must stay for the awaiting-password entry"
+            );
+        }
+        assert!(rx.try_recv().is_err(), "at most one job expected");
+        // "without_pdf" is gone in both cases; "fresh" (after launch) is untouched.
+        assert!(!remaining.contains(&"without_pdf".to_string()));
         let _ = fs::remove_dir_all(&temp_dir);
     }
 }

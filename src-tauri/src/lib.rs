@@ -496,7 +496,28 @@ pub fn run() {
             // The layer-6 sender is captured before the handles are moved into
             // managed state, so the replay task below can still reach the queue.
             let layer6_tx_for_replay = queue_handles.layer6_tx.clone();
+            let statement_tx_for_recovery = queue_handles.statement_tx.clone();
             app.manage(queue_handles);
+
+            // Statements left `queued` by a crash have no in-memory job behind
+            // them; re-enqueue or release them (review H6). Only rows created
+            // before this launch are touched, so new ingest is never doubled.
+            {
+                let launched_at = chrono::Utc::now().naive_utc();
+                let pool = pool_clone.clone();
+                let app_handle = app.handle().clone();
+                let app_dir = app_dir.clone();
+                tauri::async_runtime::spawn(async move {
+                    crate::ingestion::queues::recover_queued_statements(
+                        &app_handle,
+                        &pool,
+                        &statement_tx_for_recovery,
+                        &app_dir,
+                        launched_at,
+                    )
+                    .await;
+                });
+            }
 
             // Re-enqueues extraction jobs that were still pending when the app
             // last exited, so work interrupted by a quit is not silently dropped.
