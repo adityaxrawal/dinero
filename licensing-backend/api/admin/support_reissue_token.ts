@@ -15,7 +15,7 @@ import { prisma } from '../../lib/db';
 import {LicensingApiError} from '../../lib/errors';
 import { requirePostWithFields, handleAdminSupportError } from '../../lib/api_helpers';
 import { assertAdminAuthorized } from '../../lib/admin_auth';
-import { signLicenseJwt } from '../../lib/jwt';
+import { signLicenseJwt, stateForSubscriptionStatus, LICENSE_TOKEN_TTL_MS } from '../../lib/jwt';
 import { maskDeviceFingerprint } from '../../lib/license_key';
 import { logAuditEvent, type AuditWriter } from '../../lib/audit';
 
@@ -89,13 +89,14 @@ export async function reissueToken(
   }
 
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + 48 * 60 * 60 * 1000);
+  const expiresAt = new Date(now.getTime() + LICENSE_TOKEN_TTL_MS);
   const newJwt = signLicenseJwt(
     {
       sub: input.email,
       device_id: input.new_device_id,
       plan: subscription.planId,
       billing_interval: subscription.billingInterval,
+      state: stateForSubscriptionStatus(subscription.status),
     },
     privateKeyPem
   );

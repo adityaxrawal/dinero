@@ -18,7 +18,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
 import { LicensingApiError, sendApiError } from '../../lib/errors';
 import { requirePostWithFields } from '../../lib/api_helpers';
-import { signLicenseJwt } from '../../lib/jwt';
+import { signLicenseJwt, stateForSubscriptionStatus } from '../../lib/jwt';
 import { logAuditEvent, type AuditWriter } from '../../lib/audit';
 import {
   decideTrialEligibility,
@@ -102,6 +102,7 @@ export async function startTrial(
         device_id: input.device_id,
         plan: boundSub!.planId,
         billing_interval: boundSub!.billingInterval,
+        state: stateForSubscriptionStatus(boundSub!.status),
       },
       privateKeyPem
     );
@@ -167,6 +168,7 @@ export async function startTrial(
       device_id: input.device_id,
       plan: TRIAL_PLAN_ID,
       billing_interval: 'monthly',
+      state: 'TRIAL',
     },
     privateKeyPem
   );

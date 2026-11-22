@@ -24,7 +24,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma, findOrCreateAccount } from '../../lib/db';
 import { LicensingApiError, sendApiError } from '../../lib/errors';
 import { requirePostWithFields } from '../../lib/api_helpers';
-import { signLicenseJwt } from '../../lib/jwt';
+import { signLicenseJwt, LICENSE_TOKEN_TTL_MS } from '../../lib/jwt';
 import { logAuditEvent, countRecentEvents, type AuditWriter } from '../../lib/audit';
 import {
   verifyPaymentSignature,
@@ -43,6 +43,7 @@ export interface ActivateInput {
 
 export interface ActivateResult {
   status: 'activated';
+  state: 'ACTIVE';
   jwt: string;
   plan: string;
   billing_interval: string;
@@ -140,7 +141,7 @@ export async function activateLicense(
   // Token lifetime matches the JWT default: short enough to bound a revoked
   // subscription, long enough to survive a spell offline.
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + 48 * 60 * 60 * 1000);
+  const expiresAt = new Date(now.getTime() + LICENSE_TOKEN_TTL_MS);
 
   const existingSubscription = await db.subscription.findFirst({
     where: { accountId: account.id },
@@ -182,6 +183,7 @@ export async function activateLicense(
       device_id: input.device_id,
       plan: planInfo.planId,
       billing_interval: planInfo.billingInterval,
+      state: 'ACTIVE',
     },
     privateKeyPem
   );
@@ -194,6 +196,7 @@ export async function activateLicense(
 
   return {
     status: 'activated',
+    state: 'ACTIVE',
     jwt: jwtToken,
     plan: planInfo.planId,
     billing_interval: planInfo.billingInterval,

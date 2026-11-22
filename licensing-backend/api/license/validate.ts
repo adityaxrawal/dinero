@@ -14,14 +14,19 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
 import { LicensingApiError, sendApiError } from '../../lib/errors';
 import { requirePostWithFields, getTokenAndSubscription } from '../../lib/api_helpers';
-import { signLicenseJwt } from '../../lib/jwt';
+import {
+  signLicenseJwt,
+  stateForSubscriptionStatus,
+  LICENSE_TOKEN_TTL_MS,
+  type ServerLicenseState,
+} from '../../lib/jwt';
 import { logAuditEvent, type AuditWriter } from '../../lib/audit';
 
 export interface ValidateInput {
   device_id: string;
 }
 
-export type ServerLicenseState = 'TRIAL' | 'ACTIVE' | 'PAST_DUE' | 'LOCKED';
+export type { ServerLicenseState };
 
 export interface ValidateResult {
   status: 'validated';
@@ -31,25 +36,6 @@ export interface ValidateResult {
   billing_interval: string;
   expires_at: string;
   server_time: string;
-}
-
-/**
- * Maps a subscription status onto the entitlement state the client understands.
- *
- * The default is LOCKED, which is the safe direction: an unrecognised status must
- * never be interpreted as granting access.
- */
-function computeState(subscriptionStatus: string): ServerLicenseState {
-  switch (subscriptionStatus) {
-    case 'trialing':
-      return 'TRIAL';
-    case 'active':
-      return 'ACTIVE';
-    case 'past_due':
-      return 'PAST_DUE';
-    default:
-      return 'LOCKED';
-  }
 }
 
 export type ValidateDb = {
@@ -82,9 +68,9 @@ export async function validateLicense(
   // Server-side status is authoritative. Deriving the state here rather than
   // shipping the raw status keeps entitlement policy on the server, where a
   // modified client cannot reinterpret it.
-  const state = computeState(subscription.status);
+  const state = stateForSubscriptionStatus(subscription.status);
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + 48 * 60 * 60 * 1000);
+  const expiresAt = new Date(now.getTime() + LICENSE_TOKEN_TTL_MS);
 
   const jwtToken = signLicenseJwt(
     {
@@ -92,6 +78,7 @@ export async function validateLicense(
       device_id: input.device_id,
       plan: subscription.planId,
       billing_interval: subscription.billingInterval,
+      state,
     },
     privateKeyPem
   );

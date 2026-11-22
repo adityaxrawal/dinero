@@ -11,20 +11,55 @@
  */
 import jwt from 'jsonwebtoken';
 
+/** Entitlement the client honours; signed so a client cannot upgrade itself. */
+export type ServerLicenseState = 'TRIAL' | 'ACTIVE' | 'PAST_DUE' | 'LOCKED';
+
 export interface LicenseJwtClaims {
   sub: string;
   device_id: string;
   plan: string;
   billing_interval: string;
+  state: ServerLicenseState;
+}
+
+/**
+ * Maps a subscription status onto the entitlement state the client understands.
+ *
+ * The default is LOCKED, which is the safe direction: an unrecognised status
+ * (cancelled, halted, completed, expired) must never be read as granting access.
+ */
+export function stateForSubscriptionStatus(subscriptionStatus: string): ServerLicenseState {
+  switch (subscriptionStatus) {
+    case 'trialing':
+      return 'TRIAL';
+    case 'active':
+      return 'ACTIVE';
+    case 'past_due':
+      return 'PAST_DUE';
+    default:
+      return 'LOCKED';
+  }
 }
 
 // The complete permitted claim set, including the two JWT registered claims.
 // Anything outside this is a leak of information the token has no need to carry.
-const ALLOWED_CLAIM_KEYS = new Set(['sub', 'device_id', 'plan', 'billing_interval', 'exp', 'iat']);
+const ALLOWED_CLAIM_KEYS = new Set([
+  'sub',
+  'device_id',
+  'plan',
+  'billing_interval',
+  'state',
+  'exp',
+  'iat',
+]);
 
-// Two days. Long enough that a briefly offline machine keeps working, short
-// enough that a revoked subscription stops being honoured reasonably soon.
-const DEFAULT_EXPIRY_SECONDS = 48 * 60 * 60;
+// Seven days: the offline allowance. A machine that cannot reach the server
+// keeps working this long on its last token; the signed `state` claim means a
+// lapsed subscription is honoured as LOCKED at the next successful check.
+const DEFAULT_EXPIRY_SECONDS = 7 * 24 * 60 * 60;
+
+/** Token lifetime in milliseconds, for the `expires_at` values responses report. */
+export const LICENSE_TOKEN_TTL_MS = DEFAULT_EXPIRY_SECONDS * 1000;
 
 /** Sign a claim set into a license token with the given private key. */
 export function signLicenseJwt(

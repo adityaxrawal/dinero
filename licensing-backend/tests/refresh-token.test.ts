@@ -25,6 +25,7 @@ function tokenExpiringInSeconds(seconds: number): string {
       device_id: 'device-A',
       plan: 'desktop_pro_monthly',
       billing_interval: 'monthly',
+      state: 'ACTIVE',
     },
     TEST_PRIVATE_KEY_PEM,
     seconds

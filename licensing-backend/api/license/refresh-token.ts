@@ -19,7 +19,13 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
 import { LicensingApiError, sendApiError } from '../../lib/errors';
 import { requirePostWithFields, getTokenAndSubscription } from '../../lib/api_helpers';
-import { signLicenseJwt, verifyLicenseJwt, JwtVerificationError } from '../../lib/jwt';
+import {
+  signLicenseJwt,
+  verifyLicenseJwt,
+  JwtVerificationError,
+  stateForSubscriptionStatus,
+  LICENSE_TOKEN_TTL_MS,
+} from '../../lib/jwt';
 import { logAuditEvent, type AuditWriter } from '../../lib/audit';
 
 export interface RefreshInput {
@@ -92,13 +98,14 @@ export async function refreshLicenseToken(
   }
 
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + 48 * 60 * 60 * 1000);
+  const expiresAt = new Date(now.getTime() + LICENSE_TOKEN_TTL_MS);
   const newJwt = signLicenseJwt(
     {
       sub: claims.sub,
       device_id: input.device_id,
       plan: subscription.planId,
       billing_interval: subscription.billingInterval,
+      state: stateForSubscriptionStatus(subscription.status),
     },
     privateKeyPem
   );

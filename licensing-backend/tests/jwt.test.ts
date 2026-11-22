@@ -13,6 +13,7 @@ const claims = {
   device_id: 'device-abc',
   plan: 'desktop_pro_monthly',
   billing_interval: 'monthly',
+  state: 'ACTIVE' as const,
 };
 
 describe('test_jwt_signed_with_rs256', () => {
