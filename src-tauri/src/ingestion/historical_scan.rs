@@ -397,8 +397,29 @@ pub async fn scans_historical<R: tauri::Runtime>(
     crate::ipc::validation::validate_date_range(&start_date, &end_date)?;
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
-    let pool = pool.inner().clone();
+    start_historical_scan(
+        app,
+        pool.inner().clone(),
+        account_id,
+        start_date,
+        end_date,
+        crate::ingestion::gmail_client::GMAIL_API_BASE_URL.to_string(),
+    )
+    .await
+}
 
+/// Claims the scan checkpoint and starts the scan in the background.
+///
+/// Shared by the IPC command and the poller's catch-up after an expired
+/// history id. Returns `ScanAlreadyRunning` if a scan holds the checkpoint.
+pub(crate) async fn start_historical_scan<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    pool: Pool,
+    account_id: String,
+    start_date: String,
+    end_date: String,
+    base_url: String,
+) -> Result<String, crate::error::AppError> {
     let access_token = get_valid_access_token(&app, &pool, &account_id)
         .await
         .map_err(|e| crate::error::AppError::Auth(e.to_string()))?;
@@ -463,6 +484,7 @@ pub async fn scans_historical<R: tauri::Runtime>(
             end_date,
             access_token,
             existing,
+            base_url,
         )
         .await;
 
@@ -533,11 +555,12 @@ async fn run_scan<R: tauri::Runtime>(
     end_date: String,
     access_token: String,
     existing_checkpoint: Option<ProcessingCheckpointRow>,
+    base_url: String,
 ) -> anyhow::Result<()> {
     clear_scan_cancellation(&account_id);
 
     let refresher = crate::ingestion::oauth::create_token_refresher(&app, &pool, &account_id);
-    let client = GmailClient::new(access_token, pool.clone(), refresher);
+    let client = GmailClient::new_with_base_url(access_token, pool.clone(), base_url, refresher);
 
     let mut state = if let Some(cp) = existing_checkpoint {
         // Restore state from the checkpoint for paused, failed, cancelled, or
@@ -551,14 +574,17 @@ async fn run_scan<R: tauri::Runtime>(
             || cp.status == "cancelled"
             || cp.status == "in_progress"
         {
-
-            serde_json::from_str::<ScanCheckpointState>(&cp.checkpoint_state_json).unwrap_or_else(
-                |_| ScanCheckpointState {
+            // Only a run over the same date range is resumed. A different
+            // range (for example a catch-up scan after a stale paused scan)
+            // starts fresh rather than silently scanning the old range.
+            serde_json::from_str::<ScanCheckpointState>(&cp.checkpoint_state_json)
+                .ok()
+                .filter(|st| st.start_date == start_date && st.end_date == end_date)
+                .unwrap_or_else(|| ScanCheckpointState {
                     start_date: start_date.clone(),
                     end_date: end_date.clone(),
                     ..Default::default()
-                },
-            )
+                })
         } else {
             ScanCheckpointState {
                 start_date: start_date.clone(),

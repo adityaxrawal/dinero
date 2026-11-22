@@ -543,12 +543,11 @@ mod tests {
     }
 
     /// Doc 30 TASK-QA-005 acceptance: `test_gap_recovery_resumes_from_last_checkpoint`.
-    /// A 404/400 from `history.list` means Gmail's history window has
-    /// expired (the account was offline long enough that incremental resume
-    /// is no longer possible) -- `handle_invalid_history_id` must reset
-    /// `last_history_id` to `None` (forcing a fresh full historical scan
-    /// next time, the only honest recovery once the delta window is gone)
-    /// and record it in the audit log, not silently swallow the gap.
+    /// A 404 from `history.list` means Gmail's history window has expired.
+    /// Recovery must re-seed BOTH the `gmail_history` checkpoint and
+    /// `last_history_id` from Gmail's current id (so the next poll does not
+    /// request the dead id again), record the reset in the audit log, and
+    /// claim a catch-up historical scan for the missed period (review C2).
     #[tokio::test]
     async fn test_gap_recovery_resumes_from_last_checkpoint() {
         let mut server = mockito::Server::new_async().await;
@@ -562,12 +561,42 @@ mod tests {
             .expect("DB init failed");
         setup_account_for_poll(&pool, &account_id, Some("stale_history_id")).await;
 
-        let mock = server
+        let stale = server
             .mock("GET", "/gmail/v1/users/me/history")
-            .match_query(mockito::Matcher::Any)
+            .match_query(mockito::Matcher::UrlEncoded(
+                "startHistoryId".into(),
+                "stale_history_id".into(),
+            ))
             .with_status(404)
             .with_header("content-type", "application/json")
             .with_body(serde_json::json!({ "error": "Invalid history id" }).to_string())
+            .expect(1)
+            .create_async()
+            .await;
+        let profile = server
+            .mock("GET", "/gmail/v1/users/me/profile")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(serde_json::json!({ "historyId": "fresh_999" }).to_string())
+            .create_async()
+            .await;
+        let fresh = server
+            .mock("GET", "/gmail/v1/users/me/history")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "startHistoryId".into(),
+                "fresh_999".into(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(serde_json::json!({ "historyId": "fresh_999" }).to_string())
+            .expect(1)
+            .create_async()
+            .await;
+        let _messages = server
+            .mock("GET", mockito::Matcher::Regex("^/gmail/v1/users/me/messages".into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(serde_json::json!({ "resultSizeEstimate": 0 }).to_string())
             .create_async()
             .await;
 
@@ -585,16 +614,22 @@ mod tests {
 
         let conn = pool.get().await.unwrap();
         let acc_id_clone = account_id.clone();
-        let account_after = conn
-            .interact(move |c| connected_accounts::get_account(c, &acc_id_clone))
+        let (account_after, checkpoint, scan_cp) = conn
+            .interact(move |c| {
+                (
+                    connected_accounts::get_account(c, &acc_id_clone).unwrap().unwrap(),
+                    processing_checkpoints::get_checkpoint(c, "gmail_history", &acc_id_clone)
+                        .unwrap()
+                        .unwrap(),
+                    processing_checkpoints::get_checkpoint(c, "historical_scan", &acc_id_clone)
+                        .unwrap(),
+                )
+            })
             .await
-            .unwrap()
-            .unwrap()
             .unwrap();
-        assert_eq!(
-            account_after.last_history_id, None,
-            "an invalid/expired history id must reset last_history_id, forcing a fresh full historical scan"
-        );
+        assert_eq!(account_after.last_history_id.as_deref(), Some("fresh_999"));
+        assert_eq!(checkpoint.last_processed_token.as_deref(), Some("fresh_999"));
+        assert!(scan_cp.is_some(), "a catch-up historical scan must be claimed");
 
         let conn = pool.get().await.unwrap();
         let reset_logged: i64 = conn
@@ -613,7 +648,14 @@ mod tests {
             "the gap-recovery reset must be recorded in the audit log, not silent"
         );
 
-        mock.assert_async().await;
+        // The next poll must use the re-seeded id, not the expired one.
+        poll_all_accounts(&app_handle, &pool, &server.url())
+            .await
+            .unwrap();
+
+        stale.assert_async().await;
+        profile.assert_async().await;
+        fresh.assert_async().await;
         let _ = fs::remove_dir_all(&temp_dir);
     }
 

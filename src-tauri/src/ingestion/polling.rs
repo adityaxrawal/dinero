@@ -294,7 +294,8 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                             account.id,
                             status
                         );
-                        handle_invalid_history_id(pool, &account.id).await?;
+                        recover_from_expired_history(app, pool, &account.id, base_url, &token)
+                            .await?;
                         return Ok(());
                     } else if status == StatusCode::UNAUTHORIZED && !refreshed_after_401 {
                         refreshed_after_401 = true;
@@ -597,6 +598,63 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
         save_history_id(pool, &account.id, new_history_id).await?;
     }
 
+    Ok(())
+}
+
+/// Recovers an account whose stored Gmail history id has expired.
+///
+/// Fetches Gmail's current history id, re-seeds the cursor so polling resumes
+/// from now, then starts a catch-up scan from one day before the cursor was
+/// last known good up to today (dedupe drops anything already ingested). If
+/// the profile fetch fails nothing is changed, so the next poll retries.
+async fn recover_from_expired_history<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    pool: &Pool,
+    account_id: &str,
+    base_url: &str,
+    token: &str,
+) -> anyhow::Result<()> {
+    let network = NetworkClient::new(pool.clone());
+    let builder = network
+        .client()
+        .get(format!("{}/gmail/v1/users/me/profile", base_url))
+        .bearer_auth(token);
+    let res = network.execute("gmail_api", builder).await?;
+    if !res.status().is_success() {
+        anyhow::bail!("Gmail profile fetch failed with {}", res.status());
+    }
+    let profile: serde_json::Value = res.json().await?;
+    let new_history_id = match &profile["historyId"] {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Number(n) => n.to_string(),
+        _ => anyhow::bail!("Gmail profile response had no historyId"),
+    };
+
+    let since = handle_invalid_history_id(pool, account_id, &new_history_id).await?;
+    let start = (since - chrono::Duration::days(1)).format("%Y-%m-%d").to_string();
+    let end = chrono::Utc::now().date_naive().format("%Y-%m-%d").to_string();
+    match crate::ingestion::historical_scan::start_historical_scan(
+        app.clone(),
+        pool.clone(),
+        account_id.to_string(),
+        start.clone(),
+        end.clone(),
+        base_url.to_string(),
+    )
+    .await
+    {
+        Ok(_) => tracing::info!(
+            "Started catch-up scan {}..{} for account {}",
+            start,
+            end,
+            account_id
+        ),
+        Err(crate::error::AppError::ScanAlreadyRunning(_)) => tracing::info!(
+            "Catch-up scan for account {} skipped: a scan is already running",
+            account_id
+        ),
+        Err(e) => tracing::error!("Could not start catch-up scan for {}: {}", account_id, e),
+    }
     Ok(())
 }
 

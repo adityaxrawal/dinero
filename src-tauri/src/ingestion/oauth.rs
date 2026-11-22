@@ -1034,42 +1034,84 @@ async fn refresh_token_store<R: tauri::Runtime>(
     }
 }
 
-/// Recovers from an invalid Gmail history id.
+/// Re-seeds an expired Gmail history cursor and says where catch-up starts.
 ///
-/// History ids expire once they age out of Gmail's window. Recovery resets to a
-/// full sync, since incremental polling has no valid point to resume from.
-pub async fn handle_invalid_history_id(pool: &Pool, account_id: &str) -> Result<()> {
-    tracing::warn!("history checkpoint reset: Invalid history id encountered, falling back to full historical scan");
+/// History ids expire once they age out of Gmail's window, so polling cannot
+/// resume from the stored one. Both the `gmail_history` checkpoint (which the
+/// poller reads first) and the account's `last_history_id` move to
+/// `new_history_id`, Gmail's current id, so polling resumes from now. The
+/// returned date is the last time the cursor was known good (checkpoint, else
+/// account creation, else 30 days ago); mail since then is recovered by a
+/// catch-up scan.
+pub async fn handle_invalid_history_id(
+    pool: &Pool,
+    account_id: &str,
+    new_history_id: &str,
+) -> Result<chrono::NaiveDate> {
+    tracing::warn!(
+        "history checkpoint reset: expired history id for account {}, re-seeding and scheduling catch-up scan",
+        account_id
+    );
     let conn = pool.get().await?;
     let acc_id = account_id.to_string();
-    conn.interact(move |c| {
-        if let Ok(Some(mut account)) = connected_accounts::get_account(c, &acc_id) {
-            account.last_history_id = None;
-            let _ = connected_accounts::update_account(c, &account);
-        }
-        if let Err(e) = crate::db::audit_log::insert(
-            c,
-            &crate::db::audit_log::AuditLogRow {
-                id: uuid::Uuid::new_v4().to_string(),
-                actor_type: Some("system".to_string()),
-                actor_id: None,
-                action: Some("history_checkpoint_reset".to_string()),
-                resource_type: Some("connected_account".to_string()),
-                resource_id: Some(acc_id),
-                before_json: None,
-                after_json: None,
-                created_at: chrono::Utc::now(),
-            },
-        ) {
-            tracing::warn!(
-                "Failed to record history_checkpoint_reset audit event: {}",
-                e
-            );
-        }
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!("DB interaction error: {}", e))?;
-    Ok(())
+    let new_id = new_history_id.to_string();
+    let since = conn
+        .interact(move |c| -> Result<chrono::NaiveDate> {
+            let checkpoint =
+                crate::db::processing_checkpoints::get_checkpoint(c, "gmail_history", &acc_id)?;
+            let account = connected_accounts::get_account(c, &acc_id)?;
+            let since = checkpoint
+                .as_ref()
+                .and_then(|cp| cp.updated_at)
+                .or_else(|| account.as_ref().and_then(|a| a.created_at))
+                .map(|t| t.date())
+                .unwrap_or_else(|| {
+                    (chrono::Utc::now() - chrono::Duration::days(30)).date_naive()
+                });
+
+            crate::db::processing_checkpoints::upsert_checkpoint(
+                c,
+                &crate::db::processing_checkpoints::ProcessingCheckpointRow {
+                    id: checkpoint
+                        .as_ref()
+                        .map(|cp| cp.id.clone())
+                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                    job_type: "gmail_history".to_string(),
+                    job_key: acc_id.clone(),
+                    checkpoint_state_json: "{}".to_string(),
+                    last_processed_token: Some(new_id.clone()),
+                    status: "success".to_string(),
+                    updated_at: None,
+                },
+            )?;
+            if let Some(mut account) = account {
+                account.last_history_id = Some(new_id.clone());
+                connected_accounts::update_account(c, &account)?;
+            }
+            if let Err(e) = crate::db::audit_log::insert(
+                c,
+                &crate::db::audit_log::AuditLogRow {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    actor_type: Some("system".to_string()),
+                    actor_id: None,
+                    action: Some("history_checkpoint_reset".to_string()),
+                    resource_type: Some("connected_account".to_string()),
+                    resource_id: Some(acc_id),
+                    before_json: None,
+                    after_json: Some(serde_json::json!({
+                        "new_history_id": new_id,
+                        "catch_up_since": since.to_string(),
+                    })),
+                    created_at: chrono::Utc::now(),
+                },
+            ) {
+                tracing::warn!("Failed to record history_checkpoint_reset audit event: {}", e);
+            }
+            Ok(since)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("DB interaction error: {}", e))??;
+    Ok(since)
 }
 
 /// Builds the refresher closure the Gmail client uses to renew tokens.
