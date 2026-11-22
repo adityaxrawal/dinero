@@ -1,0 +1,1528 @@
+/**
+ * Architecture explorer theme — the application's global design system.
+ *
+ * Scoped entirely under `.archx` so the dev-only architecture route inherits
+ * the app's Emerald Ink (#064E3B) + Champagne (#F8E7C9) UI theme and its
+ * global Inter typeface (App.css "Global Design System v2", Doc 14 §4). The
+ * explorer keeps its structural language — layer rail, cluster boxes,
+ * component cards, inspector, workflow player — rendered in the same tokens
+ * the rest of Dinero uses.
+ *
+ * `--ax-*` aliases restate the app tokens so inline styles and the standalone
+ * document's runtime can reference one stable name set. Values mirror App.css
+ * exactly; when App.css is present (in-app) the same values resolve there too.
+ */
+
+.archx {
+  --ax-bg: #f8e7c9; /* --bg-canvas */
+  --ax-surface: #ecddb0; /* --bg-surface */
+  --ax-card: #f3ebdd; /* --bg-card */
+  --ax-card-hover: #e8dbc8; /* --bg-card-hover */
+  --ax-panel: #f3ebdd; /* --bg-panel */
+  --ax-ink: #064e3b; /* --emerald-ink */
+  --ax-ink-hover: #053d2f; /* --emerald-ink-hover */
+  --ax-ink-light: #0a6e53; /* --emerald-ink-light */
+  --ax-ink-subtle: rgba(6, 78, 59, 0.07); /* --emerald-ink-subtle */
+  --ax-ink-subtle-hover: rgba(6, 78, 59, 0.12);
+  --ax-text: #0d2b22; /* --text-primary */
+  --ax-text-2: #3d5a50; /* --text-secondary */
+  /* darker than App.css --text-muted (#6b8a7f, 2.8–3.2:1) so the explorer's
+     small muted text meets WCAG AA 4.5:1 on every surface */
+  --ax-text-3: #4a655c;
+  --ax-border: #d9c8a8; /* --border-color */
+  --ax-border-strong: #c4ae88; /* --border-strong */
+  --ax-border-subtle: rgba(6, 78, 59, 0.08); /* --border-subtle */
+  --ax-champagne: #f8e7c9;
+  --ax-champagne-dark: #f0d4a8;
+  --ax-champagne-deeper: #e8c888;
+  --ax-warning: #f59e0b;
+  --ax-warning-bg: rgba(245, 158, 11, 0.1);
+  --ax-warning-text: #92400e; /* amber that is legible as text (≥5.2:1) */
+  --ax-danger: #ef4444;
+  --ax-success: #10b981;
+  --ax-radius-sm: 6px;
+  --ax-radius-md: 8px;
+  --ax-radius-lg: 12px;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+
+  height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--ax-bg);
+  color: var(--ax-text);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+.archx * {
+  box-sizing: border-box;
+}
+.archx ::selection {
+  background: var(--ax-ink);
+  color: var(--ax-champagne);
+}
+/* :where() keeps this reset at zero specificity so Tailwind utilities on
+   buttons (selected-state bg, borders) still apply */
+:where(.archx) button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: inherit;
+}
+.archx input {
+  font-family: inherit;
+}
+
+/* ---------- top bar ---------- */
+.archx-top {
+  height: 56px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--ax-border);
+  background: var(--ax-surface);
+  flex-shrink: 0;
+  z-index: 40;
+}
+.archx-brand {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.archx-mark {
+  width: 26px;
+  height: 26px;
+  border: 1.5px solid var(--ax-ink);
+  position: relative;
+  flex-shrink: 0;
+  align-self: center;
+}
+.archx-mark::after {
+  content: "";
+  position: absolute;
+  inset: 5px;
+  background: var(--ax-ink);
+}
+.archx-brand h1 {
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  margin: 0;
+  color: var(--ax-ink);
+}
+.archx-brand h1 span {
+  color: var(--ax-ink-light);
+}
+.archx-brand .sub {
+  color: var(--ax-text-3);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.archx-search {
+  position: relative;
+  flex: 1;
+  max-width: 420px;
+}
+.archx-search input {
+  width: 100%;
+  height: 34px;
+  background: var(--ax-card);
+  border: 1px solid var(--ax-border);
+  color: var(--ax-text);
+  padding: 0 12px 0 34px;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  outline: none;
+  border-radius: var(--ax-radius-sm);
+  transition: border-color 0.18s ease;
+}
+.archx-search input:focus {
+  border-color: var(--ax-ink);
+}
+.archx-search .ic {
+  position: absolute;
+  left: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--ax-text-3);
+  font-size: 12px;
+  pointer-events: none;
+}
+.archx-search .kbd {
+  position: absolute;
+  right: 9px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--ax-text-3);
+  font-size: 9px;
+  border: 1px solid var(--ax-border);
+  padding: 1px 5px;
+  border-radius: 3px;
+  pointer-events: none;
+}
+.archx-results {
+  display: none;
+  position: absolute;
+  top: 40px;
+  left: 0;
+  right: 0;
+  background: var(--ax-card);
+  border: 1px solid var(--ax-border-strong);
+  border-radius: var(--ax-radius-md);
+  max-height: 320px;
+  overflow: auto;
+  z-index: 60;
+  box-shadow: 0 8px 22px rgba(6, 78, 59, 0.12);
+}
+.archx-results.open {
+  display: block;
+}
+.archx-results .r {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--ax-border-subtle);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.archx-results .r:hover {
+  background: var(--ax-ink-subtle-hover);
+}
+.archx-results .r .id {
+  color: var(--ax-ink-light);
+  font-size: 10px;
+  font-weight: 600;
+  width: 22px;
+  flex-shrink: 0;
+  letter-spacing: 0.08em;
+}
+.archx-results .r .nm {
+  font-size: 11.5px;
+  flex: 1;
+  color: var(--ax-text);
+}
+.archx-results .r .sec {
+  color: var(--ax-text-3);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+}
+
+.archx-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.archx-tbtn {
+  height: 32px;
+  min-width: 32px;
+  padding: 0 11px;
+  border: 1px solid var(--ax-border);
+  background: var(--ax-card);
+  color: var(--ax-text-2);
+  font-size: 10px;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: var(--ax-radius-sm);
+  transition: all 0.16s ease;
+  white-space: nowrap;
+}
+.archx-tbtn:hover {
+  color: var(--ax-text);
+  border-color: var(--ax-border-strong);
+  background: var(--ax-card-hover);
+}
+.archx-tbtn.on {
+  color: var(--ax-champagne);
+  background: var(--ax-ink);
+  border-color: var(--ax-ink);
+  font-weight: 600;
+}
+.archx-tbtn svg {
+  width: 13px;
+  height: 13px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.7;
+}
+
+/* ---------- body layout ---------- */
+.archx-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  position: relative;
+}
+
+/* ---------- left rail ---------- */
+.archx-rail {
+  width: 296px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--ax-border);
+  background: var(--ax-bg);
+  overflow-y: auto;
+  overflow-x: hidden;
+  z-index: 30;
+}
+.archx-rail::-webkit-scrollbar {
+  width: 8px;
+}
+.archx-rail::-webkit-scrollbar-thumb {
+  background: var(--ax-border-strong);
+  border-radius: 8px;
+}
+.archx-sec {
+  border-bottom: 1px solid var(--ax-border-subtle);
+  padding: 15px 15px 13px;
+}
+.archx-h {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--ax-text-3);
+  margin-bottom: 11px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.archx-h .n {
+  color: var(--ax-ink-light);
+  letter-spacing: 0.08em;
+}
+.archx-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+}
+.archx-stat {
+  background: var(--ax-card);
+  border: 1px solid var(--ax-border-subtle);
+  border-radius: var(--ax-radius-sm);
+  padding: 9px 10px;
+}
+.archx-stat .v {
+  font-family: var(--font-sans);
+  font-size: 19px;
+  font-weight: 700;
+  color: var(--ax-ink);
+  line-height: 1;
+}
+.archx-stat .k {
+  font-size: 8.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ax-text-3);
+  margin-top: 5px;
+}
+
+.archx-layer {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 8px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: var(--ax-radius-sm);
+  transition: all 0.14s ease;
+  width: 100%;
+  text-align: left;
+}
+.archx-layer:hover {
+  background: var(--ax-ink-subtle);
+  border-color: var(--ax-border-subtle);
+}
+.archx-layer .dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+}
+.archx-layer .lid {
+  font-size: 10px;
+  font-weight: 600;
+  width: 15px;
+  color: var(--ax-text-3);
+}
+.archx-layer .lnm {
+  font-size: 10.5px;
+  flex: 1;
+  line-height: 1.3;
+  letter-spacing: 0.01em;
+  color: var(--ax-text-2);
+}
+.archx-layer .lc {
+  font-size: 9px;
+  color: var(--ax-text-3);
+  background: var(--ax-card);
+  padding: 1px 5px;
+  border: 1px solid var(--ax-border-subtle);
+  border-radius: 3px;
+}
+
+.archx-wf {
+  border: 1px solid var(--ax-border-subtle);
+  background: var(--ax-card);
+  padding: 9px 11px;
+  margin-bottom: 7px;
+  cursor: pointer;
+  transition: all 0.16s ease;
+  position: relative;
+  width: 100%;
+  text-align: left;
+  border-radius: var(--ax-radius-sm);
+}
+.archx-wf:hover {
+  border-color: var(--ax-border-strong);
+  transform: translateX(2px);
+}
+.archx-wf.on {
+  border-color: var(--ax-ink);
+}
+.archx-wf .wt {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1.35;
+  color: var(--ax-text);
+}
+.archx-wf .wd {
+  color: var(--ax-text-2);
+  font-size: 9.5px;
+  line-height: 1.5;
+  margin-top: 4px;
+}
+.archx-wf .wm {
+  display: flex;
+  gap: 8px;
+  margin-top: 7px;
+  font-size: 8.5px;
+  color: var(--ax-text-3);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.archx-inv .it {
+  font-size: 9.5px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--ax-ink-light);
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+.archx-inv .ib {
+  font-size: 10.5px;
+  color: var(--ax-text-2);
+  line-height: 1.55;
+  margin-bottom: 11px;
+}
+
+.archx-legend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 9px;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--ax-text-2);
+  margin-bottom: 7px;
+}
+.archx-legend svg {
+  width: 30px;
+  height: 8px;
+  flex-shrink: 0;
+}
+/* role glyphs keep their own square box — the rule above is only for the
+   edge-line colour swatches and would squash these into a smear */
+.archx-legend .archx-kind-glyph {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+.archx-legend .sq {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  border: 1px solid var(--ax-border);
+  border-radius: 2px;
+}
+.archx-legend-kinds {
+  flex-wrap: wrap;
+  gap: 5px 10px;
+}
+
+/* ---------- stage ---------- */
+.archx-stage {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--ax-bg);
+}
+.archx-stagebody {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.archx-stage .react-flow__background-pattern {
+  stroke: var(--ax-border-subtle);
+}
+.archx-stagebar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.archx-sbtn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--ax-border);
+  background: var(--ax-card);
+  color: var(--ax-text-2);
+  border-radius: var(--ax-radius-sm);
+  transition: all 0.16s ease;
+}
+.archx-sbtn:hover {
+  color: var(--ax-text);
+  border-color: var(--ax-border-strong);
+  background: var(--ax-card-hover);
+}
+.archx-sbtn svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+}
+.archx-modechip {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  background: var(--ax-card);
+  border-bottom: 1px solid var(--ax-border);
+  padding: 8px 14px;
+  flex-shrink: 0;
+}
+.archx-modechip b {
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ax-ink);
+  font-weight: 700;
+}
+.archx-modechip span {
+  font-size: 9px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--ax-text-3);
+}
+.archx-zoom {
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ax-text-3);
+  background: var(--ax-card);
+  border: 1px solid var(--ax-border);
+  padding: 4px 9px;
+  border-radius: var(--ax-radius-sm);
+  white-space: nowrap;
+}
+
+/* footer bar: view tabs left, zoom cluster right — solid chrome below the
+   canvas so wrapped pills can never bleed over band headers or node cards */
+.archx-stagefoot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 10px;
+  background: var(--ax-surface);
+  border-top: 1px solid var(--ax-border);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+/* view switcher (the explorer's view tabs) */
+.archx-views {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  /* tabs may wrap inside the footer strip — it grows downward, so wrapped
+     rows can never land on the canvas like the old overlay did */
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.archx-vbtn {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--ax-border);
+  background: var(--ax-card);
+  color: var(--ax-text-2);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  border-radius: var(--ax-radius-sm);
+  transition: all 0.16s ease;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.archx-vbtn:hover {
+  color: var(--ax-text);
+  border-color: var(--ax-border-strong);
+  background: var(--ax-card-hover);
+}
+.archx-vbtn.on {
+  color: var(--ax-champagne);
+  background: var(--ax-ink);
+  border-color: var(--ax-ink);
+  font-weight: 700;
+}
+
+/* ---------- node card ---------- */
+.archx-node {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: var(--ax-card);
+  border: 1px solid var(--nb, var(--ax-border));
+  border-left: 3px solid var(--nc, var(--ax-border-strong));
+  padding: 8px 10px 7px;
+  cursor: pointer;
+  border-radius: var(--ax-radius-sm);
+  transition:
+    border-color 0.16s ease,
+    background 0.16s ease,
+    box-shadow 0.16s ease;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.archx-node:hover {
+  border-color: var(--nc, var(--ax-border-strong));
+  background: var(--ax-card-hover);
+}
+.archx-node:focus-visible {
+  outline: 2px solid var(--ax-ink);
+  outline-offset: 2px;
+}
+/* neighbourhood-focus ring (hover blast radius) */
+.archx-node.hl {
+  border-color: var(--nc, var(--ax-border-strong));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--nc, var(--ax-ink)) 55%, transparent);
+}
+/* search-hit ring */
+.archx-node.matched {
+  box-shadow: 0 0 0 1.5px var(--nc, var(--ax-ink));
+}
+.archx-node.sel {
+  border-color: var(--ax-ink) !important;
+  background: var(--ax-card-hover);
+  box-shadow: 0 0 0 2px var(--ax-ink);
+}
+.archx-node.sel .archx-node-id {
+  color: var(--ax-ink);
+}
+.archx-node-id {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 8.6px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--nc, var(--ax-text-3)) 75%, #000);
+  margin-bottom: 3px;
+  font-weight: 600;
+}
+/* blueprint role glyphs (cylinder / queue / cloud / shield / rack…) */
+.archx-kind-glyph {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.85;
+}
+.archx-node-name {
+  font-family: var(--font-sans);
+  font-size: 11.6px;
+  font-weight: 700;
+  line-height: 1.25;
+  letter-spacing: 0.015em;
+  color: var(--ax-text);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.archx-node-role {
+  font-size: 8.8px;
+  color: var(--ax-text-2);
+  line-height: 1.45;
+  margin-top: 3px;
+  letter-spacing: 0.01em;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.archx-node-tags {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 3px;
+  margin-top: 5px;
+  min-width: 0;
+}
+.archx-node-tags span {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 0 1 auto;
+  font-size: 7.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ax-text-3);
+  border: 1px solid var(--ax-border-subtle);
+  background: var(--ax-ink-subtle);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.archx-node-tags span.more {
+  flex-shrink: 0;
+}
+.archx-node .gap-flag {
+  position: absolute;
+  top: 0;
+  right: 0;
+  background: var(--ax-warning-text);
+  color: #fff;
+  font-size: 7px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  padding: 1px 5px;
+  text-transform: uppercase;
+  border-radius: 0 0 0 4px;
+}
+/* reserve room for the corner flag so the id line never runs under it */
+.archx-node:has(.gap-flag) .archx-node-id {
+  padding-right: 26px;
+}
+
+/* ER entity node — stacked header (name over group) so long names never
+   collide with the group label */
+.archx-ent-hd {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 7px 10px 6px;
+  background: var(--ax-card-hover);
+  border-bottom: 1px solid var(--ax-border);
+}
+.archx-ent-name {
+  font-family: var(--font-sans);
+  font-size: 9.6px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ax-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.archx-ent-group {
+  font-size: 7.6px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ax-text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.archx-ent-cols {
+  padding: 5px 10px 8px;
+  width: 100%;
+}
+.archx-ent-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 3px;
+  min-width: 0;
+}
+.archx-ent-key {
+  width: 18px;
+  flex-shrink: 0;
+  font-size: 7.5px;
+  letter-spacing: 0.1em;
+}
+.archx-ent-col {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ax-text-2);
+  font-family: var(--font-sans, Inter);
+  font-size: 9px;
+}
+.archx-ent-type {
+  flex-shrink: 0;
+  max-width: 64px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ax-text-3);
+  font-size: 8px;
+}
+
+/* cluster / layer box */
+.archx-band {
+  width: 100%;
+  height: 100%;
+  border: 1px solid color-mix(in srgb, var(--bc) 34%, transparent);
+  background: color-mix(in srgb, var(--bc) 5%, var(--ax-bg));
+  border-radius: var(--ax-radius-md);
+  position: relative;
+}
+/* untrusted / network-boundary zone — dashed enclosure like a blueprint */
+.archx-band.untrusted {
+  border: 1.5px dashed color-mix(in srgb, var(--bc) 62%, transparent);
+}
+/* band title plate: a separate node above the connector layer, on the band's
+   own tint, so connectors pass under the title instead of through it */
+.archx-band-label {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 3px 10px 3px 8px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--bc) 5%, var(--ax-bg));
+  white-space: nowrap;
+}
+.archx-band-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.archx-band-code {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  color: var(--bc);
+}
+.archx-band-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--ax-ink);
+}
+.archx-band-tech {
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: var(--ax-text-3);
+}
+.archx-band-count {
+  position: absolute;
+  top: 13px;
+  right: 16px;
+  font-size: 8.6px;
+  letter-spacing: 0.12em;
+  color: var(--ax-text-3);
+  text-transform: uppercase;
+}
+
+/* ---------- detail panel ---------- */
+.archx-detail {
+  width: 372px;
+  flex-shrink: 0;
+  border-left: 1px solid var(--ax-border);
+  background: var(--ax-panel);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 30;
+}
+.archx-dtabs {
+  display: flex;
+  border-bottom: 1px solid var(--ax-border);
+  flex-shrink: 0;
+}
+.archx-dtab {
+  flex: 1;
+  height: 42px;
+  font-size: 9.5px;
+  letter-spacing: 0.19em;
+  text-transform: uppercase;
+  color: var(--ax-text-3);
+  border-bottom: 2px solid transparent;
+  transition: all 0.16s ease;
+}
+.archx-dtab:hover {
+  color: var(--ax-text-2);
+}
+.archx-dtab.on {
+  color: var(--ax-ink);
+  border-bottom-color: var(--ax-ink);
+  font-weight: 700;
+}
+.archx-dcontent {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.archx-dcontent::-webkit-scrollbar {
+  width: 8px;
+}
+.archx-dcontent::-webkit-scrollbar-thumb {
+  background: var(--ax-border-strong);
+  border-radius: 8px;
+}
+.archx-dp {
+  padding: 18px;
+}
+
+/* analysis + detail prose */
+.archx-an-h {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--ax-ink);
+  margin: 22px 0 10px;
+  padding-bottom: 7px;
+  border-bottom: 1px solid var(--ax-border-subtle);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.archx-an-h:first-child {
+  margin-top: 0;
+}
+.archx-an-h .num {
+  color: var(--ax-ink-light);
+  font-size: 10px;
+}
+.archx-an-p {
+  color: var(--ax-text-2);
+  font-size: 11px;
+  line-height: 1.68;
+  margin: 8px 0;
+}
+.archx-an-p b,
+.archx-dp b {
+  color: var(--ax-text);
+  font-weight: 600;
+}
+.archx-an-li {
+  color: var(--ax-text-2);
+  font-size: 11px;
+  line-height: 1.62;
+  margin: 6px 0;
+  padding-left: 14px;
+  position: relative;
+}
+.archx-an-li::before {
+  content: "▸";
+  position: absolute;
+  left: 0;
+  color: var(--ax-ink-light);
+  font-size: 9px;
+}
+.archx-kv {
+  display: grid;
+  grid-template-columns: 108px 1fr;
+  gap: 5px 12px;
+  font-size: 10.5px;
+  line-height: 1.55;
+  margin: 10px 0;
+}
+.archx-kv .k {
+  color: var(--ax-text-3);
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  font-size: 8.6px;
+  padding-top: 2px;
+}
+.archx-kv .v {
+  color: var(--ax-text-2);
+}
+.archx-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 7px 0;
+}
+.archx-chip {
+  font-size: 9px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ax-text-2);
+  border: 1px solid var(--ax-border);
+  background: var(--ax-card);
+  padding: 2.5px 8px;
+  border-radius: 3px;
+}
+.archx-chip.accent {
+  color: var(--ax-ink);
+  border-color: var(--ax-ink-light);
+  background: var(--ax-ink-subtle);
+}
+.archx-note {
+  border-left: 2px solid var(--ax-ink);
+  background: var(--ax-ink-subtle);
+  padding: 10px 13px;
+  margin: 12px 0;
+  font-size: 10.5px;
+  line-height: 1.62;
+  color: var(--ax-text-2);
+  border-radius: 0 var(--ax-radius-sm) var(--ax-radius-sm) 0;
+}
+.archx-note.warn {
+  border-left-color: var(--ax-warning);
+  background: var(--ax-warning-bg);
+}
+.archx-note.warn b {
+  color: #b45309;
+}
+.archx-note b {
+  color: var(--ax-text);
+}
+
+.archx-dtab-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 8px 0 2px;
+}
+.archx-dlink {
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  color: var(--ax-text-2);
+  border: 1px solid var(--ax-border);
+  background: var(--ax-card);
+  padding: 3px 8px;
+  border-radius: 3px;
+  transition: all 0.14s ease;
+}
+.archx-dlink:hover {
+  color: var(--ax-ink);
+  border-color: var(--ax-ink);
+  background: var(--ax-ink-subtle);
+}
+
+/* ---------- workflow player ---------- */
+.archx-wfbar {
+  border-top: 1px solid var(--ax-border);
+  background: var(--ax-surface);
+  flex-shrink: 0;
+  z-index: 40;
+}
+.archx-wf-top {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 16px 8px;
+}
+.archx-wf-top .t {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ax-ink);
+}
+.archx-wf-top .d {
+  color: var(--ax-text-2);
+  font-size: 10px;
+  line-height: 1.5;
+  flex: 1;
+  max-width: 620px;
+}
+.archx-wf-nav {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+.archx-wf-steps {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 4px 16px 12px;
+}
+.archx-wf-steps::-webkit-scrollbar {
+  height: 6px;
+}
+.archx-wf-steps::-webkit-scrollbar-thumb {
+  background: var(--ax-border-strong);
+  border-radius: 8px;
+}
+.archx-step {
+  min-width: 196px;
+  max-width: 196px;
+  border: 1px solid var(--ax-border-subtle);
+  background: var(--ax-card);
+  padding: 9px 11px;
+  cursor: pointer;
+  transition: all 0.16s ease;
+  border-radius: var(--ax-radius-sm);
+  text-align: left;
+  overflow: hidden;
+}
+.archx-step:hover {
+  border-color: var(--ax-border-strong);
+}
+.archx-step.on {
+  border-color: var(--ax-ink);
+  background: var(--ax-ink-subtle);
+}
+.archx-step .n {
+  font-size: 8.5px;
+  letter-spacing: 0.18em;
+  color: var(--ax-ink-light);
+  margin-bottom: 4px;
+}
+.archx-step .t {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: var(--ax-text);
+}
+.archx-step .k {
+  margin-top: 6px;
+  font-size: 8px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ax-text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- misc tables in detail ---------- */
+.archx-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 10px;
+  margin: 10px 0;
+}
+.archx-table th {
+  text-align: left;
+  color: var(--ax-text-3);
+  font-size: 8.4px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--ax-border);
+}
+.archx-table td {
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--ax-border-subtle);
+  color: var(--ax-text-2);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.archx-table code {
+  color: var(--ax-text);
+  background: var(--ax-ink-subtle);
+  padding: 1px 4px;
+  font-size: 9.5px;
+  border-radius: 3px;
+  overflow-wrap: anywhere;
+}
+
+/* react-flow light overrides */
+.archx .react-flow__controls {
+  background: var(--ax-card);
+  border: 1px solid var(--ax-border);
+  box-shadow: 0 1px 3px rgba(6, 78, 59, 0.08);
+  border-radius: var(--ax-radius-sm);
+  overflow: hidden;
+}
+.archx .react-flow__controls-button {
+  background: var(--ax-card);
+  border-bottom: 1px solid var(--ax-border-subtle);
+  fill: var(--ax-text-2);
+}
+.archx .react-flow__controls-button:hover {
+  background: var(--ax-card-hover);
+  fill: var(--ax-text);
+}
+.archx .react-flow__minimap {
+  background: var(--ax-card);
+  border: 1px solid var(--ax-border);
+  border-radius: var(--ax-radius-sm);
+}
+.archx .react-flow__edge-path {
+  transition:
+    stroke-opacity 0.18s ease,
+    stroke-width 0.18s ease;
+}
+.archx .react-flow__handle {
+  opacity: 0;
+}
+.archx .react-flow__node {
+  transition: opacity 0.22s ease;
+}
+/* Focus dimming is data-driven (per-node `dimmed`/`hl` on the card), not via
+   wrapper opacity — the old `:not(.hl)` wrapper rules ghosted the entire
+   graph including the focus subject. */
+.archx .react-flow__attribution {
+  display: none;
+}
+
+/* standalone-file helpers (used by the generated HTML) — a static side column
+   beside the canvas, never an overlay that can cover graph content */
+.archx-subpanel {
+  width: 238px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--ax-border);
+  background: var(--ax-card);
+  padding: 11px 12px;
+  overflow: auto;
+  z-index: 22;
+}
+.archx-subpanel .sp-h {
+  font-family: var(--font-sans);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--ax-text-3);
+  margin-bottom: 9px;
+}
+
+/* header-row counts (moved out of the canvas so they never cover cards) */
+.archx-modechip .counts {
+  margin-left: auto;
+}
+.archx-sbtn.on {
+  color: var(--ax-champagne);
+  background: var(--ax-ink);
+  border-color: var(--ax-ink);
+}
+
+/* layer rail row: focus button + visibility toggle */
+.archx-layer-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.archx-layer-row .archx-layer {
+  flex: 1;
+  min-width: 0;
+}
+.archx-layer-row.off .archx-layer {
+  opacity: 0.32;
+  cursor: default;
+}
+.archx-layer-eye {
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--ax-radius-sm);
+  color: var(--ax-text-3);
+}
+.archx-layer-eye:hover {
+  color: var(--ax-ink);
+  background: var(--ax-ink-subtle);
+}
+.archx-layer-eye svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.7;
+}
+
+/* inspector connection groups + copyable source paths */
+.archx-sub {
+  font-size: 8.6px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ax-text-3);
+  margin-top: 10px;
+}
+.archx-dlink .kd {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 5px;
+  vertical-align: middle;
+}
+.archx-dlink .via {
+  color: var(--ax-text-3);
+}
+.archx-src {
+  display: block;
+  text-align: left;
+  overflow-wrap: anywhere;
+  color: var(--ax-text-2);
+  font: inherit;
+  padding: 0;
+}
+.archx-src:hover {
+  color: var(--ax-ink);
+  text-decoration: underline;
+}
+.archx-kv .v {
+  overflow-wrap: anywhere;
+}
+
+/* ---------- level of detail (system map zoomed below 60%) ---------- */
+.archx-lod-far .archx-node-role,
+.archx-lod-far .archx-node-tags,
+.archx-lod-far .archx-node-id {
+  display: none;
+}
+.archx-lod-far .archx-node-name {
+  font-size: 25px;
+  line-height: 1.15;
+  -webkit-line-clamp: 3;
+}
+.archx-lod-far .archx-band-name,
+.archx-lod-far .archx-band-code {
+  font-size: 20px; /* fits the 44px band header without touching the cards */
+}
+.archx-lod-far .archx-band-tech {
+  display: none;
+}
+.archx-lod-far .archx-band-count {
+  font-size: 12px;
+}
+/* zoomed out, dash patterns shrink to sub-pixel speckle: unfocused connectors
+   become quiet solid hairlines so the layer/card structure reads first; a
+   highlighted path keeps its full kind styling */
+.archx-lod-far .react-flow__edge-path:not(.hl) {
+  stroke-dasharray: none !important;
+  stroke-opacity: 0.22 !important;
+}
+
+/* narrow windows: icon-only toolbar, no strapline, so search keeps its width */
+@media (max-width: 1500px) {
+  .archx-brand .sub {
+    display: none;
+  }
+  .archx-tbtn .tl {
+    display: none;
+  }
+  .archx-tbtn {
+    padding: 0 9px;
+  }
+}
+
+/* ---------- per-kind card outlines (shape, not colour, carries the kind) ---------- */
+/* ui: browser-chrome top bar */
+.archx-node.k-ui {
+  border-top: 3px solid var(--nc);
+}
+/* command (IPC boundary): dashed left bar */
+.archx-node.k-command {
+  border-left-style: dashed;
+}
+/* gate: double left bar */
+.archx-node.k-gate {
+  border-left: 5px double var(--nc);
+}
+/* queue: stacked trays */
+.archx-node.k-queue {
+  box-shadow:
+    3px 3px 0 -1px var(--ax-card),
+    3px 3px 0 0 color-mix(in srgb, var(--nc) 60%, transparent),
+    6px 6px 0 -1px var(--ax-card),
+    6px 6px 0 0 color-mix(in srgb, var(--nc) 35%, transparent);
+}
+/* store: cylinder (rounded ends + lid ellipse) */
+.archx-node.k-store {
+  border-radius: 16px / 10px;
+}
+.archx-node.k-store::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--nc) 55%, transparent);
+  border-radius: 50%;
+  pointer-events: none;
+}
+/* process (isolated sidecar): double outline */
+.archx-node.k-process {
+  outline: 1px solid color-mix(in srgb, var(--nc) 70%, transparent);
+  outline-offset: 2px;
+}
+/* external: dashed all round (outside the trust boundary) */
+.archx-node.k-external {
+  border-style: dashed;
+  border-left-style: solid;
+}
+/* worker: dotted base (background loop) */
+.archx-node.k-worker {
+  border-bottom: 2px dotted var(--nc);
+}
+
+/* legend swatches reuse the card classes so legend and canvas cannot differ */
+.archx-legend-kinds {
+  display: grid !important;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px 10px;
+}
+.archx-legend-kinds .kind {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.archx-legend-kinds .archx-node {
+  width: 26px;
+  height: 16px;
+  padding: 0;
+  flex-shrink: 0;
+  cursor: default;
+  --nc: var(--ax-text-2);
+}
+
+/* ---------- data-flow (DFD) shapes ---------- */
+/* terminator: stadium */
+.archx-node.s-terminator {
+  border-radius: 999px;
+  border-left-width: 1px;
+  padding-inline: 18px;
+}
+/* data store: open-ended box (top + bottom rules only) */
+.archx-node.s-store {
+  border-radius: 0;
+  border-left: none;
+  border-right: none;
+  border-top: 2px solid var(--nc);
+  border-bottom: 2px solid var(--nc);
+}
+/* decision: hexagon — outer layer is the outline colour, ::before the fill */
+.archx-node.s-decision {
+  border: none;
+  border-radius: 0;
+  background: var(--nc) !important;
+  clip-path: polygon(
+    14px 0,
+    calc(100% - 14px) 0,
+    100% 50%,
+    calc(100% - 14px) 100%,
+    14px 100%,
+    0 50%
+  );
+  padding-inline: 22px;
+  isolation: isolate;
+}
+.archx-node.s-decision::before {
+  content: "";
+  position: absolute;
+  inset: 1.5px;
+  background: var(--ax-card);
+  clip-path: polygon(
+    13px 0,
+    calc(100% - 13px) 0,
+    100% 50%,
+    calc(100% - 13px) 100%,
+    13px 100%,
+    0 50%
+  );
+  z-index: -1;
+}
+.archx-node.s-decision.sel::before {
+  inset: 3px;
+  background: var(--ax-card-hover);
+}
+
+/* edge hover: thicken the connector and reveal its label */
+.archx-elabel {
+  display: none;
+}
+.archx-elabel.show,
+.react-flow__edge:hover .archx-elabel {
+  display: inline;
+}
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke-width: 2.6px !important;
+  stroke-opacity: 1 !important;
+}
+
+/* section titles are real headings (h2 rail / h3 inspector) for screen-reader
+   heading navigation; reset UA heading margins to the old div layout */
+h2.archx-h {
+  margin: 0 0 11px;
+}
+.archx-results .r.act {
+  background: var(--ax-ink-subtle-hover);
+}
+
+/* De-emphasis that stays readable: a dimmed card goes flat (no fill, grey
+   accents) but keeps muted ink that passes WCAG AA, instead of fading the
+   whole card to illegible opacity. Dimmed cards remain clickable. */
+.archx-node.dim {
+  background: transparent !important;
+  border-color: color-mix(in srgb, var(--ax-border) 70%, transparent) !important;
+  box-shadow: none !important;
+  outline-color: transparent;
+  filter: grayscale(1);
+}
+.archx-node.dim .archx-node-id,
+.archx-node.dim .archx-node-name,
+.archx-node.dim .archx-node-role,
+.archx-node.dim .archx-ent-name,
+.archx-node.dim .archx-ent-col {
+  color: var(--ax-text-3) !important;
+}
+.archx-node.dim .archx-node-tags span {
+  background: transparent;
+}
+
+/* copy-path buttons: 24px minimum target (WCAG 2.5.8) */
+.archx-src {
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+}
+/* chips sit on the darker hover/selected fill there: use the secondary ink */
+.archx-node.sel .archx-node-tags span,
+.archx-node:hover .archx-node-tags span {
+  color: var(--ax-text-2);
+}
