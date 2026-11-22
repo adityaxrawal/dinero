@@ -11,6 +11,8 @@
 //! which is what prevents an injected authorisation response.
 use anyhow::{Context, Result};
 use deadpool_sqlite::Pool;
+#[cfg(not(debug_assertions))]
+use keyring::Entry;
 use oauth2::reqwest::async_http_client;
 use oauth2::{
     basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge,
