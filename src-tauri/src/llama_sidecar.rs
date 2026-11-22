@@ -409,6 +409,32 @@ pub async fn shutdown() {
     st.state = ServerState::NotStarted;
 }
 
+/// Whether the sidecar process is still running.
+fn child_alive(child: &mut Option<Child>) -> bool {
+    child.as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(None)))
+}
+
+/// Resets a Ready server whose port refuses connections.
+///
+/// A hung or crashed server that still looks Ready would otherwise fail every
+/// request until restart; the next request now starts a fresh one.
+async fn note_request_error(port: u16, err: &anyhow::Error) {
+    let refused = err
+        .downcast_ref::<reqwest::Error>()
+        .is_some_and(|e| e.is_connect());
+    if !refused {
+        return;
+    }
+    let mut st = state().lock().await;
+    if matches!(st.state, ServerState::Ready { port: p } if p == port) {
+        tracing::warn!("llama-server on port {port} refused a connection — will restart");
+        if let Some(mut child) = st.child.take() {
+            let _ = child.kill().await;
+        }
+        st.state = ServerState::NotStarted;
+    }
+}
+
 /// Ensures a healthy server is running for the requested model.
 ///
 /// Applies a cooldown after a failed start, so a persistently broken sidecar is
@@ -419,6 +445,7 @@ async fn ensure_server_ready(
 ) -> Result<(u16, Arc<Semaphore>, Duration)> {
     let requested_slots = current_parallel_slots();
     let mut st = state().lock().await;
+    let alive = child_alive(&mut st.child);
     match &st.state {
         ServerState::Ready { port }
             if server_matches(
@@ -426,9 +453,22 @@ async fn ensure_server_ready(
                 st.parallel_slots,
                 model_id,
                 requested_slots,
-            ) =>
+            ) && alive =>
         {
             Ok((*port, Arc::clone(&st.semaphore), st.calibrated_timeout))
+        }
+        // Ready but the process is gone (for example OOM-killed): restart
+        // instead of failing every request until the app is relaunched.
+        ServerState::Ready { .. } if !alive => {
+            tracing::warn!("llama-server exited unexpectedly — restarting");
+            st.child = None;
+            st.state = ServerState::Starting;
+            tokio::spawn(start_server_task(
+                app_dir.to_path_buf(),
+                model_id.to_string(),
+                requested_slots,
+            ));
+            Err(anyhow!("llama-server exited and is restarting — try again shortly"))
         }
         ServerState::Ready { .. } => {
             if let Some(mut child) = st.child.take() {
@@ -586,7 +626,11 @@ pub async fn complete(
         .await
         .context("llama-server semaphore closed")?;
     let ctx = crate::logging::llm_logger::LlmCallContext::unclassified();
-    raw_complete(port, model_id, prompt, timeout, None, ctx).await
+    let result = raw_complete(port, model_id, prompt, timeout, None, ctx).await;
+    if let Err(e) = &result {
+        note_request_error(port, e).await;
+    }
+    result
 }
 
 /// Runs a completion using the calibrated timeout.
@@ -641,20 +685,39 @@ pub async fn complete_with_optional_schema_and_context(
     
     let effective_timeout = calibrated_timeout.min(Duration::from_secs(150));
     
-    raw_complete(
-        port,
-        model_id,
-        prompt,
-        effective_timeout,
-        schema,
-        ctx,
-    )
-    .await
+    let result = raw_complete(port, model_id, prompt, effective_timeout, schema, ctx).await;
+    if let Err(e) = &result {
+        note_request_error(port, e).await;
+    }
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::server_matches;
+
+    #[tokio::test]
+    async fn child_alive_detects_exited_process() {
+        let mut running = Some(tokio::process::Command::new("sleep").arg("5").kill_on_drop(true).spawn().unwrap());
+        assert!(super::child_alive(&mut running));
+        let mut exited = Some(tokio::process::Command::new("true").spawn().unwrap());
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(!super::child_alive(&mut exited));
+        assert!(!super::child_alive(&mut None));
+    }
+
+    #[tokio::test]
+    async fn refused_connection_is_recognised_through_anyhow_context() {
+        use anyhow::Context;
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let err = reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{port}/"))
+            .send()
+            .await
+            .context("llama-server /completion request failed")
+            .unwrap_err();
+        assert!(err.downcast_ref::<reqwest::Error>().is_some_and(|e| e.is_connect()));
+    }
 
     #[test]
     fn second_completion_fails_fast_instead_of_queueing() {

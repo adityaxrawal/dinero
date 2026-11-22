@@ -947,10 +947,18 @@ pub fn run() {
         // alert loops together, so they do not keep touching the database while
         // the process is tearing down.
         .run(|app_handle, event| match event {
-            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit => {
+            tauri::RunEvent::ExitRequested { .. } => {
                 if let Some(cancel_token) = app_handle.try_state::<tokio_util::sync::CancellationToken>() {
                     cancel_token.cancel();
                 }
+            }
+            tauri::RunEvent::Exit => {
+                if let Some(cancel_token) = app_handle.try_state::<tokio_util::sync::CancellationToken>() {
+                    cancel_token.cancel();
+                }
+                // The llama-server child lives in a static, so kill_on_drop never
+                // fires at exit; without this a multi-GB server outlives the app.
+                tauri::async_runtime::block_on(crate::llama_sidecar::shutdown());
             }
             _ => {}
         });
