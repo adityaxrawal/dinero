@@ -237,15 +237,30 @@ pub async fn license_deactivate(
     Ok(response)
 }
 
+/// The stored license token, sent as proof of the device to the server.
+async fn stored_license_jwt(pool: &deadpool_sqlite::Pool) -> Result<String, AppError> {
+    let conn = pool.get().await.map_err(|e| AppError::Db(e.to_string()))?;
+    conn.interact(|c| crate::licensing::state::get_license_state(c))
+        .await
+        .map_err(|e| AppError::Unknown(e.to_string()))?
+        .map_err(|e| AppError::Db(e.to_string()))?
+        .map(|s| s.license_jwt)
+        .filter(|j| !j.is_empty())
+        .ok_or_else(|| {
+            AppError::Auth("No license token on this device — activate the license again".to_string())
+        })
+}
+
 /// Performs deactivation and clears local licence state.
 pub async fn deactivate_license_internal(
     pool: &deadpool_sqlite::Pool,
 ) -> Result<LicenseDeactivateResponse, AppError> {
     let device_id = get_device_id().map_err(|e| AppError::Auth(e.to_string()))?;
 
+    let jwt = stored_license_jwt(pool).await?;
     let client = LicensingClient::new(LICENSING_BASE_URL.to_string(), pool.clone());
     client
-        .deactivate(ValidateRequest { device_id })
+        .deactivate(ValidateRequest { device_id, jwt })
         .await
         .map_err(|e| AppError::Network(e.to_string()))?;
 
@@ -281,6 +296,7 @@ pub async fn license_refresh(
     let response = client
         .validate(ValidateRequest {
             device_id: device_id.clone(),
+            jwt: stored_license_jwt(pool.inner()).await?,
         })
         .await
         .map_err(|e| AppError::Network(e.to_string()))?;

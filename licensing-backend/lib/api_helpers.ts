@@ -7,6 +7,29 @@
  */
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { LicensingApiError, sendApiError } from './errors';
+import { verifyLicenseJwt } from './jwt';
+
+/**
+ * Requires the caller to prove it holds this device's license token.
+ *
+ * A device id alone is guessable or leakable; without this, anyone knowing it
+ * could deactivate the licence or pull a token (review M16). Expiry is ignored
+ * so a device that was offline past its token's lifetime can still validate.
+ */
+export function assertDeviceProof(jwt: unknown, deviceId: string, publicKeyPem: string): void {
+  if (typeof jwt !== 'string' || jwt.length === 0) {
+    throw new LicensingApiError('LICENSE_INVALID', 'A license token is required for this device');
+  }
+  let claims;
+  try {
+    claims = verifyLicenseJwt(jwt, publicKeyPem, { ignoreExpiration: true });
+  } catch {
+    throw new LicensingApiError('LICENSE_INVALID', 'License token could not be verified');
+  }
+  if (claims.device_id !== deviceId) {
+    throw new LicensingApiError('DEVICE_MISMATCH', 'License token belongs to a different device');
+  }
+}
 
 /**
  * Gate a request on method and required body fields.

@@ -92,7 +92,7 @@ export async function reissueToken(
   const expiresAt = new Date(now.getTime() + LICENSE_TOKEN_TTL_MS);
   const newJwt = signLicenseJwt(
     {
-      sub: input.email,
+      sub: account.id,
       device_id: input.new_device_id,
       plan: subscription.planId,
       billing_interval: subscription.billingInterval,

@@ -38,6 +38,9 @@ struct LicensingErrorResponse {
 #[derive(Serialize)]
 pub struct ValidateRequest {
     pub device_id: String,
+    /// The current (possibly expired) license token, proving this device holds
+    /// the licence; the server refuses validate/deactivate without it (M16).
+    pub jwt: String,
 }
 
 #[derive(Serialize)]
@@ -130,7 +133,8 @@ mod tests {
         let mock = server
             .mock("POST", "/api/license/validate")
             .match_body(mockito::Matcher::Json(serde_json::json!({
-                "device_id": "some-device-id"
+                "device_id": "some-device-id",
+                "jwt": "token"
             })))
             .with_status(200)
             .with_header("content-type", "application/json")
@@ -146,6 +150,7 @@ mod tests {
         let res = client
             .validate(ValidateRequest {
                 device_id: "some-device-id".to_string(),
+                jwt: "token".to_string(),
             })
             .await
             .unwrap();

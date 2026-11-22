@@ -98,7 +98,7 @@ export async function startTrial(
     });
     const jwtToken = signLicenseJwt(
       {
-        sub: input.email,
+        sub: existingBinding!.accountId,
         device_id: input.device_id,
         plan: boundSub!.planId,
         billing_interval: boundSub!.billingInterval,
@@ -164,7 +164,7 @@ export async function startTrial(
 
   const jwtToken = signLicenseJwt(
     {
-      sub: input.email,
+      sub: account.id,
       device_id: input.device_id,
       plan: TRIAL_PLAN_ID,
       billing_interval: 'monthly',

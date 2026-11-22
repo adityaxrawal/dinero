@@ -96,7 +96,10 @@ pub async fn start_background_validation<R: tauri::Runtime>(
                             }
                         };
 
-                        let req = ValidateRequest { device_id };
+                        let req = ValidateRequest {
+                            device_id,
+                            jwt: state.license_jwt.clone(),
+                        };
 
                         match client.validate(req).await {
                             Ok(response) => {

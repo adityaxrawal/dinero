@@ -121,7 +121,7 @@ async fn test_activation_validation_refresh_flow() {
     let validate_mock = server3
         .mock("POST", "/api/license/validate")
         .match_body(mockito::Matcher::Json(
-            serde_json::json!({ "device_id": "device-abc" }),
+            serde_json::json!({ "device_id": "device-abc", "jwt": "previous.jwt.token" }),
         ))
         .with_status(200)
         .with_header("content-type", "application/json")
@@ -134,6 +134,7 @@ async fn test_activation_validation_refresh_flow() {
     let refreshed = client3
         .validate(ValidateRequest {
             device_id: "device-abc".to_string(),
+            jwt: "previous.jwt.token".to_string(),
         })
         .await
         .expect("validate must succeed against a mocked 200 response");

@@ -3,7 +3,15 @@
 import { describe, it, expect, vi } from 'vitest';
 import { validateLicense, type ValidateDb } from '../api/license/validate';
 import { TEST_PRIVATE_KEY_PEM, TEST_PUBLIC_KEY_PEM } from './testKeys';
-import { verifyLicenseJwt } from '../lib/jwt';
+import { verifyLicenseJwt, signLicenseJwt } from '../lib/jwt';
+
+/** A token the device would hold, as proof for validate (review M16). */
+const proof = (deviceId: string, expirySeconds = 3600) =>
+  signLicenseJwt(
+    { sub: 'acc_1', device_id: deviceId, plan: 'p', billing_interval: 'monthly', state: 'ACTIVE' },
+    TEST_PRIVATE_KEY_PEM,
+    expirySeconds
+  );
 
 function makeDb(
   token: { accountId: string; account: { email: string } } | null,
@@ -30,11 +38,12 @@ describe('test_validate_returns_fresh_jwt_with_server_timestamp', () => {
       { planId: 'desktop_pro_monthly', billingInterval: 'monthly', status: 'active' }
     );
     const before = Date.now();
-    const result = await validateLicense(db, { device_id: 'device-A' }, TEST_PRIVATE_KEY_PEM);
+    const result = await validateLicense(db, { device_id: 'device-A', jwt: proof('device-A') }, TEST_PRIVATE_KEY_PEM, TEST_PUBLIC_KEY_PEM);
     expect(new Date(result.server_time).getTime()).toBeGreaterThanOrEqual(before);
     const verified = verifyLicenseJwt(result.jwt, TEST_PUBLIC_KEY_PEM);
     expect(verified.device_id).toBe('device-A');
-    expect(verified.sub).toBe('user@example.com');
+    expect(verified.sub).toBe('acc_1');
+    expect(result.jwt).not.toContain('user@example.com');
   });
 });
 
@@ -42,7 +51,7 @@ describe('test_device_mismatch_rejected', () => {
   it('rejects when no license_tokens row is bound to the requesting device', async () => {
     const db = makeDb(null, null);
     await expect(
-      validateLicense(db, { device_id: 'device-UNKNOWN' }, TEST_PRIVATE_KEY_PEM)
+      validateLicense(db, { device_id: 'device-UNKNOWN', jwt: proof('device-UNKNOWN') }, TEST_PRIVATE_KEY_PEM, TEST_PUBLIC_KEY_PEM)
     ).rejects.toMatchObject({ code: 'LICENSE_INVALID' });
   });
 });
@@ -59,7 +68,40 @@ describe('test_state_transitions_computed_correctly', () => {
       { accountId: 'acc_1', account: { email: 'user@example.com' } },
       { planId: 'desktop_pro_monthly', billingInterval: 'monthly', status: dbStatus }
     );
-    const result = await validateLicense(db, { device_id: 'device-A' }, TEST_PRIVATE_KEY_PEM);
+    const result = await validateLicense(db, { device_id: 'device-A', jwt: proof('device-A') }, TEST_PRIVATE_KEY_PEM, TEST_PUBLIC_KEY_PEM);
     expect(result.state).toBe(expectedState);
+  });
+});
+
+// Review M16: a device id alone no longer yields a token.
+describe('validate requires proof of the device token', () => {
+  const db = () =>
+    makeDb(
+      { accountId: 'acc_1', account: { email: 'user@example.com' } },
+      { planId: 'desktop_pro_monthly', billingInterval: 'monthly', status: 'active' }
+    );
+  it('rejects a missing token', async () => {
+    await expect(
+      validateLicense(db(), { device_id: 'device-A', jwt: '' }, TEST_PRIVATE_KEY_PEM, TEST_PUBLIC_KEY_PEM)
+    ).rejects.toMatchObject({ code: 'LICENSE_INVALID' });
+  });
+  it("rejects another device's token", async () => {
+    await expect(
+      validateLicense(
+        db(),
+        { device_id: 'device-A', jwt: proof('device-B') },
+        TEST_PRIVATE_KEY_PEM,
+        TEST_PUBLIC_KEY_PEM
+      )
+    ).rejects.toMatchObject({ code: 'DEVICE_MISMATCH' });
+  });
+  it('accepts an expired token from the same device (offline recovery)', async () => {
+    const result = await validateLicense(
+      db(),
+      { device_id: 'device-A', jwt: proof('device-A', -60) },
+      TEST_PRIVATE_KEY_PEM,
+      TEST_PUBLIC_KEY_PEM
+    );
+    expect(result.state).toBe('ACTIVE');
   });
 });

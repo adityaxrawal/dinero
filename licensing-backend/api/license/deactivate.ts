@@ -13,12 +13,14 @@ import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
 import { LicensingApiError, sendApiError } from '../../lib/errors';
-import { requirePostWithFields } from '../../lib/api_helpers';
+import { requirePostWithFields, assertDeviceProof } from '../../lib/api_helpers';
 import { logAuditEvent, type AuditWriter } from '../../lib/audit';
 import { consoleEmailSender, type EmailSender } from '../../lib/email';
 
 export interface DeactivateInput {
   device_id: string;
+  /** The device's current (possibly expired) license token, as proof. */
+  jwt: string;
 }
 
 export interface DeactivateResult {
@@ -42,8 +44,10 @@ export type DeactivateDb = {
 export async function deactivateLicense(
   db: DeactivateDb,
   input: DeactivateInput,
+  publicKeyPem: string,
   emailSender: EmailSender = consoleEmailSender
 ): Promise<DeactivateResult> {
+  assertDeviceProof(input.jwt, input.device_id, publicKeyPem);
   const token = await db.licenseToken.findUnique({
     where: { deviceFingerprint: input.device_id },
     include: { account: true },
@@ -77,10 +81,15 @@ export async function deactivateLicense(
  * HTTP entry point: validates the request, delegates, and maps errors to statuses.
  */
 async function handler(req: VercelRequest, res: VercelResponse) {
-  if (!requirePostWithFields(req, res, ['device_id'])) return;
-  const { device_id } = req.body;
+  if (!requirePostWithFields(req, res, ['device_id', 'jwt'])) return;
+  const { device_id, jwt } = req.body;
+  const publicKeyPem = process.env.JWT_PUBLIC_KEY_PEM;
+  if (!publicKeyPem) {
+    res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Server misconfigured' });
+    return;
+  }
   try {
-    const result = await deactivateLicense(prisma, { device_id });
+    const result = await deactivateLicense(prisma, { device_id, jwt }, publicKeyPem);
     res.status(200).json(result);
   } catch (e) {
     sendApiError(res, e);

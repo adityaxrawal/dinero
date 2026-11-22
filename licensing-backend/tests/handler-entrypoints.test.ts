@@ -94,7 +94,7 @@ describe('handler entrypoints — server misconfiguration', () => {
   it('license/validate refuses to sign without a private key', async () => {
     delete process.env.JWT_PRIVATE_KEY_PEM;
     const res = makeRes();
-    await validateHandler(req({ body: { device_id: 'device-A' } }), res);
+    await validateHandler(req({ body: { device_id: 'device-A', jwt: 'token' } }), res);
 
     expect(res.statusCode).toBe(500);
     expect(res.body).toMatchObject({ code: 'INTERNAL_ERROR', message: 'Server misconfigured' });

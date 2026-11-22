@@ -225,7 +225,7 @@ export async function activateLicense(
 
   const jwtToken = signLicenseJwt(
     {
-      sub: input.email,
+      sub: account.id,
       device_id: input.device_id,
       plan: planInfo.planId,
       billing_interval: planInfo.billingInterval,

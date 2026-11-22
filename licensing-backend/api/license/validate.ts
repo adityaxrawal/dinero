@@ -13,7 +13,11 @@ import type { PrismaClient } from '@prisma/client';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { prisma } from '../../lib/db';
 import { LicensingApiError, sendApiError } from '../../lib/errors';
-import { requirePostWithFields, getTokenAndSubscription } from '../../lib/api_helpers';
+import {
+  requirePostWithFields,
+  getTokenAndSubscription,
+  assertDeviceProof,
+} from '../../lib/api_helpers';
 import {
   signLicenseJwt,
   stateForSubscriptionStatus,
@@ -24,6 +28,8 @@ import { logAuditEvent, type AuditWriter } from '../../lib/audit';
 
 export interface ValidateInput {
   device_id: string;
+  /** The device's current (possibly expired) license token, as proof. */
+  jwt: string;
 }
 
 export type { ServerLicenseState };
@@ -58,8 +64,10 @@ export type ValidateDb = {
 export async function validateLicense(
   db: ValidateDb,
   input: ValidateInput,
-  privateKeyPem: string
+  privateKeyPem: string,
+  publicKeyPem: string
 ): Promise<ValidateResult> {
+  assertDeviceProof(input.jwt, input.device_id, publicKeyPem);
   const { token, subscription } = await getTokenAndSubscription(db, input.device_id, true);
   if (!subscription) {
     throw new LicensingApiError('LICENSE_INVALID', 'No subscription found for this license');
@@ -74,7 +82,7 @@ export async function validateLicense(
 
   const jwtToken = signLicenseJwt(
     {
-      sub: token.account.email,
+      sub: token.accountId,
       device_id: input.device_id,
       plan: subscription.planId,
       billing_interval: subscription.billingInterval,
@@ -105,15 +113,16 @@ export async function validateLicense(
  * HTTP entry point: validates the request, delegates, and maps errors to statuses.
  */
 async function handler(req: VercelRequest, res: VercelResponse) {
-  if (!requirePostWithFields(req, res, ['device_id'])) return;
-  const { device_id } = req.body;
+  if (!requirePostWithFields(req, res, ['device_id', 'jwt'])) return;
+  const { device_id, jwt } = req.body;
   const privateKeyPem = process.env.JWT_PRIVATE_KEY_PEM;
-  if (!privateKeyPem) {
+  const publicKeyPem = process.env.JWT_PUBLIC_KEY_PEM;
+  if (!privateKeyPem || !publicKeyPem) {
     res.status(500).json({ code: 'INTERNAL_ERROR', message: 'Server misconfigured' });
     return;
   }
   try {
-    const result = await validateLicense(prisma, { device_id }, privateKeyPem);
+    const result = await validateLicense(prisma, { device_id, jwt }, privateKeyPem, publicKeyPem);
     res.status(200).json(result);
   } catch (e) {
     sendApiError(res, e);
