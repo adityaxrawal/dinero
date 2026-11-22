@@ -117,6 +117,57 @@ fn gmail_polling_status(conn: &rusqlite::Connection) -> String {
     "active".to_string()
 }
 
+/// How long an active account may go without a successful poll before the
+/// user is warned (the poll interval is 60s).
+pub const STALE_SYNC_THRESHOLD: chrono::Duration = chrono::Duration::minutes(15);
+
+/// Accounts whose sync needs the user's attention.
+#[derive(Debug, Default, PartialEq)]
+pub struct SyncWatch {
+    /// Active accounts with no successful poll within the threshold.
+    pub stale: usize,
+    /// Accounts marked degraded, which only a Gmail reconnect fixes.
+    pub degraded: usize,
+}
+
+/// Finds stale and degraded accounts for the sync watchdog.
+///
+/// The last successful poll is the `gmail_history` checkpoint's `updated_at`
+/// (written after every successful history.list), falling back to the account's
+/// creation time. Staleness is measured from the later of that and
+/// `watching_since` (app start), so a launch after a night off is not reported
+/// as stale before the first poll has had a chance to run.
+pub fn sync_watch(
+    conn: &rusqlite::Connection,
+    now: NaiveDateTime,
+    watching_since: NaiveDateTime,
+) -> rusqlite::Result<SyncWatch> {
+    let mut stmt = conn.prepare(
+        "SELECT a.account_status, COALESCE(cp.updated_at, a.created_at)
+         FROM connected_accounts a
+         LEFT JOIN processing_checkpoints cp
+           ON cp.job_type = 'gmail_history' AND cp.job_key = a.id",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<NaiveDateTime>>(1)?))
+    })?;
+    let mut watch = SyncWatch::default();
+    for row in rows {
+        let (status, last_ok) = row?;
+        match status.as_deref() {
+            Some("degraded") => watch.degraded += 1,
+            Some("ACTIVE") | Some("active") => {
+                let since = last_ok.map_or(watching_since, |t| t.max(watching_since));
+                if now - since > STALE_SYNC_THRESHOLD {
+                    watch.stale += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(watch)
+}
+
 #[tauri::command]
 /// Command returning the health report.
 pub async fn get_health_report(
@@ -128,6 +179,41 @@ pub async fn get_health_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sync_watch_flags_stale_active_and_degraded_accounts() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        let now = Utc::now().naive_utc();
+        let started = now - chrono::Duration::hours(3);
+        conn.execute("INSERT INTO local_profile (id) VALUES (1)", []).unwrap();
+        let insert = |id: &str, status: &str, last_ok: Option<NaiveDateTime>| {
+            conn.execute(
+                "INSERT INTO connected_accounts (id, profile_id, account_status, created_at) VALUES (?1, 1, ?2, ?3)",
+                rusqlite::params![id, status, started - chrono::Duration::days(1)],
+            )
+            .unwrap();
+            if let Some(t) = last_ok {
+                conn.execute(
+                    "INSERT INTO processing_checkpoints (id, job_type, job_key, checkpoint_state_json, status, updated_at)
+                     VALUES (?1, 'gmail_history', ?2, '{}', 'success', ?3)",
+                    rusqlite::params![format!("cp_{id}"), id, t],
+                )
+                .unwrap();
+            }
+        };
+        insert("fresh", "ACTIVE", Some(now - chrono::Duration::minutes(2)));
+        insert("stale", "ACTIVE", Some(now - chrono::Duration::minutes(40)));
+        insert("never_polled", "active", None);
+        insert("broken", "degraded", Some(now - chrono::Duration::days(3)));
+        insert("gone", "disconnected", None);
+
+        let watch = sync_watch(&conn, now, started).unwrap();
+        assert_eq!(watch, SyncWatch { stale: 2, degraded: 1 });
+
+        // Right after launch nothing is stale yet, however old the last poll.
+        let watch = sync_watch(&conn, now, now - chrono::Duration::minutes(1)).unwrap();
+        assert_eq!(watch, SyncWatch { stale: 0, degraded: 1 });
+    }
 
     #[test]
     fn test_health_checks_do_not_expose_user_data() {

@@ -810,8 +810,61 @@ pub fn run() {
             let pool_for_health = pool_clone.clone();
             let app_handle_for_health = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                let watching_since = chrono::Utc::now().naive_utc();
+                let (mut warned_stale, mut warned_degraded) = (false, false);
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+
+                    // Stale-sync watchdog: a stopped poller or a degraded
+                    // account must be visible, not silent. Warnings are sent
+                    // and cleared only when the state changes.
+                    if let Ok(conn) = pool_for_health.get().await {
+                        let now = chrono::Utc::now().naive_utc();
+                        if let Ok(Ok(watch)) = conn
+                            .interact(move |c| crate::health::sync_watch(c, now, watching_since))
+                            .await
+                        {
+                            use crate::ipc::system_warnings::{
+                                clear_system_warning, emit_system_warning, SystemWarningPayload,
+                                WarningSeverity,
+                            };
+                            let stale = watch.stale > 0;
+                            if stale && !warned_stale {
+                                emit_system_warning(
+                                    &app_handle_for_health,
+                                    SystemWarningPayload {
+                                        warning_type: "gmail_sync_stale".to_string(),
+                                        message: "Gmail hasn't synced for over 15 minutes. \
+                                        Dinero will keep retrying; check your connection."
+                                            .to_string(),
+                                        severity: WarningSeverity::Degraded,
+                                        action_hint: None,
+                                    },
+                                );
+                            } else if !stale && warned_stale {
+                                clear_system_warning(&app_handle_for_health, "gmail_sync_stale");
+                            }
+                            warned_stale = stale;
+
+                            let degraded = watch.degraded > 0;
+                            if degraded && !warned_degraded {
+                                emit_system_warning(
+                                    &app_handle_for_health,
+                                    SystemWarningPayload {
+                                        warning_type: "gmail_token_degraded".to_string(),
+                                        message: "Gmail sync is paused: reconnect your Gmail account to resume."
+                                            .to_string(),
+                                        severity: WarningSeverity::Degraded,
+                                        action_hint: Some("reconnect_gmail_account".to_string()),
+                                    },
+                                );
+                            } else if !degraded && warned_degraded {
+                                clear_system_warning(&app_handle_for_health, "gmail_token_degraded");
+                            }
+                            warned_degraded = degraded;
+                        }
+                    }
+
                     let report = crate::health::compute_health_report(&pool_for_health).await;
                     if !report.backend_ready {
                         let monitor = app_handle_for_health
