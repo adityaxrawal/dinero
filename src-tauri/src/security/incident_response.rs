@@ -46,16 +46,39 @@ impl TriggerKind {
     }
 }
 
+/// Occurrences only count toward a threshold within this window, so a few
+/// unrelated failures spread over days never add up to an incident.
+const TRIGGER_WINDOW: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// Recent trigger times per (kind, scope); scope is an account id or "".
 #[derive(Default)]
-pub struct IncidentMonitor(Mutex<std::collections::HashMap<TriggerKind, u32>>);
+pub struct IncidentMonitor(
+    Mutex<std::collections::HashMap<(TriggerKind, String), Vec<std::time::Instant>>>,
+);
 
 /// Records a trigger, returning whether it now warrants a response.
 pub fn record_trigger(monitor: &IncidentMonitor, kind: TriggerKind) -> bool {
-    let mut counters = monitor.0.lock().unwrap();
-    let count = counters.entry(kind).or_insert(0);
-    *count += 1;
-    if *count >= kind.threshold() {
-        *count = 0;
+    record_trigger_for(monitor, kind, "")
+}
+
+/// Records a trigger for one scope (for example a Gmail account), so failures
+/// on different accounts are counted separately.
+pub fn record_trigger_for(monitor: &IncidentMonitor, kind: TriggerKind, scope: &str) -> bool {
+    record_trigger_at(monitor, kind, scope, std::time::Instant::now())
+}
+
+fn record_trigger_at(
+    monitor: &IncidentMonitor,
+    kind: TriggerKind,
+    scope: &str,
+    now: std::time::Instant,
+) -> bool {
+    let mut recent = monitor.0.lock().unwrap();
+    let times = recent.entry((kind, scope.to_string())).or_default();
+    times.retain(|t| now.duration_since(*t) < TRIGGER_WINDOW);
+    times.push(now);
+    if times.len() as u32 >= kind.threshold() {
+        times.clear();
         true
     } else {
         false
@@ -98,11 +121,12 @@ pub async fn respond_to_incident<R: tauri::Runtime>(
         serde_json::json!({ "trigger": kind.as_str() }),
     );
 
-    if kind == TriggerKind::RepeatedOAuthFailure {
-        crate::ingestion::oauth::revoke_gmail_access(pool).await;
+    // Repeated OAuth failures concern one account, which is already degraded
+    // and needs reconnecting; revoking every account and logging out punished
+    // the user for one dead grant (review H13).
+    if kind != TriggerKind::RepeatedOAuthFailure {
+        crate::auth::session::logout(pool, session_state).await?;
     }
-
-    crate::auth::session::logout(pool, session_state).await?;
 
     Ok(())
 }
@@ -157,6 +181,32 @@ mod tests {
         assert!(record_trigger(&monitor, TriggerKind::RepeatedOAuthFailure));
 
         assert!(!record_trigger(&monitor, TriggerKind::RepeatedOAuthFailure));
+    }
+
+    #[test]
+    fn triggers_outside_the_window_do_not_add_up() {
+        let monitor = IncidentMonitor::default();
+        let t0 = std::time::Instant::now();
+        let kind = TriggerKind::RepeatedOAuthFailure;
+        assert!(!record_trigger_at(&monitor, kind, "a", t0));
+        assert!(!record_trigger_at(&monitor, kind, "a", t0 + TRIGGER_WINDOW));
+        assert!(!record_trigger_at(&monitor, kind, "a", t0 + TRIGGER_WINDOW * 2));
+        // Three within the window do.
+        let t1 = t0 + TRIGGER_WINDOW * 3;
+        assert!(!record_trigger_at(&monitor, kind, "a", t1));
+        assert!(!record_trigger_at(&monitor, kind, "a", t1 + std::time::Duration::from_secs(60)));
+        assert!(record_trigger_at(&monitor, kind, "a", t1 + std::time::Duration::from_secs(120)));
+    }
+
+    #[test]
+    fn accounts_are_counted_separately() {
+        let monitor = IncidentMonitor::default();
+        let kind = TriggerKind::RepeatedOAuthFailure;
+        assert!(!record_trigger_for(&monitor, kind, "a"));
+        assert!(!record_trigger_for(&monitor, kind, "b"));
+        assert!(!record_trigger_for(&monitor, kind, "a"));
+        assert!(!record_trigger_for(&monitor, kind, "b"));
+        assert!(record_trigger_for(&monitor, kind, "a"));
     }
 
     #[test]

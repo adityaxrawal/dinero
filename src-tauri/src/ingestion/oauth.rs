@@ -856,9 +856,10 @@ async fn mark_account_degraded_async<R: tauri::Runtime>(
         );
 
         let monitor = app.state::<crate::security::incident_response::IncidentMonitor>();
-        if crate::security::incident_response::record_trigger(
+        if crate::security::incident_response::record_trigger_for(
             monitor.inner(),
             crate::security::incident_response::TriggerKind::RepeatedOAuthFailure,
+            account_id,
         ) {
             let session_state = app.state::<crate::auth::session::SessionState>();
             if let Err(e) = crate::security::incident_response::respond_to_incident(
