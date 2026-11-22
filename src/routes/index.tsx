@@ -12,6 +12,7 @@ import Settings from '@/pages/Settings';
 import Debug from '@/pages/Debug';
 import OnboardingFlow from './onboarding/OnboardingFlow';
 import SpendingLimits from '@/pages/SpendingLimits';
+import Architecture from '@/pages/architecture/Architecture';
 
 /**
  * Application route table.
@@ -42,9 +43,14 @@ export const router = createHashRouter([
       { path: 'reconciliation/:clusterId', element: <ReconciliationClusterDetail /> },
       { path: 'spending-limits', element: <SpendingLimits /> },
       { path: 'settings', element: <Settings /> },
-      // Debug screen is spliced in only for development builds, so the route
-      // does not exist at all in a shipped binary.
-      ...(import.meta.env.DEV ? [{ path: 'debug', element: <Debug /> }] : []),
+      // Debug and Architecture screens are spliced in only for development
+      // builds, so their routes do not exist at all in a shipped binary.
+      ...(import.meta.env.DEV
+        ? [
+            { path: 'debug', element: <Debug /> },
+            { path: 'architecture', element: <Architecture /> },
+          ]
+        : []),
       // Catch-all: unknown paths redirect to the dashboard rather than showing
       // an error. `replace` keeps the bad URL out of history, so Back does not
       // return to it.

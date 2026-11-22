@@ -13,6 +13,7 @@ import {
   GitMerge,
   Settings,
   Activity,
+  Network,
 } from 'lucide-react';
 import type { NavItem } from './SidebarItem';
 
@@ -51,7 +52,10 @@ export function buildNavGroups(unresolvedClusters: number, badgePulse: boolean) 
 export const SYSTEM_ITEMS: NavItem[] = [
   { path: '/settings', label: 'Settings', icon: <Settings size={15} />, badge: 0 },
   ...(import.meta.env.DEV
-    ? [{ path: '/debug', label: 'Debug', icon: <Activity size={15} />, badge: 0 }]
+    ? [
+        { path: '/debug', label: 'Debug', icon: <Activity size={15} />, badge: 0 },
+        { path: '/architecture', label: 'Architecture', icon: <Network size={15} />, badge: 0 },
+      ]
     : []),
 ];
 
