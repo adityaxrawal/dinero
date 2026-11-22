@@ -413,6 +413,12 @@ pub struct ScanCheckpointState {
     /// message whose `scan_failed_messages` row already exists.
     #[serde(default)]
     pub retry_of_failed: bool,
+    /// Index up to which every id has finished, so resume can safely skip
+    /// that many. `processed_count` cannot be used: fetches complete out of
+    /// order, so the first N ids are not necessarily the N finished ones.
+    /// Absent in older checkpoints, which fall back to `processed_count`.
+    #[serde(default)]
+    pub resume_from: Option<usize>,
 }
 
 #[tauri::command]
@@ -843,7 +849,18 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
 ) -> anyhow::Result<()> {
     let total = state.all_message_ids.len();
     let to_process = state.all_message_ids.clone();
-    let mut processed_count = state.processed_count;
+    let resume_from = state.resume_from.unwrap_or(state.processed_count).min(total);
+    // On resume the counter restarts at the low-water mark, since ids between
+    // it and the old count are processed (and counted) again.
+    let mut processed_count = resume_from;
+    let index_of: std::collections::HashMap<String, usize> = to_process
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (id.clone(), i))
+        .collect();
+    let mut done = vec![false; total];
+    done[..resume_from].iter_mut().for_each(|d| *d = true);
+    let mut low_water = resume_from;
 
     let client = Arc::new(client);
     let pool_arc = Arc::new(pool.clone());
@@ -915,7 +932,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
     }
 
     let mut ids_iter: Box<dyn Iterator<Item = String> + Send> =
-        Box::new(to_process.into_iter().skip(processed_count));
+        Box::new(to_process.into_iter().skip(resume_from));
 
     // Failed ids are collected per pass. Once the main pass drains, they get
     // one automatic retry pass; whatever still fails marks the scan
@@ -1003,6 +1020,14 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
         match join_res {
             Ok((msg_id, result)) => {
                 tracing::info!("Finished processing msg_id='{}'", msg_id);
+                if !auto_retry_pass {
+                    if let Some(&i) = index_of.get(&msg_id) {
+                        done[i] = true;
+                        while low_water < total && done[low_water] {
+                            low_water += 1;
+                        }
+                    }
+                }
                 let retrying = manual_retry || auto_retry_pass;
                 if retrying && result.is_ok() {
                     state.errors = state.errors.saturating_sub(1);
@@ -1250,14 +1275,16 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
 
         if should_checkpoint(batch_count) {
             state.processed_count = processed_count;
+            state.resume_from = Some(low_water);
 
             if let Err(e) = scan_batcher.lock().await.flush(&pool).await {
                 tracing::warn!("scan_batcher flush failed (best-effort): {}", e);
             }
 
             let key = account_id.clone();
-            let (p, t, s, m, n, e, pe) = (
+            let (p, r, t, s, m, n, e, pe) = (
                 processed_count,
+                low_water,
                 state.transactions_found,
                 state.statements_found,
                 state.mandate_events_found,
@@ -1269,7 +1296,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                 let _ = conn
                     .interact(move |c| {
                         crate::db::processing_checkpoints::patch_scan_progress(
-                            c, &key, p, t, s, m, n, e, pe,
+                            c, &key, p, r, t, s, m, n, e, pe,
                         )
                     })
                     .await;
@@ -1333,6 +1360,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
     join_set.abort_all();
 
     state.processed_count = processed_count;
+    state.resume_from = Some(low_water);
 
     if was_cancelled {
         if let Ok(conn) = pool.get().await {
@@ -1643,6 +1671,7 @@ mod tests {
             errors: 0,
             pending_enrichment: 0,
             retry_of_failed: false,
+            resume_from: None,
         };
         let cp = ProcessingCheckpointRow {
             id: "cp_status".into(),
@@ -1761,7 +1790,7 @@ mod tests {
         .unwrap();
 
         crate::db::processing_checkpoints::patch_scan_progress(
-            &conn, "acct_1", 42, 7, 3, 2, 11, 1, 5,
+            &conn, "acct_1", 42, 40, 7, 3, 2, 11, 1, 5,
         )
         .unwrap();
 
@@ -1775,6 +1804,7 @@ mod tests {
         assert_eq!(patched.all_message_ids, ids, "the work queue must survive");
         assert_eq!(patched.start_date, "2023-01-01");
         assert_eq!(patched.processed_count, 42);
+        assert_eq!(patched.resume_from, Some(40));
         assert_eq!(patched.transactions_found, 7);
         assert_eq!(patched.statements_found, 3);
         assert_eq!(patched.mandate_events_found, 2);
@@ -1786,6 +1816,7 @@ mod tests {
             &conn,
             "acct_missing",
             1,
+            0,
             0,
             0,
             0,
@@ -1829,6 +1860,7 @@ mod tests {
             errors: 0,
             pending_enrichment: 0,
             retry_of_failed: false,
+            resume_from: None,
         };
 
         let gmail = mock_gmail(200).await;
@@ -1916,6 +1948,67 @@ mod tests {
             .unwrap();
         assert_eq!(cp.status, "completed_with_errors");
 
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    /// Review H5: resume skips only the contiguous finished prefix
+    /// (`resume_from`), not `processed_count`, because fetches finish out of
+    /// order. Here 5 were counted but only the first 2 were contiguous, so 4
+    /// of the 6 ids must be fetched again.
+    #[tokio::test]
+    async fn test_resume_uses_low_water_mark_not_processed_count() {
+        let app = mock_builder()
+            .build(mock_context(tauri::test::noop_assets()))
+            .unwrap()
+            .handle()
+            .clone();
+        app.manage(test_queue_handles());
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let pool = init_db(temp_dir.join("test_lowwater.db")).await.expect("DB init failed");
+
+        let mut server = mockito::Server::new_async().await;
+        let fetches = server
+            .mock("GET", mockito::Matcher::Regex("^/gmail/v1/users/me/messages/m[2-5]".into()))
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(MINIMAL_MESSAGE)
+            .expect_at_least(4)
+            .create_async()
+            .await;
+        let untouched = server
+            .mock("GET", mockito::Matcher::Regex("^/gmail/v1/users/me/messages/m[01]".into()))
+            .match_query(mockito::Matcher::Any)
+            .with_status(500)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let state = ScanCheckpointState {
+            start_date: "2023-01-01".into(),
+            end_date: "2023-01-31".into(),
+            all_message_ids: (0..6).map(|i| format!("m{i}")).collect(),
+            processed_count: 5,
+            resume_from: Some(2),
+            ..Default::default()
+        };
+        let client =
+            GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
+        run_scan_batches(app, pool.clone(), "acc_lw".to_string(), state, client)
+            .await
+            .expect("run_scan_batches failed");
+
+        let conn = pool.get().await.unwrap();
+        let cp = conn
+            .interact(|c| get_checkpoint(c, "historical_scan", "acc_lw").unwrap().unwrap())
+            .await
+            .unwrap();
+        let final_state: ScanCheckpointState = serde_json::from_str(&cp.checkpoint_state_json).unwrap();
+        assert_eq!(final_state.processed_count, 6, "counter restarts at the low-water mark");
+        assert_eq!(final_state.resume_from, Some(6));
+        fetches.assert_async().await;
+        untouched.assert_async().await;
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
@@ -2104,6 +2197,7 @@ mod tests {
             errors: 0,
             pending_enrichment: 0,
             retry_of_failed: false,
+            resume_from: None,
         };
 
         let gmail = mock_gmail(200).await;
@@ -2185,6 +2279,7 @@ mod tests {
             errors: 0,
             pending_enrichment: 0,
             retry_of_failed: false,
+            resume_from: None,
         };
 
         let gmail = mock_gmail(200).await;

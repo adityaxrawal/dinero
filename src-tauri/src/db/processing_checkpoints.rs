@@ -55,6 +55,7 @@ pub fn patch_scan_progress(
     conn: &Connection,
     job_key: &str,
     processed_count: usize,
+    resume_from: usize,
     transactions_found: usize,
     statements_found: usize,
     mandate_events_found: usize,
@@ -72,7 +73,8 @@ pub fn patch_scan_progress(
                  '$.mandate_events_found', ?5,
                  '$.non_financial', ?6,
                  '$.errors', ?7,
-                 '$.pending_enrichment', ?8
+                 '$.pending_enrichment', ?8,
+                 '$.resume_from', ?9
              ),
              status = 'in_progress'
          WHERE job_type = 'historical_scan' AND job_key = ?1",
@@ -85,6 +87,7 @@ pub fn patch_scan_progress(
             non_financial as i64,
             errors as i64,
             pending_enrichment as i64,
+            resume_from as i64,
         ],
     )?;
     Ok(())
