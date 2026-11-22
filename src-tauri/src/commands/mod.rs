@@ -96,6 +96,39 @@ pub async fn auth_get_recovery_phrase(
     Ok(phrase)
 }
 
+/// Managed when the database could not be opened with the stored key; the app
+/// then serves only the recovery commands below.
+pub struct RecoveryMode;
+
+#[tauri::command]
+/// Whether the app started in recovery mode (database key mismatch).
+pub fn app_recovery_mode(app: tauri::AppHandle) -> bool {
+    app.try_state::<RecoveryMode>().is_some()
+}
+
+#[tauri::command]
+/// Relaunches the app after a successful recovery-phrase restore.
+pub fn recovery_restart(app: tauri::AppHandle) -> Result<(), crate::error::AppError> {
+    if app.try_state::<RecoveryMode>().is_none() {
+        return Err(crate::error::AppError::Validation("not in recovery mode".into()));
+    }
+    app.restart();
+}
+
+#[tauri::command]
+/// Deletes all local data and relaunches; offered only in recovery mode, for
+/// users without a recovery phrase.
+pub async fn recovery_reset_app_data(app: tauri::AppHandle) -> Result<(), crate::error::AppError> {
+    if app.try_state::<RecoveryMode>().is_none() {
+        return Err(crate::error::AppError::Validation("not in recovery mode".into()));
+    }
+    let app_dir = app.path().app_data_dir().map_err(|e| {
+        crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e))
+    })?;
+    crate::commands::data::perform_account_deletion(&app_dir, None).await?;
+    app.restart();
+}
+
 #[tauri::command]
 pub async fn auth_restore_from_recovery_phrase(
     app: tauri::AppHandle,
@@ -3232,6 +3265,9 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         crate::ingestion::oauth::auth_google_disconnect,
         auth_get_recovery_phrase,
         auth_restore_from_recovery_phrase,
+        app_recovery_mode,
+        recovery_restart,
+        recovery_reset_app_data,
         export_logs,
         log_renderer_error,
         crate::ingestion::historical_scan::scans_historical,

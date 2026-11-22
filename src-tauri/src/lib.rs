@@ -230,22 +230,17 @@ pub fn run() {
                 // Each failure below is terminal but distinct, and each explains
                 // the specific recovery path -- a generic "could not start"
                 // would leave the user with no way forward.
+                // Recovery mode: no database, no workers. The window shows only
+                // the recovery screen, which restores the key from the recovery
+                // phrase (re-keying a database from another Mac) or resets app
+                // data, then relaunches (review H11).
                 Err(db::DbInitError::KeyMismatch) => {
-                    let msg = concat!(
-                        "Dinero cannot open its database.\n\n",
-                        "The encryption key stored in your Keychain no longer matches the database file on disk. ",
-                        "This can happen after a Keychain reset, a macOS migration, or an OS reinstall.\n\n",
-                        "To recover your data, use Settings → Recovery Phrase after the app restarts.\n",
-                        "If you have no Recovery Phrase, you must reset App Data from Settings to start fresh.\n\n",
-                        "The app will now exit."
+                    tracing::error!(
+                        "DB key mismatch — starting in recovery mode (hardware migration suspected: {})",
+                        looks_like_hardware_migration
                     );
-                    tracing::error!("Fatal: DB key mismatch — {}", msg);
-                    let _ = app.dialog()
-                        .message(msg)
-                        .title("Dinero — Database Key Mismatch")
-                        .kind(tauri_plugin_dialog::MessageDialogKind::Error)
-                        .blocking_show();
-                    std::process::exit(1);
+                    app.manage(crate::commands::RecoveryMode);
+                    return Ok(());
                 }
                 Err(db::DbInitError::KeychainAccessDenied) => {
                     let msg = concat!(

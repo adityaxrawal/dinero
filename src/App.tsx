@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { RouterProvider } from 'react-router-dom';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { onAction } from '@tauri-apps/plugin-notification';
@@ -14,6 +14,7 @@ import { queryClient } from './lib/queryClient';
 import { useIpcQueryInvalidation } from './hooks/useIpcQueryInvalidation';
 import { useResumeFromSleepRefetch } from './hooks/useResumeFromSleepRefetch';
 import { syncLlmState } from './lib/syncLlmState';
+import RecoveryScreen from './components/RecoveryScreen';
 import './App.css';
 
 /** Payload of the backend's `update_available` event. */
@@ -111,6 +112,23 @@ function IpcEventBridge() {
  * everything above it.
  */
 function App() {
+  // Recovery mode (database key mismatch): the backend has no database, so
+  // only the recovery screen is rendered. Unknown until the first answer.
+  const [recovery, setRecovery] = useState<boolean | null>(null);
+  useEffect(() => {
+    API.recovery
+      .isActive()
+      .then(setRecovery)
+      .catch(() => setRecovery(false));
+  }, []);
+
+  if (recovery === null) return null;
+  if (recovery) return <RecoveryScreen />;
+  return <MainApp />;
+}
+
+/** The normal application, once the database is open. */
+function MainApp() {
   // Session and navigation logging, giving backend logs the route context that
   // makes a later error entry interpretable.
   useEffect(() => {

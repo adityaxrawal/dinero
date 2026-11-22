@@ -927,6 +927,14 @@ export const API = {
       invokeCommand<void>('log_renderer_error', { message, stack, source }),
   },
   // Google OAuth and connected-account management.
+  // Startup recovery mode, entered when the database key no longer matches.
+  recovery: {
+    isActive: () => invokeCommand<boolean>('app_recovery_mode'),
+    restoreFromPhrase: (recoveryPhrase: string) =>
+      invokeCommand<string>('auth_restore_from_recovery_phrase', { recoveryPhrase }),
+    restart: () => invokeCommand<void>('recovery_restart'),
+    resetAppData: () => invokeCommand<void>('recovery_reset_app_data'),
+  },
   auth: {
     startGoogle: () => invokeCommand<string>('auth_google_start'),
     isGmailConnected: () => invokeCommand<boolean>('is_gmail_connected'),
