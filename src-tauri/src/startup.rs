@@ -29,6 +29,25 @@ pub fn compute_llm_eligibility(total_ram_gb: f64) -> LlmEligibility {
     }
 }
 
+/// Whether Layer 6 can actually run now: enough RAM and a downloaded model.
+///
+/// RAM alone was used before, so machines without a model parked every ladder
+/// miss as an LLM job that could never succeed.
+pub fn llm_ready<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
+    let eligible = app
+        .try_state::<LlmEligibility>()
+        .map(|s| s.eligible)
+        .unwrap_or(false);
+    eligible && app.path().app_data_dir().is_ok_and(|dir| any_model_downloaded(&dir))
+}
+
+/// Whether any catalogue model is present on disk.
+pub fn any_model_downloaded(app_dir: &std::path::Path) -> bool {
+    crate::llm_manager::get_available_models()
+        .iter()
+        .any(|m| crate::llm_manager::get_model_path(app_dir, &m.id).is_some())
+}
+
 /// Checks RAM at launch and records LLM eligibility.
 pub fn check_ram_and_set_llm_eligibility(app: &AppHandle) {
     let mut sys = sysinfo::System::new_all();

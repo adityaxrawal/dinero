@@ -40,11 +40,33 @@ pub fn delete(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Outstanding jobs, replayed at startup.
+/// Failed attempts allowed before a job is marked dead.
+pub const MAX_ATTEMPTS: i64 = 3;
+
+/// Records a failed attempt; returns true once the job has been marked dead.
+pub fn record_failed_attempt(conn: &Connection, id: &str) -> Result<bool> {
+    conn.execute(
+        "UPDATE layer6_pending_jobs
+         SET attempts = attempts + 1,
+             dead_at = CASE WHEN attempts + 1 >= ?2 THEN datetime('now') ELSE dead_at END
+         WHERE id = ?1",
+        params![id, MAX_ATTEMPTS],
+    )?;
+    let dead: bool = conn
+        .query_row(
+            "SELECT dead_at IS NOT NULL FROM layer6_pending_jobs WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    Ok(dead)
+}
+
+/// Outstanding (not dead) jobs, replayed at startup.
 pub fn select_all(conn: &Connection) -> Result<Vec<PendingLayer6Job>> {
     let mut stmt = conn.prepare(
         "SELECT id, observation_id, bank_name, body_text, internal_date_seconds \
-         FROM layer6_pending_jobs",
+         FROM layer6_pending_jobs WHERE dead_at IS NULL",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(PendingLayer6Job {
@@ -105,5 +127,31 @@ mod tests {
         assert!(all.is_empty());
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn job_is_marked_dead_after_max_attempts_and_not_replayed() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        insert(
+            &conn,
+            &PendingLayer6Job {
+                id: "u1".to_string(),
+                observation_id: "o1".to_string(),
+                bank_name: "HDFC Bank".to_string(),
+                body_text: "x".to_string(),
+                internal_date_seconds: None,
+            },
+        )
+        .unwrap();
+        for attempt in 1..MAX_ATTEMPTS {
+            assert!(!record_failed_attempt(&conn, "u1").unwrap(), "attempt {attempt}");
+            assert_eq!(select_all(&conn).unwrap().len(), 1);
+        }
+        assert!(record_failed_attempt(&conn, "u1").unwrap());
+        assert!(select_all(&conn).unwrap().is_empty(), "dead jobs are not replayed");
+        let kept: i64 = conn
+            .query_row("SELECT COUNT(*) FROM layer6_pending_jobs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kept, 1, "dead jobs are kept for diagnosis");
     }
 }

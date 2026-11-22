@@ -853,10 +853,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
     );
 
     let app_dir = app.path().app_data_dir().ok();
-    let llm_eligible = app
-        .try_state::<crate::startup::LlmEligibility>()
-        .map(|s| s.eligible)
-        .unwrap_or(false);
+    let llm_eligible = crate::startup::llm_ready(&app);
     let layer6_tx = app
         .state::<crate::ingestion::queues::QueueHandles>()
         .layer6_tx

@@ -187,6 +187,12 @@ pub async fn replay_pending_layer6_jobs(
     tx: &mpsc::Sender<Layer6Job>,
     app_dir: std::path::PathBuf,
 ) {
+    // Without a model every replayed job would just fail again. They stay
+    // pending (no attempt is spent) until a model is downloaded.
+    if !crate::startup::any_model_downloaded(&app_dir) {
+        tracing::info!("No LLM model downloaded — Layer 6 replay skipped");
+        return;
+    }
     let conn = match pool.get().await {
         Ok(c) => c,
         Err(e) => {
@@ -656,12 +662,32 @@ async fn process_layer6_job(
     if completed {
         delete_persisted_layer6_job(pool, &job.unassigned_id).await;
     } else {
-        // A timeout, a dead sidecar or a failed write is exactly what the durable
-        // queue is for: keep the row so the next launch retries it.
-        tracing::warn!(
-            "Layer 6 job for unassigned_id='{}' did not complete — kept for replay at next launch",
-            job.unassigned_id
-        );
+        // A timeout, a dead sidecar or a failed write is what the durable queue
+        // is for: keep the row so the next launch retries it -- but only up to
+        // MAX_ATTEMPTS, after which it is marked dead and left in the review
+        // queue rather than replayed forever.
+        let id = job.unassigned_id.clone();
+        let dead = match pool.get().await {
+            Ok(conn) => conn
+                .interact(move |c| crate::db::layer6_jobs::record_failed_attempt(c, &id))
+                .await
+                .ok()
+                .and_then(|r| r.ok())
+                .unwrap_or(false),
+            Err(_) => false,
+        };
+        if dead {
+            tracing::warn!(
+                "Layer 6 job for unassigned_id='{}' failed {} times — marked dead, left for manual review",
+                job.unassigned_id,
+                crate::db::layer6_jobs::MAX_ATTEMPTS
+            );
+        } else {
+            tracing::warn!(
+                "Layer 6 job for unassigned_id='{}' did not complete — kept for replay at next launch",
+                job.unassigned_id
+            );
+        }
     }
 }
 
@@ -2149,7 +2175,16 @@ mod layer6_tests {
         );
         assert_eq!(pending[0].id, "unassigned-durability");
 
+        // Without a model replay is skipped (review H8).
         let (replay_tx, mut replay_rx) = mpsc::channel::<Layer6Job>(4);
+        replay_pending_layer6_jobs(&pool, &replay_tx, temp_dir.clone()).await;
+        assert!(replay_rx.try_recv().is_err(), "no model: nothing may be replayed");
+
+        // A downloaded, verified model enables replay.
+        let models = temp_dir.join("models");
+        fs::create_dir_all(&models).unwrap();
+        fs::write(models.join("gemma4_e4b.gguf"), b"stub").unwrap();
+        fs::write(models.join("gemma4_e4b.gguf.verified"), b"").unwrap();
         replay_pending_layer6_jobs(&pool, &replay_tx, temp_dir.clone()).await;
         let replayed = replay_rx.recv().await.expect("replayed job must arrive");
         assert_eq!(replayed.unassigned_id, "unassigned-durability");
