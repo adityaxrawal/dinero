@@ -45,6 +45,20 @@ fn clear_scan_cancellation(account_id: &str) {
     cancelled_scans().lock().unwrap().remove(account_id);
 }
 
+/// Sleeps for `delay`, returning early with `true` if the scan is cancelled.
+async fn sleep_unless_cancelled(account_id: &str, delay: std::time::Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + delay;
+    while tokio::time::Instant::now() < deadline {
+        if is_scan_cancelled(account_id) {
+            return true;
+        }
+        let step = std::time::Duration::from_millis(500)
+            .min(deadline.saturating_duration_since(tokio::time::Instant::now()));
+        tokio::time::sleep(step).await;
+    }
+    is_scan_cancelled(account_id)
+}
+
 /// Blocks while the scan is paused, reporting whether it was cancelled meanwhile.
 async fn wait_while_paused(account_id: &str) -> bool {
     loop {
@@ -169,7 +183,20 @@ fn should_checkpoint(batch_count: usize) -> bool {
     batch_count >= CHECKPOINT_INTERVAL
 }
 
-const MAX_CONCURRENT_FETCHES: usize = 25;
+/// Concurrent message fetches. Each message costs two Gmail calls, and 25 at
+/// once tripped Gmail's per-user concurrency limit (403 rateLimitExceeded).
+const MAX_CONCURRENT_FETCHES: usize = 8;
+
+/// Concurrency for retrying failed messages, kept low since they most likely
+/// failed from throttling.
+const RETRY_CONCURRENCY: usize = 2;
+
+/// Pause before the automatic retry pass, giving Gmail's limits time to reset.
+const RETRY_PASS_DELAY: std::time::Duration = if cfg!(test) {
+    std::time::Duration::from_millis(50)
+} else {
+    std::time::Duration::from_secs(60)
+};
 
 const MAX_SENDER_CLAUSE_CHARS: usize = 1500;
 
@@ -382,6 +409,10 @@ pub struct ScanCheckpointState {
     pub errors: usize,
     #[serde(default)]
     pub pending_enrichment: usize,
+    /// Set for a manual "Retry failed" run: every id is a previously failed
+    /// message whose `scan_failed_messages` row already exists.
+    #[serde(default)]
+    pub retry_of_failed: bool,
 }
 
 #[tauri::command]
@@ -406,6 +437,100 @@ pub async fn scans_historical<R: tauri::Runtime>(
         crate::ingestion::gmail_client::GMAIL_API_BASE_URL.to_string(),
     )
     .await
+}
+
+#[tauri::command]
+/// Number of distinct messages that failed in earlier scans and can be retried.
+pub async fn scans_failed_count(
+    pool: State<'_, Pool>,
+    account_id: String,
+) -> Result<usize, crate::error::AppError> {
+    crate::ipc::validation::validate_account_id("account_id", &account_id)?;
+    pool.get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+        .interact(move |c| crate::db::scan_failed_messages::distinct_msg_ids(c, &account_id))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map(|ids| ids.len())
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))
+}
+
+#[tauri::command]
+/// Re-processes every message recorded in `scan_failed_messages`.
+///
+/// Runs as a scan over just those ids: it seeds the scan checkpoint with them
+/// (as a paused run for today's date) and starts the normal scan, which
+/// resumes that state. Successes delete their failure rows; failures keep them.
+pub async fn scans_retry_failed<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    pool: State<'_, Pool>,
+    account_id: String,
+) -> Result<String, crate::error::AppError> {
+    crate::ipc::validation::validate_account_id("account_id", &account_id)?;
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    let pool = pool.inner().clone();
+    let today = Utc::now().date_naive().format("%Y-%m-%d").to_string();
+
+    let seeded = {
+        let acc = account_id.clone();
+        let today = today.clone();
+        pool.get()
+            .await
+            .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+            .interact(move |c| -> anyhow::Result<Option<usize>> {
+                if get_checkpoint(c, "historical_scan", &acc)?
+                    .is_some_and(|cp| cp.status == "in_progress")
+                {
+                    return Ok(None);
+                }
+                let ids = crate::db::scan_failed_messages::distinct_msg_ids(c, &acc)?;
+                let n = ids.len();
+                let state = ScanCheckpointState {
+                    start_date: today.clone(),
+                    end_date: today,
+                    all_message_ids: ids,
+                    errors: n,
+                    retry_of_failed: true,
+                    ..Default::default()
+                };
+                upsert_checkpoint(
+                    c,
+                    &ProcessingCheckpointRow {
+                        id: Uuid::new_v4().to_string(),
+                        job_type: "historical_scan".to_string(),
+                        job_key: acc,
+                        checkpoint_state_json: serde_json::to_string(&state)?,
+                        last_processed_token: None,
+                        status: "paused".to_string(),
+                        updated_at: None,
+                    },
+                )?;
+                Ok(Some(n))
+            })
+            .await
+            .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+            .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+    };
+    match seeded {
+        None => Err(crate::error::AppError::ScanAlreadyRunning(
+            "A historical scan is already in progress for this account".into(),
+        )),
+        Some(0) => Err(crate::error::AppError::Validation(
+            "There are no failed messages to retry".into(),
+        )),
+        Some(_) => {
+            start_historical_scan(
+                app,
+                pool,
+                account_id,
+                today.clone(),
+                today,
+                crate::ingestion::gmail_client::GMAIL_API_BASE_URL.to_string(),
+            )
+            .await
+        }
+    }
 }
 
 /// Claims the scan checkpoint and starts the scan in the background.
@@ -792,9 +917,23 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
         });
     }
 
-    let mut ids_iter = to_process.into_iter().skip(processed_count);
+    let mut ids_iter: Box<dyn Iterator<Item = String> + Send> =
+        Box::new(to_process.into_iter().skip(processed_count));
 
-    for _ in 0..MAX_CONCURRENT_FETCHES {
+    // Failed ids are collected per pass. Once the main pass drains, they get
+    // one automatic retry pass; whatever still fails marks the scan
+    // `completed_with_errors`. In a retry (automatic or manual) a success
+    // deletes the failure row and a failure keeps the existing row.
+    let manual_retry = state.retry_of_failed;
+    let mut auto_retry_pass = false;
+    let mut failed_this_pass: Vec<String> = Vec::new();
+    let initial_concurrency = if manual_retry {
+        RETRY_CONCURRENCY
+    } else {
+        MAX_CONCURRENT_FETCHES
+    };
+
+    for _ in 0..initial_concurrency {
         if wait_while_paused(&account_id).await {
             break;
         }
@@ -820,6 +959,37 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
         let join_res = tokio::select! {
             res = join_set.join_next() => match res {
                 Some(r) => r,
+                None if !manual_retry && !auto_retry_pass && !failed_this_pass.is_empty() => {
+                    auto_retry_pass = true;
+                    let retry_ids = std::mem::take(&mut failed_this_pass);
+                    tracing::info!(
+                        "Retrying {} failed messages for account_id='{}' after {:?}",
+                        retry_ids.len(),
+                        account_id,
+                        RETRY_PASS_DELAY
+                    );
+                    if sleep_unless_cancelled(&account_id, RETRY_PASS_DELAY).await {
+                        clear_scan_cancellation(&account_id);
+                        was_cancelled = true;
+                        break;
+                    }
+                    ids_iter = Box::new(retry_ids.into_iter());
+                    for _ in 0..RETRY_CONCURRENCY {
+                        if let Some(msg_id) = ids_iter.next() {
+                            spawn_fetch(
+                                &mut join_set,
+                                Arc::clone(&client),
+                                Arc::clone(&pool_arc),
+                                msg_id,
+                                app_dir.clone(),
+                                llm_eligible,
+                                layer6_tx.clone(),
+                                Arc::clone(&scan_batcher),
+                            );
+                        }
+                    }
+                    continue;
+                }
                 None => break,
             },
             _ = cancel_poll.tick() => {
@@ -836,6 +1006,18 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
         match join_res {
             Ok((msg_id, result)) => {
                 tracing::info!("Finished processing msg_id='{}'", msg_id);
+                let retrying = manual_retry || auto_retry_pass;
+                if retrying && result.is_ok() {
+                    state.errors = state.errors.saturating_sub(1);
+                    let (acc, id) = (account_id.clone(), msg_id.clone());
+                    if let Ok(conn) = pool.get().await {
+                        let _ = conn
+                            .interact(move |c| {
+                                crate::db::scan_failed_messages::delete_for_message(c, &acc, &id)
+                            })
+                            .await;
+                    }
+                }
                 match result {
                     Ok(Some(ProcessResult::TransactionAlert(extracted, boxed_obs, email_meta))) => {
                         tracing::info!("Classified msg_id='{}' as Transaction", msg_id);
@@ -1031,9 +1213,14 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                         );
                         state.pending_enrichment += 1;
                     }
+                    Err(e) if retrying => {
+                        tracing::error!("Retry failed for message {}: {}", msg_id, e);
+                        failed_this_pass.push(msg_id.clone());
+                    }
                     Err(e) => {
                         state.errors += 1;
                         tracing::error!("Failed to process message {}: {}", msg_id, e);
+                        failed_this_pass.push(msg_id.clone());
 
                         let failed_row = crate::db::scan_failed_messages::ScanFailedMessageRow {
                             id: Uuid::new_v4().to_string(),
@@ -1058,8 +1245,11 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
             }
         }
 
-        processed_count += 1;
-        batch_count += 1;
+        // The automatic retry pass re-processes ids already counted.
+        if !auto_retry_pass {
+            processed_count += 1;
+            batch_count += 1;
+        }
 
         if should_checkpoint(batch_count) {
             state.processed_count = processed_count;
@@ -1203,7 +1393,11 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
             job_key: account_id.clone(),
             checkpoint_state_json: serde_json::to_string(&state).unwrap_or_default(),
             last_processed_token: None,
-            status: "completed".to_string(),
+            status: if failed_this_pass.is_empty() {
+                "completed".to_string()
+            } else {
+                "completed_with_errors".to_string()
+            },
             updated_at: Some(Utc::now().naive_utc()),
         };
 
@@ -1294,6 +1488,26 @@ async fn export_unassigned_transactions_for_dev<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A local Gmail stand-in so scan tests never call the real API. Every
+    /// message fetch answers `status`; 200 returns a minimal non-financial
+    /// message.
+    async fn mock_gmail(status: usize) -> mockito::ServerGuard {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("GET", mockito::Matcher::Regex("^/gmail/v1/users/me/messages/".into()))
+            .match_query(mockito::Matcher::Any)
+            .with_status(status)
+            .with_header("content-type", "application/json")
+            .with_body(MINIMAL_MESSAGE)
+            .create_async()
+            .await;
+        server
+    }
+
+    const MINIMAL_MESSAGE: &str = r#"{"id":"m","threadId":"t","snippet":"hello",
+        "payload":{"mimeType":"text/plain","headers":[{"name":"From","value":"friend@example.com"},
+        {"name":"Subject","value":"Lunch?"}],"body":{"size":5,"data":"aGVsbG8"}}}"#;
     use crate::db::init_db;
     use std::fs;
     use tauri::test::{mock_builder, mock_context};
@@ -1431,6 +1645,7 @@ mod tests {
             non_financial: 1,
             errors: 0,
             pending_enrichment: 0,
+            retry_of_failed: false,
         };
         let cp = ProcessingCheckpointRow {
             id: "cp_status".into(),
@@ -1616,9 +1831,11 @@ mod tests {
             non_financial: 0,
             errors: 0,
             pending_enrichment: 0,
+            retry_of_failed: false,
         };
 
-        let client = GmailClient::new("fake_token".into(), pool.clone(), None);
+        let gmail = mock_gmail(200).await;
+        let client = GmailClient::new_with_base_url("fake_token".into(), pool.clone(), gmail.url(), None);
 
         run_scan_batches(app, pool.clone(), account_id.clone(), state, client)
             .await
@@ -1665,7 +1882,8 @@ mod tests {
             ..Default::default()
         };
 
-        let client = GmailClient::new("fake_token".into(), pool.clone(), None);
+        let gmail = mock_gmail(401).await;
+        let client = GmailClient::new_with_base_url("fake_token".into(), pool.clone(), gmail.url(), None);
 
         run_scan_batches(app, pool.clone(), account_id.clone(), state, client)
             .await
@@ -1691,6 +1909,168 @@ mod tests {
             failed[0].error
         );
 
+        // Review C1: the automatic retry pass must not duplicate rows, and a
+        // scan that still has failures must not report plain "completed".
+        let conn = pool.get().await.unwrap();
+        let acc = account_id.clone();
+        let cp = conn
+            .interact(move |c| get_checkpoint(c, "historical_scan", &acc).unwrap().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(cp.status, "completed_with_errors");
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    /// Review C1: a message that fails in the main pass and succeeds in the
+    /// automatic retry pass leaves no failure row and a clean "completed".
+    #[tokio::test]
+    async fn test_retry_pass_recovers_transiently_failed_message() {
+        let app = mock_builder()
+            .build(mock_context(tauri::test::noop_assets()))
+            .unwrap()
+            .handle()
+            .clone();
+        app.manage(test_queue_handles());
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let pool = init_db(temp_dir.join("test_retry.db")).await.expect("DB init failed");
+
+        let mut server = mockito::Server::new_async().await;
+        let path = mockito::Matcher::Regex("^/gmail/v1/users/me/messages/".into());
+        let fail_once = server
+            .mock("GET", path.clone())
+            .match_query(mockito::Matcher::Any)
+            .with_status(404)
+            .expect(1)
+            .create_async()
+            .await;
+        let ok = server
+            .mock("GET", path)
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(MINIMAL_MESSAGE)
+            .create_async()
+            .await;
+
+        let account_id = "acc_retry".to_string();
+        let state = ScanCheckpointState {
+            start_date: "2023-01-01".into(),
+            end_date: "2023-01-31".into(),
+            all_message_ids: vec!["msg_r".to_string()],
+            ..Default::default()
+        };
+        let client =
+            GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
+        run_scan_batches(app, pool.clone(), account_id.clone(), state, client)
+            .await
+            .expect("run_scan_batches failed");
+
+        let conn = pool.get().await.unwrap();
+        let acc = account_id.clone();
+        let (failed, cp) = conn
+            .interact(move |c| {
+                (
+                    crate::db::scan_failed_messages::select_by_account(c, &acc).unwrap(),
+                    get_checkpoint(c, "historical_scan", &acc).unwrap().unwrap(),
+                )
+            })
+            .await
+            .unwrap();
+        assert!(failed.is_empty(), "recovered message must leave no failure row");
+        assert_eq!(cp.status, "completed");
+        let final_state: ScanCheckpointState = serde_json::from_str(&cp.checkpoint_state_json).unwrap();
+        assert_eq!(final_state.errors, 0);
+        assert_eq!(final_state.processed_count, 1);
+        fail_once.assert_async().await;
+        ok.assert_async().await;
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    /// Review C1: a manual "Retry failed" run (retry_of_failed) deletes the
+    /// rows of messages that now succeed, keeps rows for those that still
+    /// fail without duplicating them, and reports the remainder.
+    #[tokio::test]
+    async fn test_manual_retry_clears_recovered_and_keeps_failing_rows() {
+        let app = mock_builder()
+            .build(mock_context(tauri::test::noop_assets()))
+            .unwrap()
+            .handle()
+            .clone();
+        app.manage(test_queue_handles());
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let pool = init_db(temp_dir.join("test_manual_retry.db")).await.expect("DB init failed");
+        let account_id = "acc_manual".to_string();
+
+        let conn = pool.get().await.unwrap();
+        let acc = account_id.clone();
+        conn.interact(move |c| {
+            for id in ["msg_ok", "msg_bad"] {
+                crate::db::scan_failed_messages::insert(
+                    c,
+                    &crate::db::scan_failed_messages::ScanFailedMessageRow {
+                        id: Uuid::new_v4().to_string(),
+                        account_id: acc.clone(),
+                        msg_id: id.to_string(),
+                        error: "403 rateLimitExceeded".to_string(),
+                        failed_at: None,
+                    },
+                )
+                .unwrap();
+            }
+        })
+        .await
+        .unwrap();
+
+        let mut server = mockito::Server::new_async().await;
+        let _bad = server
+            .mock("GET", mockito::Matcher::Regex("^/gmail/v1/users/me/messages/msg_bad".into()))
+            .match_query(mockito::Matcher::Any)
+            .with_status(404)
+            .create_async()
+            .await;
+        let _ok = server
+            .mock("GET", mockito::Matcher::Regex("^/gmail/v1/users/me/messages/msg_ok".into()))
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(MINIMAL_MESSAGE)
+            .create_async()
+            .await;
+
+        let state = ScanCheckpointState {
+            start_date: "2026-11-23".into(),
+            end_date: "2026-11-23".into(),
+            all_message_ids: vec!["msg_ok".to_string(), "msg_bad".to_string()],
+            errors: 2,
+            retry_of_failed: true,
+            ..Default::default()
+        };
+        let client =
+            GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
+        run_scan_batches(app, pool.clone(), account_id.clone(), state, client)
+            .await
+            .expect("run_scan_batches failed");
+
+        let conn = pool.get().await.unwrap();
+        let acc = account_id.clone();
+        let (failed, cp) = conn
+            .interact(move |c| {
+                (
+                    crate::db::scan_failed_messages::select_by_account(c, &acc).unwrap(),
+                    get_checkpoint(c, "historical_scan", &acc).unwrap().unwrap(),
+                )
+            })
+            .await
+            .unwrap();
+        let ids: Vec<_> = failed.iter().map(|r| r.msg_id.as_str()).collect();
+        assert_eq!(ids, vec!["msg_bad"]);
+        assert_eq!(cp.status, "completed_with_errors");
+        let final_state: ScanCheckpointState = serde_json::from_str(&cp.checkpoint_state_json).unwrap();
+        assert_eq!(final_state.errors, 1);
+        assert_eq!(final_state.processed_count, 2);
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
@@ -1726,9 +2106,11 @@ mod tests {
             non_financial: 0,
             errors: 0,
             pending_enrichment: 0,
+            retry_of_failed: false,
         };
 
-        let client = GmailClient::new("fake_token".into(), pool.clone(), None);
+        let gmail = mock_gmail(200).await;
+        let client = GmailClient::new_with_base_url("fake_token".into(), pool.clone(), gmail.url(), None);
 
         let captured_events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let captured_clone = captured_events.clone();
@@ -1805,9 +2187,11 @@ mod tests {
             non_financial: 0,
             errors: 0,
             pending_enrichment: 0,
+            retry_of_failed: false,
         };
 
-        let client = GmailClient::new("fake_token".into(), pool.clone(), None);
+        let gmail = mock_gmail(200).await;
+        let client = GmailClient::new_with_base_url("fake_token".into(), pool.clone(), gmail.url(), None);
 
         run_scan_batches(app, pool.clone(), account_id.clone(), state, client)
             .await

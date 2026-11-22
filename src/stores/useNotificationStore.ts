@@ -374,11 +374,16 @@ function onScanCompleted(p: ScanProgressPayload) {
     progressPct: 100,
   });
 
+  // Failures left after the automatic retry pass are surfaced as a warning,
+  // so a scan that skipped emails never reads as a clean success.
+  const failed = p.errors > 0;
   notifications().addNotification({
     category: 'ingestion',
-    severity: 'success',
-    title: 'Gmail Scan Completed',
-    message: `Processed ${p.total} emails. Found ${p.transactions_found} transactions and ${p.statements_found} statements.`,
+    severity: failed ? 'warning' : 'success',
+    title: failed ? 'Gmail Scan Completed with Errors' : 'Gmail Scan Completed',
+    message: failed
+      ? `Processed ${p.total} emails, but ${p.errors} could not be read. Retry them from Settings → Mail Scan.`
+      : `Processed ${p.total} emails. Found ${p.transactions_found} transactions and ${p.statements_found} statements.`,
     actionUrl: '/transactions',
     actionLabel: 'View Transactions',
     taskId,

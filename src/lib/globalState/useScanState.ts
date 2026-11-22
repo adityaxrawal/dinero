@@ -93,6 +93,18 @@ export function useScanState() {
   // Scans currently target one account; the first connected one is used.
   const primaryConnectedAccount = connectedAccounts[0] ?? null;
 
+  // Messages that failed in earlier scans, offered for retry. Re-read when the
+  // account changes and whenever a scan stops running.
+  const [failedScanCount, setFailedScanCount] = useState(0);
+  const primaryAccountId = primaryConnectedAccount?.account_id;
+  useEffect(() => {
+    if (!primaryAccountId || scanStatus === 'running') return;
+    API.ingestion
+      .getFailedScanCount(primaryAccountId)
+      .then(setFailedScanCount)
+      .catch(() => setFailedScanCount(0));
+  }, [primaryAccountId, scanStatus]);
+
   /**
    * Shared terminal path for completed, failed and cancelled scans.
    *
@@ -163,7 +175,23 @@ export function useScanState() {
       alert(error);
       return;
     }
+    await beginScan(() =>
+      API.ingestion.startHistoricalScan(
+        primaryConnectedAccount!.account_id,
+        scanStartDate,
+        scanEndDate
+      )
+    );
+  };
 
+  /** Re-run only the messages that failed in earlier scans. */
+  const handleRetryFailed = async () => {
+    if (!primaryConnectedAccount) return;
+    await beginScan(() => API.ingestion.retryFailedScan(primaryConnectedAccount.account_id));
+  };
+
+  /** Shared start path: reset state, subscribe, then invoke `start`. */
+  const beginScan = async (start: () => Promise<string>) => {
     setScanStatus('running');
     setScanProgress(EMPTY_PROGRESS(primaryConnectedAccount!.account_id));
     setScanError(null);
@@ -175,11 +203,7 @@ export function useScanState() {
       // new ones, so events are never handled twice.
       if (unlistenScanRef.current) unlistenScanRef.current();
       await attachScanListeners();
-      await API.ingestion.startHistoricalScan(
-        primaryConnectedAccount!.account_id,
-        scanStartDate,
-        scanEndDate
-      );
+      await start();
     } catch (err: unknown) {
       setScanStatus('error');
       setScanError(errorMessage(err));
@@ -232,5 +256,7 @@ export function useScanState() {
     handleStartScan,
     handleCancelScan,
     resetScan,
+    failedScanCount,
+    handleRetryFailed,
   };
 }

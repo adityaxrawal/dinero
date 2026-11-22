@@ -98,6 +98,20 @@ impl QuotaLimiter {
     }
 }
 
+/// Attempts allowed for a rate-limited request before giving up.
+const RATE_LIMIT_MAX_ATTEMPTS: u32 = 6;
+
+/// Whether a response is Gmail asking the client to slow down.
+///
+/// Gmail signals per-user limits as 403 with reason `rateLimitExceeded` or
+/// `userRateLimitExceeded`, not only as 429. Any other 403 (for example
+/// insufficient permissions) is permanent and must not be retried.
+fn is_rate_limited(status: reqwest::StatusCode, body: &str) -> bool {
+    status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || (status == reqwest::StatusCode::FORBIDDEN
+            && (body.contains("rateLimitExceeded") || body.contains("userRateLimitExceeded")))
+}
+
 pub(crate) fn gmail_quota_limiter() -> &'static QuotaLimiter {
     static LIMITER: std::sync::OnceLock<QuotaLimiter> = std::sync::OnceLock::new();
     LIMITER.get_or_init(|| QuotaLimiter::new(225.0))
@@ -274,9 +288,14 @@ impl GmailClient {
                 }
             }
 
-            if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-                if attempts >= max_retries {
-                    let error_text = res.text().await.unwrap_or_default();
+            let error_text = res.text().await.unwrap_or_default();
+            let rate_limited = is_rate_limited(status, &error_text);
+            if rate_limited || status.is_server_error() {
+                // Rate limits get more, longer retries (2s..32s, ~1 min in
+                // total): Gmail asks clients to back off, and giving up early
+                // is what dropped most of a historical scan.
+                let limit = if rate_limited { RATE_LIMIT_MAX_ATTEMPTS } else { max_retries };
+                if attempts >= limit {
                     tracing::warn!(operation, attempts, %status, "gmail request failed, retries exhausted");
                     anyhow::bail!(
                         "{} failed with status {}: {}",
@@ -291,7 +310,6 @@ impl GmailClient {
                 continue;
             }
 
-            let error_text = res.text().await.unwrap_or_default();
             anyhow::bail!(
                 "{} failed with status {}: {}",
                 operation,

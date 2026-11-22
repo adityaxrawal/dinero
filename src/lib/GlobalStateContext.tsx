@@ -41,6 +41,9 @@ interface GlobalStateContextType {
   setConnectedAccounts: React.Dispatch<React.SetStateAction<ConnectedAccountInfo[]>>;
   refreshConnectedAccounts: () => Promise<void>;
   handleStartScan: () => Promise<void>;
+  // Messages that failed in earlier scans, and the action that retries them.
+  failedScanCount: number;
+  handleRetryFailed: () => Promise<void>;
 
   statementHistory: StatementRecord[];
   statementLoading: boolean;

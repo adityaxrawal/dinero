@@ -943,6 +943,10 @@ export const API = {
     cancelScan: (accountId: string) => invokeCommand<string>('scans_cancel', { accountId }),
     getScanStatus: (accountId: string) =>
       invokeCommand<ScanStatusResponse>('scans_status', { accountId }),
+    getFailedScanCount: (accountId: string) =>
+      invokeCommand<number>('scans_failed_count', { accountId }),
+    retryFailedScan: (accountId: string) =>
+      invokeCommand<string>('scans_retry_failed', { accountId }),
   },
   // Local LLM lifecycle: model catalogue, download, activation, concurrency.
   llm: {

@@ -235,3 +235,68 @@ async fn test_pdf_bytes_never_touch_filesystem() {
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+/// Review C1: Gmail signals per-user rate limits as 403 `rateLimitExceeded`,
+/// not only 429. These must be retried (beyond the normal 3 attempts), or a
+/// historical scan silently drops most of the mailbox.
+#[tokio::test]
+async fn test_403_rate_limit_is_retried_beyond_normal_attempts() {
+    let mut server = mockito::Server::new_async().await;
+    let rate_limit_body = serde_json::json!({
+        "error": { "code": 403, "errors": [{ "reason": "rateLimitExceeded" }] }
+    })
+    .to_string();
+    let limited = server
+        .mock("GET", "/gmail/v1/users/me/messages/msg1")
+        .match_query(mockito::Matcher::Any)
+        .with_status(403)
+        .with_body(rate_limit_body)
+        .expect(3)
+        .create_async()
+        .await;
+    let ok = server
+        .mock("GET", "/gmail/v1/users/me/messages/msg1")
+        .match_query(mockito::Matcher::Any)
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(serde_json::json!({ "id": "msg1", "threadId": "t1" }).to_string())
+        .expect(1)
+        .create_async()
+        .await;
+
+    let client = client_with_temp_db(server.url()).await;
+    let message = client
+        .fetch_message("msg1", crate::ingestion::gmail_client::FetchFormat::Metadata)
+        .await
+        .expect("a rate-limited fetch must succeed once Gmail stops throttling");
+    assert_eq!(message.id, "msg1");
+    limited.assert_async().await;
+    ok.assert_async().await;
+}
+
+/// A 403 that is not a rate limit (e.g. insufficient permissions) is
+/// permanent and must fail on the first attempt.
+#[tokio::test]
+async fn test_403_permission_error_is_not_retried() {
+    let mut server = mockito::Server::new_async().await;
+    let forbidden = server
+        .mock("GET", "/gmail/v1/users/me/messages/msg1")
+        .match_query(mockito::Matcher::Any)
+        .with_status(403)
+        .with_body(
+            serde_json::json!({
+                "error": { "code": 403, "errors": [{ "reason": "insufficientPermissions" }] }
+            })
+            .to_string(),
+        )
+        .expect(1)
+        .create_async()
+        .await;
+
+    let client = client_with_temp_db(server.url()).await;
+    let res = client
+        .fetch_message("msg1", crate::ingestion::gmail_client::FetchFormat::Metadata)
+        .await;
+    assert!(res.is_err());
+    forbidden.assert_async().await;
+}

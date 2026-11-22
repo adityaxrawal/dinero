@@ -48,6 +48,27 @@ pub fn select_by_account(conn: &Connection, account_id: &str) -> Result<Vec<Scan
     Ok(rows)
 }
 
+/// Removes the failure rows for a message once it has been processed.
+pub fn delete_for_message(conn: &Connection, account_id: &str, msg_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM scan_failed_messages WHERE account_id = ?1 AND msg_id = ?2",
+        params![account_id, msg_id],
+    )?;
+    Ok(())
+}
+
+/// Distinct failed message ids for an account, oldest failure first.
+pub fn distinct_msg_ids(conn: &Connection, account_id: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT msg_id FROM scan_failed_messages WHERE account_id = ?1 \
+         GROUP BY msg_id ORDER BY MIN(failed_at)",
+    )?;
+    let ids = stmt
+        .query_map(params![account_id], |r| r.get(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    Ok(ids)
+}
+
 #[cfg(test)]
 #[path = "scan_failed_messages_tests.rs"]
 mod tests;

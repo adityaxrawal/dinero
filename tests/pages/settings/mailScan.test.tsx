@@ -13,6 +13,7 @@ const asMock = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
 const handleStartScan = vi.fn();
 const handleCancelScan = vi.fn();
 const resetScan = vi.fn();
+const handleRetryFailed = vi.fn();
 
 const progress = (over: Partial<ScanProgressPayload> = {}): ScanProgressPayload => ({
   account_id: 'acc1',
@@ -42,6 +43,8 @@ function mockState(over: Record<string, unknown> = {}) {
     handleStartScan,
     handleCancelScan,
     resetScan,
+    failedScanCount: 0,
+    handleRetryFailed,
     ...over,
   }));
 }
@@ -52,6 +55,21 @@ beforeEach(() => {
 });
 
 describe('MailScanSection', () => {
+  it('offers Retry failed with the count when earlier scans left failures', () => {
+    mockState({ failedScanCount: 2096 });
+    render(<MailScanSection />);
+    fireEvent.click(screen.getByRole('button', { name: /Retry failed \(2096\)/ }));
+    expect(handleRetryFailed).toHaveBeenCalled();
+  });
+
+  it('hides Retry failed when nothing failed or a scan is running', () => {
+    render(<MailScanSection />);
+    expect(screen.queryByRole('button', { name: /Retry failed/ })).toBeNull();
+    mockState({ failedScanCount: 3, scanStatus: 'running' as ScanStatus });
+    render(<MailScanSection />);
+    expect(screen.queryByRole('button', { name: /Retry failed/ })).toBeNull();
+  });
+
   it('warns and blocks the scan when no account is connected', () => {
     mockState({ connectedAccounts: [] });
     render(<MailScanSection />);

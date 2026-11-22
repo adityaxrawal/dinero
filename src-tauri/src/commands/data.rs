@@ -714,7 +714,7 @@ pub fn do_get_debug_metrics(conn: &Connection) -> Result<DebugMetrics, String> {
 
     let queue_depth: i64 = conn
         .query_row(
-            "SELECT count(*) FROM processing_checkpoints WHERE status != 'completed'",
+            "SELECT count(*) FROM processing_checkpoints WHERE status NOT IN ('completed', 'completed_with_errors')",
             [],
             |row| row.get(0),
         )

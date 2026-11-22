@@ -18,6 +18,8 @@ vi.mock('@/lib/ipc', () => ({
     ingestion: {
       startHistoricalScan: (...args: unknown[]) => startHistoricalScanMock(...args),
       cancelScan: (...args: unknown[]) => cancelScanMock(...args),
+      getFailedScanCount: vi.fn().mockResolvedValue(0),
+      retryFailedScan: vi.fn().mockResolvedValue('started'),
     },
   },
 }));
