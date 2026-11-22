@@ -207,35 +207,50 @@ fn save_token(account_id: &str, token_store: &TokenStore) -> Result<()> {
 }
 
 /// Reads the development token from disk.
+///
+/// `Ok(None)` means no token is stored; `Err` means storage could not be read,
+/// which may be temporary and must not be treated as a missing token.
 #[cfg(debug_assertions)]
-fn get_token(account_id: &str) -> Result<String> {
-    if let Ok(token) = std::fs::read_to_string(dev_token_path(account_id)) {
-        return Ok(token);
-    }
-    let legacy = legacy_dev_token_path(account_id);
-    if let Ok(token) = std::fs::read_to_string(&legacy) {
-        if crate::db::crypto::write_private_file(&dev_token_path(account_id), &token).is_ok() {
-            let _ = std::fs::remove_file(&legacy);
+fn get_token(account_id: &str) -> Result<Option<String>> {
+    for path in [dev_token_path(account_id), legacy_dev_token_path(account_id)] {
+        match std::fs::read_to_string(&path) {
+            Ok(token) => {
+                if path != dev_token_path(account_id)
+                    && crate::db::crypto::write_private_file(&dev_token_path(account_id), &token)
+                        .is_ok()
+                {
+                    let _ = std::fs::remove_file(&path);
+                }
+                return Ok(Some(token));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(anyhow::anyhow!("Could not read token file: {}", e)),
         }
-        return Ok(token);
     }
-    Err(anyhow::anyhow!("No matching entry found in secure storage"))
+    Ok(None)
 }
 
 /// Reads the release token from the keychain.
+///
+/// `Ok(None)` means no entry exists; `Err` means the keychain could not be read
+/// (locked, access denied), which may be temporary.
 #[cfg(not(debug_assertions))]
-fn get_token(account_id: &str) -> Result<String> {
+fn get_token(account_id: &str) -> Result<Option<String>> {
     let entry = Entry::new(KEYCHAIN_SERVICE, &keychain_account_name(account_id))
         .map_err(|e| anyhow::anyhow!("Keyring entry error: {}", e))?;
-    if let Ok(token) = entry.get_password() {
-        return Ok(token);
+    match entry.get_password() {
+        Ok(token) => return Ok(Some(token)),
+        Err(keyring::Error::NoEntry) => {}
+        Err(e) => return Err(anyhow::anyhow!("Keychain read failed: {}", e)),
     }
 
     let legacy_entry = Entry::new(LEGACY_KEYCHAIN_SERVICE, &keychain_account_name(account_id))
         .map_err(|e| anyhow::anyhow!("Keyring entry error: {}", e))?;
-    let token = legacy_entry
-        .get_password()
-        .map_err(|e| anyhow::anyhow!("No matching entry found in secure storage: {}", e))?;
+    let token = match legacy_entry.get_password() {
+        Ok(token) => token,
+        Err(keyring::Error::NoEntry) => return Ok(None),
+        Err(e) => return Err(anyhow::anyhow!("Keychain read failed: {}", e)),
+    };
 
     if entry.set_password(&token).is_ok() {
         let _ = legacy_entry.delete_credential();
@@ -245,7 +260,7 @@ fn get_token(account_id: &str) -> Result<String> {
         );
     }
 
-    Ok(token)
+    Ok(Some(token))
 }
 
 /// Deletes the development token file.
@@ -299,7 +314,7 @@ async fn revoke_single_account_with_google(
     network: &crate::network_client::NetworkClient,
     account_id: &str,
 ) {
-    let Ok(token_json) = get_token(account_id) else {
+    let Ok(Some(token_json)) = get_token(account_id) else {
         return;
     };
     let Ok(token_store) = serde_json::from_str::<TokenStore>(&token_json) else {
@@ -742,14 +757,83 @@ fn classify_refresh_error(raw: &str) -> &'static str {
     }
 }
 
-/// Whether a failure reason means the token is permanently invalid.
+/// Whether Google has said the stored grant is dead, so the token is deleted.
 fn reason_indicates_invalid_token(reason: &str) -> bool {
-    reason == "keychain_read_failed"
+    reason.contains("invalid_grant") || reason.contains("invalid_client")
+}
+
+/// Whether a failure can only be fixed by reconnecting Gmail.
+///
+/// Everything else (network errors, timeouts, unknown errors, a locked or
+/// denied keychain) is treated as transient: the account stays active and the
+/// next poll retries. The stale-sync watchdog warns if it never recovers.
+fn reason_requires_reconnect(reason: &str) -> bool {
+    reason_indicates_invalid_token(reason)
+        || reason.contains("unauthorized")
+        || reason == "token_missing"
         || reason == "token_parse_failed"
         || reason == "no_refresh_token"
-        || reason.contains("invalid_grant")
-        || reason.contains("invalid_client")
-        || reason.contains("unauthorized")
+}
+
+/// Reads the stored token, recording a failure if there is none.
+async fn read_stored_token<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    pool: &Pool,
+    account_id: &str,
+) -> Result<String> {
+    match get_token(account_id) {
+        Ok(Some(t)) => Ok(t),
+        Ok(None) => {
+            tracing::error!("No stored token for account {}", account_id);
+            record_refresh_failure(app, pool, account_id, "token_missing").await;
+            Err(anyhow::anyhow!("No matching entry found in secure storage"))
+        }
+        Err(e) => {
+            tracing::error!("Failed to read token from secure storage: {}", e);
+            record_refresh_failure(app, pool, account_id, "keychain_read_failed").await;
+            Err(e)
+        }
+    }
+}
+
+/// Records a token failure: degrades the account only if it needs reconnecting.
+async fn record_refresh_failure<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    pool: &Pool,
+    account_id: &str,
+    reason: &str,
+) {
+    if reason_requires_reconnect(reason) {
+        mark_account_degraded_async(app, pool, account_id, reason).await;
+        return;
+    }
+    tracing::warn!(
+        "Transient Gmail token failure for account {} ({}); will retry next poll",
+        account_id,
+        reason
+    );
+    if let Ok(conn) = pool.get().await {
+        let acc_id = account_id.to_string();
+        let reason = reason.to_string();
+        let _ = conn
+            .interact(move |c| {
+                crate::db::audit_log::insert(
+                    c,
+                    &crate::db::audit_log::AuditLogRow {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        actor_type: Some("system".to_string()),
+                        actor_id: None,
+                        action: Some("gmail_token_refresh_transient_failure".to_string()),
+                        resource_type: Some("connected_account".to_string()),
+                        resource_id: Some(acc_id),
+                        before_json: None,
+                        after_json: Some(serde_json::json!({ "reason": reason })),
+                        created_at: chrono::Utc::now(),
+                    },
+                )
+            })
+            .await;
+    }
 }
 
 /// Marks an account degraded and notifies the frontend.
@@ -844,20 +928,13 @@ pub async fn get_valid_access_token<R: tauri::Runtime>(
     pool: &Pool,
     account_id: &str,
 ) -> Result<String> {
-    let token_json = match get_token(account_id) {
-        Ok(t) => t,
-        Err(e) => {
-            tracing::error!("Failed to get token from secure storage: {}", e);
-            mark_account_degraded_async(app, pool, account_id, "keychain_read_failed").await;
-            return Err(e);
-        }
-    };
+    let token_json = read_stored_token(app, pool, account_id).await?;
 
     let token_store: TokenStore = match serde_json::from_str(&token_json) {
         Ok(ts) => ts,
         Err(e) => {
             tracing::error!("Failed to parse token from secure storage: {}", e);
-            mark_account_degraded_async(app, pool, account_id, "token_parse_failed").await;
+            record_refresh_failure(app, pool, account_id, "token_parse_failed").await;
             return Err(anyhow::anyhow!("Token parse error: {}", e));
         }
     };
@@ -879,19 +956,12 @@ pub async fn force_refresh_access_token<R: tauri::Runtime>(
     pool: &Pool,
     account_id: &str,
 ) -> Result<String> {
-    let token_json = match get_token(account_id) {
-        Ok(t) => t,
-        Err(e) => {
-            tracing::error!("Failed to get token from secure storage: {}", e);
-            mark_account_degraded_async(app, pool, account_id, "keychain_read_failed").await;
-            return Err(e);
-        }
-    };
+    let token_json = read_stored_token(app, pool, account_id).await?;
     let token_store: TokenStore = match serde_json::from_str(&token_json) {
         Ok(ts) => ts,
         Err(e) => {
             tracing::error!("Failed to parse token from secure storage: {}", e);
-            mark_account_degraded_async(app, pool, account_id, "token_parse_failed").await;
+            record_refresh_failure(app, pool, account_id, "token_parse_failed").await;
             return Err(anyhow::anyhow!("Token parse error: {}", e));
         }
     };
@@ -909,7 +979,7 @@ async fn refresh_token_store<R: tauri::Runtime>(
         Some(rt) => rt.clone(),
         None => {
             tracing::error!("No refresh token available");
-            mark_account_degraded_async(app, pool, account_id, "no_refresh_token").await;
+            record_refresh_failure(app, pool, account_id, "no_refresh_token").await;
             return Err(anyhow::anyhow!("No refresh token available"));
         }
     };
@@ -928,7 +998,7 @@ async fn refresh_token_store<R: tauri::Runtime>(
                 "Gmail token refresh timed out after {:?}",
                 OAUTH_TOKEN_REQUEST_TIMEOUT
             );
-            mark_account_degraded_async(app, pool, account_id, "network_error").await;
+            record_refresh_failure(app, pool, account_id, "network_error").await;
             Err(anyhow::anyhow!(
                 "Timed out refreshing Gmail access token after {:?}",
                 OAUTH_TOKEN_REQUEST_TIMEOUT
@@ -952,7 +1022,7 @@ async fn refresh_token_store<R: tauri::Runtime>(
         Ok(Err(e)) => {
             let category = classify_refresh_error(&e.to_string());
             tracing::error!("Gmail token refresh failed: {}", category);
-            mark_account_degraded_async(
+            record_refresh_failure(
                 app,
                 pool,
                 account_id,
@@ -1069,6 +1139,32 @@ mod tests {
             )
             .unwrap();
         assert_eq!(action, "gmail_revoked");
+    }
+
+    #[test]
+    fn only_real_auth_failures_require_reconnect_or_purge() {
+        for permanent in [
+            "refresh_request_failed: invalid_grant",
+            "refresh_request_failed: invalid_client",
+            "refresh_request_failed: unauthorized",
+            "token_missing",
+            "token_parse_failed",
+            "no_refresh_token",
+        ] {
+            assert!(reason_requires_reconnect(permanent), "{permanent}");
+        }
+        for transient in [
+            "network_error",
+            "refresh_request_failed: network_error",
+            "refresh_request_failed: unknown_error",
+            "keychain_read_failed",
+        ] {
+            assert!(!reason_requires_reconnect(transient), "{transient}");
+            assert!(!reason_indicates_invalid_token(transient), "{transient}");
+        }
+        assert!(reason_indicates_invalid_token("refresh_request_failed: invalid_grant"));
+        assert!(!reason_indicates_invalid_token("token_missing"));
+        assert!(!reason_indicates_invalid_token("refresh_request_failed: unauthorized"));
     }
 
     #[test]
