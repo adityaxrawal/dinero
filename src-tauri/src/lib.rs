@@ -577,16 +577,22 @@ pub fn run() {
             let pool_for_backup = pool_clone.clone();
             let app_handle_for_backup = app.handle().clone();
             let db_path_for_backup = db_path.clone();
+            let app_dir_for_maintenance = app_dir.clone();
             tauri::async_runtime::spawn(async move {
                 loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(60 * 60 * 24)).await;
+                    // Scheduled from the last recorded run, not from launch: a
+                    // desktop app is rarely open for 24h straight, so counting
+                    // uptime meant maintenance (and backups) never ran.
+                    let wait = crate::db::maintenance::time_until_maintenance(
+                        &app_dir_for_maintenance,
+                        chrono::Utc::now(),
+                    );
+                    tokio::time::sleep(wait).await;
                     tracing::info!("Running daily encrypted SQLite backup background task...");
 
-                    let backup_file = backup_dir.join("finance.db.daily.bak");
-                    // Written to a temporary file and renamed on success. The
-                    // rename is atomic, so a crash mid-backup can never leave a
-                    // truncated file sitting where the recovery path expects a
-                    // usable backup.
+                    // Written to a temporary file, verified, then rotated into
+                    // place. Nothing replaces an existing backup until the new
+                    // one has passed its integrity check.
                     let backup_tmp_file = backup_dir.join("finance.db.daily.bak.tmp");
                     let _ = std::fs::remove_file(&backup_tmp_file);
                     let backup_tmp_file_str = backup_tmp_file.to_string_lossy().to_string();
@@ -600,35 +606,16 @@ pub fn run() {
 
                         match res {
                             Ok(Ok(_)) => {
-                                match std::fs::rename(&backup_tmp_file, &backup_file) {
-                                    Ok(_) => {
+                                match crate::db::maintenance::promote_verified_backup(
+                                    &backup_dir,
+                                    &backup_tmp_file,
+                                    crate::db::backup::verify_backup_integrity,
+                                ) {
+                                    Ok(backup_file) => {
                                         tracing::info!(
                                             "Backup successful: {}",
                                             backup_file.display()
                                         );
-                                        // A backup that cannot be verified is
-                                        // worse than none, because it invites
-                                        // false confidence -- so the user is
-                                        // warned rather than left assuming it
-                                        // would work.
-                                        if let Err(e) = crate::db::backup::verify_backup_integrity(&backup_file) {
-                                            tracing::error!(
-                                                "Daily backup verification failed for {}: {}",
-                                                backup_file.display(),
-                                                e
-                                            );
-                                            crate::ipc::system_warnings::emit_system_warning(
-                                                &app_handle_for_backup,
-                                                crate::ipc::system_warnings::SystemWarningPayload {
-                                                    warning_type: "backup_verification_failed".to_string(),
-                                                    message: "Today's automatic backup could not be verified. \
-                                                    Your data is still safe, but this backup may not be usable \
-                                                    for restore.".to_string(),
-                                                    severity: crate::ipc::system_warnings::WarningSeverity::Degraded,
-                                                    action_hint: None,
-                                                },
-                                            );
-                                        }
                                         let _ = app_handle_for_backup.emit(
                                             crate::ipc::events::AppEvent::DbBackupCompleted.as_str(),
                                             serde_json::json!({
@@ -656,11 +643,23 @@ pub fn run() {
                                                 .await;
                                         }
                                     }
-                                    Err(e) => tracing::error!(
-                                        "Backup succeeded but failed to replace {}: {}",
-                                        backup_file.display(),
-                                        e
-                                    ),
+                                    Err(e) => {
+                                        // The previous generations are kept;
+                                        // the user is still warned, since a
+                                        // backup that keeps failing means the
+                                        // newest restorable copy is ageing.
+                                        tracing::error!("Daily backup was not kept (verification or rotation failed): {}", e);
+                                        crate::ipc::system_warnings::emit_system_warning(
+                                            &app_handle_for_backup,
+                                            crate::ipc::system_warnings::SystemWarningPayload {
+                                                warning_type: "backup_verification_failed".to_string(),
+                                                message: "Today's automatic backup could not be completed and was discarded. \
+                                                Your data and earlier backups are unchanged.".to_string(),
+                                                severity: crate::ipc::system_warnings::WarningSeverity::Degraded,
+                                                action_hint: None,
+                                            },
+                                        );
+                                    }
                                 }
                             }
                             _ => {
@@ -781,6 +780,13 @@ pub fn run() {
                     crate::permissions::macos_permissions::check_permissions_at_launch(
                         &app_handle_for_backup,
                     );
+
+                    if let Err(e) = crate::db::maintenance::record_maintenance_run(
+                        &app_dir_for_maintenance,
+                        chrono::Utc::now(),
+                    ) {
+                        tracing::error!("Could not record daily maintenance run: {}", e);
+                    }
                 }
             });
 
