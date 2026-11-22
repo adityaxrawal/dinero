@@ -52,6 +52,58 @@ pub fn dev_base_key_path() -> std::path::PathBuf {
     }
 }
 
+/// Writes a secret file that only the owner can read or write.
+///
+/// Applies 0600 to an existing file too, since `OpenOptions::mode` only takes
+/// effect when the file is created.
+pub fn write_private_file(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+    let mut file = opts.open(path)?;
+    #[cfg(unix)]
+    std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    file.write_all(contents.as_bytes())
+}
+
+/// Restricts the data directory and its secret files to the owner.
+///
+/// The directory becomes 0700 and the key, database and SQLite side files
+/// become 0600, so other local users cannot read them.
+pub fn restrict_profile_permissions(app_dir: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let set = |p: &std::path::Path, mode: u32| {
+            if p.exists() {
+                if let Err(e) = std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)) {
+                    tracing::warn!("Could not restrict permissions on {}: {}", p.display(), e);
+                }
+            }
+        };
+        set(app_dir, 0o700);
+        for name in [
+            "dinero_dev_base_key.txt",
+            "finance.db",
+            "finance.db-wal",
+            "finance.db-shm",
+        ] {
+            set(&app_dir.join(name), 0o600);
+        }
+    }
+}
+
+/// Directory for development secrets (base key and OAuth tokens).
+///
+/// The real profile in normal dev runs, an isolated temp directory under tests.
+#[cfg(debug_assertions)]
+pub fn dev_secrets_dir() -> std::path::PathBuf {
+    let path = dev_base_key_path();
+    path.parent().map(|p| p.to_path_buf()).unwrap_or_else(std::env::temp_dir)
+}
+
 /// Directory that replaces the real profile for the dev key, if any.
 ///
 /// `DINERO_DEV_KEY_DIR` wins when set. Otherwise test binaries get a fixed
@@ -93,13 +145,14 @@ pub fn get_or_create_base_key() -> Result<String> {
         .then(|| std::fs::read_to_string(&temp_path).ok())
         .flatten()
     {
-        let _ = std::fs::write(&persistent_path, &key);
+        let _ = write_private_file(&persistent_path, &key);
+        let _ = std::fs::remove_file(&temp_path);
         key
     } else {
         let mut bytes = [0u8; 32];
         OsRng.fill_bytes(&mut bytes);
         let new_key = hex::encode(bytes);
-        let _ = std::fs::write(&persistent_path, &new_key);
+        let _ = write_private_file(&persistent_path, &new_key);
         new_key
     };
     Ok(DEV_BASE_KEY.get_or_init(|| key).clone())
@@ -397,6 +450,31 @@ pub fn try_migrate_hardware_uuid(
 #[cfg(test)]
 mod hardware_migration_tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn write_private_file_tightens_existing_and_new_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("dinero_private_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let existing = dir.join("existing");
+        std::fs::write(&existing, "old").unwrap();
+        std::fs::set_permissions(&existing, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_private_file(&existing, "new").unwrap();
+        write_private_file(&dir.join("fresh"), "x").unwrap();
+        for f in ["existing", "fresh"] {
+            let mode = std::fs::metadata(dir.join(f)).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "{f}");
+        }
+        assert_eq!(std::fs::read_to_string(&existing).unwrap(), "new");
+
+        std::fs::write(dir.join("finance.db-wal"), "").unwrap();
+        restrict_profile_permissions(&dir);
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&dir.join("finance.db-wal")), 0o600);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[cfg(debug_assertions)]
     #[test]

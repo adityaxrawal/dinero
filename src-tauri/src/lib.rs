@@ -173,6 +173,7 @@ pub fn run() {
                 .app_data_dir()
                 .unwrap_or_else(|_| PathBuf::from(".dinero"));
             std::fs::create_dir_all(&app_dir).unwrap();
+            crate::db::crypto::restrict_profile_permissions(&app_dir);
 
             crate::crash_reporter::init(app_dir.clone());
             app.manage(crate::feedback::FeedbackManager::new(app_dir.clone()));

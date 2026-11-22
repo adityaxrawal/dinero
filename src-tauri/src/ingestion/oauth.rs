@@ -169,9 +169,27 @@ fn keychain_account_name(account_id: &str) -> String {
 /// each unsigned binary as a different application.
 #[cfg(debug_assertions)]
 fn save_token(account_id: &str, token_store: &TokenStore) -> Result<()> {
-    let dev_token_path = std::env::temp_dir().join(format!("dinero_dev_token_{}.json", account_id));
-    std::fs::write(dev_token_path, serde_json::to_string(token_store)?)?;
+    crate::db::crypto::write_private_file(
+        &dev_token_path(account_id),
+        &serde_json::to_string(token_store)?,
+    )?;
+    let _ = std::fs::remove_file(legacy_dev_token_path(account_id));
     Ok(())
+}
+
+/// Development token file, kept with the dev base key (0600).
+///
+/// Not in `$TMPDIR`: macOS purges it, which silently deleted tokens and left
+/// accounts degraded.
+#[cfg(debug_assertions)]
+fn dev_token_path(account_id: &str) -> std::path::PathBuf {
+    crate::db::crypto::dev_secrets_dir().join(format!("dinero_dev_token_{}.json", account_id))
+}
+
+/// Where older dev builds kept the token; read once and migrated.
+#[cfg(debug_assertions)]
+fn legacy_dev_token_path(account_id: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("dinero_dev_token_{}.json", account_id))
 }
 
 /// Release token storage: the OS keychain.
@@ -189,8 +207,14 @@ fn save_token(account_id: &str, token_store: &TokenStore) -> Result<()> {
 /// Reads the development token from disk.
 #[cfg(debug_assertions)]
 fn get_token(account_id: &str) -> Result<String> {
-    let dev_token_path = std::env::temp_dir().join(format!("dinero_dev_token_{}.json", account_id));
-    if let Ok(token) = std::fs::read_to_string(dev_token_path) {
+    if let Ok(token) = std::fs::read_to_string(dev_token_path(account_id)) {
+        return Ok(token);
+    }
+    let legacy = legacy_dev_token_path(account_id);
+    if let Ok(token) = std::fs::read_to_string(&legacy) {
+        if crate::db::crypto::write_private_file(&dev_token_path(account_id), &token).is_ok() {
+            let _ = std::fs::remove_file(&legacy);
+        }
         return Ok(token);
     }
     Err(anyhow::anyhow!("No matching entry found in secure storage"))
@@ -225,8 +249,8 @@ fn get_token(account_id: &str) -> Result<String> {
 /// Deletes the development token file.
 #[cfg(debug_assertions)]
 fn delete_token(account_id: &str) {
-    let dev_token_path = std::env::temp_dir().join(format!("dinero_dev_token_{}.json", account_id));
-    let _ = std::fs::remove_file(dev_token_path);
+    let _ = std::fs::remove_file(dev_token_path(account_id));
+    let _ = std::fs::remove_file(legacy_dev_token_path(account_id));
 }
 
 /// Deletes the release token from the keychain.
