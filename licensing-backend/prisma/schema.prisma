@@ -167,3 +167,14 @@ model LicensingAuditLog {
   @@index([eventType])
   @@map("licensing_audit_log")
 }
+
+/// Razorpay webhook event ids already applied (review H3). The id comes from
+/// the x-razorpay-event-id header; the primary key makes a retried delivery a
+/// no-op instead of a scan over the whole audit log.
+model ProcessedWebhookEvent {
+  eventId   String   @id @map("event_id")
+  eventType String   @map("event_type")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@map("processed_webhook_events")
+}

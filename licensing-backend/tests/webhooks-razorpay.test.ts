@@ -15,11 +15,8 @@ function makeDb(opts: {
 }): WebhookDb {
   const subscriptions = opts.subscriptions ?? [];
   const paymentProviderRecords = opts.paymentProviderRecords ?? [];
-  const auditRows = (opts.processedEventIds ?? []).map((id) => ({
-    eventType: 'webhook_processed',
-    payload: { event_id: id },
-    createdAt: new Date(),
-  }));
+  const auditRows: { eventType: string; payload: unknown; createdAt: Date }[] = [];
+  const processed = new Set(opts.processedEventIds ?? []);
 
   return {
     subscription: {
@@ -47,12 +44,25 @@ function makeDb(opts: {
         .fn()
         .mockImplementation(({ where }) =>
           Promise.resolve(
-            paymentProviderRecords.find(
-              (r) => r.razorpaySubscriptionId === where.razorpaySubscriptionId
+            paymentProviderRecords.find((r) =>
+              where.razorpayPaymentId !== undefined
+                ? r.razorpayPaymentId === where.razorpayPaymentId
+                : r.razorpaySubscriptionId === where.razorpaySubscriptionId
             ) ?? null
           )
         ),
     } as unknown as WebhookDb['paymentProviderRecord'],
+    processedWebhookEvent: {
+      findUnique: vi
+        .fn()
+        .mockImplementation(({ where }) =>
+          Promise.resolve(processed.has(where.eventId) ? { eventId: where.eventId } : null)
+        ),
+      create: vi.fn().mockImplementation(({ data }) => {
+        processed.add(data.eventId);
+        return Promise.resolve(data);
+      }),
+    } as unknown as WebhookDb['processedWebhookEvent'],
     licensingAuditLog: {
       create: vi.fn().mockImplementation(({ data }) => {
         auditRows.push({ eventType: data.eventType, payload: data.payload, createdAt: new Date() });
@@ -148,5 +158,71 @@ describe('test_invalid_webhook_signature_rejected', () => {
   it('rejects a forged signature', () => {
     const body = JSON.stringify({ id: 'evt_1' });
     expect(verifyWebhookSignature(body, 'ab'.repeat(32), webhookSecret)).toBe(false);
+  });
+});
+
+// Review H3: cancellation-type events and full refunds end entitlement; ids
+// are recorded so a redelivery is ignored.
+describe('lifecycle events end entitlement', () => {
+  const linked = () =>
+    makeDb({
+      subscriptions: [{ id: 'sub_1', accountId: 'acc_1', status: 'active' }],
+      paymentProviderRecords: [
+        { subscriptionId: 'sub_1', razorpaySubscriptionId: 'rzp_sub_1' },
+        { accountId: 'acc_1', razorpayPaymentId: 'pay_1' },
+      ],
+    });
+
+  it.each([
+    ['subscription.cancelled', 'canceled'],
+    ['subscription.halted', 'locked'],
+    ['subscription.completed', 'expired'],
+  ])('%s sets status %s', async (eventType, status) => {
+    const db = linked();
+    await processWebhookEvent(db, {
+      id: `evt_${eventType}`,
+      event: eventType,
+      payload: { subscription: { entity: { id: 'rzp_sub_1' } } },
+    });
+    expect(db.subscription.update).toHaveBeenCalledWith({ where: { id: 'sub_1' }, data: { status } });
+  });
+
+  it('a full refund cancels; a partial refund does not', async () => {
+    const partial = linked();
+    await processWebhookEvent(partial, {
+      id: 'evt_r1',
+      event: 'refund.processed',
+      payload: {
+        refund: { entity: { payment_id: 'pay_1', amount: 100 } },
+        payment: { entity: { amount: 29900 } },
+      },
+    });
+    expect(partial.subscription.update).not.toHaveBeenCalled();
+
+    const full = linked();
+    await processWebhookEvent(full, {
+      id: 'evt_r2',
+      event: 'refund.processed',
+      payload: {
+        refund: { entity: { payment_id: 'pay_1', amount: 29900 } },
+        payment: { entity: { amount: 29900 } },
+      },
+    });
+    expect(full.subscription.update).toHaveBeenCalledWith({
+      where: { id: 'sub_1' },
+      data: { status: 'canceled' },
+    });
+  });
+
+  it('a redelivered event id is ignored', async () => {
+    const db = linked();
+    const event: RazorpayWebhookEvent = {
+      id: 'evt_dup',
+      event: 'subscription.cancelled',
+      payload: { subscription: { entity: { id: 'rzp_sub_1' } } },
+    };
+    expect((await processWebhookEvent(db, event)).status).toBe('processed');
+    expect((await processWebhookEvent(db, event)).status).toBe('duplicate_ignored');
+    expect(db.subscription.update).toHaveBeenCalledTimes(1);
   });
 });

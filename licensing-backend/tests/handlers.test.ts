@@ -12,6 +12,7 @@ const prisma = {
   subscription: { findFirst: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
   licenseToken: { findFirst: vi.fn(), findUnique: vi.fn() },
   licensingAuditLog: { create: vi.fn(), findMany: vi.fn(), count: vi.fn() },
+  processedWebhookEvent: { findUnique: vi.fn(), create: vi.fn() },
 };
 
 const assertAdminAuthorized = vi.fn();
@@ -374,7 +375,20 @@ describe('billing/refund handler', () => {
 });
 
 describe('license/webhooks/razorpay handler', () => {
-  const signed = { headers: { 'x-razorpay-signature': 'sig' }, body: { event: 'payment.captured' } };
+  // Body parsing is off for this route, so the request is the raw byte
+  // stream Razorpay signed. Whitespace is kept to prove nothing re-serialises.
+  const RAW = '{"event": "payment.captured",  "payload": {}}';
+  const rawReq = (raw: string, headers: Record<string, string>) =>
+    ({
+      method: 'POST',
+      query: {},
+      headers,
+      async *[Symbol.asyncIterator]() {
+        yield Buffer.from(raw);
+      },
+    }) as unknown as VercelRequest;
+  const signedHeaders = { 'x-razorpay-signature': 'sig', 'x-razorpay-event-id': 'evt_h1' };
+  const signed = rawReq(RAW, signedHeaders);
 
   it('rejects a non-POST', async () => {
     const handler = await load('../api/license/webhooks/razorpay');
@@ -387,7 +401,7 @@ describe('license/webhooks/razorpay handler', () => {
     vi.stubEnv('RAZORPAY_WEBHOOK_SECRET', '');
     const handler = await load('../api/license/webhooks/razorpay');
     const res = makeRes();
-    await handler(req(signed), res);
+    await handler(signed, res);
     expect(res.statusCode).toBe(500);
   });
 
@@ -404,7 +418,7 @@ describe('license/webhooks/razorpay handler', () => {
     verifyWebhookSignature.mockReturnValue(false);
     const handler = await load('../api/license/webhooks/razorpay');
     const res = makeRes();
-    await handler(req(signed), res);
+    await handler(rawReq(RAW, signedHeaders), res);
     expect(res.statusCode).toBe(400);
     expect(payload(res).code).toBe('INVALID_WEBHOOK_SIGNATURE');
   });
@@ -412,12 +426,8 @@ describe('license/webhooks/razorpay handler', () => {
   it('verifies against the exact raw body it received', async () => {
     vi.stubEnv('RAZORPAY_WEBHOOK_SECRET', 'whsec');
     const handler = await load('../api/license/webhooks/razorpay');
-    await handler(req(signed), makeRes());
-    expect(verifyWebhookSignature).toHaveBeenCalledWith(
-      JSON.stringify(signed.body),
-      'sig',
-      'whsec'
-    );
+    await handler(rawReq(RAW, signedHeaders), makeRes());
+    expect(verifyWebhookSignature).toHaveBeenCalledWith(RAW, 'sig', 'whsec');
   });
 
   it('hides a processing failure behind a 500', async () => {
@@ -426,7 +436,7 @@ describe('license/webhooks/razorpay handler', () => {
     prisma.account.findUnique.mockRejectedValue(new Error('postgres down'));
     const handler = await load('../api/license/webhooks/razorpay');
     const res = makeRes();
-    await handler(req({ ...signed, body: { event: 'subscription.charged' } }), res);
+    await handler(rawReq('{"event":"subscription.charged","payload":{}}', signedHeaders), res);
     expect([200, 500]).toContain(res.statusCode);
     if (res.statusCode === 500) {
       expect(JSON.stringify(payload(res))).not.toContain('postgres');
