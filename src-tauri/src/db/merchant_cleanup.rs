@@ -279,10 +279,11 @@ pub fn apply_correction(
             &resolution.merchant_in_email,
         )?;
         let now = Utc::now().naive_utc();
+        let new_id = Uuid::new_v4().to_string();
         crate::db::field_rules::upsert_variant(
             conn,
             &crate::db::field_rules::FieldRuleVariant {
-                id: Uuid::new_v4().to_string(),
+                id: new_id.clone(),
                 bank_name: candidate.bank_name.clone(),
                 field_name: "merchant".to_string(),
                 source_type: "email".to_string(),
@@ -303,6 +304,9 @@ pub fn apply_correction(
             None,
         )
         .ok()
+        // An identical rule already existed: it is not this correction's to
+        // retire on revert (review P2).
+        .filter(|id| *id == new_id)
     });
 
     conn.execute(

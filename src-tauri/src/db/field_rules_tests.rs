@@ -185,75 +185,122 @@ fn second_template_becomes_a_sibling_variant() {
     );
 }
 
-// ── A newer correction replaces the live rule and preserves the old payload ──
+// ── Review P2: a newer user correction serves at once; the old rule is kept ──
 #[test]
-fn recorrection_replaces_payload_and_logs_the_old_one() {
+fn recorrection_supersedes_the_serving_rule_and_keeps_it() {
     let conn = setup_db();
     let first = make_variant("r1", "HDFC", "merchant", "hash_r", "active");
-    let id = upsert_variant(&conn, &first, None).unwrap();
+    upsert_variant(&conn, &first, None).unwrap();
 
     let mut second = make_variant("r2", "HDFC", "merchant", "hash_r", "active");
     second.rule_payload_json = serde_json::json!({"regex": "NEW (.+)", "capture_group": 1});
     let id2 = upsert_variant(&conn, &second, Some("fb_1")).unwrap();
 
-    assert_eq!(
-        id2, id,
-        "replacing a live variant must reuse its row, not add a second"
-    );
-    let live = select_by_id(&conn, &id).unwrap().unwrap();
-    assert_eq!(live.rule_payload_json["regex"], "NEW (.+)");
+    assert_eq!(id2, "r2", "a correction is stored beside the old rule, not over it");
+    assert_eq!(select_by_id(&conn, "r2").unwrap().unwrap().status, "active");
+    assert_eq!(select_by_id(&conn, "r1").unwrap().unwrap().status, "inactive");
+    let live = select_live_by_bank(&conn, "HDFC", "email").unwrap();
+    assert_eq!(live.len(), 1);
+    assert_eq!(live[0].rule_payload_json["regex"], "NEW (.+)");
 
-    // Both `created` rows land in the same second, so `created_at` cannot
-    // distinguish them -- the replacement is identified by being the one that
-    // displaced a payload.
-    let (old, new, fb): (Option<String>, Option<String>, Option<String>) = conn
+    let (old, fb): (Option<String>, Option<String>) = conn
         .query_row(
-            "SELECT old_payload_json, new_payload_json, triggering_feedback_log_id
-             FROM rule_change_log
-             WHERE field_rule_variant_id = ?1 AND action = 'created'
-               AND old_payload_json IS NOT NULL",
-            [&id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            "SELECT old_payload_json, triggering_feedback_log_id FROM rule_change_log
+             WHERE field_rule_variant_id = 'r2' AND action = 'created'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    assert!(
-        old.unwrap().contains(r"Rs (\\d+)"),
-        "the replaced payload must be recoverable"
-    );
-    assert!(new.unwrap().contains("NEW (.+)"));
-    assert_eq!(fb.unwrap_or_default(), "fb_1");
+    assert!(old.unwrap().contains(r"Rs (\\d+)"), "the displaced payload is logged");
+    assert_eq!(fb.as_deref(), Some("fb_1"));
 }
 
-// ── An inactive variant does not block relearning the same template ──────────
-#[test]
-fn a_reverted_rule_can_be_relearned() {
-    let conn = setup_db();
-    let id = upsert_variant(
-        &conn,
-        &make_variant("g1", "HDFC", "amount", "hash_g", "active"),
-        None,
-    )
-    .unwrap();
-    revert(&conn, &id, "user reverted").unwrap();
-    assert_eq!(
-        select_by_id(&conn, &id).unwrap().unwrap().status,
-        "inactive"
-    );
+/// A rule the way an automatic source (drift LLM, merchant cleanup) writes it.
+fn automatic(id: &str, hash: &str, learned_from: &str, regex: &str) -> FieldRuleVariant {
+    let mut v = make_variant(id, "HDFC", "merchant", hash, "active");
+    v.authored_by = "llm".to_string();
+    v.learned_from = learned_from.to_string();
+    v.success_count = 1;
+    v.rule_payload_json = serde_json::json!({"regex": regex, "capture_group": 1});
+    v
+}
 
-    let fresh = upsert_variant(
-        &conn,
-        &make_variant("g2", "HDFC", "amount", "hash_g", "active"),
-        None,
-    )
-    .unwrap();
-    assert_ne!(
-        fresh, id,
-        "a fresh attempt must insert a new row, not revive the reverted one"
-    );
-    assert_eq!(
-        select_live_by_bank(&conn, "HDFC", "email").unwrap().len(),
-        1
-    );
+// ── Review P2: an automatic rule never demotes or replaces a proven one ──────
+#[test]
+fn drift_rule_shadows_a_trusted_rule_instead_of_demoting_it() {
+    let conn = setup_db();
+    let mut proven = automatic("proven", "h", "batch_cleanup", "at (.+)");
+    proven.status = "trusted".to_string();
+    proven.success_count = 50;
+    upsert_variant(&conn, &proven, None).unwrap();
+
+    let mut drift = automatic("drift", "h", "drift_llm", "on (.+)");
+    drift.status = "pending".to_string();
+    drift.success_count = 0;
+    upsert_variant(&conn, &drift, None).unwrap();
+
+    let kept = select_by_id(&conn, "proven").unwrap().unwrap();
+    assert_eq!((kept.status.as_str(), kept.success_count), ("trusted", 50));
+    assert_eq!(select_by_id(&conn, "drift").unwrap().unwrap().status, "pending");
+    let live = select_live_by_bank(&conn, "HDFC", "email").unwrap();
+    assert_eq!(live.iter().map(|v| v.id.as_str()).collect::<Vec<_>>(), ["proven"]);
+}
+
+#[test]
+fn cleanup_rule_becomes_a_challenger_not_the_serving_rule() {
+    let conn = setup_db();
+    upsert_variant(&conn, &make_variant("user", "HDFC", "merchant", "h", "active"), None).unwrap();
+    upsert_variant(&conn, &automatic("cleanup", "h", "batch_cleanup", "at (.+)"), None).unwrap();
+
+    let c = select_by_id(&conn, "cleanup").unwrap().unwrap();
+    assert_eq!((c.status.as_str(), c.success_count, c.failure_count), ("pending", 0, 0));
+    assert_eq!(select_by_id(&conn, "user").unwrap().unwrap().status, "active");
+}
+
+#[test]
+fn a_user_correction_rule_is_never_displaced_automatically() {
+    let conn = setup_db();
+    let mut user = make_variant("user", "HDFC", "merchant", "h", "active");
+    user.success_count = 4;
+    user.failure_count = 2;
+    user.confidence = 4.0 / 6.0;
+    upsert_variant(&conn, &user, None).unwrap();
+    upsert_variant(&conn, &automatic("cleanup", "h", "batch_cleanup", "at (.+)"), None).unwrap();
+    for _ in 0..5 {
+        record_success(&conn, "cleanup").unwrap();
+    }
+    assert_eq!(select_by_id(&conn, "cleanup").unwrap().unwrap().status, "pending");
+    assert_eq!(select_by_id(&conn, "user").unwrap().unwrap().status, "active");
+}
+
+#[test]
+fn a_challenger_takes_over_only_by_beating_the_serving_rule() {
+    let conn = setup_db();
+    // A perfect serving rule is never displaced, however well a challenger does.
+    let mut perfect = automatic("perfect", "h1", "batch_cleanup", "at (.+)");
+    perfect.success_count = 20;
+    upsert_variant(&conn, &perfect, None).unwrap();
+    upsert_variant(&conn, &automatic("c1", "h1", "drift_llm", "on (.+)"), None).unwrap();
+    for _ in 0..5 {
+        record_success(&conn, "c1").unwrap();
+    }
+    assert_eq!(select_by_id(&conn, "c1").unwrap().unwrap().status, "pending");
+    assert_eq!(select_by_id(&conn, "perfect").unwrap().unwrap().status, "active");
+
+    // A serving rule that has started failing loses to a challenger with a
+    // better hit rate after three shadow successes.
+    let mut slipping = automatic("slipping", "h2", "batch_cleanup", "at (.+)");
+    slipping.success_count = 8;
+    slipping.failure_count = 2;
+    slipping.confidence = 0.8;
+    upsert_variant(&conn, &slipping, None).unwrap();
+    upsert_variant(&conn, &automatic("c2", "h2", "drift_llm", "on (.+)"), None).unwrap();
+    record_success(&conn, "c2").unwrap();
+    record_success(&conn, "c2").unwrap();
+    assert_eq!(select_by_id(&conn, "c2").unwrap().unwrap().status, "pending");
+    record_success(&conn, "c2").unwrap();
+    assert_eq!(select_by_id(&conn, "c2").unwrap().unwrap().status, "active");
+    assert_eq!(select_by_id(&conn, "slipping").unwrap().unwrap().status, "inactive");
 }
 
 // ── Revert is auditable ──────────────────────────────────────────────────────
@@ -403,8 +450,10 @@ fn pending_rule_is_promoted_by_agreeing_confirmations_and_not_by_disagreeing() {
 
     // Disagreement counts against a pending rule; with no successes behind it
     // the existing failure policy retires it.
-    let id2 = upsert_variant(&conn, &make_variant("v_wrong", "HDFC", "amount", &hash, "pending"), None)
-        .unwrap();
+    let mut wrong = make_variant("v_wrong", "HDFC", "amount", &hash, "pending");
+    wrong.learned_from = "drift_llm".to_string();
+    wrong.rule_payload_json = serde_json::json!({"regex": r"Rs (\d)", "capture_group": 1});
+    let id2 = upsert_variant(&conn, &wrong, None).unwrap();
     let disagree = crate::extraction::ladder::ExtractionResult {
         amount_minor: Some(99900),
         ..Default::default()

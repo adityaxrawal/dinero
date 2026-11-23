@@ -116,10 +116,20 @@ fn insert_change_log(
     Ok(())
 }
 
-/// Inserts or updates a rule variant for a bank and field.
+/// Stores a new rule variant beside the one serving its bank, field and
+/// template (review P2).
 ///
-/// Variants let a newly synthesised rule coexist with the one it may replace,
-/// so a rule can be trialled without immediately displacing a working one.
+/// - No variant serves that template: the new one is stored as given.
+/// - It comes from the user's own correction (`user_edit`): it serves at
+///   once and the previous serving variant is set inactive (kept for revert).
+/// - Otherwise (drift LLM, merchant cleanup) it becomes the template's
+///   pending challenger, evaluated in shadow, and takes over only by beating
+///   the serving variant (see `record_success`). A serving variant learned
+///   from a user correction is never displaced automatically.
+///
+/// Each template has at most one challenger; a newer automatic rule replaces
+/// an unproven one. Returns the id of the stored (or identical existing)
+/// variant.
 pub fn upsert_variant(
     conn: &Connection,
     v: &FieldRuleVariant,
@@ -129,49 +139,39 @@ pub fn upsert_variant(
         return Err(anyhow::anyhow!("Invalid status: {}", v.status));
     }
     let parent_id = get_or_create_parent(conn, &v.bank_name, &v.field_name, &v.source_type)?;
-    let payload_str = serde_json::to_string(&v.rule_payload_json)?;
 
-    let existing: Option<(String, String)> = conn
-        .query_row(
-            &format!(
-                "SELECT id, rule_payload_json FROM field_rule_variants
-                 WHERE field_rule_id = ?1 AND template_hash = ?2 AND status IN {LIVE_STATUSES}"
-            ),
-            params![parent_id, v.template_hash],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
+    // An identical live rule is already there: nothing to add.
+    let live = live_variants(conn, &parent_id, &v.template_hash)?;
+    if let Some(same) = live.iter().find(|l| l.rule_payload_json == v.rule_payload_json) {
+        return Ok(same.id.clone());
+    }
+    let serving = live.iter().find(|l| l.status == "active" || l.status == "trusted");
+    let challenger = live.iter().find(|l| l.status == "pending");
 
-    if let Some((existing_id, old_payload_str)) = existing {
-        conn.execute(
-            "UPDATE field_rule_variants
-             SET rule_payload_json = ?2, status = ?3, success_count = ?4, failure_count = ?5,
-                 confidence = ?6, authored_by = ?7, learned_from = ?8,
-                 updated_at = CURRENT_TIMESTAMP
-             WHERE id = ?1",
-            params![
-                existing_id,
-                payload_str,
-                v.status,
-                v.success_count,
-                v.failure_count,
-                v.confidence,
-                v.authored_by,
-                v.learned_from,
-            ],
-        )?;
-        let old_payload: serde_json::Value =
-            serde_json::from_str(&old_payload_str).unwrap_or(serde_json::Value::Null);
-        insert_change_log(
-            conn,
-            Some(&existing_id),
-            "created",
-            Some(&old_payload),
-            Some(&v.rule_payload_json),
-            feedback_log_id,
-            "replaced by a newer validated rule",
-        )?;
-        return Ok(existing_id);
+    let mut stored = v.clone();
+    match serving {
+        None => {}
+        Some(incumbent)
+            if v.learned_from == "user_edit" && (v.status == "active" || v.status == "trusted") =>
+        {
+            set_inactive(conn, incumbent, "superseded by the user's correction")?;
+        }
+        Some(incumbent) => {
+            stored.status = "pending".to_string();
+            stored.success_count = 0;
+            stored.failure_count = 0;
+            stored.confidence = 0.0;
+            tracing::info!(
+                incumbent = %incumbent.id,
+                challenger = %stored.id,
+                "New rule shadows the serving rule instead of replacing it"
+            );
+        }
+    }
+    if stored.status == "pending" {
+        if let Some(old) = challenger {
+            set_inactive(conn, old, "replaced by a newer challenger")?;
+        }
     }
 
     conn.execute(
@@ -180,28 +180,102 @@ pub fn upsert_variant(
              success_count, failure_count, confidence, authored_by, learned_from)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
-            v.id,
+            stored.id,
             parent_id,
-            v.template_hash,
-            payload_str,
-            v.status,
-            v.success_count,
-            v.failure_count,
-            v.confidence,
-            v.authored_by,
-            v.learned_from,
+            stored.template_hash,
+            serde_json::to_string(&stored.rule_payload_json)?,
+            stored.status,
+            stored.success_count,
+            stored.failure_count,
+            stored.confidence,
+            stored.authored_by,
+            stored.learned_from,
         ],
     )?;
     insert_change_log(
         conn,
-        Some(&v.id),
+        Some(&stored.id),
         "created",
-        None,
-        Some(&v.rule_payload_json),
+        serving.map(|s| &s.rule_payload_json),
+        Some(&stored.rule_payload_json),
         feedback_log_id,
-        "synthesized from a validated correction",
+        if stored.status == "pending" && serving.is_some() {
+            "challenger to the serving rule, evaluated in shadow"
+        } else {
+            "synthesized from a validated correction"
+        },
     )?;
-    Ok(v.id.clone())
+    Ok(stored.id)
+}
+
+/// The live (serving or challenger) variants for one rule and template.
+fn live_variants(
+    conn: &Connection,
+    parent_id: &str,
+    template_hash: &str,
+) -> Result<Vec<FieldRuleVariant>> {
+    let sql = format!(
+        "{ROW_SELECT} WHERE v.field_rule_id = ?1 AND v.template_hash = ?2 \
+         AND v.status IN {LIVE_STATUSES}"
+    );
+    let rows = conn
+        .prepare(&sql)?
+        .query_map(params![parent_id, template_hash], map_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Retires a variant, logging why.
+fn set_inactive(conn: &Connection, v: &FieldRuleVariant, reason: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE field_rule_variants SET status = 'inactive', updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?1",
+        params![v.id],
+    )?;
+    insert_change_log(conn, Some(&v.id), "reverted", Some(&v.rule_payload_json), None, None, reason)
+}
+
+/// Promotes a challenger that has beaten the serving variant (review P2).
+///
+/// A challenger needs the usual three shadow successes and a strictly higher
+/// hit rate than the variant serving its template, so a rule that still
+/// extracts perfectly is never displaced; a serving rule learned from a user
+/// correction is never displaced at all.
+fn promote_challenger_if_better(conn: &Connection, id: &str) -> Result<()> {
+    let Some(challenger) = select_by_id(conn, id)? else {
+        return Ok(());
+    };
+    if challenger.status != "pending" || challenger.success_count < 3 {
+        return Ok(());
+    }
+    let parent_id: String = conn.query_row(
+        "SELECT field_rule_id FROM field_rule_variants WHERE id = ?1",
+        params![id],
+        |r| r.get(0),
+    )?;
+    let live = live_variants(conn, &parent_id, &challenger.template_hash)?;
+    let Some(incumbent) = live.iter().find(|l| l.status == "active" || l.status == "trusted")
+    else {
+        return Ok(());
+    };
+    if incumbent.learned_from == "user_edit" || challenger.confidence <= incumbent.confidence {
+        return Ok(());
+    }
+    set_inactive(conn, incumbent, "outperformed by a challenger in shadow evaluation")?;
+    conn.execute(
+        "UPDATE field_rule_variants SET status = 'active', updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?1",
+        params![id],
+    )?;
+    insert_change_log(
+        conn,
+        Some(id),
+        "activated",
+        Some(&incumbent.rule_payload_json),
+        Some(&challenger.rule_payload_json),
+        None,
+        "beat the serving rule in shadow evaluation",
+    )
 }
 
 /// Active rules for a bank, used during extraction.
@@ -310,7 +384,15 @@ pub fn record_success(conn: &Connection, id: &str) -> Result<()> {
          SET success_count = success_count + 1,
              confidence = CAST(success_count + 1 AS REAL) / (success_count + 1 + failure_count),
              status = CASE
-                 WHEN status = 'pending' AND success_count + 1 >= 3 THEN 'active'
+                 -- A pending rule beside a serving one is a challenger: it is
+                 -- promoted only by promote_challenger_if_better (review P2).
+                 WHEN status = 'pending' AND success_count + 1 >= 3
+                      AND NOT EXISTS (
+                          SELECT 1 FROM field_rule_variants s
+                          WHERE s.field_rule_id = field_rule_variants.field_rule_id
+                            AND s.template_hash = field_rule_variants.template_hash
+                            AND s.status IN ('active', 'trusted'))
+                      THEN 'active'
                  WHEN status = 'active' AND success_count + 1 >= 10 THEN 'trusted'
                  ELSE status
              END,
@@ -321,7 +403,7 @@ pub fn record_success(conn: &Connection, id: &str) -> Result<()> {
     if updated == 0 {
         return Err(anyhow::anyhow!("Rule not found"));
     }
-    Ok(())
+    promote_challenger_if_better(conn, id)
 }
 
 /// Increments a rule's failure count.
