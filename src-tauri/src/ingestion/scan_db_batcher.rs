@@ -128,6 +128,11 @@ impl ScanDbBatcher {
                     created_at: Utc::now(),
                 };
                 let _ = crate::db::audit_log::insert(&tx, &row);
+                let _ = crate::db::processed_messages::record(
+                    &tx,
+                    &r.message_id,
+                    &format!("rejected:{}", r.reason),
+                );
             }
 
             for ig in &ignored {

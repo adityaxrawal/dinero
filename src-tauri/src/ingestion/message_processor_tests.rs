@@ -842,3 +842,16 @@ async fn record_unassigned_transaction_returns_none_on_duplicate() {
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+/// Review M2: messages with only an audit-row rejection, and mandate events,
+/// count as processed so rescans skip them.
+#[test]
+fn rejected_and_mandate_messages_count_as_processed() {
+    let conn = crate::db::test_helpers::setup_test_db();
+    assert!(!message_already_processed(&conn, "m1").unwrap());
+    crate::db::processed_messages::record(&conn, "m1", "rejected:gate2_not_financial").unwrap();
+    crate::db::processed_messages::record(&conn, "m2", "mandate_event").unwrap();
+    assert!(message_already_processed(&conn, "m1").unwrap());
+    assert!(message_already_processed(&conn, "m2").unwrap());
+    assert!(!message_already_processed(&conn, "m3").unwrap());
+}

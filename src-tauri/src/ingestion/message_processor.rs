@@ -97,6 +97,24 @@ pub fn scan_log_path(app_dir: Option<&std::path::Path>, decision: &str) -> std::
     }
 }
 
+/// Whether a message already has a final outcome, so a rescan can skip it.
+pub(crate) fn message_already_processed(
+    c: &rusqlite::Connection,
+    message_id: &str,
+) -> Result<bool, rusqlite::Error> {
+    for sql in [
+        "SELECT 1 FROM ignored_messages WHERE message_id = ?1",
+        "SELECT 1 FROM transaction_observations WHERE source_pipeline = 'gmail_transaction' AND source_record_id = ?1",
+        "SELECT 1 FROM statements WHERE source_message_id = ?1",
+        "SELECT 1 FROM processed_messages WHERE message_id = ?1",
+    ] {
+        if c.prepare_cached(sql)?.exists([message_id])? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 impl MessageProcessor {
     /// Processes one message end to end.
     ///
@@ -110,21 +128,7 @@ impl MessageProcessor {
         let msg_id_owned = message_id.to_string();
         if let Ok(conn) = pool.get().await {
             let exists = conn
-                .interact(move |c| -> Result<bool, rusqlite::Error> {
-                    let mut stmt = c.prepare_cached("SELECT 1 FROM ignored_messages WHERE message_id = ?1")?;
-                    if stmt.exists([&msg_id_owned])? {
-                        return Ok(true);
-                    }
-                    let mut stmt = c.prepare_cached("SELECT 1 FROM transaction_observations WHERE source_pipeline = 'gmail_transaction' AND source_record_id = ?1")?;
-                    if stmt.exists([&msg_id_owned])? {
-                        return Ok(true);
-                    }
-                    let mut stmt = c.prepare_cached("SELECT 1 FROM statements WHERE source_message_id = ?1")?;
-                    if stmt.exists([&msg_id_owned])? {
-                        return Ok(true);
-                    }
-                    Ok(false)
-                })
+                .interact(move |c| message_already_processed(c, &msg_id_owned))
                 .await;
             if let Ok(Ok(true)) = exists {
                 return true;
@@ -483,6 +487,16 @@ impl MessageProcessor {
                                 Some(body_text),
                             )
                             .await;
+                            // Recorded so rescans skip it; the mandate job itself
+                            // is persisted until processed (H4).
+                            if let Ok(conn) = pool.get().await {
+                                let msg_id = message_id.to_string();
+                                let _ = conn
+                                    .interact(move |c| {
+                                        crate::db::processed_messages::record(c, &msg_id, "mandate_event")
+                                    })
+                                    .await;
+                            }
                             return Ok(Some(ProcessResult::MandateEvent(
                                 extracted, extraction, event_type,
                             )));
@@ -1156,9 +1170,14 @@ impl MessageProcessor {
         };
 
         let conn = pool.get().await?;
-        conn.interact(move |c| audit_log::insert(c, &row))
-            .await
-            .map_err(|e| anyhow::anyhow!("Interact error: {}", e))??;
+        let decision = format!("rejected:{}", reason);
+        let msg_id = message_id.to_string();
+        conn.interact(move |c| -> anyhow::Result<()> {
+            audit_log::insert(c, &row)?;
+            crate::db::processed_messages::record(c, &msg_id, &decision)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Interact error: {}", e))??;
 
         Ok(())
     }
