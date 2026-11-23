@@ -379,9 +379,11 @@ async fn create_awaiting_password_row(
     let conn = pool.get().await?;
     conn.interact(move |c| {
         c.execute(
+            // Locked PDFs are raw financial documents too; kept 7 days for the
+            // user to supply the password, then purged (review L5).
             "INSERT INTO unprocessed_statements \
-             (id, statement_source_json, failure_type, failure_reason, status) \
-             VALUES (?, ?, 'password_required', '', 'awaiting_password')",
+             (id, statement_source_json, failure_type, failure_reason, status, pdf_retained_until) \
+             VALUES (?, ?, 'password_required', '', 'awaiting_password', datetime('now', '+7 days'))",
             rusqlite::params![stmt_id, source_json],
         )
     })
@@ -624,5 +626,34 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod retention_migration_tests {
+    /// Review L5: awaiting-password PDFs get a 7-day expiry; others untouched.
+    #[test]
+    fn awaiting_password_rows_get_a_retention_date() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        conn.execute_batch(
+            "INSERT INTO unprocessed_statements (id, statement_source_json, failure_type, failure_reason, status)
+             VALUES ('locked', '{}', 'password_required', '', 'awaiting_password'),
+                    ('other', '{}', 'parse_failed', '', 'pending_review');",
+        )
+        .unwrap();
+        conn.execute_batch(include_str!(
+            "../../migrations/20260101000065_awaiting_password_pdf_retention.sql"
+        ))
+        .unwrap();
+        let retained = |id: &str| -> Option<String> {
+            conn.query_row(
+                "SELECT pdf_retained_until FROM unprocessed_statements WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert!(retained("locked").is_some());
+        assert!(retained("other").is_none());
     }
 }
