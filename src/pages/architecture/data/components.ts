@@ -360,7 +360,7 @@ const CORE: ComponentDef[] = [
     apiSurface: ['sync_force_poll_now', 'start_polling_loop'],
     facts: [
       'NORMAL_POLL_INTERVAL_SECS = 60; LOW_BATTERY_POLL_INTERVAL_SECS = 300',
-      'Per-cycle retry budget 8 (1,2,4,8,16,32,60,60 + ±15% jitter)',
+      'Per-cycle retry budget 8 (1,2,4,8,16,32,60,60 + ±15% jitter) for rate limits (429 and 403 rateLimitExceeded) and 5xx',
       'Each poll cycle checks the license gate; a lapsed licence stops background polling',
       'Transaction and mandate jobs are persisted (pending_ingest_jobs) before the cursor advances and replayed at launch',
       'A message that fails processing gets a scan_failed_messages row (retryable via Retry failed)',

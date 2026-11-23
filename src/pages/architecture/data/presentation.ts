@@ -260,7 +260,6 @@ export const ANALYSIS = {
     '**IPC command-count discrepancy.** The code registers 149 commands in generate_handler!; the design docs quote 143 and 151; figures are recorded rather than silently reconciled.',
     '**License state machine.** Two write paths: 8 local, time-driven edges (is_legal_transition) and server-verified updates (apply_server_validation) that can set any server state. Locked has no local exit but a renewal lifts it at the next validation.',
     '**Statement row extraction.** All seven bank-specific parsers matched zero of nine real statements; `parse_universal` took the corpus 0→79 rows.',
-    '**Live polling rate limits.** history.list retries 429 and 5xx but not a 403 rateLimitExceeded: that poll cycle fails and the next one, 60s later, retries. The historical scan retries both.',
   ],
   help: 'Click any component to inspect it. Use **Impact** for the downstream blast radius, **Labels** to pin connector labels, and the workflow rail to step through an end-to-end flow — the participating components light up as you go.',
 };

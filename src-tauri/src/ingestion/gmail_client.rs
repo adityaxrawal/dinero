@@ -109,7 +109,7 @@ const RATE_LIMIT_MAX_ATTEMPTS: u32 = 6;
 /// Gmail signals per-user limits as 403 with reason `rateLimitExceeded` or
 /// `userRateLimitExceeded`, not only as 429. Any other 403 (for example
 /// insufficient permissions) is permanent and must not be retried.
-fn is_rate_limited(status: reqwest::StatusCode, body: &str) -> bool {
+pub(crate) fn is_rate_limited(status: reqwest::StatusCode, body: &str) -> bool {
     status == reqwest::StatusCode::TOO_MANY_REQUESTS
         || (status == reqwest::StatusCode::FORBIDDEN
             && (body.contains("rateLimitExceeded") || body.contains("userRateLimitExceeded")))

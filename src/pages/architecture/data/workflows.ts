@@ -230,7 +230,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'history-sync',
         title: 'history.list since cursor',
         detail:
-          'Cursor resolution: processing_checkpoints (job_type=gmail_history) first, then connected_accounts.last_history_id. No cursor → skip the account. A lapsed licence skips polling. 401 → force-refresh token once per cycle; 404/400 → re-seed the cursor from users.getProfile and start a catch-up scan from the last sync (deferred if a scan is running); 429/5xx → backoff+jitter up to 8 retries.',
+          'Cursor resolution: processing_checkpoints (job_type=gmail_history) first, then connected_accounts.last_history_id. No cursor → skip the account. A lapsed licence skips polling. 401 → force-refresh token once per cycle; 404/400 → re-seed the cursor from users.getProfile and start a catch-up scan from the last sync (deferred if a scan is running); rate limits (429, or 403 rateLimitExceeded) and 5xx → backoff+jitter up to 8 retries; any other 403 fails the cycle.',
         components: ['polling', 'gmail-client', 'google-oauth', 'sqlite'],
         relations: ['network', 'db'],
         outcomes: [

@@ -908,6 +908,100 @@ mod tests {
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
+    /// Gmail also signals per-user rate limits as 403 rateLimitExceeded. Live
+    /// polling must back off and retry it like a 429, not fail the cycle.
+    #[tokio::test]
+    async fn test_poll_retries_403_rate_limit() {
+        let mut server = mockito::Server::new_async().await;
+        let account_id = format!("acc_403_{}", uuid::Uuid::new_v4());
+        write_dev_token(&account_id);
+
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let pool = init_db(temp_dir.join("test.db")).await.expect("DB init failed");
+        setup_account_for_poll(&pool, &account_id, Some("history_403")).await;
+
+        // Mockito uses the first mock that still expects requests: one 403
+        // rate limit, then success.
+        let limited = server
+            .mock("GET", "/gmail/v1/users/me/history")
+            .match_query(mockito::Matcher::Any)
+            .with_status(403)
+            .with_header("content-type", "application/json")
+            .with_body(
+                serde_json::json!({
+                    "error": { "code": 403, "errors": [{ "reason": "rateLimitExceeded" }] }
+                })
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let ok = server
+            .mock("GET", "/gmail/v1/users/me/history")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(serde_json::json!({ "historyId": "history_after" }).to_string())
+            .expect(1)
+            .create_async()
+            .await;
+
+        let app = mock_builder()
+            .build(mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(crate::auth::session::SessionState::default());
+        app.manage(crate::security::incident_response::IncidentMonitor::default());
+        app.manage(test_queue_handles());
+
+        poll_all_accounts(app.handle(), &pool, &server.url()).await.unwrap();
+
+        limited.assert_async().await;
+        ok.assert_async().await;
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    /// A 403 that is not a rate limit (for example missing permissions) is
+    /// permanent: it is not retried.
+    #[tokio::test]
+    async fn test_poll_does_not_retry_other_403() {
+        let mut server = mockito::Server::new_async().await;
+        let account_id = format!("acc_403p_{}", uuid::Uuid::new_v4());
+        write_dev_token(&account_id);
+
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let pool = init_db(temp_dir.join("test.db")).await.expect("DB init failed");
+        setup_account_for_poll(&pool, &account_id, Some("history_403p")).await;
+
+        let denied = server
+            .mock("GET", "/gmail/v1/users/me/history")
+            .match_query(mockito::Matcher::Any)
+            .with_status(403)
+            .with_header("content-type", "application/json")
+            .with_body(
+                serde_json::json!({
+                    "error": { "code": 403, "errors": [{ "reason": "insufficientPermissions" }] }
+                })
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let app = mock_builder()
+            .build(mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(crate::auth::session::SessionState::default());
+        app.manage(crate::security::incident_response::IncidentMonitor::default());
+        app.manage(test_queue_handles());
+
+        poll_all_accounts(app.handle(), &pool, &server.url()).await.unwrap();
+
+        denied.assert_async().await;
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
     /// Doc 30 TASK-QA-005 acceptance: `test_quota_exhaustion_sets_degraded_state`.
     /// Persistent 429s (quota exhaustion) must, after retries are exhausted,
     /// surface as a `system_warning` (TASK-RT-003's `gmail_quota_exhausted`)

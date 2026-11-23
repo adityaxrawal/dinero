@@ -334,8 +334,8 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                 ));
                             }
                         }
-                    } else if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-                        if status == StatusCode::TOO_MANY_REQUESTS {
+                    } else if let Some(rate_limited) = retryable_failure(res).await {
+                        if rate_limited {
                             crate::ingestion::gmail_telemetry::gmail_telemetry()
                                 .record_quota_exhausted();
                         } else {
@@ -343,7 +343,7 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                 .record_5xx(status.as_u16());
                         }
                         if retry_count >= max_retries {
-                            if status == StatusCode::TOO_MANY_REQUESTS {
+                            if rate_limited {
                                 crate::ipc::system_warnings::emit_system_warning(
                                     app,
                                     crate::ipc::system_warnings::SystemWarningPayload {
@@ -628,6 +628,26 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
 /// from now, then starts a catch-up scan from one day before the cursor was
 /// last known good up to today (dedupe drops anything already ingested). If
 /// the profile fetch fails nothing is changed, so the next poll retries.
+/// Whether a failed history.list response should be retried: `Some(true)`
+/// for a Gmail rate limit (429, or 403 rateLimitExceeded /
+/// userRateLimitExceeded), `Some(false)` for a 5xx, `None` for anything else.
+/// Only a 403 body is read, since that is where the rate-limit reason is.
+async fn retryable_failure(res: reqwest::Response) -> Option<bool> {
+    let status = res.status();
+    let body = if status == StatusCode::FORBIDDEN {
+        res.text().await.unwrap_or_default()
+    } else {
+        String::new()
+    };
+    if crate::ingestion::gmail_client::is_rate_limited(status, &body) {
+        Some(true)
+    } else if status.is_server_error() {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 async fn recover_from_expired_history<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     pool: &Pool,
