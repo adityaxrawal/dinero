@@ -251,7 +251,7 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
     };
 
     let db_path_for_backup = db_path.clone();
-    let integrity_or_backup: Result<PathBuf, String> = conn
+    let integrity_or_backup: Result<Option<PathBuf>, String> = conn
         .interact(move |c| {
             let count: i64 = c.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get(0))?;
             info!("Database initialized successfully. Tables count: {}", count);
@@ -259,14 +259,19 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
             let integrity: String = c.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
             if integrity != "ok" {
                 warn!("Database integrity check failed: {}", integrity);
-                return Ok::<Result<PathBuf, String>, anyhow::Error>(Err(integrity));
+                return Ok::<Result<Option<PathBuf>, String>, anyhow::Error>(Err(integrity));
             }
             info!("Database integrity check passed.");
 
+            // A full VACUUM INTO copy is only worth taking when a migration
+            // will actually run (review L3); it used to happen on every launch.
+            if !migrations::has_pending_migrations(c)? {
+                return Ok(Ok(None));
+            }
             let backup_path = migrations::create_pre_migration_backup(c, &db_path_for_backup)
                 .context("Pre-migration backup failed — aborting before migration")?;
 
-            Ok(Ok(backup_path))
+            Ok(Ok(Some(backup_path)))
         })
         .await
         .map_err(|e| {
@@ -287,11 +292,13 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
         Ok(path) => path,
     };
 
-    if let Err(source) = migrations::run_migrations(&db_path, Some(&db_key_for_migration)).await {
-        return Err(DbInitError::MigrationFailed {
-            source,
-            backup_path,
-        });
+    if let Some(backup_path) = backup_path {
+        if let Err(source) = migrations::run_migrations(&db_path, Some(&db_key_for_migration)).await {
+            return Err(DbInitError::MigrationFailed {
+                source,
+                backup_path,
+            });
+        }
     }
 
     conn.interact(move |c| {
@@ -325,6 +332,33 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
 #[cfg(test)]
 mod migration_rollback_tests {
     use super::restore_backup_file;
+
+    /// Review L3: with no pending migration, startup takes no full backup.
+    #[tokio::test]
+    async fn no_pre_migration_backup_when_nothing_is_pending() {
+        let dir = std::env::temp_dir().join(format!("dinero_l3_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let count_baks = || {
+            std::fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().starts_with("finance.db.bak."))
+                .count()
+        };
+        let pool = super::init_db(dir.join("finance.db")).await.unwrap();
+        let after_first = count_baks();
+        pool.close();
+        let pool = super::init_db(dir.join("finance.db")).await.unwrap();
+        assert_eq!(count_baks(), after_first, "second start must not copy the database");
+        let conn = pool.get().await.unwrap();
+        let pending = conn
+            .interact(|c| super::migrations::has_pending_migrations(c))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!pending);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn restore_copies_backup_over_live_db_and_clears_sidecars() {

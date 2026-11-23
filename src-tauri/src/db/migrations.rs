@@ -19,6 +19,28 @@ use std::str::FromStr;
 // database, so unbounded retention would grow without limit.
 const PRE_MIGRATION_BACKUP_RETENTION: usize = 3;
 
+/// Whether any embedded migration has not yet been applied successfully.
+///
+/// A database without the sqlx bookkeeping table (a fresh one) has everything
+/// pending.
+pub fn has_pending_migrations(conn: &Connection) -> Result<bool> {
+    let table_exists: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !table_exists {
+        return Ok(true);
+    }
+    let applied: std::collections::HashSet<i64> = conn
+        .prepare("SELECT version FROM _sqlx_migrations WHERE success = 1")?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(sqlx::migrate!("./migrations")
+        .iter()
+        .any(|m| !applied.contains(&m.version)))
+}
+
 /// Copies the database before a migration runs.
 ///
 /// The safety net that makes a failed migration recoverable: startup can offer a
