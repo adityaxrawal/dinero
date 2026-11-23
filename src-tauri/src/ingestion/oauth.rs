@@ -521,6 +521,7 @@ pub async fn settings_get_connected_accounts(
 #[tauri::command]
 /// Disconnects one account, revoking its grant and clearing local state.
 pub async fn auth_google_disconnect(
+    app: tauri::AppHandle,
     account_id: String,
     pool: tauri::State<'_, Pool>,
     session_state: tauri::State<'_, crate::auth::session::SessionState>,
@@ -541,6 +542,7 @@ pub async fn auth_google_disconnect(
     conn.interact(move |c| apply_disconnect(c, &acc_id_clone))
         .await
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
+    emit_accounts_changed(&app);
 
     Ok("Disconnected".to_string())
 }
@@ -618,7 +620,7 @@ async fn assert_new_gmail_account_allowed(pool: &Pool) -> Result<()> {
 
 /// Runs the full OAuth flow: consent, callback, token exchange.
 pub async fn start_oauth_flow_async(
-    _app: AppHandle,
+    app: AppHandle,
     pool: Pool,
     profile_id: i64,
 ) -> Result<String> {
@@ -733,8 +735,19 @@ pub async fn start_oauth_flow_async(
     .await
     .map_err(|e| anyhow::anyhow!("DB interaction error: {}", e))?
     .map_err(|e| anyhow::anyhow!("Failed to save account: {}", e))?;
+    emit_accounts_changed(&app);
 
     Ok("Authentication successful".to_string())
+}
+
+/// Tells the frontend the connected-account list changed, replacing its
+/// 3-second polling of that list (review M9).
+fn emit_accounts_changed<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let _ = crate::ipc::events::emit_event(
+        app,
+        crate::ipc::events::AppEvent::ConnectedAccountsChanged,
+        serde_json::json!({}),
+    );
 }
 
 /// Classifies a token-refresh failure.
@@ -907,6 +920,7 @@ async fn mark_account_degraded_async<R: tauri::Runtime>(
             })
             .await;
     }
+    emit_accounts_changed(app);
     crate::ipc::system_warnings::emit_system_warning(
         app,
         crate::ipc::system_warnings::SystemWarningPayload {

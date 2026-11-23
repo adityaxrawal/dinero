@@ -18,10 +18,6 @@ import { errorMessage } from '@/lib/utils';
 
 export type ScanStatus = 'idle' | 'running' | 'done' | 'error' | 'cancelled';
 
-// Accounts are polled rather than pushed, because OAuth connection completes in
-// an external browser window that produces no event the app can subscribe to.
-const CONNECTED_ACCOUNTS_POLL_MS = 3000;
-
 /** Default scan window start: one month back, as an ISO date string. */
 function monthAgo(): string {
   const d = new Date();
@@ -84,10 +80,24 @@ export function useScanState() {
     }
   };
 
+  // Refreshed when the backend reports a change (connect, disconnect, status)
+  // and when the window regains focus, instead of polling every 3 seconds for
+  // the whole session (review M9).
   useEffect(() => {
     refreshConnectedAccounts();
-    const interval = setInterval(refreshConnectedAccounts, CONNECTED_ACCOUNTS_POLL_MS);
-    return () => clearInterval(interval);
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    listen('connected_accounts_changed', () => refreshConnectedAccounts()).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    const onFocus = () => refreshConnectedAccounts();
+    window.addEventListener('focus', onFocus);
+    return () => {
+      cancelled = true;
+      unlisten?.();
+      window.removeEventListener('focus', onFocus);
+    };
   }, []);
 
   // Scans currently target one account; the first connected one is used.
