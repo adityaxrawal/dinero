@@ -46,7 +46,11 @@ describe('requirePostWithFields', () => {
     expect(status).toHaveBeenCalledWith(400);
   });
 
-  it.each([['', 'empty string'], [null, 'null'], [0, 'zero']])(
+  it.each<[string | number | null, string]>([
+    ['', 'empty string'],
+    [null, 'null'],
+    [0, 'zero'],
+  ])(
     'treats a %s field value as missing (%s)',
     (value) => {
       const { res, status } = makeRes();
