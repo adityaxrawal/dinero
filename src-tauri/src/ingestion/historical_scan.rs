@@ -589,14 +589,14 @@ pub(crate) async fn start_historical_scan<R: tauri::Runtime>(
 
     let parsed_start =
         chrono::NaiveDate::parse_from_str(&start_date, "%Y-%m-%d").map_err(|_| {
-            crate::error::AppError::Unknown("Invalid start_date format. Use YYYY-MM-DD".into())
+            crate::error::AppError::Validation("Invalid start_date format. Use YYYY-MM-DD".into())
         })?;
     let parsed_end = chrono::NaiveDate::parse_from_str(&end_date, "%Y-%m-%d").map_err(|_| {
-        crate::error::AppError::Unknown("Invalid end_date format. Use YYYY-MM-DD".into())
+        crate::error::AppError::Validation("Invalid end_date format. Use YYYY-MM-DD".into())
     })?;
 
     if parsed_start > parsed_end {
-        return Err(crate::error::AppError::Unknown(
+        return Err(crate::error::AppError::Validation(
             "start_date cannot be after end_date".into(),
         ));
     }

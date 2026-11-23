@@ -329,7 +329,7 @@ async fn upload_one_statement(
             }),
         )
         .ok();
-        return Err(crate::error::AppError::Unknown(
+        return Err(crate::error::AppError::Conflict(
             "duplicate_file_hash: statement already imported".to_string(),
         ));
     }
@@ -348,7 +348,7 @@ async fn upload_one_statement(
             events::DUPLICATE_REJECTED,
             serde_json::json!({ "reason": "duplicate_billing_cycle_filename", "filename": filename }),
         );
-        return Err(crate::error::AppError::Unknown(
+        return Err(crate::error::AppError::Conflict(
             "duplicate_billing_cycle: statement cycle already imported".to_string(),
         ));
     }
@@ -1178,7 +1178,7 @@ pub async fn statements_confirm_instrument(
             )
         })?
         .ok_or_else(|| {
-            crate::error::AppError::Unknown(
+            crate::error::AppError::NotFound(
                 "This statement's PDF file could not be found — please re-upload the file"
                     .to_string(),
             )
@@ -1199,7 +1199,7 @@ pub async fn statements_confirm_instrument(
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?
         .map_err(|_| {
-            crate::error::AppError::Unknown(format!(
+            crate::error::AppError::NotFound(format!(
                 "No unprocessed statement found with statement_id='{}'",
                 statement_id
             ))
@@ -1355,7 +1355,7 @@ pub async fn statements_submit_password(
             )
         })?
         .ok_or_else(|| {
-            crate::error::AppError::Unknown(
+            crate::error::AppError::NotFound(
                 "This statement's PDF file could not be found — please re-upload the file"
                     .to_string(),
             )
@@ -1389,7 +1389,7 @@ pub async fn statements_submit_password(
                 .await
                 .map_err(|e| crate::error::AppError::Db(e.to_string()))?
                 .map_err(|_| {
-                    crate::error::AppError::Unknown(format!(
+                    crate::error::AppError::NotFound(format!(
                         "No unprocessed statement found with statement_id='{}'",
                         statement_id
                     ))
@@ -1592,7 +1592,7 @@ async fn retry_one_unprocessed(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?
         .ok_or_else(|| {
-            crate::error::AppError::Unknown(format!(
+            crate::error::AppError::NotFound(format!(
                 "No unprocessed statement found with statement_id='{}'",
                 statement_id
             ))
@@ -1927,7 +1927,7 @@ pub async fn statements_discard(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
 
     if !removed {
-        return Err(crate::error::AppError::Unknown(format!(
+        return Err(crate::error::AppError::NotFound(format!(
             "No unprocessed statement found with statement_id='{}'",
             statement_id
         )));
@@ -2003,7 +2003,7 @@ pub async fn statements_get_draft_pdf(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?
         .is_some();
     if !exists {
-        return Err(crate::error::AppError::Unknown(
+        return Err(crate::error::AppError::NotFound(
             "Draft not found".to_string(),
         ));
     }
@@ -2018,7 +2018,7 @@ pub async fn statements_get_draft_pdf(
             )
         })?
         .ok_or_else(|| {
-            crate::error::AppError::Unknown(
+            crate::error::AppError::NotFound(
                 "This statement's PDF file could not be found".to_string(),
             )
         })?;
@@ -2047,7 +2047,7 @@ pub async fn statements_get_draft(
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?
-        .ok_or_else(|| crate::error::AppError::Unknown("Draft not found".to_string()))?;
+        .ok_or_else(|| crate::error::AppError::NotFound("Draft not found".to_string()))?;
 
     let rows: Vec<crate::statements::row_extractor::StatementRow> =
         serde_json::from_str(&draft.rows_json).unwrap_or_default();
@@ -2357,7 +2357,7 @@ fn apply_transaction_field_update(
 ) -> Result<Vec<crate::reconciliation::audit::CorrectionContext>, crate::error::AppError> {
     let old_tx = crate::db::transactions::get_transaction(conn, tx_id)
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?
-        .ok_or_else(|| crate::error::AppError::Unknown("Transaction not found".to_string()))?;
+        .ok_or_else(|| crate::error::AppError::NotFound("Transaction not found".to_string()))?;
 
     let mut new_merchant = old_tx.merchant_display_name.clone();
     let mut new_merchant_normalized = old_tx.merchant_normalized_name.clone();
@@ -3062,7 +3062,7 @@ pub async fn transactions_delete(
         );
         match source_mix {
             Ok(Some(ref mix)) if mix.as_str() != "manual" => {
-                return Err(crate::error::AppError::Unknown(
+                return Err(crate::error::AppError::Forbidden(
                     "delete_restricted: only manually-entered transactions (source_mix='manual') can be deleted"
                         .to_string(),
                 ));
@@ -3122,7 +3122,7 @@ pub async fn ipc_trigger_patch_sync(
 
     if let Some(alert) = alert {
         if alert.alert_type == "SMS Offline" {
-            return Err(crate::error::AppError::Unknown(
+            return Err(crate::error::AppError::Forbidden(
                 "No automated retry is available for this alert — please check the bank connection manually.".to_string(),
             ));
         } else if alert.alert_type == "Email Offline" {
@@ -3141,7 +3141,7 @@ pub async fn ipc_trigger_patch_sync(
 
         Ok("Sync triggered".to_string())
     } else {
-        Err(crate::error::AppError::Unknown(
+        Err(crate::error::AppError::NotFound(
             "Alert not found".to_string(),
         ))
     }
