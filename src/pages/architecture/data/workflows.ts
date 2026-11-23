@@ -447,9 +447,9 @@ const AUTHORED: WorkflowDef[] = [
       },
       {
         id: 'validate',
-        title: 'Validation + session middleware',
+        title: 'Validation',
         detail:
-          'ipc::validation runs before any DB/network call for commands accepting user-supplied identifiers or date ranges. ipc::middleware::require_active_session gates session-dependent commands.',
+          'ipc::validation runs before any DB/network call for commands accepting user-supplied identifiers or date ranges.',
         components: ['ipc-validation'],
         relations: ['sync'],
         outcomes: [
@@ -597,7 +597,7 @@ const AUTHORED: WorkflowDef[] = [
     id: 'incident-response',
     name: 'Incident Response Convergence',
     summary:
-      'Independent failure signals converge on the IncidentMonitor, which counts them within a 1-hour window and responds with an audit entry, a security_incident event, session revocation (not for OAuth failures) and health alerts.',
+      'Independent failure signals converge on the IncidentMonitor, which counts them within a 1-hour window and responds with an audit entry, a security_incident event and a health alert; an integrity failure also pauses ingestion until restart.',
     participants: [
       'oauth',
       'maintenance',
@@ -619,7 +619,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'respond',
         title: 'Threshold → respond',
         detail:
-          'Per-trigger-kind thresholds (1 or 3 within 1 hour); crossing one runs the response: audit row, security_incident event, session revoke (skipped for OAuth: one dead grant only needs that account reconnected), health alert. There is no global Gmail disconnect. Backup verification failure raises a system_warning instead of an incident.',
+          'Per-trigger-kind thresholds (1 or 3 within 1 hour); crossing one runs the response: audit row, security_incident event, health alert. IntegrityCheckFailure also pauses ingestion: the poller skips, scans and queues wait in place, user-started imports are refused; reads and edits stay. There is no global Gmail disconnect. Backup verification failure raises a system_warning instead of an incident.',
         components: ['incident-monitor', 'events'],
         relations: ['event'],
       },

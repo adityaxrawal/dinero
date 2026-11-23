@@ -158,12 +158,11 @@ const CORE: ComponentDef[] = [
     name: 'IPC Validation & Middleware',
     layer: 'ipc',
     kind: 'gate',
-    purpose: 'Argument validation and session middleware run before any DB or network call.',
+    purpose: 'Argument validation runs before any DB or network call.',
     description:
-      'ipc::validation checks user-supplied identifiers and date ranges; ipc::middleware::require_active_session gates session-dependent commands. ipc::system_warnings keeps the active warnings for late-mounting components and stores them in active_system_warnings so they survive a restart.',
+      'ipc::validation checks user-supplied identifiers and date ranges. There is no session middleware: the app is single-user and local. ipc::system_warnings keeps the active warnings for late-mounting components and stores them in active_system_warnings so they survive a restart.',
     responsibilities: [
       'validate_account_id / validate_date_range',
-      'require_active_session middleware',
       'Keep active system warnings across late mounts and restarts; clear each when its cause recovers',
     ],
     technologies: ['Rust', 'AppError contract'],
@@ -171,10 +170,9 @@ const CORE: ComponentDef[] = [
     outputs: ['AppError::Validation or validated args'],
     sources: [
       'src-tauri/src/ipc/validation.rs',
-      'src-tauri/src/ipc/middleware.rs',
       'src-tauri/src/ipc/system_warnings.rs',
     ],
-    apiSurface: ['validate_account_id', 'validate_date_range', 'require_active_session'],
+    apiSurface: ['validate_account_id', 'validate_date_range'],
     facts: [
       'Re-derived warnings (gmail_sync_stale, gmail_token_degraded, low_ram, clock_skew) are not restored on launch; their checks raise them again',
     ],
@@ -1044,11 +1042,12 @@ const INFRA: ComponentDef[] = [
     kind: 'worker',
     purpose: 'Central in-memory trigger/response for cross-cutting failures.',
     description:
-      'security::incident_response::IncidentMonitor counts six trigger kinds within a 1-hour window, per scope (OAuth failures per Gmail account). Integrity-check, signature-verification and backend-startup failures fire on the first occurrence; the others after 3. A response is audited and emitted as security_incident; every kind except RepeatedOAuthFailure also revokes the local session. Health alerts surface as system warnings.',
+      'security::incident_response::IncidentMonitor counts six trigger kinds within a 1-hour window, per scope (OAuth failures per Gmail account). Integrity-check, signature-verification and backend-startup failures fire on the first occurrence; the others after 3. A response is audited, emitted as security_incident and raised as a health alert. An integrity failure also pauses all ingestion (polling, scans, statement imports and the queues behind them) until restart; reads and edits stay (ingestion_paused / assert_ingestion_allowed).',
     responsibilities: [
       'Aggregate incident triggers in a 1h window, scoped per account where relevant',
       'Per-trigger-kind thresholds (1 or 3)',
-      'Respond: audit row, security_incident event, session revoke (not for OAuth), health alert',
+      'Respond: audit row, security_incident event, health alert',
+      'Integrity failure: pause ingestion until restart',
     ],
     technologies: ['In-memory monitor'],
     inputs: [
