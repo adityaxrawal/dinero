@@ -1,6 +1,6 @@
 /**
- * Verified database model — 43 tables built by applying all 60 migrations
- * (recounted 2026-08-01). Only the architecturally significant entities and
+ * Verified database model — 45 tables built by applying all 68 migrations
+ * (recounted 2026-11-23). Only the architecturally significant entities and
  * their relationships are modelled here; the five failure/deferral tables and
  * the two immutability triggers are called out explicitly because they change
  * how you may write against the schema.
@@ -12,10 +12,11 @@ export const ENTITIES: EntityDef[] = [
     id: 'local_profile',
     name: 'local_profile',
     group: 'identity',
-    description: 'Single-row install profile. created_at drives the 14-day trial window.',
+    description:
+      'Single-row install profile, created at startup (startup fails if it cannot be). created_at is the offline fallback for the 14-day trial; the trial is anchored on the licensing server.',
     columns: [
       { name: 'id', type: 'INTEGER', key: 'PK' },
-      { name: 'created_at', type: 'DATETIME', note: 'drives trial window' },
+      { name: 'created_at', type: 'DATETIME', note: 'offline trial fallback' },
       { name: 'timezone', type: 'TEXT' },
       { name: 'spending_limit_monthly', type: 'INTEGER' },
       { name: 'historical_scan_months', type: 'INTEGER' },
@@ -75,7 +76,12 @@ export const ENTITIES: EntityDef[] = [
       'Resumable job state keyed (job_type, job_key) — historical scans and Gmail history cursors.',
     columns: [
       { name: 'id', type: 'TEXT', key: 'PK' },
-      { name: 'job_type', type: 'TEXT', key: 'UQ', note: 'historical_scan | gmail_history' },
+      {
+        name: 'job_type',
+        type: 'TEXT',
+        key: 'UQ',
+        note: 'historical_scan | gmail_history | gmail_catch_up',
+      },
       { name: 'job_key', type: 'TEXT', key: 'UQ' },
       { name: 'checkpoint_state_json', type: 'TEXT' },
       { name: 'last_processed_token', type: 'TEXT' },
@@ -138,7 +144,8 @@ export const ENTITIES: EntityDef[] = [
     id: 'statement_drafts',
     name: 'statement_drafts',
     group: 'statements',
-    description: 'Staged, user-editable statement rows. Commit mints a real statement id.',
+    description:
+      'Staged, user-editable statement rows. Commit claims the draft (committing) and mints a real statement id in one transaction.',
     columns: [
       { name: 'id', type: 'TEXT', key: 'PK' },
       { name: 'file_hash', type: 'TEXT' },
@@ -146,7 +153,7 @@ export const ENTITIES: EntityDef[] = [
       { name: 'issuer_name', type: 'TEXT' },
       { name: 'masked_identifier', type: 'TEXT' },
       { name: 'rows_json', type: 'TEXT' },
-      { name: 'status', type: 'TEXT', note: 'pending_review …' },
+      { name: 'status', type: 'TEXT', note: 'pending_review | committing | committed …' },
     ],
   },
   {
@@ -159,6 +166,7 @@ export const ENTITIES: EntityDef[] = [
       { name: 'source_type', type: 'TEXT', note: 'gmail_email | manual_upload' },
       { name: 'file_hash', type: 'TEXT' },
       { name: 'parse_status', type: 'TEXT' },
+      { name: 'source_filename', type: 'TEXT', note: 'kept for queued-statement recovery' },
     ],
   },
   {
@@ -175,7 +183,7 @@ export const ENTITIES: EntityDef[] = [
     id: 'unprocessed_statements',
     name: 'unprocessed_statements',
     group: 'statements',
-    description: 'Parked statements awaiting user input. One of five failure/deferral tables.',
+    description: 'Parked statements awaiting user input. One of the failure/deferral tables.',
     columns: [
       { name: 'id', type: 'TEXT', key: 'PK' },
       { name: 'statement_source_json', type: 'TEXT' },
@@ -185,6 +193,7 @@ export const ENTITIES: EntityDef[] = [
         type: 'TEXT',
         note: 'awaiting_password | awaiting_instrument_confirmation',
       },
+      { name: 'pdf_retained_until', type: 'TEXT', note: 'awaiting-password PDFs kept 7 days' },
     ],
   },
   {
@@ -249,10 +258,49 @@ export const ENTITIES: EntityDef[] = [
     id: 'layer6_pending_jobs',
     name: 'layer6_pending_jobs',
     group: 'ops',
-    description: 'Durable backing for deferred LLM work — the only queue that survives restart.',
+    description: 'Durable backing for deferred LLM work, so jobs survive restart.',
     columns: [
       { name: 'id', type: 'TEXT', key: 'PK' },
       { name: 'observation_id', type: 'TEXT', note: 'logical ref, no FK constraint' },
+      { name: 'attempts', type: 'INTEGER', note: 'dead after 3' },
+      { name: 'dead_at', type: 'TEXT' },
+    ],
+  },
+  {
+    id: 'pending_ingest_jobs',
+    name: 'pending_ingest_jobs',
+    group: 'ops',
+    description:
+      'Durable backing for transaction and mandate jobs from Gmail: written before the job is queued, deleted once processed, replayed at launch.',
+    columns: [
+      { name: 'id', type: 'TEXT', key: 'PK', note: 'transaction:<msg> | mandate:<msg>' },
+      { name: 'kind', type: 'TEXT' },
+      { name: 'payload_json', type: 'TEXT' },
+      { name: 'attempts', type: 'INTEGER', note: 'dead after 3' },
+      { name: 'dead_at', type: 'TEXT' },
+    ],
+  },
+  {
+    id: 'processed_messages',
+    name: 'processed_messages',
+    group: 'ops',
+    description:
+      'One row per Gmail message already decided (accepted, rejected or mandate), so rescans skip it.',
+    columns: [
+      { name: 'message_id', type: 'TEXT', key: 'PK' },
+      { name: 'decision', type: 'TEXT' },
+      { name: 'created_at', type: 'TEXT' },
+    ],
+  },
+  {
+    id: 'active_system_warnings',
+    name: 'active_system_warnings',
+    group: 'ops',
+    description: 'System warnings still active, reloaded at launch and deleted when cleared.',
+    columns: [
+      { name: 'warning_type', type: 'TEXT', key: 'PK' },
+      { name: 'payload_json', type: 'TEXT' },
+      { name: 'updated_at', type: 'TEXT' },
     ],
   },
   {
@@ -272,7 +320,7 @@ export const ENTITIES: EntityDef[] = [
     name: 'network_activity_log',
     group: 'ops',
     description:
-      'On-device audit trail of outbound calls through NetworkClient (3 of 5 channels — ADR-024).',
+      'On-device audit trail of outbound calls (Gmail, Google OAuth, licensing, model downloads); only the updater check is missing (ADR-024). Kept 30 days.',
     columns: [
       { name: 'id', type: 'TEXT', key: 'PK' },
       { name: 'channel', type: 'TEXT' },
@@ -282,7 +330,8 @@ export const ENTITIES: EntityDef[] = [
     id: 'audit_log',
     name: 'audit_log',
     group: 'ops',
-    description: 'Append-only audit trail — BEFORE UPDATE/DELETE trigger enforced by SQLite.',
+    description:
+      'Append-only audit trail — BEFORE UPDATE/DELETE trigger enforced by SQLite. Kept indefinitely.',
     columns: [
       { name: 'id', type: 'TEXT', key: 'PK' },
       { name: 'action', type: 'TEXT' },
@@ -313,7 +362,7 @@ export const ENTITIES: EntityDef[] = [
  * `logical: true` marks a relationship the schema does not enforce: either the
  * column has no FOREIGN KEY constraint, or the link is a lifecycle step with no
  * stored reference. These render dashed. Everything else is a real FK
- * (verified with pragma_foreign_key_list against all 60 migrations).
+ * (verified with pragma_foreign_key_list against all 68 migrations).
  */
 export const ENTITY_RELATIONS: EntityRelation[] = [
   { from: 'local_profile', to: 'connected_accounts', cardinality: '||--o{', label: 'has' },
@@ -460,6 +509,6 @@ export const SCHEMA_FACTS = [
   {
     fact: 'Five failure/deferral tables exist',
     consequence:
-      'unassigned_transactions, unprocessed_statements, scan_failed_messages, layer6_pending_jobs, network_activity_log. There is no generic dead-letter table.',
+      'unassigned_transactions, unprocessed_statements, scan_failed_messages, layer6_pending_jobs, pending_ingest_jobs. The two job tables mark a job dead after 3 attempts; there is no generic dead-letter table.',
   },
 ];

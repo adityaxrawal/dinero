@@ -19,7 +19,7 @@ export const LAYERS: LayerDef[] = [
   {
     id: 'ipc',
     label: 'IPC Bridge',
-    summary: 'Tauri command surface (142 commands) with validation, write-gate and events.',
+    summary: 'Tauri command surface (149 commands) with validation, write-gate and events.',
     color: '#1d4ed8',
     tint: 'rgba(29, 78, 216, 0.07)',
     order: 2,
@@ -75,7 +75,7 @@ export const LAYERS: LayerDef[] = [
   {
     id: 'persistence',
     label: 'Persistence',
-    summary: 'SQLCipher SQLite (43 tables), macOS Keychain secrets, encrypted backups.',
+    summary: 'SQLCipher SQLite (45 tables), macOS Keychain secrets, encrypted backups.',
     color: '#475569',
     tint: 'rgba(71, 85, 105, 0.08)',
     order: 9,

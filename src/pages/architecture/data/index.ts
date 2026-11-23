@@ -69,6 +69,8 @@ export {
   EDGE_KIND_DISPLAY,
   NODE_KIND_LABEL,
   INVARIANTS,
+  ANALYSIS,
+  analysisSegments,
   STAT_DEFS,
   nodeCode,
   nodeKindLabel,

@@ -43,7 +43,7 @@ export const CONNECTIONS: ConnectionDef[] = [
     from: 'ipc-bridge',
     to: 'license-gate',
     kind: 'gate',
-    label: 'assert_write_allowed (37 writes)',
+    label: 'assert_write_allowed (39 writes)',
     detail: 'Every mutating command passes the write-gate before touching the DB or network.',
   },
   {
@@ -101,11 +101,20 @@ export const CONNECTIONS: ConnectionDef[] = [
 
   // ── ingestion: oauth + gmail ─────────────────────────────────────────────
   {
-    id: 'oauth-google',
+    id: 'oauth-net',
     from: 'oauth',
+    to: 'network-client',
+    kind: 'sync',
+    label: 'audited token request',
+    detail: 'Token exchange and refresh use a NetworkClient transport for the oauth2 crate.',
+  },
+  {
+    id: 'oauth-google',
+    from: 'network-client',
     to: 'google-oauth',
     kind: 'network',
-    label: 'PKCE token exchange',
+    label: 'PKCE token exchange / refresh',
+    detail: 'Logged under the google_oauth channel.',
   },
   {
     id: 'oauth-keychain',
@@ -247,8 +256,16 @@ export const CONNECTIONS: ConnectionDef[] = [
     from: 'llm-manager',
     to: 'model-cdn',
     kind: 'network',
-    label: 'GGUF + binary (unaudited)',
-    detail: 'Bypasses NetworkClient — ADR-024.',
+    label: 'GGUF + binary (logged)',
+    detail:
+      'Streamed downloads (15 s connect / 60 s read timeouts) recorded with log_unpooled_request under the llm_download channel.',
+  },
+  {
+    id: 'llm-netlog',
+    from: 'llm-manager',
+    to: 'network-client',
+    kind: 'sync',
+    label: 'log_unpooled_request',
   },
   {
     id: 'learn-llm',
@@ -270,13 +287,6 @@ export const CONNECTIONS: ConnectionDef[] = [
     to: 'llm-manager',
     kind: 'sync',
     label: 'batch cleanup',
-  },
-  {
-    id: 'mandate-txq',
-    from: 'mandate-recurring',
-    to: 'tx-queue',
-    kind: 'async',
-    label: '₹0 marker transaction',
   },
 
   // ── queues → reconciliation ──────────────────────────────────────────────
@@ -587,6 +597,13 @@ export const CONNECTIONS: ConnectionDef[] = [
     to: 'incident-monitor',
     kind: 'async',
     label: 'IntegrityCheckFailure',
+  },
+  {
+    id: 'licworker-incident',
+    from: 'license-worker',
+    to: 'incident-monitor',
+    kind: 'async',
+    label: 'licence validate / signature failures',
   },
   {
     id: 'incident-events',

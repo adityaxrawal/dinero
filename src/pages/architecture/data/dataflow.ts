@@ -121,7 +121,7 @@ export const STAGES: Stage[] = [
     y: 380,
     components: ['extraction-ladder', 'learning', 'merchant-norm', 'fingerprint'],
     detail:
-      'Learned rules → bank template → generic regex → NLP → statement cross-ref, then a mandatory-field gate.',
+      'Learned rules → bank template → generic regex → NLP → statement cross-ref, then a mandatory-field gate and one confidence floor (0.75) for every layer.',
   },
   {
     id: 'l6',
@@ -133,7 +133,7 @@ export const STAGES: Stage[] = [
     y: 540,
     components: ['layer6-queue', 'llm-manager', 'llama-sidecar'],
     detail:
-      'When Layers 1–5 fail on an LLM-eligible machine, the job is deferred here. Jobs survive restart (layer6_pending_jobs).',
+      'When Layers 1–5 fail on an LLM-eligible machine (enough RAM and a downloaded model), the job is deferred here. Jobs survive restart (layer6_pending_jobs); a fixed pool of 6 workers runs them, at most 3 attempts each.',
   },
   {
     id: 'obs',
@@ -145,7 +145,7 @@ export const STAGES: Stage[] = [
     y: 380,
     components: ['tx-queue', 'fingerprint', 'merchant-norm'],
     detail:
-      'Transaction Queue workers normalize, fingerprint and insert the observation idempotently.',
+      'Transaction Queue workers normalize, fingerprint and insert the observation idempotently. Jobs from Gmail are persisted (pending_ingest_jobs) until this succeeds.',
   },
   {
     id: 'unassigned',
@@ -156,7 +156,8 @@ export const STAGES: Stage[] = [
     x: 960,
     y: 560,
     components: ['sqlite'],
-    detail: 'Partial data is salvaged into unassigned_transactions for user resolution.',
+    detail:
+      'Partial data is salvaged into unassigned_transactions for user resolution; results below the 0.75 confidence floor land here too.',
   },
   {
     id: 'upload',
@@ -255,14 +256,14 @@ export const STAGES: Stage[] = [
   {
     id: 'recurring',
     label: 'Recurring payment',
-    sub: '₹0 marker txn',
+    sub: 'marker, no ledger entry',
     color: DF_COLORS.flow,
     shape: 'process',
     x: 900,
     y: 180,
-    components: ['mandate-recurring', 'tx-queue'],
+    components: ['mandate-recurring', 'mandate-queue'],
     detail:
-      'Upserts recurring_payments and writes a ₹0.00 marker transaction through the canonical path.',
+      'The Mandate Queue upserts recurring_payments and records the decision in processed_messages. Mandates are markers only: no transaction is booked in the ledger.',
   },
   {
     id: 'recon',
@@ -349,8 +350,8 @@ export const PATHS: { id: string; name: string; stages: StageId[] }[] = [
   },
   {
     id: 'p-mandate',
-    name: 'Mandate → recurring → ledger',
-    stages: ['gmail', 'gate1', 'gate2', 'mandate', 'recurring', 'obs', 'recon', 'ledger', 'ui'],
+    name: 'Mandate → recurring payment (no ledger entry)',
+    stages: ['gmail', 'gate1', 'gate2', 'mandate', 'recurring'],
   },
   {
     id: 'p-park',
@@ -380,7 +381,6 @@ export const EDGES: FlowEdge[] = [
   { from: 'draft', to: 'commit', label: 'commit', path: [] },
   { from: 'commit', to: 'obs', label: 'observations', path: [] },
   { from: 'mandate', to: 'recurring', label: 'extracted', path: [] },
-  { from: 'recurring', to: 'obs', label: 'marker txn', path: [] },
   { from: 'obs', to: 'recon', label: 'reconcile', path: [] },
   { from: 'recon', to: 'ledger', label: 'canonical', path: [] },
   { from: 'ledger', to: 'ui', label: 'events', path: [] },

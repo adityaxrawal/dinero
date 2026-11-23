@@ -2,7 +2,8 @@
  * Component inventory for the Dinero architecture.
  *
  * Derived from `docs/design/00-master-system-design.md` and Documents 01–05
- * (re-verified against the tree 2026-08-01). Every `sources` entry points at a
+ * (re-verified against the tree 2026-08-01; updated 2026-11-23 for every
+ * fix from the 2026-11-22 system design review). Every `sources` entry points at a
  * real file in the repository. `confidence: 'gap'` marks known gaps or
  * discrepancies the verification surfaced.
  */
@@ -81,7 +82,7 @@ const CORE: ComponentDef[] = [
     facts: [
       '`dinero_onboarded` is set at the gmail_consent → historical_scan transition, not the final step',
       'Consent-write failure is logged only and never blocks advancing',
-      '14-day trial is backend-derived from local_profile.created_at (TRIAL_WINDOW_DAYS = 14)',
+      '14-day trial is anchored on the licensing server at first launch (start-trial by device id); local_profile.created_at is only the offline fallback (TRIAL_WINDOW_DAYS = 14)',
     ],
     confidence: 'verified',
     notes: [
@@ -121,9 +122,9 @@ const CORE: ComponentDef[] = [
     name: 'Tauri IPC Bridge',
     layer: 'ipc',
     kind: 'command',
-    purpose: 'Command dispatch surface — 142 Tauri commands registered via generate_handler!.',
+    purpose: 'Command dispatch surface — 149 Tauri commands registered via generate_handler!.',
     description:
-      'The complete request surface between WebView and Rust core. Commands are grouped in `commands/mod.rs` (data.rs, llm.rs, merchant_cleanup.rs, network.rs, debug.rs, release_readiness.rs). Expensive operations acknowledge immediately and report outcomes via named events.',
+      'The complete request surface between WebView and Rust core. Commands are grouped in `commands/mod.rs` (data.rs, llm.rs, merchant_cleanup.rs, network.rs, debug.rs, release_readiness.rs). Expensive operations acknowledge immediately and report outcomes via named events. Every app command needs an explicit permission: build.rs generates the app manifest and capabilities/app-commands.json from generate_handler!.',
     responsibilities: [
       'Dispatch validated commands to Rust handlers',
       'Return immediate acks for long-running work',
@@ -132,17 +133,24 @@ const CORE: ComponentDef[] = [
     technologies: ['Tauri v2 commands', 'tokio async runtime'],
     inputs: ['invoke(command, args)'],
     outputs: ['Command results', 'AppEvent emissions'],
-    sources: ['src-tauri/src/commands/mod.rs', 'src-tauri/src/commands/data.rs'],
+    sources: [
+      'src-tauri/src/commands/mod.rs',
+      'src-tauri/src/commands/data.rs',
+      'src-tauri/build.rs',
+      'src-tauri/capabilities/app-commands.json',
+    ],
     apiSurface: [
-      '142 commands registered in generate_handler! (docs quote 143 in diagrams, 151 in Doc 05 §9 prose)',
+      '149 commands registered in generate_handler! (141 in release builds: the 8 debug_* commands are debug-only)',
     ],
     facts: [
-      'Write commands are test-enforced to call assert_write_allowed (37 named writes)',
+      'Write commands are test-enforced to call assert_write_allowed (39 named writes)',
       'Read-only commands must never call the gate so a locked user can still view data',
+      'debug_* commands are compiled only into debug builds (#[cfg(debug_assertions)])',
+      'Recovery mode (database key mismatch) manages no database pool; the recovery screen uses app_recovery_mode, auth_restore_from_recovery_phrase, recovery_reset_app_data and recovery_restart',
     ],
     confidence: 'verified',
     notes: [
-      'Command count discrepancy: code registers 142; the design docs quote 143 (correction note + diagrams) and 151 (§9 prose).',
+      'The design docs still quote 143 (diagrams) and 151 (Doc 05 §9 prose); the code registers 149.',
     ],
   },
   {
@@ -152,11 +160,11 @@ const CORE: ComponentDef[] = [
     kind: 'gate',
     purpose: 'Argument validation and session middleware run before any DB or network call.',
     description:
-      'ipc::validation checks user-supplied identifiers and date ranges; ipc::middleware::require_active_session gates session-dependent commands. ipc::system_warnings persists warning state so late-mounting components recover it.',
+      'ipc::validation checks user-supplied identifiers and date ranges; ipc::middleware::require_active_session gates session-dependent commands. ipc::system_warnings keeps the active warnings for late-mounting components and stores them in active_system_warnings so they survive a restart.',
     responsibilities: [
       'validate_account_id / validate_date_range',
       'require_active_session middleware',
-      'Persist system warnings for late mounts',
+      'Keep active system warnings across late mounts and restarts; clear each when its cause recovers',
     ],
     technologies: ['Rust', 'AppError contract'],
     inputs: ['Raw command args'],
@@ -167,7 +175,9 @@ const CORE: ComponentDef[] = [
       'src-tauri/src/ipc/system_warnings.rs',
     ],
     apiSurface: ['validate_account_id', 'validate_date_range', 'require_active_session'],
-    facts: [],
+    facts: [
+      'Re-derived warnings (gmail_sync_stale, gmail_token_degraded, low_ram, clock_skew) are not restored on launch; their checks raise them again',
+    ],
     confidence: 'verified',
   },
   {
@@ -177,9 +187,9 @@ const CORE: ComponentDef[] = [
     kind: 'gate',
     purpose: 'Fail-closed seam — every mutating command must pass assert_write_allowed.',
     description:
-      'Single enforcement point for license states. Only Active, Grace, PastDue and an unexpired Trial may write; Locked, Canceled, Expired and AnonymousEval are read-only. Cached status is never trusted alone: the backing JWT is cryptographically re-verified and device-bound on every check. Invalid JWT is treated as Locked.',
+      'Single enforcement point for license states. Only Active, Grace, PastDue and an unexpired Trial may write; Locked, Canceled, Expired and AnonymousEval are read-only. A lapsed licence also stops background ingestion (polling checks the gate each cycle). Cached status is never trusted alone: the backing JWT is cryptographically re-verified and device-bound on every check. Invalid JWT is treated as Locked.',
     responsibilities: [
-      'assert_write_allowed for 37 named write commands (test-enforced)',
+      'assert_write_allowed for 39 named write commands (test-enforced)',
       'Deliberately exempt: license_activate / license_deactivate (escape hatch from Locked) and backup export/import',
       'Fail closed on unverifiable state',
     ],
@@ -205,17 +215,18 @@ const CORE: ComponentDef[] = [
     kind: 'service',
     purpose: 'Async outcome delivery — named Tauri events for work that outlives the request.',
     description:
-      'ipc::events (28 AppEvent variants: transactions, scans, reconciliation, licensing, tasks, system warnings) and statements::events (12 statement-pipeline events). Every expensive operation returns immediately and reports its real result later through these channels.',
+      'ipc::events (29 AppEvent variants: transactions, scans, connected accounts, reconciliation, licensing, tasks, system warnings) and statements::events (12 statement-pipeline events). Every expensive operation returns immediately and reports its real result later through these channels.',
     responsibilities: [
       'Emit scan_progress / scan_completed / scan_failed / scan_cancelled',
       'Emit statement_staged / statement_parse_failed / statement_batch_progress',
       'Emit license_state_changed, system_warning, background_task_progress',
+      'Emit connected_accounts_changed (the UI refetches accounts on it instead of polling)',
     ],
     technologies: ['Tauri event system'],
     inputs: ['Pipeline outcomes'],
     outputs: ['Tauri events consumed by React (useIpcListen)'],
     sources: ['src-tauri/src/ipc/events.rs', 'src-tauri/src/statements/events.rs'],
-    apiSurface: ['28 AppEvent variants', '12 statement events'],
+    apiSurface: ['29 AppEvent variants', '12 statement events'],
     facts: [],
     confidence: 'verified',
   },
@@ -231,6 +242,7 @@ const CORE: ComponentDef[] = [
       'Authorization Code + PKCE with a loopback redirect on an OS-assigned ephemeral port (RFC 8252 §7.3). Tokens are stored in macOS Keychain under com.dinero.app, one isolated entry per account. Refresh errors are redacted to classified codes before logging.',
     responsibilities: [
       'start_oauth_flow_async with PKCE + state validation (CSRF)',
+      'Debug builds keep tokens in a 0600 file beside the dev base key (never in $TMPDIR)',
       'get_valid_access_token / force_refresh_access_token',
       'classify_refresh_error redaction (invalid_grant / network_error / unknown_error)',
       'record_refresh_failure: degraded only on permanent auth failures; transient ones are audited and retried',
@@ -285,6 +297,10 @@ const CORE: ComponentDef[] = [
       'run_scan_batches: 8-concurrent fetch/process/checkpoint loop, then one retry pass for failures (concurrency 2)',
       'Atomic checkpoint claim (one in_progress scan per account)',
       'Durable per-message failures in scan_failed_messages',
+      'Resume from the contiguous finished prefix (low-water mark), not a processed count',
+      'Cancel rolls back only rows this scan created, in one all-or-nothing transaction; triaged review entries are kept',
+      'Statement attachments downloaded at most 2 at a time per scan',
+      'Optional re-check of previously rejected emails',
     ],
     technologies: ['tokio JoinSet', 'processing_checkpoints table', 'BackgroundTaskRegistry'],
     inputs: ['account_id, start_date, end_date', 'Gmail message IDs'],
@@ -306,10 +322,12 @@ const CORE: ComponentDef[] = [
       'scans_failed_count',
     ],
     facts: [
-      'CHECKPOINT_INTERVAL = 5 messages; MAX_CONCURRENT_FETCHES = 8; RETRY_CONCURRENCY = 2',
+      'CHECKPOINT_INTERVAL = 5 messages; MAX_CONCURRENT_FETCHES = 8; RETRY_CONCURRENCY = 2; MAX_CONCURRENT_ATTACHMENT_FETCHES = 2',
       'Statuses: in_progress, paused, completed, completed_with_errors, failed (not_started = no row; cancel deletes the row)',
       'Scan complete ≠ extraction complete: Layer 6 enrichment is counted separately as pending_enrichment',
       'Startup rewrites in_progress → failed, so a crashed scan never holds the claim',
+      'Rescans skip messages already decided (processed_messages), including rejections and mandate events',
+      'A cancel cleanup that fails is rolled back and the checkpoint marked failed (resumable)',
     ],
     confidence: 'verified',
   },
@@ -344,8 +362,9 @@ const CORE: ComponentDef[] = [
       'NORMAL_POLL_INTERVAL_SECS = 60; LOW_BATTERY_POLL_INTERVAL_SECS = 300',
       'Per-cycle retry budget 8 (1,2,4,8,16,32,60,60 + ±15% jitter)',
       'Each poll cycle checks the license gate; a lapsed licence stops background polling',
+      'Transaction and mandate jobs are persisted (pending_ingest_jobs) before the cursor advances and replayed at launch',
       'A message that fails processing gets a scan_failed_messages row (retryable via Retry failed)',
-      'History 404/400: cursor re-seeded from users.getProfile + catch-up scan',
+      'History 404/400: cursor re-seeded from users.getProfile + catch-up scan (deferred and retried if a scan is already running)',
       'Degraded accounts are skipped; transient token errors keep the account ACTIVE',
     ],
     confidence: 'verified',
@@ -383,6 +402,9 @@ const CORE: ComponentDef[] = [
       'SPF/DKIM/DMARC only trusts authserv-id naming a Google host (anti-relay-injection)',
       'Unverified-but-known-history senders are "rescued" as unknown bank',
       'Gate 3 never accepts a partial extraction (precision over recall)',
+      'One confidence floor for every layer: below MIN_LEDGER_CONFIDENCE = 0.75 a result goes to review, not the ledger',
+      'Every decision (accepted, rejected, mandate) is recorded in processed_messages so rescans skip it',
+      'email_scan_selected/rejected.log are debug-build only and hold metadata, never the body',
     ],
     confidence: 'verified',
   },
@@ -396,18 +418,21 @@ const CORE: ComponentDef[] = [
       'Every continuous outbound network call in ingestion/licensing routes through this client so it is captured in the local, user-visible audit trail — the same trail the onboarding Network Disclosure screen promises exists.',
     responsibilities: [
       'Execute HTTP with audit logging into network_activity_log',
+      'One shared reqwest client; per-request timeouts (default 15 s)',
       'Channel inference at read time (gmail_api, google_oauth, licensing_backend, huggingface, github_releases)',
+      'log_unpooled_request records streaming downloads (model + llama.cpp binary) under channel llm_download',
     ],
-    technologies: ['reqwest', 'network_activity_log table'],
-    inputs: ['HTTP requests from ingestion + licensing'],
+    technologies: ['reqwest (shared client)', 'network_activity_log table'],
+    inputs: ['HTTP requests from ingestion, OAuth, licensing and model downloads'],
     outputs: ['Audited network_activity_log rows'],
     sources: ['src-tauri/src/network_client.rs', 'src-tauri/src/commands/network.rs'],
-    apiSurface: ['NetworkClient::execute'],
-    facts: ['Covers 3 of the 5 disclosed channels'],
-    confidence: 'gap',
-    notes: [
-      'ADR-024: three paths bypass it and leave no row — Hugging Face model download (llm_manager.rs), llama.cpp binary download (llama_sidecar::ensure_binary), and tauri-plugin-updater update check.',
+    apiSurface: ['NetworkClient::execute', 'log_unpooled_request'],
+    facts: [
+      'OAuth token exchange and refresh use a NetworkClient transport (google_oauth)',
+      'Network activity is kept 30 days; the audit log is kept indefinitely',
     ],
+    confidence: 'gap',
+    notes: ['ADR-024: the tauri-plugin-updater update check still bypasses it and leaves no row.'],
   },
 ];
 
@@ -525,7 +550,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
       'Consume user corrections',
       'Synthesize field_rules variants via LLM',
       'Self-check + regression-check gate before adoption',
-      'Shadow-evaluate pending rules whenever a verified Layer 6 result is committed (field_rules::shadow_evaluate_pending)',
+      'Shadow-evaluate pending rules whenever a verified Layer 6 result is committed or the user resolves a review entry (field_rules::shadow_evaluate_pending)',
     ],
     technologies: ['llama-server sidecar', 'field_rules + field_rules_variants tables'],
     inputs: ['User corrections', 'Drift signals'],
@@ -555,7 +580,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     description:
       'llm_manager.rs performs resumable, hash-verified GGUF downloads from Hugging Face and maintains the model catalogue; llama_sidecar.rs spawns/monitors the pinned llama.cpp release (b10068) as a loopback-bound llama-server process.',
     responsibilities: [
-      'Resumable GGUF download with SHA-256 verification',
+      'Resumable GGUF download with SHA-256 verification (15 s connect / 60 s read timeouts; logged to network_activity_log)',
       'Model catalogue + parallel-slot context sizing (2048 × slots)',
       'Spawn/supervise llama-server on 127.0.0.1:<ephemeral> with allowed-origin lock',
     ],
@@ -567,9 +592,9 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     facts: [
       'Not in-process Candle — candle-transformers has no loader for the shipped architectures',
       '4 integration points: Layer 6 extraction, statement row_llm, merchant cleanup, rule learning',
+      'Layer 6 is eligible only with enough RAM AND a downloaded model',
     ],
     confidence: 'verified',
-    notes: ['Hugging Face download and llama.cpp binary download bypass NetworkClient (ADR-024).'],
   },
 
   // ───────────────────────────── STATEMENTS ─────────────────────────────
@@ -584,7 +609,8 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     responsibilities: [
       'resolve_statement_password (Proceed | PromptCreated) — single choke point',
       'stage_parse_pipeline (Steps 6–11): store → parse → metadata → Instrument Gate → duplicate check → rows → draft',
-      'commit_staged_draft: statements + statement_entries + observations + reconciliation + bill classification',
+      'commit_staged_draft: claims the draft, then books statements + statement_entries + observations + reconciliation + bill classification in one transaction (a retry is idempotent)',
+      'Auto-detected statements are classified as credit card or bank account from their metadata',
     ],
     technologies: ['pdf_sidecar (pdfium)', 'AES-256-GCM PDF storage', 'Tesseract OCR fallback'],
     inputs: ['PDF bytes (email attachment or upload)', 'User-supplied password'],
@@ -611,6 +637,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
       'awaiting_password never blocks — the caller moves to the next file',
       'ParseMethod fallback chain: Pdfium → OcrFallback → LlmAssist',
       'batch progress tracker activates above 10 files',
+      'Statements left queued by a crash are recovered at launch, keeping the original filename',
     ],
     confidence: 'verified',
   },
@@ -697,7 +724,10 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
       'settings_pdf_passwords_list',
       'settings_pdf_passwords_delete',
     ],
-    facts: ['Retried statements work because the encrypted PDF was persisted at intake'],
+    facts: [
+      'Retried statements work because the encrypted PDF was persisted at intake',
+      'PDFs awaiting a password are kept 7 days (pdf_retained_until), then removed',
+    ],
     confidence: 'verified',
   },
 
@@ -709,18 +739,22 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     kind: 'queue',
     purpose: 'Normalize + fingerprint + reconcile every transaction observation.',
     description:
-      'Tokio mpsc channel (capacity 256) with 4 persistent workers routing to reconcile_transactionally. Fed by Gate 3 routing and by statement commits; mandate markers also write through its canonical path.',
+      'Tokio mpsc channel (capacity 256) with 4 persistent workers routing to reconcile_transactionally. Fed by Gate 3 routing and by statement commits. Jobs from Gmail are persisted in pending_ingest_jobs until processed, so a quit or crash never loses them.',
     responsibilities: [
       'Normalize + fingerprint observations',
       'Write idempotent observations',
       'Invoke reconciliation',
     ],
-    technologies: ['tokio mpsc (cap 256)', '4 workers'],
+    technologies: ['tokio mpsc (cap 256)', '4 workers', 'pending_ingest_jobs table'],
     inputs: ['TransactionJob'],
     outputs: ['transaction_observations', 'canonical transactions'],
-    sources: ['src-tauri/src/ingestion/queues.rs'],
+    sources: ['src-tauri/src/ingestion/queues.rs', 'src-tauri/src/db/pending_ingest_jobs.rs'],
     apiSurface: ['pipeline_pause / pipeline_resume / pipeline_status (covers this queue)'],
-    facts: ['4 workers, capacity 256'],
+    facts: [
+      '4 workers, capacity 256',
+      'Persisted jobs are replayed at launch; after 3 failed attempts a job is marked dead',
+      'An observation whose reconciliation fails is kept (unassigned for review), never dropped',
+    ],
     confidence: 'verified',
   },
   {
@@ -740,7 +774,10 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     outputs: ['statement_drafts / unprocessed_statements'],
     sources: ['src-tauri/src/ingestion/queues.rs'],
     apiSurface: ['pipeline_pause / pipeline_resume (covers this queue)'],
-    facts: ['5-permit semaphore shared by manual upload and email attachment paths'],
+    facts: [
+      '5-permit semaphore shared by manual upload and email attachment paths',
+      'Durable through the statements table: rows left queued are re-dispatched at launch',
+    ],
     confidence: 'verified',
   },
   {
@@ -750,14 +787,22 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     kind: 'queue',
     purpose: 'Sequential worker upserting recurring payment schedules.',
     description:
-      'Tokio mpsc channel (capacity 64) with one sequential worker. Mandate events produce a ₹0.00 marker transaction through the Transaction Queue canonical-write path.',
-    responsibilities: ['Upsert recurring_payments', 'Emit ₹0.00 marker transactions'],
-    technologies: ['tokio mpsc (cap 64)', '1 worker'],
+      'Tokio mpsc channel (capacity 64) with one sequential worker. Mandate events are recurring-payment markers only: they update recurring_payments and processed_messages and never book a ledger transaction. Jobs are persisted in pending_ingest_jobs until recorded.',
+    responsibilities: [
+      'Upsert recurring_payments',
+      'Record the mandate decision in processed_messages',
+    ],
+    technologies: ['tokio mpsc (cap 64)', '1 worker', 'pending_ingest_jobs table'],
     inputs: ['MandateJob'],
-    outputs: ['recurring_payments rows', 'marker transactions'],
+    outputs: ['recurring_payments rows'],
     sources: ['src-tauri/src/ingestion/queues.rs'],
     apiSurface: [],
-    facts: ['1 worker, capacity 64', 'Not covered by pipeline_pause/resume (deliberate)'],
+    facts: [
+      '1 worker, capacity 64',
+      'Not covered by pipeline_pause/resume (deliberate)',
+      'No ₹0 transactions: migration 064 soft-deleted the ones older builds booked',
+      'A failed mandate write is logged and the job kept for replay',
+    ],
     confidence: 'verified',
   },
   {
@@ -767,7 +812,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     kind: 'queue',
     purpose: 'Durable deferred-LLM work so slow inference never stalls a scan.',
     description:
-      'Tokio mpsc channel (capacity 256) with 6 workers, uniquely backed by the layer6_pending_jobs table so jobs survive restart. Not a routing destination — a Transaction Queue worker enqueues here after ladder Layers 1–5 all failed.',
+      'Tokio mpsc channel (capacity 256) drained by a fixed pool of 6 workers, backed by the layer6_pending_jobs table so jobs survive restart. Not a routing destination — a Transaction Queue worker enqueues here after ladder Layers 1–5 all failed.',
     responsibilities: [
       'Run Layer 6 LLM extraction off the hot path',
       'Persist jobs across restarts',
@@ -779,8 +824,8 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     sources: ['src-tauri/src/ingestion/queues.rs', 'src-tauri/src/db/layer6_jobs.rs'],
     apiSurface: ['layer6_pending_jobs'],
     facts: [
-      'Only queue with durable backing table rather than mpsc alone',
-      'Over-spawned vs llama_sidecar’s own semaphore, which actually gates inference',
+      'At most 6 jobs in flight; the channel capacity is the backpressure',
+      'A job is tried at most 3 times, then marked dead and left in review',
     ],
     confidence: 'verified',
   },
@@ -873,6 +918,7 @@ const INFRA: ComponentDef[] = [
       'Entitled (may write): Active, Grace, PastDue, unexpired Trial',
       'Canceled / Expired remain in the enum for older rows; the server mapping never produces them',
       '7-day offline grace from last_server_validated_at before Grace → Locked; JWTs also last 7 days',
+      'The server signs the entitlement state into the JWT (state claim); the app maps that claim, not a status string',
     ],
     confidence: 'verified',
   },
@@ -883,7 +929,7 @@ const INFRA: ComponentDef[] = [
     kind: 'worker',
     purpose: 'Background 6h tick re-validating the device-bound JWT with the backend.',
     description:
-      'licensing::worker::start_background_validation talks to https://api.dinero-app.com. With no license row it registers the trial (start-trial by device id). Otherwise it validates, sending the stored JWT as device proof, and stores the signed state via apply_server_validation — which can also lift Locked. Backend unreachable → Active → Grace for a 7-day offline grace; then Grace → Locked.',
+      'licensing::worker::start_background_validation talks to https://api.dinero-app.com. With no license row it registers the trial (start-trial by device id). Otherwise it validates, sending the stored JWT as device proof, and stores the signed state via apply_server_validation — which can also lift Locked. Backend unreachable → Active → Grace for a 7-day offline grace; then Grace → Locked. A successful validation clears the licence-failure warnings.',
     responsibilities: [
       '6h validation tick',
       'Offline grace handling',
@@ -893,8 +939,12 @@ const INFRA: ComponentDef[] = [
     inputs: ['license_state', 'Backend /license/validate'],
     outputs: ['Updated license_state', 'license_state_changed events'],
     sources: ['src-tauri/src/licensing/worker.rs', 'src-tauri/src/licensing/client.rs'],
-    apiSurface: ['start_background_validation'],
-    facts: ['Pointed at https://api.dinero-app.com', '6h cadence'],
+    apiSurface: ['start_background_validation', 'license_restore'],
+    facts: [
+      'Pointed at https://api.dinero-app.com',
+      '6h cadence',
+      'license_restore re-binds a paid licence after a reinstall (account email + payment id)',
+    ],
     confidence: 'verified',
   },
 
@@ -904,14 +954,14 @@ const INFRA: ComponentDef[] = [
     name: 'Local SQLite (SQLCipher)',
     layer: 'persistence',
     kind: 'store',
-    purpose: 'The canonical ledger — 43 tables, 60 migrations, append-only audit trails.',
+    purpose: 'The canonical ledger — 45 tables, 68 migrations, append-only audit trails.',
     description:
       'rusqlite with bundled-sqlcipher, pooled via deadpool-sqlite, migrations via sqlx. transactions.amount is a generated virtual column (display only); all arithmetic uses amount_minor. audit_log and match_decisions carry BEFORE UPDATE/DELETE triggers so append-only is enforced by SQLite itself.',
     responsibilities: [
       'Store ledger, observations, statements, instruments, checkpoints, audit',
-      '43 tables plus the transactions_fts FTS5 virtual table',
+      '45 tables plus the transactions_fts FTS5 virtual table',
       '2 immutability triggers: immutable_audit_log, immutable_match_decisions',
-      'Five failure/deferral tables: unassigned_transactions, unprocessed_statements, scan_failed_messages, layer6_pending_jobs, network_activity_log',
+      'Failure/deferral tables: unassigned_transactions, unprocessed_statements, scan_failed_messages, layer6_pending_jobs, pending_ingest_jobs',
     ],
     technologies: ['rusqlite (bundled-sqlcipher)', 'deadpool-sqlite', 'sqlx migrations', 'FTS5'],
     inputs: ['All pipeline writes'],
@@ -922,10 +972,12 @@ const INFRA: ComponentDef[] = [
       'src-tauri/src/db/backup.rs',
       'src-tauri/src/db/maintenance.rs',
     ],
-    apiSurface: ['41 db/ modules', '60 migrations', '12 triggers'],
+    apiSurface: ['63 db/ source files', '68 migrations', '17 triggers'],
     facts: [
       'transactions.amount = GENERATED ALWAYS AS (amount_minor / 100.0) VIRTUAL — unwritable',
       'instruments UNIQUE(type, issuer_name, masked_identifier) enables atomic INSERT OR IGNORE',
+      'Startup backs up before migrating only when a migration is pending',
+      'Startup stops with an error if the default profile row cannot be created',
     ],
     confidence: 'verified',
   },
@@ -936,7 +988,7 @@ const INFRA: ComponentDef[] = [
     kind: 'store',
     purpose: 'The only place secrets live — OAuth tokens, DB key, PDF password key.',
     description:
-      'Service com.dinero.app. Gmail OAuth tokens are one isolated entry per account. The SQLCipher DB key and the PDF-password AES key are both derived from a shared base key with domain separation, so they can never collide. Never SQLite, never plaintext files, never env vars in release builds.',
+      'Service com.dinero.app. Gmail OAuth tokens are one isolated entry per account. The SQLCipher DB key and the PDF-password AES key are both derived from a shared base key with domain separation, so they can never collide. Never SQLite, never plaintext files, never env vars in release builds. On a key mismatch the app starts in a recovery screen (restore from the recovery phrase, which also re-keys a database from another Mac, or reset).',
     responsibilities: [
       'Store OAuth tokens per account',
       'Derive DB encryption key',
@@ -947,7 +999,10 @@ const INFRA: ComponentDef[] = [
     outputs: ['Keychain entries'],
     sources: ['src-tauri/src/db/crypto.rs', 'src-tauri/src/ingestion/oauth.rs'],
     apiSurface: ['KEYCHAIN_SERVICE = "com.dinero.app"'],
-    facts: ['Debug builds use a temp-file fallback'],
+    facts: [
+      'Debug builds keep the base key and OAuth tokens in owner-only (0600) files in the app data folder (directory 0700), not the Keychain',
+      'Tests use an isolated key directory, never the real dev key',
+    ],
     confidence: 'verified',
   },
   {
@@ -957,11 +1012,11 @@ const INFRA: ComponentDef[] = [
     kind: 'service',
     purpose: 'Daily encrypted backups, integrity verification, retention sweeps, archival.',
     description:
-      'Daily VACUUM INTO backup with atomic rename, verified by reopening with the derived key and running integrity_check before pruning. Raw-payload retention sweep (>90 days), yearly archival of old transactions (>5 years into finance_archive_YYYY.db), pre-migration snapshots (last 3).',
+      'Daily VACUUM INTO backup to a temp file, verified by reopening with the derived key and running integrity_check, and only then rotated into place (7 generations). Raw-payload retention sweep (>90 days), network activity sweep (>30 days), yearly archival of old transactions (>5 years into finance_archive_YYYY.db), pre-migration snapshots (last 3).',
     responsibilities: [
-      'Encrypted daily backup + verification',
+      'Encrypted daily backup: verify first, then rotate (BACKUP_GENERATIONS = 7)',
       'Corruption check + incremental vacuum',
-      'Retention sweep + archival',
+      'Retention sweeps (raw payloads, network activity, settled drafts) + archival',
       'create_pre_migration_backup (last 3, verified)',
     ],
     technologies: ['VACUUM INTO', 'PRAGMA integrity_check'],
@@ -974,8 +1029,9 @@ const INFRA: ComponentDef[] = [
     ],
     apiSurface: ['db_restore_backup', 'db_backup_completed event'],
     facts: [
-      '24h recovery-point window (daily cadence)',
-      'An unopenable backup is deleted and the migration refuses to proceed',
+      'Up to 24h recovery-point window (daily cadence, run at launch when due)',
+      'A backup that fails verification is discarded; earlier generations are untouched and a warning is shown',
+      'An unopenable pre-migration backup is deleted and the migration refuses to proceed',
     ],
     confidence: 'verified',
   },
@@ -988,18 +1044,26 @@ const INFRA: ComponentDef[] = [
     kind: 'worker',
     purpose: 'Central in-memory trigger/response for cross-cutting failures.',
     description:
-      'security::incident_response::IncidentMonitor aggregates three trigger kinds with per-kind thresholds: RepeatedOAuthFailure → session revoke + Gmail disconnect; IntegrityCheckFailure fires on first occurrence; BackendStartupFailure from the health loop. Responds with session revoke, Gmail disconnect and health alerts.',
+      'security::incident_response::IncidentMonitor counts six trigger kinds within a 1-hour window, per scope (OAuth failures per Gmail account). Integrity-check, signature-verification and backend-startup failures fire on the first occurrence; the others after 3. A response is audited and emitted as security_incident; every kind except RepeatedOAuthFailure also revokes the local session. Health alerts surface as system warnings.',
     responsibilities: [
-      'Aggregate incident triggers',
-      'Per-trigger-kind thresholds',
-      'Respond: session revoke, Gmail disconnect, health alert',
+      'Aggregate incident triggers in a 1h window, scoped per account where relevant',
+      'Per-trigger-kind thresholds (1 or 3)',
+      'Respond: audit row, security_incident event, session revoke (not for OAuth), health alert',
     ],
     technologies: ['In-memory monitor'],
-    inputs: ['OAuth failures', 'DB integrity failures', 'Backend health failures'],
+    inputs: [
+      'OAuth failures',
+      'DB integrity failures',
+      'Licence validation/signature failures',
+      'Backend health failures',
+    ],
     outputs: ['Incident responses', 'System warnings'],
     sources: ['src-tauri/src/security/incident_response.rs'],
-    apiSurface: ['IncidentMonitor'],
-    facts: ['IntegrityCheckFailure fires on first occurrence (no threshold)'],
+    apiSurface: ['IncidentMonitor', 'record_trigger / record_trigger_for'],
+    facts: [
+      'IntegrityCheckFailure, SignatureVerificationFailure and BackendStartupFailure fire on first occurrence',
+      'Repeated OAuth failures concern one account: no global Gmail disconnect or logout',
+    ],
     confidence: 'verified',
   },
   {
@@ -1009,21 +1073,24 @@ const INFRA: ComponentDef[] = [
     kind: 'worker',
     purpose: '24h cadence: backup, integrity check, retention, archival, reminders, permissions.',
     description:
-      'One of the 12 boot-spawned workers. Batches expensive whole-DB operations onto a predictable schedule, trading immediacy for lower overhead.',
+      'One of the 12 boot-spawned workers. Batches expensive whole-DB operations onto a predictable schedule. Scheduled from the last recorded run (last_maintenance_at), not from launch, so it runs at startup once 24h have passed even if the app is never open that long.',
     responsibilities: [
       'Encrypted backup + verification',
       'PRAGMA integrity_check + incremental vacuum',
-      'Raw-payload retention sweep',
+      'Retention sweeps (raw payloads, network activity, settled drafts, reconciliation audit)',
       'Yearly archival',
       'Upcoming-bill native reminders',
       'Permission re-check',
     ],
-    technologies: ['tokio interval (24h)'],
+    technologies: ['tokio sleep until due (24h, marker file)', 'cancellation token'],
     inputs: ['SQLite DB'],
     outputs: ['Backups', 'system_warnings', 'native reminders'],
     sources: ['src-tauri/src/lib.rs', 'src-tauri/src/db/maintenance.rs'],
-    apiSurface: ['daily maintenance task'],
-    facts: ['24h cadence = up to 24h recovery-point window'],
+    apiSurface: ['daily maintenance task', 'time_until_maintenance'],
+    facts: [
+      '24h cadence = up to 24h recovery-point window',
+      'Stops on shutdown (selects on the cancellation token)',
+    ],
     confidence: 'verified',
   },
   {
@@ -1033,14 +1100,19 @@ const INFRA: ComponentDef[] = [
     kind: 'worker',
     purpose: '60s SELECT 1 probe feeding incident response and the menu/tray status.',
     description:
-      'One of the 12 boot-spawned workers. A failed probe raises a BackendStartupFailure incident trigger.',
-    responsibilities: ['SELECT 1 every 60s', 'Feed IncidentMonitor', 'Feed health report UI'],
+      'One of the 12 boot-spawned workers. A failed probe raises a BackendStartupFailure incident trigger; recovery clears the warning. The same loop is the stale-sync watchdog.',
+    responsibilities: [
+      'SELECT 1 every 60s',
+      'Feed IncidentMonitor',
+      'Feed health report UI',
+      'Watchdog: gmail_sync_stale after 15 min without a sync; gmail_token_degraded while an account is degraded',
+    ],
     technologies: ['tokio interval (60s)'],
     inputs: ['SQLite pool'],
     outputs: ['Health status'],
     sources: ['src-tauri/src/health.rs', 'src-tauri/src/lib.rs'],
-    apiSurface: ['get_health_report'],
-    facts: ['60s cadence'],
+    apiSurface: ['get_health_report', 'health::sync_watch'],
+    facts: ['60s cadence', 'STALE_SYNC_THRESHOLD = 15 min'],
     confidence: 'verified',
   },
   {
@@ -1110,7 +1182,7 @@ const INFRA: ComponentDef[] = [
     kind: 'service',
     purpose: 'PII-redacting structured logs, crash reporting, integrity diagnostics.',
     description:
-      'app-logs.log is wrapped in a RedactingWriter — redaction happens at write time, not lazy export. Daily rotation with bounded retention (default 15 days). Global panic hook writes to the log; tokio task boundaries isolate panics. dev_review.rs was removed (it recorded PII).',
+      'app-logs.log is wrapped in a RedactingWriter — redaction happens at write time, not lazy export. Release builds write to ~/Library/Logs/com.dinero.app (debug builds: the repository root). Daily rotation with bounded retention (default 15 days). Global panic hook writes to the log; tokio task boundaries isolate panics; a lock poisoned by a panic is recovered rather than crashing later callers. dev_review.rs was removed (it recorded PII).',
     responsibilities: [
       'Redact PII at write time',
       'Daily rotation + bounded retention',
@@ -1162,9 +1234,10 @@ const INFRA: ComponentDef[] = [
     kind: 'process',
     purpose: 'Long-lived loopback-bound llama-server for all on-device LLM work.',
     description:
-      'Spawns the pinned llama.cpp release (b10068) as llama-server on 127.0.0.1:<ephemeral> with an allowed-origin lock. Binary and GGUF weights are both downloaded and SHA-256 verified. Context size scales with parallel slots (2048 × slots). Serves exactly four integration points.',
+      'Spawns the pinned llama.cpp release (b10068) as llama-server on 127.0.0.1:<ephemeral> with an allowed-origin lock and a per-run --api-key. The downloaded archive is re-checked against the compiled-in SHA-256 and re-extracted before every start. Context size scales with parallel slots (2048 × slots). Serves exactly four integration points.',
     responsibilities: [
-      'Supervise llama-server process',
+      'Supervise llama-server process: restart when it exits or after 3 consecutive timeouts',
+      'Kill it on app exit (llama_sidecar::shutdown)',
       'Serve Layer 6 extraction, row_llm, merchant cleanup, rule learning',
     ],
     technologies: ['llama.cpp llama-server (b10068)', 'GGUF', 'loopback HTTP'],
@@ -1173,11 +1246,11 @@ const INFRA: ComponentDef[] = [
     sources: ['src-tauri/src/llama_sidecar.rs', 'src-tauri/src/llm_pipeline.rs'],
     apiSurface: ['4 LLM integration points'],
     facts: [
-      'Binary download from github.com/ggml-org/llama.cpp/releases',
+      'Binary download from github.com/ggml-org/llama.cpp/releases (logged to network_activity_log)',
       'Process boundary as security/stability boundary',
+      'MAX_CONSECUTIVE_TIMEOUTS = 3',
     ],
     confidence: 'verified',
-    notes: ['Binary download bypasses NetworkClient (ADR-024).'],
   },
 
   // ───────────────────────────── EXTERNAL ─────────────────────────────
@@ -1222,10 +1295,12 @@ const INFRA: ComponentDef[] = [
     kind: 'external',
     purpose: 'Minimal cloud service — licensing and billing only, never financial data.',
     description:
-      'Separate Node/TypeScript service on Vercel serverless functions (@vercel/node, nodejs20.x) over Neon Postgres via Prisma 5.20. Issues RS256 device-bound JWTs (app holds only the public key). Razorpay payments. 6 Prisma models; tests assert no financial data ever appears in the schema.',
+      'Separate Node/TypeScript service on Vercel serverless functions (@vercel/node, nodejs20.x) over Neon Postgres via Prisma 5.20. Issues RS256 device-bound JWTs carrying a signed entitlement state claim, valid 7 days (app holds only the public key). Razorpay payments. 7 Prisma models; tests assert no financial data ever appears in the schema.',
     responsibilities: [
-      'License activate / deactivate / validate / refresh-token / start-trial',
-      'Billing create-order / cancel / refund + Razorpay webhook',
+      'License activate / deactivate / validate / refresh-token / start-trial / restore',
+      'Validate and deactivate require the device JWT as proof (LEGACY_NO_PROOF_UNTIL rollout window for older builds)',
+      'Activate checks the payment is captured, matches the plan amount, and is single-use',
+      'Billing create-order / cancel / refund + Razorpay webhook (raw-body HMAC, dedupe on the event-id header)',
       '5 admin endpoints (metrics, plans, support lookup/reissue/reset)',
       'Monthly cron billing-reconciliation',
     ],
@@ -1238,10 +1313,14 @@ const INFRA: ComponentDef[] = [
     ],
     inputs: ['License activation requests', 'Razorpay webhooks'],
     outputs: ['License JWTs', 'Subscription state'],
-    sources: ['licensing-backend/api/', 'licensing-backend/prisma/schema.prisma'],
+    sources: [
+      'licensing-backend/api/',
+      'licensing-backend/prisma/schema.prisma',
+      'licensing-backend/DEPLOY.md',
+    ],
     apiSurface: [
       '16 API routes + 1 cron',
-      '6 Prisma models: Account, Plan, Subscription, LicenseToken, PaymentProviderRecord, LicensingAuditLog',
+      '7 Prisma models: Account, Plan, Subscription, LicenseToken, PaymentProviderRecord, LicensingAuditLog, ProcessedWebhookEvent',
     ],
     facts: [
       'URL hardcoded as https://api.dinero-app.com',
@@ -1258,18 +1337,18 @@ const INFRA: ComponentDef[] = [
     kind: 'external',
     purpose: 'Sources for the local LLM binary and GGUF weights.',
     description:
-      'Hugging Face serves GGUF model weights (resumable, hash-verified); GitHub Releases serves the pinned llama.cpp binary (b10068, SHA-256 verified). Both are one-time download paths.',
+      'Hugging Face serves GGUF model weights (resumable, hash-verified); GitHub Releases serves the pinned llama.cpp binary (b10068, SHA-256 verified). Both are one-time download paths, and both are recorded in the Network Activity log.',
     responsibilities: ['Serve GGUF weights', 'Serve llama.cpp release binary'],
     technologies: ['Hugging Face Hub', 'GitHub Releases'],
     inputs: ['Download requests'],
     outputs: ['Model artifacts'],
     sources: ['src-tauri/src/llm_manager.rs', 'src-tauri/src/llama_sidecar.rs'],
     apiSurface: [],
-    facts: ['Disclosed in NETWORK_DISCLOSURE_TABLE (5 rows)'],
-    confidence: 'gap',
-    notes: [
-      'Both downloads bypass NetworkClient, so the Network Activity log records neither (ADR-024).',
+    facts: [
+      'Disclosed in NETWORK_DISCLOSURE_TABLE (5 rows)',
+      'Logged under channel llm_download via log_unpooled_request',
     ],
+    confidence: 'verified',
   },
 ];
 

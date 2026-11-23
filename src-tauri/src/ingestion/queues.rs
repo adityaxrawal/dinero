@@ -1148,13 +1148,13 @@ async fn process_mandate_job(
     let event_type = job.event_type.clone();
 
     // False when the mandate could not be recorded, so the job is kept and
-    // replayed (the ₹0 transaction it emits is idempotent on source_record_id).
+    // replayed (recording is idempotent on source_record_id).
     let mut recorded = true;
     let conn = match pool.get().await {
         Ok(conn) => Some(conn),
         Err(e) => {
-            // The ₹0 transaction job below is still worth emitting; only the
-            // mandate bookkeeping is lost, and silence would hide that.
+            // The job is kept for replay; log it, since silence would hide
+            // that the mandate was not recorded.
             tracing::error!(
                 "Mandate Queue: DB pool unavailable for source_record_id='{}' — mandate not recorded: {}",
                 job.source_record_id,

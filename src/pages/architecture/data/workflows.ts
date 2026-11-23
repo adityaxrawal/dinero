@@ -27,7 +27,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'boot-init',
         title: 'App boot',
         detail:
-          'lib.rs::run initializes logging + panic hook, registers plugins, runs init_db (fails closed on error), manages shared state, spawns 12 background workers, then registers 142 IPC commands.',
+          'lib.rs::run initializes logging + panic hook, registers plugins, runs init_db (fails closed on error, including when the default profile cannot be created), manages shared state, reloads persisted system warnings, replays persisted ingest jobs and statements left queued, spawns 12 background workers, then registers 149 IPC commands (141 in release builds). Daily maintenance runs at once if its last run was over 24h ago. On a database key mismatch the app starts in recovery mode instead: no database, no workers, only the recovery screen.',
         components: [
           'sqlite',
           'maintenance',
@@ -77,7 +77,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'first-scan',
         title: 'Historical scan (background)',
         detail:
-          'scans_historical claims a checkpoint atomically and returns "Scan started" immediately. run_scan_batches fetches up to 50 messages concurrently through Gate 1-2-3, checkpointing every 5. Progress arrives via scan_progress events.',
+          'scans_historical claims a checkpoint atomically and returns "Scan started" immediately. run_scan_batches fetches up to 8 messages concurrently through Gate 1-2-3, checkpointing every 5. Progress arrives via scan_progress events.',
         components: [
           'historical-scan',
           'gmail-client',
@@ -110,7 +110,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'license-confirm',
         title: 'Trial confirmation → Dashboard',
         detail:
-          'LicenseActivationScreen shows the auto-started 14-day trial (derived server-side from local_profile.created_at) or an existing paid state. `dinero_onboarded` was already set at the Gmail-consent transition. Continue navigates to the Dashboard.',
+          'LicenseActivationScreen shows the auto-started 14-day trial (registered on the licensing server at first launch by device id; local_profile.created_at is only the offline fallback) or an existing paid state. `dinero_onboarded` was already set at the Gmail-consent transition. Continue navigates to the Dashboard.',
         components: ['onboarding-ui', 'license-state', 'react-ui'],
         relations: ['sync'],
       },
@@ -120,7 +120,7 @@ const AUTHORED: WorkflowDef[] = [
     id: 'historical-scan',
     name: 'Historical Scan (Bulk Backfill)',
     summary:
-      'One-time per date range: search every message, fetch through Gate 1-2-3 at 50-way concurrency, checkpoint every 5, and route into the shared queues. Resumable across crashes.',
+      'One-time per date range: search every message, fetch through Gate 1-2-3 at 8-way concurrency, checkpoint every 5, and route into the shared queues. Resumable across crashes.',
     participants: [
       'react-ui',
       'historical-scan',
@@ -157,7 +157,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'scan-batch',
         title: 'Bounded fetch + process loop',
         detail:
-          'Up to 8 concurrent full fetches (the quota token bucket is shared with live polling), primed once and refilled one-for-one. Metadata-first gating keeps quota cost low. Every message runs the shared Gate 1-2-3 pipeline. Failures get one retry pass at the end.',
+          'Up to 8 concurrent full fetches (the quota token bucket is shared with live polling), primed once and refilled one-for-one; statement attachments at most 2 at a time. Metadata-first gating keeps quota cost low, and messages already decided (processed_messages) are skipped. Gmail rate limits (429 and 403 rateLimitExceeded) and 5xx are retried with backoff. Every message runs the shared Gate 1-2-3 pipeline. Failures get one retry pass at the end.',
         components: ['historical-scan', 'gmail-client', 'message-processor', 'extraction-ladder'],
         relations: ['sync', 'network'],
         outcomes: [
@@ -184,7 +184,11 @@ const AUTHORED: WorkflowDef[] = [
             label: 'completed_with_errors',
             detail: 'scan_completed with errors > 0; "Retry failed (N)" seeds a paused retry run',
           },
-          { label: 'cancelled', detail: 'scan_cancelled; checkpoint deleted (not_started)' },
+          {
+            label: 'cancelled',
+            detail:
+              'scan_cancelled; rows this scan created rolled back in one transaction, checkpoint deleted (not_started). If the rollback fails, nothing is undone and the checkpoint is marked failed',
+          },
           { label: 'failed', detail: 'scan_failed; scans_resume continues from resume_from' },
         ],
       },
@@ -192,7 +196,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'scan-downstream',
         title: 'Downstream: queues → reconciliation',
         detail:
-          'Transaction Queue normalizes + fingerprints + reconciles; Statement Queue feeds the statement pipeline; Mandate Queue upserts recurring payments. All three converge on the same reconciliation engine and ledger as live ingestion.',
+          'Transaction Queue normalizes + fingerprints + reconciles; Statement Queue feeds the statement pipeline; Mandate Queue upserts recurring payments (markers only, no ledger entry). Transaction and mandate jobs are persisted in pending_ingest_jobs until processed. Transactions and statements converge on the same reconciliation engine and ledger as live ingestion.',
         components: ['tx-queue', 'stmt-queue', 'mandate-queue', 'recon-engine', 'sqlite'],
         relations: ['async', 'db'],
       },
@@ -226,7 +230,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'history-sync',
         title: 'history.list since cursor',
         detail:
-          'Cursor resolution: processing_checkpoints (job_type=gmail_history) first, then connected_accounts.last_history_id. No cursor → skip the account. 401 → force-refresh token once per cycle; 404/400 → clear cursor + history_checkpoint_reset audit entry; 429/5xx → backoff+jitter up to 8 retries.',
+          'Cursor resolution: processing_checkpoints (job_type=gmail_history) first, then connected_accounts.last_history_id. No cursor → skip the account. A lapsed licence skips polling. 401 → force-refresh token once per cycle; 404/400 → re-seed the cursor from users.getProfile and start a catch-up scan from the last sync (deferred if a scan is running); 429/5xx → backoff+jitter up to 8 retries.',
         components: ['polling', 'gmail-client', 'google-oauth', 'sqlite'],
         relations: ['network', 'db'],
         outcomes: [
@@ -235,6 +239,10 @@ const AUTHORED: WorkflowDef[] = [
             detail: 'Each message goes through process_message (Gate 1-2-3)',
           },
           { label: 'no change', detail: 'Save new cursor only if a page returned a historyId' },
+          {
+            label: 'message fails',
+            detail: 'scan_failed_messages row; retried by "Retry failed"',
+          },
         ],
       },
       {
@@ -269,7 +277,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'gate-3',
         title: 'Gate 3 — extraction ladder',
         detail:
-          'Layers 1→5 (learned rules → bank template → generic regex → NLP → statement cross-ref), cheapest first. A mandatory-field check rejects partial extractions. Ladder exhaustion on an LLM-eligible machine defers to the durable Layer 6 queue.',
+          'Layers 1→5 (learned rules → bank template → generic regex → NLP → statement cross-ref), cheapest first. A mandatory-field check rejects partial extractions, and every layer must reach MIN_LEDGER_CONFIDENCE = 0.75 to enter the ledger. Ladder exhaustion on an LLM-eligible machine (enough RAM and a downloaded model) defers to the durable Layer 6 queue.',
         components: [
           'extraction-ladder',
           'learning',
@@ -285,13 +293,14 @@ const AUTHORED: WorkflowDef[] = [
             detail: 'Layer 6 queue (durable) — scan complete ≠ extraction complete',
           },
           { label: 'fail', detail: 'unassigned_transactions (partial data salvaged)' },
+          { label: 'below 0.75', detail: 'unassigned_transactions for review' },
         ],
       },
       {
         id: 'queue-normalize',
         title: 'Normalize + fingerprint + observation',
         detail:
-          'Transaction Queue workers (4, cap 256) build the observation row (normalize_observation), resolve its instrument and compute the event fingerprint, then hand it to reconciliation, whose insert is idempotent — UNIQUE(source_pipeline, source_record_id) makes re-runs safe. Merchant normalization already happened in the extraction ladder.',
+          'Transaction Queue workers (4, cap 256) build the observation row (normalize_observation), resolve its instrument and compute the event fingerprint, then hand it to reconciliation, whose insert is idempotent — UNIQUE(source_pipeline, source_record_id) makes re-runs safe. The persisted job is deleted once processed. Merchant normalization already happened in the extraction ladder.',
         components: ['tx-queue', 'fingerprint', 'sqlite'],
         relations: ['db'],
       },
@@ -299,7 +308,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'reconcile',
         title: 'Reconcile → canonical transaction',
         detail:
-          'prefilter → exact_match → scorer → cluster. Ambiguous matches become reconciliation clusters for human review; the engine deliberately refuses to auto-resolve them. match_decisions records an immutable trail (append-only trigger).',
+          'prefilter → exact_match → scorer → cluster. Ambiguous matches become reconciliation clusters for human review; the engine deliberately refuses to auto-resolve them. match_decisions records an immutable trail (append-only trigger). If reconciliation fails (for example a missing event time), the observation is kept as an unassigned entry, never dropped.',
         components: ['recon-engine', 'sqlite'],
         relations: ['db', 'sync'],
       },
@@ -401,7 +410,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'review',
         title: 'User review + commit',
         detail:
-          'commit_staged_draft asserts the draft is still pending_review (hard error otherwise), writes statements + statement_entries, builds observations, inserts them idempotently and reconciles each row. Per-observation reconciliation failure is logged and does not abort. bill_classifier derives the upcoming bill.',
+          'commit_staged_draft claims the draft (pending_review → committing), then writes statements + statement_entries, inserts the observations idempotently and reconciles every row in one transaction: any failure rolls the whole commit back and a retry is safe. bill_classifier derives the upcoming bill.',
         components: ['react-ui', 'statement-pipeline', 'recon-engine', 'sqlite'],
         relations: ['sync', 'db'],
         outcomes: [
@@ -452,7 +461,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'gate-check',
         title: 'assert_write_allowed',
         detail:
-          'Fail-closed license check: the cached status is never trusted alone — the backing JWT is cryptographically re-verified and device-bound. Invalid JWT is treated as Locked. 37 write commands are test-enforced to call this.',
+          'Fail-closed license check: the cached status is never trusted alone — the backing JWT is cryptographically re-verified and device-bound. Invalid JWT is treated as Locked. 39 write commands are test-enforced to call this.',
         components: ['license-gate', 'license-state'],
         relations: ['gate'],
         outcomes: [
@@ -507,7 +516,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'durable',
         title: 'Durable queue drain',
         detail:
-          'layer6_pending_jobs is the only queue with a durable backing table, so jobs survive app restart. 6 workers (cap 256) are over-spawned relative to the llama-sidecar semaphore, which actually gates inference.',
+          'layer6_pending_jobs backs the queue, so jobs survive app restart. A fixed pool of 6 workers drains the channel (cap 256), so at most 6 jobs are in flight. A job is tried at most 3 times, then marked dead and left in review.',
         components: ['layer6-queue', 'sqlite'],
         relations: ['db'],
       },
@@ -515,7 +524,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'infer',
         title: 'llama-server inference',
         detail:
-          'llm_manager routes the prompt to the loopback-bound llama-server (pinned llama.cpp b10068). Context size scales with parallel slots (2048 × slots).',
+          'llm_manager routes the prompt to the loopback-bound llama-server (pinned llama.cpp b10068, per-run API key). Context size scales with parallel slots (2048 × slots). A server that has exited, or timed out 3 times in a row, is restarted.',
         components: ['llm-manager', 'llama-sidecar'],
         relations: ['pipe'],
       },
@@ -588,22 +597,29 @@ const AUTHORED: WorkflowDef[] = [
     id: 'incident-response',
     name: 'Incident Response Convergence',
     summary:
-      'Three independent failure signals converge on the IncidentMonitor, which responds with session revocation, Gmail disconnect and health alerts.',
-    participants: ['oauth', 'maintenance', 'health-loop', 'incident-monitor', 'events'],
+      'Independent failure signals converge on the IncidentMonitor, which counts them within a 1-hour window and responds with an audit entry, a security_incident event, session revocation (not for OAuth failures) and health alerts.',
+    participants: [
+      'oauth',
+      'maintenance',
+      'health-loop',
+      'license-worker',
+      'incident-monitor',
+      'events',
+    ],
     steps: [
       {
         id: 'triggers',
         title: 'Failure triggers',
         detail:
-          'RepeatedOAuthFailure (from oauth.rs mark_account_degraded_async), IntegrityCheckFailure (daily check — fires on FIRST occurrence), BackendStartupFailure (60s health loop SELECT 1).',
-        components: ['oauth', 'maintenance', 'health-loop', 'incident-monitor'],
+          'RepeatedOAuthFailure (permanent auth failures, counted per account), IntegrityCheckFailure (daily check — fires on FIRST occurrence), BackendStartupFailure (60s health loop SELECT 1 — first occurrence), plus licence validation and signature-verification failures from the licensing worker.',
+        components: ['oauth', 'maintenance', 'health-loop', 'license-worker', 'incident-monitor'],
         relations: ['async'],
       },
       {
         id: 'respond',
         title: 'Threshold → respond',
         detail:
-          'Per-trigger-kind thresholds; crossing one runs the response: session revoke, Gmail disconnect, health alert. Backup verification failure raises a system_warning instead of an incident.',
+          'Per-trigger-kind thresholds (1 or 3 within 1 hour); crossing one runs the response: audit row, security_incident event, session revoke (skipped for OAuth: one dead grant only needs that account reconnected), health alert. There is no global Gmail disconnect. Backup verification failure raises a system_warning instead of an incident.',
         components: ['incident-monitor', 'events'],
         relations: ['event'],
       },

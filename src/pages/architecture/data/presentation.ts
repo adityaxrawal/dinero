@@ -213,6 +213,72 @@ export const INVARIANTS: { title: string; body: string }[] = [
 ];
 
 /** Stat tiles in the rail header. Values derive from the model at render time. */
+/**
+ * Text of the Architecture Analysis pane. Shared so the in-app explorer and
+ * the standalone document render identical wording. Inline markup is limited
+ * to **bold** and `code` (see `analysisSegments`).
+ */
+export const ANALYSIS = {
+  shape: [
+    '**Dinero** is a local-first macOS personal-finance tracker: a Tauri v2 application (Rust core + React 19 frontend) that ingests bank/UPI transaction alerts and PDF statements from Gmail — or manual upload — extracts and reconciles them into one unified ledger **entirely on-device**, paired with a minimal separate cloud service that handles **only** licensing and billing.',
+    'Two ingestion channels converge on three routing queues behind a single license write-gate, with a fourth queue carrying deferred LLM work downstream; every queue funnels into one reconciliation engine that produces the canonical ledger the React frontend renders. A dozen background workers keep the system self-healing without ever leaving the device.',
+  ],
+  patterns: [
+    '**One processing path per job type** — historical scan, live polling and manual upload all converge on the same queues and the same Gate 1→2→3 / password-resolution logic.',
+    '**Async acknowledgment, event-driven outcome** — expensive operations return immediately and report results via named events; the UI never blocks on multi-minute work.',
+    '**Checkpoint everything long-running** — scans, Gmail history cursors, statement drafts and queued ingest jobs are durably resumable across crashes.',
+    '**Precision over recall** — Gate 3 never accepts a partial extraction and holds every layer to one 0.75 confidence floor; the Instrument Gate never defaults a missing identifier; a wrong PDF password re-prompts without losing context.',
+  ],
+  profile: [
+    {
+      k: 'Queues',
+      v: 'Transaction 4w/256 · Statement 5-permit/64 · Mandate 1w/64 · Layer-6 6w/256 — all durable (pending_ingest_jobs, the statements table, layer6_pending_jobs)',
+    },
+    {
+      k: 'Workers',
+      v: '12 boot-spawned loops (polling 60s, health + stale-sync watchdog 60s, maintenance daily and at launch when due, licensing 6h, updates ~6h)',
+    },
+    {
+      k: 'Storage',
+      v: 'SQLCipher SQLite — 45 tables + FTS5 search index, 68 migrations, append-only audit + match trails; daily verified backup, 7 generations',
+    },
+    {
+      k: 'Sidecars',
+      v: 'pdf_sidecar (spawn-per-file) · llama_sidecar (long-lived loopback llama-server, b10068, per-run API key, restarted when dead or hung)',
+    },
+    {
+      k: 'IPC',
+      v: '149 registered Tauri commands (141 in release builds), each needing an explicit permission; 39 writes test-enforced through assert_write_allowed',
+    },
+    {
+      k: 'Licensing',
+      v: '8 statuses; 8 local edges plus server-verified updates; signed state claim in a 7-day JWT; Locked lifts on renewal; 7-day offline grace',
+    },
+  ],
+  gaps: [
+    '**ADR-024 — NetworkClient coverage.** The updater check is the one remaining outbound path that leaves no Network Activity row. Gmail, Google OAuth, licensing and both model downloads are logged.',
+    '**IPC command-count discrepancy.** The code registers 149 commands in generate_handler!; the design docs quote 143 and 151; figures are recorded rather than silently reconciled.',
+    '**License state machine.** Two write paths: 8 local, time-driven edges (is_legal_transition) and server-verified updates (apply_server_validation) that can set any server state. Locked has no local exit but a renewal lifts it at the next validation.',
+    '**Statement row extraction.** All seven bank-specific parsers matched zero of nine real statements; `parse_universal` took the corpus 0→79 rows.',
+    '**Live polling rate limits.** history.list retries 429 and 5xx but not a 403 rateLimitExceeded: that poll cycle fails and the next one, 60s later, retries. The historical scan retries both.',
+  ],
+  help: 'Click any component to inspect it. Use **Impact** for the downstream blast radius, **Labels** to pin connector labels, and the workflow rail to step through an end-to-end flow — the participating components light up as you go.',
+};
+
+/** Splits analysis text into plain, **bold** and `code` segments. */
+export function analysisSegments(text: string): { kind: 'text' | 'b' | 'code'; text: string }[] {
+  return text
+    .split(/(\*\*[^*]+\*\*|`[^`]+`)/)
+    .filter(Boolean)
+    .map((part) =>
+      part.startsWith('**')
+        ? { kind: 'b' as const, text: part.slice(2, -2) }
+        : part.startsWith('`')
+          ? { kind: 'code' as const, text: part.slice(1, -1) }
+          : { kind: 'text' as const, text: part }
+    );
+}
+
 export const STAT_DEFS = [
   { key: 'components', label: 'Components' },
   { key: 'connections', label: 'Connections' },
