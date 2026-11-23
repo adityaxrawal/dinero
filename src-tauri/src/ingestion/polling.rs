@@ -495,6 +495,7 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                                 if let Ok(conn) = pool.get().await {
                                                     let id = stmt_id.clone();
                                                     let msg_id_for_row = msg_id.clone();
+                                                    let name = filename.clone();
                                                     let _ = conn
                                                         .interact(move |c| {
                                                             crate::db::statements::insert_queued(
@@ -503,7 +504,8 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                                                 "gmail_email",
                                                                 Some(&msg_id_for_row),
                                                                 None,
-                                                            )
+                                                            )?;
+                                                            crate::db::statements::set_source_filename(c, &id, &name)
                                                         })
                                                         .await;
                                                 }

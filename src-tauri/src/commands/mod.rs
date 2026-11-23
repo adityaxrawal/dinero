@@ -375,8 +375,10 @@ async fn upload_one_statement(
             .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
         let id = stmt_id.clone();
         let hash = file_hash.clone();
+        let name = filename.clone();
         conn.interact(move |c| {
-            crate::db::statements::insert_queued(c, &id, "manual_upload", None, Some(&hash))
+            crate::db::statements::insert_queued(c, &id, "manual_upload", None, Some(&hash))?;
+            crate::db::statements::set_source_filename(c, &id, &name)
         })
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?

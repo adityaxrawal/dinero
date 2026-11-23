@@ -56,6 +56,16 @@ pub fn insert_queued(
     Ok(())
 }
 
+/// Records the original filename of a queued statement, so crash recovery
+/// can re-enqueue it under its real name (H6 follow-up).
+pub fn set_source_filename(conn: &Connection, id: &str, filename: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE statements SET source_filename = ?2 WHERE id = ?1",
+        params![id, filename],
+    )?;
+    Ok(())
+}
+
 /// Insert a fully populated statement row.
 ///
 /// Used where the statement's metadata is already known, as opposed to
@@ -170,4 +180,18 @@ fn row_to_statement(row: &Row) -> rusqlite::Result<StatementsRow> {
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })
+}
+
+#[cfg(test)]
+mod source_filename_tests {
+    #[test]
+    fn queued_statement_keeps_its_original_filename() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        super::insert_queued(&conn, "s1", "gmail_email", Some("m1"), None).unwrap();
+        super::set_source_filename(&conn, "s1", "HDFC_Nov.pdf").unwrap();
+        let name: Option<String> = conn
+            .query_row("SELECT source_filename FROM statements WHERE id = 's1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(name.as_deref(), Some("HDFC_Nov.pdf"));
+    }
 }

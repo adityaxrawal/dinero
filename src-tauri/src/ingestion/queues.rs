@@ -196,15 +196,16 @@ pub async fn recover_queued_statements<R: tauri::Runtime>(
     launched_before: chrono::NaiveDateTime,
 ) {
     let cutoff = launched_before.format("%Y-%m-%d %H:%M:%S").to_string();
-    let rows: Vec<(String, Option<String>, String)> = match pool.get().await {
+    type QueuedRow = (String, Option<String>, String, Option<String>);
+    let rows: Vec<QueuedRow> = match pool.get().await {
         Ok(conn) => conn
-            .interact(move |c| -> rusqlite::Result<Vec<(String, Option<String>, String)>> {
+            .interact(move |c| -> rusqlite::Result<Vec<QueuedRow>> {
                 let mut stmt = c.prepare(
-                    "SELECT id, file_hash, source_type FROM statements
+                    "SELECT id, file_hash, source_type, source_filename FROM statements
                      WHERE parse_status = 'queued' AND created_at < ?1",
                 )?;
                 let rows = stmt
-                    .query_map([cutoff], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                    .query_map([cutoff], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
                     .collect();
                 rows
             })
@@ -219,7 +220,7 @@ pub async fn recover_queued_statements<R: tauri::Runtime>(
     }
     tracing::info!("Recovering {} statement(s) left queued before this launch", rows.len());
 
-    for (stmt_id, file_hash, source_type) in rows {
+    for (stmt_id, file_hash, source_type, source_filename) in rows {
         let bytes = crate::statements::pdf_storage::read_pdf(app_dir, &stmt_id)
             .ok()
             .flatten();
@@ -232,7 +233,7 @@ pub async fn recover_queued_statements<R: tauri::Runtime>(
             use sha2::Digest;
             format!("{:x}", sha2::Sha256::digest(&bytes))
         });
-        let filename = "statement.pdf".to_string();
+        let filename = source_filename.unwrap_or_else(|| "statement.pdf".to_string());
         let password = match crate::statements::password::resolve_statement_password(
             &stmt_id, &bytes, &filename, &file_hash, pool, app, None,
         )
@@ -2509,6 +2510,10 @@ mod queued_statement_recovery_tests {
         )
         .unwrap();
         crate::statements::pdf_storage::store_pdf(&temp_dir, "with_pdf", &pdf).unwrap();
+        conn.interact(|c| crate::db::statements::set_source_filename(c, "with_pdf", "HDFC_Nov.pdf"))
+            .await
+            .unwrap()
+            .unwrap();
 
         let (tx, mut rx) = mpsc::channel::<StatementJob>(4);
         let launched = chrono::Utc::now().naive_utc() - chrono::Duration::minutes(1);
@@ -2529,6 +2534,7 @@ mod queued_statement_recovery_tests {
             let job = rx.try_recv().expect("statement with a staged PDF must be re-enqueued");
             assert_eq!(job.stmt_id, "with_pdf");
             assert_eq!(job.origin, "email_scan");
+            assert_eq!(job.filename, "HDFC_Nov.pdf", "original filename is kept");
             assert_eq!(remaining, vec!["fresh".to_string(), "with_pdf".to_string()]);
         } else {
             assert_eq!(remaining, vec!["fresh".to_string()]);
