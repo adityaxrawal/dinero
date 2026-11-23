@@ -113,7 +113,8 @@ export async function validateLicense(
  * HTTP entry point: validates the request, delegates, and maps errors to statuses.
  */
 async function handler(req: VercelRequest, res: VercelResponse) {
-  if (!requirePostWithFields(req, res, ['device_id', 'jwt'])) return;
+  // jwt is checked by assertDeviceProof, which also handles the rollout window.
+  if (!requirePostWithFields(req, res, ['device_id'])) return;
   const { device_id, jwt } = req.body;
   const privateKeyPem = process.env.JWT_PRIVATE_KEY_PEM;
   const publicKeyPem = process.env.JWT_PUBLIC_KEY_PEM;

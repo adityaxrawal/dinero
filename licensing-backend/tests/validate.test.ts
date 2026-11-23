@@ -105,3 +105,31 @@ describe('validate requires proof of the device token', () => {
     expect(result.state).toBe('ACTIVE');
   });
 });
+
+// Rollout: older desktop builds send no token. Accepted only while
+// LEGACY_NO_PROOF_UNTIL is in the future; a token, when sent, is always checked.
+describe('legacy no-proof window', () => {
+  const db = () =>
+    makeDb(
+      { accountId: 'acc_1', account: { email: 'user@example.com' } },
+      { planId: 'desktop_pro_monthly', billingInterval: 'monthly', status: 'active' }
+    );
+  it('accepts a missing token only while the window is open', async () => {
+    vi.stubEnv('LEGACY_NO_PROOF_UNTIL', new Date(Date.now() + 86_400_000).toISOString());
+    await expect(
+      validateLicense(db(), { device_id: 'device-A', jwt: '' }, TEST_PRIVATE_KEY_PEM, TEST_PUBLIC_KEY_PEM)
+    ).resolves.toMatchObject({ state: 'ACTIVE' });
+    vi.stubEnv('LEGACY_NO_PROOF_UNTIL', new Date(Date.now() - 1000).toISOString());
+    await expect(
+      validateLicense(db(), { device_id: 'device-A', jwt: '' }, TEST_PRIVATE_KEY_PEM, TEST_PUBLIC_KEY_PEM)
+    ).rejects.toMatchObject({ code: 'LICENSE_INVALID' });
+    vi.unstubAllEnvs();
+  });
+  it("still rejects another device's token during the window", async () => {
+    vi.stubEnv('LEGACY_NO_PROOF_UNTIL', new Date(Date.now() + 86_400_000).toISOString());
+    await expect(
+      validateLicense(db(), { device_id: 'device-A', jwt: proof('device-B') }, TEST_PRIVATE_KEY_PEM, TEST_PUBLIC_KEY_PEM)
+    ).rejects.toMatchObject({ code: 'DEVICE_MISMATCH' });
+    vi.unstubAllEnvs();
+  });
+});

@@ -16,8 +16,23 @@ import { verifyLicenseJwt } from './jwt';
  * could deactivate the licence or pull a token (review M16). Expiry is ignored
  * so a device that was offline past its token's lifetime can still validate.
  */
-export function assertDeviceProof(jwt: unknown, deviceId: string, publicKeyPem: string): void {
+/** Whether requests without a device token are still accepted (rollout only). */
+export function legacyNoProofAllowed(now: Date = new Date()): boolean {
+  const until = Date.parse(process.env.LEGACY_NO_PROOF_UNTIL ?? '');
+  return Number.isFinite(until) && now.getTime() < until;
+}
+
+export function assertDeviceProof(
+  jwt: unknown,
+  deviceId: string,
+  publicKeyPem: string,
+  now: Date = new Date()
+): void {
   if (typeof jwt !== 'string' || jwt.length === 0) {
+    // Compatibility window for desktop builds released before the proof
+    // existed (they send no token). Off unless LEGACY_NO_PROOF_UNTIL is set to
+    // a future ISO date; set it only for the rollout, then let it lapse.
+    if (legacyNoProofAllowed(now)) return;
     throw new LicensingApiError('LICENSE_INVALID', 'A license token is required for this device');
   }
   let claims;
