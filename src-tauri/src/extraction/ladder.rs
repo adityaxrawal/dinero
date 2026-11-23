@@ -141,6 +141,32 @@ static TEMPLATE_HASH_WHITESPACE_RE: OnceLock<Regex> = OnceLock::new();
 /// identically regardless of amount, date or merchant. That is what lets a rule
 /// synthesised from a single message apply to every future message of the same
 /// shape -- and what lets drift be detected when a bank changes its template.
+/// Whether a rule's capture for `field` agrees with a confirmed extraction,
+/// parsed the same way the ladder parses live rule output. `None` when the
+/// confirmed result has no value for that field (no evidence either way).
+pub fn rule_capture_agrees(field: &str, captured: &str, confirmed: &ExtractionResult) -> Option<bool> {
+    let captured = captured.trim();
+    match field {
+        "merchant" => confirmed
+            .merchant_raw
+            .as_deref()
+            .map(|m| m.trim().eq_ignore_ascii_case(captured)),
+        "amount" => confirmed.amount_minor.map(|v| parse_amount(captured) == Some(v)),
+        "balance" => confirmed.balance_after.map(|v| parse_amount(captured) == Some(v)),
+        "reference_id" => confirmed.reference_id.as_deref().map(|r| r.trim() == captured),
+        "last4" => confirmed
+            .masked_identifier
+            .as_deref()
+            .map(|m| clean_masked_identifier(captured) == m),
+        "direction" => confirmed
+            .direction
+            .as_deref()
+            .map(|d| normalize_direction(captured).as_deref() == Some(d)),
+        "currency" => confirmed.currency.as_deref().map(|c| normalize_currency(captured) == c),
+        _ => None,
+    }
+}
+
 pub fn compute_template_hash(body: &str) -> String {
     let re_digits = TEMPLATE_HASH_DIGITS_RE.get_or_init(|| Regex::new(r"\d+").unwrap());
     let re_whitespace = TEMPLATE_HASH_WHITESPACE_RE.get_or_init(|| Regex::new(r"\s+").unwrap());

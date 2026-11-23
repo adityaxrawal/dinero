@@ -241,6 +241,48 @@ pub fn count_live_by_bank_and_hash(
     Ok(count)
 }
 
+/// Scores pending rules against a confirmed extraction (review M10).
+///
+/// Pending rules (synthesised from LLM drift) are never applied, so they only
+/// earn evidence here: each pending rule for this bank, source and email
+/// template is run on the body, and agreement with the confirmed value counts
+/// as a success (3 promote it to active, 10 to trusted) and disagreement as a
+/// failure. Returns how many rules were scored.
+pub fn shadow_evaluate_pending(
+    conn: &Connection,
+    bank_name: &str,
+    source_type: &str,
+    body: &str,
+    confirmed: &crate::extraction::ladder::ExtractionResult,
+) -> Result<usize> {
+    let template_hash = crate::extraction::ladder::compute_template_hash(body);
+    let sql = format!(
+        "{ROW_SELECT} WHERE p.bank_name = ?1 AND p.source_type = ?2 \
+         AND v.template_hash = ?3 AND v.status = 'pending'"
+    );
+    let pending = conn
+        .prepare(&sql)?
+        .query_map(params![bank_name, source_type, template_hash], map_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut scored = 0;
+    for rule in pending {
+        let Some(captured) =
+            crate::extraction::rule_synthesis::apply_payload(&rule.rule_payload_json, body)
+        else {
+            record_failure(conn, &rule.id)?;
+            scored += 1;
+            continue;
+        };
+        match crate::extraction::ladder::rule_capture_agrees(&rule.field_name, &captured, confirmed) {
+            Some(true) => record_success(conn, &rule.id)?,
+            Some(false) => record_failure(conn, &rule.id)?,
+            None => continue,
+        }
+        scored += 1;
+    }
+    Ok(scored)
+}
+
 /// Fetch one rule.
 pub fn select_by_id(conn: &Connection, id: &str) -> Result<Option<FieldRuleVariant>> {
     let sql = format!("{ROW_SELECT} WHERE v.id = ?1");

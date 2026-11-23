@@ -667,6 +667,7 @@ async fn process_layer6_job(
             );
             enriched.channel = crate::extraction::ladder::detect_channel(&enriched, &job.body_text);
 
+            let confirmed = enriched.clone();
             match apply_layer6_success(
                 pool,
                 &job.observation_id,
@@ -676,7 +677,21 @@ async fn process_layer6_job(
             )
             .await
             {
-                Ok(()) => true,
+                Ok(()) => {
+                    // A committed, grounded LLM value is the evidence pending
+                    // drift rules need to be promoted or retired (M10).
+                    let (bank, body) = (job.bank_name.clone(), job.body_text.clone());
+                    if let Ok(conn) = pool.get().await {
+                        let _ = conn
+                            .interact(move |c| {
+                                crate::db::field_rules::shadow_evaluate_pending(
+                                    c, &bank, "email", &body, &confirmed,
+                                )
+                            })
+                            .await;
+                    }
+                    true
+                }
                 Err(e) => {
                     tracing::error!(
                         "Layer 6 background worker: failed to apply success for observation_id='{}': {}",

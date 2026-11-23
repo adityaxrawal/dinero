@@ -383,3 +383,37 @@ fn historical_samples_pairs_body_with_accepted_value() {
         "the training example must be excludable"
     );
 }
+
+// ── Review M10: pending rules earn promotion by shadow evaluation ──────────
+#[test]
+fn pending_rule_is_promoted_by_agreeing_confirmations_and_not_by_disagreeing() {
+    let conn = setup_db();
+    let body = "Rs 250 debited from your account";
+    let hash = crate::extraction::ladder::compute_template_hash(body);
+    let id = upsert_variant(&conn, &make_variant("v_shadow", "HDFC", "amount", &hash, "pending"), None)
+        .unwrap();
+    let agree = crate::extraction::ladder::ExtractionResult {
+        amount_minor: Some(25000),
+        ..Default::default()
+    };
+    for _ in 0..3 {
+        assert_eq!(shadow_evaluate_pending(&conn, "HDFC", "email", body, &agree).unwrap(), 1);
+    }
+    assert_eq!(select_by_id(&conn, &id).unwrap().unwrap().status, "active");
+
+    // Disagreement counts against a pending rule; with no successes behind it
+    // the existing failure policy retires it.
+    let id2 = upsert_variant(&conn, &make_variant("v_wrong", "HDFC", "amount", &hash, "pending"), None)
+        .unwrap();
+    let disagree = crate::extraction::ladder::ExtractionResult {
+        amount_minor: Some(99900),
+        ..Default::default()
+    };
+    shadow_evaluate_pending(&conn, "HDFC", "email", body, &disagree).unwrap();
+    let rule = select_by_id(&conn, &id2).unwrap().unwrap();
+    assert_eq!(rule.failure_count, 1);
+    assert_eq!(rule.status, "inactive");
+
+    // Other banks and templates are untouched.
+    assert_eq!(shadow_evaluate_pending(&conn, "ICICI", "email", body, &agree).unwrap(), 0);
+}
