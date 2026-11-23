@@ -946,8 +946,13 @@ export const API = {
   },
   // Historical Gmail scans: start, cancel, and status.
   ingestion: {
-    startHistoricalScan: (accountId: string, startDate: string, endDate: string) =>
-      invokeCommand<string>('scans_historical', { accountId, startDate, endDate }),
+    startHistoricalScan: (
+      accountId: string,
+      startDate: string,
+      endDate: string,
+      recheckRejected = false
+    ) =>
+      invokeCommand<string>('scans_historical', { accountId, startDate, endDate, recheckRejected }),
     cancelScan: (accountId: string) => invokeCommand<string>('scans_cancel', { accountId }),
     getScanStatus: (accountId: string) =>
       invokeCommand<ScanStatusResponse>('scans_status', { accountId }),

@@ -44,6 +44,8 @@ interface GlobalStateContextType {
   // Messages that failed in earlier scans, and the action that retries them.
   failedScanCount: number;
   handleRetryFailed: () => Promise<void>;
+  recheckRejected: boolean;
+  setRecheckRejected: React.Dispatch<React.SetStateAction<boolean>>;
 
   statementHistory: StatementRecord[];
   statementLoading: boolean;

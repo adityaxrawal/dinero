@@ -172,7 +172,7 @@ pub async fn scans_resume<R: tauri::Runtime>(
     let state: ScanCheckpointState = serde_json::from_str(&cp.checkpoint_state_json)
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
 
-    scans_historical(app, pool, account_id, state.start_date, state.end_date).await
+    scans_historical(app, pool, account_id, state.start_date, state.end_date, None).await
 }
 
 /// Whether enough messages have been processed to warrant a checkpoint.
@@ -434,10 +434,25 @@ pub async fn scans_historical<R: tauri::Runtime>(
     account_id: String,
     start_date: String,
     end_date: String,
+    recheck_rejected: Option<bool>,
 ) -> Result<String, crate::error::AppError> {
     crate::ipc::validation::validate_account_id("account_id", &account_id)?;
     crate::ipc::validation::validate_date_range(&start_date, &end_date)?;
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+
+    // Opt-in: forget earlier rejection decisions so this scan evaluates those
+    // emails again, e.g. after extraction improved (M2 follow-up). Messages
+    // that produced transactions, statements or ignored rows stay deduped.
+    if recheck_rejected == Some(true) {
+        pool.inner()
+            .get()
+            .await
+            .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+            .interact(|c| crate::db::processed_messages::forget_rejections(c))
+            .await
+            .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+            .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    }
 
     start_historical_scan(
         app,

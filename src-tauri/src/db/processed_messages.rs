@@ -11,3 +11,24 @@ pub fn record(conn: &Connection, message_id: &str, decision: &str) -> Result<()>
     )?;
     Ok(())
 }
+
+/// Forgets rejection decisions so the next scan evaluates those emails again.
+/// Mandate events stay recorded. Returns how many were cleared.
+pub fn forget_rejections(conn: &Connection) -> Result<usize> {
+    Ok(conn.execute("DELETE FROM processed_messages WHERE decision LIKE 'rejected:%'", [])?)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn forgetting_rejections_keeps_mandate_events() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        super::record(&conn, "r1", "rejected:gate2_not_financial").unwrap();
+        super::record(&conn, "m1", "mandate_event").unwrap();
+        assert_eq!(super::forget_rejections(&conn).unwrap(), 1);
+        let left: String = conn
+            .query_row("SELECT message_id FROM processed_messages", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, "m1");
+    }
+}

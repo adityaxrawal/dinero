@@ -62,6 +62,8 @@ export function useScanState() {
   const [scanStartDate, setScanStartDate] = useState(monthAgo);
   const [scanEndDate, setScanEndDate] = useState(() => new Date().toISOString().split('T')[0]);
   const [scanStatus, setScanStatus] = useState<ScanStatus>('idle');
+  // Opt-in: re-evaluate emails earlier scans rejected (cleared after use).
+  const [recheckRejected, setRecheckRejected] = useState(false);
   const [scanProgress, setScanProgress] = useState<ScanProgressPayload | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
   const [scanStartedAt, setScanStartedAt] = useState<number | null>(null);
@@ -189,7 +191,8 @@ export function useScanState() {
       API.ingestion.startHistoricalScan(
         primaryConnectedAccount!.account_id,
         scanStartDate,
-        scanEndDate
+        scanEndDate,
+        recheckRejected
       )
     );
   };
@@ -268,5 +271,7 @@ export function useScanState() {
     resetScan,
     failedScanCount,
     handleRetryFailed,
+    recheckRejected,
+    setRecheckRejected,
   };
 }

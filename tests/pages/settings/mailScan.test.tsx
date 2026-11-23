@@ -14,6 +14,7 @@ const handleStartScan = vi.fn();
 const handleCancelScan = vi.fn();
 const resetScan = vi.fn();
 const handleRetryFailed = vi.fn();
+const setRecheckRejected = vi.fn();
 
 const progress = (over: Partial<ScanProgressPayload> = {}): ScanProgressPayload => ({
   account_id: 'acc1',
@@ -45,6 +46,8 @@ function mockState(over: Record<string, unknown> = {}) {
     resetScan,
     failedScanCount: 0,
     handleRetryFailed,
+    recheckRejected: false,
+    setRecheckRejected,
     ...over,
   }));
 }
@@ -55,6 +58,12 @@ beforeEach(() => {
 });
 
 describe('MailScanSection', () => {
+  it('lets the user opt in to re-checking previously rejected emails', () => {
+    render(<MailScanSection />);
+    fireEvent.click(screen.getByLabelText(/Re-check emails that earlier scans rejected/));
+    expect(setRecheckRejected).toHaveBeenCalledWith(true);
+  });
+
   it('offers Retry failed with the count when earlier scans left failures', () => {
     mockState({ failedScanCount: 2096 });
     render(<MailScanSection />);
