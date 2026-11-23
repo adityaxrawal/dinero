@@ -98,6 +98,9 @@ impl QuotaLimiter {
     }
 }
 
+/// Timeout for one attachment download (review L1).
+const ATTACHMENT_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Attempts allowed for a rate-limited request before giving up.
 const RATE_LIMIT_MAX_ATTEMPTS: u32 = 6;
 
@@ -451,7 +454,14 @@ impl GmailClient {
         let att: AttachmentResponse = self
             .execute_with_retry_and_parse("fetch_attachment", |token| {
                 let url = url.clone();
-                async move { self.network.client().get(&url).bearer_auth(token) }
+                // Statement PDFs can take longer than the 15s default.
+                async move {
+                    self.network
+                        .client()
+                        .get(&url)
+                        .bearer_auth(token)
+                        .timeout(ATTACHMENT_TIMEOUT)
+                }
             })
             .await?;
 

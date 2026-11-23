@@ -22,6 +22,28 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 pub struct NetworkClient {
     client: Client,
     db_pool: Pool,
+    /// Applied to requests that set no timeout of their own.
+    default_timeout: Duration,
+}
+
+/// One connection pool for the whole process (review L1). A client per
+/// NetworkClient meant a fresh pool, TLS session and DNS lookup on every poll.
+/// No total timeout here: each request gets one in `execute`, so a large
+/// attachment download can ask for longer than a metadata call.
+fn shared_client() -> Client {
+    static CLIENT: std::sync::OnceLock<Client> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            Client::builder()
+                .connect_timeout(Duration::from_secs(10))
+                .pool_idle_timeout(Duration::from_secs(30))
+                .http2_keep_alive_interval(Duration::from_secs(10))
+                .http2_keep_alive_timeout(Duration::from_secs(5))
+                .http2_keep_alive_while_idle(true)
+                .build()
+                .expect("reqwest client with static settings must build")
+        })
+        .clone()
 }
 
 impl NetworkClient {
@@ -33,15 +55,9 @@ impl NetworkClient {
     /// Builds a client with an explicit timeout, for tests.
     pub(crate) fn with_timeout(db_pool: Pool, timeout: Duration) -> Self {
         Self {
-            client: Client::builder()
-                .timeout(timeout)
-                .pool_idle_timeout(Duration::from_secs(30))
-                .http2_keep_alive_interval(Duration::from_secs(10))
-                .http2_keep_alive_timeout(Duration::from_secs(5))
-                .http2_keep_alive_while_idle(true)
-                .build()
-                .expect("reqwest::Client::builder() with only a timeout set must always succeed"),
+            client: shared_client(),
             db_pool,
+            default_timeout: timeout,
         }
     }
 
@@ -59,7 +75,10 @@ impl NetworkClient {
         channel: &str,
         req_builder: RequestBuilder,
     ) -> reqwest::Result<Response> {
-        let request = req_builder.build()?;
+        let mut request = req_builder.build()?;
+        if request.timeout().is_none() {
+            *request.timeout_mut() = Some(self.default_timeout);
+        }
 
         let method = request.method().to_string();
         let url = request.url().clone();
@@ -128,14 +147,13 @@ impl NetworkClient {
             }
         }
 
-        let pool = self.db_pool.clone();
-        tokio::spawn(async move {
-            if let Ok(conn) = pool.get().await {
-                let _ = conn
-                    .interact(move |c| network_activity_log::insert(c, &log_row))
-                    .await;
-            }
-        });
+        // Awaited rather than spawned (review L1): a spawn per request had no
+        // bound, and one small insert is cheap next to the request itself.
+        if let Ok(conn) = self.db_pool.get().await {
+            let _ = conn
+                .interact(move |c| network_activity_log::insert(c, &log_row))
+                .await;
+        }
 
         response_result
     }
@@ -143,6 +161,35 @@ impl NetworkClient {
 
 #[cfg(test)]
 mod tests {
+
+    /// Review L1: the default timeout applies only when a request sets none,
+    /// so a request can ask for a different bound (e.g. long attachments).
+    #[tokio::test]
+    async fn request_timeout_overrides_the_default() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            // Accept and never answer.
+            let mut held = Vec::new();
+            while let Ok((sock, _)) = listener.accept().await {
+                held.push(sock);
+            }
+        });
+        let client = NetworkClient::with_timeout(dummy_pool(), Duration::from_secs(30));
+        let start = std::time::Instant::now();
+        let res = client
+            .execute(
+                "test",
+                client
+                    .client()
+                    .get(format!("http://{addr}/"))
+                    .timeout(Duration::from_millis(200)),
+            )
+            .await;
+        assert!(res.is_err());
+        assert!(start.elapsed() < Duration::from_secs(5), "per-request timeout must win");
+    }
+
     use super::*;
 
     fn dummy_pool() -> Pool {
