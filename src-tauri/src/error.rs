@@ -9,6 +9,8 @@
 //! Variants carry a `String` rather than the underlying error type on purpose:
 //! it forces each failure to be converted at the point it is understood, and
 //! stops internal detail (SQL text, file paths) from reaching the UI unexamined.
+//! `Db`, `Io`, `Unknown` and `Internal` serialize a generic message and log the
+//! detail instead; use a specific variant when the text is meant for the user.
 
 use serde::Serialize;
 use thiserror::Error;
@@ -159,9 +161,24 @@ impl Serialize for AppError {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
+        // Variants that wrap raw internal failures (SQL text, file paths,
+        // upstream bodies) get a generic message; the detail goes to the log.
+        let generic = match self {
+            Self::Db(_) => Some("A database error occurred"),
+            Self::Io(_) => Some("A file could not be read or written"),
+            Self::Unknown(_) | Self::Internal(_) => Some("Something went wrong"),
+            _ => None,
+        };
+        let message = match generic {
+            Some(msg) => {
+                tracing::error!(code = self.code(), "{}", self);
+                msg.to_string()
+            }
+            None => self.to_string(),
+        };
         let mut state = serializer.serialize_struct("AppError", 2)?;
         state.serialize_field("code", self.code())?;
-        state.serialize_field("message", &self.to_string())?;
+        state.serialize_field("message", &message)?;
         state.end()
     }
 }
@@ -202,8 +219,22 @@ mod tests {
         let err = AppError::Db("Connection failed".to_string());
         assert_eq!(
             serialized(&err),
-            json!({ "code": "INTERNAL_ERROR", "message": "Database error: Connection failed" })
+            json!({ "code": "INTERNAL_ERROR", "message": "A database error occurred" })
         );
+    }
+
+    #[test]
+    fn db_error_serialization_hides_sql_and_path_detail() {
+        let err = AppError::Db(
+            "no such column: amount_minor in SELECT * FROM transactions at /Users/x/dinero.db"
+                .to_string(),
+        );
+        let message = serialized(&err)["message"].as_str().unwrap().to_string();
+        assert!(!message.contains("SELECT"));
+        assert!(!message.contains("transactions"));
+        assert!(!message.contains("/Users"));
+        // Display still carries the detail for logs.
+        assert!(err.to_string().contains("SELECT"));
     }
 
     #[test]
@@ -229,7 +260,7 @@ mod tests {
         let err = AppError::Unknown("Something went wrong".to_string());
         assert_eq!(
             serialized(&err),
-            json!({ "code": "INTERNAL_ERROR", "message": "Unknown error: Something went wrong" })
+            json!({ "code": "INTERNAL_ERROR", "message": "Something went wrong" })
         );
     }
 
@@ -265,7 +296,7 @@ mod tests {
         let err = AppError::Io("disk full".to_string());
         assert_eq!(
             serialized(&err),
-            json!({ "code": "INTERNAL_ERROR", "message": "I/O error: disk full" })
+            json!({ "code": "INTERNAL_ERROR", "message": "A file could not be read or written" })
         );
     }
 
@@ -274,7 +305,7 @@ mod tests {
         let err = AppError::Internal("unexpected panic".to_string());
         assert_eq!(
             serialized(&err),
-            json!({ "code": "INTERNAL_ERROR", "message": "Internal error: unexpected panic" })
+            json!({ "code": "INTERNAL_ERROR", "message": "Something went wrong" })
         );
     }
 
@@ -481,8 +512,9 @@ mod tests {
         let mapped = map_insert_conflict(other_err, "duplicate name");
         assert_eq!(
             serialized(&mapped),
-            json!({ "code": "INTERNAL_ERROR", "message": "Database error: connection lost" })
+            json!({ "code": "INTERNAL_ERROR", "message": "A database error occurred" })
         );
+        assert_eq!(mapped.to_string(), "Database error: connection lost");
     }
 
     #[test]
