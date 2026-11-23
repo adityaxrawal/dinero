@@ -56,6 +56,7 @@
     "allow-license-deactivate",
     "allow-license-get-status",
     "allow-license-refresh",
+    "allow-license-restore",
     "allow-llm-cancel-download",
     "allow-llm-delete-model",
     "allow-llm-download-model",

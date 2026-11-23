@@ -1041,6 +1041,8 @@ export const API = {
         razorpaySignature,
         billingInterval,
       }),
+    restore: (email: string, razorpayPaymentId: string) =>
+      invokeCommand<LicenseActivateResponse>('license_restore', { email, razorpayPaymentId }),
     deactivate: () => invokeCommand<LicenseDeactivateResponse>('license_deactivate'),
     refresh: () => invokeCommand<LicenseRefreshResponse>('license_refresh'),
     startCheckout: (email: string, planId: string) =>

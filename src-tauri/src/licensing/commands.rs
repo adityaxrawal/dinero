@@ -179,49 +179,7 @@ pub async fn license_activate(
             }
         })?;
 
-    let claims = verify_license_jwt(&response.jwt)
-        .map_err(|e| AppError::Auth(format!("Activation JWT failed verification: {}", e)))?;
-
-    if claims.device_id != device_id {
-        return Err(AppError::Auth(
-            "Activation JWT device_id does not match this device".to_string(),
-        ));
-    }
-
-    let expires_at: DateTime<Utc> = DateTime::from_timestamp(claims.exp, 0)
-        .ok_or_else(|| AppError::Auth("Invalid JWT expiry claim".to_string()))?;
-
-    let status = crate::licensing::state_machine::server_status(&claims, response.state.as_deref());
-
-    let conn = pool.get().await.map_err(|e| AppError::Db(e.to_string()))?;
-    let row = LicenseStateRow {
-        id: 1,
-        license_jwt: response.jwt.clone(),
-        subscription_status_cached: status.clone(),
-        plan_id_cached: Some(claims.plan.clone()),
-        current_period_end_cached: Some(expires_at),
-        jwt_expires_at: expires_at,
-        last_server_validated_at: Some(Utc::now()),
-        last_known_valid_time: Utc::now(),
-        device_fingerprint: Some(device_id),
-        source: "server_fresh".to_string(),
-        billing_interval_cached: Some(claims.billing_interval.clone()),
-    };
-    conn.interact(move |c| upsert_license_state(c, &row))
-        .await
-        .map_err(|e| AppError::Unknown(e.to_string()))?
-        .map_err(|e| AppError::Db(e.to_string()))?;
-
-    emit_license_state_changed(&app_handle, pool.inner()).await;
-
-    Ok(LicenseActivateResponse {
-        status: "activated".to_string(),
-        state: status.as_str().to_uppercase(),
-        device_bound: true,
-        plan_id: Some(claims.plan),
-        billing_interval: Some(claims.billing_interval),
-        expires_at: Some(expires_at.to_rfc3339()),
-    })
+    store_server_license(response, device_id, pool.inner(), &app_handle, "activated").await
 }
 
 #[tauri::command]
@@ -382,4 +340,93 @@ pub async fn billing_start_checkout(
         razorpay_payment_id: result.razorpay_payment_id,
         razorpay_signature: result.razorpay_signature,
     })
+}
+
+/// Verifies a licence token the server just issued for this device and stores
+/// it. Shared by activation and restore, so both apply the same checks.
+async fn store_server_license(
+    response: crate::licensing::client::LicenseResponse,
+    device_id: String,
+    pool: &deadpool_sqlite::Pool,
+    app_handle: &tauri::AppHandle,
+    outcome: &str,
+) -> Result<LicenseActivateResponse, AppError> {
+    let claims = verify_license_jwt(&response.jwt)
+        .map_err(|e| AppError::Auth(format!("Activation JWT failed verification: {}", e)))?;
+
+    if claims.device_id != device_id {
+        return Err(AppError::Auth(
+            "Activation JWT device_id does not match this device".to_string(),
+        ));
+    }
+
+    let expires_at: DateTime<Utc> = DateTime::from_timestamp(claims.exp, 0)
+        .ok_or_else(|| AppError::Auth("Invalid JWT expiry claim".to_string()))?;
+
+    let status = crate::licensing::state_machine::server_status(&claims, response.state.as_deref());
+
+    let conn = pool.get().await.map_err(|e| AppError::Db(e.to_string()))?;
+    let row = LicenseStateRow {
+        id: 1,
+        license_jwt: response.jwt.clone(),
+        subscription_status_cached: status.clone(),
+        plan_id_cached: Some(claims.plan.clone()),
+        current_period_end_cached: Some(expires_at),
+        jwt_expires_at: expires_at,
+        last_server_validated_at: Some(Utc::now()),
+        last_known_valid_time: Utc::now(),
+        device_fingerprint: Some(device_id),
+        source: "server_fresh".to_string(),
+        billing_interval_cached: Some(claims.billing_interval.clone()),
+    };
+    conn.interact(move |c| upsert_license_state(c, &row))
+        .await
+        .map_err(|e| AppError::Unknown(e.to_string()))?
+        .map_err(|e| AppError::Db(e.to_string()))?;
+
+    emit_license_state_changed(app_handle, pool).await;
+
+    Ok(LicenseActivateResponse {
+        status: outcome.to_string(),
+        state: status.as_str().to_uppercase(),
+        device_bound: true,
+        plan_id: Some(claims.plan),
+        billing_interval: Some(claims.billing_interval),
+        expires_at: Some(expires_at.to_rfc3339()),
+    })
+}
+
+#[tauri::command]
+/// Restores the licence to this Mac after a reinstall lost the local token,
+/// using the account email and the payment id from the purchase receipt
+/// (M16 follow-up: validate now requires the device's token).
+pub async fn license_restore(
+    email: String,
+    razorpay_payment_id: String,
+    pool: State<'_, deadpool_sqlite::Pool>,
+    session_state: State<'_, crate::auth::session::SessionState>,
+    app_handle: tauri::AppHandle,
+) -> Result<LicenseActivateResponse, AppError> {
+    crate::ipc::middleware::require_active_session(&session_state)?;
+    let device_id = get_device_id().map_err(|e| AppError::Auth(e.to_string()))?;
+    let client = LicensingClient::new(LICENSING_BASE_URL.to_string(), pool.inner().clone());
+    let response = client
+        .restore(crate::licensing::client::RestoreRequest {
+            email,
+            razorpay_payment_id,
+            device_id: device_id.clone(),
+        })
+        .await
+        .map_err(|e| match e.to_string().as_str() {
+            "DEVICE_ALREADY_BOUND" => AppError::Auth(
+                "This license is active on another Mac. Deactivate it there first, then restore here."
+                    .to_string(),
+            ),
+            "LICENSE_INVALID" => AppError::Auth(
+                "No licence matches that email and payment id. Check both against your purchase receipt."
+                    .to_string(),
+            ),
+            _ => AppError::Network(e.to_string()),
+        })?;
+    store_server_license(response, device_id, pool.inner(), &app_handle, "restored").await
 }

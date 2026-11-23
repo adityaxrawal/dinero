@@ -32,6 +32,13 @@ pub struct LicenseResponse {
 }
 
 #[derive(Serialize)]
+pub struct RestoreRequest {
+    pub email: String,
+    pub razorpay_payment_id: String,
+    pub device_id: String,
+}
+
+#[derive(Serialize)]
 pub struct StartTrialRequest {
     pub device_id: String,
 }
@@ -104,6 +111,20 @@ impl LicensingClient {
         res.error_for_status_ref()?;
         let data = res.json::<LicenseResponse>().await?;
         Ok(data)
+    }
+
+    /// Restores a paid licence to this device (email + payment id).
+    pub async fn restore(&self, req: RestoreRequest) -> Result<LicenseResponse> {
+        let url = format!("{}/api/license/restore", self.base_url);
+        let builder = self.network.client().post(&url).json(&req);
+        let res = self.network.execute("licensing_backend", builder).await?;
+        if !res.status().is_success() {
+            if let Ok(body) = res.json::<LicensingErrorResponse>().await {
+                anyhow::bail!(body.code);
+            }
+            anyhow::bail!("Licensing Backend restore request failed");
+        }
+        Ok(res.json::<LicenseResponse>().await?)
     }
 
     /// Registers (or resumes) this device's trial with the server.
@@ -180,6 +201,38 @@ mod tests {
         assert_eq!(res.status, "active");
         mock.assert_async().await;
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    /// M16 follow-up: restore sends email + payment id + device and surfaces
+    /// the server's error code.
+    #[tokio::test]
+    async fn restore_sends_receipt_details_and_surfaces_error_codes() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/license/restore")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "email": "u@e.com",
+                "razorpay_payment_id": "pay_1",
+                "device_id": "dev"
+            })))
+            .with_status(400)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"code":"LICENSE_INVALID","message":"x"}"#)
+            .create_async()
+            .await;
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+        let err = LicensingClient::new(server.url(), pool)
+            .restore(RestoreRequest {
+                email: "u@e.com".into(),
+                razorpay_payment_id: "pay_1".into(),
+                device_id: "dev".into(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "LICENSE_INVALID");
+        mock.assert_async().await;
     }
 
     #[tokio::test]

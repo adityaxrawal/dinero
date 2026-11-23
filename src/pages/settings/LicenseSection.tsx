@@ -9,6 +9,7 @@ import LicenseStateBanner from './LicenseStateBanner';
 import LicenseStatusGrid from './LicenseStatusGrid';
 import LicenseActions from './LicenseActions';
 import ManualActivationForm from './ManualActivationForm';
+import RestoreLicenseForm from './RestoreLicenseForm';
 
 /** Licence and subscription section. */
 export default function LicenseSection() {
@@ -42,6 +43,12 @@ export default function LicenseSection() {
 
           {activation.showActivateForm && !licenseStatus.is_active && (
             <ManualActivationForm activation={activation} />
+          )}
+          {!licenseStatus.is_active && (
+            <RestoreLicenseForm
+              reload={license.loadLicenseStatus}
+              setError={license.setLicenseActionError}
+            />
           )}
         </div>
       ) : (

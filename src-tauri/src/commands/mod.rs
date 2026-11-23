@@ -3290,6 +3290,7 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         network::settings_get_network_activity,
         crate::licensing::commands::license_get_status,
         crate::licensing::commands::license_activate,
+        crate::licensing::commands::license_restore,
         crate::licensing::commands::license_deactivate,
         crate::licensing::commands::billing_start_checkout,
         crate::ipc::system_warnings::get_active_system_warnings,
