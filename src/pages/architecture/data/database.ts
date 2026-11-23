@@ -22,6 +22,7 @@ export const ENTITIES: EntityDef[] = [
       { name: 'historical_scan_months', type: 'INTEGER' },
       { name: 'llm_model', type: 'TEXT' },
       { name: 'statement_preference', type: 'TEXT', note: 'auto | manual' },
+      { name: 'onboarded_at', type: 'DATETIME', note: 'onboarding gate; set by the preferences save' },
     ],
   },
   {
@@ -154,6 +155,7 @@ export const ENTITIES: EntityDef[] = [
       { name: 'masked_identifier', type: 'TEXT' },
       { name: 'rows_json', type: 'TEXT' },
       { name: 'status', type: 'TEXT', note: 'pending_review | committing | committed …' },
+      { name: 'missing_pages', type: 'TEXT', note: 'JSON page numbers; commit needs acknowledge_partial' },
     ],
   },
   {
@@ -353,7 +355,7 @@ export const ENTITIES: EntityDef[] = [
     name: 'field_rules',
     group: 'ledger',
     description:
-      'Learned extraction rules (Layer 1 of the ladder) with per-template-shape variants. Variant status: pending → active (3 successes) → trusted (10); inactive after 3 failures or a hit rate below 70%. Pending (LLM-drift) rules are promoted by shadow evaluation against committed Layer 6 results.',
+      'Learned extraction rules (Layer 1 of the ladder) with per-template-shape variants. Variant status: pending → active (3 successes) → trusted (10); inactive after 3 failures or a hit rate below 70%. One variant serves a template (active/trusted) with at most one pending challenger beside it; a challenger replaces the serving variant only by a better shadow hit rate, never one learned from a user correction.',
     columns: [{ name: 'id', type: 'TEXT', key: 'PK' }],
   },
 ];

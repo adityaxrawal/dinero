@@ -23,7 +23,7 @@ const CORE: ComponentDef[] = [
       'Render dashboard, transactions, instruments, statements, reconciliation and settings',
       'Route via createHashRouter under AppLayout (onboarding sits outside the shell)',
       'Mirror backend scan/warning state through useSyncStore',
-      'Drive the onboarding gate (localStorage `dinero_onboarded`)',
+      'Drive the onboarding gate (onboarding_status: local_profile.onboarded_at + network consent)',
     ],
     technologies: [
       'React 19',
@@ -36,7 +36,7 @@ const CORE: ComponentDef[] = [
       'Recharts',
       'Lucide',
     ],
-    inputs: ['IPC query results', 'Tauri events', 'localStorage flags'],
+    inputs: ['IPC query results', 'Tauri events', 'localStorage LLM preferences'],
     outputs: ['IPC invocations', 'Rendered ledger + review UI'],
     sources: ['src/routes/index.tsx', 'src/pages/', 'src/components/', 'src/stores/', 'src/hooks/'],
     apiSurface: ['12 pages', '6 Zustand stores', '21 query hooks', '13 mutation hooks'],
@@ -60,7 +60,7 @@ const CORE: ComponentDef[] = [
       'Branch auto (Gmail OAuth → historical scan) vs manual-only path',
       'Confirm auto-started 14-day trial; mark install onboarded',
     ],
-    technologies: ['React', 'localStorage', 'useScanState'],
+    technologies: ['React', 'useScanState'],
     inputs: ['User form input', 'License state', 'Scan progress events'],
     outputs: [
       'consent_events rows',
@@ -80,9 +80,9 @@ const CORE: ComponentDef[] = [
       'license status query',
     ],
     facts: [
-      '`dinero_onboarded` is set at the gmail_consent → historical_scan transition, not the final step',
-      'Consent-write failure is logged only and never blocks advancing',
-      '14-day trial is anchored on the licensing server at first launch (start-trial by device id); local_profile.created_at is only the offline fallback (TRIAL_WINDOW_DAYS = 14)',
+      'Onboarding completion is local_profile.onboarded_at, set by onboarding_save_preferences itself; a failed save keeps the user on the step, and a database reset means onboarding again',
+      'The disclosure acknowledgement is awaited: a failed consent write keeps the user on the disclosure screen. An onboarded install without it is shown only that screen',
+      '14-day trial is anchored on the licensing server once the network disclosure is acknowledged (start-trial by device id); local_profile.created_at is only the offline fallback (TRIAL_WINDOW_DAYS = 14)',
     ],
     confidence: 'verified',
     notes: [
@@ -543,7 +543,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     kind: 'service',
     purpose: 'Convert user corrections into extraction rules that survive the next scan.',
     description:
-      'learning/worker.rs consumes correction and drift signals, then synthesizes and validates field_rules variants with a self-check + regression-check gate (ADR-021). rule_llm.rs authors candidate rules from source_text/old_value/new_value. Rules learned from a user correction start active; rules learned from LLM drift start pending and are never applied until they earn promotion.',
+      'learning/worker.rs consumes correction and drift signals, then synthesizes and validates field_rules variants with a self-check + regression-check gate (ADR-021). rule_llm.rs authors candidate rules from source_text/old_value/new_value. A rule learned from a user correction serves at once (the old serving rule is set inactive). An automatic rule (LLM drift, merchant cleanup) beside a serving rule becomes the pending challenger for that template and takes over only by beating the serving rule in shadow evaluation; a serving rule from a user correction is never displaced automatically.',
     responsibilities: [
       'Consume user corrections',
       'Synthesize field_rules variants via LLM',
@@ -561,7 +561,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     apiSurface: ['spawn_learning_worker', 'shadow_evaluate_pending'],
     facts: [
       'Lifecycle: pending → active after 3 successes → trusted after 10; retired (inactive) after 3 failures or a hit rate below 70%',
-      'Shadow evaluation: each pending rule for the same bank + email template runs on the body; agreeing with the committed value is a success, disagreeing a failure',
+      'Shadow evaluation: each pending rule for the same bank + email template runs on the body, and so does the rule serving that template (unless it came from a user correction); agreeing with the committed value is a success, disagreeing a failure',
       'Only active and trusted rules are applied by Layer 1',
     ],
     confidence: 'verified',
@@ -633,7 +633,8 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     ],
     facts: [
       'awaiting_password never blocks — the caller moves to the next file',
-      'ParseMethod fallback chain: Pdfium → OcrFallback → LlmAssist',
+      'ParseMethod fallback chain: Pdfium → OcrFallback → LlmAssist; OCR pages are rendered inside pdf_sidecar, never in-process',
+      'Pages neither the text layer nor OCR could read are recorded as statement_drafts.missing_pages; commit needs acknowledge_partial',
       'batch progress tracker activates above 10 files',
       'Statements left queued by a crash are recovered at launch, keeping the original filename',
     ],
@@ -836,7 +837,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     kind: 'service',
     purpose: 'Deterministic matching that turns observations into canonical transactions.',
     description:
-      'prefilter → exact_match → scorer → cluster → canonical write. Ambiguous matches are grouped into clusters for human review rather than auto-resolved. post_processing runs follow-up work; audit records an immutable decision trail.',
+      'prefilter → exact_match → scorer → cluster → canonical write. A hard constraint runs before scoring: a canonical already holding an observation from the same source pipeline is never a candidate unless both carry the same non-empty reference id. Ambiguous matches are grouped into clusters for human review rather than auto-resolved. post_processing runs follow-up work; audit records an immutable decision trail.',
     responsibilities: [
       'Prefilter + exact match on fingerprints/amount/date',
       'Scored fuzzy matching',
@@ -927,7 +928,7 @@ const INFRA: ComponentDef[] = [
     kind: 'worker',
     purpose: 'Background 6h tick re-validating the device-bound JWT with the backend.',
     description:
-      'licensing::worker::start_background_validation talks to https://api.dinero-app.com. With no license row it registers the trial (start-trial by device id). Otherwise it validates, sending the stored JWT as device proof, and stores the signed state via apply_server_validation — which can also lift Locked. Backend unreachable → Active → Grace for a 7-day offline grace; then Grace → Locked. A successful validation clears the licence-failure warnings.',
+      'licensing::worker::start_background_validation talks to https://api.dinero-app.com, starting only once the network disclosure consent is recorded. With no license row it registers the trial (start-trial by device id). Otherwise it validates, sending the stored JWT as device proof, and stores the signed state via apply_server_validation — which can also lift Locked. Backend unreachable → Active → Grace for a 7-day offline grace; then Grace → Locked. A successful validation clears the licence-failure warnings.',
     responsibilities: [
       '6h validation tick',
       'Offline grace handling',
@@ -941,7 +942,7 @@ const INFRA: ComponentDef[] = [
     facts: [
       'Pointed at https://api.dinero-app.com',
       '6h cadence',
-      'license_restore re-binds a paid licence after a reinstall (account email + payment id)',
+      'license_restore re-binds a paid licence (account email + payment id); a licence bound to another device moves here and the old binding is revoked, at most once per 30 days per account',
     ],
     confidence: 'verified',
   },
@@ -1141,7 +1142,7 @@ const INFRA: ComponentDef[] = [
     kind: 'worker',
     purpose: 'GitHub Releases update check (~6h), explicit-confirm install.',
     description:
-      'tauri-plugin-updater with minisign verification against a pinned public key. Skipped entirely in debug builds. The update check bypasses NetworkClient (ADR-024).',
+      'tauri-plugin-updater with minisign verification against a pinned public key. Skipped entirely in debug builds. The first check waits for the network disclosure consent, and the loop stops on the shutdown token. The update check bypasses NetworkClient (ADR-024).',
     responsibilities: [
       'Check for updates ~6h',
       'Verify minisign signature',
@@ -1213,13 +1214,13 @@ const INFRA: ComponentDef[] = [
     kind: 'process',
     purpose: 'Isolated pdfium process — a malformed PDF can only crash the child.',
     description:
-      'Spawn-per-file binary using pdfium-render against the bundled libpdfium.dylib. Speaks a small request protocol over stdio: unlock_check / extract_text / decrypt. Any infrastructure error is treated as "unlock failed" — fails closed. 30s per-call timeout.',
+      'Spawn-per-file binary using pdfium-render against the bundled libpdfium.dylib. Speaks a small request protocol over stdio: unlock_check / extract_text / render_page (grayscale PGM for OCR) / decrypt. The app never opens a PDF with pdfium in-process. Any infrastructure error is treated as "unlock failed" — fails closed. 30s per-call timeout.',
     responsibilities: ['PDF unlock check', 'Text + geometry extraction', 'Decrypt for viewing'],
     technologies: ['pdfium-render 0.8', 'libpdfium.dylib', 'stdio protocol'],
     inputs: ['PDF bytes over pipe (never on disk during calls)'],
     outputs: ['Page text + per-character geometry'],
     sources: ['src-tauri/src/bin/pdf_sidecar.rs', 'src-tauri/src/statements/sidecar/'],
-    apiSurface: ['SidecarRequest { operation: "unlock_check" | "extract_text" }'],
+    apiSurface: ['SidecarRequest { operation: "unlock_check" | "extract_text" | "render_page" }'],
     facts: ['SIDECAR_TIMEOUT_SECS = 30', 'Spawn-per-file process model'],
     confidence: 'verified',
     notes: [
@@ -1242,12 +1243,13 @@ const INFRA: ComponentDef[] = [
     technologies: ['llama.cpp llama-server (b10068)', 'GGUF', 'loopback HTTP'],
     inputs: ['Prompts from extraction/statements/learning'],
     outputs: ['Structured extraction results'],
-    sources: ['src-tauri/src/llama_sidecar.rs', 'src-tauri/src/llm_pipeline.rs'],
+    sources: ['src-tauri/src/llama_sidecar.rs'],
     apiSurface: ['4 LLM integration points'],
     facts: [
       'Binary download from github.com/ggml-org/llama.cpp/releases (logged to network_activity_log)',
       'Process boundary as security/stability boundary',
       'MAX_CONSECUTIVE_TIMEOUTS = 3',
+      'Scheduling: interactive requests (statement rows) take the next free slot before background work (Layer 6, merchant cleanup, rule authoring); the calibrated timeout starts once a slot is held',
     ],
     confidence: 'verified',
   },

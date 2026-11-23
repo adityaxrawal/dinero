@@ -45,7 +45,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'boot-check',
         title: 'Onboarding gate',
         detail:
-          'WebView loads; AppLayout checks localStorage `dinero_onboarded`. Unset → navigate to /onboarding (replace).',
+          'WebView loads; AppLayout reads onboarding_status from the database. Not onboarded → /onboarding (replace); onboarded but no network consent → the disclosure screen only.',
         components: ['react-ui', 'onboarding-ui'],
         relations: ['sync'],
       },
@@ -53,7 +53,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'consent',
         title: 'Network disclosure + preferences',
         detail:
-          'The user acknowledges NETWORK_DISCLOSURE_TABLE verbatim — recorded as a consent event before any network feature is reachable. Preferences (timezone, spending limit, LLM tier, statement preference) are saved to local_profile.',
+          'The user acknowledges NETWORK_DISCLOSURE_TABLE verbatim — recorded (and awaited) as a consent event; licence revalidation and update checks wait for it in the backend. Preferences (timezone, spending limit, LLM tier, statement preference) are saved to local_profile, which also sets onboarded_at; a failed save keeps the user on the step.',
         components: ['onboarding-ui', 'ipc-client', 'ipc-bridge', 'sqlite'],
         relations: ['sync', 'db'],
         outcomes: [
@@ -110,7 +110,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'license-confirm',
         title: 'Trial confirmation → Dashboard',
         detail:
-          'LicenseActivationScreen shows the auto-started 14-day trial (registered on the licensing server at first launch by device id; local_profile.created_at is only the offline fallback) or an existing paid state. `dinero_onboarded` was already set at the Gmail-consent transition. Continue navigates to the Dashboard.',
+          'LicenseActivationScreen shows the auto-started 14-day trial (registered on the licensing server by device id once the disclosure is acknowledged; local_profile.created_at is only the offline fallback) or an existing paid state. onboarded_at was already set by the preferences save. Continue navigates to the Dashboard.',
         components: ['onboarding-ui', 'license-state', 'react-ui'],
         relations: ['sync'],
       },
@@ -374,7 +374,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'parse',
         title: 'Parse + metadata (5-permit queue)',
         detail:
-          'Under the 5-permit semaphore: store encrypted PDF bytes → sidecar extract_text (empty pages = hard parse_failed) → extract issuer/masked-ID/billing period/due date. ParseMethod fallback chain: Pdfium → OcrFallback (Tesseract) → LlmAssist.',
+          'Under the 5-permit semaphore: store encrypted PDF bytes → sidecar extract_text (empty pages = hard parse_failed) → extract issuer/masked-ID/billing period/due date. ParseMethod fallback chain: Pdfium → OcrFallback (Tesseract on every page, rendered inside the sidecar) → LlmAssist. Unreadable pages are recorded on the draft as missing_pages.',
         components: ['stmt-queue', 'statement-pipeline', 'pdf-sidecar', 'pdf-storage'],
         relations: ['pipe', 'db'],
       },

@@ -209,7 +209,7 @@ export const STATE_MACHINES: StateMachineDef[] = [
       'Un-skippable where required; consent is recorded before any network feature is reachable.',
     source: 'src/routes/onboarding/OnboardingFlow.tsx + pages/Onboarding.tsx',
     notes: [
-      '`dinero_onboarded` is set at the gmail_consent → historical_scan transition (or on Gmail skip), NOT at the final step — a user who quits before step 4 lands on Dashboard next launch.',
+      'Onboarding completion is local_profile.onboarded_at, written by the preferences save (before Gmail) — a user who quits after preferences lands on Dashboard next launch. Consent is awaited before advancing past disclosure.',
       'Phase state is purely client-side useState; a refresh restarts at welcome.',
     ],
     states: [
