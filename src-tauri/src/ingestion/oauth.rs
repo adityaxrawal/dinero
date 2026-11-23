@@ -13,7 +13,6 @@ use anyhow::{Context, Result};
 use deadpool_sqlite::Pool;
 #[cfg(not(debug_assertions))]
 use keyring::Entry;
-use oauth2::reqwest::async_http_client;
 use oauth2::{
     basic::BasicClient, AuthUrl, AuthorizationCode, ClientId, CsrfToken, PkceCodeChallenge,
     RedirectUrl, RefreshToken, Scope, TokenResponse, TokenUrl,
@@ -669,7 +668,7 @@ pub async fn start_oauth_flow_async(
         client
             .exchange_code(AuthorizationCode::new(code))
             .set_pkce_verifier(pkce_verifier)
-            .request_async(async_http_client),
+            .request_async(|req| audited_oauth_http_client(pool.clone(), req)),
     )
     .await
     .context("Timed out exchanging OAuth authorization code for a token")??;
@@ -920,6 +919,42 @@ async fn mark_account_degraded_async<R: tauri::Runtime>(
     );
 }
 
+/// HTTP transport for the oauth2 crate that goes through NetworkClient.
+///
+/// The token exchange and refresh used oauth2's own client, so they bypassed
+/// the network activity log that every other outbound call is recorded in
+/// (ADR-024, review M7). oauth2 4.x speaks http 0.2 types and reqwest 0.12
+/// http 1.x, so headers and status are converted by value.
+async fn audited_oauth_http_client(
+    pool: Pool,
+    request: oauth2::HttpRequest,
+) -> Result<oauth2::HttpResponse, reqwest::Error> {
+    let network = crate::network_client::NetworkClient::new(pool);
+    let method = reqwest::Method::from_bytes(request.method.as_str().as_bytes())
+        .unwrap_or(reqwest::Method::POST);
+    let mut builder = network
+        .client()
+        .request(method, request.url.as_str())
+        .body(request.body);
+    for (name, value) in request.headers.iter() {
+        builder = builder.header(name.as_str(), value.as_bytes());
+    }
+    let response = network.execute("google_oauth", builder).await?;
+    let status_code = oauth2::http::StatusCode::from_u16(response.status().as_u16())
+        .unwrap_or(oauth2::http::StatusCode::INTERNAL_SERVER_ERROR);
+    let mut headers = oauth2::http::HeaderMap::new();
+    for (name, value) in response.headers() {
+        if let (Ok(name), Ok(value)) = (
+            oauth2::http::HeaderName::from_bytes(name.as_str().as_bytes()),
+            oauth2::http::HeaderValue::from_bytes(value.as_bytes()),
+        ) {
+            headers.append(name, value);
+        }
+    }
+    let body = response.bytes().await?.to_vec();
+    Ok(oauth2::HttpResponse { status_code, headers, body })
+}
+
 /// Returns a valid access token, refreshing it if expired.
 ///
 /// The single entry point every Gmail call goes through, so refresh happens in
@@ -990,7 +1025,7 @@ async fn refresh_token_store<R: tauri::Runtime>(
         OAUTH_TOKEN_REQUEST_TIMEOUT,
         client
             .exchange_refresh_token(&RefreshToken::new(refresh_token))
-            .request_async(async_http_client),
+            .request_async(|req| audited_oauth_http_client(pool.clone(), req)),
     )
     .await;
     match refresh_result {
@@ -1182,6 +1217,67 @@ mod tests {
             )
             .unwrap();
         assert_eq!(action, "gmail_revoked");
+    }
+
+    /// Review M7: OAuth token calls go through NetworkClient (logged under
+    /// google_oauth) and the response is converted faithfully for oauth2.
+    #[tokio::test]
+    async fn oauth_transport_is_audited_and_faithful() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/token")
+            .match_header("content-type", "application/x-www-form-urlencoded")
+            .match_body("grant_type=refresh_token")
+            .with_status(400)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"error":"invalid_grant"}"#)
+            .create_async()
+            .await;
+        let dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pool = crate::db::init_db(dir.join("t.db")).await.unwrap();
+
+        let mut headers = oauth2::http::HeaderMap::new();
+        headers.insert(
+            oauth2::http::header::CONTENT_TYPE,
+            oauth2::http::HeaderValue::from_static("application/x-www-form-urlencoded"),
+        );
+        let response = audited_oauth_http_client(
+            pool.clone(),
+            oauth2::HttpRequest {
+                url: url::Url::parse(&format!("{}/token", server.url())).unwrap(),
+                method: oauth2::http::Method::POST,
+                headers,
+                body: b"grant_type=refresh_token".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status_code.as_u16(), 400);
+        assert_eq!(response.body, br#"{"error":"invalid_grant"}"#.to_vec());
+        assert_eq!(
+            response.headers.get("content-type").unwrap(),
+            "application/json"
+        );
+        mock.assert_async().await;
+
+        // The network log write is asynchronous; give it a moment.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let logged: i64 = pool
+            .get()
+            .await
+            .unwrap()
+            .interact(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM network_activity_log WHERE channel = 'google_oauth'",
+                    [],
+                    |r| r.get(0),
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(logged, 1);
     }
 
     #[test]
