@@ -1399,12 +1399,16 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
             let msg_ids = state.all_message_ids.clone();
             let started_at = started_at.clone();
 
-            let _ = conn.interact(move |c| {
-                if let Ok(tx) = c.transaction() {
-                    let _ = tx.execute(
+            let acct_for_fallback = account_id.clone();
+            let result = conn.interact(move |c| -> rusqlite::Result<()> {
+                // All-or-nothing (S4): any failed step rolls the whole cleanup
+                // back instead of committing a partial undo.
+                let tx = c.transaction()?;
+                {
+                    tx.execute(
                         "DELETE FROM processing_checkpoints WHERE job_type = 'historical_scan' AND job_key = ?",
                         rusqlite::params![acct_id],
-                    );
+                    )?;
 
                     for chunk in msg_ids.chunks(900) {
                         // ?1 is the scan's start time: only rows this scan
@@ -1425,7 +1429,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                             )",
                             placeholders
                         );
-                        let _ = tx.execute(&sql_unassigned, rusqlite::params_from_iter(params()));
+                        tx.execute(&sql_unassigned, rusqlite::params_from_iter(params()))?;
 
                         let sql_obs = format!(
                             "DELETE FROM transaction_observations
@@ -1436,7 +1440,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                              AND id NOT IN (SELECT observation_id FROM unassigned_transactions)",
                             placeholders
                         );
-                        let _ = tx.execute(&sql_obs, rusqlite::params_from_iter(params()));
+                        tx.execute(&sql_obs, rusqlite::params_from_iter(params()))?;
 
                         for table_sql in [
                             "DELETE FROM ignored_messages WHERE created_at >= ?1 AND message_id IN ({})",
@@ -1444,18 +1448,38 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                             "DELETE FROM unprocessed_statements WHERE created_at >= ?1 AND json_extract(statement_source_json, '$.message_id') IN ({})",
                         ] {
                             let sql = table_sql.replace("{}", &placeholders);
-                            let _ = tx.execute(&sql, rusqlite::params_from_iter(params()));
+                            tx.execute(&sql, rusqlite::params_from_iter(params()))?;
                         }
                     }
                     // Layer 6 jobs whose unassigned row was rolled back.
-                    let _ = tx.execute(
+                    tx.execute(
                         "DELETE FROM layer6_pending_jobs WHERE id NOT IN (SELECT id FROM unassigned_transactions)",
                         [],
-                    );
+                    )?;
 
-                    let _ = tx.commit();
                 }
+                tx.commit()
             }).await;
+            let failed = match result {
+                Ok(Ok(())) => None,
+                Ok(Err(e)) => Some(e.to_string()),
+                Err(e) => Some(e.to_string()),
+            };
+            if let Some(e) = failed {
+                tracing::error!("Cancel cleanup for '{}' was rolled back: {}", acct_for_fallback, e);
+                // Leave a resumable state instead of an in_progress claim that
+                // would refuse new scans until the next restart.
+                if let Ok(conn) = pool.get().await {
+                    let _ = conn
+                        .interact(move |c| {
+                            c.execute(
+                                "UPDATE processing_checkpoints SET status = 'failed' WHERE job_type = 'historical_scan' AND job_key = ?1",
+                                rusqlite::params![acct_for_fallback],
+                            )
+                        })
+                        .await;
+                }
+            }
         }
     } else {
         let final_cp = ProcessingCheckpointRow {
@@ -2282,6 +2306,79 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(triage, vec![("u_resolved".to_string(), "resolved".to_string())]);
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    /// S4: a cancel cleanup step that fails rolls the whole cleanup back and
+    /// leaves the checkpoint `failed` (resumable) instead of a half-undone
+    /// scan with a stuck in_progress claim.
+    #[tokio::test]
+    async fn test_failed_cancel_cleanup_rolls_back_and_frees_the_claim() {
+        let app = mock_builder()
+            .build(mock_context(tauri::test::noop_assets()))
+            .unwrap()
+            .handle()
+            .clone();
+        app.manage(test_queue_handles());
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let pool = init_db(temp_dir.join("t.db")).await.expect("DB init failed");
+        let account_id = format!("gmail_{}", uuid::Uuid::new_v4());
+
+        let conn = pool.get().await.unwrap();
+        let acc = account_id.clone();
+        conn.interact(move |c| {
+            c.execute_batch(
+                "INSERT INTO processed_messages (message_id, decision, created_at)
+                 VALUES ('m1', 'rejected:x', datetime('now', '+1 minute'));
+                 CREATE TRIGGER fail_cleanup BEFORE DELETE ON ignored_messages
+                 BEGIN SELECT RAISE(ABORT, 'simulated failure'); END;
+                 INSERT INTO ignored_messages (id, message_id, reason, created_at, expires_at)
+                 VALUES ('i1', 'm1', 'r', datetime('now', '+1 minute'), datetime('now', '+30 days'));",
+            )
+            .unwrap();
+            upsert_checkpoint(
+                c,
+                &ProcessingCheckpointRow {
+                    id: Uuid::new_v4().to_string(),
+                    job_type: "historical_scan".into(),
+                    job_key: acc,
+                    checkpoint_state_json: "{}".into(),
+                    last_processed_token: None,
+                    status: "in_progress".into(),
+                    updated_at: None,
+                },
+            )
+            .unwrap();
+        })
+        .await
+        .unwrap();
+
+        scans_cancel(account_id.clone()).await.unwrap();
+        let state = ScanCheckpointState {
+            start_date: "2023-01-01".into(),
+            end_date: "2023-01-31".into(),
+            all_message_ids: vec!["m1".into()],
+            ..Default::default()
+        };
+        let gmail = mock_gmail(200).await;
+        let client =
+            GmailClient::new_with_base_url("fake_token".into(), pool.clone(), gmail.url(), None);
+        run_scan_batches(app, pool.clone(), account_id.clone(), state, client).await.unwrap();
+
+        let acc = account_id.clone();
+        let (processed, cp) = conn
+            .interact(move |c| {
+                (
+                    c.query_row("SELECT COUNT(*) FROM processed_messages", [], |r| r.get::<_, i64>(0))
+                        .unwrap(),
+                    get_checkpoint(c, "historical_scan", &acc).unwrap(),
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!(processed, 1, "nothing is deleted when a cleanup step fails");
+        assert_eq!(cp.map(|c| c.status).as_deref(), Some("failed"));
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
