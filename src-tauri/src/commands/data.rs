@@ -784,128 +784,121 @@ pub async fn check_backend_status(
 }
 
 #[tauri::command]
-/// Exports the user's data to a file.
-///
-/// Optionally password-protected, since the export leaves the machine and its
-/// keychain behind and cannot rely on the database key.
-pub async fn settings_export_data(
+/// Writes a portable backup: the database re-keyed to a password the user
+/// chooses, so it can be restored on any Mac (the live database key is bound to
+/// this machine's hardware).
+pub async fn settings_export_backup(
     export_path: String,
-    password: Option<String>,
+    password: String,
     pool: State<'_, deadpool_sqlite::Pool>,
 ) -> Result<String, crate::error::AppError> {
     let conn = pool
         .get()
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-
-    match password {
-        None => {
-            let path_for_export = export_path.clone();
-            conn.interact(move |c| c.execute("VACUUM INTO ?1", rusqlite::params![path_for_export]))
-                .await
-                .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
-                .map_err(|e| crate::error::AppError::Io(format!("Export failed: {}", e)))?;
-        }
-        Some(password) => {
-            crate::ipc::validation::validate_non_empty("password", &password)?;
-            let temp_path =
-                std::env::temp_dir().join(format!("dinero-export-{}.tmp", uuid::Uuid::new_v4()));
-            let temp_path_str = temp_path.to_string_lossy().to_string();
-            conn.interact(move |c| c.execute("VACUUM INTO ?1", rusqlite::params![temp_path_str]))
-                .await
-                .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
-                .map_err(|e| crate::error::AppError::Io(format!("Export failed: {}", e)))?;
-
-            let plaintext =
-                std::fs::read(&temp_path).map_err(|e| crate::error::AppError::Io(e.to_string()))?;
-            let _ = std::fs::remove_file(&temp_path);
-
-            let encrypted = crate::db::backup::encrypt_backup(&plaintext, &password)
-                .map_err(|e| crate::error::AppError::Validation(e.to_string()))?;
-            std::fs::write(&export_path, encrypted)
-                .map_err(|e| crate::error::AppError::Io(e.to_string()))?;
-        }
-    }
-
-    let conn = pool
-        .get()
-        .await
-        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-    let export_path_for_log = export_path.clone();
+    let dest = std::path::PathBuf::from(&export_path);
     conn.interact(move |c| {
+        crate::db::backup::export_portable_backup(c, &dest, &password)?;
         crate::auth::consent::insert_consent_event(
             c,
             "data_export",
             &format!(
-                "User exported an encrypted copy of their local data to {}",
-                export_path_for_log
+                "User exported a password-protected backup to {}",
+                dest.display()
             ),
         )
+        .map_err(|e| anyhow::anyhow!(e.to_string()))
     })
     .await
     .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
-    .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    .map_err(|e| crate::error::AppError::Validation(e.to_string()))?;
 
     tracing::info!(
-        "settings_export_data: exported encrypted snapshot to {}",
+        "settings_export_backup: wrote portable backup to {}",
         export_path
     );
     Ok(export_path)
 }
 
 #[tauri::command]
-/// Exports an encrypted backup.
-pub async fn settings_export_encrypted_backup(
-    export_path: String,
-    password: String,
-    pool: State<'_, deadpool_sqlite::Pool>,
-) -> Result<String, crate::error::AppError> {
-    if password.is_empty() {
-        return Err(crate::error::AppError::Validation(
-            "password must not be empty".to_string(),
-        ));
-    }
-    let conn = pool
-        .get()
-        .await
-        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-    let temp_path =
-        std::env::temp_dir().join(format!("dinero-backup-{}.tmp", uuid::Uuid::new_v4()));
-    let temp_path_str = temp_path.to_string_lossy().to_string();
-    conn.interact(move |c| c.execute("VACUUM INTO ?1", rusqlite::params![temp_path_str]))
-        .await
-        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
-        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-
-    let plaintext =
-        std::fs::read(&temp_path).map_err(|e| crate::error::AppError::Io(e.to_string()))?;
-    let _ = std::fs::remove_file(&temp_path);
-
-    let encrypted = crate::db::backup::encrypt_backup(&plaintext, &password)
-        .map_err(|e| crate::error::AppError::Validation(e.to_string()))?;
-    std::fs::write(&export_path, encrypted)
-        .map_err(|e| crate::error::AppError::Io(e.to_string()))?;
-
-    Ok(export_path)
-}
-
-#[tauri::command]
-/// Imports a previously exported encrypted backup.
-pub async fn settings_import_encrypted_backup(
+/// Replaces the live database with a portable backup, then restarts.
+///
+/// The backup is opened with its password and verified before anything is
+/// touched; it is re-keyed to this device's key inside the app data directory
+/// and swapped in atomically. The current database is saved first as a regular
+/// backup, so `db_restore_backup` can undo the restore.
+pub async fn settings_restore_backup(
     import_path: String,
     password: String,
+    app: tauri::AppHandle,
+    pool: State<'_, deadpool_sqlite::Pool>,
 ) -> Result<String, crate::error::AppError> {
-    let blob =
-        std::fs::read(&import_path).map_err(|e| crate::error::AppError::Io(e.to_string()))?;
-    let decrypted = crate::db::backup::decrypt_backup(&blob, &password)
-        .map_err(|e| crate::error::AppError::Validation(e.to_string()))?;
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    let app_dir = app.path().app_data_dir().map_err(|e| {
+        crate::error::AppError::Io(format!("Failed to resolve app data directory: {}", e))
+    })?;
+    stage_restore_and_swap(&app_dir, &import_path, &password, pool.inner()).await?;
+    tracing::info!("Restored finance.db from portable backup — restarting");
+    app.restart();
+}
 
-    let staging_path =
-        std::env::temp_dir().join(format!("dinero-restore-{}.db", uuid::Uuid::new_v4()));
-    std::fs::write(&staging_path, decrypted)
-        .map_err(|e| crate::error::AppError::Io(e.to_string()))?;
+/// Everything `settings_restore_backup` does short of restarting the app.
+async fn stage_restore_and_swap(
+    app_dir: &std::path::Path,
+    import_path: &str,
+    password: &str,
+    pool: &deadpool_sqlite::Pool,
+) -> Result<(), crate::error::AppError> {
+    use crate::error::AppError;
+    let db_path = app_dir.join("finance.db");
+    let device_key = crate::db::crypto::derive_database_key()
+        .map_err(|e| AppError::Unknown(format!("Failed to derive database key: {e}")))?;
 
-    Ok(staging_path.to_string_lossy().to_string())
+    let (src, pw, dir) = (
+        std::path::PathBuf::from(import_path),
+        password.to_string(),
+        app_dir.to_path_buf(),
+    );
+    let staged = tokio::task::spawn_blocking(move || {
+        crate::db::backup::stage_portable_restore(&src, &pw, &dir, &device_key)
+    })
+    .await
+    .map_err(|e| AppError::Unknown(e.to_string()))?
+    .map_err(|e| AppError::Validation(e.to_string()))?;
+
+    // Safety copy of the current database, where db_restore_backup looks.
+    let backup_dir = app_dir.join("backups");
+    let safety = backup_dir.join(format!(
+        "finance.db.bak.{}",
+        chrono::Utc::now().format("%Y%m%d%H%M%S%3f")
+    ));
+    let safety_result = async {
+        std::fs::create_dir_all(&backup_dir).map_err(|e| AppError::Io(e.to_string()))?;
+        let conn = pool.get().await.map_err(|e| AppError::Db(e.to_string()))?;
+        let safety_str = safety.to_string_lossy().to_string();
+        conn.interact(move |c| c.execute("VACUUM INTO ?1", [safety_str]))
+            .await
+            .map_err(|e| AppError::Unknown(e.to_string()))?
+            .map_err(|e| AppError::Io(format!("Pre-restore backup failed: {e}")))?;
+        crate::db::backup::verify_backup_integrity(&safety)
+            .map_err(|e| AppError::Io(format!("Pre-restore backup failed verification: {e}")))
+    }
+    .await;
+    if let Err(e) = safety_result {
+        let _ = std::fs::remove_file(&staged);
+        return Err(e);
+    }
+
+    // No connection may write to the old file (or its WAL) after the swap.
+    pool.close();
+    for suffix in ["-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{}", db_path.display(), suffix));
+    }
+    std::fs::rename(&staged, &db_path).map_err(|e| {
+        let _ = std::fs::remove_file(&staged);
+        AppError::Io(format!("Failed to replace database: {e}"))
+    })?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -3043,32 +3036,108 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_export_data_with_password_round_trips_via_decrypt_backup() {
+    async fn test_portable_backup_export_restore_round_trips() {
         let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&temp_dir).unwrap();
-        let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+        let pool = crate::db::init_db(temp_dir.join("finance.db"))
+            .await
+            .unwrap();
+        let count_marker = |pool: deadpool_sqlite::Pool| async move {
+            pool.get()
+                .await
+                .unwrap()
+                .interact(|c| {
+                    c.query_row(
+                        "SELECT COUNT(*) FROM consent_events WHERE disclosure_text = 'roundtrip-marker'",
+                        [],
+                        |r| r.get::<_, i64>(0),
+                    )
+                })
+                .await
+                .unwrap()
+                .unwrap()
+        };
+        pool.get()
+            .await
+            .unwrap()
+            .interact(|c| crate::auth::consent::insert_consent_event(c, "test", "roundtrip-marker"))
+            .await
+            .unwrap()
+            .unwrap();
 
         let app = tauri::test::mock_builder()
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         app.manage(pool.clone());
 
-        let export_path = temp_dir.join("export.enc").to_string_lossy().to_string();
-        let result = settings_export_data(
+        let export_path = temp_dir.join("backup.dinero").to_string_lossy().to_string();
+        assert!(settings_export_backup(
             export_path.clone(),
-            Some("correct horse battery staple".to_string()),
+            "short".to_string(),
+            app.state::<deadpool_sqlite::Pool>(),
+        )
+        .await
+        .is_err());
+        settings_export_backup(
+            export_path.clone(),
+            "correct horse battery staple".to_string(),
             app.state::<deadpool_sqlite::Pool>(),
         )
         .await
         .unwrap();
-        assert_eq!(result, export_path);
 
-        let encrypted = std::fs::read(&export_path).unwrap();
-        let decrypted =
-            crate::db::backup::decrypt_backup(&encrypted, "correct horse battery staple").unwrap();
-        assert!(decrypted.len() > 100);
+        // The file is password-keyed, not device-keyed.
+        assert!(
+            crate::db::backup::verify_backup_integrity(std::path::Path::new(&export_path)).is_err()
+        );
 
-        assert!(crate::db::backup::decrypt_backup(&encrypted, "wrong password").is_err());
+        // A wrong password fails before the live database is touched.
+        assert!(
+            stage_restore_and_swap(&temp_dir, &export_path, "wrong password!", &pool)
+                .await
+                .is_err()
+        );
+        assert!(!pool.is_closed());
+
+        // Remove the marker, then restore it from the backup.
+        pool.get()
+            .await
+            .unwrap()
+            .interact(|c| {
+                c.execute_batch(
+                    "DELETE FROM consent_events WHERE disclosure_text = 'roundtrip-marker';",
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(count_marker(pool.clone()).await, 0);
+        stage_restore_and_swap(
+            &temp_dir,
+            &export_path,
+            "correct horse battery staple",
+            &pool,
+        )
+        .await
+        .unwrap();
+        assert!(pool.is_closed());
+
+        let safety_count = std::fs::read_dir(temp_dir.join("backups"))
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("finance.db.bak.")
+            })
+            .count();
+        assert_eq!(safety_count, 1, "a pre-restore safety backup must exist");
+
+        // The swapped-in database opens with the device key and has the data.
+        let reopened = crate::db::init_db(temp_dir.join("finance.db"))
+            .await
+            .unwrap();
+        assert_eq!(count_marker(reopened).await, 1);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

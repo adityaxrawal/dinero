@@ -4,6 +4,7 @@
 import PrivacySettings from '@/components/settings/PrivacySettings';
 import StatementPasswordSettings from '@/components/settings/StatementPasswordSettings';
 import LifecycleSettings from '@/components/settings/LifecycleSettings';
+import PortableBackupSettings from '@/components/settings/PortableBackupSettings';
 import RecoveryPhraseSection from './RecoveryPhraseSection';
 
 /** Privacy section: disclosure and network activity. */
@@ -19,6 +20,10 @@ export default function PrivacySection() {
       </section>
       <div className="h-px w-full bg-[#064E3B]/10" />
       <RecoveryPhraseSection />
+      <div className="h-px w-full bg-[#064E3B]/10" />
+      <section>
+        <PortableBackupSettings />
+      </section>
       <div className="h-px w-full bg-[#064E3B]/10" />
       <section>
         <LifecycleSettings />

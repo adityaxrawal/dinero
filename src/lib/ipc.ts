@@ -915,11 +915,15 @@ export const API = {
     check: () => invokeCommand<BackendStatus>('check_backend_status'),
     getHealthReport: () => invokeCommand<HealthReport>('get_health_report'),
   },
-  // Whole-database operations: backup restore, export, and deletion.
+  // Whole-database operations: local backup restore and portable backup export/restore.
   db: {
     restoreBackup: () => invokeCommand<string>('db_restore_backup'),
-    exportData: (exportPath: string, password?: string) =>
-      invokeCommand<string>('settings_export_data', { exportPath, password: password ?? null }),
+    /** Writes the database re-keyed to `password`, restorable on any Mac. */
+    exportBackup: (exportPath: string, password: string) =>
+      invokeCommand<string>('settings_export_backup', { exportPath, password }),
+    /** Replaces the live database with a portable backup; the app restarts on success. */
+    restorePortableBackup: (importPath: string, password: string) =>
+      invokeCommand<string>('settings_restore_backup', { importPath, password }),
   },
   // Development-only helpers. Destructive; not reachable in normal use.
   dev: {

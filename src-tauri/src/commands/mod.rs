@@ -3241,11 +3241,10 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         ipc_trigger_patch_sync,
         log_frontend_event,
         data::settings_delete_account,
-        data::settings_export_data,
+        data::settings_export_backup,
+        data::settings_restore_backup,
         data::settings_profile_get,
         data::settings_profile_update,
-        data::settings_export_encrypted_backup,
-        data::settings_import_encrypted_backup,
         data::dashboard_summary,
         data::dashboard_upcoming_bills,
         data::dashboard_categories,
@@ -3544,9 +3543,7 @@ mod tests {
             "pipeline_status",
             "license_get_status",
             "auth_get_consent_history",
-            "settings_export_data",
-            "settings_export_encrypted_backup",
-            "settings_import_encrypted_backup",
+            "settings_export_backup",
         ];
 
         let mut wrongly_gated = Vec::new();
