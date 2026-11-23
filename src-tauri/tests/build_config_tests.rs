@@ -147,3 +147,45 @@ fn test_unsigned_dev_and_signed_release_profiles_are_separate_workflows() {
         "the release workflow must be tag-triggered, not run on every push"
     );
 }
+
+/// Review M11 follow-up: every registered app command needs an explicit
+/// permission (build.rs declares them in the app manifest), and the generated
+/// capability must grant exactly the registered set, to the main window only.
+#[test]
+fn test_app_command_capability_matches_registered_commands() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(root.join("src/commands/mod.rs")).unwrap();
+    let start = src.find("tauri::generate_handler![").unwrap() + "tauri::generate_handler![".len();
+    let list = &src[start..];
+    let list = &list[..list.find("\n    ]").unwrap()];
+    let mut registered: Vec<String> = list
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with("//") && !l.starts_with("#["))
+        .map(|l| format!("allow-{}", l.trim_end_matches(',').rsplit("::").next().unwrap().replace('_', "-")))
+        .collect();
+    registered.sort();
+    registered.dedup();
+
+    let cap: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("capabilities/app-commands.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(cap["windows"], serde_json::json!(["main"]));
+    let mut granted: Vec<String> = cap["permissions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p.as_str().unwrap().to_string())
+        .collect();
+    granted.sort();
+    assert_eq!(granted, registered);
+
+    let conf: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(root.join("tauri.conf.json")).unwrap()).unwrap();
+    assert!(conf["app"]["security"]["capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|c| c == "app-commands"));
+}
