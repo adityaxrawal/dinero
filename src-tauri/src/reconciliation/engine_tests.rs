@@ -2955,3 +2955,38 @@ async fn test_missing_data_alert_worker_creates_alert() {
     let (_, _, issuer_name) = &rows[0];
     assert_eq!(issuer_name, "AlertBank");
 }
+
+/// Review M6: an observation with no event time used to make the candidate
+/// lookup fail and roll back the whole insert, silently losing it. It is now
+/// kept and sent to the review queue.
+#[test]
+fn observation_without_event_time_goes_to_review_not_lost() {
+    let conn = crate::db::test_helpers::setup_test_db();
+    conn.execute("PRAGMA foreign_keys = OFF", []).unwrap();
+    let row = crate::db::transaction_observations::TransactionObservationsRow {
+        id: "obs_no_time".into(),
+        source_pipeline: Some("gmail_transaction".into()),
+        source_record_id: Some("msg_no_time".into()),
+        instrument_id: Some("inst_1".into()),
+        direction: Some("debit".into()),
+        amount_minor: Some(1000),
+        currency: Some("INR".into()),
+        event_time: None,
+        fingerprint: Some("fp_no_time".into()),
+        ..Default::default()
+    };
+    let (_, decision) = crate::reconciliation::engine::ingest_observation(&conn, &row, true).unwrap();
+    assert!(decision.is_none());
+    let kept: i64 = conn
+        .query_row("SELECT COUNT(*) FROM transaction_observations WHERE id = 'obs_no_time'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(kept, 1);
+    let reason: String = conn
+        .query_row(
+            "SELECT reason FROM unassigned_transactions WHERE observation_id = 'obs_no_time'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(reason, "missing_event_time");
+}

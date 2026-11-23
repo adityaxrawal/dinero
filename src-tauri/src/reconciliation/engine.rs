@@ -149,19 +149,57 @@ pub fn ingest_observation(
                 channel: row.channel.clone(),
             };
             
-            match fetch_candidates(conn, &incoming).and_then(|candidates| reconcile(conn, &incoming, candidates)) {
+            // Reconciliation runs inside a savepoint. If it fails -- most
+            // often a missing or unparseable event time breaking the candidate
+            // lookup -- only its writes are undone; the observation is kept and
+            // sent to the review queue instead of the whole insert being
+            // rolled back and the email silently lost (review M6).
+            conn.execute_batch("SAVEPOINT reconcile")?;
+            let reconciled = if incoming.event_time.is_empty() {
+                Err(anyhow::anyhow!("observation has no event time"))
+            } else {
+                fetch_candidates(conn, &incoming)
+                    .and_then(|candidates| reconcile(conn, &incoming, candidates))
+            };
+            let decision = match reconciled {
                 Ok(decision) => {
-                    if let Err(e) = conn.execute_batch("COMMIT") {
-                        let _ = conn.execute_batch("ROLLBACK");
-                        return Err(e.into());
-                    }
-                    Ok((crate::db::transaction_observations::InsertObservationOutcome::Inserted, Some(decision)))
+                    conn.execute_batch("RELEASE reconcile")?;
+                    Some(decision)
                 }
                 Err(e) => {
-                    let _ = conn.execute_batch("ROLLBACK");
-                    Err(e)
+                    tracing::warn!("Reconciliation failed for obs '{}', sending to review: {:#}", row.id, e);
+                    let reason = if incoming.event_time.is_empty() {
+                        "missing_event_time"
+                    } else {
+                        "reconciliation_failed"
+                    };
+                    let routed = conn
+                        .execute_batch("ROLLBACK TO reconcile; RELEASE reconcile")
+                        .map_err(anyhow::Error::from)
+                        .and_then(|_| {
+                            crate::db::unassigned_transactions::insert(
+                                conn,
+                                &crate::db::unassigned_transactions::UnassignedTransactionRow {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    observation_id: row.id.clone(),
+                                    reason: reason.to_string(),
+                                    status: "open".to_string(),
+                                    created_at: None,
+                                },
+                            )
+                        });
+                    if let Err(e) = routed {
+                        let _ = conn.execute_batch("ROLLBACK");
+                        return Err(e);
+                    }
+                    None
                 }
+            };
+            if let Err(e) = conn.execute_batch("COMMIT") {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(e.into());
             }
+            Ok((crate::db::transaction_observations::InsertObservationOutcome::Inserted, decision))
         }
         Ok(crate::db::transaction_observations::InsertObservationOutcome::DuplicateSkipped) => {
             conn.execute_batch("COMMIT")?;
