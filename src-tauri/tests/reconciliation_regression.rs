@@ -41,6 +41,22 @@ fn insert_observation_row(conn: &Connection, id: &str, fingerprint: Option<&str>
     .unwrap();
 }
 
+/// Reconciles `obs` after making its stored row agree with it, as ingestion
+/// does (both come from the same data). The same-source rule (review P1)
+/// reads the pipeline and reference id of the observations already stored.
+fn reconcile_stored(
+    conn: &Connection,
+    obs: &IncomingObservation,
+    candidates: Vec<dinero_app_lib::reconciliation::engine::CanonicalCandidate>,
+) -> anyhow::Result<DecisionType> {
+    conn.execute(
+        "UPDATE transaction_observations SET source_pipeline = ?2, reference_id = ?3 WHERE id = ?1",
+        rusqlite::params![obs.id, obs.source_pipeline, obs.reference_id],
+    )
+    .unwrap();
+    reconcile(conn, obs, candidates)
+}
+
 fn base_obs(id: &str, amount_minor: i64, direction: &str, event_time: &str) -> IncomingObservation {
     IncomingObservation {
         id: id.to_string(),
@@ -75,7 +91,7 @@ fn test_regression_email_then_statement_overrides() {
     let mut email_obs = base_obs("obs_email", 150000, "debit", "2026-06-10 14:00:00");
     email_obs.reference_id = Some("REF_R1".to_string());
     email_obs.merchant_raw = Some("Uber Email".to_string());
-    let decision = reconcile(&conn, &email_obs, vec![]).unwrap();
+    let decision = reconcile_stored(&conn, &email_obs, vec![]).unwrap();
     assert_eq!(decision, DecisionType::NewCanonical);
 
     let canonical_id: String = conn
@@ -93,7 +109,7 @@ fn test_regression_email_then_statement_overrides() {
     stmt_obs.merchant_raw = Some("Uber Statement".to_string());
 
     let candidates = fetch_candidates(&conn, &stmt_obs).unwrap();
-    let decision = reconcile(&conn, &stmt_obs, candidates).unwrap();
+    let decision = reconcile_stored(&conn, &stmt_obs, candidates).unwrap();
     assert!(matches!(
         decision,
         DecisionType::AutoMatchedExact | DecisionType::AutoMatchedScored
@@ -126,7 +142,7 @@ fn test_regression_statement_then_email_fills_nulls_only() {
     stmt_obs.source_pipeline = "statement_pdf".to_string();
     stmt_obs.reference_id = Some("REF_R2".to_string());
     stmt_obs.merchant_raw = None; // statement row had no merchant text captured
-    let decision = reconcile(&conn, &stmt_obs, vec![]).unwrap();
+    let decision = reconcile_stored(&conn, &stmt_obs, vec![]).unwrap();
     assert_eq!(decision, DecisionType::NewCanonical);
 
     let canonical_id: String = conn
@@ -158,7 +174,7 @@ fn test_regression_statement_then_email_fills_nulls_only() {
     email_obs.merchant_raw = Some("Uber Email".to_string()); // must fill the NULL
 
     let candidates = fetch_candidates(&conn, &email_obs).unwrap();
-    reconcile(&conn, &email_obs, candidates).unwrap();
+    reconcile_stored(&conn, &email_obs, candidates).unwrap();
 
     let (merchant, reference_id): (String, String) = conn
         .query_row(
@@ -192,13 +208,13 @@ fn test_regression_two_accounts_same_instrument_still_merges() {
     insert_observation_row(&conn, "obs_acct_a", Some("fp_account_a"));
     let mut obs_a = base_obs("obs_acct_a", 42000, "debit", "2026-06-10 09:00:00");
     obs_a.reference_id = Some("REF_R3".to_string());
-    reconcile(&conn, &obs_a, vec![]).unwrap();
+    reconcile_stored(&conn, &obs_a, vec![]).unwrap();
 
     insert_observation_row(&conn, "obs_acct_b", Some("fp_account_b")); // different account -> different fingerprint
     let mut obs_b = base_obs("obs_acct_b", 42000, "debit", "2026-06-10 09:02:00");
     obs_b.reference_id = Some("REF_R3".to_string());
     let candidates = fetch_candidates(&conn, &obs_b).unwrap();
-    let decision = reconcile(&conn, &obs_b, candidates).unwrap();
+    let decision = reconcile_stored(&conn, &obs_b, candidates).unwrap();
 
     assert!(
         matches!(decision, DecisionType::AutoMatchedExact | DecisionType::AutoMatchedScored),
@@ -230,12 +246,12 @@ fn test_regression_coincidental_similarity_does_not_auto_merge() {
 
     insert_observation_row(&conn, "obs_coincidence_1", None);
     let obs1 = base_obs("obs_coincidence_1", 20000, "debit", "2026-06-10 12:00:00");
-    reconcile(&conn, &obs1, vec![]).unwrap();
+    reconcile_stored(&conn, &obs1, vec![]).unwrap();
 
     insert_observation_row(&conn, "obs_coincidence_2", None);
     let obs2 = base_obs("obs_coincidence_2", 20000, "debit", "2026-06-10 12:03:00");
     let candidates = fetch_candidates(&conn, &obs2).unwrap();
-    let decision = reconcile(&conn, &obs2, candidates).unwrap();
+    let decision = reconcile_stored(&conn, &obs2, candidates).unwrap();
 
     assert!(
         !matches!(decision, DecisionType::AutoMatchedExact),
@@ -255,7 +271,7 @@ fn test_regression_refund_is_distinct_canonical_not_matched_to_debit() {
 
     insert_observation_row(&conn, "obs_debit", None);
     let obs_debit = base_obs("obs_debit", 30000, "debit", "2026-06-10 10:00:00");
-    reconcile(&conn, &obs_debit, vec![]).unwrap();
+    reconcile_stored(&conn, &obs_debit, vec![]).unwrap();
 
     insert_observation_row(&conn, "obs_refund", None);
     let obs_refund = base_obs("obs_refund", 30000, "credit", "2026-06-10 11:00:00");
@@ -265,7 +281,7 @@ fn test_regression_refund_is_distinct_canonical_not_matched_to_debit() {
         "opposite-direction candidate search must never surface the original debit"
     );
 
-    let decision = reconcile(&conn, &obs_refund, candidates).unwrap();
+    let decision = reconcile_stored(&conn, &obs_refund, candidates).unwrap();
     assert_eq!(decision, DecisionType::NewCanonical);
 
     let canonical_count: i64 = conn
@@ -303,7 +319,7 @@ fn test_regression_emi_conversion_links_to_original_purchase() {
     let mut obs_emi_1 = base_obs("obs_emi_1", 100000, "debit", "2026-06-01 10:00:00");
     obs_emi_1.emi_total_installments = Some(6);
     obs_emi_1.emi_original_amount_minor = Some(600000);
-    reconcile(&conn, &obs_emi_1, vec![]).unwrap();
+    reconcile_stored(&conn, &obs_emi_1, vec![]).unwrap();
     let installment_1_id: String = conn
         .query_row(
             "SELECT canonical_transaction_id FROM transaction_observations WHERE id = 'obs_emi_1'",
@@ -340,7 +356,7 @@ fn test_regression_emi_conversion_links_to_original_purchase() {
         "installment 2 is 30 days after installment 1 -- outside the +/-3-day candidate window, so \
          generic scoring never even considers them a match; EMI linking below is what actually connects them"
     );
-    let decision = reconcile(&conn, &obs_emi_2, candidates).unwrap();
+    let decision = reconcile_stored(&conn, &obs_emi_2, candidates).unwrap();
     assert_eq!(decision, DecisionType::NewCanonical);
     let installment_2_id: String = conn
         .query_row(
@@ -389,7 +405,8 @@ fn test_regression_emi_conversion_links_to_original_purchase() {
 /// batch (consistent with TASK-TXN-014's own precedent of a pure,
 /// no-external-corpus-dependency benchmark when no real corpus is
 /// provisioned locally): half the pairs are genuine duplicates (same
-/// fingerprint, close time, same everything) that must merge; half are
+/// fingerprint, close time, same reference id -- since review P1 the only
+/// way two same-source observations merge) that must merge; half are
 /// genuinely distinct transactions (different instruments) that must never
 /// merge.
 #[test]
@@ -411,14 +428,16 @@ fn test_false_merge_and_false_separation_rates() {
         let mut base = base_obs(&base_id, amount, "debit", "2026-06-10 10:00:00");
         base.instrument_id = format!("inst_dup_{i}");
         base.fingerprint = Some(fp.clone());
-        reconcile(&conn, &base, vec![]).unwrap();
+        base.reference_id = Some(format!("REF_DUP_{i}"));
+        reconcile_stored(&conn, &base, vec![]).unwrap();
 
         insert_observation_row(&conn, &dup_id, Some(&fp));
         let mut dup = base_obs(&dup_id, amount, "debit", "2026-06-10 10:00:45");
         dup.instrument_id = format!("inst_dup_{i}");
         dup.fingerprint = Some(fp);
+        dup.reference_id = Some(format!("REF_DUP_{i}"));
         let candidates = fetch_candidates(&conn, &dup).unwrap();
-        let decision = reconcile(&conn, &dup, candidates).unwrap();
+        let decision = reconcile_stored(&conn, &dup, candidates).unwrap();
         if !matches!(
             decision,
             DecisionType::AutoMatchedExact | DecisionType::AutoMatchedScored
@@ -436,14 +455,14 @@ fn test_false_merge_and_false_separation_rates() {
         insert_observation_row(&conn, &a_id, None);
         let mut a = base_obs(&a_id, amount, "debit", "2026-06-10 08:00:00");
         a.instrument_id = format!("inst_a_{i}");
-        reconcile(&conn, &a, vec![]).unwrap();
+        reconcile_stored(&conn, &a, vec![]).unwrap();
 
         insert_observation_row(&conn, &b_id, None);
         let mut b = base_obs(&b_id, amount, "debit", "2026-06-10 08:01:00");
         b.instrument_id = format!("inst_b_{i}"); // different instrument entirely
         let candidates = fetch_candidates(&conn, &b).unwrap();
         assert!(candidates.is_empty(), "candidate search is instrument-scoped -- a different instrument must never surface as a candidate");
-        let decision = reconcile(&conn, &b, candidates).unwrap();
+        let decision = reconcile_stored(&conn, &b, candidates).unwrap();
         if matches!(
             decision,
             DecisionType::AutoMatchedExact | DecisionType::AutoMatchedScored
@@ -495,13 +514,13 @@ fn test_auto_match_rate_reaches_target() {
         insert_observation_row(&conn, &format!("am_a_{i}"), Some(&format!("fp_am_a_{i}")));
         let mut a = base_obs(&format!("am_a_{i}"), amount, "debit", "2026-06-10 11:00:00");
         a.reference_id = Some(ref_id.clone());
-        reconcile(&conn, &a, vec![]).unwrap();
+        reconcile_stored(&conn, &a, vec![]).unwrap();
 
         insert_observation_row(&conn, &format!("am_b_{i}"), Some(&format!("fp_am_b_{i}")));
         let mut b = base_obs(&format!("am_b_{i}"), amount, "debit", "2026-06-10 11:01:30");
         b.reference_id = Some(ref_id);
         let candidates = fetch_candidates(&conn, &b).unwrap();
-        let decision = reconcile(&conn, &b, candidates).unwrap();
+        let decision = reconcile_stored(&conn, &b, candidates).unwrap();
         if matches!(
             decision,
             DecisionType::AutoMatchedExact | DecisionType::AutoMatchedScored
@@ -520,7 +539,7 @@ fn test_auto_match_rate_reaches_target() {
             "2026-06-12 09:00:00",
         );
         a.merchant_raw = Some("Uber".to_string());
-        reconcile(&conn, &a, vec![]).unwrap();
+        reconcile_stored(&conn, &a, vec![]).unwrap();
 
         insert_observation_row(&conn, &format!("amb_b_{i}"), None);
         let mut b = base_obs(
@@ -534,7 +553,7 @@ fn test_auto_match_rate_reaches_target() {
         // Deliberately not asserting the outcome here -- this half of the
         // corpus exists only so the auto-match *rate* is measured against a
         // realistic mixed batch, not a corpus rigged to be 100% matchable.
-        let _ = reconcile(&conn, &b, candidates);
+        let _ = reconcile_stored(&conn, &b, candidates);
     }
 
     let total = SHOULD_MATCH + SHOULD_STAY_AMBIGUOUS;

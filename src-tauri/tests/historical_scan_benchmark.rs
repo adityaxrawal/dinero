@@ -68,10 +68,12 @@ fn p95(mut samples: Vec<Duration>) -> Duration {
 
 /// One realistic HDFC-shaped transaction body per index. Doc 30 TASK-QA-002
 /// wants "template variants, duplicates, a small malformed-message
-/// percentage": every 10th non-zero index reuses index 0's exact body (a
-/// genuine duplicate -- same merchant/amount/date, so it produces the same
-/// fingerprint and must dedup), and every 50th index is malformed (no
-/// From/Subject headers, so it fails Gate 1 outright).
+/// percentage": every 10th non-zero index reuses index 0's exact body under
+/// its own message id (same merchant/amount/date, no reference id), and every
+/// 50th index is malformed (no From/Subject headers, so it fails Gate 1
+/// outright). Since review P1 those repeats are separate purchases: two
+/// observations from one pipeline merge only on equal reference ids, and a
+/// resent email is absorbed earlier by message-id idempotency.
 fn synthetic_message_json(idx: usize) -> serde_json::Value {
     if idx % 50 == 49 {
         return serde_json::json!({
@@ -288,12 +290,12 @@ async fn test_1000_email_scan_p95_under_target() {
         observation_count, expected_observations as i64,
         "extraction throughput: expected {expected_observations} observations from {TOTAL} messages"
     );
-    // Every 10th non-zero index (within each batch of 50) duplicates index 0
-    // of that same batch -- real reconciliation must collapse those into the
-    // same canonical row rather than creating a new one per duplicate.
-    assert!(
-        canonical_count < observation_count,
-        "dedup rate: canonical count ({canonical_count}) must be lower than observation count ({observation_count}) given the corpus's intentional duplicates"
+    // Every 10th non-zero index repeats index 0's body under a different
+    // message id with no reference id: separate purchases (review P1), so
+    // each must keep its own canonical row.
+    assert_eq!(
+        canonical_count, observation_count,
+        "same-source repeats without a reference id must not be merged (review P1)"
     );
 }
 
