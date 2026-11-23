@@ -93,7 +93,7 @@ fn record_trigger_at(
 /// Whether ingestion is paused because the database failed its integrity
 /// check. Cleared only by a restart (normally after restoring a backup).
 pub fn ingestion_paused() -> bool {
-    !crate::db::maintenance::last_known_integrity_ok()
+    crate::db::maintenance::integrity_failed_this_run()
 }
 
 /// Refuses a user-started ingestion action while ingestion is paused.
@@ -202,10 +202,14 @@ pub fn emit_health_alert<R: tauri::Runtime>(kind: TriggerKind, app: &AppHandle<R
 mod tests {
     use super::*;
 
+    /// Serialises the tests that flip the process-wide integrity flags.
+    static INTEGRITY_FLAG: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Review P5: an integrity failure pauses ingestion until restart. The
     /// flag is process-wide, so it is flipped for as short a window as possible.
     #[test]
     fn integrity_failure_pauses_ingestion() {
+        let _guard = INTEGRITY_FLAG.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         crate::db::maintenance::set_last_integrity_ok_for_test(false);
         let paused = ingestion_paused();
         let refused = assert_ingestion_allowed();
@@ -214,6 +218,20 @@ mod tests {
         assert!(matches!(refused, Err(crate::error::AppError::Forbidden(_))));
         assert!(!ingestion_paused());
         assert!(assert_ingestion_allowed().is_ok());
+    }
+
+    /// A later passing check (the daily re-check, or after an in-app restore)
+    /// does not lift the pause: only a restart does.
+    #[test]
+    fn a_later_passing_check_keeps_ingestion_paused() {
+        let _guard = INTEGRITY_FLAG.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::db::maintenance::record_integrity_result_for_test(false);
+        crate::db::maintenance::record_integrity_result_for_test(true);
+        let still_paused = ingestion_paused();
+        let health_ok = crate::db::maintenance::last_known_integrity_ok();
+        crate::db::maintenance::set_last_integrity_ok_for_test(true);
+        assert!(still_paused);
+        assert!(health_ok, "health still reports the latest result");
     }
 
     #[test]

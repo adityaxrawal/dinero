@@ -15,15 +15,37 @@ use tauri::{AppHandle, Emitter};
 pub const SIZE_WARNING_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 static LAST_INTEGRITY_OK: AtomicBool = AtomicBool::new(true);
+/// Set by the first failed check and never cleared, so ingestion stays paused
+/// until restart even if a later check passes (review P5).
+static INTEGRITY_FAILED_THIS_RUN: AtomicBool = AtomicBool::new(false);
 
 /// The most recent recorded integrity result.
 pub fn last_known_integrity_ok() -> bool {
     LAST_INTEGRITY_OK.load(Ordering::Relaxed)
 }
 
+/// Whether any integrity check has failed since the app started.
+pub fn integrity_failed_this_run() -> bool {
+    INTEGRITY_FAILED_THIS_RUN.load(Ordering::Relaxed)
+}
+
+fn record_integrity_result(ok: bool) {
+    LAST_INTEGRITY_OK.store(ok, Ordering::Relaxed);
+    if !ok {
+        INTEGRITY_FAILED_THIS_RUN.store(true, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn record_integrity_result_for_test(ok: bool) {
+    record_integrity_result(ok);
+}
+
+/// Sets both flags as a fresh start with this result would.
 #[cfg(test)]
 pub(crate) fn set_last_integrity_ok_for_test(ok: bool) {
     LAST_INTEGRITY_OK.store(ok, Ordering::Relaxed);
+    INTEGRITY_FAILED_THIS_RUN.store(!ok, Ordering::Relaxed);
 }
 
 /// Runs SQLite's integrity check over the database.
@@ -38,7 +60,7 @@ pub fn run_integrity_check(conn: &Connection) -> Result<bool> {
 /// a financial ledger is precisely the fault that must not pass unnoticed.
 pub fn check_integrity_and_report(conn: &Connection, app_handle: &AppHandle) -> Result<bool> {
     let ok = run_integrity_check(conn)?;
-    LAST_INTEGRITY_OK.store(ok, Ordering::Relaxed);
+    record_integrity_result(ok);
     if !ok {
         let _ = app_handle.emit(
             crate::ipc::events::AppEvent::DbCorrupted.as_str(),
