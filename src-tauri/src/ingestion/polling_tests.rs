@@ -711,6 +711,79 @@ mod tests {
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
+    /// C2 follow-up: a catch-up scan deferred because another scan was running
+    /// is started by a later poll, and the pending marker is cleared.
+    #[tokio::test]
+    async fn test_deferred_catch_up_scan_runs_on_next_poll() {
+        let mut server = mockito::Server::new_async().await;
+        let account_id = format!("acc_catchup_{}", uuid::Uuid::new_v4());
+        write_dev_token(&account_id);
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let pool = init_db(temp_dir.join("test.db")).await.expect("DB init failed");
+        setup_account_for_poll(&pool, &account_id, Some("h1")).await;
+        let acc = account_id.clone();
+        pool.get()
+            .await
+            .unwrap()
+            .interact(move |c| {
+                processing_checkpoints::upsert_checkpoint(
+                    c,
+                    &processing_checkpoints::ProcessingCheckpointRow {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        job_type: "gmail_catch_up".into(),
+                        job_key: acc,
+                        checkpoint_state_json: r#"{"start":"2026-11-01"}"#.into(),
+                        last_processed_token: None,
+                        status: "pending".into(),
+                        updated_at: None,
+                    },
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        let _history = server
+            .mock("GET", "/gmail/v1/users/me/history")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"historyId":"h1"}"#)
+            .create_async()
+            .await;
+        let _messages = server
+            .mock("GET", mockito::Matcher::Regex("^/gmail/v1/users/me/messages".into()))
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"resultSizeEstimate":0}"#)
+            .create_async()
+            .await;
+
+        let app = mock_builder().build(mock_context(tauri::test::noop_assets())).unwrap();
+        app.manage(crate::auth::session::SessionState::default());
+        app.manage(crate::security::incident_response::IncidentMonitor::default());
+        app.manage(test_queue_handles());
+        poll_all_accounts(&app.handle().clone(), &pool, &server.url()).await.unwrap();
+
+        let acc = account_id.clone();
+        let (marker, scan) = pool
+            .get()
+            .await
+            .unwrap()
+            .interact(move |c| {
+                (
+                    processing_checkpoints::get_checkpoint(c, "gmail_catch_up", &acc).unwrap(),
+                    processing_checkpoints::get_checkpoint(c, "historical_scan", &acc).unwrap(),
+                )
+            })
+            .await
+            .unwrap();
+        assert!(marker.is_none(), "pending marker must be cleared once the scan starts");
+        assert!(scan.is_some(), "the deferred catch-up scan must be claimed");
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
     /// Licensing Q1: a locked licence stops background ingestion entirely.
     #[tokio::test]
     async fn test_locked_license_skips_polling() {

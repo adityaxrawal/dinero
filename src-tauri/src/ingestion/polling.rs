@@ -199,6 +199,7 @@ pub(crate) async fn poll_all_accounts<R: tauri::Runtime>(
     });
 
     for account in active_accounts {
+        run_pending_catch_up(app, pool, &account.id, base_url).await;
         if let Err(e) = poll_single_account(app, pool, &account, base_url).await {
             tracing::error!("Failed to poll account {}: {}", account.id, e);
         }
@@ -665,13 +666,87 @@ async fn recover_from_expired_history<R: tauri::Runtime>(
             end,
             account_id
         ),
-        Err(crate::error::AppError::ScanAlreadyRunning(_)) => tracing::info!(
-            "Catch-up scan for account {} skipped: a scan is already running",
-            account_id
-        ),
+        Err(crate::error::AppError::ScanAlreadyRunning(_)) => {
+            // Saved and retried by the poller once the running scan ends,
+            // rather than skipped (follow-up to review C2).
+            tracing::info!(
+                "Catch-up scan for account {} deferred: a scan is already running",
+                account_id
+            );
+            save_pending_catch_up(pool, account_id, &start).await;
+        }
         Err(e) => tracing::error!("Could not start catch-up scan for {}: {}", account_id, e),
     }
     Ok(())
+}
+
+const PENDING_CATCH_UP: &str = "gmail_catch_up";
+
+/// Remembers a catch-up scan that could not start yet (start date only; it
+/// always runs up to today).
+async fn save_pending_catch_up(pool: &Pool, account_id: &str, start: &str) {
+    let row = ProcessingCheckpointRow {
+        id: uuid::Uuid::new_v4().to_string(),
+        job_type: PENDING_CATCH_UP.to_string(),
+        job_key: account_id.to_string(),
+        checkpoint_state_json: serde_json::json!({ "start": start }).to_string(),
+        last_processed_token: None,
+        status: "pending".to_string(),
+        updated_at: None,
+    };
+    if let Ok(conn) = pool.get().await {
+        let _ = conn
+            .interact(move |c| processing_checkpoints::upsert_checkpoint(c, &row))
+            .await;
+    }
+}
+
+/// Starts a deferred catch-up scan if one is pending and no scan is running.
+async fn run_pending_catch_up<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    pool: &Pool,
+    account_id: &str,
+    base_url: &str,
+) {
+    let Ok(conn) = pool.get().await else { return };
+    let acc = account_id.to_string();
+    let pending = conn
+        .interact(move |c| processing_checkpoints::get_checkpoint(c, PENDING_CATCH_UP, &acc))
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .flatten();
+    let Some(start) = pending.and_then(|cp| {
+        serde_json::from_str::<serde_json::Value>(&cp.checkpoint_state_json)
+            .ok()
+            .and_then(|v| v["start"].as_str().map(String::from))
+    }) else {
+        return;
+    };
+    let end = chrono::Utc::now().date_naive().format("%Y-%m-%d").to_string();
+    match crate::ingestion::historical_scan::start_historical_scan(
+        app.clone(),
+        pool.clone(),
+        account_id.to_string(),
+        start.clone(),
+        end,
+        base_url.to_string(),
+    )
+    .await
+    {
+        Err(crate::error::AppError::ScanAlreadyRunning(_)) => return,
+        Ok(_) => tracing::info!("Started deferred catch-up scan from {} for {}", start, account_id),
+        Err(e) => tracing::error!("Deferred catch-up scan for {} failed to start: {}", account_id, e),
+    }
+    let acc = account_id.to_string();
+    let _ = conn
+        .interact(move |c| {
+            c.execute(
+                "DELETE FROM processing_checkpoints WHERE job_type = ?1 AND job_key = ?2",
+                rusqlite::params![PENDING_CATCH_UP, acc],
+            )
+        })
+        .await;
 }
 
 /// Persists the Gmail history id marking how far this account has been read.
