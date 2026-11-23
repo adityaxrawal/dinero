@@ -610,7 +610,9 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
                 return Ok(PipelineOutcome::BlockedAwaitingInstrument(unprocessed_id));
             }
         };
-        (issuer, masked, "credit_card".to_string())
+        let instrument_type =
+            crate::statements::metadata_extractor::classify_statement_instrument(&parse_result.pages, &meta);
+        (issuer, masked, instrument_type.to_string())
     };
     let instrument_id = resolve_or_create_instrument(
         &instrument_type,

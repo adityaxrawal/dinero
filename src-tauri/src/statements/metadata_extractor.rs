@@ -23,6 +23,42 @@ pub struct StatementMetadata {
     pub statement_date: Option<String>,
 }
 
+/// Chooses the instrument type for an auto-detected statement (review M18).
+///
+/// Card-only signals (a minimum due, "credit card", "credit limit") win; bank
+/// account signals ("savings account", "opening balance" and the like) make it
+/// a bank account; with neither it stays a credit card, the historical default.
+pub fn classify_statement_instrument(pages: &[ParsedPage], meta: &StatementMetadata) -> &'static str {
+    let text = pages
+        .iter()
+        .take(2)
+        .map(|p| p.text.to_lowercase())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let card = meta.minimum_due.is_some()
+        || ["credit card", "credit limit", "minimum amount due", "total amount due", "card statement"]
+            .iter()
+            .any(|k| text.contains(k));
+    if card {
+        return "credit_card";
+    }
+    let bank = [
+        "savings account",
+        "current account",
+        "statement of account",
+        "account statement",
+        "opening balance",
+        "closing balance",
+    ]
+    .iter()
+    .any(|k| text.contains(k));
+    if bank {
+        "bank_account"
+    } else {
+        "credit_card"
+    }
+}
+
 /// Extracts a statement's identity: issuer, account, period and balances.
 pub fn extract_metadata(pages: &[ParsedPage]) -> Result<StatementMetadata> {
     let mut meta = StatementMetadata::default();
@@ -407,6 +443,27 @@ pub async fn resolve_or_create_instrument(
 
 #[cfg(test)]
 mod real_statement_headers {
+    #[test]
+    fn statement_instrument_type_is_classified_from_content() {
+        let page = |t: &str| ParsedPage { page_number: 1, text: t.to_string(), ocr_used: false };
+        let empty = StatementMetadata::default();
+        assert_eq!(
+            classify_statement_instrument(&[page("Savings Account Statement\nOpening Balance 1,000")], &empty),
+            "bank_account"
+        );
+        assert_eq!(
+            classify_statement_instrument(&[page("Credit Card Statement\nTotal Amount Due")], &empty),
+            "credit_card"
+        );
+        let with_min_due = StatementMetadata { minimum_due: Some(500), ..Default::default() };
+        assert_eq!(
+            classify_statement_instrument(&[page("Statement of Account")], &with_min_due),
+            "credit_card",
+            "a minimum due means a card"
+        );
+        assert_eq!(classify_statement_instrument(&[page("Monthly statement")], &empty), "credit_card");
+    }
+
     use super::*;
 
     fn meta_of(text: &str) -> StatementMetadata {
