@@ -71,11 +71,20 @@ pub async fn auth_get_recovery_phrase(
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(|c| {
-        if let Ok(Some(mut profile)) = crate::db::local_profile::select_by_id(c, 1) {
-            profile.recovery_phrase_enabled = true;
-            let _ = crate::db::local_profile::update(c, &profile);
+        // The phrase is still returned if this fails (showing it matters
+        // more), but the failure is logged: the app would otherwise keep
+        // treating the phrase as never saved, with no trace of why (S3).
+        match crate::db::local_profile::select_by_id(c, 1) {
+            Ok(Some(mut profile)) => {
+                profile.recovery_phrase_enabled = true;
+                if let Err(e) = crate::db::local_profile::update(c, &profile) {
+                    tracing::error!("Could not record that the recovery phrase was shown: {}", e);
+                }
+            }
+            Ok(None) => tracing::error!("No local profile to record the recovery phrase on"),
+            Err(e) => tracing::error!("Could not read the local profile: {}", e),
         }
-        let _ = crate::db::audit_log::insert(
+        if let Err(e) = crate::db::audit_log::insert(
             c,
             &crate::db::audit_log::AuditLogRow {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -88,7 +97,9 @@ pub async fn auth_get_recovery_phrase(
                 after_json: None,
                 created_at: chrono::Utc::now(),
             },
-        );
+        ) {
+            tracing::warn!("Could not audit the recovery phrase view: {}", e);
+        }
     })
     .await
     .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
