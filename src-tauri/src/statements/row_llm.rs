@@ -149,7 +149,6 @@ pub async fn extract_unparsed_pages(
     app_dir: &std::path::Path,
     model_id: &str,
     start_index: usize,
-    pipeline: Option<&crate::llm_pipeline::LlmPipeline>,
 ) -> Vec<StatementRow> {
     let mut out = Vec::new();
     let mut sent = 0usize;
@@ -182,38 +181,16 @@ pub async fn extract_unparsed_pages(
                 1,
             );
             
-            let fut = async {
-                if let Some(pipeline) = pipeline {
-                    let (tx, rx) = tokio::sync::oneshot::channel();
-                    let req = crate::llm_pipeline::LlmRequest {
-                        model_id: model_id.to_string(),
-                        prompt: prompt.clone(),
-                        schema: Some(rows_schema()),
-                        ctx: ctx.clone(),
-                        app_dir: app_dir.to_path_buf(),
-                        response_tx: tx,
-                    };
-                    if let Err(e) = pipeline.enqueue(req).await {
-                        Err(e)
-                    } else {
-                        rx.await.unwrap_or_else(|_| Err(anyhow::anyhow!("inference channel closed")))
-                    }
-                } else {
-                    crate::llama_sidecar::complete_with_optional_schema_and_context(
-                        app_dir,
-                        model_id,
-                        &prompt,
-                        Some(rows_schema()),
-                        ctx,
-                    )
-                    .await
-                }
-            };
-
-            let result = match tokio::time::timeout(std::time::Duration::from_secs(120), fut).await {
-                Ok(r) => r,
-                Err(_) => Err(anyhow::anyhow!("timeout")),
-            };
+            // Interactive priority and a timeout that starts only once a slot
+            // is held both live in the sidecar call (review P7).
+            let result = crate::llama_sidecar::complete_with_optional_schema_and_context(
+                app_dir,
+                model_id,
+                &prompt,
+                Some(rows_schema()),
+                ctx.clone(),
+            )
+            .await;
 
             match result {
                 Ok(raw) => break Some(raw),

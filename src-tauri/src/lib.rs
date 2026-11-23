@@ -36,7 +36,6 @@ pub mod licensing;
 pub mod lifecycle;
 pub mod llama_sidecar;
 pub mod llm_manager;
-pub mod llm_pipeline;
 pub mod logging;
 pub mod menu;
 pub mod network_client;
@@ -462,7 +461,6 @@ pub fn run() {
             app.manage(crate::security::incident_response::IncidentMonitor::default());
             app.manage(crate::background_tasks::indicator::BackgroundTaskRegistry::default());
             app.manage(crate::llm_manager::DownloadRegistry::default());
-            app.manage(crate::llm_pipeline::LlmPipeline::new());
             {
                 // Warning dismissals are persisted, so they are loaded into the
                 // in-memory set before any warning can be raised -- otherwise a
@@ -510,8 +508,7 @@ pub fn run() {
             // Background services from here on. Each is spawned onto the async
             // runtime so startup completes and the window renders while they come
             // up in the background.
-            let pipeline = app.state::<crate::llm_pipeline::LlmPipeline>().inner().clone();
-            let learning_handle = crate::learning::spawn_learning_worker(pool_clone.clone(), pipeline);
+            let learning_handle = crate::learning::spawn_learning_worker(pool_clone.clone());
             app.manage(learning_handle.clone());
 
             let queue_handles = crate::ingestion::queues::spawn_queues(

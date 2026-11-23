@@ -13,7 +13,6 @@ use deadpool_sqlite::Pool;
 use futures_util::FutureExt as _;
 use std::sync::Arc;
 use tauri::Emitter;
-use tauri::Manager;
 use tokio::sync::{mpsc, Mutex, Semaphore};
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -488,8 +487,7 @@ pub fn spawn_queues<R: tauri::Runtime>(
     spawn_transaction_workers(transaction_rx, pool.clone(), app.clone());
     spawn_statement_dispatcher(statement_rx, pool.clone(), app.clone());
     spawn_mandate_workers(mandate_rx, pool.clone());
-    let pipeline = app.state::<crate::llm_pipeline::LlmPipeline>().inner().clone();
-    spawn_layer6_workers(layer6_rx, pool, learning, pipeline);
+    spawn_layer6_workers(layer6_rx, pool, learning);
 
     let handles = QueueHandles {
         transaction_tx,
@@ -581,7 +579,6 @@ fn spawn_layer6_workers(
     rx: mpsc::Receiver<Layer6Job>,
     pool: Pool,
     learning: crate::learning::LearningHandle,
-    pipeline: crate::llm_pipeline::LlmPipeline,
 ) {
     // A fixed pool (review M4). One task per job let an unbounded number pile
     // up behind the sidecar's own semaphore; now the channel's capacity is
@@ -591,14 +588,13 @@ fn spawn_layer6_workers(
         let rx = Arc::clone(&rx);
         let pool = pool.clone();
         let learning = learning.clone();
-        let pipeline = pipeline.clone();
         tauri::async_runtime::spawn(async move {
             loop {
                 let job = { rx.lock().await.recv().await };
                 let Some(job) = job else { break };
                 crate::security::incident_response::wait_while_ingestion_paused().await;
                 ACTIVE_LAYER6_JOBS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                process_layer6_job(job, &pool, &learning, pipeline.clone()).await;
+                process_layer6_job(job, &pool, &learning).await;
                 ACTIVE_LAYER6_JOBS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             }
         });
@@ -643,14 +639,12 @@ async fn process_layer6_job(
     job: Layer6Job,
     pool: &Pool,
     learning: &crate::learning::LearningHandle,
-    pipeline: crate::llm_pipeline::LlmPipeline,
 ) {
     use crate::extraction::llm::Layer6Outcome;
 
     let layer = crate::extraction::ladder::Layer6LlmLayer {
         app_dir: Some(job.app_dir.clone()),
         fallback_event_time: job.internal_date_seconds,
-        pipeline: Some(pipeline),
     };
     let result = layer.run(pool, &job.bank_name, &job.body_text).await;
     let completed = match result {

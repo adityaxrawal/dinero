@@ -269,7 +269,6 @@ async fn run_cleanup(app: tauri::AppHandle, pool: Pool, run_id: String) -> anyho
         .await
         .ok_or_else(|| anyhow::anyhow!("no downloaded LLM model available"))?;
 
-    let pipeline = app.state::<crate::llm_pipeline::LlmPipeline>().inner().clone();
 
     let conn = pool.get().await?;
     let (candidates, categories) = conn
@@ -309,7 +308,6 @@ async fn run_cleanup(app: tauri::AppHandle, pool: Pool, run_id: String) -> anyho
         let run_id = run_id.clone();
         let app_dir = app_dir.clone();
         let model_id = model_id.clone();
-        let pipeline = pipeline.clone();
 
         handles.push(tauri::async_runtime::spawn(async move {
             loop {
@@ -324,7 +322,6 @@ async fn run_cleanup(app: tauri::AppHandle, pool: Pool, run_id: String) -> anyho
                     &pool,
                     &app_dir,
                     &model_id,
-                    &pipeline,
                     &run_id,
                     &candidate,
                     &categories,
@@ -384,7 +381,6 @@ async fn process_one(
     pool: &Pool,
     app_dir: &std::path::Path,
     model_id: &str,
-    pipeline: &crate::llm_pipeline::LlmPipeline,
     run_id: &str,
     candidate: &merchant_cleanup::CleanupCandidate,
     categories: &[String],
@@ -412,29 +408,18 @@ async fn process_one(
         crate::logging::llm_logger::LlmCallType::MerchantCleanup,
         1,
     );
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let req = crate::llm_pipeline::LlmRequest {
-        model_id: model_id.to_string(),
-        prompt: prompt.clone(),
-        schema: Some(schema.clone()),
+    let raw = match crate::llama_sidecar::complete_with_optional_schema_and_context(
+        app_dir,
+        model_id,
+        &prompt,
+        Some(schema.clone()),
         ctx,
-        app_dir: app_dir.to_path_buf(),
-        response_tx: tx,
-    };
-
-    if let Err(e) = pipeline.enqueue(req).await {
-        tracing::debug!(tx = %candidate.transaction_id, "merchant cleanup: pipeline error: {e}");
-        return None;
-    }
-
-    let raw = match rx.await {
-        Ok(Ok(raw)) => raw,
-        Ok(Err(e)) => {
+    )
+    .await
+    {
+        Ok(raw) => raw,
+        Err(e) => {
             tracing::debug!(tx = %candidate.transaction_id, "merchant cleanup: inference failed: {e}");
-            return None;
-        }
-        Err(_) => {
-            tracing::debug!(tx = %candidate.transaction_id, "merchant cleanup: pipeline channel closed");
             return None;
         }
     };

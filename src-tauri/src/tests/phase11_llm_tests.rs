@@ -70,7 +70,7 @@ Have a nice day!
 
 #[test]
 fn test_llm_output_parsed_to_extraction_result() {
-    let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy", None);
+    let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
 
     let valid_json = r#"{
         "amount": 1500.50,
@@ -96,7 +96,7 @@ fn test_llm_output_parsed_to_extraction_result() {
 
 #[test]
 fn test_llm_output_parsed_invalid_direction_normalized() {
-    let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy", None);
+    let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
 
     let json = r#"{
         "amount": 50.0,
@@ -118,7 +118,7 @@ fn test_llm_output_parsed_invalid_direction_normalized() {
 
 #[test]
 fn test_llm_output_parsed_missing_mandatory_fields_rejected() {
-    let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy", None);
+    let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
 
     let json = r#"{
         "amount": 50.0,
@@ -139,7 +139,7 @@ async fn test_llm_extraction_falls_back_gracefully_on_oom() {
     // model file on disk to spawn against) rather than hanging or
     // crashing, and extract() maps that to a graceful None.
 
-    let engine = LlmEngine::new(&PathBuf::from("/does/not/exist"), "nonexistent-model", None);
+    let engine = LlmEngine::new(&PathBuf::from("/does/not/exist"), "nonexistent-model");
 
     let result = engine
         .extract("HDFC Bank", "You spent Rs 500 at Amazon.", None)
@@ -153,7 +153,7 @@ async fn test_llm_extraction_falls_back_gracefully_on_oom() {
 
 #[test]
 fn test_llm_output_parsed_with_hallucinated_json_rejected() {
-    let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy", None);
+    let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
 
     let json = r#"This is not JSON at all."#;
 

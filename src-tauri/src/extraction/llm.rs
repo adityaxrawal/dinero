@@ -13,7 +13,6 @@ use tracing::{debug, error};
 pub struct LlmEngine {
     app_dir: std::path::PathBuf,
     model_id: String,
-    pipeline: Option<crate::llm_pipeline::LlmPipeline>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -54,12 +53,11 @@ struct LlmJsonOutput {
 }
 
 impl LlmEngine {
-    /// Creates an engine bound to a model file and pipeline.
-    pub fn new(app_dir: &Path, model_id: &str, pipeline: Option<crate::llm_pipeline::LlmPipeline>) -> Self {
+    /// Creates an engine bound to a model file.
+    pub fn new(app_dir: &Path, model_id: &str) -> Self {
         Self {
             app_dir: app_dir.to_path_buf(),
             model_id: model_id.to_string(),
-            pipeline,
         }
     }
 
@@ -207,38 +205,16 @@ impl LlmEngine {
         let mut timed_out = false;
 
         let raw_output = loop {
-            let fut = async {
-                if let Some(pipeline) = &self.pipeline {
-                    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
-                    let req = crate::llm_pipeline::LlmRequest {
-                        model_id: self.model_id.clone(),
-                        prompt: prompt.to_string(),
-                        schema: Some(crate::llama_sidecar::layer6_json_schema_pub()),
-                        ctx: ctx.clone(),
-                        app_dir: self.app_dir.clone(),
-                        response_tx,
-                    };
-                    if let Err(e) = pipeline.enqueue(req).await {
-                        Err(e)
-                    } else {
-                        response_rx.await.unwrap_or_else(|_| Err(anyhow::anyhow!("Pipeline channel closed")))
-                    }
-                } else {
-                    crate::llama_sidecar::complete_with_optional_schema_and_context(
-                        &self.app_dir,
-                        &self.model_id,
-                        prompt,
-                        Some(crate::llama_sidecar::layer6_json_schema_pub()),
-                        ctx.clone(),
-                    )
-                    .await
-                }
-            };
-
-            let result = match tokio::time::timeout(std::time::Duration::from_secs(120), fut).await {
-                Ok(r) => r,
-                Err(_) => Err(anyhow::anyhow!("timeout")),
-            };
+            // The sidecar's calibrated timeout starts once a slot is held; an
+            // outer timeout here used to count the queue wait too (review P7).
+            let result = crate::llama_sidecar::complete_with_optional_schema_and_context(
+                &self.app_dir,
+                &self.model_id,
+                prompt,
+                Some(crate::llama_sidecar::layer6_json_schema_pub()),
+                ctx.clone(),
+            )
+            .await;
 
             match result {
                 Ok(output) => break Some(output),
@@ -501,7 +477,7 @@ mod tests {
 
     #[test]
     fn test_llm_output_parses_self_reported_confidence() {
-        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy", None);
+        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
         let raw = r#"{"amount": 500.00, "currency": "INR", "direction": "debit",
                       "merchant": "Amazon", "datetime": "05-Jan-24", "reference_id": null,
                       "confidence": 0.35}"#;
@@ -513,7 +489,7 @@ mod tests {
 
     #[test]
     fn test_llm_output_missing_confidence_defaults_low() {
-        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy", None);
+        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
         let raw = r#"{"amount": 500.00, "currency": "INR", "direction": "debit",
                       "merchant": "Amazon", "datetime": "05-Jan-24", "reference_id": null}"#;
         let result = engine
@@ -524,7 +500,7 @@ mod tests {
 
     #[test]
     fn test_llm_output_missing_event_time_uses_fallback() {
-        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy", None);
+        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
         let raw = r#"{"amount": 5194.00, "currency": "INR", "direction": "debit",
                       "merchant": "Edge CSB Bank Credit Card", "reference_id": "1321778584196999168"}"#;
 
@@ -545,7 +521,7 @@ mod tests {
 
     #[test]
     fn test_llm_output_schema_validation_rejects_malformed_json() {
-        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy", None);
+        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
         let malformed = r#"{ "amount": 50.0, "currency": "USD" "merchant": "Netflix" "#;
         assert!(engine.parse_json_to_result(malformed, None).is_err());
 
@@ -555,7 +531,7 @@ mod tests {
 
     #[test]
     fn classify_raw_output_distinguishes_unparseable_json_from_failed_validation() {
-        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy", None);
+        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
         let source_body = "Dear Customer, Rs 1,299.00 has been debited from your HDFC Bank \
             account ending 4521 on 05-Jan-24 towards purchase at Amazon. Ref No 987654321.";
 
@@ -721,7 +697,7 @@ mod tests {
 
     #[test]
     fn llm_output_rejects_values_that_are_grounded_but_impossible() {
-        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy", None);
+        let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
 
         for bogus in ["unknown", "", "transfer", "DEBIT or CREDIT"] {
             let raw = format!(

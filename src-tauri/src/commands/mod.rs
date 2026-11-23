@@ -458,7 +458,6 @@ async fn llm_rows_for_unparsed_pages<R: tauri::Runtime>(
         return Vec::new();
     };
 
-    let pipeline = app.state::<crate::llm_pipeline::LlmPipeline>().inner().clone();
     crate::statements::row_llm::extract_unparsed_pages(
         pages,
         parser,
@@ -466,7 +465,6 @@ async fn llm_rows_for_unparsed_pages<R: tauri::Runtime>(
         &app_dir,
         &model_id,
         start_index,
-        Some(&pipeline),
     )
     .await
 }

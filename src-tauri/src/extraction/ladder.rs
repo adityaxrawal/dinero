@@ -1698,7 +1698,6 @@ impl Layer5CrossrefLayer {
 pub struct Layer6LlmLayer {
     pub app_dir: Option<std::path::PathBuf>,
     pub fallback_event_time: Option<i64>,
-    pub pipeline: Option<crate::llm_pipeline::LlmPipeline>,
 }
 impl Layer6LlmLayer {
     /// Executes the LLM call and classifies its outcome.
@@ -1738,7 +1737,7 @@ impl Layer6LlmLayer {
 
         tracing::info!(bank_name = bank_name, "Layer 6 (LLM) extraction invoked");
 
-        let engine = crate::extraction::llm::LlmEngine::new(app_dir, &model_id, self.pipeline.clone());
+        let engine = crate::extraction::llm::LlmEngine::new(app_dir, &model_id);
         let result = engine
             .extract(bank_name, body, self.fallback_event_time)
             .await;
@@ -2045,7 +2044,6 @@ pub async fn run_extraction_ladder(
     let layer6 = Layer6LlmLayer {
         app_dir: app_dir.clone(),
         fallback_event_time: internal_date,
-        pipeline: None, // Used in historical scan where pipeline may not be initialized
     };
     let layer6_outcome = layer6.run(pool, bank_name, body).await;
     match layer6_outcome {

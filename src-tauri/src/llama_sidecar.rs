@@ -724,7 +724,52 @@ pub async fn complete_with_schema_and_context(
     complete_with_optional_schema_and_context(app_dir, model_id, prompt, Some(schema), ctx).await
 }
 
+/// Interactive requests waiting for an inference slot (review P7).
+static INTERACTIVE_WAITING: AtomicUsize = AtomicUsize::new(0);
+
+/// Counts an interactive request as waiting until it holds a slot (or is
+/// dropped), so background requests stand aside.
+struct InteractiveWaiting;
+impl InteractiveWaiting {
+    fn new() -> Self {
+        INTERACTIVE_WAITING.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+impl Drop for InteractiveWaiting {
+    fn drop(&mut self) {
+        INTERACTIVE_WAITING.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Takes an inference slot, letting interactive work (a statement the user is
+/// reviewing) go before background work (Layer-6 replay, merchant cleanup,
+/// rule authoring) (review P7). A background request waits while any
+/// interactive one is queued, and hands back a slot it won meanwhile.
+async fn acquire_slot(
+    semaphore: &Semaphore,
+    call_type: crate::logging::llm_logger::LlmCallType,
+) -> Result<tokio::sync::SemaphorePermit<'_>> {
+    use crate::logging::llm_logger::LlmCallType;
+    if matches!(call_type, LlmCallType::StatementRowExtraction) {
+        let _waiting = InteractiveWaiting::new();
+        return semaphore.acquire().await.context("llama-server semaphore closed");
+    }
+    loop {
+        while INTERACTIVE_WAITING.load(Ordering::SeqCst) > 0 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let permit = semaphore.acquire().await.context("llama-server semaphore closed")?;
+        if INTERACTIVE_WAITING.load(Ordering::SeqCst) == 0 {
+            return Ok(permit);
+        }
+    }
+}
+
 /// Runs a completion with an optional schema and context.
+///
+/// The calibrated timeout starts once a slot is held, so time spent queued
+/// behind other work never counts against a request (review P7).
 pub async fn complete_with_optional_schema_and_context(
     app_dir: &Path,
     model_id: &str,
@@ -733,10 +778,7 @@ pub async fn complete_with_optional_schema_and_context(
     ctx: crate::logging::llm_logger::LlmCallContext,
 ) -> Result<String> {
     let (port, semaphore, calibrated_timeout) = ensure_server_ready(app_dir, model_id).await?;
-    let _permit = semaphore
-        .acquire()
-        .await
-        .context("llama-server semaphore closed")?;
+    let _permit = acquire_slot(&semaphore, ctx.call_type).await?;
     
     let effective_timeout = calibrated_timeout.min(Duration::from_secs(150));
     
@@ -751,6 +793,35 @@ pub async fn complete_with_optional_schema_and_context(
 #[cfg(test)]
 mod tests {
     use super::server_matches;
+
+    /// Review P7: an interactive request queued behind background work gets
+    /// the next free slot, even when background asked first.
+    #[tokio::test]
+    async fn interactive_requests_overtake_queued_background_work() {
+        use crate::logging::llm_logger::LlmCallType;
+        use std::sync::{Arc, Mutex};
+        let sem = Arc::new(tokio::sync::Semaphore::new(1));
+        let held = sem.clone().acquire_owned().await.unwrap();
+        let order = Arc::new(Mutex::new(Vec::new()));
+
+        let run = |call_type, name: &'static str| {
+            let (sem, order) = (sem.clone(), order.clone());
+            tokio::spawn(async move {
+                let _slot = super::acquire_slot(&sem, call_type).await.unwrap();
+                order.lock().unwrap().push(name);
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            })
+        };
+        let background = run(LlmCallType::MerchantCleanup, "background");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let interactive = run(LlmCallType::StatementRowExtraction, "interactive");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        drop(held);
+        interactive.await.unwrap();
+        background.await.unwrap();
+        assert_eq!(*order.lock().unwrap(), ["interactive", "background"]);
+    }
 
     /// Review M17: the archive is re-checked before every start.
     #[tokio::test]
