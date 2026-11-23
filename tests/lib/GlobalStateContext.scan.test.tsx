@@ -135,13 +135,15 @@ describe('GlobalStateContext scan cancellation + timing', () => {
   it('resetScan clears status, progress, and timestamps back to idle', async () => {
     renderProvider();
     await startScan();
-    expect(screen.getByTestId('scan-status').textContent).toBe('running');
+    // waitFor rather than a single read: under a loaded parallel run the
+    // provider's async effects can settle a tick later (this test was flaky).
+    await waitFor(() => expect(screen.getByTestId('scan-status').textContent).toBe('running'));
 
     await act(async () => {
       screen.getByText('reset').click();
     });
 
-    expect(screen.getByTestId('scan-status').textContent).toBe('idle');
+    await waitFor(() => expect(screen.getByTestId('scan-status').textContent).toBe('idle'));
     expect(screen.getByTestId('scan-started-at').textContent).toBe('null');
     expect(screen.getByTestId('scan-finished-at').textContent).toBe('null');
   });

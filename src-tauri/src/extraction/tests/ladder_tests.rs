@@ -658,6 +658,11 @@
         let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let subscriber = tracing_subscriber::registry().with(CapturingLayer(logs.clone()));
         let _guard = tracing::subscriber::set_default(subscriber);
+        // Other tests running in parallel can make tracing cache "no
+        // subscriber is interested" for these callsites before this
+        // thread-local subscriber exists, which silently dropped the lines
+        // this test asserts on (it was flaky). Re-evaluate the cache now.
+        tracing::callsite::rebuild_interest_cache();
 
         let pool = dummy_pool();
         let mut layer6_timed_out = false;

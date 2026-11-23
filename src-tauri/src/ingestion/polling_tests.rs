@@ -308,6 +308,9 @@ mod tests {
         let logs = Arc::new(Mutex::new(Vec::<String>::new()));
         let subscriber = tracing_subscriber::registry().with(CapturingLayer(logs.clone()));
         let _guard = tracing::subscriber::set_default(subscriber);
+        // See ladder_tests::test_llm_skipped_when_ineligible: avoid tracing's
+        // cached "no subscriber" interest from parallel tests dropping lines.
+        tracing::callsite::rebuild_interest_cache();
 
         let app = mock_builder()
             .build(mock_context(tauri::test::noop_assets()))
