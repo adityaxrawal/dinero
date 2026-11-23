@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import PortableBackupSettings from './PortableBackupSettings';
+import PortableBackupSettings from '@/components/settings/PortableBackupSettings';
 
 const dialog = vi.hoisted(() => ({ save: vi.fn(), open: vi.fn(), ask: vi.fn() }));
 const api = vi.hoisted(() => ({ exportBackup: vi.fn(), restorePortableBackup: vi.fn() }));
