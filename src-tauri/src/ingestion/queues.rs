@@ -573,27 +573,34 @@ fn spawn_queue_monitor<R: tauri::Runtime>(
 }
 
 fn spawn_layer6_workers(
-    mut rx: mpsc::Receiver<Layer6Job>,
+    rx: mpsc::Receiver<Layer6Job>,
     pool: Pool,
     learning: crate::learning::LearningHandle,
     pipeline: crate::llm_pipeline::LlmPipeline,
 ) {
-    // We no longer manually constrain Layer 6 to a fixed size here.
-    // The central LlmPipeline manages concurrency via llama_sidecar's Semaphore.
-    // We just spawn a new task for each job as it arrives.
-    tauri::async_runtime::spawn(async move {
-        while let Some(job) = rx.recv().await {
-            let pool = pool.clone();
-            let learning = learning.clone();
-            let pipeline = pipeline.clone();
-            tauri::async_runtime::spawn(async move {
+    // A fixed pool (review M4). One task per job let an unbounded number pile
+    // up behind the sidecar's own semaphore; now the channel's capacity is
+    // the backpressure, and at most LAYER6_WORKERS jobs are in flight.
+    let rx = Arc::new(Mutex::new(rx));
+    for _ in 0..LAYER6_WORKERS {
+        let rx = Arc::clone(&rx);
+        let pool = pool.clone();
+        let learning = learning.clone();
+        let pipeline = pipeline.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                let job = { rx.lock().await.recv().await };
+                let Some(job) = job else { break };
                 ACTIVE_LAYER6_JOBS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                process_layer6_job(job, &pool, &learning, pipeline).await;
+                process_layer6_job(job, &pool, &learning, pipeline.clone()).await;
                 ACTIVE_LAYER6_JOBS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-            });
-        }
-    });
+            }
+        });
+    }
 }
+
+/// Layer 6 workers, matching the documented queue design.
+const LAYER6_WORKERS: usize = 6;
 
 const LAYER6_AUTO_RESOLVE_CONFIDENCE_THRESHOLD: f64 = crate::extraction::ladder::MIN_LEDGER_CONFIDENCE;
 
