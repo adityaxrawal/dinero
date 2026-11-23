@@ -825,20 +825,9 @@ async fn commit_claimed_draft<R: tauri::Runtime>(
 ) -> anyhow::Result<String> {
     use crate::db::transaction_observations::TransactionObservationsRow;
     use crate::statements::{
-        bill_classifier,
-        metadata_extractor::{resolve_or_create_instrument, write_statement_row, StatementMetadata},
+        bill_classifier, metadata_extractor::StatementMetadata,
         observation_builder::build_all_observations,
-        row_extractor::map_rows_to_statement_entries,
     };
-
-    let instrument_id = resolve_or_create_instrument(
-        &edited_metadata.instrument_type,
-        &edited_metadata.issuer_name,
-        &edited_metadata.masked_identifier,
-        None,
-        pool,
-    )
-    .await?;
 
     let meta = StatementMetadata {
         billing_period_start: edited_metadata.billing_period_start,
@@ -852,43 +841,55 @@ async fn commit_claimed_draft<R: tauri::Runtime>(
         rewards_summary_json: None,
         statement_date: edited_metadata.statement_date,
     };
-
-    let derived_stmt_id = uuid::Uuid::new_v5(
+    let stmt_id = uuid::Uuid::new_v5(
         &uuid::Uuid::NAMESPACE_OID,
         format!("statement:{}", draft_id).as_bytes(),
     )
     .to_string();
-    let stmt_id = write_statement_row(
-        &derived_stmt_id,
-        &instrument_id,
-        &edited_metadata.instrument_type,
-        &meta,
-        Some(&draft.file_hash),
-        pool,
-    )
-    .await?;
 
-    let entry_ids = map_rows_to_statement_entries(&stmt_id, &edited_rows, pool).await;
-    if entry_ids.len() != edited_rows.len() {
-        return Err(anyhow::anyhow!(
-            "{} of {} statement rows could not be saved — the draft was kept for review",
-            edited_rows.len() - entry_ids.len(),
-            edited_rows.len()
-        ));
-    }
-
-    if !edited_rows.is_empty() && !entry_ids.is_empty() {
-        let observations =
-            build_all_observations(&stmt_id, &instrument_id, &edited_rows, &entry_ids);
-        let conn = pool
-            .get()
-            .await
-            .map_err(|e| anyhow::anyhow!("DB pool error: {}", e))?;
-        let obs_cloned = observations.clone();
-        let stmt_id_for_obs = stmt_id.clone();
-        let failed_rows = conn.interact(move |c| {
-            let mut failed = 0usize;
-            for obs in &obs_cloned {
+    // Everything that books the statement runs in ONE transaction (review H7):
+    // instrument, statement row, entries, observations (each reconciled in a
+    // savepoint), the PDF-retention link and the draft's committed status. Any
+    // failure rolls all of it back, so the ledger is never half-updated; the
+    // caller then returns the draft to review. Ids stay derived from the draft,
+    // so a retry after a crash is still idempotent.
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| anyhow::anyhow!("DB pool error: {}", e))?;
+    let (instrument_id, entry_ids, observation_ids) = {
+        let stmt_id = stmt_id.clone();
+        let meta = meta.clone();
+        let draft_id = draft_id.to_string();
+        let file_hash = draft.file_hash.clone();
+        let rows = edited_rows.clone();
+        let itype = edited_metadata.instrument_type.clone();
+        let issuer = edited_metadata.issuer_name.clone();
+        let masked = edited_metadata.masked_identifier.clone();
+        conn.interact(move |c| -> anyhow::Result<(String, Vec<String>, Vec<String>)> {
+            c.execute_batch("BEGIN IMMEDIATE")?;
+            let result = (|| -> anyhow::Result<(String, Vec<String>, Vec<String>)> {
+                let instrument_id = crate::statements::metadata_extractor::resolve_or_create_instrument_sync(
+                    c,
+                    &uuid::Uuid::new_v4().to_string(),
+                    &itype,
+                    &issuer,
+                    &masked,
+                    None,
+                )?;
+                crate::statements::metadata_extractor::write_statement_row_sync(
+                    c,
+                    &stmt_id,
+                    &instrument_id,
+                    &itype,
+                    &meta,
+                    Some(&file_hash),
+                )?;
+                let entry_ids =
+                    crate::statements::row_extractor::insert_statement_entries_sync(c, &stmt_id, &rows)?;
+                let observations = build_all_observations(&stmt_id, &instrument_id, &rows, &entry_ids);
+                let stmt_id_for_obs = stmt_id.clone();
+                for obs in &observations {
                 let fmt = "%Y-%m-%d %H:%M:%S";
                 let event_time = chrono::NaiveDateTime::parse_from_str(&obs.event_time, fmt)
                     .or_else(|_| {
@@ -936,67 +937,49 @@ async fn commit_claimed_draft<R: tauri::Runtime>(
                     created_at: None,
                     updated_at: None,
                 };
-                if let Err(e) = crate::reconciliation::engine::ingest_observation(c, &row, true) {
-                    tracing::warn!("Reconciliation failed for obs '{}': {}", obs.id, e);
-                    failed += 1;
+                    crate::reconciliation::engine::ingest_observation(c, &row, true).map_err(|e| {
+                        anyhow::anyhow!("statement row {} could not be booked: {}", obs.source_record_id, e)
+                    })?;
+                }
+                c.execute(
+                    "INSERT OR IGNORE INTO unprocessed_statements \
+                     (id, statement_source_json, failure_type, failure_reason, status) \
+                     VALUES (?1, '{}', 'staged_review', '', 'pending_review')",
+                    rusqlite::params![draft_id],
+                )?;
+                crate::db::unprocessed_statements::update_status(c, &draft_id, "resolved", Some(&stmt_id))?;
+                crate::db::statement_drafts::update_status(c, &draft_id, "committed")?;
+                Ok((instrument_id, entry_ids, observations.into_iter().map(|o| o.id).collect()))
+            })();
+            match result {
+                Ok(v) => {
+                    c.execute_batch("COMMIT")?;
+                    Ok(v)
+                }
+                Err(e) => {
+                    let _ = c.execute_batch("ROLLBACK");
+                    Err(e)
                 }
             }
-            failed
         })
         .await
-        .map_err(|e| anyhow::anyhow!("Interact error: {}", e))?;
-        if failed_rows > 0 {
-            return Err(anyhow::anyhow!(
-                "{} of {} statement rows could not be booked — the draft was kept for review; \
-                 committing again finishes the rest",
-                failed_rows,
-                observations.len()
-            ));
-        }
+        .map_err(|e| anyhow::anyhow!("Interact error: {}", e))?
+        .map_err(|e| e.context("statement commit rolled back — the draft was kept for review"))?
+    };
 
-        let obs_ids: Vec<String> = observations.into_iter().map(|o| o.id).collect();
-        tokio::spawn(
-            crate::reconciliation::alert_worker::evaluate_alerts_for_observations(
-                pool.clone(),
-                app.clone(),
-                obs_ids,
-            ),
-        );
+    // After the commit: these must not undo a booked statement if they fail.
+    if !observation_ids.is_empty() {
+        tokio::spawn(crate::reconciliation::alert_worker::evaluate_alerts_for_observations(
+            pool.clone(),
+            app.clone(),
+            observation_ids,
+        ));
     }
-
-    bill_classifier::classify_and_update(&instrument_id, &stmt_id, &meta, pool, Some(app)).await?;
-
-    let draft_id_for_retention = draft_id.to_string();
-    let stmt_id_for_retention = stmt_id.clone();
-    let conn = pool
-        .get()
-        .await
-        .map_err(|e| anyhow::anyhow!("DB pool error: {}", e))?;
-    conn.interact(move |c| {
-        c.execute(
-            "INSERT OR IGNORE INTO unprocessed_statements \
-             (id, statement_source_json, failure_type, failure_reason, status) \
-             VALUES (?1, '{}', 'staged_review', '', 'pending_review')",
-            rusqlite::params![draft_id_for_retention],
-        )?;
-        crate::db::unprocessed_statements::update_status(
-            c,
-            &draft_id_for_retention,
-            "resolved",
-            Some(&stmt_id_for_retention),
-        )
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!("Interact error: {}", e))?
-    .map_err(|e| anyhow::anyhow!("DB error linking PDF retention: {}", e))?;
-
-    let draft_id_owned = draft_id.to_string();
-    conn.interact(move |c| {
-        crate::db::statement_drafts::update_status(c, &draft_id_owned, "committed")
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!("Interact error: {}", e))?
-    .map_err(|e| anyhow::anyhow!("DB error: {}", e))?;
+    if let Err(e) =
+        bill_classifier::classify_and_update(&instrument_id, &stmt_id, &meta, pool, Some(app)).await
+    {
+        tracing::warn!("Bill classification failed after commit of '{}': {}", stmt_id, e);
+    }
 
     let rows_extracted = entry_ids.len() as i64;
     let issuer_name_for_event = instrument_id.clone();
@@ -4306,6 +4289,56 @@ mod tests {
             .await
             .unwrap();
         assert_eq!((stmts, entries, obs), (1, 1, 1));
+    }
+
+    /// Review H7 follow-up: one row that cannot be booked rolls back the whole
+    /// commit — no statement, entries or observations remain — and the draft
+    /// goes back to review.
+    #[tokio::test]
+    async fn test_failed_row_rolls_back_the_whole_commit() {
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        seed_test_draft(&pool, "draft_rb", "inst_rb", "8888").await;
+        let conn = pool.get().await.unwrap();
+        conn.interact(|c| {
+            c.execute_batch(
+                "CREATE TRIGGER fail_one_row BEFORE INSERT ON transaction_observations
+                 WHEN NEW.merchant_raw = 'BOOM'
+                 BEGIN SELECT RAISE(ABORT, 'simulated failure'); END;",
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+        let mut rows = edited_rows_fixture();
+        let mut bad = rows[0].clone();
+        bad.row_index = 1;
+        bad.merchant_raw = "BOOM".into();
+        bad.amount_minor = 777;
+        rows.push(bad);
+        let res = commit_staged_draft("draft_rb", edited_metadata_fixture(), rows, &pool, app.handle()).await;
+        assert!(res.is_err());
+
+        let (stmts, entries, obs, status): (i64, i64, i64, String) = conn
+            .interact(|c| {
+                let n = |sql: &str| c.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+                (
+                    n("SELECT COUNT(*) FROM statements WHERE parse_status = 'parsed'"),
+                    n("SELECT COUNT(*) FROM statement_entries"),
+                    n("SELECT COUNT(*) FROM transaction_observations"),
+                    c.query_row("SELECT status FROM statement_drafts WHERE id = 'draft_rb'", [], |r| r.get(0))
+                        .unwrap(),
+                )
+            })
+            .await
+            .unwrap();
+        assert_eq!((stmts, entries, obs), (0, 0, 0), "nothing may be half-booked");
+        assert_eq!(status, "pending_review");
     }
 
     #[test]

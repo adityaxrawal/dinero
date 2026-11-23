@@ -111,19 +111,45 @@ fn to_canonical_candidate(r: crate::db::transactions::TransactionsRow) -> Canoni
 /// Ensures the insertion of the observation and its canonicalization 
 /// occur atomically in the same transaction. A crash midway cannot leave 
 /// an observation half-merged.
+/// Opens BEGIN IMMEDIATE, or a savepoint when a transaction is already open.
+fn begin_scope(conn: &Connection) -> rusqlite::Result<bool> {
+    if conn.is_autocommit() {
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        Ok(false)
+    } else {
+        conn.execute_batch("SAVEPOINT ingest_observation")?;
+        Ok(true)
+    }
+}
+
+fn commit_scope(conn: &Connection, nested: bool) -> rusqlite::Result<()> {
+    conn.execute_batch(if nested { "RELEASE ingest_observation" } else { "COMMIT" })
+}
+
+fn rollback_scope(conn: &Connection, nested: bool) -> rusqlite::Result<()> {
+    conn.execute_batch(if nested {
+        "ROLLBACK TO ingest_observation; RELEASE ingest_observation"
+    } else {
+        "ROLLBACK"
+    })
+}
+
 pub fn ingest_observation(
     conn: &Connection,
     row: &TransactionObservationsRow,
     should_reconcile: bool,
 ) -> Result<(crate::db::transaction_observations::InsertObservationOutcome, Option<DecisionType>)> {
-    conn.execute_batch("BEGIN IMMEDIATE")?;
+    // Inside a caller's transaction (a statement commit) this runs as a
+    // savepoint, so the caller can make many observations all-or-nothing
+    // (review H7); on its own it opens BEGIN IMMEDIATE as before.
+    let nested = begin_scope(conn)?;
     
     let insert_outcome = crate::db::transaction_observations::insert_observation_idempotent(conn, row);
     
     match insert_outcome {
         Ok(crate::db::transaction_observations::InsertObservationOutcome::Inserted) => {
             if !should_reconcile || row.instrument_id.is_none() {
-                conn.execute_batch("COMMIT")?;
+                commit_scope(conn, nested)?;
                 return Ok((crate::db::transaction_observations::InsertObservationOutcome::Inserted, None));
             }
             
@@ -189,24 +215,24 @@ pub fn ingest_observation(
                             )
                         });
                     if let Err(e) = routed {
-                        let _ = conn.execute_batch("ROLLBACK");
+                        let _ = rollback_scope(conn, nested);
                         return Err(e);
                     }
                     None
                 }
             };
-            if let Err(e) = conn.execute_batch("COMMIT") {
-                let _ = conn.execute_batch("ROLLBACK");
+            if let Err(e) = commit_scope(conn, nested) {
+                let _ = rollback_scope(conn, nested);
                 return Err(e.into());
             }
             Ok((crate::db::transaction_observations::InsertObservationOutcome::Inserted, decision))
         }
         Ok(crate::db::transaction_observations::InsertObservationOutcome::DuplicateSkipped) => {
-            conn.execute_batch("COMMIT")?;
+            commit_scope(conn, nested)?;
             Ok((crate::db::transaction_observations::InsertObservationOutcome::DuplicateSkipped, None))
         }
         Err(e) => {
-            let _ = conn.execute_batch("ROLLBACK");
+            let _ = rollback_scope(conn, nested);
             Err(e)
         }
     }

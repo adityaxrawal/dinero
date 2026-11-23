@@ -9,7 +9,7 @@ use crate::statements::parser::ParsedPage;
 use anyhow::Result;
 use regex::Regex;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct StatementMetadata {
     pub billing_period_start: Option<String>,
     pub billing_period_end: Option<String>,
@@ -302,14 +302,16 @@ fn extract_text_pattern<S: AsRef<str>>(text: &str, patterns: &[S]) -> Option<Str
 }
 
 /// Writes the statement row derived from extracted metadata.
-pub async fn write_statement_row(
+/// Writes the statement row (and the instrument's latest figures) on a
+/// caller-supplied connection, so it can run inside a larger transaction.
+pub fn write_statement_row_sync(
+    c: &rusqlite::Connection,
     stmt_id: &str,
     instrument_id: &str,
     instrument_type: &str,
     meta: &StatementMetadata,
     source_message_id: Option<&str>,
-    pool: &deadpool_sqlite::Pool,
-) -> Result<String> {
+) -> rusqlite::Result<()> {
     let sid = stmt_id.to_string();
     let inst_id = instrument_id.to_string();
     let stmt_type = match instrument_type {
@@ -331,8 +333,7 @@ pub async fn write_statement_row(
     let rewards = meta.rewards_summary_json.clone();
     let src_msg = source_message_id.map(|s| s.to_string());
 
-    let conn = pool.get().await?;
-    conn.interact(move |c| {
+
         let updated = c.execute(
             "UPDATE statements SET \
              instrument_id = ?2, statement_type = ?3, billing_period_start = ?4, \
@@ -376,7 +377,23 @@ pub async fn write_statement_row(
             rusqlite::params![inst_id, due, min_due, cur_bal, rewards, cycle_day],
         )?;
 
-        Ok::<(), rusqlite::Error>(())
+        Ok(())
+}
+
+pub async fn write_statement_row(
+    stmt_id: &str,
+    instrument_id: &str,
+    instrument_type: &str,
+    meta: &StatementMetadata,
+    source_message_id: Option<&str>,
+    pool: &deadpool_sqlite::Pool,
+) -> Result<String> {
+    let (sid, inst_id, itype) = (stmt_id.to_string(), instrument_id.to_string(), instrument_type.to_string());
+    let meta_owned = meta.clone();
+    let src_msg = source_message_id.map(|s| s.to_string());
+    let conn = pool.get().await?;
+    conn.interact(move |c| {
+        write_statement_row_sync(c, &sid, &inst_id, &itype, &meta_owned, src_msg.as_deref())
     })
     .await
     .map_err(|e| anyhow::anyhow!("DB interact error (write_statement_row): {}", e))??;
@@ -398,6 +415,29 @@ pub async fn write_statement_row(
 /// Where identification is not confident the user is asked instead. A
 /// misattributed statement corrupts the balances of two accounts at once, so
 /// guessing is the worse option.
+/// Finds or creates an instrument on a caller-supplied connection.
+pub fn resolve_or_create_instrument_sync(
+    c: &rusqlite::Connection,
+    new_id: &str,
+    instrument_type: &str,
+    issuer_name: &str,
+    masked_identifier: &str,
+    network: Option<&str>,
+) -> rusqlite::Result<String> {
+    c.execute(
+        "INSERT OR IGNORE INTO instruments \
+         (id, type, issuer_name, masked_identifier, network, status, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, 'active', datetime('now'), datetime('now'))",
+        rusqlite::params![new_id, instrument_type, issuer_name, masked_identifier, network],
+    )?;
+    c.query_row(
+        "SELECT id FROM instruments \
+         WHERE type = ? AND issuer_name = ? AND masked_identifier = ?",
+        rusqlite::params![instrument_type, issuer_name, masked_identifier],
+        |row| row.get::<_, String>(0),
+    )
+}
+
 pub async fn resolve_or_create_instrument(
     instrument_type: &str,
     issuer_name: &str,
@@ -414,18 +454,7 @@ pub async fn resolve_or_create_instrument(
     let conn = pool.get().await?;
     let instrument_id = conn
         .interact(move |c| {
-            c.execute(
-                "INSERT OR IGNORE INTO instruments \
-                 (id, type, issuer_name, masked_identifier, network, status, created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, 'active', datetime('now'), datetime('now'))",
-                rusqlite::params![id, itype, issuer, masked, net],
-            )?;
-            c.query_row(
-                "SELECT id FROM instruments \
-                 WHERE type = ? AND issuer_name = ? AND masked_identifier = ?",
-                rusqlite::params![itype, issuer, masked],
-                |row| row.get::<_, String>(0),
-            )
+            resolve_or_create_instrument_sync(c, &id, &itype, &issuer, &masked, net.as_deref())
         })
         .await
         .map_err(|e| anyhow::anyhow!("DB interact error (resolve_or_create_instrument): {}", e))??;

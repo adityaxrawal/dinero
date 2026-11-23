@@ -761,6 +761,53 @@ pub(crate) fn extract_reference_id(description: &str) -> Option<String> {
         .map(|m| m.as_str().to_string())
 }
 
+/// Inserts statement entries on a caller-supplied connection, failing on the
+/// first row that cannot be saved (used inside the statement commit, where a
+/// lost row must fail the whole commit — review H7). Entry ids are derived
+/// from (statement, row) so re-running is idempotent.
+pub fn insert_statement_entries_sync(
+    c: &rusqlite::Connection,
+    statement_id: &str,
+    rows: &[StatementRow],
+) -> rusqlite::Result<Vec<String>> {
+    let mut ids = Vec::with_capacity(rows.len());
+    for row in rows {
+        let entry_id = statement_entry_id(statement_id, row.row_index);
+        c.execute(
+            "INSERT INTO statement_entries \
+             (id, statement_id, row_index, transaction_date, description_raw, \
+              merchant_raw, amount, amount_minor, currency, direction, reference_id, \
+              raw_row_json, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', datetime('now')) \
+             ON CONFLICT(id) DO NOTHING",
+            rusqlite::params![
+                entry_id,
+                statement_id,
+                row.row_index as i64,
+                row.transaction_date,
+                row.merchant_raw,
+                row.merchant_raw,
+                row.amount_minor as f64 / 100.0,
+                row.amount_minor,
+                row.currency,
+                row.direction,
+                row.reference_id,
+            ],
+        )?;
+        ids.push(entry_id);
+    }
+    Ok(ids)
+}
+
+/// Deterministic statement entry id for (statement, row index).
+pub fn statement_entry_id(statement_id: &str, row_index: usize) -> String {
+    uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_OID,
+        format!("statement_entry:{}:{}", statement_id, row_index).as_bytes(),
+    )
+    .to_string()
+}
+
 /// Maps extracted rows onto statement entries for reconciliation.
 pub async fn map_rows_to_statement_entries(
     statement_id: &str,
@@ -785,11 +832,7 @@ pub async fn map_rows_to_statement_entries(
                 // Derived from (statement, row) so re-committing the same
                 // statement rewrites the same entry instead of adding another,
                 // and observations keyed on the entry id dedupe (review H7).
-                let entry_id = uuid::Uuid::new_v5(
-                    &uuid::Uuid::NAMESPACE_OID,
-                    format!("statement_entry:{}:{}", stmt_id, row.row_index).as_bytes(),
-                )
-                .to_string();
+                let entry_id = statement_entry_id(&stmt_id, row.row_index);
                 let ref_id = row.reference_id.clone();
                 let result = c.execute(
                     "INSERT INTO statement_entries \
