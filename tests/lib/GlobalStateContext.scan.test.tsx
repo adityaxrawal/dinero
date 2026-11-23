@@ -4,6 +4,17 @@ import { GlobalStateProvider, useGlobalState } from '@/lib/GlobalStateContext';
 
 const cancelScanMock = vi.fn().mockResolvedValue('cancel_requested');
 const startHistoricalScanMock = vi.fn().mockResolvedValue('started');
+const getScanStatusMock = vi.fn();
+const NOT_STARTED = {
+  status: 'not_started',
+  processed: 0,
+  total: 0,
+  transactions_found: 0,
+  statements_found: 0,
+  mandate_events_found: 0,
+  errors: 0,
+  pending_enrichment: 0,
+};
 
 vi.mock('@/lib/ipc', () => ({
   API: {
@@ -22,6 +33,7 @@ vi.mock('@/lib/ipc', () => ({
       cancelScan: (...args: unknown[]) => cancelScanMock(...args),
       getFailedScanCount: vi.fn().mockResolvedValue(0),
       retryFailedScan: vi.fn().mockResolvedValue('started'),
+      getScanStatus: (...args: unknown[]) => getScanStatusMock(...args),
     },
   },
 }));
@@ -43,6 +55,8 @@ vi.mock('@tauri-apps/api/event', () => ({
 function Probe() {
   const {
     scanStatus,
+    scanError,
+    scanProgress,
     scanStartedAt,
     scanFinishedAt,
     connectedAccounts,
@@ -54,6 +68,8 @@ function Probe() {
     <div>
       <div data-testid="connected-count">{connectedAccounts.length}</div>
       <div data-testid="scan-status">{scanStatus}</div>
+      <div data-testid="scan-error">{String(scanError)}</div>
+      <div data-testid="scan-processed">{String(scanProgress?.processed)}</div>
       <div data-testid="scan-started-at">{String(scanStartedAt)}</div>
       <div data-testid="scan-finished-at">{String(scanFinishedAt)}</div>
       <button onClick={handleStartScan}>start</button>
@@ -84,6 +100,7 @@ describe('GlobalStateContext scan cancellation + timing', () => {
     vi.clearAllMocks();
     cancelScanMock.mockResolvedValue('cancel_requested');
     startHistoricalScanMock.mockResolvedValue('started');
+    getScanStatusMock.mockResolvedValue(NOT_STARTED);
     for (const k of Object.keys(listenHandlers)) delete listenHandlers[k];
   });
 
@@ -148,5 +165,67 @@ describe('GlobalStateContext scan cancellation + timing', () => {
     await waitFor(() => expect(screen.getByTestId('scan-status').textContent).toBe('idle'));
     expect(screen.getByTestId('scan-started-at').textContent).toBe('null');
     expect(screen.getByTestId('scan-finished-at').textContent).toBe('null');
+  });
+
+  // Review P8: the panel follows the backend, not only the Start button.
+  it('adopts a scan already running in the backend on mount', async () => {
+    getScanStatusMock.mockResolvedValue({
+      ...NOT_STARTED,
+      status: 'in_progress',
+      processed: 40,
+      total: 100,
+    });
+    renderProvider();
+    await waitFor(() => expect(screen.getByTestId('scan-status').textContent).toBe('running'));
+    expect(screen.getByTestId('scan-processed').textContent).toBe('40');
+    expect(getScanStatusMock).toHaveBeenCalledWith('gmail_test');
+  });
+
+  it('follows a scan the backend started on its own', async () => {
+    renderProvider();
+    await waitFor(() => expect(listenHandlers['scan_progress']).toBeDefined());
+    act(() => {
+      listenHandlers['scan_progress']({
+        payload: {
+          ...NOT_STARTED,
+          account_id: 'gmail_test',
+          processed: 7,
+          total: 20,
+          non_financial: 0,
+        },
+      });
+    });
+    expect(screen.getByTestId('scan-status').textContent).toBe('running');
+    expect(screen.getByTestId('scan-processed').textContent).toBe('7');
+  });
+
+  it('ignores events for another account', async () => {
+    renderProvider();
+    await waitFor(() => expect(listenHandlers['scan_progress']).toBeDefined());
+    act(() => {
+      listenHandlers['scan_progress']({
+        payload: { ...NOT_STARTED, account_id: 'other', processed: 7, total: 20, non_financial: 0 },
+      });
+    });
+    expect(screen.getByTestId('scan-status').textContent).toBe('idle');
+  });
+
+  it('shows the error_message sent with scan_failed', async () => {
+    renderProvider();
+    await startScan();
+    await waitFor(() => expect(listenHandlers['scan_failed']).toBeDefined());
+    act(() => {
+      listenHandlers['scan_failed']({
+        payload: {
+          ...NOT_STARTED,
+          account_id: 'gmail_test',
+          non_financial: 0,
+          errors: 1,
+          error_message: 'token expired',
+        },
+      });
+    });
+    expect(screen.getByTestId('scan-status').textContent).toBe('error');
+    expect(screen.getByTestId('scan-error').textContent).toBe('token expired');
   });
 });

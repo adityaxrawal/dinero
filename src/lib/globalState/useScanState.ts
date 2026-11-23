@@ -7,9 +7,9 @@
  * date range that parameterises it, and the list of connected accounts a scan
  * can run against.
  *
- * The three terminal events share one `finish` path, which both records the end
- * time and detaches every listener, so a completed scan stops consuming events
- * and a subsequent scan starts from clean subscriptions.
+ * The listeners stay attached while the account is shown, so scans the backend
+ * starts on its own, and scans already running when the window opens, are
+ * followed too (review P8).
  */
 import { useState, useEffect, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
@@ -69,9 +69,6 @@ export function useScanState() {
   const [scanStartedAt, setScanStartedAt] = useState<number | null>(null);
   const [scanFinishedAt, setScanFinishedAt] = useState<number | null>(null);
   const [connectedAccounts, setConnectedAccounts] = useState<ConnectedAccountInfo[]>([]);
-  // Holds a single composed teardown for all four scan listeners, so they are
-  // always attached and detached as one unit.
-  const unlistenScanRef = useRef<(() => void) | null>(null);
 
   /** Reloads the connected-account list. */
   const refreshConnectedAccounts = async () => {
@@ -117,65 +114,106 @@ export function useScanState() {
       .catch(() => setFailedScanCount(0));
   }, [primaryAccountId, scanStatus]);
 
-  /**
-   * Shared terminal path for completed, failed and cancelled scans.
-   *
-   * The caller supplies the status-specific state update; this records the
-   * finish time and tears the listeners down, which is what stops a finished
-   * scan from reacting to any further events.
-   */
+  // Mirrors scanStatus for the event handlers below, which outlive renders.
+  const scanStatusRef = useRef<ScanStatus>('idle');
+  useEffect(() => {
+    scanStatusRef.current = scanStatus;
+  }, [scanStatus]);
+
+  /** Shared terminal path for completed, failed and cancelled scans. */
   const finish = (apply: () => void) => {
     apply();
     setScanFinishedAt(Date.now());
-    if (unlistenScanRef.current) {
-      unlistenScanRef.current();
-      unlistenScanRef.current = null;
-    }
   };
 
   /**
-   * Subscribe to the four scan events and compose one combined teardown.
-   *
-   * Note the ordering below: the progress unlisten is parked in the ref first,
-   * then captured as `prev` and folded into the composed teardown alongside the
-   * three terminal listeners, so all four are released together.
+   * Follow the primary account's scan for as long as that account is shown,
+   * whoever started it (review P8). The backend also starts scans itself
+   * (catch-up after a history reset, deferred catch-up), and a scan survives a
+   * frontend reload, so the listeners cannot depend on the Start button, and
+   * the state is first adopted from `scans_status`. A stale `in_progress`
+   * checkpoint is reset at boot, so `in_progress` means a scan is running.
    */
-  const attachScanListeners = async () => {
-    const unlistenProgress = await listen<ScanProgressPayload>('scan_progress', (event) =>
-      setScanProgress(event.payload)
-    );
-    unlistenScanRef.current = unlistenProgress;
+  useEffect(() => {
+    if (!primaryAccountId) return;
+    let cancelled = false;
+    const unlistens: Array<() => void> = [];
+    const mine = (p: { account_id: string }) => p.account_id === primaryAccountId;
 
-    const unlistenDone = await listen<ScanProgressPayload>('scan_completed', (event) =>
-      finish(() => {
-        setScanStatus('done');
-        setScanProgress(event.payload);
-      })
-    );
-    const unlistenError = await listen<{ error: string }>('scan_failed', (event) =>
-      finish(() => {
-        setScanStatus('error');
-        setScanError(event.payload.error);
-      })
-    );
-    const unlistenCancelled = await listen<ScanProgressPayload>('scan_cancelled', (event) =>
-      finish(() => {
-        setScanStatus('cancelled');
-        setScanProgress(event.payload);
-      })
-    );
-
-    const prev = unlistenScanRef.current;
-    unlistenScanRef.current = () => {
-      if (prev) prev();
-      unlistenDone();
-      unlistenError();
-      unlistenCancelled();
+    const adoptRunning = (progress: ScanProgressPayload) => {
+      if (scanStatusRef.current !== 'running') {
+        setScanStatus('running');
+        setScanError(null);
+        setScanStartedAt(Date.now());
+        setScanFinishedAt(null);
+      }
+      setScanProgress(progress);
     };
-  };
+
+    const subscribe = async () => {
+      const handlers = [
+        listen<ScanProgressPayload>('scan_progress', (e) => {
+          if (mine(e.payload)) adoptRunning(e.payload);
+        }),
+        listen<ScanProgressPayload>('scan_completed', (e) => {
+          if (mine(e.payload))
+            finish(() => {
+              setScanStatus('done');
+              setScanProgress(e.payload);
+            });
+        }),
+        listen<ScanProgressPayload>('scan_failed', (e) => {
+          if (mine(e.payload))
+            finish(() => {
+              setScanStatus('error');
+              setScanError(e.payload.error_message ?? 'Scan failed');
+            });
+        }),
+        listen<ScanProgressPayload>('scan_cancelled', (e) => {
+          if (mine(e.payload))
+            finish(() => {
+              setScanStatus('cancelled');
+              setScanProgress(e.payload);
+            });
+        }),
+      ];
+      for (const h of handlers) {
+        const fn = await h;
+        if (cancelled) fn();
+        else unlistens.push(fn);
+      }
+      if (cancelled) return;
+      // Hydrate after subscribing, so a live event is never missed; a live
+      // event that already arrived wins over this snapshot.
+      try {
+        const status = await API.ingestion.getScanStatus(primaryAccountId);
+        if (cancelled || status.status !== 'in_progress' || scanStatusRef.current === 'running')
+          return;
+        adoptRunning({
+          account_id: primaryAccountId,
+          processed: status.processed,
+          total: status.total,
+          transactions_found: status.transactions_found,
+          statements_found: status.statements_found,
+          mandate_events_found: status.mandate_events_found,
+          non_financial: 0,
+          errors: status.errors,
+          pending_enrichment: status.pending_enrichment,
+          error_message: null,
+        });
+      } catch (err) {
+        console.error('Failed to read scan status:', err);
+      }
+    };
+    subscribe();
+    return () => {
+      cancelled = true;
+      for (const fn of unlistens) fn();
+    };
+  }, [primaryAccountId]);
 
   /**
-   * Validate, reset prior state, subscribe, then ask the backend to begin.
+   * Validate, reset prior state, then ask the backend to begin.
    *
    * State is moved to 'running' before the IPC call so the UI responds
    * immediately; a rejected call rolls it forward to 'error' rather than back to
@@ -203,8 +241,9 @@ export function useScanState() {
     await beginScan(() => API.ingestion.retryFailedScan(primaryConnectedAccount.account_id));
   };
 
-  /** Shared start path: reset state, subscribe, then invoke `start`. */
+  /** Shared start path: reset state, then invoke `start`. */
   const beginScan = async (start: () => Promise<string>) => {
+    scanStatusRef.current = 'running';
     setScanStatus('running');
     setScanProgress(EMPTY_PROGRESS(primaryConnectedAccount!.account_id));
     setScanError(null);
@@ -212,10 +251,6 @@ export function useScanState() {
     setScanFinishedAt(null);
 
     try {
-      // Release any listeners left over from a previous scan before attaching
-      // new ones, so events are never handled twice.
-      if (unlistenScanRef.current) unlistenScanRef.current();
-      await attachScanListeners();
       await start();
     } catch (err: unknown) {
       setScanStatus('error');
