@@ -2010,6 +2010,15 @@ pub(crate) async fn resolve_unassigned_transaction_manually<R: tauri::Runtime>(
     crate::ipc::validation::validate_uuid("id", &id)?;
     crate::licensing::gate::assert_write_allowed(pool).await?;
 
+    let confirmed = crate::extraction::ladder::ExtractionResult {
+        amount_minor: Some(payload.amount_minor),
+        currency: Some(payload.currency.clone()),
+        direction: Some(payload.direction.clone()),
+        merchant_raw: Some(payload.merchant_name.clone()),
+        reference_id: payload.reference_id.clone(),
+        ..Default::default()
+    };
+    let instrument_id = payload.instrument_id.to_string();
     let decision = crate::commands::create_manual_transaction(payload, pool, app_handle).await?;
 
     let conn = pool
@@ -2024,7 +2033,48 @@ pub(crate) async fn resolve_unassigned_transaction_manually<R: tauri::Runtime>(
     .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
     .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
 
+    // What the user entered is confirmed truth for this email: score pending
+    // learned rules against it (M10 follow-up). Best effort -- entries
+    // created before the bank was recorded are skipped.
+    let _ = conn
+        .interact(move |c| score_rules_from_resolution(c, &id, &instrument_id, confirmed))
+        .await;
+
     Ok(decision)
+}
+
+/// Shadow-evaluates pending rules against a user-resolved review entry.
+fn score_rules_from_resolution(
+    c: &rusqlite::Connection,
+    unassigned_id: &str,
+    instrument_id: &str,
+    mut confirmed: crate::extraction::ladder::ExtractionResult,
+) -> anyhow::Result<usize> {
+    use rusqlite::OptionalExtension;
+    let raw: Option<String> = c
+        .query_row(
+            "SELECT o.raw_payload_json FROM unassigned_transactions u
+             JOIN transaction_observations o ON o.id = u.observation_id
+             WHERE u.id = ?1",
+            [unassigned_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    let Some(payload) = raw.and_then(|r| serde_json::from_str::<serde_json::Value>(&r).ok()) else {
+        return Ok(0);
+    };
+    let (Some(bank), Some(body)) = (payload["bank"].as_str(), payload["body"].as_str()) else {
+        return Ok(0);
+    };
+    confirmed.masked_identifier = c
+        .query_row(
+            "SELECT masked_identifier FROM instruments WHERE id = ?1",
+            [instrument_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    crate::db::field_rules::shadow_evaluate_pending(c, bank, "email", body, &confirmed)
 }
 
 #[tauri::command]
@@ -4010,5 +4060,64 @@ mod source_email_tests {
         assert!(text.contains("alerts@bank.in"));
         assert!(text.contains("Debit alert"));
         assert!(text.contains("Rs 100 debited"));
+    }
+}
+
+#[cfg(test)]
+mod resolution_scoring_tests {
+    /// M10 follow-up: resolving a review entry scores pending rules for the
+    /// bank stored with it; an entry without a stored bank is skipped.
+    #[test]
+    fn resolving_a_review_entry_scores_pending_rules() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        conn.execute("PRAGMA foreign_keys = OFF", []).unwrap();
+        let body = "Rs 250 debited from your account";
+        let hash = crate::extraction::ladder::compute_template_hash(body);
+        let now = chrono::Utc::now().naive_utc();
+        let rule_id = crate::db::field_rules::upsert_variant(
+            &conn,
+            &crate::db::field_rules::FieldRuleVariant {
+                id: "v1".into(),
+                bank_name: "HDFC".into(),
+                field_name: "amount".into(),
+                source_type: "email".into(),
+                template_hash: hash,
+                rule_payload_json: serde_json::json!({"regex": r"Rs (\d+)", "capture_group": 1}),
+                status: "pending".into(),
+                success_count: 0,
+                failure_count: 0,
+                confidence: 0.0,
+                authored_by: "llm".into(),
+                learned_from: "drift_llm".into(),
+                created_at: Some(now),
+                updated_at: Some(now),
+            },
+            None,
+        )
+        .unwrap();
+        let payload = serde_json::json!({"body": body, "bank": "HDFC"}).to_string();
+        conn.execute(
+            "INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint, raw_payload_json)
+             VALUES ('o1', 'gmail_transaction', 'm1', 'f1', ?1),
+                    ('o2', 'gmail_transaction', 'm2', 'f2', '{\"body\": \"Rs 250 debited from your account\"}')",
+            [payload],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO unassigned_transactions (id, observation_id, reason, status)
+             VALUES ('u1', 'o1', 'r', 'open'), ('u2', 'o2', 'r', 'open')",
+            [],
+        )
+        .unwrap();
+        let confirmed = crate::extraction::ladder::ExtractionResult {
+            amount_minor: Some(25000),
+            ..Default::default()
+        };
+        assert_eq!(super::score_rules_from_resolution(&conn, "u1", "none", confirmed.clone()).unwrap(), 1);
+        assert_eq!(
+            crate::db::field_rules::select_by_id(&conn, &rule_id).unwrap().unwrap().success_count,
+            1
+        );
+        assert_eq!(super::score_rules_from_resolution(&conn, "u2", "none", confirmed).unwrap(), 0);
     }
 }

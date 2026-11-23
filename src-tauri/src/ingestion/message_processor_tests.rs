@@ -734,6 +734,7 @@ async fn test_gate3_partial_extraction_salvaged_to_unassigned_queue() {
         "You spent at Amazon.",
         None,
         reason,
+        None,
     )
     .await
     .unwrap();
@@ -788,6 +789,7 @@ async fn record_unassigned_transaction_returns_ids_on_fresh_insert() {
         "body text",
         None,
         "pending_llm_enrichment",
+        None,
     )
     .await
     .unwrap();
@@ -819,6 +821,7 @@ async fn record_unassigned_transaction_returns_none_on_duplicate() {
         "body text",
         None,
         "pending_llm_enrichment",
+        None,
     )
     .await
     .unwrap();
@@ -831,6 +834,7 @@ async fn record_unassigned_transaction_returns_none_on_duplicate() {
         "body text",
         None,
         "pending_llm_enrichment",
+        None,
     )
     .await
     .unwrap();

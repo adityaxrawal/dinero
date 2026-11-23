@@ -625,6 +625,7 @@ impl MessageProcessor {
                                 body_text,
                                 Some(&email_meta),
                                 reason,
+                                Some(&current_bank_name),
                             )
                             .await?;
                             let recoverable_by_llm = matches!(
@@ -677,6 +678,7 @@ impl MessageProcessor {
                             body_text,
                             Some(&email_meta),
                             "pending_llm_enrichment",
+                            Some(&current_bank_name),
                         )
                         .await?;
                         let enqueued =
@@ -725,6 +727,7 @@ impl MessageProcessor {
                             body_text,
                             Some(&email_meta),
                             "extraction_failed",
+                            Some(&current_bank_name),
                         )
                         .await?;
                         Self::append_to_scan_log(
@@ -1196,14 +1199,23 @@ impl MessageProcessor {
         body_text: &str,
         email_meta: Option<&EmailMetadata>,
         reason: &str,
+        bank_name: Option<&str>,
     ) -> Result<Option<(String, String)>> {
-        let obs_row = crate::extraction::normalization::normalize_observation(
+        let mut obs_row = crate::extraction::normalization::normalize_observation(
             obs,
             "gmail_transaction",
             message_id,
             Some(body_text),
             email_meta,
         );
+        // The bank is kept with the review entry so that resolving it can
+        // score pending learned rules for that bank (M10 follow-up).
+        if let (Some(bank), Some(raw)) = (bank_name, obs_row.raw_payload_json.as_deref()) {
+            if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(raw) {
+                v["bank"] = serde_json::json!(bank);
+                obs_row.raw_payload_json = Some(v.to_string());
+            }
+        }
         let observation_id = obs_row.id.clone();
         let unassigned_id = Uuid::new_v4().to_string();
         let reason_owned = reason.to_string();
