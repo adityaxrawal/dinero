@@ -85,6 +85,9 @@ pub(crate) fn get_sender_validator() -> &'static SenderValidator {
 /// bundled application is launched with the working directory set somewhere it
 /// cannot write, where the append fails silently and the log the "view source"
 /// screen reads back never exists at all.
+/// Debug scan logs rotate at this size, keeping one previous file.
+const SCAN_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
+
 pub fn scan_log_path(app_dir: Option<&std::path::Path>, decision: &str) -> std::path::PathBuf {
     let name = if decision == "SELECTED" {
         "email_scan_selected.log"
@@ -1257,70 +1260,48 @@ impl MessageProcessor {
         decision: &str,
         reason: &str,
         raw_msg: Option<&Message>,
-        body_text: Option<&str>,
+        _body_text: Option<&str>,
     ) {
-        let mut from = "N/A".to_string();
-        let mut subject = "N/A".to_string();
-        let mut snippet = "N/A".to_string();
-
-        // Each field keeps its "N/A" unless the message actually carries one:
-        // `header_value` returns an empty string for a header that is absent,
-        // which would otherwise blank the placeholder out.
-        if let Some(msg) = raw_msg {
-            if let Some(snip) = msg.snippet.as_ref().filter(|s| !s.is_empty()) {
-                snippet = snip.clone();
-            }
-            let from_header = Self::header_value(msg, "from");
-            if !from_header.is_empty() {
-                from = from_header;
-            }
-            let subject_header = Self::header_value(msg, "subject");
-            if !subject_header.is_empty() {
-                subject = subject_header;
-            }
-        }
-
-        let timestamp = chrono::Utc::now().to_rfc3339();
-        let mut s = format!(
-            "================================================================================\n\
-             Timestamp  : {}\n\
-             Message ID : {}\n\
-             Decision   : {}\n\
-             Reason     : {}\n\
-             From       : {}\n\
-             Subject    : {}\n\
-             --------------------------------------------------------------------------------\n\
-             Snippet    : {}\n",
-            timestamp, message_id, decision, reason, from, subject, snippet
+        // Debug builds only, and only metadata (review M8): these logs used to
+        // keep From, Subject, snippet and 500 characters of every email body in
+        // plaintext, unbounded, in release builds too. Without an app dir
+        // (tests) nothing is written, rather than dropping a file in the
+        // current directory.
+        let Some(app_dir) = app_dir.filter(|_| cfg!(debug_assertions)) else {
+            return;
+        };
+        let sender_domain = raw_msg
+            .map(|msg| Self::header_value(msg, "from"))
+            .and_then(|from| {
+                from.rsplit('@')
+                    .next()
+                    .map(|d| d.trim_end_matches('>').trim().to_lowercase())
+            })
+            .filter(|d| !d.is_empty())
+            .unwrap_or_else(|| "unknown".to_string());
+        let line = format!(
+            "{}\t{}\t{}\t{}\t{}\n",
+            chrono::Utc::now().to_rfc3339(),
+            message_id,
+            decision,
+            reason,
+            sender_domain
         );
 
-        if let Some(body) = body_text {
-            s.push_str("--------------------------------------------------------------------------------\nBody Preview:\n");
-            let preview: String = body.chars().take(500).collect();
-            // Compare char counts, not byte lengths: `take(500)` counts characters,
-            // so a body with multi-byte characters has `body.len() > preview.len()`
-            // even when the full body fits in 500 chars, falsely marking it truncated.
-            let truncated = body.chars().count() > 500;
-            s.push_str(&preview);
-            if truncated {
-                s.push_str("... [TRUNCATED]\n");
-            } else {
-                s.push('\n');
-            }
+        let path = scan_log_path(Some(app_dir), decision);
+        if tokio::fs::metadata(&path)
+            .await
+            .is_ok_and(|m| m.len() > SCAN_LOG_MAX_BYTES)
+        {
+            let _ = tokio::fs::rename(&path, path.with_extension("log.1")).await;
         }
-
-        s.push_str(
-            "================================================================================\n\n",
-        );
-
-        let path = scan_log_path(app_dir, decision);
         if let Ok(mut file) = tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path)
             .await
         {
-            let _ = file.write_all(s.as_bytes()).await;
+            let _ = file.write_all(line.as_bytes()).await;
         }
     }
 }

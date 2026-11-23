@@ -1711,52 +1711,62 @@ pub async fn fetch_transaction_source_log(
         }
     };
 
-    use std::io::{BufRead, BufReader};
-
-    // Resolved through the writer's own helper, so reader and writer cannot
-    // drift apart over where the log lives.
-    let app_dir = app.path().app_data_dir().ok();
-    let log_path =
-        crate::ingestion::message_processor::scan_log_path(app_dir.as_deref(), "SELECTED");
-    let file = std::fs::File::open(&log_path).map_err(|e| {
-        crate::error::AppError::Io(format!("Could not open {}: {}", log_path.display(), e))
-    })?;
-    let reader = BufReader::new(file);
-
-    let mut inside_target_block = false;
-    let mut current_block = String::new();
-    let target_marker = format!("Message ID : {}", source_message_id);
-    let separator =
-        "================================================================================";
-
-    for l in reader.lines().map_while(Result::ok) {
-        if l.starts_with(separator) {
-            if inside_target_block {
-                current_block.push_str(&l);
-                current_block.push('\n');
-                return Ok(current_block);
-            } else {
-                current_block.clear();
-                current_block.push_str(&l);
-                current_block.push('\n');
+    // Fetched from Gmail on demand through the audited client rather than read
+    // from a local log: the scan logs no longer keep email bodies (review M8),
+    // and nothing fetched here is stored.
+    let accounts = conn
+        .interact(|c| crate::db::connected_accounts::get_all_accounts(c))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    drop(conn);
+    let pool = pool.inner().clone();
+    let mut last_error = None;
+    for account in accounts
+        .into_iter()
+        .filter(|a| matches!(a.account_status.as_deref(), Some("ACTIVE") | Some("active")))
+    {
+        let token = match crate::ingestion::oauth::get_valid_access_token(&app, &pool, &account.id).await {
+            Ok(t) => t,
+            Err(e) => {
+                last_error = Some(e.to_string());
+                continue;
             }
-        } else {
-            current_block.push_str(&l);
-            current_block.push('\n');
-            if !inside_target_block && l.contains(&target_marker) {
-                inside_target_block = true;
-            }
+        };
+        let refresher = crate::ingestion::oauth::create_token_refresher(&app, &pool, &account.id);
+        let client = crate::ingestion::gmail_client::GmailClient::new(token, pool.clone(), refresher);
+        match client
+            .fetch_message(&source_message_id, crate::ingestion::gmail_client::FetchFormat::Full)
+            .await
+        {
+            Ok(msg) => return Ok(format_source_email(&msg)),
+            Err(e) => last_error = Some(e.to_string()),
         }
     }
+    Err(crate::error::AppError::Validation(match last_error {
+        Some(e) => format!("Could not fetch the source email from Gmail: {}", e),
+        None => "Connect the Gmail account this transaction came from to view its source email.".to_string(),
+    }))
+}
 
-    if inside_target_block {
-        return Ok(current_block);
-    }
-
-    Err(crate::error::AppError::Validation(format!(
-        "Source log not found for message ID {}",
-        source_message_id
-    )))
+/// Renders a fetched email as plain text for the source evidence panel.
+fn format_source_email(msg: &crate::ingestion::gmail_client::Message) -> String {
+    use crate::ingestion::message_processor::MessageProcessor;
+    let header = |name| MessageProcessor::header_value(msg, name);
+    let body = msg
+        .payload
+        .as_ref()
+        .map(crate::ingestion::mime_sanitization::extract_body_and_attachments)
+        .and_then(|e| e.text_body.or(e.html_body))
+        .unwrap_or_default();
+    format!(
+        "From    : {}\nSubject : {}\nDate    : {}\nMessage : {}\n\n{}",
+        header("from"),
+        header("subject"),
+        header("date"),
+        msg.id,
+        body.trim()
+    )
 }
 
 const STATEMENTS_PAGE_SIZE: i64 = 50;
@@ -3966,5 +3976,39 @@ mod tests {
             validate_limit_thresholds(&[80.0, 150.0]).is_err(),
             "a value outside 0-100 must be rejected"
         );
+    }
+}
+
+#[cfg(test)]
+mod source_email_tests {
+    /// Review M8: the source panel renders the fetched email as text.
+    #[test]
+    fn source_email_shows_headers_and_body() {
+        use crate::ingestion::gmail_client::{Message, MessagePart, MessagePartBody, MessagePartHeader};
+        use base64::Engine as _;
+        let h = |n: &str, v: &str| MessagePartHeader { name: n.into(), value: v.into() };
+        let msg = Message {
+            id: "m1".into(),
+            payload: Some(MessagePart {
+                part_id: None,
+                mime_type: "text/plain".into(),
+                filename: None,
+                headers: Some(vec![h("From", "alerts@bank.in"), h("Subject", "Debit alert")]),
+                body: Some(MessagePartBody {
+                    size: Some(5),
+                    data: Some(base64::engine::general_purpose::URL_SAFE.encode("Rs 100 debited")),
+                    attachment_id: None,
+                }),
+                parts: None,
+            }),
+            thread_id: "t1".into(),
+            history_id: None,
+            internal_date: None,
+            snippet: None,
+        };
+        let text = super::format_source_email(&msg);
+        assert!(text.contains("alerts@bank.in"));
+        assert!(text.contains("Debit alert"));
+        assert!(text.contains("Rs 100 debited"));
     }
 }

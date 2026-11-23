@@ -93,3 +93,7 @@ implementation-log.md
 # ------------------------------------------------------------------------------
 /graphify-out/
 /tmp-arch-audit/
+
+# Debug email scan logs (review M8)
+email_scan_*.log
+email_scan_*.log.1
