@@ -225,10 +225,7 @@ pub fn generate_diagnostic_bundle(
 
     let table_counts = collect_table_row_counts(conn).unwrap_or_default();
 
-    let mut log_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    if log_dir.ends_with("src-tauri") {
-        log_dir = log_dir.parent().unwrap_or(Path::new(".")).to_path_buf();
-    }
+    let log_dir = crate::logging::log_base_dir();
     let error_lines = collect_error_lines(&log_dir, 500);
 
     let crash_dir = app_data_dir.join("audit_log").join("crash_reports");

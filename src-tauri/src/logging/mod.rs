@@ -8,6 +8,26 @@
 //! Logs are categorised into separate files so a diagnostic bundle can include
 //! the relevant category without carrying everything, and old files are pruned so
 //! they cannot grow without bound.
+/// Where log files are written (and read back for diagnostics).
+///
+/// Debug builds keep the repository root (cargo runs from src-tauri, so that
+/// level is stripped). Release builds use ~/Library/Logs/com.dinero.app: the
+/// working directory of a bundled app is not writable (review L2).
+pub fn log_base_dir() -> std::path::PathBuf {
+    if cfg!(debug_assertions) {
+        let mut dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        if dir.ends_with("src-tauri") {
+            dir = dir.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
+        }
+        return dir;
+    }
+    let dir = std::env::var_os("HOME")
+        .map(|h| std::path::PathBuf::from(h).join("Library").join("Logs").join("com.dinero.app"))
+        .unwrap_or_else(std::env::temp_dir);
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
 pub mod llm_logger;
 
 use regex::Regex;

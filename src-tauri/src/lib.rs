@@ -52,18 +52,25 @@ use std::path::PathBuf;
 use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 
+/// Sleeps for `duration`; returns true if shutdown was requested first, so
+/// background loops stop with the app instead of touching a closing database
+/// (review L2).
+async fn sleep_or_cancelled(
+    token: &tokio_util::sync::CancellationToken,
+    duration: std::time::Duration,
+) -> bool {
+    tokio::select! {
+        _ = token.cancelled() => true,
+        _ = tokio::time::sleep(duration) => false,
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// Builds and runs the desktop application.
 pub fn run() {
     // Logs belong at the repository/app root, not inside src-tauri. During
     // development cargo runs from src-tauri, so that one level is stripped.
-    let mut log_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    if log_dir.ends_with("src-tauri") {
-        log_dir = log_dir
-            .parent()
-            .unwrap_or(std::path::Path::new("."))
-            .to_path_buf();
-    }
+    let log_dir = crate::logging::log_base_dir();
     let (categorized_writers, guards) = crate::logging::CategorizedLogWriters::init(&log_dir);
     // The writer guards must outlive every log call, and logging continues
     // until the process exits. Leaking them is the simplest correct lifetime
@@ -611,6 +618,7 @@ pub fn run() {
             let app_handle_for_backup = app.handle().clone();
             let db_path_for_backup = db_path.clone();
             let app_dir_for_maintenance = app_dir.clone();
+            let cancel_for_maintenance = app.state::<tokio_util::sync::CancellationToken>().inner().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
                     // Scheduled from the last recorded run, not from launch: a
@@ -620,7 +628,9 @@ pub fn run() {
                         &app_dir_for_maintenance,
                         chrono::Utc::now(),
                     );
-                    tokio::time::sleep(wait).await;
+                    if sleep_or_cancelled(&cancel_for_maintenance, wait).await {
+                        break;
+                    }
                     tracing::info!("Running daily encrypted SQLite backup background task...");
 
                     // Written to a temporary file, verified, then rotated into
@@ -848,11 +858,14 @@ pub fn run() {
             // in the sidebar.
             let pool_for_health = pool_clone.clone();
             let app_handle_for_health = app.handle().clone();
+            let cancel_for_health = app.state::<tokio_util::sync::CancellationToken>().inner().clone();
             tauri::async_runtime::spawn(async move {
                 let watching_since = chrono::Utc::now().naive_utc();
                 let (mut warned_stale, mut warned_degraded) = (false, false);
                 loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                    if sleep_or_cancelled(&cancel_for_health, std::time::Duration::from_secs(60)).await {
+                        break;
+                    }
 
                     // Stale-sync watchdog: a stopped poller or a degraded
                     // account must be visible, not silent. Warnings are sent
@@ -940,6 +953,7 @@ pub fn run() {
 
                 let pool_for_status = pool_clone.clone();
                 let app_handle_for_status = app.handle().clone();
+                let cancel_for_status = app.state::<tokio_util::sync::CancellationToken>().inner().clone();
                 tauri::async_runtime::spawn(async move {
                     loop {
                         if let Ok(conn) = pool_for_status.get().await {
@@ -971,7 +985,9 @@ pub fn run() {
                                 })
                                 .await;
                         }
-                        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                        if sleep_or_cancelled(&cancel_for_status, std::time::Duration::from_secs(30)).await {
+                            break;
+                        }
                     }
                 });
             }
