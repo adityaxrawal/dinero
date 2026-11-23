@@ -2,8 +2,13 @@
 //!
 //! Triggers are deduplicated before acting, so a repeating condition -- a failing
 //! integrity check on every cycle -- produces one response rather than a storm of
-//! them. Response can revoke the local session, which is what makes the guard on
-//! write commands meaningful.
+//! them.
+//!
+//! What a response stops (review P5): an integrity failure pauses all
+//! ingestion (Gmail polling, scans, statement imports and the queues behind
+//! them) until the user restores a backup from the recovery screen; reads and
+//! edits stay available. A licence signature failure locks the licence (see
+//! the licensing worker). The other triggers only alert.
 use anyhow::Result;
 use deadpool_sqlite::Pool;
 use std::sync::Mutex;
@@ -85,12 +90,37 @@ fn record_trigger_at(
     }
 }
 
-/// Responds to an incident, up to revoking the local session.
+/// Whether ingestion is paused because the database failed its integrity
+/// check. Cleared only by a restart (normally after restoring a backup).
+pub fn ingestion_paused() -> bool {
+    !crate::db::maintenance::last_known_integrity_ok()
+}
+
+/// Refuses a user-started ingestion action while ingestion is paused.
+pub fn assert_ingestion_allowed() -> Result<(), crate::error::AppError> {
+    if ingestion_paused() {
+        return Err(crate::error::AppError::Forbidden(
+            "Importing is paused because the database failed its integrity check. \
+             Restore a backup from the recovery screen to resume."
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Blocks while ingestion is paused; for background workers, which then
+/// resume where they were instead of failing their jobs.
+pub async fn wait_while_ingestion_paused() {
+    while ingestion_paused() {
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    }
+}
+
+/// Records and announces an incident.
 pub async fn respond_to_incident<R: tauri::Runtime>(
     kind: TriggerKind,
     app: &AppHandle<R>,
     pool: &Pool,
-    session_state: &crate::auth::session::SessionState,
 ) -> Result<()> {
     tracing::warn!("Security incident detected: {}", kind.as_str());
 
@@ -120,13 +150,7 @@ pub async fn respond_to_incident<R: tauri::Runtime>(
         "security_incident",
         serde_json::json!({ "trigger": kind.as_str() }),
     );
-
-    // Repeated OAuth failures concern one account, which is already degraded
-    // and needs reconnecting; revoking every account and logging out punished
-    // the user for one dead grant (review H13).
-    if kind != TriggerKind::RepeatedOAuthFailure {
-        crate::auth::session::logout(pool, session_state).await?;
-    }
+    emit_health_alert(kind, app);
 
     Ok(())
 }
@@ -153,9 +177,14 @@ pub fn emit_health_alert<R: tauri::Runtime>(kind: TriggerKind, app: &AppHandle<R
             contact support if this persists."
                 .to_string(),
         ),
-        TriggerKind::RepeatedOAuthFailure
-        | TriggerKind::RepeatedDbDecryptionFailure
-        | TriggerKind::IntegrityCheckFailure => return,
+        TriggerKind::IntegrityCheckFailure => (
+            crate::ipc::system_warnings::WarningSeverity::Critical,
+            "Dinero found damage in its database and has paused importing new \
+            transactions. Your data stays readable and editable. Restore a backup \
+            from the recovery screen to resume importing."
+                .to_string(),
+        ),
+        TriggerKind::RepeatedOAuthFailure | TriggerKind::RepeatedDbDecryptionFailure => return,
     };
 
     crate::ipc::system_warnings::emit_system_warning(
@@ -172,6 +201,20 @@ pub fn emit_health_alert<R: tauri::Runtime>(kind: TriggerKind, app: &AppHandle<R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review P5: an integrity failure pauses ingestion until restart. The
+    /// flag is process-wide, so it is flipped for as short a window as possible.
+    #[test]
+    fn integrity_failure_pauses_ingestion() {
+        crate::db::maintenance::set_last_integrity_ok_for_test(false);
+        let paused = ingestion_paused();
+        let refused = assert_ingestion_allowed();
+        crate::db::maintenance::set_last_integrity_ok_for_test(true);
+        assert!(paused);
+        assert!(matches!(refused, Err(crate::error::AppError::Forbidden(_))));
+        assert!(!ingestion_paused());
+        assert!(assert_ingestion_allowed().is_ok());
+    }
 
     #[test]
     fn record_trigger_fires_exactly_at_threshold_then_resets() {

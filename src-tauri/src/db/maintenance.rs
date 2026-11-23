@@ -21,6 +21,11 @@ pub fn last_known_integrity_ok() -> bool {
     LAST_INTEGRITY_OK.load(Ordering::Relaxed)
 }
 
+#[cfg(test)]
+pub(crate) fn set_last_integrity_ok_for_test(ok: bool) {
+    LAST_INTEGRITY_OK.store(ok, Ordering::Relaxed);
+}
+
 /// Runs SQLite's integrity check over the database.
 pub fn run_integrity_check(conn: &Connection) -> Result<bool> {
     let result: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;

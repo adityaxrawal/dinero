@@ -315,7 +315,6 @@ mod tests {
         let app = mock_builder()
             .build(mock_context(tauri::test::noop_assets()))
             .unwrap();
-        app.manage(crate::auth::session::SessionState::default());
         app.manage(crate::security::incident_response::IncidentMonitor::default());
         let app_handle = app.handle().clone();
 
@@ -484,7 +483,6 @@ mod tests {
         let app = mock_builder()
             .build(mock_context(tauri::test::noop_assets()))
             .unwrap();
-        app.manage(crate::auth::session::SessionState::default());
         app.manage(crate::security::incident_response::IncidentMonitor::default());
         app.manage(test_queue_handles());
         let app_handle = app.handle().clone();
@@ -606,7 +604,6 @@ mod tests {
         let app = mock_builder()
             .build(mock_context(tauri::test::noop_assets()))
             .unwrap();
-        app.manage(crate::auth::session::SessionState::default());
         app.manage(crate::security::incident_response::IncidentMonitor::default());
         app.manage(test_queue_handles());
         let app_handle = app.handle().clone();
@@ -697,7 +694,6 @@ mod tests {
             .await;
 
         let app = mock_builder().build(mock_context(tauri::test::noop_assets())).unwrap();
-        app.manage(crate::auth::session::SessionState::default());
         app.manage(crate::security::incident_response::IncidentMonitor::default());
         app.manage(test_queue_handles());
         poll_all_accounts(&app.handle().clone(), &pool, &server.url()).await.unwrap();
@@ -764,7 +760,6 @@ mod tests {
             .await;
 
         let app = mock_builder().build(mock_context(tauri::test::noop_assets())).unwrap();
-        app.manage(crate::auth::session::SessionState::default());
         app.manage(crate::security::incident_response::IncidentMonitor::default());
         app.manage(test_queue_handles());
         poll_all_accounts(&app.handle().clone(), &pool, &server.url()).await.unwrap();
@@ -827,7 +822,6 @@ mod tests {
             .create_async()
             .await;
         let app = mock_builder().build(mock_context(tauri::test::noop_assets())).unwrap();
-        app.manage(crate::auth::session::SessionState::default());
         app.manage(crate::security::incident_response::IncidentMonitor::default());
         app.manage(test_queue_handles());
         poll_all_accounts(&app.handle().clone(), &pool, &server.url()).await.unwrap();
@@ -880,7 +874,6 @@ mod tests {
         let app = mock_builder()
             .build(mock_context(tauri::test::noop_assets()))
             .unwrap();
-        app.manage(crate::auth::session::SessionState::default());
         app.manage(crate::security::incident_response::IncidentMonitor::default());
         app.manage(test_queue_handles());
         let app_handle = app.handle().clone();
@@ -950,7 +943,6 @@ mod tests {
         let app = mock_builder()
             .build(mock_context(tauri::test::noop_assets()))
             .unwrap();
-        app.manage(crate::auth::session::SessionState::default());
         app.manage(crate::security::incident_response::IncidentMonitor::default());
         app.manage(test_queue_handles());
 
@@ -992,7 +984,6 @@ mod tests {
         let app = mock_builder()
             .build(mock_context(tauri::test::noop_assets()))
             .unwrap();
-        app.manage(crate::auth::session::SessionState::default());
         app.manage(crate::security::incident_response::IncidentMonitor::default());
         app.manage(test_queue_handles());
 
@@ -1046,7 +1037,6 @@ mod tests {
         let app = mock_builder()
             .build(mock_context(tauri::test::noop_assets()))
             .unwrap();
-        app.manage(crate::auth::session::SessionState::default());
         app.manage(crate::security::incident_response::IncidentMonitor::default());
         app.manage(test_queue_handles());
         let app_handle = app.handle().clone();

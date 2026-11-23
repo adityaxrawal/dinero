@@ -362,16 +362,20 @@ pub static TRANSACTION_QUEUE_PAUSED: std::sync::atomic::AtomicBool =
 pub static STATEMENT_QUEUE_PAUSED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// Blocks while the transaction queue is paused.
+/// Blocks while the transaction queue, or all ingestion (review P5), is paused.
 async fn wait_while_transaction_queue_paused() {
-    while TRANSACTION_QUEUE_PAUSED.load(std::sync::atomic::Ordering::Relaxed) {
+    while TRANSACTION_QUEUE_PAUSED.load(std::sync::atomic::Ordering::Relaxed)
+        || crate::security::incident_response::ingestion_paused()
+    {
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
 }
 
-/// Blocks while the statement queue is paused.
+/// Blocks while the statement queue, or all ingestion (review P5), is paused.
 async fn wait_while_statement_queue_paused() {
-    while STATEMENT_QUEUE_PAUSED.load(std::sync::atomic::Ordering::Relaxed) {
+    while STATEMENT_QUEUE_PAUSED.load(std::sync::atomic::Ordering::Relaxed)
+        || crate::security::incident_response::ingestion_paused()
+    {
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
 }
@@ -592,6 +596,7 @@ fn spawn_layer6_workers(
             loop {
                 let job = { rx.lock().await.recv().await };
                 let Some(job) = job else { break };
+                crate::security::incident_response::wait_while_ingestion_paused().await;
                 ACTIVE_LAYER6_JOBS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 process_layer6_job(job, &pool, &learning, pipeline.clone()).await;
                 ACTIVE_LAYER6_JOBS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
@@ -1129,6 +1134,7 @@ pub async fn replay_pending_ingest_jobs(
 fn spawn_mandate_workers(mut rx: mpsc::Receiver<MandateJob>, pool: Pool) {
     tauri::async_runtime::spawn(async move {
         while let Some(job) = rx.recv().await {
+            crate::security::incident_response::wait_while_ingestion_paused().await;
             let key = mandate_job_key(&job);
             if process_mandate_job(job, &pool).await {
                 delete_persisted_job(&pool, key).await;

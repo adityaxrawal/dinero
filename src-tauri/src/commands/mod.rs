@@ -49,17 +49,6 @@ pub async fn auth_google_start(
 }
 
 #[tauri::command]
-pub async fn auth_logout(
-    app: tauri::AppHandle,
-    pool: tauri::State<'_, deadpool_sqlite::Pool>,
-) -> Result<(), crate::error::AppError> {
-    let state = app.state::<crate::auth::session::SessionState>();
-    crate::auth::session::logout(pool.inner(), state.inner())
-        .await
-        .map_err(|e| crate::error::AppError::Auth(e.to_string()))
-}
-
-#[tauri::command]
 pub async fn auth_get_recovery_phrase(
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
 ) -> Result<String, crate::error::AppError> {
@@ -250,6 +239,8 @@ pub async fn statements_upload(
 ) -> Result<serde_json::Value, crate::error::AppError> {
     validate_upload_files_non_empty(&files)?;
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    // Statement imports pause with the rest of ingestion (review P5).
+    crate::security::incident_response::assert_ingestion_allowed()?;
 
     if let Ok(app_data_dir) = app.path().app_data_dir() {
         if let Err(e) =
@@ -1163,6 +1154,8 @@ pub async fn statements_confirm_instrument(
     let masked_identifier = masked_identifier.trim().to_string();
 
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    // Statement imports pause with the rest of ingestion (review P5).
+    crate::security::incident_response::assert_ingestion_allowed()?;
 
     let app_data_dir = app.path().app_data_dir().map_err(|_| {
         crate::error::AppError::Unknown("Failed to determine app data directory".to_string())
@@ -1333,6 +1326,8 @@ pub async fn statements_submit_password(
     crate::ipc::validation::validate_non_empty("password", &password)?;
 
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    // Statement imports pause with the rest of ingestion (review P5).
+    crate::security::incident_response::assert_ingestion_allowed()?;
 
     use crate::statements::{
         events,
@@ -1521,6 +1516,8 @@ pub async fn statements_retry_unprocessed(
 ) -> Result<serde_json::Value, crate::error::AppError> {
     crate::ipc::validation::validate_uuid("statement_id", &statement_id)?;
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    // Statement imports pause with the rest of ingestion (review P5).
+    crate::security::incident_response::assert_ingestion_allowed()?;
 
     let outcome = retry_one_unprocessed(&statement_id, &app, pool.inner()).await?;
 
@@ -1680,6 +1677,8 @@ pub async fn statements_reparse_all(
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
 ) -> Result<serde_json::Value, crate::error::AppError> {
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    // Statement imports pause with the rest of ingestion (review P5).
+    crate::security::incident_response::assert_ingestion_allowed()?;
 
     static REPARSE_RUNNING: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
@@ -1936,6 +1935,8 @@ pub async fn statements_commit_draft(
 ) -> Result<serde_json::Value, crate::error::AppError> {
     crate::ipc::validation::validate_uuid("draft_id", &draft_id)?;
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    // Statement imports pause with the rest of ingestion (review P5).
+    crate::security::incident_response::assert_ingestion_allowed()?;
 
     let stmt_id = commit_staged_draft(&draft_id, edited_metadata, edited_rows, pool.inner(), &app)
         .await
@@ -3181,7 +3182,6 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         data::settings_get_low_battery_poll_threshold_percent,
         data::settings_set_low_battery_poll_threshold_percent,
         auth_google_start,
-        auth_logout,
         reconciliation_clusters_resolve,
         trigger_reconciliation,
         transactions_create,

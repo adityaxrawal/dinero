@@ -6,7 +6,6 @@
 //! UI can report, and keeps one bad command from destabilising the process.
 pub mod args;
 pub mod events;
-pub mod middleware;
 pub mod responses;
 pub mod system_warnings;
 pub mod validation;

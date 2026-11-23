@@ -3,12 +3,9 @@
 //! Document 22 §13.1: Dinero is single-tenant per device. The mandatory
 //! invariant isn't multi-tenant row isolation (there's exactly one
 //! `local_profile` row, `CHECK(id = 1)`, TASK-DB-003) — it's that the
-//! "current profile/session" is always resolved from Rust-side
-//! `SessionState`, never trusted from a React-supplied argument. A forged
-//! IPC parameter must have nothing to attach to, structurally.
-
-use dinero_app_lib::auth::session::SessionState;
-use dinero_app_lib::ipc::middleware::require_active_session;
+//! current profile is always resolved on the Rust side, never trusted from a
+//! React-supplied argument. A forged IPC parameter must have nothing to attach
+//! to, structurally.
 
 /// `test_data_isolation_ipc_parameter_attack`: the mechanical half of the
 /// convention Document 30 describes ("IPC argument structs must never carry
@@ -65,28 +62,8 @@ fn test_data_isolation_ipc_parameter_attack() {
     assert!(
         violations.is_empty(),
         "no IPC command may accept an identity-scoping parameter from the caller \
-         (must resolve exclusively from Rust-side SessionState): {:#?}",
+         (identity is resolved on the Rust side only): {:#?}",
         violations
-    );
-}
-
-/// Exercises `require_active_session`'s actual behavior via the crate's
-/// public API: a forged/absent session resolves to a hard error, never to
-/// some default or caller-suggested identity.
-#[test]
-fn require_active_session_never_falls_back_to_a_default_identity() {
-    let state = SessionState::default();
-    let result = require_active_session(&state);
-    assert!(
-        result.is_err(),
-        "an empty SessionState must never resolve to a usable session id"
-    );
-
-    *state.0.lock().unwrap() = Some("real_session_id".to_string());
-    assert_eq!(
-        require_active_session(&state).unwrap(),
-        "real_session_id",
-        "once a real session is set, it must be the exact value returned — never altered or substituted"
     );
 }
 

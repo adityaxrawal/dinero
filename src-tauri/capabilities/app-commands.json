@@ -13,7 +13,6 @@
     "allow-auth-get-recovery-phrase",
     "allow-auth-google-disconnect",
     "allow-auth-google-start",
-    "allow-auth-logout",
     "allow-auth-restore-from-recovery-phrase",
     "allow-billing-start-checkout",
     "allow-categories-create",

@@ -69,9 +69,6 @@ pub mod sender_bank_overrides;
 pub mod sender_reputation;
 #[cfg(test)]
 mod sender_reputation_tests;
-pub mod sessions;
-#[cfg(test)]
-mod sessions_tests;
 pub mod statement_drafts;
 pub mod statement_entries;
 pub mod statements;

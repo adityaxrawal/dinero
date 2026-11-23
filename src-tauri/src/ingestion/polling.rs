@@ -144,6 +144,7 @@ pub async fn sync_force_poll_now<R: tauri::Runtime>(
     pool: tauri::State<'_, Pool>,
 ) -> Result<String, crate::error::AppError> {
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    crate::security::incident_response::assert_ingestion_allowed()?;
 
     let now = std::time::Instant::now();
     {
@@ -183,6 +184,10 @@ pub(crate) async fn poll_all_accounts<R: tauri::Runtime>(
     // were actually blocked.
     if let Err(e) = crate::licensing::gate::assert_write_allowed(pool).await {
         tracing::info!("Gmail polling skipped: {}", e);
+        return Ok(());
+    }
+    if let Err(e) = crate::security::incident_response::assert_ingestion_allowed() {
+        tracing::warn!("Gmail polling skipped: {}", e);
         return Ok(());
     }
 

@@ -524,9 +524,7 @@ pub async fn auth_google_disconnect(
     app: tauri::AppHandle,
     account_id: String,
     pool: tauri::State<'_, Pool>,
-    session_state: tauri::State<'_, crate::auth::session::SessionState>,
 ) -> Result<String, crate::error::AppError> {
-    crate::ipc::middleware::require_active_session(&session_state)?;
 
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
@@ -879,12 +877,10 @@ async fn mark_account_degraded_async<R: tauri::Runtime>(
             crate::security::incident_response::TriggerKind::RepeatedOAuthFailure,
             account_id,
         ) {
-            let session_state = app.state::<crate::auth::session::SessionState>();
             if let Err(e) = crate::security::incident_response::respond_to_incident(
                 crate::security::incident_response::TriggerKind::RepeatedOAuthFailure,
                 app,
                 pool,
-                session_state.inner(),
             )
             .await
             {

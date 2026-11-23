@@ -1,7 +1,6 @@
-//! Local session handling and consent records.
+//! Consent records: what the user agreed to and when.
 //!
-//! Not authentication against a server -- the app is single-user and local.
-//! Sessions scope activity for auditing and give incident response something to
-//! revoke; consent records capture what the user agreed to and when.
+//! The app is single-user and local, so there is no login or session; the
+//! session concept that used to live here guarded nothing that mattered and
+//! was removed (review P5).
 pub mod consent;
-pub mod session;

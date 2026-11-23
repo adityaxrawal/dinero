@@ -62,8 +62,11 @@ async fn sleep_unless_cancelled(account_id: &str, delay: std::time::Duration) ->
 /// Blocks while the scan is paused, reporting whether it was cancelled meanwhile.
 async fn wait_while_paused(account_id: &str) -> bool {
     loop {
-        let paused =
-            crate::commands::debug::SCAN_QUEUE_PAUSED.load(std::sync::atomic::Ordering::Relaxed);
+        // Also held while ingestion is paused after an integrity failure
+        // (review P5); the scan resumes where it was, or can be cancelled.
+        let paused = crate::commands::debug::SCAN_QUEUE_PAUSED
+            .load(std::sync::atomic::Ordering::Relaxed)
+            || crate::security::incident_response::ingestion_paused();
         if !paused {
             return false;
         }
@@ -574,6 +577,7 @@ pub(crate) async fn start_historical_scan<R: tauri::Runtime>(
     end_date: String,
     base_url: String,
 ) -> Result<String, crate::error::AppError> {
+    crate::security::incident_response::assert_ingestion_allowed()?;
     let access_token = get_valid_access_token(&app, &pool, &account_id)
         .await
         .map_err(|e| crate::error::AppError::Auth(e.to_string()))?;

@@ -459,7 +459,6 @@ pub fn run() {
             crate::network_client::set_audit_pool(pool.clone());
             app.manage(pool);
 
-            app.manage(crate::auth::session::SessionState::default());
             app.manage(crate::security::incident_response::IncidentMonitor::default());
             app.manage(crate::background_tasks::indicator::BackgroundTaskRegistry::default());
             app.manage(crate::llm_manager::DownloadRegistry::default());
@@ -494,19 +493,6 @@ pub fn run() {
                         .collect(),
                 );
             }
-            {
-                // Spawned rather than blocking: session setup is not needed for
-                // the window to appear, and blocking here would delay first paint.
-                let pool_for_session = pool_clone.clone();
-                let session_state_handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    let state = session_state_handle.state::<crate::auth::session::SessionState>();
-                    if let Err(e) = crate::auth::session::ensure_active_session(&pool_for_session, state.inner()).await {
-                        tracing::warn!("Failed to establish local session: {}", e);
-                    }
-                });
-            }
-
             crate::permissions::macos_permissions::check_permissions_at_launch(&app.handle().clone());
 
             {
@@ -771,12 +757,10 @@ pub fn run() {
                                 monitor.inner(),
                                 crate::security::incident_response::TriggerKind::IntegrityCheckFailure,
                             ) {
-                                let session_state = app_handle_for_backup.state::<crate::auth::session::SessionState>();
                                 let _ = crate::security::incident_response::respond_to_incident(
                                     crate::security::incident_response::TriggerKind::IntegrityCheckFailure,
                                     &app_handle_for_backup,
                                     &pool_for_backup,
-                                    session_state.inner(),
                                 )
                                 .await;
                             }

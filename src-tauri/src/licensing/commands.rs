@@ -150,10 +150,8 @@ pub async fn license_activate(
     razorpay_signature: String,
     billing_interval: String,
     pool: State<'_, deadpool_sqlite::Pool>,
-    session_state: State<'_, crate::auth::session::SessionState>,
     app_handle: tauri::AppHandle,
 ) -> Result<LicenseActivateResponse, AppError> {
-    crate::ipc::middleware::require_active_session(&session_state)?;
 
     let device_id = get_device_id().map_err(|e| AppError::Auth(e.to_string()))?;
 
@@ -186,10 +184,8 @@ pub async fn license_activate(
 /// Command deactivating this device's licence.
 pub async fn license_deactivate(
     pool: State<'_, deadpool_sqlite::Pool>,
-    session_state: State<'_, crate::auth::session::SessionState>,
     app_handle: tauri::AppHandle,
 ) -> Result<LicenseDeactivateResponse, AppError> {
-    crate::ipc::middleware::require_active_session(&session_state)?;
     let response = deactivate_license_internal(pool.inner()).await?;
     emit_license_state_changed(&app_handle, pool.inner()).await;
     Ok(response)
@@ -243,10 +239,8 @@ pub async fn deactivate_license_internal(
 /// Re-validates the licence with the service.
 pub async fn license_refresh(
     pool: State<'_, deadpool_sqlite::Pool>,
-    session_state: State<'_, crate::auth::session::SessionState>,
     app_handle: tauri::AppHandle,
 ) -> Result<LicenseRefreshResponse, AppError> {
-    crate::ipc::middleware::require_active_session(&session_state)?;
 
     let device_id = get_device_id().map_err(|e| AppError::Auth(e.to_string()))?;
 
@@ -301,9 +295,7 @@ pub async fn billing_start_checkout(
     email: String,
     plan_id: String,
     pool: State<'_, deadpool_sqlite::Pool>,
-    session_state: State<'_, crate::auth::session::SessionState>,
 ) -> Result<CheckoutCompletedResponse, AppError> {
-    crate::ipc::middleware::require_active_session(&session_state)?;
 
     let client = LicensingClient::new(LICENSING_BASE_URL.to_string(), pool.inner().clone());
     let order = client
@@ -404,10 +396,8 @@ pub async fn license_restore(
     email: String,
     razorpay_payment_id: String,
     pool: State<'_, deadpool_sqlite::Pool>,
-    session_state: State<'_, crate::auth::session::SessionState>,
     app_handle: tauri::AppHandle,
 ) -> Result<LicenseActivateResponse, AppError> {
-    crate::ipc::middleware::require_active_session(&session_state)?;
     let device_id = get_device_id().map_err(|e| AppError::Auth(e.to_string()))?;
     let client = LicensingClient::new(LICENSING_BASE_URL.to_string(), pool.inner().clone());
     let response = client
