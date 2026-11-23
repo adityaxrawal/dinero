@@ -36,7 +36,8 @@ const STAGE_LABELS: Record<string, string> = {
  */
 export default function StatementReviewModal() {
   const draft = useStatementDraft();
-  const { metadata, isStaged, processingProgress } = draft;
+  const { metadata, isStaged, processingProgress, missingPages } = draft;
+  const needsAcknowledgement = missingPages.length > 0 && !draft.partialAcknowledged;
 
   return (
     <Dialog
@@ -79,6 +80,30 @@ export default function StatementReviewModal() {
               </div>
             )}
 
+            {isStaged && missingPages.length > 0 && (
+              <div
+                role="alert"
+                className="mb-4 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm"
+              >
+                <p className="font-medium text-destructive">
+                  {missingPages.length === 1 ? 'Page' : 'Pages'} {missingPages.join(', ')} could not
+                  be read
+                </p>
+                <p className="mt-1 text-muted-foreground">
+                  Transactions on {missingPages.length === 1 ? 'that page' : 'those pages'} are
+                  missing below. Add them by hand from the PDF, or discard this statement.
+                </p>
+                <label className="mt-2 flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={draft.partialAcknowledged}
+                    onChange={(e) => draft.setPartialAcknowledged(e.target.checked)}
+                  />
+                  I understand this statement may be incomplete
+                </label>
+              </div>
+            )}
+
             {isStaged && metadata && (
               <div className="flex-1 flex flex-col gap-4 min-h-0">
                 <DraftMetadataForm metadata={metadata} onChange={draft.setMetadata} />
@@ -95,7 +120,10 @@ export default function StatementReviewModal() {
               <Button variant="outline" onClick={draft.handleCancel} disabled={draft.isDiscarding}>
                 Cancel
               </Button>
-              <Button onClick={draft.handleSubmit} disabled={!isStaged || draft.isSaving}>
+              <Button
+                onClick={draft.handleSubmit}
+                disabled={!isStaged || draft.isSaving || needsAcknowledgement}
+              >
                 {draft.isSaving ? 'Saving…' : 'Submit'}
               </Button>
             </DialogFooter>

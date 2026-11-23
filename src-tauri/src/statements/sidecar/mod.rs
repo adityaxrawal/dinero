@@ -21,6 +21,16 @@ pub const SIDECAR_TIMEOUT_SECS: u64 = 30;
 struct SidecarRequest<'a> {
     operation: &'a str,
     password: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    page_number: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct RenderPageResponse {
+    success: bool,
+    page_count: Option<usize>,
+    pgm_base64: Option<String>,
+    error: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -72,6 +82,7 @@ pub async fn unlock_check_in_sidecar(pdf_bytes: &[u8], password: &str) -> Result
     let meta = serde_json::to_vec(&SidecarRequest {
         operation: "unlock_check",
         password: Some(password),
+        page_number: None,
     })?;
     let output = run_with_timeout(
         sidecar_binary_path(),
@@ -101,6 +112,7 @@ pub async fn extract_text_in_sidecar(
     let meta = serde_json::to_vec(&SidecarRequest {
         operation: "extract_text",
         password,
+        page_number: None,
     })?;
     let output = run_with_timeout(
         sidecar_binary_path(),
@@ -132,6 +144,7 @@ pub async fn decrypt_pdf_in_sidecar(pdf_bytes: &[u8], password: &str) -> Result<
     let meta = serde_json::to_vec(&SidecarRequest {
         operation: "decrypt",
         password: Some(password),
+        page_number: None,
     })?;
     let output = run_with_timeout(
         sidecar_binary_path(),
@@ -158,6 +171,41 @@ pub async fn decrypt_pdf_in_sidecar(pdf_bytes: &[u8], password: &str) -> Result<
             resp.error.unwrap_or_else(|| "unknown".to_string())
         ))
     }
+}
+
+/// Renders one page (1-based) to a grayscale PGM inside the sidecar, for OCR.
+/// Returns the document's page count with the image.
+pub async fn render_page_in_sidecar(
+    pdf_bytes: &[u8],
+    password: Option<&str>,
+    page_number: usize,
+) -> Result<(usize, Vec<u8>)> {
+    let meta = serde_json::to_vec(&SidecarRequest {
+        operation: "render_page",
+        password,
+        page_number: Some(page_number),
+    })?;
+    let output = run_with_timeout(
+        sidecar_binary_path(),
+        &[],
+        &meta,
+        pdf_bytes,
+        Duration::from_secs(SIDECAR_TIMEOUT_SECS),
+    )
+    .await?;
+    let resp: RenderPageResponse = serde_json::from_slice(&output)
+        .map_err(|e| anyhow!("malformed sidecar response: {}", e))?;
+    if !resp.success {
+        return Err(anyhow!(
+            "sidecar render_page error: {}",
+            resp.error.unwrap_or_else(|| "unknown".to_string())
+        ));
+    }
+    use base64::Engine;
+    let pgm = base64::engine::general_purpose::STANDARD
+        .decode(resp.pgm_base64.ok_or_else(|| anyhow!("render_page: no image"))?)
+        .map_err(|e| anyhow!("render_page: malformed base64: {}", e))?;
+    Ok((resp.page_count.unwrap_or(0), pgm))
 }
 
 async fn run_with_timeout(

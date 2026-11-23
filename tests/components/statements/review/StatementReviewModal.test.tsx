@@ -166,3 +166,30 @@ describe('StatementReviewModal dismissal', () => {
     expect(closeReviewModal).toHaveBeenCalled();
   });
 });
+
+// Review P3: unreadable pages mean missing rows; saving needs an explicit ack.
+describe('StatementReviewModal with unreadable pages', () => {
+  it('warns, blocks Submit until acknowledged, then commits with the acknowledgement', async () => {
+    asMock(API.statements.getDraft).mockResolvedValue({ ...DRAFT, missing_pages: [2, 4] });
+    render(<StatementReviewModal />);
+
+    expect(await screen.findByText('Pages 2, 4 could not be read')).toBeInTheDocument();
+    const submit = screen.getByRole('button', { name: 'Submit' });
+    expect(submit).toBeDisabled();
+
+    fireEvent.click(screen.getByLabelText('I understand this statement may be incomplete'));
+    await waitFor(() => expect(submit).toBeEnabled());
+    fireEvent.click(submit);
+    expect(commit).toHaveBeenCalledWith(
+      expect.objectContaining({ draftId: 'd1', acknowledgePartial: true }),
+      expect.anything()
+    );
+  });
+
+  it('shows no warning for a complete draft', async () => {
+    asMock(API.statements.getDraft).mockResolvedValue({ ...DRAFT, missing_pages: null });
+    render(<StatementReviewModal />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Submit' })).toBeEnabled());
+    expect(screen.queryByText(/could not be read/)).toBeNull();
+  });
+});

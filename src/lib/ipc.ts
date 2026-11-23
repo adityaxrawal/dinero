@@ -286,6 +286,8 @@ export interface StatementDraft {
   minimum_due: number | null;
   rows: DraftRow[];
   status: string;
+  /** Pages neither the text layer nor OCR could read (review P3). */
+  missing_pages: number[] | null;
 }
 
 export interface DraftMetadataInput {
@@ -755,7 +757,12 @@ export const API = {
       invokeCommand<StatementDraft>('statements_get_draft', { draftId }),
     getDraftPdf: (draftId: string) =>
       invokeCommand<string>('statements_get_draft_pdf', { draftId }),
-    commitDraft: (draftId: string, metadata: DraftMetadataInput, rows: DraftRow[]) =>
+    commitDraft: (
+      draftId: string,
+      metadata: DraftMetadataInput,
+      rows: DraftRow[],
+      acknowledgePartial = false
+    ) =>
       invokeCommand<{ status: string; statement_id: string }>('statements_commit_draft', {
         draftId,
         editedMetadata: {
@@ -770,6 +777,7 @@ export const API = {
           minimum_due: metadata.minimumDue,
         },
         editedRows: rows,
+        acknowledgePartial,
       }),
     discardDraft: (draftId: string) =>
       invokeCommand<{ status: string }>('statements_discard_draft', { draftId }),

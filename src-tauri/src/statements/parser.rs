@@ -21,6 +21,9 @@ pub struct ParseResult {
     pub parse_method: ParseMethod,
     pub total_pages: usize,
     pub ocr_page_count: usize,
+    /// Pages that had no usable text layer and that OCR could not read
+    /// either; rows on them are missing from the draft (review P3).
+    pub missing_pages: Vec<usize>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -78,50 +81,29 @@ pub async fn parse_in_memory_with_password(
                 .collect();
 
             let mut ocr_page_count = 0usize;
-            if !ocr_pages.is_empty() {
-                let owned_bytes = pdf_bytes.to_vec();
-                let owned_password = password.map(|p| p.to_string());
-                let results = tokio::task::spawn_blocking(move || {
-                    ocr_pages
-                        .into_iter()
-                        .map(|page_number| {
-                            let text =
-                                try_ocr_page(&owned_bytes, page_number, owned_password.as_deref());
-                            (page_number, text)
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .await
-                .unwrap_or_default();
-
-                for (page_number, result) in results {
-                    let Some(page) = pages.iter_mut().find(|p| p.page_number == page_number) else {
-                        continue;
-                    };
-                    match result {
-                        Ok(Some(ocr_text)) => {
-                            tracing::info!(
-                                "OCR fallback produced {} chars for page {}",
-                                ocr_text.len(),
-                                page_number
-                            );
-                            page.text = ocr_text;
-                            page.ocr_used = true;
-                            ocr_page_count += 1;
-                        }
-                        Ok(None) => {
-                            tracing::warn!(
-                                "OCR fallback returned no text for page {} — page will be empty",
-                                page_number
-                            );
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                "OCR fallback error for page {}: {} — continuing with empty text",
-                                page_number,
-                                e
-                            );
-                        }
+            let mut missing_pages = Vec::new();
+            for page_number in ocr_pages {
+                let Some(page) = pages.iter_mut().find(|p| p.page_number == page_number) else {
+                    continue;
+                };
+                match ocr_page(pdf_bytes, page_number, password).await {
+                    Ok((_, Some(ocr_text))) => {
+                        tracing::info!(
+                            "OCR fallback produced {} chars for page {}",
+                            ocr_text.len(),
+                            page_number
+                        );
+                        page.text = ocr_text;
+                        page.ocr_used = true;
+                        ocr_page_count += 1;
+                    }
+                    Ok((_, None)) => {
+                        tracing::warn!("OCR returned no text for page {}", page_number);
+                        missing_pages.push(page_number);
+                    }
+                    Err(e) => {
+                        tracing::warn!("OCR failed for page {}: {:#}", page_number, e);
+                        missing_pages.push(page_number);
                     }
                 }
             }
@@ -144,6 +126,7 @@ pub async fn parse_in_memory_with_password(
                 parse_method,
                 total_pages,
                 ocr_page_count,
+                missing_pages,
             })
         }
         Err(e) => {
@@ -151,26 +134,11 @@ pub async fn parse_in_memory_with_password(
                 "pdfium parse failed: {} — falling back to OCR for all pages",
                 e
             );
-            let owned_bytes = pdf_bytes.to_vec();
-            let owned_password = password.map(|p| p.to_string());
-            let full_doc_ocr = tokio::task::spawn_blocking(move || {
-                try_ocr_full_document(&owned_bytes, owned_password.as_deref())
-            })
-            .await
-            .unwrap_or_else(|e| Err(anyhow::anyhow!("OCR task panicked: {}", e)));
-            match full_doc_ocr {
-                Ok(pages) => {
-                    let total = pages.len();
-                    Ok(ParseResult {
-                        pages,
-                        parse_method: ParseMethod::OcrFallback,
-                        total_pages: total,
-                        ocr_page_count: total,
-                    })
-                }
+            match ocr_full_document(pdf_bytes, password).await {
+                Ok(result) => Ok(result),
                 Err(ocr_err) => {
                     tracing::error!(
-                        "Both pdfium and OCR failed. pdfium: {}. OCR: {}",
+                        "Both pdfium and OCR failed. pdfium: {}. OCR: {:#}",
                         e,
                         ocr_err
                     );
@@ -179,6 +147,7 @@ pub async fn parse_in_memory_with_password(
                         parse_method: ParseMethod::OcrFallback,
                         total_pages: 0,
                         ocr_page_count: 0,
+                        missing_pages: vec![],
                     })
                 }
             }
@@ -201,78 +170,64 @@ impl Drop for TesseractChildGuard {
     }
 }
 
-/// Runs OCR over a single page.
-fn try_ocr_page(
+/// OCRs one page: the page is rendered inside the sandboxed PDF sidecar, never
+/// in this process (review P3), then read by tesseract. Returns the document's
+/// page count with the text.
+async fn ocr_page(
     pdf_bytes: &[u8],
     page_number: usize,
     password: Option<&str>,
-) -> Result<Option<String>> {
-    let png_bytes = render_page_to_png(pdf_bytes, page_number, 200, password)?;
-
-    run_tesseract_on_bytes(&png_bytes)
+) -> Result<(usize, Option<String>)> {
+    let (page_count, pgm) =
+        crate::statements::sidecar::render_page_in_sidecar(pdf_bytes, password, page_number)
+            .await?;
+    let text = tokio::task::spawn_blocking(move || run_tesseract_on_bytes(&pgm))
+        .await
+        .map_err(|e| anyhow::anyhow!("OCR task panicked: {}", e))??;
+    Ok((page_count, text))
 }
 
-/// Runs OCR over the whole document.
+/// OCRs every page of a document whose text extraction failed outright.
 ///
 /// The last resort for scanned statements with no text layer at all. Markedly
-/// slower and less accurate than native extraction, so it is only reached when
-/// nothing else produced text.
-fn try_ocr_full_document(pdf_bytes: &[u8], password: Option<&str>) -> Result<Vec<ParsedPage>> {
-    tracing::warn!("Attempting full-document OCR (pdfium unavailable)");
-    match render_page_to_png(pdf_bytes, 1, 200, password) {
-        Ok(png_bytes) => {
-            let text = run_tesseract_on_bytes(&png_bytes)?.unwrap_or_default();
-            Ok(vec![ParsedPage {
-                page_number: 1,
-                text,
-                ocr_used: true,
-            }])
-        }
-        Err(e) => {
-            tracing::warn!(
-                "Full-document OCR rendering failed: {} — returning empty result",
-                e
-            );
-            Ok(vec![])
-        }
+/// slower and less accurate than native extraction. Fails only if the first
+/// page cannot be rendered; later pages that cannot be read are reported in
+/// `missing_pages`.
+async fn ocr_full_document(pdf_bytes: &[u8], password: Option<&str>) -> Result<ParseResult> {
+    tracing::warn!("Attempting full-document OCR (text extraction failed)");
+    let (page_count, first) = ocr_page(pdf_bytes, 1, password).await?;
+    let mut texts = vec![first];
+    for page_number in 2..=page_count {
+        texts.push(match ocr_page(pdf_bytes, page_number, password).await {
+            Ok((_, text)) => text,
+            Err(e) => {
+                tracing::warn!("OCR failed for page {}: {:#}", page_number, e);
+                None
+            }
+        });
     }
-}
-
-/// Renders one PDF page to PNG for OCR input.
-fn render_page_to_png(
-    pdf_bytes: &[u8],
-    page_number: usize,
-    _dpi: u32,
-    password: Option<&str>,
-) -> Result<Vec<u8>> {
-    use pdfium_render::prelude::*;
-
-    let bindings = Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./"))
-        .or_else(|_| Pdfium::bind_to_system_library())
-        .map_err(|e| anyhow::anyhow!("pdfium bind error (render): {:?}", e))?;
-
-    let pdfium = Pdfium::new(bindings);
-    let doc = pdfium
-        .load_pdf_from_byte_slice(pdf_bytes, password)
-        .map_err(|e| anyhow::anyhow!("pdfium load error (render): {:?}", e))?;
-
-    let page_index = (page_number.saturating_sub(1)) as u16;
-    let page = doc
-        .pages()
-        .get(page_index)
-        .map_err(|e| anyhow::anyhow!("pdfium page {} not found: {:?}", page_number, e))?;
-
-    let bitmap = page
-        .render_with_config(
-            &PdfRenderConfig::new()
-                .set_target_width(1654)
-                .set_maximum_height(2339),
-        )
-        .map_err(|e| anyhow::anyhow!("pdfium render error for page {}: {:?}", page_number, e))?;
-
-    let png_bytes = bitmap.as_image().into_rgb8().to_vec();
-
-    Ok(png_bytes)
+    let missing_pages: Vec<usize> = texts
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.is_none())
+        .map(|(i, _)| i + 1)
+        .collect();
+    let pages: Vec<ParsedPage> = texts
+        .into_iter()
+        .enumerate()
+        .map(|(i, text)| ParsedPage {
+            page_number: i + 1,
+            text: text.unwrap_or_default(),
+            ocr_used: true,
+        })
+        .collect();
+    Ok(ParseResult {
+        total_pages: pages.len(),
+        ocr_page_count: pages.len() - missing_pages.len(),
+        pages,
+        parse_method: ParseMethod::OcrFallback,
+        missing_pages,
+    })
 }
 
 /// Runs tesseract over image bytes and returns the recognised text.

@@ -716,6 +716,8 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
         status: "pending_review".to_string(),
         created_at: None,
         updated_at: None,
+        missing_pages: (!parse_result.missing_pages.is_empty())
+            .then(|| serde_json::to_string(&parse_result.missing_pages).unwrap_or_default()),
     };
     let conn = pool
         .get()
@@ -774,6 +776,7 @@ pub async fn commit_staged_draft<R: tauri::Runtime>(
     draft_id: &str,
     edited_metadata: DraftMetadataUpdate,
     edited_rows: Vec<crate::statements::row_extractor::StatementRow>,
+    acknowledge_partial: bool,
     pool: &deadpool_sqlite::Pool,
     app: &tauri::AppHandle<R>,
 ) -> anyhow::Result<String> {
@@ -788,6 +791,16 @@ pub async fn commit_staged_draft<R: tauri::Runtime>(
         .map_err(|e| anyhow::anyhow!("Interact error: {}", e))?
         .map_err(|e| anyhow::anyhow!("DB error: {}", e))?
         .ok_or_else(|| anyhow::anyhow!("draft not found: {}", draft_id))?;
+
+    // Pages that could not be read mean rows are missing; committing such a
+    // draft needs the user's explicit acknowledgement (review P3).
+    if draft.missing_pages.is_some() && !acknowledge_partial {
+        return Err(anyhow::anyhow!(
+            "statement_partial: pages {} could not be read, so some transactions may be \
+             missing. Confirm to commit anyway.",
+            draft.missing_pages.as_deref().unwrap_or_default()
+        ));
+    }
 
     let draft_id_owned = draft_id.to_string();
     let claimed = conn
@@ -1930,6 +1943,7 @@ pub async fn statements_commit_draft(
     draft_id: String,
     edited_metadata: DraftMetadataUpdate,
     edited_rows: Vec<crate::statements::row_extractor::StatementRow>,
+    acknowledge_partial: Option<bool>,
     app: tauri::AppHandle,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
 ) -> Result<serde_json::Value, crate::error::AppError> {
@@ -1938,7 +1952,14 @@ pub async fn statements_commit_draft(
     // Statement imports pause with the rest of ingestion (review P5).
     crate::security::incident_response::assert_ingestion_allowed()?;
 
-    let stmt_id = commit_staged_draft(&draft_id, edited_metadata, edited_rows, pool.inner(), &app)
+    let stmt_id = commit_staged_draft(
+        &draft_id,
+        edited_metadata,
+        edited_rows,
+        acknowledge_partial.unwrap_or(false),
+        pool.inner(),
+        &app,
+    )
         .await
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
 
@@ -2047,6 +2068,10 @@ pub async fn statements_get_draft(
         "minimum_due": draft.minimum_due,
         "rows": rows,
         "status": draft.status,
+        "missing_pages": draft
+            .missing_pages
+            .as_deref()
+            .and_then(|m| serde_json::from_str::<Vec<usize>>(m).ok()),
     }))
 }
 
@@ -4104,6 +4129,53 @@ mod tests {
         assert!(second_attempt.is_err());
     }
 
+    /// Review P3: a draft with unreadable pages commits only once the user
+    /// acknowledges that rows may be missing.
+    #[tokio::test]
+    async fn test_partial_draft_needs_acknowledgement_to_commit() {
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        seed_test_draft(&pool, "draft_partial", "inst_partial", "3333").await;
+        pool.get()
+            .await
+            .unwrap()
+            .interact(|c| {
+                c.execute(
+                    "UPDATE statement_drafts SET missing_pages = '[3]' WHERE id = 'draft_partial'",
+                    [],
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+
+        let refused = commit_staged_draft(
+            "draft_partial",
+            edited_metadata_fixture(),
+            edited_rows_fixture(),
+            false,
+            &pool,
+            app.handle(),
+        )
+        .await;
+        assert!(refused.unwrap_err().to_string().contains("statement_partial"));
+
+        commit_staged_draft(
+            "draft_partial",
+            edited_metadata_fixture(),
+            edited_rows_fixture(),
+            true,
+            &pool,
+            app.handle(),
+        )
+        .await
+        .expect("an acknowledged partial draft commits");
+    }
+
     async fn seed_test_draft(pool: &deadpool_sqlite::Pool, id: &str, inst_id: &str, masked: &str) {
         let conn = pool.get().await.unwrap();
         let id = id.to_string();
@@ -4143,6 +4215,7 @@ mod tests {
                 status: "pending_review".to_string(),
                 created_at: None,
                 updated_at: None,
+                missing_pages: None,
             };
             crate::db::statement_drafts::insert(c, &row).unwrap();
         })
@@ -4192,6 +4265,7 @@ mod tests {
             "draft_commit",
             edited_metadata_fixture(),
             edited_rows_fixture(),
+            false,
             &pool,
             app.handle(),
         )
@@ -4258,6 +4332,7 @@ mod tests {
             "draft_commit2",
             edited_metadata_fixture(),
             edited_rows_fixture(),
+            false,
             &pool,
             app.handle(),
         )
@@ -4268,6 +4343,7 @@ mod tests {
             "draft_commit2",
             edited_metadata_fixture(),
             edited_rows_fixture(),
+            false,
             &pool,
             app.handle(),
         )
@@ -4289,8 +4365,8 @@ mod tests {
         seed_test_draft(&pool, "draft_h7", "inst_h7", "7777").await;
 
         let (a, b) = tokio::join!(
-            commit_staged_draft("draft_h7", edited_metadata_fixture(), edited_rows_fixture(), &pool, app.handle()),
-            commit_staged_draft("draft_h7", edited_metadata_fixture(), edited_rows_fixture(), &pool, app.handle()),
+            commit_staged_draft("draft_h7", edited_metadata_fixture(), edited_rows_fixture(), false, &pool, app.handle()),
+            commit_staged_draft("draft_h7", edited_metadata_fixture(), edited_rows_fixture(), false, &pool, app.handle()),
         );
         assert_eq!([a.is_ok(), b.is_ok()].iter().filter(|ok| **ok).count(), 1);
         let first_id = a.or(b).unwrap();
@@ -4305,6 +4381,7 @@ mod tests {
             "draft_h7",
             edited_metadata_fixture(),
             edited_rows_fixture(),
+            false,
             &pool,
             app.handle(),
         )
@@ -4357,7 +4434,7 @@ mod tests {
         bad.merchant_raw = "BOOM".into();
         bad.amount_minor = 777;
         rows.push(bad);
-        let res = commit_staged_draft("draft_rb", edited_metadata_fixture(), rows, &pool, app.handle()).await;
+        let res = commit_staged_draft("draft_rb", edited_metadata_fixture(), rows, false, &pool, app.handle()).await;
         assert!(res.is_err());
 
         let (stmts, entries, obs, status): (i64, i64, i64, String) = conn

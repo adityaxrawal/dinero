@@ -34,6 +34,6 @@ describe('useCommitStatementDraft', () => {
     result.current.mutate({ draftId: 'draft_1', metadata, rows: [] });
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
-    expect(API.statements.commitDraft).toHaveBeenCalledWith('draft_1', metadata, []);
+    expect(API.statements.commitDraft).toHaveBeenCalledWith('draft_1', metadata, [], undefined);
   });
 });

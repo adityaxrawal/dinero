@@ -1,6 +1,7 @@
 //! Sandboxed PDF worker process.
 //!
-//! Runs the unlock, text-extraction and decryption operations out-of-process.
+//! Runs the unlock, text-extraction, page-rendering (for OCR) and decryption
+//! operations out-of-process.
 //! Separation is the whole point: PDF parsing is a well-known source of
 //! memory-safety bugs and the input is an untrusted file, so a malformed or
 //! hostile document crashes this process instead of the application.
@@ -15,6 +16,9 @@ struct Request {
     operation: String,
     #[serde(default)]
     password: Option<String>,
+    /// 1-based page to render (`render_page`).
+    #[serde(default)]
+    page_number: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -34,6 +38,15 @@ struct PageOut {
 struct ExtractTextResponse {
     success: bool,
     pages: Option<Vec<PageOut>>,
+    error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct RenderPageResponse {
+    success: bool,
+    page_count: Option<usize>,
+    /// The page as a grayscale binary PGM, which tesseract reads from stdin.
+    pgm_base64: Option<String>,
     error: Option<String>,
 }
 
@@ -84,6 +97,14 @@ fn run() -> anyhow::Result<()> {
         }
         "decrypt" => {
             let resp = decrypt(&pdf_bytes, request.password.as_deref());
+            write_line(&resp)
+        }
+        "render_page" => {
+            let resp = render_page(
+                &pdf_bytes,
+                request.password.as_deref(),
+                request.page_number.unwrap_or(1),
+            );
             write_line(&resp)
         }
         other => write_line(&serde_json::json!({
@@ -194,6 +215,55 @@ fn extract_text(pdf_bytes: &[u8], password: Option<&str>) -> ExtractTextResponse
     ExtractTextResponse {
         success: true,
         pages: Some(pages),
+        error: None,
+    }
+}
+
+/// Renders one page to a grayscale PGM for OCR (review P3: rendering used to
+/// happen in the app process, outside this sandbox).
+fn render_page(pdf_bytes: &[u8], password: Option<&str>, page_number: usize) -> RenderPageResponse {
+    use pdfium_render::prelude::*;
+    let fail = |error: String| RenderPageResponse {
+        success: false,
+        page_count: None,
+        pgm_base64: None,
+        error: Some(error),
+    };
+
+    let bindings = match bind_pdfium() {
+        Ok(b) => b,
+        Err(e) => return fail(format!("pdfium bind error: {:?}", e)),
+    };
+    let pdfium = Pdfium::new(bindings);
+    let doc = match pdfium.load_pdf_from_byte_slice(pdf_bytes, password) {
+        Ok(d) => d,
+        Err(e) => return fail(format!("pdfium load error: {:?}", e)),
+    };
+    let page_count = doc.pages().len() as usize;
+    if page_number == 0 || page_number > page_count {
+        return fail(format!("page {} out of range (1..={})", page_number, page_count));
+    }
+    let page = match doc.pages().get((page_number - 1) as u16) {
+        Ok(p) => p,
+        Err(e) => return fail(format!("pdfium page {} error: {:?}", page_number, e)),
+    };
+    let bitmap = match page.render_with_config(
+        &PdfRenderConfig::new()
+            .set_target_width(1654)
+            .set_maximum_height(2339),
+    ) {
+        Ok(b) => b,
+        Err(e) => return fail(format!("pdfium render error for page {}: {:?}", page_number, e)),
+    };
+    let gray = bitmap.as_image().into_luma8();
+    let mut pgm = format!("P5\n{} {}\n255\n", gray.width(), gray.height()).into_bytes();
+    pgm.extend_from_slice(gray.as_raw());
+
+    use base64::Engine;
+    RenderPageResponse {
+        success: true,
+        page_count: Some(page_count),
+        pgm_base64: Some(base64::engine::general_purpose::STANDARD.encode(&pgm)),
         error: None,
     }
 }

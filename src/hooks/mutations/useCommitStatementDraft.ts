@@ -18,11 +18,13 @@ export function useCommitStatementDraft() {
       draftId,
       metadata,
       rows,
+      acknowledgePartial,
     }: {
       draftId: string;
       metadata: DraftMetadataInput;
       rows: DraftRow[];
-    }) => API.statements.commitDraft(draftId, metadata, rows),
+      acknowledgePartial?: boolean;
+    }) => API.statements.commitDraft(draftId, metadata, rows, acknowledgePartial),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.statements.all() });
     },

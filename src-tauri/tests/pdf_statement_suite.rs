@@ -356,7 +356,7 @@ async fn test_statement_overrides_email_where_both_exist() {
         minimum_due: draft.minimum_due,
     };
     let statement_row_count = rows.len() as i64;
-    commit_staged_draft(&draft_id, edited_metadata, rows, &pool, &app)
+    commit_staged_draft(&draft_id, edited_metadata, rows, false, &pool, &app)
         .await
         .expect("commit_staged_draft failed");
 
@@ -445,4 +445,23 @@ async fn test_raw_pdf_not_persisted_after_parse() {
             );
         }
     }
+}
+
+/// Review P3: OCR rendering happens inside the sandboxed sidecar and yields a
+/// PGM tesseract can read, plus the page count, so every page can be OCR'd.
+#[tokio::test]
+async fn test_page_render_for_ocr_runs_in_the_sidecar() {
+    let bytes = std::fs::read(fixture("hdfc_plain.pdf")).unwrap();
+    let (page_count, pgm) =
+        dinero_app_lib::statements::sidecar::render_page_in_sidecar(&bytes, None, 1)
+            .await
+            .expect("sidecar renders page 1");
+    assert!(page_count >= 1);
+    assert!(pgm.starts_with(b"P5\n"), "binary PGM header");
+    assert!(
+        dinero_app_lib::statements::sidecar::render_page_in_sidecar(&bytes, None, page_count + 1)
+            .await
+            .is_err(),
+        "a page past the end is an error, not an empty image"
+    );
 }

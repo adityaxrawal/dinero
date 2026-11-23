@@ -53,6 +53,8 @@ export function useStatementDraft() {
   const [draft, setDraft] = useState<StatementDraft | null>(null);
   const [metadata, setMetadata] = useState<DraftMetadataInput | null>(null);
   const [rows, setRows] = useState<DraftRow[]>([]);
+  // A partial draft (unreadable pages) is saved only once acknowledged.
+  const [partialAcknowledged, setPartialAcknowledged] = useState(false);
 
   useEffect(() => {
     if (!reviewModalOpen || !activeDraftId) {
@@ -60,6 +62,7 @@ export function useStatementDraft() {
       setDraft(null);
       setMetadata(null);
       setRows([]);
+      setPartialAcknowledged(false);
       return;
     }
     let cancelled = false;
@@ -144,7 +147,7 @@ export function useStatementDraft() {
   const handleSubmit = () => {
     if (!activeDraftId || !metadata) return;
     commitDraft.mutate(
-      { draftId: activeDraftId, metadata, rows },
+      { draftId: activeDraftId, metadata, rows, acknowledgePartial: partialAcknowledged },
       {
         onSuccess: () => {
           toast({
@@ -169,6 +172,9 @@ export function useStatementDraft() {
     addRow,
     removeRow,
     isStaged: processingProgress?.stage === 'staged' || !!draft,
+    missingPages: draft?.missing_pages ?? [],
+    partialAcknowledged,
+    setPartialAcknowledged,
     isSaving: commitDraft.isPending,
     isDiscarding: discardDraft.isPending,
     handleCancel,
