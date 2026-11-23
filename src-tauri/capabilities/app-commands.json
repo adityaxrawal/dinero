@@ -75,6 +75,7 @@
     "allow-merchant-cleanup-runs",
     "allow-merchant-cleanup-start",
     "allow-onboarding-save-preferences",
+    "allow-onboarding-status",
     "allow-pipeline-pause",
     "allow-pipeline-resume",
     "allow-pipeline-status",

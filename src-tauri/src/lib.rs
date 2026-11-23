@@ -884,9 +884,15 @@ pub fn run() {
             // Periodic licence revalidation against the licensing service, so a
             // subscription that lapsed or was cancelled elsewhere takes effect
             // without waiting for a restart.
+            // It starts only once the network disclosure has been acknowledged
+            // (review P4): the device id must not leave the machine first.
             let pool_for_licensing = pool_clone.clone();
             let app_handle_for_licensing = app.handle().clone();
+            let cancel_for_licensing = app.state::<tokio_util::sync::CancellationToken>().inner().clone();
             tauri::async_runtime::spawn(async move {
+                if !crate::auth::consent::wait_for_network_consent(&pool_for_licensing, &cancel_for_licensing).await {
+                    return;
+                }
                 crate::licensing::worker::start_background_validation(
                     pool_for_licensing,
                     "https://api.dinero-app.com".to_string(),
@@ -986,7 +992,11 @@ pub fn run() {
             // prompted to replace itself with the published version.
             app.manage(crate::updater::PendingUpdate::default());
             if !cfg!(debug_assertions) {
-                crate::updater::spawn_update_check_loop(app.handle().clone());
+                crate::updater::spawn_update_check_loop(
+                    app.handle().clone(),
+                    pool_clone.clone(),
+                    app.state::<tokio_util::sync::CancellationToken>().inner().clone(),
+                );
             }
 
             {

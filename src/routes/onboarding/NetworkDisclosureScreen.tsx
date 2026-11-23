@@ -22,10 +22,15 @@ import { NETWORK_DISCLOSURE_TABLE } from '@/constants/privacy';
  */
 interface NetworkDisclosureScreenProps {
   onContinue: () => void;
+  /** Shown when recording the acknowledgement failed. */
+  error?: string | null;
 }
 
 /** Discloses every outbound network call before Gmail is connected. */
-export default function NetworkDisclosureScreen({ onContinue }: NetworkDisclosureScreenProps) {
+export default function NetworkDisclosureScreen({
+  onContinue,
+  error,
+}: NetworkDisclosureScreenProps) {
   return (
     <div className="flex h-screen w-screen items-center justify-center bg-background p-4">
       <Card className="w-full max-w-2xl shadow-2xl">
@@ -79,7 +84,12 @@ export default function NetworkDisclosureScreen({ onContinue }: NetworkDisclosur
           </div>
         </CardContent>
 
-        <CardFooter className="justify-end">
+        <CardFooter className="justify-end gap-3">
+          {error && (
+            <p className="text-sm text-destructive mr-auto" role="alert">
+              {error}
+            </p>
+          )}
           <Button
             onClick={onContinue}
             variant="accent"

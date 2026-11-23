@@ -58,9 +58,18 @@ export function useBackendStatus() {
   }, []);
 
   useEffect(() => {
-    if (isTauriRuntime() && !localStorage.getItem('dinero_onboarded')) {
-      navigate('/onboarding', { replace: true });
-      return;
+    // Onboarding state lives in the database, so a reset database also means
+    // onboarding again. An install onboarded before the network disclosure
+    // existed is shown just that screen (review P4).
+    if (isTauriRuntime()) {
+      API.onboarding
+        .status()
+        .then((s) => {
+          if (!s.onboarded) navigate('/onboarding', { replace: true });
+          else if (!s.network_consent)
+            navigate('/onboarding', { replace: true, state: { consentOnly: true } });
+        })
+        .catch((err) => console.error('Failed to read onboarding status:', err));
     }
 
     /** Runs an action only while the database is usable. */

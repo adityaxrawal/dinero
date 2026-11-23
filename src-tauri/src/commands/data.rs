@@ -2530,23 +2530,30 @@ pub async fn onboarding_save_preferences(
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(move |c| {
-        c.execute(
-            "UPDATE local_profile SET
-                timezone = ?1,
-                spending_limit_monthly = ?2,
-                historical_scan_months = ?3,
-                llm_model = ?4,
-                statement_preference = ?5
-             WHERE id = 1",
-            rusqlite::params![
-                preferences.timezone,
-                preferences.spending_limit_monthly,
-                preferences.historical_scan_months,
-                preferences.llm_model,
-                preferences.statement_preference,
-            ],
-        )
-        .map_err(|e| e.to_string())?;
+        // The onboarding-complete mark is set by the same write as the
+        // preferences, so it can never claim a save that failed (review P4).
+        let changed = c
+            .execute(
+                "UPDATE local_profile SET
+                    timezone = ?1,
+                    spending_limit_monthly = ?2,
+                    historical_scan_months = ?3,
+                    llm_model = ?4,
+                    statement_preference = ?5,
+                    onboarded_at = COALESCE(onboarded_at, datetime('now'))
+                 WHERE id = 1",
+                rusqlite::params![
+                    preferences.timezone,
+                    preferences.spending_limit_monthly,
+                    preferences.historical_scan_months,
+                    preferences.llm_model,
+                    preferences.statement_preference,
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+        if changed == 0 {
+            return Err("The local profile is missing".to_string());
+        }
         Ok::<_, String>(())
     })
     .await
@@ -2554,6 +2561,42 @@ pub async fn onboarding_save_preferences(
     .map_err(crate::error::AppError::Db)?;
 
     Ok("Onboarding preferences saved".to_string())
+}
+
+#[derive(Serialize, Debug)]
+pub struct OnboardingStatus {
+    /// Onboarding preferences were saved.
+    pub onboarded: bool,
+    /// The network-communication disclosure was acknowledged. Background
+    /// network calls (licence revalidation, update checks) wait for it.
+    pub network_consent: bool,
+}
+
+/// Where the user stands in onboarding, read from the database so that a
+/// reset of the database also resets onboarding (review P4).
+#[tauri::command]
+pub async fn onboarding_status(
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<OnboardingStatus, crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(|c| {
+        let onboarded: bool = c.query_row(
+            "SELECT EXISTS (SELECT 1 FROM local_profile WHERE id = 1 AND onboarded_at IS NOT NULL)",
+            [],
+            |r| r.get(0),
+        )?;
+        let network_consent = crate::auth::consent::has_active_consent(
+            c,
+            crate::notifications::NETWORK_DISCLOSURE_CONSENT_EVENT_TYPE,
+        )?;
+        Ok::<_, anyhow::Error>(OnboardingStatus { onboarded, network_consent })
+    })
+    .await
+    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+    .map_err(|e| crate::error::AppError::Db(e.to_string()))
 }
 
 #[tauri::command]

@@ -884,6 +884,7 @@ export const API = {
   },
   // First-run setup: preferences captured before the main app is usable.
   onboarding: {
+    status: () => invokeCommand<OnboardingStatus>('onboarding_status'),
     savePreferences: (prefs: {
       timezone: string;
       spendingLimitMonthly: number;
@@ -1173,6 +1174,12 @@ export interface ConsentEventRecord {
   disclosure_text: string;
   consented_at: string;
   withdrawn_at: string | null;
+}
+
+/** Onboarding progress, stored in the database (review P4). */
+export interface OnboardingStatus {
+  onboarded: boolean;
+  network_consent: boolean;
 }
 
 export interface ScanStatusResponse {

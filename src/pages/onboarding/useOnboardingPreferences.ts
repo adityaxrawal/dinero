@@ -39,24 +39,23 @@ export function useOnboardingPreferences() {
     return true;
   };
 
-  /** Saves the collected preferences. */
+  /**
+   * Saves the collected preferences; throws if the backend save fails.
+   *
+   * The backend write also marks onboarding complete, so a failed save leaves
+   * the user in onboarding instead of half-onboarded (review P4). `llm_model`
+   * is still mirrored to localStorage because syncLlmState reads the model
+   * preference from there.
+   */
   const persist = async () => {
-    localStorage.setItem('dinero_onboarded', 'true');
-    localStorage.setItem('dinero_monthly_limit', monthlyLimit);
-    localStorage.setItem('dinero_scan_range', SCAN_RANGE);
+    await API.onboarding.savePreferences({
+      timezone,
+      spendingLimitMonthly: parseFloat(monthlyLimit) || 0,
+      historicalScanMonths: parseInt(SCAN_RANGE, 10) || 3,
+      llmModel: llmConfig,
+      statementPreference: statementPref,
+    });
     localStorage.setItem('llm_model', llmConfig);
-    localStorage.setItem('dinero_statement_pref', statementPref);
-    try {
-      await API.onboarding.savePreferences({
-        timezone,
-        spendingLimitMonthly: parseFloat(monthlyLimit) || 0,
-        historicalScanMonths: parseInt(SCAN_RANGE, 10) || 3,
-        llmModel: llmConfig,
-        statementPreference: statementPref,
-      });
-    } catch (err) {
-      console.error('Failed to persist onboarding preferences to backend:', err);
-    }
   };
 
   return {

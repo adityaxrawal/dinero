@@ -103,13 +103,26 @@ pub async fn download_and_install<R: Runtime>(
 }
 
 /// Starts the periodic update-check loop.
-pub fn spawn_update_check_loop<R: Runtime>(app: AppHandle<R>) {
+///
+/// The first check waits for the network disclosure to be acknowledged
+/// (review P4), and the loop stops with the app's shutdown token (P14).
+pub fn spawn_update_check_loop<R: Runtime>(
+    app: AppHandle<R>,
+    pool: deadpool_sqlite::Pool,
+    cancel: tokio_util::sync::CancellationToken,
+) {
     tauri::async_runtime::spawn(async move {
+        if !crate::auth::consent::wait_for_network_consent(&pool, &cancel).await {
+            return;
+        }
         loop {
             if let Err(e) = check_for_update(&app).await {
                 tracing::warn!("Scheduled update check failed: {}", e);
             }
-            tokio::time::sleep(UPDATE_CHECK_INTERVAL).await;
+            tokio::select! {
+                _ = cancel.cancelled() => return,
+                _ = tokio::time::sleep(UPDATE_CHECK_INTERVAL) => {}
+            }
         }
     });
 }

@@ -58,6 +58,34 @@ pub fn has_active_consent(conn: &Connection, event_type: &str) -> Result<bool> {
     Ok(count > 0)
 }
 
+/// Waits until the network-communication disclosure has been acknowledged.
+///
+/// Background network calls made without a user action (licence revalidation,
+/// update checks) start only after it, so nothing leaves the machine before
+/// the user has read what will (review P4). Returns false if `cancel` fires
+/// first.
+pub async fn wait_for_network_consent(
+    pool: &deadpool_sqlite::Pool,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> bool {
+    loop {
+        if let Ok(conn) = pool.get().await {
+            let given = conn
+                .interact(|c| {
+                    has_active_consent(c, crate::notifications::NETWORK_DISCLOSURE_CONSENT_EVENT_TYPE)
+                })
+                .await;
+            if matches!(given, Ok(Ok(true))) {
+                return true;
+            }
+        }
+        tokio::select! {
+            _ = cancel.cancelled() => return false,
+            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+        }
+    }
+}
+
 /// The full consent history, for the settings view.
 pub fn fetch_consent_history(
     conn: &Connection,
@@ -103,6 +131,47 @@ mod tests {
 
     fn setup_db() -> Connection {
         crate::db::test_helpers::setup_test_db()
+    }
+
+    async fn setup_pool() -> deadpool_sqlite::Pool {
+        let path = crate::db::test_helpers::fresh_temp_db_path();
+        crate::db::migrations::run_migrations(&path, None).await.unwrap();
+        let mgr = deadpool_sqlite::Manager::from_config(
+            &deadpool_sqlite::Config { path, pool: Some(deadpool_sqlite::PoolConfig::new(1)) },
+            deadpool_sqlite::Runtime::Tokio1,
+        );
+        deadpool_sqlite::Pool::builder(mgr).build().unwrap()
+    }
+
+    /// Review P4: background network calls wait for the disclosure.
+    #[tokio::test]
+    async fn network_consent_wait_holds_until_cancelled_without_consent() {
+        let pool = setup_pool().await;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let waiter = tokio::spawn({
+            let (pool, cancel) = (pool.clone(), cancel.clone());
+            async move { wait_for_network_consent(&pool, &cancel).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(!waiter.is_finished(), "must not proceed without consent");
+        cancel.cancel();
+        assert!(!waiter.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn network_consent_wait_proceeds_once_acknowledged() {
+        let pool = setup_pool().await;
+        pool.get()
+            .await
+            .unwrap()
+            .interact(|c| {
+                insert_consent_event(c, crate::notifications::NETWORK_DISCLOSURE_CONSENT_EVENT_TYPE, "t")
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        assert!(wait_for_network_consent(&pool, &cancel).await);
     }
 
     #[test]

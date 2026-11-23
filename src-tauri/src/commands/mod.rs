@@ -3278,6 +3278,7 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         crate::health::get_health_report,
         data::auth_get_consent_history,
         data::record_consent_event,
+        data::onboarding_status,
         check_system_ram,
         crate::ingestion::oauth::is_gmail_connected,
         crate::ingestion::oauth::settings_get_connected_accounts,

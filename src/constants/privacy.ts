@@ -43,7 +43,7 @@ export const NETWORK_DISCLOSURE_TABLE: NetworkDisclosureRow[] = [
   {
     destination: 'Licensing Backend',
     dataSent: 'License key, device fingerprint hash, subscription status',
-    when: 'On app launch and periodic validation',
+    when: 'Only after you continue past this screen, then every 6 hours',
   },
   {
     destination: 'Google OAuth servers',
@@ -53,7 +53,7 @@ export const NETWORK_DISCLOSURE_TABLE: NetworkDisclosureRow[] = [
   {
     destination: 'GitHub Releases API',
     dataSent: 'App version string, OS version string',
-    when: 'On app launch and periodically',
+    when: 'Only after you continue past this screen, then every 6 hours',
   },
   {
     destination: 'Hugging Face',

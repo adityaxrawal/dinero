@@ -53,6 +53,20 @@ export function useOnboardingSteps({
     setStep((s) => Math.max(s - 1, 1));
   };
 
+  /**
+   * Saves preferences, reporting a failure on this step instead of advancing
+   * (review P4: the save also marks onboarding complete).
+   */
+  const persistOrReport = async () => {
+    try {
+      await persist();
+      return true;
+    } catch (e: unknown) {
+      setOauthError(`Could not save your preferences: ${errorMessage(e)}. Please try again.`);
+      return false;
+    }
+  };
+
   /** Starts the Gmail OAuth flow. */
   const handleConnectGmail = async () => {
     setLoading(true);
@@ -60,10 +74,13 @@ export function useOnboardingSteps({
     try {
       await recordConsent('gmail_oauth_consent', GMAIL_CONSENT_DISCLOSURE_TEXT);
       await API.auth.startGoogle();
-      await persist();
-      setStep(3);
     } catch (e: unknown) {
       setOauthError(mapOauthError(errorMessage(e)));
+      setLoading(false);
+      return;
+    }
+    try {
+      if (await persistOrReport()) setStep(3);
     } finally {
       setLoading(false);
     }
@@ -72,10 +89,10 @@ export function useOnboardingSteps({
   /** Skips Gmail, leaving the app on manual statement upload alone. */
   const handleSkipGmail = async () => {
     setLoading(true);
+    setOauthError(null);
     try {
       await recordConsent('onboarding_disclosure', OUTBOUND_CHANNEL_DISCLOSURE.join(' | '));
-      await persist();
-      setStep(4);
+      if (await persistOrReport()) setStep(4);
     } finally {
       setLoading(false);
     }
