@@ -749,6 +749,12 @@ pub fn run() {
 
                     if let Ok(conn) = pool_for_backup.get().await {
                         let _ = conn
+                            .interact(|c| crate::db::retention::sweep_network_activity(c))
+                            .await;
+                    }
+
+                    if let Ok(conn) = pool_for_backup.get().await {
+                        let _ = conn
                             .interact(|c| crate::db::retention::sweep_reconciliation_audit(c))
                             .await;
                     }

@@ -86,6 +86,18 @@ const RAW_PAYLOAD_RETENTION: &str = "-1 year";
 ///
 /// Raw payloads are whole bank emails -- the most sensitive material the app
 /// holds -- so they are kept only as long as reprocessing might need them.
+/// Network activity entries older than this are deleted (review M13). The
+/// audit log is kept indefinitely by decision.
+const NETWORK_ACTIVITY_RETENTION: &str = "-30 days";
+
+/// Deletes network activity log entries older than the retention window.
+pub fn sweep_network_activity(conn: &Connection) -> Result<usize> {
+    Ok(conn.execute(
+        "DELETE FROM network_activity_log WHERE timestamp < datetime('now', ?1)",
+        [NETWORK_ACTIVITY_RETENTION],
+    )?)
+}
+
 pub fn sweep_raw_payloads(conn: &Connection) -> Result<(usize, usize)> {
     let observations_cleared = conn.execute(
         "UPDATE transaction_observations
@@ -179,6 +191,22 @@ pub fn sweep_reconciliation_audit(conn: &Connection) -> Result<(usize, usize)> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn network_activity_older_than_30_days_is_swept() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        conn.execute_batch(
+            "INSERT INTO network_activity_log (id, timestamp, method, domain, url_redacted) VALUES
+               ('old', datetime('now', '-31 days'), 'GET', 'gmail.googleapis.com', '/'),
+               ('new', datetime('now', '-1 day'), 'GET', 'gmail.googleapis.com', '/');",
+        )
+        .unwrap();
+        assert_eq!(super::sweep_network_activity(&conn).unwrap(), 1);
+        let left: String = conn
+            .query_row("SELECT id FROM network_activity_log", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, "new");
+    }
+
     use super::*;
 
     fn setup_db() -> Connection {
