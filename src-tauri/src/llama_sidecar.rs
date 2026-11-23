@@ -455,20 +455,32 @@ fn child_alive(child: &mut Option<Child>) -> bool {
     child.as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(None)))
 }
 
-/// Resets a Ready server whose port refuses connections.
+/// Timeouts in a row after which a Ready server is considered hung.
+const MAX_CONSECUTIVE_TIMEOUTS: usize = 3;
+static CONSECUTIVE_TIMEOUTS: AtomicUsize = AtomicUsize::new(0);
+
+/// Resets a Ready server whose port refuses connections or keeps timing out.
 ///
 /// A hung or crashed server that still looks Ready would otherwise fail every
 /// request until restart; the next request now starts a fresh one.
 async fn note_request_error(port: u16, err: &anyhow::Error) {
-    let refused = err
-        .downcast_ref::<reqwest::Error>()
-        .is_some_and(|e| e.is_connect());
-    if !refused {
+    let reqwest_err = err.downcast_ref::<reqwest::Error>();
+    let refused = reqwest_err.is_some_and(|e| e.is_connect());
+    // A server that is alive but hung never refuses; it times out. Several
+    // timeouts in a row are treated like a crash (H9 follow-up).
+    let timed_out = reqwest_err.is_some_and(|e| e.is_timeout());
+    let hung = timed_out
+        && CONSECUTIVE_TIMEOUTS.fetch_add(1, Ordering::Relaxed) + 1 >= MAX_CONSECUTIVE_TIMEOUTS;
+    if !refused && !hung {
         return;
     }
+    CONSECUTIVE_TIMEOUTS.store(0, Ordering::Relaxed);
     let mut st = state().lock().await;
     if matches!(st.state, ServerState::Ready { port: p } if p == port) {
-        tracing::warn!("llama-server on port {port} refused a connection — will restart");
+        tracing::warn!(
+            "llama-server on port {port} {} — will restart",
+            if refused { "refused a connection" } else { "timed out repeatedly" }
+        );
         if let Some(mut child) = st.child.take() {
             let _ = child.kill().await;
         }
@@ -669,8 +681,9 @@ pub async fn complete(
         .context("llama-server semaphore closed")?;
     let ctx = crate::logging::llm_logger::LlmCallContext::unclassified();
     let result = raw_complete(port, model_id, prompt, timeout, None, ctx).await;
-    if let Err(e) = &result {
-        note_request_error(port, e).await;
+    match &result {
+        Ok(_) => CONSECUTIVE_TIMEOUTS.store(0, Ordering::Relaxed),
+        Err(e) => note_request_error(port, e).await,
     }
     result
 }
@@ -728,8 +741,9 @@ pub async fn complete_with_optional_schema_and_context(
     let effective_timeout = calibrated_timeout.min(Duration::from_secs(150));
     
     let result = raw_complete(port, model_id, prompt, effective_timeout, schema, ctx).await;
-    if let Err(e) = &result {
-        note_request_error(port, e).await;
+    match &result {
+        Ok(_) => CONSECUTIVE_TIMEOUTS.store(0, Ordering::Relaxed),
+        Err(e) => note_request_error(port, e).await,
     }
     result
 }
@@ -753,6 +767,35 @@ mod tests {
         assert!(!super::file_matches_sha256(&f, &good).await);
         assert!(!super::file_matches_sha256(&dir.join("missing"), &good).await);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// H9 follow-up: a server that is alive but hung (only times out) is
+    /// reset after MAX_CONSECUTIVE_TIMEOUTS, so the next request restarts it.
+    #[tokio::test]
+    async fn repeated_timeouts_reset_a_hung_server() {
+        use anyhow::Context;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((sock, _)) = listener.accept().await {
+                held.push(sock);
+            }
+        });
+        super::state().lock().await.state = super::ServerState::Ready { port };
+        super::CONSECUTIVE_TIMEOUTS.store(0, std::sync::atomic::Ordering::Relaxed);
+        for i in 1..=super::MAX_CONSECUTIVE_TIMEOUTS {
+            let err = reqwest::Client::new()
+                .get(format!("http://127.0.0.1:{port}/"))
+                .timeout(std::time::Duration::from_millis(50))
+                .send()
+                .await
+                .context("llama-server /completion request failed")
+                .unwrap_err();
+            super::note_request_error(port, &err).await;
+            let reset = matches!(super::state().lock().await.state, super::ServerState::NotStarted);
+            assert_eq!(reset, i == super::MAX_CONSECUTIVE_TIMEOUTS, "after {i} timeouts");
+        }
     }
 
     #[test]
