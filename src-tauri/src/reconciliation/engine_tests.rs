@@ -41,8 +41,8 @@ fn test_exact_match_success() {
     )
     .unwrap();
     conn.execute(
-        "INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint, canonical_transaction_id) \
-         VALUES ('obs_prior', 'gmail_transaction', 'msg_prior', 'fp_shared', 'cand_1')",
+        "INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint, canonical_transaction_id, reference_id) \
+         VALUES ('obs_prior', 'gmail_transaction', 'msg_prior', 'fp_shared', 'cand_1', 'REF123')",
         [],
     )
     .unwrap();
@@ -2989,4 +2989,93 @@ fn observation_without_event_time_goes_to_review_not_lost() {
         )
         .unwrap();
     assert_eq!(reason, "missing_event_time");
+}
+
+/// Builds a card-alert style observation for the review P1 tests.
+fn p1_obs(id: &str, pipeline: &str, t: &str, reference_id: Option<&str>) -> IncomingObservation {
+    IncomingObservation {
+        id: id.into(),
+        instrument_id: "card_1".into(),
+        amount_minor: 25000,
+        currency: "INR".into(),
+        direction: "debit".into(),
+        event_time: t.into(),
+        reference_id: reference_id.map(Into::into),
+        merchant_raw: Some("STARBUCKS".into()),
+        source_pipeline: pipeline.into(),
+        source_record_id: format!("rec_{id}"),
+        emi_total_installments: None,
+        emi_original_amount_minor: None,
+        fingerprint: None,
+        confidence_score: Some(0.95),
+        event_time_confidence: None,
+        channel: None,
+    }
+}
+
+/// Inserts an observation row and reconciles it, the way ingestion does.
+fn p1_ingest(conn: &Connection, obs: &IncomingObservation) -> DecisionType {
+    conn.execute(
+        "INSERT INTO transaction_observations (id, source_pipeline, source_record_id, reference_id) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![obs.id, obs.source_pipeline, obs.source_record_id, obs.reference_id],
+    )
+    .unwrap();
+    let candidates = super::engine::fetch_candidates(conn, obs).unwrap();
+    reconcile(conn, obs, candidates).unwrap()
+}
+
+fn txn_count(conn: &Connection) -> i64 {
+    conn.query_row("SELECT COUNT(*) FROM transactions", [], |r| r.get(0)).unwrap()
+}
+
+/// Review P1: two separate purchases, same card, merchant, amount and day,
+/// both from Gmail with no reference id, stay two ledger rows.
+#[test]
+fn p1_two_identical_same_source_purchases_stay_separate() {
+    let conn = setup_test_db();
+    let a = p1_obs("obs_a", "gmail_transaction", "2026-11-10 09:00:00", None);
+    let b = p1_obs("obs_b", "gmail_transaction", "2026-11-10 11:00:00", None);
+    assert_eq!(p1_ingest(&conn, &a), DecisionType::NewCanonical);
+    assert_eq!(p1_ingest(&conn, &b), DecisionType::NewCanonical);
+    assert_eq!(txn_count(&conn), 2);
+}
+
+/// Review P1: two identical rows in one statement stay two ledger rows.
+#[test]
+fn p1_identical_statement_rows_stay_separate() {
+    let conn = setup_test_db();
+    let a = p1_obs("row_1", "statement_pdf", "2026-11-10 00:00:00", None);
+    let b = p1_obs("row_2", "statement_pdf", "2026-11-10 00:00:00", None);
+    p1_ingest(&conn, &a);
+    assert_eq!(p1_ingest(&conn, &b), DecisionType::NewCanonical);
+    assert_eq!(txn_count(&conn), 2);
+}
+
+/// Review P1: same source but different reference ids are separate too.
+#[test]
+fn p1_same_source_different_reference_ids_stay_separate() {
+    let conn = setup_test_db();
+    p1_ingest(&conn, &p1_obs("obs_a", "gmail_transaction", "2026-11-10 09:00:00", Some("UTR1")));
+    p1_ingest(&conn, &p1_obs("obs_b", "gmail_transaction", "2026-11-10 09:05:00", None));
+    assert_eq!(txn_count(&conn), 2);
+}
+
+/// Review P1: the one same-source merge allowed is equal, non-empty reference ids.
+#[test]
+fn p1_same_source_equal_reference_ids_merge() {
+    let conn = setup_test_db();
+    p1_ingest(&conn, &p1_obs("obs_a", "gmail_transaction", "2026-11-10 09:00:00", Some("UTR42")));
+    let d = p1_ingest(&conn, &p1_obs("obs_b", "gmail_transaction", "2026-11-10 09:01:00", Some("UTR42")));
+    assert!(matches!(d, DecisionType::AutoMatchedScored | DecisionType::AutoMatchedExact), "{d:?}");
+    assert_eq!(txn_count(&conn), 1);
+}
+
+/// Review P1: an email alert and its statement line still merge.
+#[test]
+fn p1_cross_source_pair_still_merges() {
+    let conn = setup_test_db();
+    p1_ingest(&conn, &p1_obs("obs_a", "gmail_transaction", "2026-11-10 09:00:00", None));
+    let d = p1_ingest(&conn, &p1_obs("row_1", "statement_pdf", "2026-11-10 00:00:00", None));
+    assert_eq!(d, DecisionType::AutoMatchedScored);
+    assert_eq!(txn_count(&conn), 1);
 }

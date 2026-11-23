@@ -85,7 +85,26 @@ pub fn fetch_candidates(
         3,
     )?;
 
-    Ok(rows.into_iter().map(to_canonical_candidate).collect())
+    // Hard constraint ahead of scoring (review P1): a canonical that already
+    // holds an observation from this pipeline is a separate payment unless the
+    // reference ids agree, however close the score would be.
+    let mut candidates = Vec::with_capacity(rows.len());
+    for row in rows {
+        if !conflicts_with_same_source(conn, &row.id, obs)? {
+            candidates.push(to_canonical_candidate(row));
+        }
+    }
+    Ok(candidates)
+}
+
+fn conflicts_with_same_source(conn: &Connection, canonical_id: &str, obs: &IncomingObservation) -> Result<bool> {
+    crate::db::transaction_observations::canonical_has_conflicting_same_source(
+        conn,
+        canonical_id,
+        &obs.source_pipeline,
+        obs.reference_id.as_deref(),
+        &obs.id,
+    )
 }
 
 /// Projects a transaction row into a match candidate.
@@ -271,7 +290,12 @@ pub fn reconcile(
         if let Some(canonical_id) =
             crate::reconciliation::prefilter::fingerprint_prefilter_lookup(conn, fp, &obs.id)?
         {
-            if let Some(row) = crate::db::transactions::get_transaction(conn, &canonical_id)? {
+            let row = if conflicts_with_same_source(conn, &canonical_id, obs)? {
+                None
+            } else {
+                crate::db::transactions::get_transaction(conn, &canonical_id)?
+            };
+            if let Some(row) = row {
                 let candidate = to_canonical_candidate(row);
                 if crate::reconciliation::exact_match::verify_exact_match(obs, &candidate) {
                     crate::reconciliation::canonical::apply_match_precedence_and_link(

@@ -88,8 +88,8 @@ pub fn score_candidates(
 /// Whether two observations come from complementary sources.
 ///
 /// An email alert and a statement line describing one payment is the expected
-/// pattern, so cross-source pairs are weighted differently from two observations
-/// of the same kind -- which are more likely genuinely separate transactions.
+/// pattern, so cross-source pairs get a small bonus. Same-source pairs never get
+/// this far without matching reference ids: `fetch_candidates` drops them.
 fn is_cross_source_complementary(
     obs_source_pipeline: &str,
     candidate_source_mix: Option<&str>,

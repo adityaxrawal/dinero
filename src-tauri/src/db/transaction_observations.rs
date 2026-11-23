@@ -271,6 +271,30 @@ pub fn update_canonical_transaction_id(
     Ok(())
 }
 
+/// Whether a canonical already holds an observation from `source_pipeline`
+/// that `reference_id` does not tie to the incoming one.
+///
+/// Two observations from the same pipeline (two alerts, two statement rows)
+/// describe separate payments unless both carry the same non-empty reference
+/// id; a resent email is already absorbed by message-id idempotency (review P1).
+pub fn canonical_has_conflicting_same_source(
+    conn: &Connection,
+    canonical_transaction_id: &str,
+    source_pipeline: &str,
+    reference_id: Option<&str>,
+    exclude_observation_id: &str,
+) -> Result<bool> {
+    let reference_id = reference_id.map(str::trim).filter(|r| !r.is_empty());
+    Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM transaction_observations
+          WHERE canonical_transaction_id = ?1 AND source_pipeline = ?2
+            AND id != ?3 AND is_deleted = 0
+            AND (?4 IS NULL OR reference_id IS NULL OR TRIM(reference_id) != ?4))",
+        params![canonical_transaction_id, source_pipeline, exclude_observation_id, reference_id],
+        |r| r.get(0),
+    )?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
