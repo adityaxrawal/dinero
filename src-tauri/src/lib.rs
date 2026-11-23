@@ -456,6 +456,22 @@ pub fn run() {
                         .ok()
                 });
                 crate::ipc::system_warnings::load_dismissals(loaded.unwrap_or_default());
+
+                let pool_for_warnings = pool_clone.clone();
+                let stored = tauri::async_runtime::block_on(async move {
+                    let conn = pool_for_warnings.get().await.ok()?;
+                    conn.interact(|c| crate::db::active_warnings::load_all(c))
+                        .await
+                        .ok()?
+                        .ok()
+                });
+                crate::ipc::system_warnings::load_active(
+                    stored
+                        .unwrap_or_default()
+                        .iter()
+                        .filter_map(|j| serde_json::from_str(j).ok())
+                        .collect(),
+                );
             }
             {
                 // Spawned rather than blocking: session setup is not needed for
@@ -659,6 +675,10 @@ pub fn run() {
                                         tracing::info!(
                                             "Backup successful: {}",
                                             backup_file.display()
+                                        );
+                                        crate::ipc::system_warnings::clear_system_warning(
+                                            &app_handle_for_backup,
+                                            "backup_verification_failed",
                                         );
                                         let _ = app_handle_for_backup.emit(
                                             crate::ipc::events::AppEvent::DbBackupCompleted.as_str(),
@@ -919,6 +939,12 @@ pub fn run() {
                     }
 
                     let report = crate::health::compute_health_report(&pool_for_health).await;
+                    if report.backend_ready {
+                        crate::ipc::system_warnings::clear_system_warning(
+                            &app_handle_for_health,
+                            "backend_startup_failure",
+                        );
+                    }
                     if !report.backend_ready {
                         let monitor = app_handle_for_health
                             .state::<crate::security::incident_response::IncidentMonitor>();

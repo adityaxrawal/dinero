@@ -38,6 +38,49 @@ static ACTIVE_WARNINGS: Mutex<Option<HashMap<String, SystemWarningPayload>>> = M
 
 static DISMISSED: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 
+/// Warnings the app re-derives on its own after a restart (watchdog, RAM and
+/// clock checks). They are not persisted: a stored copy could outlive its
+/// cause, since nothing would clear it.
+const REDERIVED: &[&str] = &["gmail_sync_stale", "gmail_token_degraded", "low_ram", "clock_skew"];
+
+fn persisted(warning_type: &str) -> bool {
+    !REDERIVED.contains(&warning_type)
+}
+
+/// Loads persisted active warnings at startup, so a warning whose cause is
+/// still present (e.g. a failed backup) survives a restart.
+pub fn load_active(payloads: Vec<SystemWarningPayload>) {
+    let mut guard = ACTIVE_WARNINGS.lock().unwrap();
+    let map = guard.get_or_insert_with(HashMap::new);
+    for w in payloads.into_iter().filter(|w| persisted(&w.warning_type)) {
+        map.entry(w.warning_type.clone()).or_insert(w);
+    }
+}
+
+/// Mirrors an active-warning change to the database, if a pool is managed.
+fn persist<R: tauri::Runtime>(app: &tauri::AppHandle<R>, warning_type: &str, payload: Option<String>) {
+    use tauri::Manager;
+    if !persisted(warning_type) {
+        return;
+    }
+    let Some(pool) = app.try_state::<deadpool_sqlite::Pool>().map(|p| p.inner().clone()) else {
+        return;
+    };
+    let wt = warning_type.to_string();
+    tauri::async_runtime::spawn(async move {
+        let Ok(conn) = pool.get().await else { return };
+        let result = conn
+            .interact(move |c| match payload {
+                Some(json) => crate::db::active_warnings::upsert(c, &wt, &json),
+                None => crate::db::active_warnings::delete(c, &wt),
+            })
+            .await;
+        if let Ok(Err(e)) = result {
+            tracing::warn!("Failed to persist system warning state: {}", e);
+        }
+    });
+}
+
 /// Loads persisted dismissals at startup, before any warning can be raised.
 pub fn load_dismissals(map: HashMap<String, String>) {
     *DISMISSED.lock().unwrap() = Some(map);
@@ -79,6 +122,7 @@ pub fn emit_system_warning<R: tauri::Runtime>(
             .get_or_insert_with(HashMap::new)
             .insert(warning.warning_type.clone(), warning.clone());
     }
+    persist(app, &warning.warning_type, serde_json::to_string(&warning).ok());
     if is_dismissed(&warning) {
         tracing::debug!(
             warning_type = warning.warning_type,
@@ -94,10 +138,14 @@ pub fn emit_system_warning<R: tauri::Runtime>(
 pub fn clear_system_warning<R: tauri::Runtime>(app: &tauri::AppHandle<R>, warning_type: &str) {
     {
         let mut guard = ACTIVE_WARNINGS.lock().unwrap();
-        if let Some(map) = guard.as_mut() {
-            map.remove(warning_type);
+        let removed = guard.as_mut().and_then(|map| map.remove(warning_type));
+        // Callers clear on every successful cycle; a warning that is not
+        // active needs no event or write.
+        if removed.is_none() {
+            return;
         }
     }
+    persist(app, warning_type, None);
     {
         let mut guard = DISMISSED.lock().unwrap();
         if let Some(map) = guard.as_mut() {
@@ -174,6 +222,73 @@ pub async fn settings_dismiss_system_warning(
 
 #[cfg(test)]
 mod tests {
+
+    /// Follow-up sweep: warnings survive a restart (except re-derived ones),
+    /// and clearing removes the stored copy.
+    #[tokio::test]
+    async fn warnings_are_persisted_reloaded_and_cleared() {
+        use tauri::Manager;
+        let dir = std::env::temp_dir().join(format!("dinero_warn_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pool = crate::db::init_db(dir.join("t.db")).await.unwrap();
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        app.manage(pool.clone());
+        let warn = |t: &str| SystemWarningPayload {
+            warning_type: t.into(),
+            message: "m".into(),
+            severity: WarningSeverity::Degraded,
+            action_hint: None,
+        };
+        emit_system_warning(app.handle(), warn("persist_test_backup"));
+        emit_system_warning(app.handle(), warn("gmail_sync_stale"));
+        let stored = |pool: deadpool_sqlite::Pool| async move {
+            pool.get()
+                .await
+                .unwrap()
+                .interact(|c| crate::db::active_warnings::load_all(c))
+                .await
+                .unwrap()
+                .unwrap()
+        };
+        let mut rows = Vec::new();
+        for _ in 0..50 {
+            rows = stored(pool.clone()).await;
+            if !rows.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(rows.len(), 1, "only the non-re-derived warning is stored: {rows:?}");
+        assert!(rows[0].contains("persist_test_backup"));
+
+        clear_system_warning(app.handle(), "persist_test_backup");
+        for _ in 0..50 {
+            if stored(pool.clone()).await.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(stored(pool.clone()).await.is_empty(), "cleared warnings leave the table");
+        clear_system_warning(app.handle(), "gmail_sync_stale");
+    }
+
+    #[test]
+    fn reload_skips_re_derived_warnings() {
+        let w = |t: &str| SystemWarningPayload {
+            warning_type: t.into(),
+            message: "m".into(),
+            severity: WarningSeverity::Info,
+            action_hint: None,
+        };
+        load_active(vec![w("reload_test_kept"), w("low_ram")]);
+        let active = active_system_warnings();
+        assert!(active.iter().any(|a| a.warning_type == "reload_test_kept"));
+        assert!(!active.iter().any(|a| a.warning_type == "low_ram" && a.message == "m"));
+        ACTIVE_WARNINGS.lock().unwrap().as_mut().unwrap().remove("reload_test_kept");
+    }
+
     use super::*;
 
     #[test]

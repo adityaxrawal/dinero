@@ -616,6 +616,8 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
     if let Some(new_history_id) = latest_history_id_received {
         save_history_id(pool, &account.id, new_history_id).await?;
     }
+    // A poll that got through means Gmail is no longer throttling us.
+    crate::ipc::system_warnings::clear_system_warning(app, "gmail_quota_exhausted");
 
     Ok(())
 }

@@ -157,7 +157,14 @@ pub async fn start_background_validation<R: tauri::Runtime>(
                                             })
                                             .await;
                                         match write {
-                                            Ok(Ok(())) => {}
+                                            Ok(Ok(())) => {
+                                                for kind in [
+                                                    "repeated_license_validate_failure",
+                                                    "signature_verification_failure",
+                                                ] {
+                                                    crate::ipc::system_warnings::clear_system_warning(&app_handle, kind);
+                                                }
+                                            }
                                             Ok(Err(e)) => tracing::error!("Failed to store license validation: {:#}", e),
                                             Err(e) => tracing::error!("Failed to store license validation: {}", e),
                                         }
