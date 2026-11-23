@@ -304,21 +304,32 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
         }
     }
 
-    conn.interact(move |c| {
-        let _ = c.execute(
+    conn.interact(move |c| -> anyhow::Result<()> {
+        // The profile row is required: without it the trial check finds no
+        // profile and every write is refused, so a failure here must stop
+        // startup with an error instead of leaving the app silently read-only.
+        c.execute(
             "INSERT OR IGNORE INTO local_profile (
                 id, primary_email, display_name, timezone, spending_limit_monthly,
                 limit_thresholds, recovery_phrase_enabled
              ) VALUES (1, NULL, 'Default User', 'Asia/Kolkata', 30000.0, '[80,90,100]', 0)",
             [],
-        );
+        )
+        .map_err(|e| anyhow::anyhow!("Could not create the default profile: {}", e))?;
 
-        let _ = c.execute(
+        // Crash recovery: a scan left in_progress by a crash would otherwise
+        // hold its claim. Not fatal, but it must be visible.
+        if let Err(e) = c.execute(
             "UPDATE processing_checkpoints SET status = 'failed' WHERE status = 'in_progress'",
             [],
-        );
+        ) {
+            tracing::error!("Could not reset interrupted scans at startup: {}", e);
+        }
 
-        let _ = instruments::cleanup_corrupted_vpa_instruments(c);
+        if let Err(e) = instruments::cleanup_corrupted_vpa_instruments(c) {
+            tracing::warn!("Startup instrument cleanup failed: {}", e);
+        }
+        Ok(())
     })
     .await
     .map_err(|e| {
@@ -326,7 +337,8 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
             "Interact error during post-migration seeding: {}",
             e
         ))
-    })?;
+    })?
+    .map_err(DbInitError::Other)?;
 
     crypto::record_last_known_hw_uuid(&app_data_dir);
     Ok(pool)
@@ -335,6 +347,31 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
 #[cfg(test)]
 mod migration_rollback_tests {
     use super::restore_backup_file;
+
+    /// Startup must fail loudly, not continue read-only, when the default
+    /// profile cannot be created.
+    #[tokio::test]
+    async fn startup_fails_if_the_default_profile_cannot_be_created() {
+        let dir = std::env::temp_dir().join(format!("dinero_profile_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pool = super::init_db(dir.join("finance.db")).await.unwrap();
+        pool.get()
+            .await
+            .unwrap()
+            .interact(|c| {
+                c.execute_batch(
+                    "DELETE FROM local_profile;
+                     CREATE TRIGGER no_profile BEFORE INSERT ON local_profile
+                     BEGIN SELECT RAISE(ABORT, 'simulated failure'); END;",
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        pool.close();
+        assert!(super::init_db(dir.join("finance.db")).await.is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// Review L3: with no pending migration, startup takes no full backup.
     #[tokio::test]
