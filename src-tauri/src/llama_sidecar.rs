@@ -199,24 +199,27 @@ fn server_matches(
 /// The SHA-256 check is the security-critical part: this binary is fetched from a
 /// third party and then executed, so it is verified before it is ever run.
 async fn ensure_binary(app_dir: &Path) -> Result<PathBuf> {
+    // The binary and its libraries live in a user-writable folder, so they are
+    // never trusted as found (review M17): the downloaded archive is kept,
+    // re-checked against the compiled-in hash before every start, and
+    // re-extracted fresh. Anything planted in the folder is replaced.
     let binary_path = server_binary_path(app_dir);
-    if binary_path.exists() {
-        return Ok(binary_path);
-    }
-
     let base = base_dir(app_dir);
     tokio::fs::create_dir_all(&base)
         .await
         .context("failed to create llama_cpp directory")?;
 
     let (asset_name, expected_sha256) = release_asset();
-    let url = format!(
-        "https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_CPP_RELEASE_TAG}/{asset_name}"
-    );
     let tarball_path = base.join(asset_name);
-    crate::llm_manager::download_file_with_hash(&url, &tarball_path, expected_sha256, None, None)
-        .await
-        .context("failed to download llama.cpp release")?;
+    if !file_matches_sha256(&tarball_path, expected_sha256).await {
+        let url = format!(
+            "https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_CPP_RELEASE_TAG}/{asset_name}"
+        );
+        crate::llm_manager::download_file_with_hash(&url, &tarball_path, expected_sha256, None, None)
+            .await
+            .context("failed to download llama.cpp release")?;
+    }
+    let _ = tokio::fs::remove_dir_all(extracted_dir(app_dir)).await;
 
     let status = Command::new("tar")
         .arg("-xzf")
@@ -229,7 +232,6 @@ async fn ensure_binary(app_dir: &Path) -> Result<PathBuf> {
     if !status.success() {
         anyhow::bail!("tar extraction of llama.cpp release exited with {status}");
     }
-    let _ = tokio::fs::remove_file(&tarball_path).await;
 
     let _ = Command::new("xattr")
         .arg("-dr")
@@ -255,6 +257,43 @@ async fn ensure_binary(app_dir: &Path) -> Result<PathBuf> {
         );
     }
     Ok(binary_path)
+}
+
+/// Whether a file exists and its SHA-256 equals `expected_hex`.
+async fn file_matches_sha256(path: &Path, expected_hex: &str) -> bool {
+    let path = path.to_path_buf();
+    let expected = expected_hex.to_ascii_lowercase();
+    tokio::task::spawn_blocking(move || {
+        use sha2::{Digest, Sha256};
+        use std::io::Read;
+        let Ok(mut file) = std::fs::File::open(&path) else {
+            return false;
+        };
+        let mut hasher = Sha256::new();
+        let mut buf = vec![0u8; 1 << 20];
+        loop {
+            match file.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => hasher.update(&buf[..n]),
+                Err(_) => return false,
+            }
+        }
+        format!("{:x}", hasher.finalize()) == expected
+    })
+    .await
+    .unwrap_or(false)
+}
+
+/// Per-run secret the sidecar requires on every request (review M17), so
+/// other local processes cannot use the model server on its loopback port.
+fn api_key() -> &'static str {
+    static KEY: OnceLock<String> = OnceLock::new();
+    KEY.get_or_init(|| {
+        use aes_gcm::aead::{rand_core::RngCore, OsRng};
+        let mut bytes = [0u8; 32];
+        OsRng.fill_bytes(&mut bytes);
+        hex::encode(bytes)
+    })
 }
 
 /// Polls the server's health endpoint.
@@ -302,6 +341,8 @@ async fn start_server_task(app_dir: PathBuf, model_id: String, slots: usize) {
             .arg(gpu_layers_arg())
             .arg("--cors-origins")
             .arg("localhost")
+            .arg("--api-key")
+            .arg(api_key())
             .kill_on_drop(true)
             .spawn()
             .context("failed to spawn llama-server")?;
@@ -553,6 +594,7 @@ async fn raw_complete(
     }
     let result = http_client()
         .post(format!("http://127.0.0.1:{port}/completion"))
+        .bearer_auth(api_key())
         .timeout(timeout)
         .json(&body)
         .send()
@@ -695,6 +737,31 @@ pub async fn complete_with_optional_schema_and_context(
 #[cfg(test)]
 mod tests {
     use super::server_matches;
+
+    /// Review M17: the archive is re-checked before every start.
+    #[tokio::test]
+    async fn archive_hash_check_rejects_tampered_or_missing_files() {
+        use sha2::{Digest, Sha256};
+        let dir = std::env::temp_dir().join(format!("dinero_hash_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("asset.tar.gz");
+        std::fs::write(&f, b"genuine").unwrap();
+        let good = format!("{:x}", Sha256::digest(b"genuine"));
+        assert!(super::file_matches_sha256(&f, &good).await);
+        assert!(super::file_matches_sha256(&f, &good.to_uppercase()).await);
+        std::fs::write(&f, b"tampered").unwrap();
+        assert!(!super::file_matches_sha256(&f, &good).await);
+        assert!(!super::file_matches_sha256(&dir.join("missing"), &good).await);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn api_key_is_random_hex_and_stable_for_the_run() {
+        let k = super::api_key();
+        assert_eq!(k.len(), 64);
+        assert!(k.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_eq!(k, super::api_key());
+    }
 
     #[tokio::test]
     async fn child_alive_detects_exited_process() {
