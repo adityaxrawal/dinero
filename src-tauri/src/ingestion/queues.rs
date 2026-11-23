@@ -482,7 +482,7 @@ pub fn spawn_queues<R: tauri::Runtime>(
 
     spawn_transaction_workers(transaction_rx, pool.clone(), app.clone());
     spawn_statement_dispatcher(statement_rx, pool.clone(), app.clone());
-    spawn_mandate_workers(mandate_rx, pool.clone(), transaction_tx.clone());
+    spawn_mandate_workers(mandate_rx, pool.clone());
     let pipeline = app.state::<crate::llm_pipeline::LlmPipeline>().inner().clone();
     spawn_layer6_workers(layer6_rx, pool, learning, pipeline);
 
@@ -1090,15 +1090,11 @@ pub async fn replay_pending_ingest_jobs(
 }
 
 /// Spawns the mandate-processing workers.
-fn spawn_mandate_workers(
-    mut rx: mpsc::Receiver<MandateJob>,
-    pool: Pool,
-    transaction_tx: mpsc::Sender<TransactionJob>,
-) {
+fn spawn_mandate_workers(mut rx: mpsc::Receiver<MandateJob>, pool: Pool) {
     tauri::async_runtime::spawn(async move {
         while let Some(job) = rx.recv().await {
             let key = mandate_job_key(&job);
-            if process_mandate_job(job, &pool, &transaction_tx).await {
+            if process_mandate_job(job, &pool).await {
                 delete_persisted_job(&pool, key).await;
             }
         }
@@ -1109,11 +1105,9 @@ fn spawn_mandate_workers(
 async fn process_mandate_job(
     job: MandateJob,
     pool: &Pool,
-    transaction_tx: &mpsc::Sender<TransactionJob>,
 ) -> bool {
     let extraction = job.extraction.clone();
     let event_type = job.event_type.clone();
-    let merchant_raw = extraction.merchant.clone();
 
     // False when the mandate could not be recorded, so the job is kept and
     // replayed (the ₹0 transaction it emits is idempotent on source_record_id).
@@ -1134,7 +1128,16 @@ async fn process_mandate_job(
     };
     if let Some(conn) = conn {
         let outcome = conn
-            .interact(move |c| -> Option<String> {
+            .interact(move |c| -> bool {
+                // Errors are logged and reported instead of swallowed (M5),
+                // so the job is kept for replay.
+                let mut ok = true;
+                let mut check = |what: &str, r: anyhow::Result<()>| {
+                    if let Err(e) = r {
+                        tracing::error!("Mandate Queue: {} failed: {:#}", what, e);
+                        ok = false;
+                    }
+                };
                 let instrument_id = crate::db::instruments::resolve_instrument(
                     c,
                     extraction.instrument_type.as_deref(),
@@ -1156,14 +1159,19 @@ async fn process_mandate_job(
                         if let (Some(instrument_id), Some(merchant_entity_id)) =
                             (&instrument_id, &merchant_entity_id)
                         {
-                            let _ = crate::db::recurring_payments::upsert_explicit(
-                                c,
-                                instrument_id,
-                                merchant_entity_id,
-                                extraction.max_limit_amount,
-                                "INR",
-                                extraction.cadence.as_deref(),
-                                extraction.external_mandate_id.as_deref(),
+                            check(
+                                "recording the mandate",
+                                crate::db::recurring_payments::upsert_explicit(
+                                    c,
+                                    instrument_id,
+                                    merchant_entity_id,
+                                    extraction.max_limit_amount,
+                                    "INR",
+                                    extraction.cadence.as_deref(),
+                                    extraction.external_mandate_id.as_deref(),
+                                )
+                                .map(|_| ())
+                                .map_err(anyhow::Error::from),
                             );
                         }
                     }
@@ -1178,9 +1186,11 @@ async fn process_mandate_job(
                             .unwrap_or_default();
                         match candidates.len() {
                             1 => {
-                                let _ = crate::db::recurring_payments::mark_cancelled(
-                                    c,
-                                    &candidates[0].id,
+                                check(
+                                    "cancelling the mandate",
+                                    crate::db::recurring_payments::mark_cancelled(c, &candidates[0].id)
+                                        .map(|_| ())
+                                        .map_err(anyhow::Error::from),
                                 );
                             }
                             _ => {
@@ -1192,19 +1202,26 @@ async fn process_mandate_job(
                                 .to_string();
                                 let candidate_ids: Vec<String> =
                                     candidates.iter().map(|r| r.id.clone()).collect();
-                                let _ =
+                                check(
+                                    "recording an unresolved cancellation",
                                     crate::db::unresolved_mandate_cancellations::insert_unresolved(
                                         c,
                                         &raw_signal,
                                         &candidate_ids,
-                                    );
+                                    )
+                                    .map(|_| ())
+                                    .map_err(anyhow::Error::from),
+                                );
                             }
                         }
                     }
                 }
-                instrument_id
+                ok
             })
             .await;
+        if matches!(outcome, Ok(false)) {
+            recorded = false;
+        }
         if let Err(e) = outcome {
             recorded = false;
             tracing::error!(
@@ -1215,27 +1232,9 @@ async fn process_mandate_job(
         }
     }
 
-    let tx_job = TransactionJob {
-        obs: crate::extraction::ladder::ExtractionResult {
-            amount_minor: Some(0),
-            currency: Some("INR".to_string()),
-            direction: Some("debit".to_string()),
-            merchant_raw,
-            extraction_method: "mandate_event".to_string(),
-            instrument_type: job.extraction.instrument_type.clone(),
-            issuer_name: job.extraction.issuer_name.clone(),
-            masked_identifier: job.extraction.masked_identifier.clone(),
-            ..Default::default()
-        },
-        source_pipeline: job.source_pipeline,
-        source_record_id: job.source_record_id,
-        connected_account_id: job.connected_account_id,
-        raw_body: job.raw_body,
-        email_meta: None,
-    };
-    // Persisted before the mandate row is released, so the follow-on job
-    // survives a quit even if the mandate bookkeeping above did not.
-    send_transaction_job(pool, transaction_tx, tx_job).await;
+    // Mandate events are recurring-payment markers (recurring_payments and
+    // processed_messages), not ledger entries: no ₹0 transaction is booked
+    // any more (review M5).
     recorded
 }
 
@@ -2550,5 +2549,42 @@ mod pending_ingest_job_tests {
         replay_pending_ingest_jobs(&pool, &tx3, &mtx, later).await;
         assert!(rx3.try_recv().is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod mandate_ledger_migration_tests {
+    /// Review M5: the migration hides mandate-only ₹0 transactions and their
+    /// observations, and leaves a transaction a real observation points to.
+    #[test]
+    fn migration_soft_deletes_only_mandate_only_zero_transactions() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             INSERT INTO transactions (id, amount_minor) VALUES ('t_mandate', 0), ('t_shared', 0), ('t_real', 500);
+             INSERT INTO transaction_observations (id, source_pipeline, source_record_id, canonical_transaction_id, extraction_method, fingerprint)
+             VALUES ('o1', 'gmail_transaction', 'm1', 't_mandate', 'mandate_event', 'f1'),
+                    ('o2', 'gmail_transaction', 'm2', 't_shared', 'mandate_event', 'f2'),
+                    ('o3', 'gmail_transaction', 'm3', 't_shared', 'layer1', 'f3'),
+                    ('o4', 'gmail_transaction', 'm4', 't_real', 'layer1', 'f4');",
+        )
+        .unwrap();
+        conn.execute_batch(include_str!(
+            "../../migrations/20260101000064_hide_mandate_zero_transactions.sql"
+        ))
+        .unwrap();
+        let deleted = |table: &str, id: &str| -> bool {
+            conn.query_row(
+                &format!("SELECT is_deleted FROM {table} WHERE id = ?1"),
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert!(deleted("transactions", "t_mandate"));
+        assert!(!deleted("transactions", "t_shared"));
+        assert!(!deleted("transactions", "t_real"));
+        assert!(deleted("transaction_observations", "o1"));
+        assert!(!deleted("transaction_observations", "o3"));
     }
 }
