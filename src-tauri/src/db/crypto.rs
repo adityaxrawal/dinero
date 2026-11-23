@@ -21,6 +21,7 @@ use argon2::{
 };
 #[cfg(not(debug_assertions))]
 use keyring::Entry;
+#[cfg(debug_assertions)]
 use std::sync::OnceLock;
 use uuid::Uuid;
 

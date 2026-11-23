@@ -3280,13 +3280,22 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         crate::ingestion::queues::pipeline_pause,
         crate::ingestion::queues::pipeline_resume,
         crate::ingestion::queues::pipeline_status,
+        // Debug tooling only exists in debug builds (review M11).
+        #[cfg(debug_assertions)]
         debug::debug_fetch_parse_errors,
+        #[cfg(debug_assertions)]
         debug::debug_fetch_unprocessed_statements,
+        #[cfg(debug_assertions)]
         debug::debug_fetch_audit_log,
+        #[cfg(debug_assertions)]
         debug::debug_fetch_reconciliation_clusters,
+        #[cfg(debug_assertions)]
         debug::debug_get_pipeline_state,
+        #[cfg(debug_assertions)]
         debug::debug_set_gmail_poll_paused,
+        #[cfg(debug_assertions)]
         debug::debug_set_scan_queue_paused,
+        #[cfg(debug_assertions)]
         debug::debug_audit_scan_coverage,
         release_readiness::release_readiness_capture_snapshot,
         release_readiness::release_readiness_list_snapshots,
