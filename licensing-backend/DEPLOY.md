@@ -54,5 +54,6 @@ updating the desktop app is required for licences to keep refreshing anyway.
 
 `POST /api/license/restore` `{ email, razorpay_payment_id, device_id }`
 restores a paid licence after a reinstall that lost the local token. It is
-rate limited per email and refused while the licence is bound to another
-device.
+rate limited per email. If the licence is bound to another device, restore
+moves it here and revokes the old binding, at most once per 30 days per
+account; a second move inside that window is refused (support can reset it).

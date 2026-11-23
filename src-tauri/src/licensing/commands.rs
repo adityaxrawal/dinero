@@ -409,7 +409,7 @@ pub async fn license_restore(
         .await
         .map_err(|e| match e.to_string().as_str() {
             "DEVICE_ALREADY_BOUND" => AppError::Auth(
-                "This license is active on another Mac. Deactivate it there first, then restore here."
+                "This licence was already moved to another Mac in the last 30 days. Contact support to move it again."
                     .to_string(),
             ),
             "LICENSE_INVALID" => AppError::Auth(

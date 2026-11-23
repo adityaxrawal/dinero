@@ -7,8 +7,9 @@
  * customer has from their purchase: the account email and the Razorpay payment
  * id from the receipt. The payment must already be recorded against that
  * account (activation records it), so a payment id alone, or an email alone,
- * is not enough. A licence bound to a different device must be deactivated
- * there first, exactly as with activation.
+ * is not enough. A licence bound to a different device moves here and the old
+ * binding is revoked (a lost or replaced Mac cannot deactivate itself), at most
+ * once per 30 days per account; past that, support resets the binding.
  */
 import { withRequestLogging } from '../../lib/request_logging';
 import type { Prisma, PrismaClient } from '@prisma/client';
@@ -40,11 +41,12 @@ export interface RestoreResult {
 
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
 const RATE_LIMIT_MAX_ATTEMPTS = 5;
+const REBIND_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 export type RestoreDb = {
   account: Pick<PrismaClient['account'], 'findUnique'>;
   paymentProviderRecord: Pick<PrismaClient['paymentProviderRecord'], 'findFirst'>;
-  licenseToken: Pick<PrismaClient['licenseToken'], 'findFirst' | 'upsert'>;
+  licenseToken: Pick<PrismaClient['licenseToken'], 'findFirst' | 'upsert' | 'updateMany'>;
   subscription: Pick<PrismaClient['subscription'], 'findFirst'>;
   licensingAuditLog: AuditWriter;
 };
@@ -84,11 +86,23 @@ export async function restoreLicense(
     where: { accountId: account.id },
     orderBy: { createdAt: 'desc' },
   });
-  if (binding?.deviceFingerprint && binding.deviceFingerprint !== input.device_id) {
-    throw new LicensingApiError(
-      'DEVICE_ALREADY_BOUND',
-      `License already bound to another device (${maskDeviceFingerprint(binding.deviceFingerprint)})`
+  const oldDevice =
+    binding?.deviceFingerprint && binding.deviceFingerprint !== input.device_id
+      ? binding.deviceFingerprint
+      : null;
+  if (oldDevice) {
+    const rebinds = await countRecentEvents(
+      db.licensingAuditLog,
+      'license_rebind',
+      REBIND_WINDOW_MS,
+      (p) => (p as { account_id?: string } | null)?.account_id === account.id
     );
+    if (rebinds > 0) {
+      throw new LicensingApiError(
+        'DEVICE_ALREADY_BOUND',
+        `License already moved to another device (${maskDeviceFingerprint(oldDevice)}) in the last 30 days. Contact support to move it again.`
+      );
+    }
   }
   const subscription = await db.subscription.findFirst({
     where: { accountId: account.id },
@@ -97,6 +111,19 @@ export async function restoreLicense(
   if (!subscription) throw notFound();
 
   const now = new Date();
+  if (oldDevice) {
+    // Same release as admin/support_reset_binding, for every other device row.
+    await db.licenseToken.updateMany({
+      where: { accountId: account.id, NOT: { deviceFingerprint: input.device_id } },
+      data: { deviceFingerprint: null, deviceBoundAt: null, revokedAt: now },
+    });
+    await logAuditEvent(db.licensingAuditLog, {
+      accountId: account.id,
+      eventType: 'license_rebind',
+      deviceFingerprint: input.device_id,
+      payload: { account_id: account.id, from_device: oldDevice } as Prisma.InputJsonValue,
+    });
+  }
   const expiresAt = new Date(now.getTime() + LICENSE_TOKEN_TTL_MS);
   await db.licenseToken.upsert({
     where: { deviceFingerprint: input.device_id },
