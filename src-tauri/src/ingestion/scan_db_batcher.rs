@@ -143,7 +143,11 @@ impl ScanDbBatcher {
                     &ig.subject,
                     &ig.snippet,
                 );
-                let _ = crate::db::ignored_messages::insert(&tx, &row);
+                if let Err(e) = crate::db::ignored_messages::insert(&tx, &row) {
+                    // Not fatal (the message is just re-evaluated on a later
+                    // scan), but it must not vanish silently.
+                    tracing::warn!("Failed to record ignored message '{}': {}", ig.message_id, e);
+                }
             }
 
             tx.commit()

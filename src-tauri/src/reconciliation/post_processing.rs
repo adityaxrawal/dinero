@@ -109,7 +109,7 @@ pub fn run_post_processing(
             |row| row.get(0),
         )
         .unwrap_or(None);
-    let _ = crate::extraction::recurring_detector::detect_and_update_recurring(
+    if let Err(e) = crate::extraction::recurring_detector::detect_and_update_recurring(
         conn,
         instrument_id,
         current_merchant_entity_id.as_deref(),
@@ -117,7 +117,9 @@ pub fn run_post_processing(
         amount_minor,
         direction,
         *event_time_utc,
-    );
+    ) {
+        tracing::warn!("Recurring-payment detection failed for transaction '{}': {}", transaction_id, e);
+    }
 
     let current_merchant_normalized: Option<String> = conn
         .query_row(

@@ -1409,7 +1409,9 @@ pub async fn statements_submit_password(
                         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
                     let orig_id = statement_id.clone();
                     conn.interact(move |c| {
-                        let _ = crate::db::unprocessed_statements::delete(c, &orig_id);
+                        if let Err(e) = crate::db::unprocessed_statements::delete(c, &orig_id) {
+                            tracing::error!("Failed to remove superseded unprocessed statement '{}': {}", orig_id, e);
+                        }
                     })
                     .await
                     .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
@@ -1639,7 +1641,9 @@ async fn retry_one_unprocessed(
                 .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
             let orig_id = statement_id.to_string();
             conn.interact(move |c| {
-                let _ = crate::db::unprocessed_statements::delete(c, &orig_id);
+                if let Err(e) = crate::db::unprocessed_statements::delete(c, &orig_id) {
+                    tracing::error!("Failed to remove superseded unprocessed statement '{}': {}", orig_id, e);
+                }
             })
             .await
             .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
@@ -2499,6 +2503,91 @@ fn apply_transaction_field_update(
     Ok(contexts)
 }
 
+/// Applies a transaction edit (fields and tags) in one database transaction.
+fn apply_transaction_update(
+    conn: &rusqlite::Connection,
+    payload: TransactionUpdatePayload,
+) -> Result<Vec<crate::reconciliation::audit::CorrectionContext>, crate::error::AppError> {
+    // One transaction for the field update and the tag rewrite: a
+    // failure part-way (e.g. after the old tags were removed) used to
+    // leave the transaction half-edited while the UI reported success.
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let conn: &rusqlite::Connection = &tx;
+    let tx_id = payload.transaction_id;
+    let contexts = apply_transaction_field_update(
+        conn,
+        &tx_id.to_string(),
+        payload.merchant_display_name,
+        payload.category_id,
+        payload.notes,
+        payload.location,
+        payload.amount_minor,
+        payload.direction,
+        payload.event_time,
+        payload.instrument_id,
+    )?;
+
+    if let Some(tag_names) = payload.tags {
+        let existing_tags = crate::db::tags::select_all(conn)
+            .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+        let mut tag_ids = Vec::new();
+        for name in &tag_names {
+            let trimmed = name.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Some(existing) = existing_tags
+                .iter()
+                .find(|t| t.name.eq_ignore_ascii_case(trimmed))
+            {
+                tag_ids.push(existing.id.clone());
+            } else {
+                let new_id = uuid::Uuid::new_v4().to_string();
+                crate::db::tags::insert(
+                    conn,
+                    &crate::db::tags::TagsRow {
+                        id: new_id.clone(),
+                        name: trimmed.to_string(),
+                        color_hex: None,
+                        created_at: Some(chrono::Utc::now().naive_utc()),
+                    },
+                )
+                .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+                tag_ids.push(new_id);
+            }
+        }
+
+        let existing_assocs =
+            crate::db::tags::select_by_transaction_id(conn, &tx_id.to_string())
+                .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+        for assoc in existing_assocs {
+            crate::db::tags::delete_transaction_tag(
+                conn,
+                &assoc.transaction_id,
+                &assoc.tag_id,
+            )
+            .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+        }
+        for tag_id in tag_ids {
+            crate::db::tags::insert_transaction_tag(
+                conn,
+                &crate::db::tags::TransactionTagsRow {
+                    transaction_id: tx_id.to_string(),
+                    tag_id,
+                    created_at: Some(chrono::Utc::now().naive_utc()),
+                },
+            )
+            .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+        }
+    }
+
+    tx.commit()
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    Ok(contexts)
+}
+
 #[tauri::command]
 pub async fn transactions_update(
     payload: TransactionUpdatePayload,
@@ -2517,75 +2606,7 @@ pub async fn transactions_update(
     let payload_tx_id = payload.transaction_id.to_string();
 
     let contexts = conn
-        .interact(move |conn| {
-            let tx_id = payload.transaction_id;
-            let contexts = apply_transaction_field_update(
-                conn,
-                &tx_id.to_string(),
-                payload.merchant_display_name,
-                payload.category_id,
-                payload.notes,
-                payload.location,
-                payload.amount_minor,
-                payload.direction,
-                payload.event_time,
-                payload.instrument_id,
-            )?;
-
-            if let Some(tag_names) = payload.tags {
-                let existing_tags = crate::db::tags::select_all(conn)
-                    .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-                let mut tag_ids = Vec::new();
-                for name in &tag_names {
-                    let trimmed = name.trim();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    if let Some(existing) = existing_tags
-                        .iter()
-                        .find(|t| t.name.eq_ignore_ascii_case(trimmed))
-                    {
-                        tag_ids.push(existing.id.clone());
-                    } else {
-                        let new_id = uuid::Uuid::new_v4().to_string();
-                        crate::db::tags::insert(
-                            conn,
-                            &crate::db::tags::TagsRow {
-                                id: new_id.clone(),
-                                name: trimmed.to_string(),
-                                color_hex: None,
-                                created_at: Some(chrono::Utc::now().naive_utc()),
-                            },
-                        )
-                        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-                        tag_ids.push(new_id);
-                    }
-                }
-
-                let existing_assocs =
-                    crate::db::tags::select_by_transaction_id(conn, &tx_id.to_string())
-                        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-                for assoc in existing_assocs {
-                    let _ = crate::db::tags::delete_transaction_tag(
-                        conn,
-                        &assoc.transaction_id,
-                        &assoc.tag_id,
-                    );
-                }
-                for tag_id in tag_ids {
-                    let _ = crate::db::tags::insert_transaction_tag(
-                        conn,
-                        &crate::db::tags::TransactionTagsRow {
-                            transaction_id: tx_id.to_string(),
-                            tag_id,
-                            created_at: Some(chrono::Utc::now().naive_utc()),
-                        },
-                    );
-                }
-            }
-
-            Ok::<_, crate::error::AppError>(contexts)
-        })
+        .interact(move |conn| apply_transaction_update(conn, payload))
         .await
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))??;
 
@@ -4342,6 +4363,54 @@ mod tests {
             .unwrap();
         assert_eq!((stmts, entries, obs), (0, 0, 0), "nothing may be half-booked");
         assert_eq!(status, "pending_review");
+    }
+
+    /// A tag rewrite that fails part-way rolls the whole edit back, so the
+    /// transaction keeps its old tags instead of losing them silently.
+    #[test]
+    fn failed_tag_edit_keeps_the_old_tags() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        let tx_id = uuid::Uuid::new_v4();
+        conn.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        conn.execute("INSERT INTO transactions (id, amount_minor) VALUES (?1, 100)", [tx_id.to_string()])
+            .unwrap();
+        conn.execute("INSERT INTO tags (id, name) VALUES ('t_old', 'old')", []).unwrap();
+        conn.execute(
+            "INSERT INTO transaction_tags (transaction_id, tag_id) VALUES (?1, 't_old')",
+            [tx_id.to_string()],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER fail_new_tag BEFORE INSERT ON transaction_tags
+             WHEN NEW.tag_id != 't_old'
+             BEGIN SELECT RAISE(ABORT, 'simulated failure'); END;",
+        )
+        .unwrap();
+
+        let res = super::apply_transaction_update(
+            &conn,
+            super::TransactionUpdatePayload {
+                transaction_id: tx_id,
+                merchant_display_name: None,
+                category_id: None,
+                notes: None,
+                location: None,
+                tags: Some(vec!["new".into()]),
+                amount_minor: None,
+                direction: None,
+                event_time: None,
+                instrument_id: None,
+            },
+        );
+        assert!(res.is_err(), "the failure must be reported, not swallowed");
+        let tags: Vec<String> = conn
+            .prepare("SELECT tag_id FROM transaction_tags WHERE transaction_id = ?1")
+            .unwrap()
+            .query_map([tx_id.to_string()], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(tags, vec!["t_old".to_string()], "old tags survive a failed edit");
     }
 
     #[test]

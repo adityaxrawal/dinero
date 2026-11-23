@@ -541,24 +541,27 @@ pub async fn auth_google_disconnect(
     let acc_id_clone = account_id.clone();
     conn.interact(move |c| apply_disconnect(c, &acc_id_clone))
         .await
-        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     emit_accounts_changed(&app);
 
     Ok("Disconnected".to_string())
 }
 
 /// Clears an account's local state on disconnect.
-fn apply_disconnect(c: &rusqlite::Connection, account_id: &str) {
-    let _ = c.execute(
+fn apply_disconnect(c: &rusqlite::Connection, account_id: &str) -> rusqlite::Result<()> {
+    // Propagated: a disconnect that did not persist would leave the account
+    // marked active and still polled while the UI said it was disconnected.
+    c.execute(
         "UPDATE connected_accounts SET account_status = 'disconnected', email_address = NULL WHERE id = ?1",
         params![account_id],
-    );
+    )?;
 
     if let Err(e) = crate::auth::consent::withdraw_consent_event(c, "gmail_oauth_consent") {
         tracing::warn!("Failed to withdraw gmail_oauth_consent event: {}", e);
     }
 
-    let _ = crate::db::audit_log::insert(
+    if let Err(e) = crate::db::audit_log::insert(
         c,
         &crate::db::audit_log::AuditLogRow {
             id: uuid::Uuid::new_v4().to_string(),
@@ -573,7 +576,10 @@ fn apply_disconnect(c: &rusqlite::Connection, account_id: &str) {
             })),
             created_at: chrono::Utc::now(),
         },
-    );
+    ) {
+        tracing::warn!("Failed to audit the disconnect of '{}': {}", account_id, e);
+    }
+    Ok(())
 }
 
 /// Refuses a new Gmail connection when one is not permitted.
@@ -894,7 +900,11 @@ async fn mark_account_degraded_async<R: tauri::Runtime>(
             .interact(move |c| {
                 if let Ok(Some(mut account)) = connected_accounts::get_account(c, &acc_id) {
                     account.account_status = Some("degraded".to_string());
-                    let _ = connected_accounts::update_account(c, &account);
+                    if let Err(e) = connected_accounts::update_account(c, &account) {
+                        // The warning below still fires; the watchdog keeps
+                        // retrying the status through the next failure.
+                        tracing::error!("Failed to mark account '{}' degraded: {}", acc_id, e);
+                    }
                 }
                 if let Err(e) = crate::db::audit_log::insert(
                     c,
@@ -1203,7 +1213,7 @@ mod tests {
         )
         .unwrap();
 
-        apply_disconnect(&conn, "acc_1");
+        apply_disconnect(&conn, "acc_1").unwrap();
 
         let (status, email): (Option<String>, Option<String>) = conn
             .query_row(
