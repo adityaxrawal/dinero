@@ -22,11 +22,32 @@ pub fn delete(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Failed attempts allowed before a job is marked dead.
+pub const MAX_ATTEMPTS: i64 = 3;
+
+/// Records a failed attempt; returns true once the job has been marked dead.
+pub fn record_failed_attempt(conn: &Connection, id: &str) -> Result<bool> {
+    conn.execute(
+        "UPDATE pending_ingest_jobs
+         SET attempts = attempts + 1,
+             dead_at = CASE WHEN attempts + 1 >= ?2 THEN datetime('now') ELSE dead_at END
+         WHERE id = ?1",
+        params![id, MAX_ATTEMPTS],
+    )?;
+    Ok(conn
+        .query_row(
+            "SELECT dead_at IS NOT NULL FROM pending_ingest_jobs WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .unwrap_or(false))
+}
+
 /// Jobs persisted before `cutoff` (UTC, `YYYY-MM-DD HH:MM:SS`), oldest first.
 pub fn select_before(conn: &Connection, cutoff: &str) -> Result<Vec<(String, String, String)>> {
     let mut stmt = conn.prepare(
         "SELECT id, kind, payload_json FROM pending_ingest_jobs
-         WHERE created_at < ?1 ORDER BY created_at",
+         WHERE created_at < ?1 AND dead_at IS NULL ORDER BY created_at",
     )?;
     let rows = stmt
         .query_map(params![cutoff], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?

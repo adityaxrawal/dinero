@@ -1030,6 +1030,26 @@ async fn persist_job(pool: &Pool, id: String, kind: &'static str, payload: anyho
     }
 }
 
+/// Counts a failed attempt for a persisted job; after MAX_ATTEMPTS it is
+/// marked dead and no longer replayed (H4 follow-up).
+async fn record_failed_job_attempt(pool: &Pool, id: String) {
+    let Ok(conn) = pool.get().await else { return };
+    let key = id.clone();
+    let dead = conn
+        .interact(move |c| crate::db::pending_ingest_jobs::record_failed_attempt(c, &key))
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .unwrap_or(false);
+    if dead {
+        tracing::warn!(
+            "Ingest job '{}' failed {} times — marked dead, no longer replayed",
+            id,
+            crate::db::pending_ingest_jobs::MAX_ATTEMPTS
+        );
+    }
+}
+
 async fn delete_persisted_job(pool: &Pool, id: String) {
     if let Ok(conn) = pool.get().await {
         let _ = conn
@@ -1111,6 +1131,8 @@ fn spawn_mandate_workers(mut rx: mpsc::Receiver<MandateJob>, pool: Pool) {
             let key = mandate_job_key(&job);
             if process_mandate_job(job, &pool).await {
                 delete_persisted_job(&pool, key).await;
+            } else {
+                record_failed_job_attempt(&pool, key).await;
             }
         }
     });
@@ -1276,6 +1298,8 @@ fn spawn_transaction_workers<R: tauri::Runtime>(
                         let key = transaction_job_key(&job);
                         if process_transaction_job(job, &pool, &app).await {
                             delete_persisted_job(&pool, key).await;
+                        } else {
+                            record_failed_job_attempt(&pool, key).await;
                         }
                     }
                     None => break,
@@ -2557,6 +2581,24 @@ mod pending_ingest_job_tests {
         let replayed = rx2.try_recv().expect("job must be replayed");
         assert_eq!(replayed.source_record_id, "msg_1");
         assert_eq!(replayed.obs.amount_minor, Some(12345));
+
+        // A job that keeps failing is marked dead after MAX_ATTEMPTS and no
+        // longer replayed, but kept for diagnosis.
+        for _ in 0..crate::db::pending_ingest_jobs::MAX_ATTEMPTS {
+            record_failed_job_attempt(&pool, transaction_job_key(&replayed)).await;
+        }
+        let (txd, mut rxd) = mpsc::channel::<TransactionJob>(4);
+        replay_pending_ingest_jobs(&pool, &txd, &mtx, later).await;
+        assert!(rxd.try_recv().is_err(), "dead jobs are not replayed");
+        let kept: i64 = pool
+            .get()
+            .await
+            .unwrap()
+            .interact(|c| c.query_row("SELECT COUNT(*) FROM pending_ingest_jobs", [], |r| r.get(0)))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(kept, 1, "dead jobs are kept for diagnosis");
 
         // Once a worker finishes it, it is gone.
         delete_persisted_job(&pool, transaction_job_key(&replayed)).await;
