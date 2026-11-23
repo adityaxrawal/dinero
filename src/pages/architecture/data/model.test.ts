@@ -106,10 +106,33 @@ describe('architecture model ↔ codebase', () => {
       .filter((p) => !p.startsWith('from>'))
       .sort();
     const license = MODEL.stateMachines.find((m) => m.id === 'license')!;
+    // Server-driven moves (apply_server_validation) are drawn too, but only the
+    // local edges must match is_legal_transition.
     const drawn = license.transitions
-      .filter((t) => t.from !== 'start')
+      .filter((t) => t.from !== 'start' && !t.server)
       .map((t) => `${t.from}>${t.to}`)
       .sort();
     expect(drawn).toEqual(enforced);
+  });
+
+  it('draws exactly the historical-scan statuses the code uses', () => {
+    const scanSrc = readFileSync(join(ROOT, 'src-tauri/src/ingestion/historical_scan.rs'), 'utf8');
+    const live = scanSrc.slice(0, scanSrc.indexOf('#[cfg(test)]'));
+    const candidates = [
+      'not_started',
+      'in_progress',
+      'paused',
+      'completed',
+      'completed_with_errors',
+      'failed',
+      'cancelled',
+    ];
+    const used = candidates.filter((s) => live.includes(`"${s}"`)).sort();
+    const scan = MODEL.stateMachines.find((m) => m.id === 'scan')!;
+    const drawn = scan.states
+      .filter((s) => !s.start)
+      .map((s) => s.id)
+      .sort();
+    expect(drawn).toEqual(used);
   });
 });

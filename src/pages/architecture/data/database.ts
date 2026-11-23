@@ -28,7 +28,7 @@ export const ENTITIES: EntityDef[] = [
     name: 'connected_accounts',
     group: 'identity',
     description:
-      'Gmail accounts connected via OAuth. account_status follows ACTIVE / degraded / disconnected.',
+      'Gmail accounts connected via OAuth. account_status follows ACTIVE / degraded / disconnected; degraded only after a permanent auth failure (reconnect needed), never for transient errors.',
     columns: [
       { name: 'id', type: 'TEXT', key: 'PK' },
       { name: 'profile_id', type: 'INTEGER', key: 'FK' },
@@ -304,7 +304,7 @@ export const ENTITIES: EntityDef[] = [
     name: 'field_rules',
     group: 'ledger',
     description:
-      'Learned extraction rules (Layer 1 of the ladder) with per-template-shape variants.',
+      'Learned extraction rules (Layer 1 of the ladder) with per-template-shape variants. Variant status: pending → active (3 successes) → trusted (10); inactive after 3 failures or a hit rate below 70%. Pending (LLM-drift) rules are promoted by shadow evaluation against committed Layer 6 results.',
     columns: [{ name: 'id', type: 'TEXT', key: 'PK' }],
   },
 ];

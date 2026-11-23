@@ -95,9 +95,15 @@ const AUTHORED: WorkflowDef[] = [
             detail: 'Emit scan_completed (note: Layer 6 enrichment may still be pending)',
           },
           {
-            label: 'cancelled / failed',
-            detail: 'Checkpoint marked accordingly; resume re-claims',
+            label: 'failures left',
+            detail:
+              'One retry pass; leftovers stay in scan_failed_messages → completed_with_errors',
           },
+          {
+            label: 'cancelled',
+            detail: 'Rows created by this scan rolled back; checkpoint deleted (not_started)',
+          },
+          { label: 'failed', detail: 'Checkpoint marked failed; scans_resume continues it' },
         ],
       },
       {
@@ -151,7 +157,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'scan-batch',
         title: 'Bounded fetch + process loop',
         detail:
-          'Up to 50 concurrent full fetches (global semaphore shared with live polling), primed once and refilled one-for-one. Metadata-first gating keeps quota cost low. Every message runs the shared Gate 1-2-3 pipeline.',
+          'Up to 8 concurrent full fetches (the quota token bucket is shared with live polling), primed once and refilled one-for-one. Metadata-first gating keeps quota cost low. Every message runs the shared Gate 1-2-3 pipeline. Failures get one retry pass at the end.',
         components: ['historical-scan', 'gmail-client', 'message-processor', 'extraction-ladder'],
         relations: ['sync', 'network'],
         outcomes: [
@@ -166,7 +172,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'scan-checkpoint',
         title: 'Checkpoint every 5 messages',
         detail:
-          'upsert_checkpoint every 5 processed messages; cancellation is checked at the same cadence. The final checkpoint marks completed / cancelled / failed and the matching event is emitted.',
+          'patch_scan_progress every 5 processed messages, saving counters and resume_from (the contiguous finished prefix); cancellation is checked continuously. The final checkpoint is completed or completed_with_errors; a cancel deletes it instead, and a scan error marks it failed.',
         components: ['historical-scan', 'sqlite', 'events'],
         relations: ['db', 'event'],
         outcomes: [
@@ -174,8 +180,12 @@ const AUTHORED: WorkflowDef[] = [
             label: 'completed',
             detail: 'scan_completed — note: Layer 6 enrichment may still be pending',
           },
-          { label: 'cancelled', detail: 'scan_cancelled; re-claim re-starts it' },
-          { label: 'failed', detail: 'scan_failed; scans_resume re-claims' },
+          {
+            label: 'completed_with_errors',
+            detail: 'scan_completed with errors > 0; "Retry failed (N)" seeds a paused retry run',
+          },
+          { label: 'cancelled', detail: 'scan_cancelled; checkpoint deleted (not_started)' },
+          { label: 'failed', detail: 'scan_failed; scans_resume continues from resume_from' },
         ],
       },
       {
@@ -446,7 +456,10 @@ const AUTHORED: WorkflowDef[] = [
         components: ['license-gate', 'license-state'],
         relations: ['gate'],
         outcomes: [
-          { label: 'Locked', detail: 'Write refused (reads remain available)' },
+          {
+            label: 'Locked / Canceled / Expired / AnonymousEval / expired trial',
+            detail: 'Write refused (reads remain available)',
+          },
           { label: 'Ok', detail: 'Dispatch to the command handler' },
         ],
       },
@@ -545,11 +558,11 @@ const AUTHORED: WorkflowDef[] = [
         id: 'apply-transition',
         title: 'Apply legal transition',
         detail:
-          'is_legal_transition enforces exactly 8 edges. The same-status transition is a no-op. PastDue/Canceled/Expired parse from the server but participate in NO local transition.',
+          'A verified response is stored via apply_server_validation: the signed JWT state claim (TRIAL / ACTIVE / PAST_DUE / LOCKED) wins, unknown → Locked, and it can lift Locked. Local, time-driven moves use is_legal_transition (8 edges); the same-status transition is a no-op.',
         components: ['license-state'],
         relations: ['sync', 'db'],
         outcomes: [
-          { label: 'valid', detail: 'Active (or Trial / AnonymousEval preserved)' },
+          { label: 'valid', detail: 'Server state stored (Trial / Active / PastDue / Locked)' },
           {
             label: 'backend unreachable',
             detail: 'Active → Grace; 7-day offline grace from last_server_validated_at',
@@ -565,7 +578,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'gate-effect',
         title: 'Write-gate effect',
         detail:
-          'Locked blocks every mutating command (reads stay available). Escaping Locked requires license_activate establishing wholesale fresh server-verified state — a local edge back to Active would be a trivial tamper.',
+          'Locked blocks every mutating command and background polling (reads stay available). Locked is not terminal: a verified server validation (6h worker or Refresh) or license_activate lifts it. There is still no local edge back to Active — that would be a trivial tamper.',
         components: ['license-gate', 'license-state', 'events'],
         relations: ['gate', 'event'],
       },

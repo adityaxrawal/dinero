@@ -91,7 +91,8 @@ export function AnalysisPanel() {
         </span>
         <span className="k">Licensing</span>
         <span className="v">
-          8-edge enforced state machine; Locked is terminal; 7-day offline grace
+          8 statuses; 8 local edges plus server-verified updates; Locked lifts on renewal; 7-day
+          offline grace
         </span>
       </div>
 
@@ -126,8 +127,9 @@ export function AnalysisPanel() {
         the design docs quote 143 and 151; figures are recorded rather than silently reconciled.
       </div>
       <div className="archx-note warn">
-        <b>License state machine.</b> The docs also contain an aspirational transition graph the
-        code does not enforce — only the 8-edge graph is real. Locked has no local exit.
+        <b>License state machine.</b> Two write paths: 8 local, time-driven edges
+        (is_legal_transition) and server-verified updates (apply_server_validation) that can set any
+        server state. Locked has no local exit but a renewal lifts it at the next validation.
       </div>
       <div className="archx-note warn">
         <b>Statement row extraction.</b> All seven bank-specific parsers matched zero of nine real

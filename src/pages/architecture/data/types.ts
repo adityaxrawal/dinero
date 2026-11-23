@@ -166,6 +166,12 @@ export interface StateTransition {
   label: string;
   /** Explains who/what causes the transition. */
   detail?: string;
+  /**
+   * Set when the move comes from a verified server answer rather than a local
+   * rule (license only). Drawn as a network edge; excluded from the
+   * is_legal_transition check.
+   */
+  server?: true;
 }
 
 export interface StateMachineDef {

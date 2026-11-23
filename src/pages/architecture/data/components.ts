@@ -177,7 +177,7 @@ const CORE: ComponentDef[] = [
     kind: 'gate',
     purpose: 'Fail-closed seam — every mutating command must pass assert_write_allowed.',
     description:
-      'Single enforcement point for license states. Cached status is never trusted alone: the backing JWT is cryptographically re-verified and device-bound on every check. Invalid JWT is treated as Locked.',
+      'Single enforcement point for license states. Only Active, Grace, PastDue and an unexpired Trial may write; Locked, Canceled, Expired and AnonymousEval are read-only. Cached status is never trusted alone: the backing JWT is cryptographically re-verified and device-bound on every check. Invalid JWT is treated as Locked.',
     responsibilities: [
       'assert_write_allowed for 37 named write commands (test-enforced)',
       'Deliberately exempt: license_activate / license_deactivate (escape hatch from Locked) and backup export/import',
@@ -193,7 +193,8 @@ const CORE: ComponentDef[] = [
     ],
     apiSurface: ['assert_write_allowed'],
     facts: [
-      'Local transitions out of Locked do not exist — reactivation requires license_activate with fresh server-verified state',
+      'Locked is not terminal: a verified server validation (background worker or Refresh) or license_activate lifts it. There is still no local edge out of Locked',
+      'A trial the server never registered (offline first launch) falls back to the local 14-day window',
     ],
     confidence: 'verified',
   },
@@ -232,7 +233,8 @@ const CORE: ComponentDef[] = [
       'start_oauth_flow_async with PKCE + state validation (CSRF)',
       'get_valid_access_token / force_refresh_access_token',
       'classify_refresh_error redaction (invalid_grant / network_error / unknown_error)',
-      'mark_account_degraded_async on repeated failure',
+      'record_refresh_failure: degraded only on permanent auth failures; transient ones are audited and retried',
+      'Token exchange and refresh go through NetworkClient (google_oauth channel)',
     ],
     technologies: ['oauth2 4.4', 'macOS Keychain (keyring 3)', 'tiny_http loopback listener'],
     inputs: ['User consent', 'Google token endpoint responses'],
@@ -253,20 +255,20 @@ const CORE: ComponentDef[] = [
     kind: 'service',
     purpose: 'Audited HTTP wrapper for the Gmail API with bounded concurrency and retries.',
     description:
-      'Wraps messages.list / messages.get / attachments.get / users.getProfile and history.list. A process-global 50-permit full-fetch semaphore is shared between the historical scan and live polling. All calls route through NetworkClient so they land in the local audit trail.',
+      'Wraps messages.list / messages.get / attachments.get / users.getProfile and history.list. A process-global token bucket (225 quota units/s) paces calls; concurrency is bounded by the callers (historical scan: 8 concurrent fetches). All calls route through NetworkClient so they land in the local audit trail.',
     responsibilities: [
-      'execute_with_retry (3 attempts, exponential backoff 2s base)',
-      'Global full_fetch_semaphore (50 permits)',
+      'execute_with_retry (3 attempts, exponential backoff 2s base; rate limits — 429 and 403 rateLimitExceeded — get 6)',
+      'Global quota token bucket (225 units/s)',
       'Metadata-first gating to minimise quota use',
     ],
-    technologies: ['reqwest 0.12 (rustls)', 'tokio Semaphore', 'NetworkClient audit'],
+    technologies: ['reqwest 0.12 (rustls)', 'quota token bucket', 'NetworkClient audit'],
     inputs: ['OAuth access token', 'Gmail API requests'],
     outputs: ['Message metadata + bodies + attachments'],
     sources: ['src-tauri/src/ingestion/gmail_client.rs', 'src-tauri/src/network_client.rs'],
     apiSurface: ['search_messages', 'fetch_message', 'fetch_attachment', 'get_profile'],
     facts: [
       'MAX_SEARCH_PAGES = 500 pagination safety cap',
-      'Historical scan gives up after 3 retries vs polling’s 8 for the same 429',
+      'A 403 that is not a rate limit (e.g. insufficientPermissions) fails at once',
     ],
     confidence: 'verified',
   },
@@ -279,8 +281,8 @@ const CORE: ComponentDef[] = [
     description:
       'Searches every message in range, fetches and classifies each, routes transaction alerts / statements / mandate events into shared queues. Returns immediately ("Scan started") and reports via events. Checkpointed every 5 messages for crash-resumable progress.',
     responsibilities: [
-      'scans_historical / scans_status / scans_resume / scans_cancel',
-      'run_scan_batches: 50-concurrent fetch/process/checkpoint loop',
+      'scans_historical / scans_status / scans_resume / scans_cancel / scans_retry_failed / scans_failed_count',
+      'run_scan_batches: 8-concurrent fetch/process/checkpoint loop, then one retry pass for failures (concurrency 2)',
       'Atomic checkpoint claim (one in_progress scan per account)',
       'Durable per-message failures in scan_failed_messages',
     ],
@@ -295,11 +297,19 @@ const CORE: ComponentDef[] = [
       'src-tauri/src/ingestion/historical_scan.rs',
       'src-tauri/src/db/processing_checkpoints.rs',
     ],
-    apiSurface: ['scans_historical', 'scans_status', 'scans_resume', 'scans_cancel'],
+    apiSurface: [
+      'scans_historical',
+      'scans_status',
+      'scans_resume',
+      'scans_cancel',
+      'scans_retry_failed',
+      'scans_failed_count',
+    ],
     facts: [
-      'CHECKPOINT_INTERVAL = 5 messages; MAX_CONCURRENT_FETCHES = 50',
+      'CHECKPOINT_INTERVAL = 5 messages; MAX_CONCURRENT_FETCHES = 8; RETRY_CONCURRENCY = 2',
+      'Statuses: in_progress, paused, completed, completed_with_errors, failed (not_started = no row; cancel deletes the row)',
       'Scan complete ≠ extraction complete: Layer 6 enrichment is counted separately as pending_enrichment',
-      'Crash mid-scan leaves status="in_progress" forever until user re-claims (no stale-lock detection)',
+      'Startup rewrites in_progress → failed, so a crashed scan never holds the claim',
     ],
     confidence: 'verified',
   },
@@ -333,13 +343,12 @@ const CORE: ComponentDef[] = [
     facts: [
       'NORMAL_POLL_INTERVAL_SECS = 60; LOW_BATTERY_POLL_INTERVAL_SECS = 300',
       'Per-cycle retry budget 8 (1,2,4,8,16,32,60,60 + ±15% jitter)',
-      'Polling loop itself has NO license gate — only sync_force_poll_now does',
-      'Processing failures leave only a log line (no scan_failed_messages row)',
+      'Each poll cycle checks the license gate; a lapsed licence stops background polling',
+      'A message that fails processing gets a scan_failed_messages row (retryable via Retry failed)',
+      'History 404/400: cursor re-seeded from users.getProfile + catch-up scan',
+      'Degraded accounts are skipped; transient token errors keep the account ACTIVE',
     ],
     confidence: 'verified',
-    notes: [
-      'Known gap: a message fetched but failing processing is never re-delivered once its history record is consumed.',
-    ],
   },
   {
     id: 'message-processor',
@@ -511,11 +520,12 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     kind: 'service',
     purpose: 'Convert user corrections into extraction rules that survive the next scan.',
     description:
-      'learning/worker.rs consumes correction and drift signals, then synthesizes and validates field_rules variants with a self-check + regression-check gate (ADR-021). rule_llm.rs authors candidate rules from source_text/old_value/new_value.',
+      'learning/worker.rs consumes correction and drift signals, then synthesizes and validates field_rules variants with a self-check + regression-check gate (ADR-021). rule_llm.rs authors candidate rules from source_text/old_value/new_value. Rules learned from a user correction start active; rules learned from LLM drift start pending and are never applied until they earn promotion.',
     responsibilities: [
       'Consume user corrections',
       'Synthesize field_rules variants via LLM',
       'Self-check + regression-check gate before adoption',
+      'Shadow-evaluate pending rules whenever a verified Layer 6 result is committed (field_rules::shadow_evaluate_pending)',
     ],
     technologies: ['llama-server sidecar', 'field_rules + field_rules_variants tables'],
     inputs: ['User corrections', 'Drift signals'],
@@ -525,9 +535,13 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
       'src-tauri/src/extraction/rule_synthesis.rs',
       'src-tauri/src/extraction/rule_llm.rs',
     ],
-    apiSurface: ['spawn_learning_worker'],
-    facts: [],
-    confidence: 'inferred',
+    apiSurface: ['spawn_learning_worker', 'shadow_evaluate_pending'],
+    facts: [
+      'Lifecycle: pending → active after 3 successes → trusted after 10; retired (inactive) after 3 failures or a hit rate below 70%',
+      'Shadow evaluation: each pending rule for the same bank + email template runs on the body; agreeing with the committed value is a success, disagreeing a failure',
+      'Only active and trusted rules are applied by Layer 1',
+    ],
+    confidence: 'verified',
     notes: [
       'The learning loop is currently described only as ADR-021, not a full design (Doc 05 §13).',
     ],
@@ -839,11 +853,13 @@ const INFRA: ComponentDef[] = [
     name: 'License State Machine',
     layer: 'licensing',
     kind: 'gate',
-    purpose: 'Locally enforced 8-edge transition graph over license status.',
+    purpose: 'License status: 8 fixed local edges plus server-authoritative updates.',
     description:
-      'licensing/state_machine.rs::is_legal_transition enforces exactly eight edges. Locked is terminal for local transitions — escaping it requires license_activate establishing fresh server-verified state, a different write path that deliberately bypasses the graph.',
+      'Eight statuses (AnonymousEval, Trial, Active, Grace, PastDue, Canceled, Expired, Locked). is_legal_transition enforces eight local, time-driven edges. A verified server validation goes through apply_server_validation instead, which may set any server state (TRIAL / ACTIVE / PAST_DUE / LOCKED) — so Locked is not terminal: a renewal lifts it at the next validation.',
     responsibilities: [
-      'Enforce legal transitions (AnonymousEval → Trial → Active → Grace → Locked family)',
+      'Enforce local transitions (offline grace, clock skew, trial expiry)',
+      'server_status: signed JWT state claim → LicenseStatus (unknown or missing → Locked)',
+      'apply_server_validation: the single write path for server answers; errors are surfaced',
       'No-op on same-status transition (Ok, no write)',
       'Clock-rollback detection: > 1h correction grace → Locked with ClockSkewDetected',
     ],
@@ -854,13 +870,11 @@ const INFRA: ComponentDef[] = [
     apiSurface: ['license_activate', 'license_deactivate', 'is_legal_transition'],
     facts: [
       'TRIAL_WINDOW_DAYS = 14; CLOCK_CORRECTION_GRACE = 1 hour',
-      'PastDue, Canceled, Expired parse from the server but participate in NO local transition',
-      '7-day offline grace from last_server_validated_at before Grace → Locked',
+      'Entitled (may write): Active, Grace, PastDue, unexpired Trial',
+      'Canceled / Expired remain in the enum for older rows; the server mapping never produces them',
+      '7-day offline grace from last_server_validated_at before Grace → Locked; JWTs also last 7 days',
     ],
     confidence: 'verified',
-    notes: [
-      'Doc 05 §10 also shows an "aspirational" state diagram that is not what the code enforces.',
-    ],
   },
   {
     id: 'license-worker',
@@ -869,7 +883,7 @@ const INFRA: ComponentDef[] = [
     kind: 'worker',
     purpose: 'Background 6h tick re-validating the device-bound JWT with the backend.',
     description:
-      'licensing::worker::start_background_validation talks to https://api.dinero-app.com. Backend unreachable → Active → Grace honoring cached state for a 7-day offline grace; then Grace → Locked. A Grace row with no last_server_validated_at is not treated as expired.',
+      'licensing::worker::start_background_validation talks to https://api.dinero-app.com. With no license row it registers the trial (start-trial by device id). Otherwise it validates, sending the stored JWT as device proof, and stores the signed state via apply_server_validation — which can also lift Locked. Backend unreachable → Active → Grace for a 7-day offline grace; then Grace → Locked.',
     responsibilities: [
       '6h validation tick',
       'Offline grace handling',

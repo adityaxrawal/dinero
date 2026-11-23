@@ -699,16 +699,15 @@ async fn run_scan<R: tauri::Runtime>(
     let client = GmailClient::new_with_base_url(access_token, pool.clone(), base_url, refresher);
 
     let mut state = if let Some(cp) = existing_checkpoint {
-        // Restore state from the checkpoint for paused, failed, cancelled, or
-        // in-progress runs. The "in_progress" case covers a crash: the app never
-        // updated the status to "paused" or "completed" before it exited, so the
-        // row is still "in_progress" at the next launch. Treating it like any other
+        // Restore state from the checkpoint for paused, failed or in-progress
+        // runs. The "in_progress" case covers a crash: the app never updated
+        // the status before it exited (startup normally rewrites it to
+        // "failed", but either way it resumes). Treating it like any other
         // resumable status lets a post-crash restart continue from where it stopped
         // rather than re-scanning the entire date range from scratch.
-        if cp.status == "paused"
-            || cp.status == "failed"
-            || cp.status == "cancelled"
-            || cp.status == "in_progress"
+        // `paused` is written by scans_retry_failed to seed a retry run.
+        // There is no `cancelled` status: cancel deletes the checkpoint.
+        if cp.status == "paused" || cp.status == "failed" || cp.status == "in_progress"
         {
             // Only a run over the same date range is resumed. A different
             // range (for example a catch-up scan after a stale paused scan)

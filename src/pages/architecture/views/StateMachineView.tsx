@@ -96,9 +96,9 @@ function StateMachineInner({ machineId, onSelectMachine }: Props) {
         sourceHandle: back ? 't-s' : 'r',
         targetHandle: back ? 't-t' : 'l',
         type: 'arch',
-        markerEnd: makeEdgeMarker('sync'),
+        markerEnd: makeEdgeMarker(t.server ? 'network' : 'sync'),
         data: {
-          kind: 'sync' as const,
+          kind: t.server ? ('network' as const) : ('sync' as const),
           edgeLabel: t.label,
           labelsOn: true, // transition labels are the diagram's content
           highlighted: selectedState === t.from || selectedState === t.to,
