@@ -435,6 +435,7 @@ pub fn run() {
             // Shared application state. Everything registered here is reachable
             // from any Tauri command handler through the app handle.
             let pool_clone = pool.clone();
+            crate::network_client::set_audit_pool(pool.clone());
             app.manage(pool);
 
             app.manage(crate::auth::session::SessionState::default());

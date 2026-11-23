@@ -46,6 +46,55 @@ fn shared_client() -> Client {
         .clone()
 }
 
+/// Pool used to log requests made outside a NetworkClient (large streamed
+/// downloads that need their own client). Set once at startup.
+static AUDIT_POOL: std::sync::OnceLock<Pool> = std::sync::OnceLock::new();
+
+/// Registers the pool for `log_unpooled_request`. Called once at startup.
+pub fn set_audit_pool(pool: Pool) {
+    let _ = AUDIT_POOL.set(pool);
+}
+
+/// Writes a network activity entry for a request made with its own client,
+/// so streamed downloads appear in the log like everything else.
+pub async fn log_unpooled_request(
+    channel: &str,
+    method: &str,
+    url: &str,
+    status_code: Option<u16>,
+    bytes_received: Option<i64>,
+) {
+    let Some(pool) = AUDIT_POOL.get() else { return };
+    let parsed = reqwest::Url::parse(url).ok();
+    let row = NetworkActivityLogRow {
+        id: Uuid::new_v4().to_string(),
+        timestamp: Some(Utc::now().naive_utc()),
+        method: method.to_string(),
+        domain: parsed
+            .as_ref()
+            .and_then(|u| u.domain().map(String::from))
+            .unwrap_or_else(|| "unknown".into()),
+        url_redacted: parsed
+            .map(|mut u| {
+                if u.query().is_some() {
+                    u.set_query(Some("redacted"));
+                }
+                u.to_string()
+            })
+            .unwrap_or_default(),
+        bytes_sent: Some(0),
+        bytes_received,
+        status_code: status_code.map(i64::from),
+        secret_fields_masked: Some("Authorization,Cookie".into()),
+        channel: Some(channel.to_string()),
+    };
+    if let Ok(conn) = pool.get().await {
+        let _ = conn
+            .interact(move |c| network_activity_log::insert(c, &row))
+            .await;
+    }
+}
+
 impl NetworkClient {
     /// Builds a client with the default request timeout.
     pub fn new(db_pool: Pool) -> Self {

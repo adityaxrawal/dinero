@@ -165,7 +165,13 @@ pub(crate) async fn download_file_with_hash(
     const PROGRESS_EMIT_INTERVAL_BYTES: u64 = 1_000_000;
     const EMA_ALPHA: f64 = 0.3;
 
-    let client = Client::new();
+    // Connect and per-read timeouts, not a total one: a multi-gigabyte file
+    // may take a long time, but a transfer that stops sending data must fail
+    // instead of hanging forever.
+    let client = Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .read_timeout(std::time::Duration::from_secs(60))
+        .build()?;
 
     let resume_from: u64 = match fs::metadata(dest_path).await {
         Ok(meta) if meta.len() > 0 => meta.len(),
@@ -176,7 +182,16 @@ pub(crate) async fn download_file_with_hash(
     if resume_from > 0 {
         request = request.header(reqwest::header::RANGE, format!("bytes={resume_from}-"));
     }
-    let mut res = request.send().await?.error_for_status()?;
+    let res = request.send().await;
+    crate::network_client::log_unpooled_request(
+        "llm_download",
+        "GET",
+        url,
+        res.as_ref().ok().map(|r| r.status().as_u16()),
+        res.as_ref().ok().and_then(|r| r.content_length()).map(|l| l as i64),
+    )
+    .await;
+    let mut res = res?.error_for_status()?;
 
     let resuming = resume_from > 0 && res.status() == reqwest::StatusCode::PARTIAL_CONTENT;
     if resume_from > 0 && !resuming {
@@ -589,5 +604,50 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod download_audit_tests {
+    /// A streamed download verifies its hash and is written to the network
+    /// activity log like every other outbound request.
+    #[tokio::test]
+    async fn download_is_hash_checked_and_logged() {
+        use sha2::Digest;
+        let dir = std::env::temp_dir().join(format!("dinero_dl_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pool = crate::db::init_db(dir.join("t.db")).await.unwrap();
+        crate::network_client::set_audit_pool(pool.clone());
+
+        let mut server = mockito::Server::new_async().await;
+        let body = b"model bytes".to_vec();
+        let _m = server
+            .mock("GET", "/model.gguf")
+            .with_status(200)
+            .with_body(body.clone())
+            .create_async()
+            .await;
+        let hash = format!("{:x}", sha2::Sha256::digest(&body));
+        let dest = dir.join("model.gguf");
+        super::download_file_with_hash(&format!("{}/model.gguf", server.url()), &dest, &hash, None, None)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), body);
+
+        let logged: i64 = pool
+            .get()
+            .await
+            .unwrap()
+            .interact(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM network_activity_log WHERE channel = 'llm_download'",
+                    [],
+                    |r| r.get(0),
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(logged >= 1);
     }
 }
