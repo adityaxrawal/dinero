@@ -51,22 +51,20 @@ struct DecryptResponse {
 }
 
 fn sidecar_binary_path() -> PathBuf {
-    let exe = std::env::current_exe().ok();
-    let sibling = exe
-        .as_ref()
-        .and_then(|p| p.parent())
-        .map(|dir| dir.join("pdf_sidecar"));
-    if let Some(ref path) = sibling {
-        if path.exists() {
-            return path.clone();
-        }
+    // DINERO_PDF_SIDECAR wins; otherwise walk up from this executable. The
+    // app bundle keeps the sidecar next to the binary, unit tests run one
+    // level below target/<profile>, and integration tests several levels
+    // below (target/<profile>/build/<crate>/<hash>/out), which the old
+    // two-level lookup never reached.
+    if let Some(p) = std::env::var_os("DINERO_PDF_SIDECAR") {
+        return PathBuf::from(p);
     }
-    exe.as_ref()
-        .and_then(|p| p.parent())
-        .and_then(|p| p.parent())
+    let exe = std::env::current_exe().ok();
+    exe.as_deref()
+        .into_iter()
+        .flat_map(|p| p.ancestors().skip(1).take(6))
         .map(|dir| dir.join("pdf_sidecar"))
-        .filter(|p| p.exists())
-        .or(sibling)
+        .find(|p| p.exists())
         .unwrap_or_else(|| PathBuf::from("pdf_sidecar"))
 }
 

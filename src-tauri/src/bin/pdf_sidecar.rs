@@ -97,8 +97,7 @@ fn run() -> anyhow::Result<()> {
 fn unlock_check(pdf_bytes: &[u8], password: &str) -> UnlockCheckResponse {
     use pdfium_render::prelude::*;
 
-    let bindings = match Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./"))
-        .or_else(|_| Pdfium::bind_to_system_library())
+    let bindings = match bind_pdfium()
     {
         Ok(b) => b,
         Err(e) => {
@@ -127,8 +126,7 @@ fn unlock_check(pdf_bytes: &[u8], password: &str) -> UnlockCheckResponse {
 fn extract_text(pdf_bytes: &[u8], password: Option<&str>) -> ExtractTextResponse {
     use pdfium_render::prelude::*;
 
-    let bindings = match Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./"))
-        .or_else(|_| Pdfium::bind_to_system_library())
+    let bindings = match bind_pdfium()
     {
         Ok(b) => b,
         Err(e) => {
@@ -204,8 +202,7 @@ fn extract_text(pdf_bytes: &[u8], password: Option<&str>) -> ExtractTextResponse
 fn decrypt(pdf_bytes: &[u8], password: Option<&str>) -> DecryptResponse {
     use pdfium_render::prelude::*;
 
-    let bindings = match Pdfium::bind_to_library(Pdfium::pdfium_platform_library_name_at_path("./"))
-        .or_else(|_| Pdfium::bind_to_system_library())
+    let bindings = match bind_pdfium()
     {
         Ok(b) => b,
         Err(e) => {
@@ -266,4 +263,30 @@ impl<R: std::io::BufRead> ReadLineInto for R {
     fn read_line_into(&mut self, buf: &mut String) -> std::io::Result<usize> {
         self.read_line(buf)
     }
+}
+
+/// Loads libpdfium from the first place it exists: next to the sidecar (and
+/// the working directory, which is set to the sidecar's folder), its `build/`
+/// subfolder (dev builds, where build.rs leaves it in target/<profile>/build),
+/// or the app bundle's Resources folder; then the system library.
+fn bind_pdfium() -> Result<Box<dyn pdfium_render::prelude::PdfiumLibraryBindings>, pdfium_render::prelude::PdfiumError> {
+    use pdfium_render::prelude::*;
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    let mut dirs = vec![std::path::PathBuf::from("./")];
+    if let Some(d) = exe_dir {
+        dirs.push(d.join("build"));
+        dirs.push(d.join("../Resources"));
+        dirs.push(d);
+    }
+    for dir in dirs {
+        let lib = Pdfium::pdfium_platform_library_name_at_path(&dir);
+        if lib.exists() {
+            if let Ok(b) = Pdfium::bind_to_library(lib) {
+                return Ok(b);
+            }
+        }
+    }
+    Pdfium::bind_to_system_library()
 }
