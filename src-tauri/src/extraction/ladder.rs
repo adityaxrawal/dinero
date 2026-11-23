@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 use std::future::Future;
 use std::pin::Pin;
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct ExtractionResult {
     pub amount_minor: Option<i64>,
     pub currency: Option<String>,

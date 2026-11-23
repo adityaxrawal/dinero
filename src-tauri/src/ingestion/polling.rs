@@ -432,9 +432,7 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                     .state::<crate::ingestion::queues::QueueHandles>()
                                     .transaction_tx
                                     .clone();
-                                if tx.send(job).await.is_err() {
-                                    tracing::error!("Transaction Queue closed — dropping job for msg_id='{}'", msg_id);
-                                }
+                                crate::ingestion::queues::send_transaction_job(pool, &tx, job).await;
                             }
                             Ok(Some(crate::ingestion::message_processor::ProcessResult::StatementEmail(extracted, email_meta))) => {
                             if extracted.pdf_attachments.is_empty() {
@@ -572,9 +570,7 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                     .state::<crate::ingestion::queues::QueueHandles>()
                                     .mandate_tx
                                     .clone();
-                                if mandate_tx.send(job).await.is_err() {
-                                    tracing::error!("Mandate Queue closed — dropping job for msg_id='{}'", msg_id);
-                                }
+                                crate::ingestion::queues::send_mandate_job(pool, &mandate_tx, job).await;
                             }
                             Ok(None) => {}
                             Ok(Some(crate::ingestion::message_processor::ProcessResult::EnqueuedForEnrichment)) => {
@@ -582,6 +578,21 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                             }
                             Err(e) => {
                                 tracing::error!("Failed to process message {} for account {}: {}", msg_id, account.id, e);
+                                // The cursor still advances past this message,
+                                // so record it for retry ("Retry failed" in
+                                // Settings) instead of losing it (review H4).
+                                let row = crate::db::scan_failed_messages::ScanFailedMessageRow {
+                                    id: uuid::Uuid::new_v4().to_string(),
+                                    account_id: account.id.clone(),
+                                    msg_id: msg_id.clone(),
+                                    error: e.to_string(),
+                                    failed_at: None,
+                                };
+                                if let Ok(conn) = pool.get().await {
+                                    let _ = conn
+                                        .interact(move |c| crate::db::scan_failed_messages::insert(c, &row))
+                                        .await;
+                                }
                             }
                         }
                     }

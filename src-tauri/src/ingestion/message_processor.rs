@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 pub type ScanBatcherHandle = Arc<Mutex<ScanDbBatcher>>;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum MandateEventType {
     Registration,
     Cancellation,

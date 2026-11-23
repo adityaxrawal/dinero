@@ -659,6 +659,58 @@ mod tests {
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
+    /// Review H4: a message that fails to process during a poll is recorded
+    /// in scan_failed_messages (retryable) rather than silently skipped as
+    /// the cursor moves on.
+    #[tokio::test]
+    async fn test_poll_records_failed_message_for_retry() {
+        let mut server = mockito::Server::new_async().await;
+        let account_id = format!("acc_fail_{}", uuid::Uuid::new_v4());
+        write_dev_token(&account_id);
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let pool = init_db(temp_dir.join("test.db")).await.expect("DB init failed");
+        setup_account_for_poll(&pool, &account_id, Some("h1")).await;
+
+        let _history = server
+            .mock("GET", "/gmail/v1/users/me/history")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                serde_json::json!({
+                    "historyId": "h2",
+                    "history": [{ "messagesAdded": [{ "message": { "id": "msg_broken" } }] }]
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let _message = server
+            .mock("GET", mockito::Matcher::Regex("^/gmail/v1/users/me/messages/".into()))
+            .match_query(mockito::Matcher::Any)
+            .with_status(404)
+            .create_async()
+            .await;
+
+        let app = mock_builder().build(mock_context(tauri::test::noop_assets())).unwrap();
+        app.manage(crate::auth::session::SessionState::default());
+        app.manage(crate::security::incident_response::IncidentMonitor::default());
+        app.manage(test_queue_handles());
+        poll_all_accounts(&app.handle().clone(), &pool, &server.url()).await.unwrap();
+
+        let conn = pool.get().await.unwrap();
+        let acc = account_id.clone();
+        let failed = conn
+            .interact(move |c| crate::db::scan_failed_messages::select_by_account(c, &acc))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].msg_id, "msg_broken");
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
     /// Licensing Q1: a locked licence stops background ingestion entirely.
     #[tokio::test]
     async fn test_locked_license_skips_polling() {

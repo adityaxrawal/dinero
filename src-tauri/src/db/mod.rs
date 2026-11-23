@@ -45,6 +45,7 @@ pub mod merchant_cleanup;
 mod merchant_cleanup_tests;
 pub mod merchants;
 pub mod migrations;
+pub mod pending_ingest_jobs;
 pub mod network_activity_log;
 #[cfg(test)]
 mod network_activity_log_tests;

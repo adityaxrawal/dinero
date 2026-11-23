@@ -16,6 +16,7 @@ use tauri::Emitter;
 use tauri::Manager;
 use tokio::sync::{mpsc, Mutex, Semaphore};
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct TransactionJob {
     pub obs: ExtractionResult,
     pub source_pipeline: String,
@@ -120,6 +121,7 @@ pub fn emit_batch_progress<R: tauri::Runtime>(
     let _ = app.emit(crate::statements::events::BATCH_PROGRESS, payload);
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct MandateJob {
     pub extraction: crate::extraction::mandate_extractor::MandateExtraction,
     pub event_type: crate::ingestion::message_processor::MandateEventType,
@@ -977,6 +979,109 @@ async fn apply_layer6_success(
     Ok(())
 }
 
+fn transaction_job_key(job: &TransactionJob) -> String {
+    format!("transaction:{}", job.source_record_id)
+}
+
+fn mandate_job_key(job: &MandateJob) -> String {
+    format!("mandate:{}", job.source_record_id)
+}
+
+async fn persist_job(pool: &Pool, id: String, kind: &'static str, payload: anyhow::Result<String>) {
+    let payload = match payload {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!("Could not serialise {} job '{}' for persistence: {}", kind, id, e);
+            return;
+        }
+    };
+    let res = match pool.get().await {
+        Ok(conn) => conn
+            .interact(move |c| crate::db::pending_ingest_jobs::upsert(c, &id, kind, &payload))
+            .await
+            .map_err(|e| anyhow::anyhow!("interact error: {}", e))
+            .and_then(|r| r),
+        Err(e) => Err(anyhow::anyhow!("pool error: {}", e)),
+    };
+    if let Err(e) = res {
+        tracing::error!("Could not persist {} job (it may be lost on quit): {:#}", kind, e);
+    }
+}
+
+async fn delete_persisted_job(pool: &Pool, id: String) {
+    if let Ok(conn) = pool.get().await {
+        let _ = conn
+            .interact(move |c| crate::db::pending_ingest_jobs::delete(c, &id))
+            .await;
+    }
+}
+
+/// Persists a transaction job, then queues it (review H4).
+pub async fn send_transaction_job(pool: &Pool, tx: &mpsc::Sender<TransactionJob>, job: TransactionJob) {
+    let payload = serde_json::to_string(&job).map_err(anyhow::Error::from);
+    persist_job(pool, transaction_job_key(&job), "transaction", payload).await;
+    if tx.send(job).await.is_err() {
+        tracing::error!("Transaction Queue closed — job kept for replay at next launch");
+    }
+}
+
+/// Persists a mandate job, then queues it (review H4).
+pub async fn send_mandate_job(pool: &Pool, tx: &mpsc::Sender<MandateJob>, job: MandateJob) {
+    let payload = serde_json::to_string(&job).map_err(anyhow::Error::from);
+    persist_job(pool, mandate_job_key(&job), "mandate", payload).await;
+    if tx.send(job).await.is_err() {
+        tracing::error!("Mandate Queue closed — job kept for replay at next launch");
+    }
+}
+
+/// Re-queues transaction and mandate jobs persisted before this launch.
+pub async fn replay_pending_ingest_jobs(
+    pool: &Pool,
+    transaction_tx: &mpsc::Sender<TransactionJob>,
+    mandate_tx: &mpsc::Sender<MandateJob>,
+    launched_before: chrono::NaiveDateTime,
+) {
+    let cutoff = launched_before.format("%Y-%m-%d %H:%M:%S").to_string();
+    let rows = match pool.get().await {
+        Ok(conn) => conn
+            .interact(move |c| crate::db::pending_ingest_jobs::select_before(c, &cutoff))
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_default(),
+        Err(_) => return,
+    };
+    if rows.is_empty() {
+        return;
+    }
+    tracing::info!("Replaying {} ingest job(s) persisted before the last restart", rows.len());
+    for (id, kind, payload) in rows {
+        let sent = match kind.as_str() {
+            "transaction" => match serde_json::from_str::<TransactionJob>(&payload) {
+                Ok(job) => transaction_tx.send(job).await.is_ok(),
+                Err(e) => {
+                    tracing::error!("Unreadable persisted job '{}' ({}), discarding", id, e);
+                    delete_persisted_job(pool, id).await;
+                    continue;
+                }
+            },
+            "mandate" => match serde_json::from_str::<MandateJob>(&payload) {
+                Ok(job) => mandate_tx.send(job).await.is_ok(),
+                Err(e) => {
+                    tracing::error!("Unreadable persisted job '{}' ({}), discarding", id, e);
+                    delete_persisted_job(pool, id).await;
+                    continue;
+                }
+            },
+            _ => continue,
+        };
+        if !sent {
+            tracing::error!("Queue closed during ingest job replay");
+            break;
+        }
+    }
+}
+
 /// Spawns the mandate-processing workers.
 fn spawn_mandate_workers(
     mut rx: mpsc::Receiver<MandateJob>,
@@ -985,7 +1090,10 @@ fn spawn_mandate_workers(
 ) {
     tauri::async_runtime::spawn(async move {
         while let Some(job) = rx.recv().await {
-            process_mandate_job(job, &pool, &transaction_tx).await;
+            let key = mandate_job_key(&job);
+            if process_mandate_job(job, &pool, &transaction_tx).await {
+                delete_persisted_job(&pool, key).await;
+            }
         }
     });
 }
@@ -995,11 +1103,14 @@ async fn process_mandate_job(
     job: MandateJob,
     pool: &Pool,
     transaction_tx: &mpsc::Sender<TransactionJob>,
-) {
+) -> bool {
     let extraction = job.extraction.clone();
     let event_type = job.event_type.clone();
     let merchant_raw = extraction.merchant.clone();
 
+    // False when the mandate could not be recorded, so the job is kept and
+    // replayed (the ₹0 transaction it emits is idempotent on source_record_id).
+    let mut recorded = true;
     let conn = match pool.get().await {
         Ok(conn) => Some(conn),
         Err(e) => {
@@ -1010,6 +1121,7 @@ async fn process_mandate_job(
                 job.source_record_id,
                 e
             );
+            recorded = false;
             None
         }
     };
@@ -1087,6 +1199,7 @@ async fn process_mandate_job(
             })
             .await;
         if let Err(e) = outcome {
+            recorded = false;
             tracing::error!(
                 "Mandate Queue: DB interact failed for source_record_id='{}' — mandate not recorded: {}",
                 job.source_record_id,
@@ -1113,9 +1226,10 @@ async fn process_mandate_job(
         raw_body: job.raw_body,
         email_meta: None,
     };
-    if transaction_tx.send(tx_job).await.is_err() {
-        tracing::error!("Transaction Queue closed — dropping mandate-generated ₹0 transaction job");
-    }
+    // Persisted before the mandate row is released, so the follow-on job
+    // survives a quit even if the mandate bookkeeping above did not.
+    send_transaction_job(pool, transaction_tx, tx_job).await;
+    recorded
 }
 
 /// Spawns the transaction-processing workers.
@@ -1138,7 +1252,10 @@ fn spawn_transaction_workers<R: tauri::Runtime>(
                         // parked in recv() when the pause arrives would otherwise
                         // process one more job while the queue reports "paused".
                         wait_while_transaction_queue_paused().await;
-                        process_transaction_job(job, &pool, &app).await
+                        let key = transaction_job_key(&job);
+                        if process_transaction_job(job, &pool, &app).await {
+                            delete_persisted_job(&pool, key).await;
+                        }
                     }
                     None => break,
                 }
@@ -1266,7 +1383,7 @@ async fn process_transaction_job<R: tauri::Runtime>(
     job: TransactionJob,
     pool: &Pool,
     app: &tauri::AppHandle<R>,
-) {
+) -> bool {
     let obs = job.obs;
     let instrument_type = obs.instrument_type.clone();
     let issuer_name = obs.issuer_name.clone();
@@ -1293,11 +1410,11 @@ async fn process_transaction_job<R: tauri::Runtime>(
         Ok(conn) => conn,
         Err(e) => {
             tracing::error!(
-                "Transaction Queue: DB pool unavailable — dropping observation for source_record_id='{}': {}",
+                "Transaction Queue: DB pool unavailable — keeping observation for replay, source_record_id='{}': {}",
                 source_record_id,
                 e
             );
-            return;
+            return false;
         }
     };
 
@@ -1358,10 +1475,11 @@ async fn process_transaction_job<R: tauri::Runtime>(
 
     if let Err(e) = &outcome {
         tracing::error!(
-                "Transaction Queue: DB interact failed — dropping observation for source_record_id='{}': {}",
-                source_record_id,
-                e
-            );
+            "Transaction Queue: DB interact failed — keeping observation for replay, source_record_id='{}': {}",
+            source_record_id,
+            e
+        );
+        return false;
     }
     if let Ok(Some((decision, obs_id))) = outcome {
         if let crate::reconciliation::audit::DecisionType::AmbiguousPending(cluster_id) = &decision
@@ -1403,6 +1521,7 @@ async fn process_transaction_job<R: tauri::Runtime>(
             }
         }
     }
+    true
 }
 
 #[cfg(test)]
@@ -2377,5 +2496,52 @@ mod queued_statement_recovery_tests {
         // "without_pdf" is gone in both cases; "fresh" (after launch) is untouched.
         assert!(!remaining.contains(&"without_pdf".to_string()));
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+}
+
+#[cfg(test)]
+mod pending_ingest_job_tests {
+    use super::*;
+
+    /// Review H4: a queued transaction job is persisted before it is sent and
+    /// replayed after a restart until a worker finishes it.
+    #[tokio::test]
+    async fn queued_transaction_job_survives_a_restart() {
+        let dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pool = crate::db::init_db(dir.join("t.db")).await.unwrap();
+
+        // The app "quits" with the job still in the channel.
+        let (tx, rx) = mpsc::channel::<TransactionJob>(4);
+        let job = TransactionJob {
+            obs: crate::extraction::ladder::ExtractionResult {
+                amount_minor: Some(12345),
+                merchant_raw: Some("CAFE".into()),
+                extraction_method: "layer1".into(),
+                ..Default::default()
+            },
+            source_pipeline: "gmail_transaction".into(),
+            source_record_id: "msg_1".into(),
+            connected_account_id: "acc".into(),
+            raw_body: None,
+            email_meta: None,
+        };
+        send_transaction_job(&pool, &tx, job).await;
+        drop(rx);
+
+        let (tx2, mut rx2) = mpsc::channel::<TransactionJob>(4);
+        let (mtx, _mrx) = mpsc::channel::<MandateJob>(4);
+        let later = chrono::Utc::now().naive_utc() + chrono::Duration::minutes(1);
+        replay_pending_ingest_jobs(&pool, &tx2, &mtx, later).await;
+        let replayed = rx2.try_recv().expect("job must be replayed");
+        assert_eq!(replayed.source_record_id, "msg_1");
+        assert_eq!(replayed.obs.amount_minor, Some(12345));
+
+        // Once a worker finishes it, it is gone.
+        delete_persisted_job(&pool, transaction_job_key(&replayed)).await;
+        let (tx3, mut rx3) = mpsc::channel::<TransactionJob>(4);
+        replay_pending_ingest_jobs(&pool, &tx3, &mtx, later).await;
+        assert!(rx3.try_recv().is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

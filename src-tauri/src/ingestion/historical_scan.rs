@@ -1056,12 +1056,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                             .state::<crate::ingestion::queues::QueueHandles>()
                             .transaction_tx
                             .clone();
-                        if tx.send(job).await.is_err() {
-                            tracing::error!(
-                                "Transaction Queue closed — dropping job for msg_id='{}'",
-                                msg_id
-                            );
-                        }
+                        crate::ingestion::queues::send_transaction_job(&pool, &tx, job).await;
                     }
                     Ok(Some(ProcessResult::StatementEmail(extracted, email_meta))) => {
                         tracing::info!("Classified msg_id='{}' as Statement", msg_id);
@@ -1217,12 +1212,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                             .state::<crate::ingestion::queues::QueueHandles>()
                             .mandate_tx
                             .clone();
-                        if mandate_tx.send(job).await.is_err() {
-                            tracing::error!(
-                                "Mandate Queue closed — dropping job for msg_id='{}'",
-                                msg_id
-                            );
-                        }
+                        crate::ingestion::queues::send_mandate_job(&pool, &mandate_tx, job).await;
                     }
                     Ok(None) => {
                         tracing::info!("Classified msg_id='{}' as Non-Financial", msg_id);

@@ -492,6 +492,8 @@ pub fn run() {
             // managed state, so the replay task below can still reach the queue.
             let layer6_tx_for_replay = queue_handles.layer6_tx.clone();
             let statement_tx_for_recovery = queue_handles.statement_tx.clone();
+            let transaction_tx_for_replay = queue_handles.transaction_tx.clone();
+            let mandate_tx_for_replay = queue_handles.mandate_tx.clone();
             app.manage(queue_handles);
 
             // Statements left `queued` by a crash have no in-memory job behind
@@ -510,6 +512,14 @@ pub fn run() {
                             .interact(|c| crate::db::statement_drafts::reset_stuck_committing(c))
                             .await;
                     }
+                    // Transaction/mandate jobs still queued at the last quit (H4).
+                    crate::ingestion::queues::replay_pending_ingest_jobs(
+                        &pool,
+                        &transaction_tx_for_replay,
+                        &mandate_tx_for_replay,
+                        launched_at,
+                    )
+                    .await;
                     crate::ingestion::queues::recover_queued_statements(
                         &app_handle,
                         &pool,

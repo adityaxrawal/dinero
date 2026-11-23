@@ -5,7 +5,7 @@
 use regex::Regex;
 use std::sync::OnceLock;
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct MandateExtraction {
     pub merchant: Option<String>,
     pub cadence: Option<String>,
