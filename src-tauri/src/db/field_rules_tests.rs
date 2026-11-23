@@ -466,3 +466,52 @@ fn pending_rule_is_promoted_by_agreeing_confirmations_and_not_by_disagreeing() {
     // Other banks and templates are untouched.
     assert_eq!(shadow_evaluate_pending(&conn, "ICICI", "email", body, &agree).unwrap(), 0);
 }
+
+// ── Review P2: a drift challenger is measured against the serving rule on the
+// same messages ─────────────────────────────────────────────────────────────
+#[test]
+fn a_drift_challenger_beats_a_serving_rule_that_stopped_matching() {
+    let conn = setup_db();
+    let body = "Spent Rs 250 on STARBUCKS today";
+    let hash = crate::extraction::ladder::compute_template_hash(body);
+
+    // A proven rule that no longer captures anything in this template.
+    let mut proven = automatic("proven", &hash, "batch_cleanup", r"at (\w+)");
+    proven.status = "trusted".to_string();
+    proven.success_count = 50;
+    upsert_variant(&conn, &proven, None).unwrap();
+    let mut drift = automatic("drift", &hash, "drift_llm", r"on (\w+)");
+    drift.status = "pending".to_string();
+    upsert_variant(&conn, &drift, None).unwrap();
+
+    let confirmed = crate::extraction::ladder::ExtractionResult {
+        merchant_raw: Some("STARBUCKS".to_string()),
+        ..Default::default()
+    };
+    for _ in 0..3 {
+        shadow_evaluate_pending(&conn, "HDFC", "email", body, &confirmed).unwrap();
+    }
+    let proven = select_by_id(&conn, "proven").unwrap().unwrap();
+    assert_eq!((proven.status.as_str(), proven.failure_count), ("inactive", 3));
+    assert_eq!(select_by_id(&conn, "drift").unwrap().unwrap().status, "active");
+
+    // A user-confirmed serving rule is neither scored nor displaced.
+    let body2 = "Paid Rs 99 on ZOMATO now";
+    let hash2 = crate::extraction::ladder::compute_template_hash(body2);
+    let mut user = make_variant("user", "HDFC", "merchant", &hash2, "active");
+    user.rule_payload_json = serde_json::json!({"regex": r"at (\w+)", "capture_group": 1});
+    upsert_variant(&conn, &user, None).unwrap();
+    let mut drift2 = automatic("drift2", &hash2, "drift_llm", r"on (\w+)");
+    drift2.status = "pending".to_string();
+    upsert_variant(&conn, &drift2, None).unwrap();
+    let confirmed2 = crate::extraction::ladder::ExtractionResult {
+        merchant_raw: Some("ZOMATO".to_string()),
+        ..Default::default()
+    };
+    for _ in 0..5 {
+        shadow_evaluate_pending(&conn, "HDFC", "email", body2, &confirmed2).unwrap();
+    }
+    let user = select_by_id(&conn, "user").unwrap().unwrap();
+    assert_eq!((user.status.as_str(), user.failure_count), ("active", 0));
+    assert_eq!(select_by_id(&conn, "drift2").unwrap().unwrap().status, "pending");
+}

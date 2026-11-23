@@ -340,21 +340,73 @@ pub fn shadow_evaluate_pending(
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut scored = 0;
     for rule in pending {
-        let Some(captured) =
-            crate::extraction::rule_synthesis::apply_payload(&rule.rule_payload_json, body)
-        else {
-            record_failure(conn, &rule.id)?;
-            scored += 1;
+        let Some(agrees) = shadow_outcome(&rule, body, confirmed) else {
             continue;
         };
-        match crate::extraction::ladder::rule_capture_agrees(&rule.field_name, &captured, confirmed) {
-            Some(true) => record_success(conn, &rule.id)?,
-            Some(false) => record_failure(conn, &rule.id)?,
-            None => continue,
+        // Score the serving rule first, so the challenger's promotion check
+        // below compares both on this message.
+        score_serving_in_shadow(conn, &rule, body, confirmed)?;
+        if agrees {
+            record_success(conn, &rule.id)?;
+        } else {
+            record_failure(conn, &rule.id)?;
         }
         scored += 1;
     }
     Ok(scored)
+}
+
+/// Whether a rule's capture on `body` agrees with the confirmed value; a rule
+/// that captures nothing disagrees, and `None` means the value can't judge it.
+fn shadow_outcome(
+    rule: &FieldRuleVariant,
+    body: &str,
+    confirmed: &crate::extraction::ladder::ExtractionResult,
+) -> Option<bool> {
+    match crate::extraction::rule_synthesis::apply_payload(&rule.rule_payload_json, body) {
+        None => Some(false),
+        Some(c) => crate::extraction::ladder::rule_capture_agrees(&rule.field_name, &c, confirmed),
+    }
+}
+
+/// Scores the serving rule on the message its challenger is scored on (review P2).
+///
+/// Drift is detected exactly when the serving rule stops matching its own
+/// template, and those misses were never counted, so a challenger could never
+/// show a better hit rate. Only the counts move here: the serving rule loses
+/// its place solely through `promote_challenger_if_better`. A serving rule from
+/// a user correction is never displaced, so it is not scored.
+fn score_serving_in_shadow(
+    conn: &Connection,
+    challenger: &FieldRuleVariant,
+    body: &str,
+    confirmed: &crate::extraction::ladder::ExtractionResult,
+) -> Result<()> {
+    let parent_id: String = conn.query_row(
+        "SELECT field_rule_id FROM field_rule_variants WHERE id = ?1",
+        params![challenger.id],
+        |r| r.get(0),
+    )?;
+    let live = live_variants(conn, &parent_id, &challenger.template_hash)?;
+    let Some(serving) = live.iter().find(|l| l.status == "active" || l.status == "trusted") else {
+        return Ok(());
+    };
+    if serving.learned_from == "user_edit" {
+        return Ok(());
+    }
+    let Some(agrees) = shadow_outcome(serving, body, confirmed) else {
+        return Ok(());
+    };
+    conn.execute(
+        "UPDATE field_rule_variants
+         SET success_count = success_count + ?2,
+             failure_count = failure_count + 1 - ?2,
+             confidence = CAST(success_count + ?2 AS REAL) / (success_count + failure_count + 1),
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?1",
+        params![serving.id, agrees as i64],
+    )?;
+    Ok(())
 }
 
 /// Fetch one rule.
