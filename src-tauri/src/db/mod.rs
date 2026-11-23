@@ -165,7 +165,9 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
     let cfg = Config::new(&db_path);
     let pool = cfg
         .builder(Runtime::Tokio1)
-        .map_err(|e| DbInitError::Other(anyhow::anyhow!(e)))?
+        // The builder's error type has no values (it cannot fail), so the
+        // match is empty; mapping it produced unreachable-code warnings.
+        .unwrap_or_else(|never| match never {})
         .post_create(deadpool_sqlite::Hook::async_fn(move |conn, _metrics| {
             let key = db_key.clone();
             Box::pin(async move {
