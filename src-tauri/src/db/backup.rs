@@ -1,75 +1,111 @@
 //! Encrypted database backups and their verification.
 //!
-//! Backups are encrypted independently of the live database, so a backup file
-//! copied elsewhere is no more readable than the original. `atomic_replace` is
+//! Daily and pre-migration backups are keyed with the device key, like the live
+//! database. Portable backups are the same SQLCipher database re-keyed to a
+//! password the user chooses, so they can be restored on another machine. `atomic_replace` is
 //! how a restore lands: writing in place would leave an unusable half-restored
 //! database if the process died partway, so the new file is put in position
 //! atomically or not at all.
-use aes_gcm::aead::{rand_core::RngCore, Aead, AeadCore, KeyInit, OsRng};
-use aes_gcm::{Aes256Gcm, Key, Nonce};
 use anyhow::{anyhow, Result};
-use argon2::Argon2;
+use rusqlite::Connection;
 
-const SALT_LEN: usize = 16;
-const NONCE_LEN: usize = 12;
+/// Minimum length of a portable-backup password.
+pub const MIN_PORTABLE_PASSWORD_LEN: usize = 8;
 
-/// Derives an encryption key from a user-supplied backup password.
-///
-/// The exported backup leaves the machine and its keychain behind, so it cannot
-/// use the database key -- it is protected by a password the user supplies and
-/// remembers instead.
-fn derive_key_from_password(password: &str, salt: &[u8]) -> Result<[u8; 32]> {
-    let mut key_bytes = [0u8; 32];
-    Argon2::default()
-        .hash_password_into(password.as_bytes(), salt, &mut key_bytes)
-        .map_err(|e| anyhow!("Argon2 key derivation failed: {}", e))?;
-    Ok(key_bytes)
+/// Tables a file must contain to be accepted as a Dinero backup.
+const REQUIRED_TABLES: [&str; 3] = ["transactions", "instruments", "statements"];
+
+fn validate_portable_password(password: &str) -> Result<()> {
+    if password.chars().count() < MIN_PORTABLE_PASSWORD_LEN {
+        return Err(anyhow!(
+            "backup password must be at least {MIN_PORTABLE_PASSWORD_LEN} characters"
+        ));
+    }
+    Ok(())
 }
 
-/// Encrypts a backup with a password-derived key.
-pub fn encrypt_backup(plaintext_db_bytes: &[u8], password: &str) -> Result<Vec<u8>> {
-    if password.is_empty() {
-        return Err(anyhow!("password must not be empty"));
+/// Copies the open database `conn` into a new SQLCipher file at `dest` keyed
+/// with `key`, carrying the schema version across.
+///
+/// `sqlcipher_export` re-encrypts page by page, so no plaintext copy of the
+/// database is ever written to disk. The copy is built beside `dest` and renamed
+/// into place, so a failed export never leaves a half-written file at `dest`.
+fn export_rekeyed(conn: &Connection, dest: &std::path::Path, key: &str) -> Result<()> {
+    let parent = dest
+        .parent()
+        .ok_or_else(|| anyhow!("destination path has no parent directory"))?;
+    let partial = parent.join(format!(".{}.partial", uuid::Uuid::new_v4()));
+    let partial_str = partial.to_string_lossy().to_string();
+    let result = (|| -> Result<()> {
+        conn.execute("ATTACH DATABASE ?1 AS rekeyed KEY ?2", [&partial_str, key])?;
+        let exported = (|| -> Result<()> {
+            conn.query_row("SELECT sqlcipher_export('rekeyed')", [], |_| Ok(()))?;
+            let version: i64 = conn.query_row("PRAGMA main.user_version", [], |r| r.get(0))?;
+            conn.execute_batch(&format!("PRAGMA rekeyed.user_version = {version};"))?;
+            Ok(())
+        })();
+        conn.execute_batch("DETACH DATABASE rekeyed;")?;
+        exported?;
+        std::fs::rename(&partial, dest)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&partial);
     }
-    let mut salt = [0u8; SALT_LEN];
-    OsRng.fill_bytes(&mut salt);
-
-    let key_bytes = derive_key_from_password(password, &salt)?;
-    let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
-    let cipher = Aes256Gcm::new(key);
-
-    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-    let ciphertext = cipher
-        .encrypt(&nonce, plaintext_db_bytes)
-        .map_err(|e| anyhow!("AES-GCM encrypt error: {:?}", e))?;
-
-    let mut blob = Vec::with_capacity(SALT_LEN + NONCE_LEN + ciphertext.len());
-    blob.extend_from_slice(&salt);
-    blob.extend_from_slice(&nonce);
-    blob.extend_from_slice(&ciphertext);
-    Ok(blob)
+    result
 }
 
-/// Decrypts an exported backup.
+/// Writes a portable backup: the live database re-keyed to a user password.
 ///
-/// A wrong password fails authentication rather than yielding garbage, since the
-/// cipher is authenticated.
-pub fn decrypt_backup(blob: &[u8], password: &str) -> Result<Vec<u8>> {
-    if blob.len() <= SALT_LEN + NONCE_LEN {
-        return Err(anyhow!("backup file is too short to be valid"));
+/// The device database key is bound to this machine's hardware UUID, so a raw
+/// copy is unreadable anywhere else. Re-keying to a password the user chooses
+/// makes the file restorable on any Mac.
+pub fn export_portable_backup(
+    conn: &Connection,
+    dest: &std::path::Path,
+    password: &str,
+) -> Result<()> {
+    validate_portable_password(password)?;
+    export_rekeyed(conn, dest, password)
+}
+
+/// Opens a portable backup with its password, verifies it, and writes a copy
+/// re-keyed to `device_key` into `staging_dir`. Returns the staged file's path.
+///
+/// A wrong password, a corrupt file, or a file that is not a Dinero database
+/// all fail here, before the live database is touched.
+pub fn stage_portable_restore(
+    src: &std::path::Path,
+    password: &str,
+    staging_dir: &std::path::Path,
+    device_key: &str,
+) -> Result<std::path::PathBuf> {
+    if !src.exists() {
+        return Err(anyhow!("backup file does not exist: {}", src.display()));
     }
-    let salt = &blob[..SALT_LEN];
-    let nonce_bytes = &blob[SALT_LEN..SALT_LEN + NONCE_LEN];
-    let ciphertext = &blob[SALT_LEN + NONCE_LEN..];
-
-    let key_bytes = derive_key_from_password(password, salt)?;
-    let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
-    let cipher = Aes256Gcm::new(key);
-    let nonce = Nonce::from_slice(nonce_bytes);
-
-    cipher
-        .decrypt(nonce, ciphertext)
-        .map_err(|_| anyhow!("decryption failed -- wrong password or corrupt backup file"))
+    let conn = Connection::open(src).map_err(|e| anyhow!("failed to open backup file: {e}"))?;
+    conn.pragma_update(None, "key", password)?;
+    let integrity: String = conn
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+        .map_err(|_| anyhow!("could not open backup -- wrong password or not a Dinero backup"))?;
+    if integrity != "ok" {
+        return Err(anyhow!("backup failed integrity check: {integrity}"));
+    }
+    for table in REQUIRED_TABLES {
+        let found: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [table],
+            |r| r.get(0),
+        )?;
+        if found == 0 {
+            return Err(anyhow!(
+                "file is not a Dinero backup (missing table {table})"
+            ));
+        }
+    }
+    let staged = staging_dir.join(format!("finance.db.restore.{}", uuid::Uuid::new_v4()));
+    export_rekeyed(&conn, &staged, device_key)?;
+    Ok(staged)
 }
 
 /// Confirms a backup file is a readable, structurally sound database.
@@ -183,32 +219,5 @@ mod tests {
         assert_eq!(std::fs::read(&dest).unwrap(), b"restored content");
 
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn test_export_backup_requires_password() {
-        let result = encrypt_backup(b"fake sqlite bytes", "");
-        assert!(result.is_err(), "an empty password must be rejected");
-    }
-
-    #[test]
-    fn test_import_backup_wrong_password_fails_cleanly() {
-        let original = b"pretend this is a real SQLite file's bytes";
-        let blob = encrypt_backup(original, "correct-horse-battery-staple").unwrap();
-
-        let result = decrypt_backup(&blob, "wrong-password");
-        assert!(
-            result.is_err(),
-            "a wrong password must fail cleanly, not silently produce garbage plaintext"
-        );
-    }
-
-    #[test]
-    fn test_encrypt_decrypt_backup_roundtrip() {
-        let original = b"pretend this is a real SQLite file's bytes";
-        let blob = encrypt_backup(original, "correct-horse-battery-staple").unwrap();
-
-        let decrypted = decrypt_backup(&blob, "correct-horse-battery-staple").unwrap();
-        assert_eq!(decrypted, original);
     }
 }
