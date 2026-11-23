@@ -1389,7 +1389,9 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                             .join(", ");
 
                         let sql_unassigned = format!(
-                            "DELETE FROM unassigned_transactions WHERE created_at >= ?1 AND observation_id IN (
+                            // Only still-open entries: anything the user already
+                            // resolved or dismissed during the scan is kept.
+                            "DELETE FROM unassigned_transactions WHERE created_at >= ?1 AND status = 'open' AND observation_id IN (
                                 SELECT id FROM transaction_observations WHERE source_record_id IN ({})
                             )",
                             placeholders
@@ -1401,7 +1403,8 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                              WHERE created_at >= ?1
                              AND source_record_id IN ({})
                              AND canonical_transaction_id IS NULL
-                             AND id NOT IN (SELECT observation_id FROM match_decisions)",
+                             AND id NOT IN (SELECT observation_id FROM match_decisions)
+                             AND id NOT IN (SELECT observation_id FROM unassigned_transactions)",
                             placeholders
                         );
                         let _ = tx.execute(&sql_obs, rusqlite::params_from_iter(params()));
@@ -2205,6 +2208,16 @@ mod tests {
                 [],
             )
             .unwrap();
+            c.execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 INSERT INTO transaction_observations (id, source_pipeline, source_record_id, fingerprint, created_at)
+                 VALUES ('o_res', 'gmail_transaction', 'new_msg', 'fp_res', datetime('now', '+1 minute')),
+                        ('o_open', 'gmail_transaction', 'old_msg', 'fp_open', datetime('now', '+1 minute'));
+                 INSERT INTO unassigned_transactions (id, observation_id, reason, status, created_at)
+                 VALUES ('u_resolved', 'o_res', 'r', 'resolved', datetime('now', '+1 minute')),
+                        ('u_open', 'o_open', 'r', 'open', datetime('now', '+1 minute'));",
+            )
+            .unwrap();
         })
         .await
         .unwrap();
@@ -2229,6 +2242,17 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(left, vec!["old_msg".to_string()]);
+
+        // A review entry the user resolved during the scan survives cancel;
+        // an untouched one is rolled back.
+        let triage: Vec<(String, String)> = conn
+            .interact(|c| {
+                let mut s = c.prepare("SELECT id, status FROM unassigned_transactions ORDER BY id").unwrap();
+                s.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(|r| r.unwrap()).collect()
+            })
+            .await
+            .unwrap();
+        assert_eq!(triage, vec![("u_resolved".to_string(), "resolved".to_string())]);
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
