@@ -25,7 +25,7 @@ impl GmailTelemetry {
 
     /// Records a server-side error response.
     pub fn record_5xx(&self, status: u16) {
-        let mut map = self.error_5xx_by_status.lock().unwrap();
+        let mut map = self.error_5xx_by_status.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         *map.entry(status).or_insert(0) += 1;
     }
 
@@ -42,7 +42,7 @@ impl GmailTelemetry {
     /// over-aggressive filter diagnosable rather than showing up as silently missing
     /// transactions.
     pub fn record_gate_rejection(&self, gate: &str) {
-        let mut map = self.gate_rejections.lock().unwrap();
+        let mut map = self.gate_rejections.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         *map.entry(gate.to_string()).or_insert(0) += 1;
     }
 
@@ -57,9 +57,9 @@ impl GmailTelemetry {
 
         GmailTelemetrySnapshot {
             quota_exhausted_count: self.quota_exhausted_count.load(Ordering::Relaxed),
-            error_5xx_by_status: self.error_5xx_by_status.lock().unwrap().clone(),
+            error_5xx_by_status: self.error_5xx_by_status.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
             avg_poll_cycle_duration_ms,
-            gate_rejections: self.gate_rejections.lock().unwrap().clone(),
+            gate_rejections: self.gate_rejections.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
         }
     }
 }

@@ -147,7 +147,7 @@ pub async fn sync_force_poll_now<R: tauri::Runtime>(
 
     let now = std::time::Instant::now();
     {
-        let mut last = last_force_poll_at().lock().unwrap();
+        let mut last = last_force_poll_at().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if !is_force_poll_allowed(now, *last) {
             return Err(crate::error::AppError::Validation(
                 "Sync Now was used too recently -- please wait a few seconds and try again"

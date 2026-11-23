@@ -50,7 +50,7 @@ fn persisted(warning_type: &str) -> bool {
 /// Loads persisted active warnings at startup, so a warning whose cause is
 /// still present (e.g. a failed backup) survives a restart.
 pub fn load_active(payloads: Vec<SystemWarningPayload>) {
-    let mut guard = ACTIVE_WARNINGS.lock().unwrap();
+    let mut guard = ACTIVE_WARNINGS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let map = guard.get_or_insert_with(HashMap::new);
     for w in payloads.into_iter().filter(|w| persisted(&w.warning_type)) {
         map.entry(w.warning_type.clone()).or_insert(w);
@@ -83,7 +83,7 @@ fn persist<R: tauri::Runtime>(app: &tauri::AppHandle<R>, warning_type: &str, pay
 
 /// Loads persisted dismissals at startup, before any warning can be raised.
 pub fn load_dismissals(map: HashMap<String, String>) {
-    *DISMISSED.lock().unwrap() = Some(map);
+    *DISMISSED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(map);
 }
 
 /// Whether this exact warning has been dismissed.
@@ -117,7 +117,7 @@ pub fn emit_system_warning<R: tauri::Runtime>(
     warning: SystemWarningPayload,
 ) {
     {
-        let mut guard = ACTIVE_WARNINGS.lock().unwrap();
+        let mut guard = ACTIVE_WARNINGS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         guard
             .get_or_insert_with(HashMap::new)
             .insert(warning.warning_type.clone(), warning.clone());
@@ -137,7 +137,7 @@ pub fn emit_system_warning<R: tauri::Runtime>(
 /// Clears a warning once its underlying condition is resolved.
 pub fn clear_system_warning<R: tauri::Runtime>(app: &tauri::AppHandle<R>, warning_type: &str) {
     {
-        let mut guard = ACTIVE_WARNINGS.lock().unwrap();
+        let mut guard = ACTIVE_WARNINGS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let removed = guard.as_mut().and_then(|map| map.remove(warning_type));
         // Callers clear on every successful cycle; a warning that is not
         // active needs no event or write.
@@ -147,7 +147,7 @@ pub fn clear_system_warning<R: tauri::Runtime>(app: &tauri::AppHandle<R>, warnin
     }
     persist(app, warning_type, None);
     {
-        let mut guard = DISMISSED.lock().unwrap();
+        let mut guard = DISMISSED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(map) = guard.as_mut() {
             map.remove(warning_type);
         }

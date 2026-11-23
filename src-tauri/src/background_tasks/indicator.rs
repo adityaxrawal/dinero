@@ -68,7 +68,7 @@ impl BackgroundTaskRegistry {
         status_message: &str,
     ) {
         let start = {
-            let tasks = self.tasks.lock().unwrap();
+            let tasks = self.tasks.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             tasks.get(task_id).map(|(_, started_at)| *started_at)
         }
         .unwrap_or_else(Instant::now);
@@ -105,7 +105,7 @@ impl BackgroundTaskRegistry {
         status: TaskStatus,
         status_message: &str,
     ) {
-        let removed = self.tasks.lock().unwrap().remove(task_id);
+        let removed = self.tasks.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(task_id);
         let Some((mut progress, _)) = removed else {
             return;
         };
@@ -131,7 +131,7 @@ impl BackgroundTaskRegistry {
 
     /// Number of active tasks.
     pub fn active_count(&self) -> usize {
-        self.tasks.lock().unwrap().len()
+        self.tasks.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
     }
 }
 

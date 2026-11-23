@@ -73,7 +73,7 @@ fn record_trigger_at(
     scope: &str,
     now: std::time::Instant,
 ) -> bool {
-    let mut recent = monitor.0.lock().unwrap();
+    let mut recent = monitor.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let times = recent.entry((kind, scope.to_string())).or_default();
     times.retain(|t| now.duration_since(*t) < TRIGGER_WINDOW);
     times.push(now);
@@ -207,6 +207,21 @@ mod tests {
         assert!(!record_trigger_for(&monitor, kind, "a"));
         assert!(!record_trigger_for(&monitor, kind, "b"));
         assert!(record_trigger_for(&monitor, kind, "a"));
+    }
+
+    /// S5: a panic while the lock is held poisons it; later calls must keep
+    /// working instead of panicking themselves.
+    #[test]
+    fn a_poisoned_lock_does_not_crash_later_callers() {
+        let monitor = std::sync::Arc::new(IncidentMonitor::default());
+        let m = std::sync::Arc::clone(&monitor);
+        let _ = std::thread::spawn(move || {
+            let _guard = m.0.lock().unwrap();
+            panic!("simulated panic while holding the lock");
+        })
+        .join();
+        assert!(monitor.0.is_poisoned());
+        assert!(record_trigger(&monitor, TriggerKind::IntegrityCheckFailure));
     }
 
     #[test]

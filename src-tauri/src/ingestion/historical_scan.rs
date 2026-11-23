@@ -37,12 +37,12 @@ fn cancelled_scans() -> &'static std::sync::Mutex<std::collections::HashSet<Stri
 
 /// Whether this account's scan has been cancelled.
 fn is_scan_cancelled(account_id: &str) -> bool {
-    cancelled_scans().lock().unwrap().contains(account_id)
+    cancelled_scans().lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains(account_id)
 }
 
 /// Clears a cancellation once the scan has actually stopped.
 fn clear_scan_cancellation(account_id: &str) {
-    cancelled_scans().lock().unwrap().remove(account_id);
+    cancelled_scans().lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(account_id);
 }
 
 /// Sleeps for `delay`, returning early with `true` if the scan is cancelled.
@@ -81,7 +81,7 @@ async fn wait_while_paused(account_id: &str) -> bool {
 /// checkpoint, so it halts at a consistent point rather than mid-write.
 pub async fn scans_cancel(account_id: String) -> Result<String, crate::error::AppError> {
     crate::ipc::validation::validate_account_id("account_id", &account_id)?;
-    cancelled_scans().lock().unwrap().insert(account_id);
+    cancelled_scans().lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(account_id);
     Ok("cancel_requested".to_string())
 }
 

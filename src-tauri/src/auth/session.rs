@@ -64,26 +64,26 @@ pub async fn ensure_active_session(pool: &Pool, state: &SessionState) -> Result<
         }
     };
 
-    *state.0.lock().unwrap() = Some(session_id.clone());
+    *state.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(session_id.clone());
     Ok(session_id)
 }
 
 /// Ends the current session.
 pub async fn logout(pool: &Pool, state: &SessionState) -> Result<()> {
-    let session_id = state.0.lock().unwrap().clone();
+    let session_id = state.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
     if let Some(id) = session_id {
         let conn = pool.get().await?;
         conn.interact(move |c| sessions::revoke(c, &id, Utc::now()))
             .await
             .map_err(|e| anyhow::anyhow!("DB interaction error: {}", e))??;
     }
-    *state.0.lock().unwrap() = None;
+    *state.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     Ok(())
 }
 
 /// The current session id, if any.
 pub fn current_session_id(state: &SessionState) -> Option<String> {
-    state.0.lock().unwrap().clone()
+    state.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
 }
 
 #[cfg(test)]

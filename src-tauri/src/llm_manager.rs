@@ -335,14 +335,14 @@ impl DownloadRegistry {
 
     /// Cancels a download in progress.
     pub fn cancel(&self, model_id: &str) {
-        if let Some(token) = self.0.lock().unwrap().get(model_id) {
+        if let Some(token) = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(model_id) {
             token.cancel();
         }
     }
 
     /// Removes a download's token once it has finished.
     pub fn unregister(&self, model_id: &str) {
-        self.0.lock().unwrap().remove(model_id);
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(model_id);
     }
 }
 
