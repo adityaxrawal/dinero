@@ -19,6 +19,23 @@ pub struct ConnectedAccountsRow {
     pub updated_at: Option<NaiveDateTime>,
 }
 
+/// Restores accounts saved before an app-data reset, all-or-nothing.
+///
+/// Accounts already present are skipped, so a restore that was interrupted
+/// can simply run again. Returns how many were inserted.
+pub fn restore_from_backup(conn: &Connection, accounts: &[ConnectedAccountsRow]) -> Result<usize> {
+    let tx = conn.unchecked_transaction()?;
+    let mut inserted = 0;
+    for account in accounts {
+        if get_account(&tx, &account.id)?.is_none() {
+            insert_account(&tx, account)?;
+            inserted += 1;
+        }
+    }
+    tx.commit()?;
+    Ok(inserted)
+}
+
 /// Record a newly connected Gmail account.
 pub fn insert_account(conn: &Connection, account: &ConnectedAccountsRow) -> Result<()> {
     conn.execute(
@@ -105,4 +122,39 @@ fn row_to_account(row: &Row) -> rusqlite::Result<ConnectedAccountsRow> {
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })
+}
+
+#[cfg(test)]
+mod restore_tests {
+    use super::*;
+
+    fn acct(id: &str) -> ConnectedAccountsRow {
+        ConnectedAccountsRow {
+            id: id.into(),
+            profile_id: 1,
+            email_address: Some(format!("{id}@e.com")),
+            account_status: Some("ACTIVE".into()),
+            last_history_id: None,
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    /// A restore inserts missing accounts, skips existing ones (so it can be
+    /// retried), and is all-or-nothing.
+    #[test]
+    fn restore_is_retryable_and_all_or_nothing() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        conn.execute("INSERT INTO local_profile (id) VALUES (1)", []).unwrap();
+        insert_account(&conn, &acct("a")).unwrap();
+        assert_eq!(restore_from_backup(&conn, &[acct("a"), acct("b")]).unwrap(), 1);
+
+        conn.execute_batch(
+            "CREATE TRIGGER fail_c BEFORE INSERT ON connected_accounts WHEN NEW.id = 'c'
+             BEGIN SELECT RAISE(ABORT, 'simulated failure'); END;",
+        )
+        .unwrap();
+        assert!(restore_from_backup(&conn, &[acct("d"), acct("c")]).is_err());
+        assert!(get_account(&conn, "d").unwrap().is_none(), "a failed restore inserts nothing");
+    }
 }

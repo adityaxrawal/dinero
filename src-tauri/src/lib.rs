@@ -213,23 +213,44 @@ pub fn run() {
                     // Connected Gmail accounts survive a database reset via this
                     // plaintext-metadata backup. It is consumed once and deleted,
                     // so a later reset does not silently resurrect old accounts.
+                    // The file is deleted only after every account was
+                    // restored; a failed restore keeps it and retries at the
+                    // next launch instead of losing the accounts.
                     let backup_path = app_dir.join("gmail_accounts_backup.json");
                     if backup_path.exists() {
-                        if let Ok(json) = std::fs::read_to_string(&backup_path) {
-                            if let Ok(accounts) = serde_json::from_str::<Vec<crate::db::connected_accounts::ConnectedAccountsRow>>(&json) {
+                        let restored: anyhow::Result<usize> = std::fs::read_to_string(&backup_path)
+                            .map_err(anyhow::Error::from)
+                            .and_then(|json| {
+                                serde_json::from_str::<Vec<crate::db::connected_accounts::ConnectedAccountsRow>>(&json)
+                                    .map_err(anyhow::Error::from)
+                            })
+                            .and_then(|accounts| {
                                 let pool_clone = p.clone();
                                 tauri::async_runtime::block_on(async move {
-                                    if let Ok(conn) = pool_clone.get().await {
-                                        let _ = conn.interact(move |c| {
-                                            for account in accounts {
-                                                let _ = crate::db::connected_accounts::insert_account(c, &account);
-                                            }
-                                        }).await;
-                                    }
-                                });
+                                    pool_clone
+                                        .get()
+                                        .await
+                                        .map_err(|e| anyhow::anyhow!("pool: {}", e))?
+                                        .interact(move |c| {
+                                            crate::db::connected_accounts::restore_from_backup(c, &accounts)
+                                        })
+                                        .await
+                                        .map_err(|e| anyhow::anyhow!("interact: {}", e))?
+                                })
+                            });
+                        match restored {
+                            Ok(n) => {
+                                tracing::info!("Restored {} Gmail account(s) after an app-data reset", n);
+                                if let Err(e) = std::fs::remove_file(&backup_path) {
+                                    tracing::warn!("Could not remove the Gmail account backup: {}", e);
+                                }
                             }
+                            Err(e) => tracing::error!(
+                                "Gmail account restore failed; keeping {} for the next launch: {:#}",
+                                backup_path.display(),
+                                e
+                            ),
                         }
-                        let _ = std::fs::remove_file(backup_path);
                     }
 
                     p
