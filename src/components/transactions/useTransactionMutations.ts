@@ -90,8 +90,7 @@ export function useTransactionMutations({
         toast({ title: 'Transaction deleted' });
         if (onClose) onClose();
       },
-      onError: (err) =>
-        reportError(err, 'Only manually-entered transactions can be deleted.'),
+      onError: (err) => reportError(err, 'Only manually-entered transactions can be deleted.'),
     });
   };
 

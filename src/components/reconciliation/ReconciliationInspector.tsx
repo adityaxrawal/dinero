@@ -68,7 +68,12 @@ export default function ReconciliationInspector({
         </button>
       </div>
 
-      <div className={cn('flex-1 overflow-y-auto', inline ? 'px-4 md:px-8 pb-4 max-w-3xl w-full' : 'p-4')}>
+      <div
+        className={cn(
+          'flex-1 overflow-y-auto',
+          inline ? 'px-4 md:px-8 pb-4 max-w-3xl w-full' : 'p-4'
+        )}
+      >
         <ClusterResolutionPanel
           clusterId={cluster.id}
           initialCluster={cluster}

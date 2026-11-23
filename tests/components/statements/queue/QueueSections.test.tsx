@@ -19,8 +19,7 @@ const item = (over = {}) => ({
 });
 
 type Items = Parameters<typeof ReviewableSection>[0]['items'];
-const renderSection = (items: unknown[]) =>
-  render(<ReviewableSection items={items as Items} />);
+const renderSection = (items: unknown[]) => render(<ReviewableSection items={items as Items} />);
 
 beforeEach(() => {
   vi.clearAllMocks();

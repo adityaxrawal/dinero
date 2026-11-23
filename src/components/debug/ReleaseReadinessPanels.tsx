@@ -83,8 +83,8 @@ export function OutOfRepoPanel() {
         separate Licensing Backend service (Vercel + Neon Postgres) that is{' '}
         <strong>not part of this repository</strong> and has no code, UI, or data visible inside
         this desktop app. This app&apos;s only connection to it is the client module{' '}
-        <code className="text-xs bg-muted px-1 rounded">src-tauri/src/licensing/</code>, used
-        solely to validate this device&apos;s own license state — not to administer other tenants.
+        <code className="text-xs bg-muted px-1 rounded">src-tauri/src/licensing/</code>, used solely
+        to validate this device&apos;s own license state — not to administer other tenants.
       </p>
     </div>
   );

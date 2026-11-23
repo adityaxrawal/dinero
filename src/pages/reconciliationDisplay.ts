@@ -43,7 +43,10 @@ export function readAlertPayload(rawJson: unknown, fallbackText: string) {
  */
 export function stripAddressFromName(name: string): string {
   if (!name.includes('<')) return name;
-  return name.split('<')[0].trim().replace(/^["']|["']$/g, '');
+  return name
+    .split('<')[0]
+    .trim()
+    .replace(/^["']|["']$/g, '');
 }
 
 /**

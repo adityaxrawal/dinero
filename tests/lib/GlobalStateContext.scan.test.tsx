@@ -8,9 +8,11 @@ const startHistoricalScanMock = vi.fn().mockResolvedValue('started');
 vi.mock('@/lib/ipc', () => ({
   API: {
     auth: {
-      listConnectedAccounts: vi.fn().mockResolvedValue([
-        { account_id: 'gmail_test', email: 'test@example.com', account_status: 'active' },
-      ]),
+      listConnectedAccounts: vi
+        .fn()
+        .mockResolvedValue([
+          { account_id: 'gmail_test', email: 'test@example.com', account_status: 'active' },
+        ]),
     },
     statements: {
       listHistory: vi.fn().mockResolvedValue([]),

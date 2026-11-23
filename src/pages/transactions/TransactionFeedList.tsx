@@ -81,7 +81,9 @@ export default function TransactionFeedList({
   /** Builds the props for one row, including selection state. */
   const rowProps = (tx: Transaction) => ({
     categoryName: categoryNameById.get(tx.category) || tx.category || 'Uncategorized',
-    instrumentName: tx.instrument_id ? instrumentById.get(tx.instrument_id)?.issuer_name : undefined,
+    instrumentName: tx.instrument_id
+      ? instrumentById.get(tx.instrument_id)?.issuer_name
+      : undefined,
   });
 
   return (

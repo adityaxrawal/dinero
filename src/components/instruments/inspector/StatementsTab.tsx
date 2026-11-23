@@ -36,11 +36,7 @@ function StatementCard({
       </div>
       <div className="flex items-center justify-between text-[11px] text-[#064E3B]/70 font-medium pt-1 border-t border-[#064E3B]/10">
         <span>Uploaded {formatCustomDate(statement.date)}</span>
-        <button
-          type="button"
-          onClick={onView}
-          className="font-bold text-[#064E3B] hover:underline"
-        >
+        <button type="button" onClick={onView} className="font-bold text-[#064E3B] hover:underline">
           View details →
         </button>
       </div>

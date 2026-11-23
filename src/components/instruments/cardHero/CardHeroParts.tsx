@@ -80,9 +80,7 @@ export function BalanceRow({
   const fullId =
     instrument.full_identifier || `•••• •••• •••• ${instrument.masked_identifier || '••••'}`;
   const balanceLabel =
-    instrument.instrument_type === 'credit_card'
-      ? 'Current Spent / Balance'
-      : 'Available Balance';
+    instrument.instrument_type === 'credit_card' ? 'Current Spent / Balance' : 'Available Balance';
 
   return (
     <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 mb-4 relative z-10">

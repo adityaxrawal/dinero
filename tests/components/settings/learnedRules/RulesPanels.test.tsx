@@ -3,7 +3,11 @@
 // list, and the sender-bank override rows.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
-import { RuleFilters, RetiredRules, SenderOverrides } from '@/components/settings/learnedRules/RulesPanels';
+import {
+  RuleFilters,
+  RetiredRules,
+  SenderOverrides,
+} from '@/components/settings/learnedRules/RulesPanels';
 import type { LearnedRule, SenderBankOverride } from '@/lib/ipc';
 
 vi.mock('@/components/settings/learnedRules/BankCard', () => ({
@@ -74,7 +78,9 @@ describe('RuleFilters', () => {
 
 describe('RetiredRules', () => {
   it('starts collapsed and pluralises the count', () => {
-    render(<RetiredRules retired={[rule(), rule({ id: 'r2' })]} revertingId={null} onRetire={vi.fn()} />);
+    render(
+      <RetiredRules retired={[rule(), rule({ id: 'r2' })]} revertingId={null} onRetire={vi.fn()} />
+    );
 
     expect(screen.getByRole('button', { name: /2 retired rules/ })).toBeInTheDocument();
     expect(screen.queryByTestId('bank-card')).not.toBeInTheDocument();

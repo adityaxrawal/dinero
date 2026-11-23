@@ -29,7 +29,8 @@ export const queryKeys = {
     list: (page: number) => ['transactions', 'list', page] as const,
     infiniteList: (filters: object) => ['transactions', 'infiniteList', filters] as const,
     detail: (id: string) => ['transactions', 'detail', id] as const,
-    search: (query: string, filters?: object) => ['transactions', 'search', query, filters] as const,
+    search: (query: string, filters?: object) =>
+      ['transactions', 'search', query, filters] as const,
     observations: (id: string) => ['transactions', 'observations', id] as const,
     tags: (id: string) => ['transactions', 'tags', id] as const,
     emiGroup: (emiGroupId: string) => ['transactions', 'emiGroup', emiGroupId] as const,

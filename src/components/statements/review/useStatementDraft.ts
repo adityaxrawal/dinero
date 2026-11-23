@@ -147,7 +147,10 @@ export function useStatementDraft() {
       { draftId: activeDraftId, metadata, rows },
       {
         onSuccess: () => {
-          toast({ title: 'Statement saved', description: 'Extracted transactions have been added.' });
+          toast({
+            title: 'Statement saved',
+            description: 'Extracted transactions have been added.',
+          });
           closeReviewModal();
         },
         onError: () => toast({ title: 'Failed to save', variant: 'destructive' }),

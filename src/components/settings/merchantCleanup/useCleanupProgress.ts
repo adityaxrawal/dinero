@@ -8,7 +8,13 @@ import { useNowTicker } from '@/hooks/useNowTicker';
 import { formatClock, formatDuration, FEED_LENGTH, type FeedEntry } from './format';
 
 /** Subscribes to live progress events for a running cleanup. */
-export function useCleanupProgress({ running, onRunEnd }: { running: boolean; onRunEnd: () => void }) {
+export function useCleanupProgress({
+  running,
+  onRunEnd,
+}: {
+  running: boolean;
+  onRunEnd: () => void;
+}) {
   const [progress, setProgress] = useState<MerchantCleanupProgress | null>(null);
   const [feed, setFeed] = useState<FeedEntry[]>([]);
   const [startedAt, setStartedAt] = useState<number | null>(null);

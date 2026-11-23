@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { useResumeFromSleepRefetch, SLEEP_GAP_THRESHOLD_MS } from '@/hooks/useResumeFromSleepRefetch';
+import {
+  useResumeFromSleepRefetch,
+  SLEEP_GAP_THRESHOLD_MS,
+} from '@/hooks/useResumeFromSleepRefetch';
 import { queryKeys } from '@/lib/queryKeys';
 
 function setVisibility(state: DocumentVisibilityState) {

@@ -31,7 +31,9 @@ vi.mock('@/components/debug/ReleaseReadinessViewer', () => ({
   ReleaseReadinessViewer: () => <div data-testid="release-readiness" />,
 }));
 vi.mock('@/pages/debug/PipelineSection', () => ({ default: () => <div data-testid="pipeline" /> }));
-vi.mock('@/pages/debug/SystemMetricsSection', () => ({ default: () => <div data-testid="system" /> }));
+vi.mock('@/pages/debug/SystemMetricsSection', () => ({
+  default: () => <div data-testid="system" />,
+}));
 
 const at = (section?: string) => {
   search = new URLSearchParams(section ? { section } : {});

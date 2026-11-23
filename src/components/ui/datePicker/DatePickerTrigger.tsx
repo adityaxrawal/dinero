@@ -79,7 +79,10 @@ export default function DatePickerTrigger({
     >
       <div className="flex items-center gap-2 overflow-hidden truncate">
         <CalendarIcon
-          className={cn('flex-shrink-0 text-[#064E3B]/70', size === 'sm' ? 'w-3.5 h-3.5' : 'w-4 h-4')}
+          className={cn(
+            'flex-shrink-0 text-[#064E3B]/70',
+            size === 'sm' ? 'w-3.5 h-3.5' : 'w-4 h-4'
+          )}
         />
         <span className={cn('truncate font-medium', !value && 'text-[#064E3B]/50 font-normal')}>
           {value ? formatDisplayDate(value) : placeholder}

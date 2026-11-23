@@ -9,13 +9,7 @@ import type { useTransactionForm } from '@/components/transactions/useTransactio
 type Form = ReturnType<typeof useTransactionForm>;
 
 /** The instrument this transaction is attributed to. */
-export default function InstrumentCard({
-  form,
-  tx,
-}: {
-  form: Form;
-  tx: NonNullable<Form['tx']>;
-}) {
+export default function InstrumentCard({ form, tx }: { form: Form; tx: NonNullable<Form['tx']> }) {
   return (
     <Card className="bg-[#F8E7C9]/60 backdrop-blur-sm border-[#064E3B]/10 shadow-xs">
       <CardHeader className="py-3.5 px-5 border-b border-[#064E3B]/10 bg-[#064E3B]/[0.03]">

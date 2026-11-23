@@ -9,7 +9,9 @@ vi.mock('@/components/common/GmailEmailViewer', () => ({
     <div data-testid="email-viewer">{subject}</div>
   ),
 }));
-vi.mock('@/components/transactions/ReportWrongBankDialog', () => ({ default: () => <div data-testid="wrong-bank" /> }));
+vi.mock('@/components/transactions/ReportWrongBankDialog', () => ({
+  default: () => <div data-testid="wrong-bank" />,
+}));
 
 const asMock = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
 

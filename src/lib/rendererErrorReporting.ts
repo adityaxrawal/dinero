@@ -27,8 +27,7 @@ export function reportRendererError(
   // already in a failed state, and letting a failed *report* throw would either
   // trigger the unhandledrejection handler below and recurse, or mask the
   // original error with a less useful one.
-  API.support.logRendererError(message, stack, source).catch(() => {
-  });
+  API.support.logRendererError(message, stack, source).catch(() => {});
 }
 
 /**

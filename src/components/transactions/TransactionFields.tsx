@@ -50,7 +50,9 @@ export function MerchantField({
 export function TagsHeader({ count }: { count: number }) {
   return (
     <div className="flex items-center justify-between">
-      <Label className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70">Tags</Label>
+      <Label className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70">
+        Tags
+      </Label>
       <span className="text-[10px] text-[#064E3B]/50 font-mono">
         {count} tag{count !== 1 ? 's' : ''}
       </span>
@@ -94,7 +96,11 @@ export function TransactionAuditRows({ tx }: { tx: CanonicalTransaction }) {
       )}
 
       {tx.reference_id && (
-        <InfoRow icon={<Hash className="w-3.5 h-3.5" />} label="Reference ID" copyValue={tx.reference_id}>
+        <InfoRow
+          icon={<Hash className="w-3.5 h-3.5" />}
+          label="Reference ID"
+          copyValue={tx.reference_id}
+        >
           <span className="font-mono text-[12px]">{tx.reference_id}</span>
         </InfoRow>
       )}
@@ -129,7 +135,9 @@ export function TransactionAuditRows({ tx }: { tx: CanonicalTransaction }) {
         </InfoRow>
       )}
 
-      {tx.alert_fired !== null && <InfoRow label="Alert Sent">{tx.alert_fired ? 'Yes' : 'No'}</InfoRow>}
+      {tx.alert_fired !== null && (
+        <InfoRow label="Alert Sent">{tx.alert_fired ? 'Yes' : 'No'}</InfoRow>
+      )}
     </>
   );
 }

@@ -27,14 +27,18 @@ describe('RecoveryScreen', () => {
     render(<RecoveryScreen />);
     const button = screen.getByRole('button', { name: /Restore and restart/ });
     expect(button).toBeDisabled();
-    fireEvent.change(screen.getByLabelText('Recovery phrase'), { target: { value: ` ${PHRASE} ` } });
+    fireEvent.change(screen.getByLabelText('Recovery phrase'), {
+      target: { value: ` ${PHRASE} ` },
+    });
     fireEvent.click(button);
     await waitFor(() => expect(restart).toHaveBeenCalled());
     expect(restoreFromPhrase).toHaveBeenCalledWith(PHRASE);
   });
 
   it('shows the error and does not restart when the phrase is wrong', async () => {
-    restoreFromPhrase.mockRejectedValue({ message: 'Recovery phrase did not decrypt the database' });
+    restoreFromPhrase.mockRejectedValue({
+      message: 'Recovery phrase did not decrypt the database',
+    });
     render(<RecoveryScreen />);
     fireEvent.change(screen.getByLabelText('Recovery phrase'), { target: { value: PHRASE } });
     fireEvent.click(screen.getByRole('button', { name: /Restore and restart/ }));
@@ -43,7 +47,10 @@ describe('RecoveryScreen', () => {
   });
 
   it('resets app data only after confirmation', () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
+    const confirm = vi
+      .spyOn(window, 'confirm')
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
     render(<RecoveryScreen />);
     const reset = screen.getByRole('button', { name: /Reset app data/ });
     fireEvent.click(reset);

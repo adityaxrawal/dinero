@@ -1,13 +1,7 @@
 /**
  * Headline amount, merchant and date for the transaction detail page.
  */
-import {
-  ArrowDownLeft,
-  ArrowUpRight,
-  ArrowLeftRight,
-  Repeat,
-  Pencil,
-} from 'lucide-react';
+import { ArrowDownLeft, ArrowUpRight, ArrowLeftRight, Repeat, Pencil } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { cn, channelLabel } from '@/lib/utils';
 import { formatCustomDate } from '@/lib/formatCustomDate';

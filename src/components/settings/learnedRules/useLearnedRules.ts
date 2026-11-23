@@ -80,7 +80,8 @@ export function useLearnedRules() {
   }, [rules]);
 
   const banks = useMemo(() => {
-    const filtered = fieldFilter === 'all' ? live : live.filter((r) => r.field_name === fieldFilter);
+    const filtered =
+      fieldFilter === 'all' ? live : live.filter((r) => r.field_name === fieldFilter);
     const grouped = groupRules(filtered);
     return sortMode === 'weakest'
       ? [...grouped].sort((a, b) => a.confidence - b.confidence)

@@ -60,7 +60,9 @@ export default function CleanupActionCard({
     <div
       className={cn(
         'mb-5 p-5 rounded-xl border transition-colors',
-        isRunning ? 'bg-[#064E3B]/[0.06] border-[#064E3B]/30' : 'bg-[#F8E7C9]/50 border-[#064E3B]/10'
+        isRunning
+          ? 'bg-[#064E3B]/[0.06] border-[#064E3B]/30'
+          : 'bg-[#F8E7C9]/50 border-[#064E3B]/10'
       )}
     >
       <div className="flex items-start justify-between flex-wrap gap-3">

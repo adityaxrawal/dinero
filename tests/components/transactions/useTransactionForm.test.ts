@@ -18,12 +18,16 @@ vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast }) }));
 vi.mock('@/hooks/queries/useTransactionDetail', () => ({
   useTransactionDetail: () => ({ data: detail, isLoading: false }),
 }));
-vi.mock('@/hooks/queries/useTransactionTags', () => ({ useTransactionTags: () => ({ data: tags }) }));
+vi.mock('@/hooks/queries/useTransactionTags', () => ({
+  useTransactionTags: () => ({ data: tags }),
+}));
 vi.mock('@/hooks/queries/useTagsList', () => ({ useTagsList: () => ({ data: [] }) }));
 vi.mock('@/hooks/queries/useInstrumentsList', () => ({
   useInstrumentsList: () => ({ data: instruments }),
 }));
-vi.mock('@/hooks/queries/useCategoriesList', () => ({ useCategoriesList: () => ({ data: categories }) }));
+vi.mock('@/hooks/queries/useCategoriesList', () => ({
+  useCategoriesList: () => ({ data: categories }),
+}));
 vi.mock('@/hooks/mutations/useUpdateTransactionFields', () => ({
   useUpdateTransactionFields: () => ({ mutate: updateMutate, isPending: false }),
 }));
@@ -103,7 +107,12 @@ describe('form hydration', () => {
       }),
     };
     const { result } = setup();
-    expect(result.current).toMatchObject({ merchant: '', categoryId: '', notes: '', instrumentId: '' });
+    expect(result.current).toMatchObject({
+      merchant: '',
+      categoryId: '',
+      notes: '',
+      instrumentId: '',
+    });
   });
 
   it('derives the amount from minor units when the decimal amount is absent', () => {
@@ -156,7 +165,11 @@ describe('derived values', () => {
 
   it('flags a foreign-currency transaction', () => {
     detail = {
-      transaction: transaction({ original_amount_minor: 2500, original_currency: 'USD', currency: 'INR' }),
+      transaction: transaction({
+        original_amount_minor: 2500,
+        original_currency: 'USD',
+        currency: 'INR',
+      }),
     };
     const { result } = setup();
     expect(result.current.isForeignCurrency).toBe(true);
@@ -164,7 +177,11 @@ describe('derived values', () => {
 
   it('does not flag a same-currency original amount as foreign', () => {
     detail = {
-      transaction: transaction({ original_amount_minor: 45050, original_currency: 'INR', currency: 'INR' }),
+      transaction: transaction({
+        original_amount_minor: 45050,
+        original_currency: 'INR',
+        currency: 'INR',
+      }),
     };
     const { result } = setup();
     expect(result.current.isForeignCurrency).toBe(false);
@@ -285,7 +302,10 @@ describe('tags', () => {
     expect(result.current.newTag).toBe('');
   });
 
-  it.each([['', 'blank'], ['   ', 'whitespace-only']])('ignores a %s tag (%s)', (value) => {
+  it.each([
+    ['', 'blank'],
+    ['   ', 'whitespace-only'],
+  ])('ignores a %s tag (%s)', (value) => {
     const { result } = setup();
     act(() => result.current.setNewTag(value));
     act(() => result.current.handleAddTag());

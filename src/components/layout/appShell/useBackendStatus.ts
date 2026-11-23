@@ -25,7 +25,9 @@ async function askConfirm(warning: string): Promise<boolean> {
 /** Polls backend health and exposes the corrupted-database recovery actions. */
 export function useBackendStatus() {
   const navigate = useNavigate();
-  const [backendStatus, setBackendStatus] = useState<'healthy' | 'offline' | 'corrupted'>('healthy');
+  const [backendStatus, setBackendStatus] = useState<'healthy' | 'offline' | 'corrupted'>(
+    'healthy'
+  );
   const [isRestoring, setIsRestoring] = useState(false);
   const [isStartingFresh, setIsStartingFresh] = useState(false);
   const hydrateLicenseStore = useLicenseStore((s) => s.hydrate);
@@ -86,7 +88,6 @@ export function useBackendStatus() {
       if (!listen) return;
 
       unlisteners.push(await listen(CORRUPTION_EVENT, () => setBackendStatus('corrupted')));
-
     };
 
     setup().catch(console.error);

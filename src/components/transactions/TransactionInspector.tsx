@@ -107,7 +107,11 @@ function SectionCard({
             {badge}
             {collapsible && (
               <span className="text-[#064E3B]/60">
-                {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                {isExpanded ? (
+                  <ChevronUp className="w-4 h-4" />
+                ) : (
+                  <ChevronDown className="w-4 h-4" />
+                )}
               </span>
             )}
           </div>
@@ -341,60 +345,56 @@ function InspectorTagEditor({
   handleRemoveTag: (tag: string) => void;
 }) {
   return (
-  <div className="space-y-2 pt-2 border-t border-[#064E3B]/10">
-    <TagsHeader count={tags.length} />
-    <div className="flex flex-wrap gap-1.5 min-h-[30px] items-center">
-      {tags.length === 0 ? (
-        <EmptyTagsNotice />
-      ) : (
-        tags.map((tag) => (
-          <span
-            key={tag}
-            className="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-0.5 rounded-full border border-[#064E3B]/15 shadow-2xs transition-transform hover:scale-105"
-            style={{ background: 'rgba(6,78,59,0.08)', color: '#064E3B' }}
-          >
-            <TagIcon className="w-2.5 h-2.5 opacity-60" />
-            {tag}
-            <button
-              type="button"
-              onClick={() => handleRemoveTag(tag)}
-              aria-label={`Remove tag ${tag}`}
-              className="rounded-full p-0.5 hover:bg-[#064E3B]/20 text-[#064E3B]/60 hover:text-[#064E3B] cursor-pointer"
+    <div className="space-y-2 pt-2 border-t border-[#064E3B]/10">
+      <TagsHeader count={tags.length} />
+      <div className="flex flex-wrap gap-1.5 min-h-[30px] items-center">
+        {tags.length === 0 ? (
+          <EmptyTagsNotice />
+        ) : (
+          tags.map((tag) => (
+            <span
+              key={tag}
+              className="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-0.5 rounded-full border border-[#064E3B]/15 shadow-2xs transition-transform hover:scale-105"
+              style={{ background: 'rgba(6,78,59,0.08)', color: '#064E3B' }}
             >
-              <X className="w-2.5 h-2.5" />
-            </button>
-          </span>
-        ))
-      )}
-    </div>
+              <TagIcon className="w-2.5 h-2.5 opacity-60" />
+              {tag}
+              <button
+                type="button"
+                onClick={() => handleRemoveTag(tag)}
+                aria-label={`Remove tag ${tag}`}
+                className="rounded-full p-0.5 hover:bg-[#064E3B]/20 text-[#064E3B]/60 hover:text-[#064E3B] cursor-pointer"
+              >
+                <X className="w-2.5 h-2.5" />
+              </button>
+            </span>
+          ))
+        )}
+      </div>
 
-    <div className="flex gap-2 pt-1">
-      <input
-        type="text"
-        aria-label="New tag"
-        placeholder="Add new tag..."
-        list="insp-tag-suggestions"
-        value={newTag}
-        onChange={(e) => setNewTag(e.target.value)}
-        onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), handleAddTag())}
-        className="flex-1 h-8 px-3 rounded-lg text-[12px] outline-none bg-[#F3EBDD]/70 border border-[#064E3B]/15 focus:border-[#064E3B]/40 text-[#064E3B] placeholder:text-[#064E3B]/40"
-      />
-      <TagDatalist
-        id="insp-tag-suggestions"
-        tags={tags}
-        availableTags={availableTags}
-      />
-      <button
-        type="button"
-        onClick={handleAddTag}
-        className="h-8 px-3 flex items-center justify-center gap-1 rounded-lg text-[12px] font-semibold transition-colors bg-[#064E3B]/10 hover:bg-[#064E3B]/20 text-[#064E3B] cursor-pointer"
-        aria-label="Add tag"
-      >
-        <Plus className="w-3.5 h-3.5" />
-        Add
-      </button>
+      <div className="flex gap-2 pt-1">
+        <input
+          type="text"
+          aria-label="New tag"
+          placeholder="Add new tag..."
+          list="insp-tag-suggestions"
+          value={newTag}
+          onChange={(e) => setNewTag(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), handleAddTag())}
+          className="flex-1 h-8 px-3 rounded-lg text-[12px] outline-none bg-[#F3EBDD]/70 border border-[#064E3B]/15 focus:border-[#064E3B]/40 text-[#064E3B] placeholder:text-[#064E3B]/40"
+        />
+        <TagDatalist id="insp-tag-suggestions" tags={tags} availableTags={availableTags} />
+        <button
+          type="button"
+          onClick={handleAddTag}
+          className="h-8 px-3 flex items-center justify-center gap-1 rounded-lg text-[12px] font-semibold transition-colors bg-[#064E3B]/10 hover:bg-[#064E3B]/20 text-[#064E3B] cursor-pointer"
+          aria-label="Add tag"
+        >
+          <Plus className="w-3.5 h-3.5" />
+          Add
+        </button>
+      </div>
     </div>
-  </div>
   );
 }
 
@@ -418,13 +418,23 @@ function DetailsPanel({
 }) {
   if (!show) return null;
   return (
-    <div id="panel-details" role="tabpanel" className="space-y-4 animate-in fade-in-50 duration-200">
-      <SectionCard title="Metadata & Categorization" icon={<SlidersHorizontal className="w-3.5 h-3.5" />}>
+    <div
+      id="panel-details"
+      role="tabpanel"
+      className="space-y-4 animate-in fade-in-50 duration-200"
+    >
+      <SectionCard
+        title="Metadata & Categorization"
+        icon={<SlidersHorizontal className="w-3.5 h-3.5" />}
+      >
         <div className="p-4 space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <div className="flex items-center justify-between">
-                <Label htmlFor="insp-form.merchant" className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70">
+                <Label
+                  htmlFor="insp-form.merchant"
+                  className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70"
+                >
                   Merchant Name
                 </Label>
                 {form.merchant !== (tx.merchant_display_name ?? '') && (
@@ -446,7 +456,10 @@ function DetailsPanel({
             </div>
 
             <div className="space-y-1.5">
-              <Label htmlFor="insp-category" className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70">
+              <Label
+                htmlFor="insp-category"
+                className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70"
+              >
                 Category
               </Label>
               <CategorySelect
@@ -460,7 +473,10 @@ function DetailsPanel({
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="insp-notes" className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70">
+            <Label
+              htmlFor="insp-notes"
+              className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70"
+            >
               Notes
             </Label>
             <Textarea
@@ -484,7 +500,10 @@ function DetailsPanel({
         </div>
       </SectionCard>
 
-      <SectionCard title="Payment Instrument & Balance" icon={<Building2 className="w-3.5 h-3.5" />}>
+      <SectionCard
+        title="Payment Instrument & Balance"
+        icon={<Building2 className="w-3.5 h-3.5" />}
+      >
         <InstrumentSelect
           instrumentId={form.instrumentId}
           onInstrumentChange={form.setInstrumentId}
@@ -545,75 +564,77 @@ function InspectorFooter({
 }) {
   if (!show) return null;
   return (
-      <div className="p-4 bg-[#F8E7C9]/90 border-t border-[#064E3B]/10 backdrop-blur-md flex flex-col gap-2 shrink-0">
-        {showSavedConfirm && (
-          <div
-            role="status"
-            className="flex items-center justify-center gap-1.5 text-xs font-semibold text-emerald-700 bg-emerald-500/10 py-1.5 px-3 rounded-lg border border-emerald-500/20 animate-in fade-in slide-in-from-bottom-1"
-          >
-            <CheckCircle2 className="w-4 h-4 text-emerald-600" aria-hidden="true" />
-            Changes saved successfully.
-          </div>
-        )}
-
-        {isDirty && !showSavedConfirm && (
-          <div className="flex items-center justify-between text-[11px] font-semibold text-amber-800 bg-amber-500/10 py-1 px-3 rounded-lg border border-amber-500/20 animate-in fade-in">
-            <span>Unsaved edits</span>
-            <kbd className="font-mono text-[10px] bg-amber-500/10 px-1.5 py-0.5 rounded">⌘S to save</kbd>
-          </div>
-        )}
-
-        <div className="flex gap-2">
-          {isDirty && (
-            <button
-              type="button"
-              onClick={resetForm}
-              className="h-9 px-3 rounded-xl text-[12px] font-semibold transition-colors border border-[#064E3B]/20 bg-[#064E3B]/5 hover:bg-[#064E3B]/10 text-[#064E3B] cursor-pointer"
-              title="Discard unsaved changes"
-            >
-              Reset
-            </button>
-          )}
-
-          <button
-            type="button"
-            onClick={handleSave}
-            disabled={updateFields.isPending || (!isDirty && !showSavedConfirm)}
-            className={cn(
-              'flex-1 h-9 rounded-xl text-[13px] font-bold flex items-center justify-center gap-2 transition-all shadow-xs cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#064E3B]',
-              isDirty
-                ? 'bg-[#064E3B] text-[#F8E7C9] hover:bg-[#064E3B]/90 shadow-md ring-2 ring-[#064E3B]/30'
-                : 'bg-[#064E3B]/40 text-[#F8E7C9]/70 cursor-not-allowed'
-            )}
-          >
-            {updateFields.isPending ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Saving Edits…
-              </>
-            ) : (
-              <>
-                <Save className="w-4 h-4" aria-hidden="true" />
-                Save Changes
-              </>
-            )}
-          </button>
-
-          <button
-            type="button"
-            onClick={handleDelete}
-            disabled={softDelete.isPending}
-            className="h-9 px-3 rounded-xl text-[13px] font-bold flex items-center justify-center gap-1.5 transition-colors border border-red-500/20 bg-red-500/10 hover:bg-red-500/20 text-red-700 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-red-500"
-            title="Delete Transaction"
-          >
-            {softDelete.isPending ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Trash2 className="w-4 h-4" aria-hidden="true" />
-            )}
-          </button>
+    <div className="p-4 bg-[#F8E7C9]/90 border-t border-[#064E3B]/10 backdrop-blur-md flex flex-col gap-2 shrink-0">
+      {showSavedConfirm && (
+        <div
+          role="status"
+          className="flex items-center justify-center gap-1.5 text-xs font-semibold text-emerald-700 bg-emerald-500/10 py-1.5 px-3 rounded-lg border border-emerald-500/20 animate-in fade-in slide-in-from-bottom-1"
+        >
+          <CheckCircle2 className="w-4 h-4 text-emerald-600" aria-hidden="true" />
+          Changes saved successfully.
         </div>
+      )}
+
+      {isDirty && !showSavedConfirm && (
+        <div className="flex items-center justify-between text-[11px] font-semibold text-amber-800 bg-amber-500/10 py-1 px-3 rounded-lg border border-amber-500/20 animate-in fade-in">
+          <span>Unsaved edits</span>
+          <kbd className="font-mono text-[10px] bg-amber-500/10 px-1.5 py-0.5 rounded">
+            ⌘S to save
+          </kbd>
+        </div>
+      )}
+
+      <div className="flex gap-2">
+        {isDirty && (
+          <button
+            type="button"
+            onClick={resetForm}
+            className="h-9 px-3 rounded-xl text-[12px] font-semibold transition-colors border border-[#064E3B]/20 bg-[#064E3B]/5 hover:bg-[#064E3B]/10 text-[#064E3B] cursor-pointer"
+            title="Discard unsaved changes"
+          >
+            Reset
+          </button>
+        )}
+
+        <button
+          type="button"
+          onClick={handleSave}
+          disabled={updateFields.isPending || (!isDirty && !showSavedConfirm)}
+          className={cn(
+            'flex-1 h-9 rounded-xl text-[13px] font-bold flex items-center justify-center gap-2 transition-all shadow-xs cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#064E3B]',
+            isDirty
+              ? 'bg-[#064E3B] text-[#F8E7C9] hover:bg-[#064E3B]/90 shadow-md ring-2 ring-[#064E3B]/30'
+              : 'bg-[#064E3B]/40 text-[#F8E7C9]/70 cursor-not-allowed'
+          )}
+        >
+          {updateFields.isPending ? (
+            <>
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Saving Edits…
+            </>
+          ) : (
+            <>
+              <Save className="w-4 h-4" aria-hidden="true" />
+              Save Changes
+            </>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={handleDelete}
+          disabled={softDelete.isPending}
+          className="h-9 px-3 rounded-xl text-[13px] font-bold flex items-center justify-center gap-1.5 transition-colors border border-red-500/20 bg-red-500/10 hover:bg-red-500/20 text-red-700 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-red-500"
+          title="Delete Transaction"
+        >
+          {softDelete.isPending ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <Trash2 className="w-4 h-4" aria-hidden="true" />
+          )}
+        </button>
       </div>
+    </div>
   );
 }
 
@@ -628,9 +649,7 @@ function InspectorHeader({
   onClose: () => void;
 }) {
   return (
-    <div
-      className="flex items-center justify-between px-5 py-4 flex-shrink-0 bg-[#F8E7C9]/80 border-b border-[#064E3B]/10 backdrop-blur-md"
-    >
+    <div className="flex items-center justify-between px-5 py-4 flex-shrink-0 bg-[#F8E7C9]/80 border-b border-[#064E3B]/10 backdrop-blur-md">
       <div className="flex items-center gap-3 min-w-0">
         <div
           className="w-10 h-10 rounded-xl flex items-center justify-center text-[16px] font-bold shadow-xs shrink-0 ring-2 ring-[#064E3B]/10"
@@ -811,15 +830,15 @@ export default function TransactionInspector({
       />
 
       <InspectorFooter
-          show={!isLoading && !!tx}
-          isDirty={isDirty}
-          showSavedConfirm={showSavedConfirm}
-          resetForm={resetForm}
-          handleSave={handleSave}
-          handleDelete={handleDelete}
-          updateFields={updateFields}
-          softDelete={softDelete}
-        />
+        show={!isLoading && !!tx}
+        isDirty={isDirty}
+        showSavedConfirm={showSavedConfirm}
+        resetForm={resetForm}
+        handleSave={handleSave}
+        handleDelete={handleDelete}
+        updateFields={updateFields}
+        softDelete={softDelete}
+      />
     </aside>
   );
 }

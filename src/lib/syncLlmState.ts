@@ -37,7 +37,8 @@ function lightestModel(models: LlmModelInfo[]): LlmModelInfo {
 function resolveModelId(hw: LlmHardwareInfo, models: LlmModelInfo[]): string {
   // Preference order: what the user last chose, else the backend's hardware-based
   // recommendation, else the first available model.
-  const selectedId = localStorage.getItem(MODEL_STORAGE_KEY) || hw.recommended_model_id || models[0].id;
+  const selectedId =
+    localStorage.getItem(MODEL_STORAGE_KEY) || hw.recommended_model_id || models[0].id;
   const selected = models.find((m) => m.id === selectedId);
 
   // A previously accepted override is remembered, so the user is warned about a

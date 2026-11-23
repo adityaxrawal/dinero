@@ -54,10 +54,10 @@
     /* Surface hierarchy */
     --bg-canvas: #f8e7c9; /* page background */
     --bg-surface: #ecddb0; /* subtle lift */
-    --bg-card: #F3EBDD; /* cards */
+    --bg-card: #f3ebdd; /* cards */
     --bg-card-hover: #e8dbc8; /* card hover */
     --bg-rail: #064e3b; /* icon rail */
-    --bg-panel: #F3EBDD; /* context panels */
+    --bg-panel: #f3ebdd; /* context panels */
     --bg-sidebar: #064e3b;
 
     /* Text hierarchy */

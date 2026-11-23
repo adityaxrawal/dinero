@@ -32,7 +32,7 @@ describe('InstrumentAnalyticsTab', () => {
         id: 'tx3',
         date: '2026-06-01',
         merchant: 'Salary',
-        amount: 1000.00, // positive magnitude in DB
+        amount: 1000.0, // positive magnitude in DB
         direction: 'credit', // income / inflow
         category: 'Income',
         status: 'posted',

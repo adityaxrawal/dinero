@@ -15,12 +15,14 @@ export function useNotificationCenter() {
   const removeTask = useNotificationStore((s) => s.removeTask);
 
   const activeTasks = useMemo(
-    () => Object.values(tasksObj).filter((t) => t.status === 'running' || t.status === 'cancelling'),
+    () =>
+      Object.values(tasksObj).filter((t) => t.status === 'running' || t.status === 'cancelling'),
     [tasksObj]
   );
 
   const recentFinishedTasks = useMemo(
-    () => Object.values(tasksObj).filter((t) => t.status !== 'running' && t.status !== 'cancelling'),
+    () =>
+      Object.values(tasksObj).filter((t) => t.status !== 'running' && t.status !== 'cancelling'),
     [tasksObj]
   );
 
@@ -39,9 +41,7 @@ export function useNotificationCenter() {
     dismissNotification,
     removeTask,
     hasContent:
-      activeTasks.length > 0 ||
-      visibleNotifications.length > 0 ||
-      recentFinishedTasks.length > 0,
+      activeTasks.length > 0 || visibleNotifications.length > 0 || recentFinishedTasks.length > 0,
     primaryTask: activeTasks[0] ?? recentFinishedTasks[0],
     hasScanTask:
       activeTasks.some((t) => t.id.startsWith('scan:')) ||

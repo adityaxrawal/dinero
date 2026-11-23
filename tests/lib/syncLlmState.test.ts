@@ -23,7 +23,13 @@ const MODELS = [
 ];
 
 const hw = (over = {}) =>
-  ({ ram_gb: 16, cpu_cores: 8, recommended_slots: 4, recommended_model_id: 'small', ...over }) as never;
+  ({
+    ram_gb: 16,
+    cpu_cores: 8,
+    recommended_slots: 4,
+    recommended_model_id: 'small',
+    ...over,
+  }) as never;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -31,7 +37,10 @@ beforeEach(() => {
   asMock(API.llm.getAvailableModels).mockResolvedValue(MODELS);
   asMock(API.llm.setActiveModel).mockResolvedValue(undefined);
   asMock(API.llm.setParallelSlots).mockResolvedValue(undefined);
-  vi.stubGlobal('confirm', vi.fn(() => false));
+  vi.stubGlobal(
+    'confirm',
+    vi.fn(() => false)
+  );
   vi.stubGlobal('alert', vi.fn());
 });
 
@@ -61,7 +70,10 @@ describe('syncLlmState', () => {
 
   it('records a persistent override when the user accepts the risk', async () => {
     localStorage.setItem('llm_model', 'large');
-    vi.stubGlobal('confirm', vi.fn(() => true));
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => true)
+    );
     asMock(API.llm.getHardwareInfo).mockResolvedValue(hw({ ram_gb: 16 }));
     await syncLlmState();
     expect(API.llm.setActiveModel).toHaveBeenCalledWith('large');

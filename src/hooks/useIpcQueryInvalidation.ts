@@ -74,7 +74,10 @@ export function useIpcQueryInvalidation(): void {
         // the cleanup loop and strand the remaining subscriptions.
         const safeUnlisten = () => {
           Promise.resolve(unlisten()).catch((e) => {
-            console.debug('Failed to unlisten to IPC event (likely already unlistened or component unmounted):', e);
+            console.debug(
+              'Failed to unlisten to IPC event (likely already unlistened or component unmounted):',
+              e
+            );
           });
         };
 

@@ -5,7 +5,7 @@
  * full PAN, is never handled by this application.
  */
 import React, { useState, useMemo } from 'react';
-import {Eye, EyeOff, Copy, Check} from 'lucide-react';
+import { Eye, EyeOff, Copy, Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 
@@ -18,23 +18,47 @@ type CardNetwork = 'visa' | 'mastercard' | 'rupay' | 'amex' | 'generic';
  * so involved -- it covers both the classic 51-55 range and the newer 2221-2720
  * range. Falls back to a generic badge for anything unrecognised.
  */
-function getCardNetwork(cardNumber: string): { network: CardNetwork; label: string; badgeClass: string } {
+function getCardNetwork(cardNumber: string): {
+  network: CardNetwork;
+  label: string;
+  badgeClass: string;
+} {
   const digits = cardNumber.replace(/\D/g, '');
 
   if (/^4/.test(digits)) {
-    return { network: 'visa', label: 'VISA', badgeClass: 'bg-blue-600/15 text-blue-800 border-blue-600/30' };
+    return {
+      network: 'visa',
+      label: 'VISA',
+      badgeClass: 'bg-blue-600/15 text-blue-800 border-blue-600/30',
+    };
   }
   if (/^(5[1-5]|222[1-9]|22[3-9]\d|2[3-6]\d{2}|27[0-1]\d|2720)/.test(digits)) {
-    return { network: 'mastercard', label: 'MC', badgeClass: 'bg-orange-600/15 text-orange-800 border-orange-600/30' };
+    return {
+      network: 'mastercard',
+      label: 'MC',
+      badgeClass: 'bg-orange-600/15 text-orange-800 border-orange-600/30',
+    };
   }
   if (/^(34|37)/.test(digits)) {
-    return { network: 'amex', label: 'AMEX', badgeClass: 'bg-[#006FCF]/15 text-[#006FCF] border-[#006FCF]/30' };
+    return {
+      network: 'amex',
+      label: 'AMEX',
+      badgeClass: 'bg-[#006FCF]/15 text-[#006FCF] border-[#006FCF]/30',
+    };
   }
   if (/^(60|65|81|82|508|3528|3589)/.test(digits)) {
-    return { network: 'rupay', label: 'RuPay', badgeClass: 'bg-emerald-600/15 text-emerald-800 border-emerald-600/30' };
+    return {
+      network: 'rupay',
+      label: 'RuPay',
+      badgeClass: 'bg-emerald-600/15 text-emerald-800 border-emerald-600/30',
+    };
   }
 
-  return { network: 'generic', label: 'CARD', badgeClass: 'bg-[#064E3B]/10 text-[#064E3B] border-[#064E3B]/20' };
+  return {
+    network: 'generic',
+    label: 'CARD',
+    badgeClass: 'bg-[#064E3B]/10 text-[#064E3B] border-[#064E3B]/20',
+  };
 }
 
 /**
@@ -62,9 +86,7 @@ function maskCardNumber(formattedValue: string): string {
     if (len <= 4) return formattedValue;
     return '•'.repeat(len - 4) + formattedValue.slice(-4);
   }
-  return parts
-    .map((part, idx) => (idx === parts.length - 1 ? part : '••••'))
-    .join(' ');
+  return parts.map((part, idx) => (idx === parts.length - 1 ? part : '••••')).join(' ');
 }
 
 interface CardNumberInputProps {
@@ -164,7 +186,11 @@ export default function CardNumberInput({
           title="Copy card number"
           aria-label="Copy card number"
         >
-          {copied ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+          {copied ? (
+            <Check className="w-3.5 h-3.5 text-emerald-600" />
+          ) : (
+            <Copy className="w-3.5 h-3.5" />
+          )}
         </button>
       </div>
     </div>

@@ -101,7 +101,7 @@ describe('SidebarNotificationCenter', () => {
   it('allows expanding and collapsing the notifications drawer', () => {
     useNotificationStore.setState({
       tasks: {
-        'task_1': {
+        task_1: {
           id: 'task_1',
           domainKey: 'task_1',
           category: 'statements',

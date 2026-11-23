@@ -51,14 +51,22 @@ describe('scan events', () => {
   it('tracks progress as a cancelable ingestion task', () => {
     emit('scan_progress', scan());
     const task = store.getState().tasks['scan:acc1'];
-    expect(task).toMatchObject({ category: 'ingestion', status: 'running', current: 10, cancelable: true });
+    expect(task).toMatchObject({
+      category: 'ingestion',
+      status: 'running',
+      current: 10,
+      cancelable: true,
+    });
     expect(task.meta).toEqual({ account_id: 'acc1' });
   });
 
   it('completes the task and posts a success notification', () => {
     emit('scan_progress', scan());
     emit('scan_completed', scan({ processed: 100 }));
-    expect(store.getState().tasks['scan:acc1']).toMatchObject({ status: 'completed', progressPct: 100 });
+    expect(store.getState().tasks['scan:acc1']).toMatchObject({
+      status: 'completed',
+      progressPct: 100,
+    });
     expect(store.getState().notifications[0]).toMatchObject({
       severity: 'success',
       title: 'Gmail Scan Completed',
@@ -68,7 +76,10 @@ describe('scan events', () => {
 
   it('records a failure with the error message', () => {
     emit('scan_failed', { error: 'rate limited', account_id: 'acc1' });
-    expect(store.getState().tasks['scan:acc1']).toMatchObject({ status: 'failed', errorMessage: 'rate limited' });
+    expect(store.getState().tasks['scan:acc1']).toMatchObject({
+      status: 'failed',
+      errorMessage: 'rate limited',
+    });
     expect(store.getState().notifications[0].severity).toBe('error');
   });
 
@@ -135,7 +146,9 @@ describe('merchant_cleanup_progress', () => {
 
   it('falls back to a counter when no merchant is named', () => {
     emit('merchant_cleanup_progress', cleanup());
-    expect(store.getState().tasks['merchant_cleanup:r1'].description).toBe('Processing transactions (5/10)');
+    expect(store.getState().tasks['merchant_cleanup:r1'].description).toBe(
+      'Processing transactions (5/10)'
+    );
   });
 
   it('summarises and notifies on completion', () => {
@@ -170,7 +183,11 @@ describe('background_task_progress', () => {
 
   it('tracks a generic system task', () => {
     emit('background_task_progress', bg());
-    expect(store.getState().tasks.bg1).toMatchObject({ category: 'system', status: 'running', progressPct: 25 });
+    expect(store.getState().tasks.bg1).toMatchObject({
+      category: 'system',
+      status: 'running',
+      progressPct: 25,
+    });
   });
 
   it('routes statement task types to the statements category', () => {
@@ -204,12 +221,22 @@ describe('system_warning and db_backup_completed', () => {
     ['degraded', 'warning'],
     ['info', 'info'],
   ])('maps %s severity to %s', (severity, expected) => {
-    emit('system_warning', { warning_type: 'low_memory', message: 'Low RAM', severity, action_hint: null });
+    emit('system_warning', {
+      warning_type: 'low_memory',
+      message: 'Low RAM',
+      severity,
+      action_hint: null,
+    });
     expect(store.getState().notifications[0].severity).toBe(expected);
   });
 
   it.each(['keychain_denied', 'notification_denied'])('suppresses %s', (warning_type) => {
-    emit('system_warning', { warning_type, message: 'denied', severity: 'critical', action_hint: null });
+    emit('system_warning', {
+      warning_type,
+      message: 'denied',
+      severity: 'critical',
+      action_hint: null,
+    });
     expect(store.getState().notifications).toHaveLength(0);
   });
 

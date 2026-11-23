@@ -48,7 +48,9 @@ vi.mock('@/pages/transactionDetail/MetadataCard', () => ({
 vi.mock('@/pages/transactionDetail/InstrumentCard', () => ({
   default: () => <div data-testid="instrument" />,
 }));
-vi.mock('@/pages/transactionDetail/AuditCard', () => ({ default: () => <div data-testid="audit" /> }));
+vi.mock('@/pages/transactionDetail/AuditCard', () => ({
+  default: () => <div data-testid="audit" />,
+}));
 vi.mock('@/pages/transactionDetail/RawSourceDialog', () => ({ default: () => null }));
 vi.mock('@/components/transactions/SourceEvidencePanel', () => ({
   default: ({

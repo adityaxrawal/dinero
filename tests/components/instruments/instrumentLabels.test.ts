@@ -1,8 +1,14 @@
 // A UPI VPA carries no issuer field, so the handle is the only signal for what
 // to call it — that mapping is what these pin.
 import { describe, it, expect } from 'vitest';
-import { getInstrumentTitle, getInstrumentSubtitle } from '@/components/instruments/instrumentLabels';
-import { buildInstrumentUpdate, type InstrumentFormFields } from '@/components/instruments/instrumentUpdate';
+import {
+  getInstrumentTitle,
+  getInstrumentSubtitle,
+} from '@/components/instruments/instrumentLabels';
+import {
+  buildInstrumentUpdate,
+  type InstrumentFormFields,
+} from '@/components/instruments/instrumentUpdate';
 
 const upi = (masked: string) => ({ instrument_type: 'upi_vpa', masked_identifier: masked });
 
@@ -12,7 +18,9 @@ describe('getInstrumentTitle', () => {
   });
 
   it('prefers a real issuer name', () => {
-    expect(getInstrumentTitle({ issuer_name: 'HDFC', instrument_type: 'credit_card' })).toBe('HDFC');
+    expect(getInstrumentTitle({ issuer_name: 'HDFC', instrument_type: 'credit_card' })).toBe(
+      'HDFC'
+    );
   });
 
   it('ignores a whitespace-only issuer name', () => {
@@ -94,8 +102,8 @@ describe('buildInstrumentUpdate', () => {
   });
 
   it('parses the two money fields into numbers', () => {
-    expect(buildInstrumentUpdate({ ...empty, creditLimit: '150000', minimumDue: '1200.50' })).toEqual(
-      { credit_limit: 150000, minimum_due: 1200.5 }
-    );
+    expect(
+      buildInstrumentUpdate({ ...empty, creditLimit: '150000', minimumDue: '1200.50' })
+    ).toEqual({ credit_limit: 150000, minimum_due: 1200.5 });
   });
 });

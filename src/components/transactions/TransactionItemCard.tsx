@@ -2,7 +2,7 @@
  * One transaction row in the ledger list.
  */
 import React from 'react';
-import {ArrowUpRight, ArrowDownRight, ChevronRight} from 'lucide-react';
+import { ArrowUpRight, ArrowDownRight, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatCustomDate } from '@/lib/formatCustomDate';
 import { formatMerchantName, getMerchantCategoryVisuals } from '@/lib/merchantFormatter';

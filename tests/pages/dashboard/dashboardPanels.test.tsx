@@ -101,9 +101,7 @@ describe('AttentionRail', () => {
   });
 
   it('falls back to upcoming bills only when nothing is urgent', () => {
-    render(
-      <AttentionRail data={data({ summary: { upcoming_bills_count: 1 } as never })} />
-    );
+    render(<AttentionRail data={data({ summary: { upcoming_bills_count: 1 } as never })} />);
     expect(screen.getByText('1 Upcoming Bill')).toBeInTheDocument();
   });
 });
@@ -111,7 +109,10 @@ describe('AttentionRail', () => {
 describe('ChartsRow', () => {
   it('spins while either chart is still loading', () => {
     const { container } = render(
-      <ChartsRow data={data({ trendLoading: true, categoriesLoading: true })} onCategoryClick={vi.fn()} />
+      <ChartsRow
+        data={data({ trendLoading: true, categoriesLoading: true })}
+        onCategoryClick={vi.fn()}
+      />
     );
     expect(container.querySelectorAll('.animate-spin').length).toBe(2);
   });

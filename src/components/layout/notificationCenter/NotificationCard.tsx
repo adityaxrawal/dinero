@@ -3,10 +3,7 @@
  */
 import { Link } from 'react-router-dom';
 import { X, Sparkles, FileText, Activity, Database, Bell, ArrowUpRight } from 'lucide-react';
-import type {
-  NotificationFeedItem,
-  NotificationCategory,
-} from '@/stores/useNotificationStore';
+import type { NotificationFeedItem, NotificationCategory } from '@/stores/useNotificationStore';
 import { cn } from '@/lib/utils';
 
 const CATEGORY_ICON: Record<NotificationCategory, typeof Bell> = {

@@ -25,7 +25,9 @@ describe('OnboardingFooter', () => {
   it('offers no way back from the first step', () => {
     renderFooter({ step: 1 });
 
-    expect(screen.queryByRole('button', { name: 'Go back to previous step' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Go back to previous step' })
+    ).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Continue to step 2' })).toBeInTheDocument();
   });
 

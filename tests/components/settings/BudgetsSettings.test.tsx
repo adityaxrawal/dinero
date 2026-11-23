@@ -101,7 +101,9 @@ describe('saving', () => {
     await mount();
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }));
     await waitFor(() =>
-      expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Spending Limits Saved' }))
+      expect(toast).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Spending Limits Saved' })
+      )
     );
   });
 

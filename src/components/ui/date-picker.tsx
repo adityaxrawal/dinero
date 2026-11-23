@@ -108,7 +108,9 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
   showPresets = true,
 }) => {
   /** Applies a preset range such as this month or last 30 days. */
-  const handlePreset = (daysBack: number | 'thisMonth' | 'lastMonth' | 'thisYear' | 'lastYear' | 'all') => {
+  const handlePreset = (
+    daysBack: number | 'thisMonth' | 'lastMonth' | 'thisYear' | 'lastYear' | 'all'
+  ) => {
     const end = new Date();
     let start = new Date();
 
@@ -125,7 +127,7 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
       start = new Date(end.getFullYear() - 1, 0, 1);
       end.setFullYear(end.getFullYear() - 1, 11, 31);
     } else if (daysBack === 'all') {
-      start = min ? (parseISODate(min) || new Date(2020, 0, 1)) : new Date(2020, 0, 1);
+      start = min ? parseISODate(min) || new Date(2020, 0, 1) : new Date(2020, 0, 1);
     }
 
     onChange({

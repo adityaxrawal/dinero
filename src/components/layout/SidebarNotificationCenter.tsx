@@ -6,11 +6,7 @@
  */
 import { useNotificationCenter } from './notificationCenter/useNotificationCenter';
 import TaskCard from './notificationCenter/TaskCard';
-import {
-  CenterHeader,
-  CollapsedSummary,
-  ExpandedFeed,
-} from './notificationCenter/CenterPanels';
+import { CenterHeader, CollapsedSummary, ExpandedFeed } from './notificationCenter/CenterPanels';
 
 /** The sidebar notification centre: live tasks and the historical feed. */
 export default function SidebarNotificationCenter() {

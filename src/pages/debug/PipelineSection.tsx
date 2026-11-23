@@ -31,9 +31,7 @@ function PipelineControlCard({
         <span
           className={cn(
             'text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-sm font-bold',
-            paused
-              ? 'bg-amber-500/20 text-amber-700'
-              : 'bg-[#064E3B]/10 text-[#064E3B]'
+            paused ? 'bg-amber-500/20 text-amber-700' : 'bg-[#064E3B]/10 text-[#064E3B]'
           )}
         >
           {paused ? 'PAUSED' : 'RUNNING'}

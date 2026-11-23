@@ -7,7 +7,9 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import StatementUploadDropzone from '@/components/statements/StatementUploadDropzone';
 import { useStatementUpload } from '@/components/statements/upload/useStatementUpload';
 
-vi.mock('@/components/statements/upload/useStatementUpload', () => ({ useStatementUpload: vi.fn() }));
+vi.mock('@/components/statements/upload/useStatementUpload', () => ({
+  useStatementUpload: vi.fn(),
+}));
 
 const asMock = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
 const pickAndUpload = vi.fn();

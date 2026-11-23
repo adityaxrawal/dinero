@@ -41,7 +41,10 @@ function ScoreBar({ score }: { score: number }) {
       <div className="flex items-center gap-1.5 w-24">
         <div className="flex-1 h-1.5 rounded-full bg-muted overflow-hidden">
           <div
-            className={cn('h-full rounded-full', color === 'emerald' ? 'bg-emerald-500' : 'bg-amber-500')}
+            className={cn(
+              'h-full rounded-full',
+              color === 'emerald' ? 'bg-emerald-500' : 'bg-amber-500'
+            )}
             style={{ width: `${Math.round(score * 100)}%` }}
           />
         </div>
@@ -49,7 +52,9 @@ function ScoreBar({ score }: { score: number }) {
           {Math.round(score * 100)}%
         </span>
       </div>
-      <p className="text-[10px] text-muted-foreground mt-0.5">Blends merchant, amount &amp; date match</p>
+      <p className="text-[10px] text-muted-foreground mt-0.5">
+        Blends merchant, amount &amp; date match
+      </p>
     </div>
   );
 }
@@ -99,7 +104,12 @@ function MemberFields({
 }) {
   return (
     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-      <DiffField label="Merchant" value={member.merchant} diff={diff.merchant} className="font-medium" />
+      <DiffField
+        label="Merchant"
+        value={member.merchant}
+        diff={diff.merchant}
+        className="font-medium"
+      />
       {(member.instrument_issuer_name || member.instrument_masked_identifier) && (
         <DiffField
           label="Instrument"
@@ -116,7 +126,10 @@ function MemberFields({
       <DiffField
         label="Amount"
         diff={diff.amount}
-        className={cn('font-medium', member.direction === 'debit' ? 'text-red-700' : 'text-emerald-700')}
+        className={cn(
+          'font-medium',
+          member.direction === 'debit' ? 'text-red-700' : 'text-emerald-700'
+        )}
         value={`${member.direction === 'debit' ? '-' : '+'} ₹${Math.abs(member.amount).toFixed(2)}`}
       />
       <DiffField
@@ -127,7 +140,9 @@ function MemberFields({
       />
       {member.reference_id && (
         <div>
-          <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">Reference ID</p>
+          <p className="text-xs text-muted-foreground uppercase tracking-wider mb-1">
+            Reference ID
+          </p>
           <p className="text-sm font-mono">{member.reference_id}</p>
         </div>
       )}
@@ -228,7 +243,13 @@ function SourceMessagePreview({ rawPayloadJson }: { rawPayloadJson: string }) {
 
   return (
     <div className="mt-2">
-      <GmailEmailViewer html={html} text={text} subject={subject} sender={sender} maxHeight="320px" />
+      <GmailEmailViewer
+        html={html}
+        text={text}
+        subject={subject}
+        sender={sender}
+        maxHeight="320px"
+      />
     </div>
   );
 }

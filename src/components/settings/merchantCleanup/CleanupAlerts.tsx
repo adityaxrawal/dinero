@@ -42,8 +42,8 @@ export default function CleanupAlerts({
         noModel && (
           <Banner tone="warn">
             No AI model is downloaded yet, so there is nothing to read your emails with. Pick one
-            under <strong className="font-semibold">Local LLM Configuration</strong> below, then come
-            back here.
+            under <strong className="font-semibold">Local LLM Configuration</strong> below, then
+            come back here.
           </Banner>
         )
       )}

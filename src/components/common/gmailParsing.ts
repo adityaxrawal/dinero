@@ -1,4 +1,3 @@
-
 /**
  * Pure parsing helpers behind the email viewer.
  *
@@ -6,7 +5,11 @@
  * Fast Refresh requires) and so this logic stays directly testable.
  */
 /** One value spotted in an email body that the user can push into a form field. */
-export type QuickCandidate = { type: 'amount' | 'merchant' | 'date' | 'ref'; label: string; value: string };
+export type QuickCandidate = {
+  type: 'amount' | 'merchant' | 'date' | 'ref';
+  label: string;
+  value: string;
+};
 
 /**
  * Strips CSS and script content out of text destined for the reader view.
@@ -19,14 +22,17 @@ export type QuickCandidate = { type: 'amount' | 'merchant' | 'date' | 'ref'; lab
  */
 function sanitizeCssAndCode(input: string): string {
   if (!input) return '';
-  
+
   let cleaned = input;
   cleaned = cleaned.replace(/<style[\s\S]*?<\/style>/gi, ' ');
   cleaned = cleaned.replace(/<script[\s\S]*?<\/script>/gi, ' ');
   cleaned = cleaned.replace(/@media[^{]+\{(?:[^{}]*|\{[^{}]*\})*\}/gi, ' ');
   cleaned = cleaned.replace(/(?:^|\n)\s*(?:[a-z0-9_#.:\-\s,>+*()]+\s*\{[^}]*\})/gi, ' ');
-  cleaned = cleaned.replace(/\{[^}]*(?:margin|padding|color|font-|border-|display:|text-align|width:|height:|background)[^}]*\}/gi, ' ');
-  
+  cleaned = cleaned.replace(
+    /\{[^}]*(?:margin|padding|color|font-|border-|display:|text-align|width:|height:|background)[^}]*\}/gi,
+    ' '
+  );
+
   return cleaned;
 }
 
@@ -47,11 +53,12 @@ export function cleanTextForReader(rawHtml?: string | null, rawText?: string | n
   if (rawText && rawText.trim()) {
     textContent = rawText;
   } else if (rawHtml && rawHtml.trim()) {
-    textContent = rawHtml.replace(/<br\s*\/?>/gi, '\n')
-                         .replace(/<\/p>/gi, '\n\n')
-                         .replace(/<\/tr>/gi, '\n')
-                         .replace(/<\/td>/gi, '  ')
-                         .replace(/<[^>]+>/g, '');
+    textContent = rawHtml
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n\n')
+      .replace(/<\/tr>/gi, '\n')
+      .replace(/<\/td>/gi, '  ')
+      .replace(/<[^>]+>/g, '');
   }
 
   textContent = sanitizeCssAndCode(textContent);
@@ -80,7 +87,10 @@ export function prepareGmailHtml(rawHtml?: string | null, rawText?: string | nul
   let content = rawHtml || '';
 
   if (!content.trim() && rawText) {
-    const isHtmlTag = /<(table|tr|td|th|div|p|span|b|strong|em|i|u|h[1-6]|ul|ol|li|br|hr|html|body|head|header|footer|section|article|a|img|pre|code)[^>]*>/i.test(rawText);
+    const isHtmlTag =
+      /<(table|tr|td|th|div|p|span|b|strong|em|i|u|h[1-6]|ul|ol|li|br|hr|html|body|head|header|footer|section|article|a|img|pre|code)[^>]*>/i.test(
+        rawText
+      );
     if (isHtmlTag) {
       content = rawText;
     }
@@ -93,10 +103,17 @@ export function prepareGmailHtml(rawHtml?: string | null, rawText?: string | nul
   if (!content.includes('<style')) {
     const hasHtmlTags = /<[a-z1-6][^>]*>/i.test(content);
     if (hasHtmlTags) {
-      const cssMatch = content.match(/(?:@media[^{]+\{(?:[^{}]*|\{[^{}]*\})*\}|[a-z0-9_#.:\-\s,>+*()]+\s*\{[^}]*\}|\{[^}]*\})/gi);
+      const cssMatch = content.match(
+        /(?:@media[^{]+\{(?:[^{}]*|\{[^{}]*\})*\}|[a-z0-9_#.:\-\s,>+*()]+\s*\{[^}]*\}|\{[^}]*\})/gi
+      );
       if (cssMatch && cssMatch.length > 0) {
         const cssBlock = cssMatch.join('\n');
-        const htmlOnly = content.replace(/(?:@media[^{]+\{(?:[^{}]*|\{[^{}]*\})*\}|[a-z0-9_#.:\-\s,>+*()]+\s*\{[^}]*\}|\{[^}]*\})/gi, '').trim();
+        const htmlOnly = content
+          .replace(
+            /(?:@media[^{]+\{(?:[^{}]*|\{[^{}]*\})*\}|[a-z0-9_#.:\-\s,>+*()]+\s*\{[^}]*\}|\{[^}]*\})/gi,
+            ''
+          )
+          .trim();
         content = `<style>\n${cssBlock}\n</style>\n${htmlOnly}`;
       }
     }
@@ -189,7 +206,11 @@ export function extractQuickCandidates(text: string): QuickCandidate[] {
     (value) => {
       const num = parseFloat(value);
       if (isNaN(num) || num <= 0) return null;
-      return { type: 'amount', label: `Amount: ₹${num.toLocaleString('en-IN')}`, value: num.toFixed(2) };
+      return {
+        type: 'amount',
+        label: `Amount: ₹${num.toLocaleString('en-IN')}`,
+        value: num.toFixed(2),
+      };
     },
     (raw) => raw.replace(/,/g, '')
   );
@@ -209,7 +230,9 @@ export function extractQuickCandidates(text: string): QuickCandidate[] {
     text,
     /\b(?:ref|reference|txn|transaction|utr|rrn)[\s#:]*([a-z0-9]{6,20})\b/gi,
     (value) =>
-      /^(bank|card|account|alert|info)$/i.test(value) ? null : { type: 'ref', label: `Ref: ${value}`, value }
+      /^(bank|card|account|alert|info)$/i.test(value)
+        ? null
+        : { type: 'ref', label: `Ref: ${value}`, value }
   );
 
   const merchants = scanCandidates(
@@ -258,7 +281,8 @@ const BANK_KEYWORDS = [
 ];
 
 /** Whether a name is one of our own fallbacks rather than a real sender name. */
-const isPlaceholderName = (name: string) => name === 'Bank Alert' || name === 'Bank / Service Alert';
+const isPlaceholderName = (name: string) =>
+  name === 'Bank Alert' || name === 'Bank / Service Alert';
 
 /**
  * Splits a `Display Name <address@host>` header into its two parts.
@@ -298,7 +322,11 @@ function findBankNameInBody(body: string): string {
  * email domain used. This runs because forwarded and relayed bank alerts
  * frequently lose their original From header.
  */
-function recoverIdentityFromBody(name: string, email: string, body: string): { name: string; email: string } {
+function recoverIdentityFromBody(
+  name: string,
+  email: string,
+  body: string
+): { name: string; email: string } {
   const foundEmail = email || findEmailInBody(body);
   if (name && !isPlaceholderName(name)) return { name, email: foundEmail };
 
@@ -319,7 +347,11 @@ function recoverIdentityFromBody(name: string, email: string, body: string): { n
  * Always returns something displayable, falling back to a generic label rather
  * than an empty string, because this feeds a UI that must render regardless.
  */
-export function parseSenderInfo(rawSender?: string | null, rawEmail?: string | null, contentText?: string | null) {
+export function parseSenderInfo(
+  rawSender?: string | null,
+  rawEmail?: string | null,
+  contentText?: string | null
+) {
   const fromHeader = splitRfc822Sender(rawSender?.trim() || '');
   let name = fromHeader.name;
   let email = rawEmail?.trim() || fromHeader.email;

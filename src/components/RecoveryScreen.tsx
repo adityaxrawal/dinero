@@ -21,7 +21,9 @@ export default function RecoveryScreen() {
       await API.recovery.restoreFromPhrase(phrase.trim());
       await API.recovery.restart();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : String((err as { message?: string })?.message ?? err));
+      setError(
+        err instanceof Error ? err.message : String((err as { message?: string })?.message ?? err)
+      );
       setBusy(false);
     }
   };

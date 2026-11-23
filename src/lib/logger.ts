@@ -12,18 +12,13 @@
  * user actions -- so those are recorded with consistent wording and structure
  * rather than being formatted differently at each call site.
  */
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from '@tauri-apps/api/core';
 
-type LogLevel = "debug" | "info" | "warn" | "error";
+type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 // Routing categories on the backend side; each becomes a log target there.
 
-type LogCategory =
-  | "frontend"
-  | "api_calls"
-  | "network"
-  | "user_action"
-  | "system";
+type LogCategory = 'frontend' | 'api_calls' | 'network' | 'user_action' | 'system';
 
 interface LogPayload {
   target?: string;
@@ -53,14 +48,10 @@ class Logger {
     level: LogLevel,
     message: string,
     data?: unknown,
-    target: LogCategory | string = "frontend",
+    target: LogCategory | string = 'frontend'
   ) {
     const serializedData =
-      data !== undefined
-        ? typeof data === "string"
-          ? data
-          : JSON.stringify(data)
-        : null;
+      data !== undefined ? (typeof data === 'string' ? data : JSON.stringify(data)) : null;
 
     // Development console mirror. The level is dispatched to the matching
     // console method rather than always using log, so the browser's own
@@ -68,17 +59,17 @@ class Logger {
     if (this.isDev) {
       const prefix = `[${target.toUpperCase()}]`;
       switch (level) {
-        case "debug":
-          console.debug(prefix, message, data ?? "");
+        case 'debug':
+          console.debug(prefix, message, data ?? '');
           break;
-        case "info":
-          console.log(prefix, message, data ?? "");
+        case 'info':
+          console.log(prefix, message, data ?? '');
           break;
-        case "warn":
-          console.warn(prefix, message, data ?? "");
+        case 'warn':
+          console.warn(prefix, message, data ?? '');
           break;
-        case "error":
-          console.error(prefix, message, data ?? "");
+        case 'error':
+          console.error(prefix, message, data ?? '');
           break;
       }
     }
@@ -90,10 +81,7 @@ class Logger {
         message,
         data: serializedData,
       };
-      await invoke(
-        "log_frontend_event",
-        payload as unknown as Record<string, unknown>,
-      );
+      await invoke('log_frontend_event', payload as unknown as Record<string, unknown>);
     } catch {
       // Swallowed deliberately. This is the logging path itself, so reporting a
       // failure here would attempt another log and recurse; a lost log line is
@@ -103,36 +91,20 @@ class Logger {
 
   // The four severity entry points. All are thin wrappers over emit, differing
   // only in level, and all are fire-and-forget -- callers never await a log.
-  public debug(
-    message: string,
-    data?: unknown,
-    target: LogCategory | string = "frontend",
-  ) {
-    this.emit("debug", message, data, target);
+  public debug(message: string, data?: unknown, target: LogCategory | string = 'frontend') {
+    this.emit('debug', message, data, target);
   }
 
-  public info(
-    message: string,
-    data?: unknown,
-    target: LogCategory | string = "frontend",
-  ) {
-    this.emit("info", message, data, target);
+  public info(message: string, data?: unknown, target: LogCategory | string = 'frontend') {
+    this.emit('info', message, data, target);
   }
 
-  public warn(
-    message: string,
-    data?: unknown,
-    target: LogCategory | string = "frontend",
-  ) {
-    this.emit("warn", message, data, target);
+  public warn(message: string, data?: unknown, target: LogCategory | string = 'frontend') {
+    this.emit('warn', message, data, target);
   }
 
-  public error(
-    message: string,
-    data?: unknown,
-    target: LogCategory | string = "frontend",
-  ) {
-    this.emit("error", message, data, target);
+  public error(message: string, data?: unknown, target: LogCategory | string = 'frontend') {
+    this.emit('error', message, data, target);
   }
 
   /**
@@ -148,9 +120,9 @@ class Logger {
     args: unknown,
     durationMs: number,
     success: boolean,
-    errorDetails?: unknown,
+    errorDetails?: unknown
   ) {
-    const statusStr = success ? "SUCCESS" : "FAILED";
+    const statusStr = success ? 'SUCCESS' : 'FAILED';
     const msg = `IPC Command: ${command} [${statusStr}] (${durationMs.toFixed(1)}ms)`;
     const details = {
       command,
@@ -159,7 +131,7 @@ class Logger {
       success,
       error: errorDetails,
     };
-    this.emit(success ? "info" : "error", msg, details, "api_calls");
+    this.emit(success ? 'info' : 'error', msg, details, 'api_calls');
   }
 
   /**
@@ -174,16 +146,11 @@ class Logger {
     method: string,
     status: number | null,
     latencyMs: number,
-    errorDetails?: unknown,
+    errorDetails?: unknown
   ) {
-    const msg = `Outbound HTTP ${method} ${url} - Status: ${status ?? "ERR"} (${latencyMs.toFixed(1)}ms)`;
+    const msg = `Outbound HTTP ${method} ${url} - Status: ${status ?? 'ERR'} (${latencyMs.toFixed(1)}ms)`;
     const details = { url, method, status, latencyMs, error: errorDetails };
-    this.emit(
-      status && status < 400 ? "info" : "error",
-      msg,
-      details,
-      "network",
-    );
+    this.emit(status && status < 400 ? 'info' : 'error', msg, details, 'network');
   }
 
   /**
@@ -193,8 +160,8 @@ class Logger {
    * error log interpretable when reconstructing a session after the fact.
    */
   public userAction(action: string, targetElement?: string, meta?: unknown) {
-    const msg = `User Action: ${action}${targetElement ? ` on [${targetElement}]` : ""}`;
-    this.emit("info", msg, meta, "frontend");
+    const msg = `User Action: ${action}${targetElement ? ` on [${targetElement}]` : ''}`;
+    this.emit('info', msg, meta, 'frontend');
   }
 }
 

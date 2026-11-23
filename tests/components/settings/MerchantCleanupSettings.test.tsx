@@ -74,7 +74,9 @@ const tick = (over: Partial<MerchantCleanupProgress> = {}): MerchantCleanupProgr
 });
 
 async function mountAndRun(...ticks: MerchantCleanupProgress[]) {
-  const { default: MerchantCleanupSettings } = await import('@/components/settings/MerchantCleanupSettings');
+  const { default: MerchantCleanupSettings } = await import(
+    '@/components/settings/MerchantCleanupSettings'
+  );
   render(<MerchantCleanupSettings />);
   await waitFor(() =>
     expect(screen.getByText(/merchant names Dinero isn't sure about/)).toBeInTheDocument()
@@ -162,7 +164,6 @@ describe('MerchantCleanupSettings, mid-run', () => {
   });
 });
 
-
 /**
  * The idle panel: the candidate queue it offers to clean, the history of past
  * runs, and the two write paths (start a run, undo one). None of this is
@@ -194,7 +195,9 @@ describe('MerchantCleanupSettings, idle', () => {
   let api: typeof import('@/lib/ipc').API;
 
   const mount = async () => {
-    const { default: MerchantCleanupSettings } = await import('@/components/settings/MerchantCleanupSettings');
+    const { default: MerchantCleanupSettings } = await import(
+      '@/components/settings/MerchantCleanupSettings'
+    );
     render(<MerchantCleanupSettings />);
     await waitFor(() =>
       expect(screen.getByText(/merchant names Dinero isn't sure about/)).toBeInTheDocument()
@@ -295,9 +298,13 @@ describe('MerchantCleanupSettings, idle', () => {
      */
     const confirmUndo = async () => {
       const rowButton = await screen.findByRole('button', { name: /Undo run/ });
-      await act(async () => { fireEvent.click(rowButton); });
+      await act(async () => {
+        fireEvent.click(rowButton);
+      });
       const buttons = await screen.findAllByRole('button', { name: /Undo run/ });
-      await act(async () => { fireEvent.click(buttons[buttons.length - 1]); });
+      await act(async () => {
+        fireEvent.click(buttons[buttons.length - 1]);
+      });
     };
 
     it('summarises a past run', async () => {

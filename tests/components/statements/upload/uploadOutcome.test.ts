@@ -1,8 +1,17 @@
 // The upload round trip reports per-file status strings, not exceptions; these
 // pin how those get sorted into the four things a user needs told apart.
 import { describe, it, expect } from 'vitest';
-import { classifyUploadResults, uploadToasts, emptyOutcome } from '@/components/statements/upload/uploadOutcome';
-import { validateDroppedFiles, isPdf, basename, MAX_FILE_SIZE_BYTES } from '@/components/statements/upload/validation';
+import {
+  classifyUploadResults,
+  uploadToasts,
+  emptyOutcome,
+} from '@/components/statements/upload/uploadOutcome';
+import {
+  validateDroppedFiles,
+  isPdf,
+  basename,
+  MAX_FILE_SIZE_BYTES,
+} from '@/components/statements/upload/validation';
 
 const file = (name: string, size: number, type = 'application/pdf') =>
   ({ name, size, type }) as File;

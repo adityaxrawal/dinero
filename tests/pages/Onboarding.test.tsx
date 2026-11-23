@@ -35,7 +35,9 @@ vi.mock('@/pages/onboarding/useOnboardingSteps', () => ({
 vi.mock('@/pages/onboarding/PreferencesStep', () => ({
   default: () => <div data-testid="preferences" />,
 }));
-vi.mock('@/pages/onboarding/OnboardingFooter', () => ({ default: () => <div data-testid="footer" /> }));
+vi.mock('@/pages/onboarding/OnboardingFooter', () => ({
+  default: () => <div data-testid="footer" />,
+}));
 vi.mock('@/routes/onboarding/GmailConsentScreen', () => ({
   default: ({ showSkip }: { showSkip: boolean }) => (
     <div data-testid="gmail">{showSkip ? 'skippable' : 'required'}</div>

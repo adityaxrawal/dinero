@@ -81,8 +81,8 @@ function ScanComplete({
     <div className="space-y-4 text-center animate-in fade-in slide-in-from-bottom-4">
       <p className="text-sm font-medium">Historical scan complete.</p>
       <p className="text-xs text-muted-foreground">
-        Found {progress?.transactions_found ?? 0} transactions and{' '}
-        {progress?.statements_found ?? 0} statements.
+        Found {progress?.transactions_found ?? 0} transactions and {progress?.statements_found ?? 0}{' '}
+        statements.
       </p>
       <Button onClick={onDone} variant="accent" aria-label="Continue to the dashboard">
         Continue

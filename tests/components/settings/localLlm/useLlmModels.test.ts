@@ -56,7 +56,10 @@ beforeEach(() => {
   asMock(API.llm.setActiveModel).mockResolvedValue(undefined);
   asMock(API.dev.checkSystemRam).mockResolvedValue(16);
   vi.stubGlobal('alert', vi.fn());
-  vi.stubGlobal('confirm', vi.fn(() => false));
+  vi.stubGlobal(
+    'confirm',
+    vi.fn(() => false)
+  );
 });
 
 async function setup() {
@@ -96,7 +99,10 @@ describe('useLlmModels.setActive', () => {
   });
 
   it('activates and records an override when the user accepts', async () => {
-    vi.stubGlobal('confirm', vi.fn(() => true));
+    vi.stubGlobal(
+      'confirm',
+      vi.fn(() => true)
+    );
     const { result } = await setup();
     await act(async () => {
       await result.current.setActive(HEAVY);

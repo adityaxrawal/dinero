@@ -46,7 +46,11 @@ describe('TransactionAmountBalance', () => {
   });
 
   describe('foreign currency', () => {
-    const foreign = { original_amount_minor: 2500, original_currency: 'USD', exchange_rate: 83.2512 };
+    const foreign = {
+      original_amount_minor: 2500,
+      original_currency: 'USD',
+      exchange_rate: 83.2512,
+    };
 
     it('shows the original amount in its own currency', () => {
       renderRow(foreign, true);

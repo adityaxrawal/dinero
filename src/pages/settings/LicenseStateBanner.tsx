@@ -8,7 +8,9 @@ import type { LicenseStatusResponse } from '@/lib/ipc';
 /** Grace-period message, escalating as the deadline nears. */
 function graceMessage(daysRemaining: number | null | undefined): string {
   const window =
-    daysRemaining != null ? ` (${daysRemaining} day${daysRemaining === 1 ? '' : 's'} remaining)` : '';
+    daysRemaining != null
+      ? ` (${daysRemaining} day${daysRemaining === 1 ? '' : 's'} remaining)`
+      : '';
   return `Your subscription is in its grace period${window} — refresh once your payment is resolved.`;
 }
 

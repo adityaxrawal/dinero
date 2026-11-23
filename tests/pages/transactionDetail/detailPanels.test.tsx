@@ -150,9 +150,7 @@ describe('RawSourceDialog', () => {
     );
     expect(await screen.findByText('Loading...')).toBeInTheDocument();
 
-    rerender(
-      <RawSourceDialog open onOpenChange={vi.fn()} isLoading={false} data="raw text" />
-    );
+    rerender(<RawSourceDialog open onOpenChange={vi.fn()} isLoading={false} data="raw text" />);
     expect(screen.getByText('raw text')).toBeInTheDocument();
 
     rerender(<RawSourceDialog open onOpenChange={vi.fn()} isLoading={false} data={null} />);

@@ -2,7 +2,16 @@
  * Summary statistics and filter controls for the learned-rules screen.
  */
 import { useState } from 'react';
-import { AtSign, ChevronRight, Landmark, Layers, Loader2, ShieldCheck, Sparkles, Undo2 } from 'lucide-react';
+import {
+  AtSign,
+  ChevronRight,
+  Landmark,
+  Layers,
+  Loader2,
+  ShieldCheck,
+  Sparkles,
+  Undo2,
+} from 'lucide-react';
 import type { LearnedRule, SenderBankOverride } from '@/lib/ipc';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';

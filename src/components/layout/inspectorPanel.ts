@@ -15,7 +15,5 @@ export function inspectorPanelClasses(inline: boolean, isOpen: boolean): string 
 
 /** Shared inline sizing for inspector side panels. */
 export function inspectorPanelStyle(inline: boolean, isOpen: boolean): React.CSSProperties {
-  return inline
-    ? { backgroundColor: '#F8E7C9' }
-    : { width: isOpen ? 'var(--inspector-width)' : 0 };
+  return inline ? { backgroundColor: '#F8E7C9' } : { width: isOpen ? 'var(--inspector-width)' : 0 };
 }

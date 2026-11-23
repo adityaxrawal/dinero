@@ -46,12 +46,7 @@ export default function InspectorBody({
       <InstrumentCardHero instrument={inst} />
 
       {activeTab === 'details' && (
-        <DetailsTab
-          form={form}
-          inst={inst}
-          copiedId={copiedId}
-          onCopyAccountId={onCopyAccountId}
-        />
+        <DetailsTab form={form} inst={inst} copiedId={copiedId} onCopyAccountId={onCopyAccountId} />
       )}
 
       {activeTab === 'transactions' && (

@@ -1,5 +1,10 @@
 import React, { createContext, useContext } from 'react';
-import type { ConnectedAccountInfo, ProcessingProgressPayload, ScanProgressPayload, StatementRecord } from './ipc';
+import type {
+  ConnectedAccountInfo,
+  ProcessingProgressPayload,
+  ScanProgressPayload,
+  StatementRecord,
+} from './ipc';
 import { useScanState, type ScanStatus } from './globalState/useScanState';
 import { useStatementState } from './globalState/useStatementState';
 

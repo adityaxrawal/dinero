@@ -54,7 +54,6 @@ export function useInstrumentForm(
   initialInstrument?: InstrumentRecord,
   onClose?: () => void
 ) {
-
   const { data: detailInst, isLoading } = useInstrumentDetail(instrumentId);
   const forgetPassword = useForgetPdfPassword();
 

@@ -2,13 +2,7 @@
  * The account-setup phase of onboarding, after welcome and disclosure.
  */
 import { useNavigate } from 'react-router-dom';
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import GmailConsentScreen from '@/routes/onboarding/GmailConsentScreen';
 import HistoricalScanScreen from '@/routes/onboarding/HistoricalScanScreen';
 import LicenseActivationScreen from '@/routes/onboarding/LicenseActivationScreen';

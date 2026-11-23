@@ -74,7 +74,8 @@ describe('LocalLlmSettings', () => {
 
   it('reassigns the Active badge to the remaining downloaded model when the active model is deleted', async () => {
     vi.mocked(API.llm.getAvailableModels).mockResolvedValue(MODELS);
-    vi.mocked(API.llm.getDownloadedModels).mockResolvedValueOnce(['gemma4_e4b', 'gemma4_12b']) // initial load
+    vi.mocked(API.llm.getDownloadedModels)
+      .mockResolvedValueOnce(['gemma4_e4b', 'gemma4_12b']) // initial load
       .mockResolvedValueOnce(['gemma4_e4b']); // after delete
     vi.mocked(API.llm.getActiveModel).mockResolvedValue('gemma4_12b');
     // Backend self-heals and returns the new active model id directly.
@@ -112,7 +113,8 @@ describe('LocalLlmSettings', () => {
 
   it('renders no Active badge when the only downloaded model is deleted', async () => {
     vi.mocked(API.llm.getAvailableModels).mockResolvedValue(MODELS);
-    vi.mocked(API.llm.getDownloadedModels).mockResolvedValueOnce(['gemma4_12b'])
+    vi.mocked(API.llm.getDownloadedModels)
+      .mockResolvedValueOnce(['gemma4_12b'])
       .mockResolvedValueOnce([]);
     vi.mocked(API.llm.getActiveModel).mockResolvedValue('gemma4_12b');
     vi.mocked(API.llm.deleteModel).mockResolvedValue('');
@@ -170,7 +172,8 @@ describe('LocalLlmSettings', () => {
 
   it('cancels an in-progress download via the Cancel button', async () => {
     vi.mocked(API.llm.getAvailableModels).mockResolvedValue(MODELS);
-    vi.mocked(API.llm.getDownloadedModels).mockResolvedValueOnce([]) // initial load
+    vi.mocked(API.llm.getDownloadedModels)
+      .mockResolvedValueOnce([]) // initial load
       .mockResolvedValueOnce([]); // after the cancelled download's cleanup fetch
     vi.mocked(API.llm.getActiveModel).mockResolvedValue('');
 

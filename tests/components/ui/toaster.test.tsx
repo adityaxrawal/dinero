@@ -35,7 +35,9 @@ describe('Toaster', () => {
   });
 
   it('renders a route action as a link', () => {
-    toasts = [{ id: '1', title: 'Locked', actionTo: '/settings', actionLabel: 'Open Settings', open: true }];
+    toasts = [
+      { id: '1', title: 'Locked', actionTo: '/settings', actionLabel: 'Open Settings', open: true },
+    ];
     render(<Toaster />);
     const link = screen.getByText('Open Settings').closest('a');
     expect(link).toHaveAttribute('href', '/settings');

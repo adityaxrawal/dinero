@@ -13,7 +13,8 @@ vi.mock('@/lib/ipc', () => ({
 }));
 
 const asMock = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
-const reset = () => useNotificationStore.setState({ tasks: {}, notifications: [], isExpanded: false });
+const reset = () =>
+  useNotificationStore.setState({ tasks: {}, notifications: [], isExpanded: false });
 const task = (id = 't1'): Pick<UnifiedTask, 'id' | 'title' | 'category'> => ({
   id,
   title: 'Gmail Scan',
@@ -53,7 +54,9 @@ describe('addOrUpdateTask', () => {
   });
 
   it('prefers an explicit progressPct over the derived one', () => {
-    useNotificationStore.getState().addOrUpdateTask({ ...task(), current: 1, total: 100, progressPct: 42 });
+    useNotificationStore
+      .getState()
+      .addOrUpdateTask({ ...task(), current: 1, total: 100, progressPct: 42 });
     expect(useNotificationStore.getState().tasks.t1.progressPct).toBe(42);
   });
 
@@ -105,7 +108,10 @@ describe('addOrUpdateTask', () => {
     const s = useNotificationStore.getState();
     s.addOrUpdateTask({ ...task(), meta: { account_id: 'acc1' } });
     s.addOrUpdateTask({ ...task(), meta: { run_id: 'r1' } });
-    expect(useNotificationStore.getState().tasks.t1.meta).toEqual({ account_id: 'acc1', run_id: 'r1' });
+    expect(useNotificationStore.getState().tasks.t1.meta).toEqual({
+      account_id: 'acc1',
+      run_id: 'r1',
+    });
   });
 
   it('distinguishes an explicit null etaSeconds from an omitted one', () => {
@@ -134,7 +140,10 @@ describe('removeTask / clearCompletedTasks', () => {
     s.addOrUpdateTask({ ...task('done'), status: 'completed' });
     s.addOrUpdateTask({ ...task('failed'), status: 'failed' });
     s.clearCompletedTasks();
-    expect(Object.keys(useNotificationStore.getState().tasks).sort()).toEqual(['cancelling', 'run']);
+    expect(Object.keys(useNotificationStore.getState().tasks).sort()).toEqual([
+      'cancelling',
+      'run',
+    ]);
   });
 });
 
@@ -187,7 +196,10 @@ describe('notifications', () => {
 
   it('marks new notifications unread and undismissed', () => {
     useNotificationStore.getState().addNotification(item);
-    expect(useNotificationStore.getState().notifications[0]).toMatchObject({ read: false, dismissed: false });
+    expect(useNotificationStore.getState().notifications[0]).toMatchObject({
+      read: false,
+      dismissed: false,
+    });
   });
 
   it('assigns unique ids', () => {
@@ -261,14 +273,18 @@ describe('fetchActiveTasks', () => {
 
   it('routes statement tasks to the statements category', async () => {
     asMock(isTauriRuntime).mockReturnValue(true);
-    asMock(API.backgroundTasks.getActive).mockResolvedValue([bgTask({ task_type: 'statement_import' })]);
+    asMock(API.backgroundTasks.getActive).mockResolvedValue([
+      bgTask({ task_type: 'statement_import' }),
+    ]);
     await useNotificationStore.getState().fetchActiveTasks();
     expect(useNotificationStore.getState().tasks.bg1.category).toBe('statements');
   });
 
   it('skips historical_scan, which the scan events already own', async () => {
     asMock(isTauriRuntime).mockReturnValue(true);
-    asMock(API.backgroundTasks.getActive).mockResolvedValue([bgTask({ task_type: 'historical_scan' })]);
+    asMock(API.backgroundTasks.getActive).mockResolvedValue([
+      bgTask({ task_type: 'historical_scan' }),
+    ]);
     await useNotificationStore.getState().fetchActiveTasks();
     expect(useNotificationStore.getState().tasks).toEqual({});
   });

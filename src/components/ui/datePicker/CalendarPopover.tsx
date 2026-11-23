@@ -12,8 +12,18 @@ import type { useCalendar } from './useCalendar';
 type Calendar = ReturnType<typeof useCalendar>;
 
 const MONTH_NAMES = [
-  'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December',
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
 ];
 
 const SHORT_DAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
@@ -21,7 +31,8 @@ const SHORT_DAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
 const SELECT_CLASS =
   'bg-[#F8E7C9] text-[#064E3B] font-semibold text-xs rounded-md px-1.5 py-1 border border-[#064E3B]/20 cursor-pointer outline-none focus:ring-1 focus:ring-[#064E3B]';
 const NAV_CLASS = 'p-1.5 rounded-md hover:bg-[#064E3B]/10 text-[#064E3B] transition-colors';
-const DAY_CLASS = 'h-8 w-8 rounded-lg text-xs flex items-center justify-center transition-all mx-auto';
+const DAY_CLASS =
+  'h-8 w-8 rounded-lg text-xs flex items-center justify-center transition-all mx-auto';
 
 /** Month title with previous/next navigation. */
 function CalendarHeader({ calendar }: { calendar: Calendar }) {

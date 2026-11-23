@@ -10,12 +10,7 @@ import { useToast } from '@/hooks/use-toast';
 import type { InstrumentRecord } from '@/lib/ipc';
 import { getBankTheme } from './cardHero/bankTheme';
 import { billingCycleText } from './cardHero/billingCycle';
-import {
-  CardHeader,
-  ChipRow,
-  BalanceRow,
-  UtilizationGauge,
-} from './cardHero/CardHeroParts';
+import { CardHeader, ChipRow, BalanceRow, UtilizationGauge } from './cardHero/CardHeroParts';
 
 interface InstrumentCardHeroProps {
   instrument: InstrumentRecord;
@@ -68,9 +63,7 @@ export default function InstrumentCardHero({ instrument }: InstrumentCardHeroPro
         onCopy={handleCopyIdentifier}
       />
 
-      {hasLimit && (
-        <UtilizationGauge spent={absBalance} limit={creditLimit} ratio={utilRatio} />
-      )}
+      {hasLimit && <UtilizationGauge spent={absBalance} limit={creditLimit} ratio={utilRatio} />}
     </div>
   );
 }

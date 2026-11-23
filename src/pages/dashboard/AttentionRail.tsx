@@ -63,13 +63,7 @@ function AttentionCard({
 }
 
 /** One upcoming bill, colour-coded by urgency. */
-function BillCard({
-  bill,
-  onClick,
-}: {
-  bill: Data['urgentBills'][number];
-  onClick: () => void;
-}) {
+function BillCard({ bill, onClick }: { bill: Data['urgentBills'][number]; onClick: () => void }) {
   const urgency = classifyBillUrgency(bill.due_date);
   const overdue = urgency === 'overdue';
   const due = new Date(bill.due_date).toLocaleDateString(undefined, {

@@ -50,7 +50,9 @@ describe('useUnassignedForm', () => {
   });
 
   it('reads a credit direction off the record', () => {
-    const { result } = renderHook(() => useUnassignedForm(record({ direction: 'credit' }), onClose));
+    const { result } = renderHook(() =>
+      useUnassignedForm(record({ direction: 'credit' }), onClose)
+    );
     expect(result.current.fields.direction).toBe('credit');
   });
 

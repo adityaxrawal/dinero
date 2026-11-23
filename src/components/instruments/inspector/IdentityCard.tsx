@@ -132,11 +132,7 @@ export default function IdentityCard({
             className="p-1 rounded text-[#064E3B]/60 hover:text-[#064E3B] hover:bg-[#064E3B]/10 transition-colors"
             title="Copy ID"
           >
-            {copied ? (
-              <Check className="w-3 h-3 text-emerald-600" />
-            ) : (
-              <Copy className="w-3 h-3" />
-            )}
+            {copied ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
           </button>
         </div>
       </div>

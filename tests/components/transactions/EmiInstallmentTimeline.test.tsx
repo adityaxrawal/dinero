@@ -102,7 +102,11 @@ describe('EmiInstallmentTimeline', () => {
   });
 
   it('does not render negative placeholders when paid exceeds the total', () => {
-    summary = group({ total_installments: 2, installments_paid: 3, installments: [installment(1)] });
+    summary = group({
+      total_installments: 2,
+      installments_paid: 3,
+      installments: [installment(1)],
+    });
     renderTimeline();
     expect(screen.queryByText(/upcoming/)).toBeNull();
   });

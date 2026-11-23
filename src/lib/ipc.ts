@@ -971,8 +971,7 @@ export const API = {
     getActiveModel: () => invokeCommand<string>('llm_get_active_model'),
     setActiveModel: (modelId: string) => invokeCommand<void>('llm_set_active_model', { modelId }),
     getHardwareInfo: () => invokeCommand<LlmHardwareInfo>('llm_get_hardware_info'),
-    setParallelSlots: (slots: number) =>
-      invokeCommand<number>('llm_set_parallel_slots', { slots }),
+    setParallelSlots: (slots: number) => invokeCommand<number>('llm_set_parallel_slots', { slots }),
   },
   // AI merchant-name normalisation: preview, run, and review its changes.
   merchantCleanup: {

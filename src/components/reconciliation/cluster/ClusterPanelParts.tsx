@@ -2,7 +2,15 @@
  * Presentational pieces of the cluster resolution panel.
  */
 import type { ReactNode } from 'react';
-import { Loader2, GitMerge, Ban, Clock, SplitSquareHorizontal, ChevronLeft, ChevronRight } from 'lucide-react';
+import {
+  Loader2,
+  GitMerge,
+  Ban,
+  Clock,
+  SplitSquareHorizontal,
+  ChevronLeft,
+  ChevronRight,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { formatRelativeDate } from '@/lib/utils';
 import type { ClusterRecord } from '@/lib/ipc';

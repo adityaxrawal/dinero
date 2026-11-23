@@ -17,4 +17,3 @@ export function useTransactionSearch(query: string, filters?: TransactionListFil
     enabled: query.trim().length > 0,
   });
 }
-

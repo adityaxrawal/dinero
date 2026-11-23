@@ -33,7 +33,9 @@ vi.mock('@/hooks/queries/useTransactionsInfiniteList', () => ({
     isLoading: false,
   }),
 }));
-vi.mock('@/hooks/queries/useStatementsList', () => ({ useStatementsList: () => ({ data: statements }) }));
+vi.mock('@/hooks/queries/useStatementsList', () => ({
+  useStatementsList: () => ({ data: statements }),
+}));
 vi.mock('@/hooks/queries/usePdfPasswordsList', () => ({
   usePdfPasswordsList: () => ({ data: pdfPasswords }),
 }));
@@ -69,7 +71,11 @@ beforeEach(() => {
 
 describe('hydration', () => {
   it('seeds the form from the fetched detail', () => {
-    detailInst = instrument({ nickname: 'Daily card', credit_limit: 200000, bank_ifsc: 'HDFC0001' });
+    detailInst = instrument({
+      nickname: 'Daily card',
+      credit_limit: 200000,
+      bank_ifsc: 'HDFC0001',
+    });
     const { result } = setup();
     expect(result.current.fields).toMatchObject({
       issuerName: 'HDFC Bank',
@@ -156,7 +162,10 @@ describe('related records', () => {
   });
 
   it('shows only this instrument’s statements and passwords', () => {
-    statements = [{ id: 's1', instrument_id: 'inst1' }, { id: 's2', instrument_id: 'other' }];
+    statements = [
+      { id: 's1', instrument_id: 'inst1' },
+      { id: 's2', instrument_id: 'other' },
+    ];
     pdfPasswords = [{ id: 'p1', instrument_id: 'other' }];
     const { result } = setup();
     expect(result.current.instrumentStatements).toHaveLength(1);

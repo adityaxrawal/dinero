@@ -74,9 +74,7 @@ describe('useStatementUpload picker path', () => {
 
   it('names every oversized file and uploads none of them', async () => {
     open.mockResolvedValue(['/tmp/big.pdf', '/tmp/ok.pdf']);
-    readFile
-      .mockResolvedValueOnce(bytes(MAX_FILE_SIZE_BYTES + 1))
-      .mockResolvedValueOnce(bytes(10));
+    readFile.mockResolvedValueOnce(bytes(MAX_FILE_SIZE_BYTES + 1)).mockResolvedValueOnce(bytes(10));
     const { result } = setup();
     await act(async () => {
       await result.current.pickAndUpload();
@@ -94,9 +92,7 @@ describe('useStatementUpload picker path', () => {
     await act(async () => {
       await result.current.pickAndUpload();
     });
-    expect(toast).toHaveBeenCalledWith(
-      expect.objectContaining({ title: 'Some Uploads Failed' })
-    );
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Some Uploads Failed' }));
     expect(onUploaded).toHaveBeenCalled();
   });
 
@@ -126,9 +122,7 @@ describe('useStatementUpload drop path', () => {
     open.mockResolvedValue(['/tmp/a.pdf']);
     const { result } = setup();
     await act(async () => {
-      result.current.dropFiles([
-        { name: 'a.pdf', size: 10, type: 'application/pdf' } as File,
-      ]);
+      result.current.dropFiles([{ name: 'a.pdf', size: 10, type: 'application/pdf' } as File]);
     });
     expect(open).toHaveBeenCalled();
   });

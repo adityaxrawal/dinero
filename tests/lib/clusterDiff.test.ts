@@ -81,6 +81,8 @@ describe('summarizeClusterDiff', () => {
     const reference = makeMember({ member_role: 'incoming', date: '2026-05-26', amount: 45 });
     const candidateA = makeMember({ date: '2026-05-25', amount: 45 });
     const candidateB = makeMember({ date: '2026-05-27', amount: 99 });
-    expect(summarizeClusterDiff(reference, [candidateA, candidateB])).toBe('Differs on: Amount, Date');
+    expect(summarizeClusterDiff(reference, [candidateA, candidateB])).toBe(
+      'Differs on: Amount, Date'
+    );
   });
 });

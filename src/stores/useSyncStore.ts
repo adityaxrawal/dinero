@@ -127,7 +127,10 @@ export const useSyncStore = create<SyncStoreState>((set) => ({
     const statuses = await Promise.all(
       accounts.map(async (a) => {
         try {
-          return { accountId: a.account_id, status: await API.ingestion.getScanStatus(a.account_id) };
+          return {
+            accountId: a.account_id,
+            status: await API.ingestion.getScanStatus(a.account_id),
+          };
         } catch {
           return null;
         }

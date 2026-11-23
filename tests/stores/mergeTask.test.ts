@@ -6,8 +6,12 @@ import type { UnifiedTask } from '@/stores/useNotificationStore';
 
 const NOW = 1_700_000_000_000;
 
-const incoming = (over = {}) =>
-  ({ id: 't1', title: 'Gmail Scan', category: 'ingestion' as const, ...over });
+const incoming = (over = {}) => ({
+  id: 't1',
+  title: 'Gmail Scan',
+  category: 'ingestion' as const,
+  ...over,
+});
 
 const existing = (over: Partial<UnifiedTask> = {}): UnifiedTask => ({
   id: 't1',

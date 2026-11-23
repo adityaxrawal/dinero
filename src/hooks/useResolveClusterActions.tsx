@@ -78,7 +78,12 @@ export function useResolveClusterActions({ cluster, onSuccess }: UseResolveClust
     const clusterIdSnapshot = cluster.id;
 
     resolveCluster.mutate(
-      { clusterId: clusterIdSnapshot, observationId: incomingObservationId, action, chosenCanonicalId },
+      {
+        clusterId: clusterIdSnapshot,
+        observationId: incomingObservationId,
+        action,
+        chosenCanonicalId,
+      },
       {
         // Feedback varies by outcome. Only a confirmed match gets an undo
         // affordance -- it is the one action that actually merged records and

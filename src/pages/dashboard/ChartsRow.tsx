@@ -121,7 +121,11 @@ export default function ChartsRow({
           </div>
           <GranularityToggle value={data.granularity} onChange={data.setGranularity} />
         </div>
-        {data.trendLoading ? <Spinner className="h-48" /> : <TrendChart data={data.trendData ?? []} />}
+        {data.trendLoading ? (
+          <Spinner className="h-48" />
+        ) : (
+          <TrendChart data={data.trendData ?? []} />
+        )}
       </div>
 
       <div className="card-champagne p-5">

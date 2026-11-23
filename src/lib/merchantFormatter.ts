@@ -16,7 +16,7 @@
  * on either the assigned category or the merchant name so a transaction still
  * gets a sensible icon before it has been categorised.
  */
-import React from "react";
+import React from 'react';
 import {
   Utensils,
   ShoppingBag,
@@ -26,27 +26,27 @@ import {
   Car,
   Film,
   HelpCircle,
-} from "lucide-react";
+} from 'lucide-react';
 
 // Canonical name paired with the descriptor fragments that map onto it.
 // Fragments are matched case-insensitively as substrings, which is what catches
 // the padded and concatenated forms banks emit.
 const BRAND_ALIASES: [name: string, fragments: string[]][] = [
-  ["Zomato", ["zomato"]],
-  ["Swiggy", ["swiggy"]],
-  ["Blinkit", ["blinkit", "blinkmerc"]],
-  ["Flipkart", ["flipkart"]],
-  ["Amazon", ["amazon"]],
-  ["Airtel", ["airtel", "bhartiairtel"]],
-  ["Reliance Jio", ["jio"]],
-  ["CRED", ["dreamplug", "cred"]],
-  ["Uber", ["uber"]],
-  ["Ola", ["ola"]],
-  ["Netflix", ["netflix"]],
-  ["Spotify", ["spotify"]],
-  ["MakeMyTrip", ["make my trip", "makemytrip"]],
-  ["BookMyShow", ["bookmyshow"]],
-  ["Zepto", ["zepto"]],
+  ['Zomato', ['zomato']],
+  ['Swiggy', ['swiggy']],
+  ['Blinkit', ['blinkit', 'blinkmerc']],
+  ['Flipkart', ['flipkart']],
+  ['Amazon', ['amazon']],
+  ['Airtel', ['airtel', 'bhartiairtel']],
+  ['Reliance Jio', ['jio']],
+  ['CRED', ['dreamplug', 'cred']],
+  ['Uber', ['uber']],
+  ['Ola', ['ola']],
+  ['Netflix', ['netflix']],
+  ['Spotify', ['spotify']],
+  ['MakeMyTrip', ['make my trip', 'makemytrip']],
+  ['BookMyShow', ['bookmyshow']],
+  ['Zepto', ['zepto']],
 ];
 
 // Corporate suffixes, applied in order. Each replacement is prefixed with a
@@ -54,22 +54,22 @@ const BRAND_ALIASES: [name: string, fragments: string[]][] = [
 // longer patterns are listed before their substrings so PVTLTD is consumed
 // before the bare LTD rule can match part of it.
 const SUFFIX_EXPANSIONS: [pattern: RegExp, replacement: string][] = [
-  [/PVTLTD/gi, " Pvt Ltd"],
-  [/LTD/gi, " Ltd"],
-  [/TECHNOLOGIES/gi, " Tech"],
-  [/TECHNOLOGI/gi, " Tech"],
-  [/SERVICES/gi, " Services"],
-  [/PAYMENTS/gi, " Payments"],
-  [/SOLUTIONS/gi, " Solutions"],
+  [/PVTLTD/gi, ' Pvt Ltd'],
+  [/LTD/gi, ' Ltd'],
+  [/TECHNOLOGIES/gi, ' Tech'],
+  [/TECHNOLOGI/gi, ' Tech'],
+  [/SERVICES/gi, ' Services'],
+  [/PAYMENTS/gi, ' Payments'],
+  [/SOLUTIONS/gi, ' Solutions'],
 ];
 
 /** Lowercase everything, then capitalise each space-separated word. */
 const toTitleCase = (value: string): string =>
   value
     .toLowerCase()
-    .split(" ")
+    .split(' ')
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
+    .join(' ');
 
 /**
  * Normalise a raw bank descriptor into a readable merchant name.
@@ -78,7 +78,7 @@ const toTitleCase = (value: string): string =>
  * soon as a known brand is recognised.
  */
 export function formatMerchantName(rawName: string): string {
-  if (!rawName) return "Unknown Merchant";
+  if (!rawName) return 'Unknown Merchant';
 
   const trimmed = rawName.trim();
   const lower = trimmed.toLowerCase();
@@ -86,14 +86,14 @@ export function formatMerchantName(rawName: string): string {
   // Stage 1. A brand hit wins outright -- the canonical name is returned
   // as-is, with no further cleanup, since it is already correctly cased.
   const brand = BRAND_ALIASES.find(([, fragments]) =>
-    fragments.some((fragment) => lower.includes(fragment)),
+    fragments.some((fragment) => lower.includes(fragment))
   );
   if (brand) return brand[0];
 
   // Stage 2. Unknown merchant: expand corporate suffixes in declaration order.
   const cleaned = SUFFIX_EXPANSIONS.reduce(
     (name, [pattern, replacement]) => name.replace(pattern, replacement),
-    trimmed,
+    trimmed
   );
 
   // Stage 3. Title-case only if the descriptor is entirely uppercase. A string
@@ -121,53 +121,53 @@ const CATEGORY_RULES: {
   textClass: string;
 }[] = [
   {
-    categories: ["food", "dining"],
-    merchants: ["zomato", "swiggy"],
+    categories: ['food', 'dining'],
+    merchants: ['zomato', 'swiggy'],
     icon: Utensils,
-    bgClass: "bg-amber-500/15 border-amber-500/20",
-    textClass: "text-amber-800",
+    bgClass: 'bg-amber-500/15 border-amber-500/20',
+    textClass: 'text-amber-800',
   },
   {
-    categories: ["shop", "store"],
-    merchants: ["flipkart", "amazon", "myntra"],
+    categories: ['shop', 'store'],
+    merchants: ['flipkart', 'amazon', 'myntra'],
     icon: ShoppingBag,
-    bgClass: "bg-purple-500/15 border-purple-500/20",
-    textClass: "text-purple-800",
+    bgClass: 'bg-purple-500/15 border-purple-500/20',
+    textClass: 'text-purple-800',
   },
   {
-    categories: ["bill", "utility"],
-    merchants: ["airtel", "jio", "electricity"],
+    categories: ['bill', 'utility'],
+    merchants: ['airtel', 'jio', 'electricity'],
     icon: Smartphone,
-    bgClass: "bg-blue-500/15 border-blue-500/20",
-    textClass: "text-blue-800",
+    bgClass: 'bg-blue-500/15 border-blue-500/20',
+    textClass: 'text-blue-800',
   },
   {
-    categories: ["grocer"],
-    merchants: ["blinkit", "zepto", "instamart"],
+    categories: ['grocer'],
+    merchants: ['blinkit', 'zepto', 'instamart'],
     icon: Zap,
-    bgClass: "bg-emerald-500/15 border-emerald-500/20",
-    textClass: "text-emerald-800",
+    bgClass: 'bg-emerald-500/15 border-emerald-500/20',
+    textClass: 'text-emerald-800',
   },
   {
-    categories: ["finance", "card"],
-    merchants: ["cred", "dreamplug"],
+    categories: ['finance', 'card'],
+    merchants: ['cred', 'dreamplug'],
     icon: CreditCard,
-    bgClass: "bg-indigo-500/15 border-indigo-500/20",
-    textClass: "text-indigo-800",
+    bgClass: 'bg-indigo-500/15 border-indigo-500/20',
+    textClass: 'text-indigo-800',
   },
   {
-    categories: ["travel", "cab"],
-    merchants: ["uber", "ola"],
+    categories: ['travel', 'cab'],
+    merchants: ['uber', 'ola'],
     icon: Car,
-    bgClass: "bg-sky-500/15 border-sky-500/20",
-    textClass: "text-sky-800",
+    bgClass: 'bg-sky-500/15 border-sky-500/20',
+    textClass: 'text-sky-800',
   },
   {
-    categories: ["entertain"],
-    merchants: ["netflix", "bookmyshow", "spotify"],
+    categories: ['entertain'],
+    merchants: ['netflix', 'bookmyshow', 'spotify'],
     icon: Film,
-    bgClass: "bg-rose-500/15 border-rose-500/20",
-    textClass: "text-rose-800",
+    bgClass: 'bg-rose-500/15 border-rose-500/20',
+    textClass: 'text-rose-800',
   },
 ];
 
@@ -180,17 +180,17 @@ const CATEGORY_RULES: {
  */
 export function getMerchantCategoryVisuals(
   category?: string,
-  merchantName?: string,
+  merchantName?: string
 ): CategoryVisual {
   // Coerced to lowercase strings up front so the fragment tests below are
   // uniform and null-safe.
-  const cat = (category || "").toLowerCase();
-  const name = (merchantName || "").toLowerCase();
+  const cat = (category || '').toLowerCase();
+  const name = (merchantName || '').toLowerCase();
 
   const rule = CATEGORY_RULES.find(
     (candidate) =>
       candidate.categories.some((fragment) => cat.includes(fragment)) ||
-      candidate.merchants.some((fragment) => name.includes(fragment)),
+      candidate.merchants.some((fragment) => name.includes(fragment))
   );
 
   // Neutral brand-coloured fallback for uncategorised merchants -- deliberately
@@ -198,14 +198,14 @@ export function getMerchantCategoryVisuals(
   // classification.
   if (!rule) {
     return {
-      icon: React.createElement(HelpCircle, { className: "w-4 h-4" }),
-      bgClass: "bg-[#064E3B]/10 border-[#064E3B]/15",
-      textClass: "text-[#064E3B]",
+      icon: React.createElement(HelpCircle, { className: 'w-4 h-4' }),
+      bgClass: 'bg-[#064E3B]/10 border-[#064E3B]/15',
+      textClass: 'text-[#064E3B]',
     };
   }
 
   return {
-    icon: React.createElement(rule.icon, { className: "w-4 h-4" }),
+    icon: React.createElement(rule.icon, { className: 'w-4 h-4' }),
     bgClass: rule.bgClass,
     textClass: rule.textClass,
   };

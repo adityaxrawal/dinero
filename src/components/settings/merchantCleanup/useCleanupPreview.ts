@@ -2,7 +2,12 @@
  * Loads a preview of what a cleanup run would change.
  */
 import { useState, useEffect, useCallback } from 'react';
-import { API, type MerchantCleanupPreview, type MerchantCleanupRun, type LlmModelInfo } from '@/lib/ipc';
+import {
+  API,
+  type MerchantCleanupPreview,
+  type MerchantCleanupRun,
+  type LlmModelInfo,
+} from '@/lib/ipc';
 import { errorMessage } from '@/lib/utils';
 
 /** Loads a preview of what a run would change. */

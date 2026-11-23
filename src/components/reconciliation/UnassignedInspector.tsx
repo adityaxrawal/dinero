@@ -23,7 +23,15 @@ interface UnassignedInspectorProps {
 }
 
 /** Header for the unassigned inspector. */
-function InspectorHeader({ title, inline, onClose }: { title: string; inline: boolean; onClose: () => void }) {
+function InspectorHeader({
+  title,
+  inline,
+  onClose,
+}: {
+  title: string;
+  inline: boolean;
+  onClose: () => void;
+}) {
   return (
     <div
       className={cn('flex items-start justify-between p-5 flex-shrink-0', inline && 'pt-0')}

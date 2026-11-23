@@ -41,8 +41,7 @@ const buttonVariants = cva(
           'text-muted-foreground ' +
           'hover:bg-accent hover:text-foreground ' +
           'active:bg-accent/70',
-        link:
-          'text-[#064E3B] underline-offset-4 hover:underline hover:text-[#053d2f]',
+        link: 'text-[#064E3B] underline-offset-4 hover:underline hover:text-[#053d2f]',
         accent:
           'bg-[#064E3B] text-[#F8E7C9] font-semibold border border-transparent ' +
           'shadow-sm hover:bg-[#053d2f] hover:shadow-md ' +

@@ -23,7 +23,13 @@ import { API } from '@/lib/ipc';
 const RESET_CONFIRM_PHRASE = 'DELETE MY DATA';
 
 /** First step: states plainly what deletion destroys. */
-function ResetWarningStep({ onCancel, onContinue }: { onCancel: () => void; onContinue: () => void }) {
+function ResetWarningStep({
+  onCancel,
+  onContinue,
+}: {
+  onCancel: () => void;
+  onContinue: () => void;
+}) {
   return (
     <>
       <DialogHeader>

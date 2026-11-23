@@ -45,15 +45,7 @@ interface GmailEmailViewerProps {
  * modulo, since the hash can go negative.
  */
 function getAvatarColor(name: string): string {
-  const colors = [
-    '#1a73e8',
-    '#ea4335',
-    '#fbbc04',
-    '#34a853',
-    '#9334e6',
-    '#fa7b17',
-    '#007b83',
-  ];
+  const colors = ['#1a73e8', '#ea4335', '#fbbc04', '#34a853', '#9334e6', '#fa7b17', '#007b83'];
   let hash = 0;
   for (let i = 0; i < name.length; i++) {
     hash = name.charCodeAt(i) + ((hash << 5) - hash);
@@ -81,7 +73,9 @@ function ViewModeSwitcher({
   const tabClass = (active: boolean) =>
     cn(
       'px-2.5 py-1 text-[11px] font-medium rounded-md transition-all flex items-center gap-1.5',
-      active ? 'bg-white text-slate-900 shadow-xs font-semibold' : 'text-slate-600 hover:text-slate-900'
+      active
+        ? 'bg-white text-slate-900 shadow-xs font-semibold'
+        : 'text-slate-600 hover:text-slate-900'
     );
 
   return (
@@ -190,9 +184,13 @@ function GmailHeader({
 
           <div className="min-w-0 flex-1">
             <div className="flex items-baseline gap-1.5 flex-wrap">
-              <span className="font-bold text-[14px] text-slate-900 tracking-tight">{displayName}</span>
+              <span className="font-bold text-[14px] text-slate-900 tracking-tight">
+                {displayName}
+              </span>
               {displayEmail && (
-                <span className="text-[12px] text-slate-500 font-normal">&lt;{displayEmail}&gt;</span>
+                <span className="text-[12px] text-slate-500 font-normal">
+                  &lt;{displayEmail}&gt;
+                </span>
               )}
             </div>
             <div className="text-[12px] text-slate-600 font-normal flex items-center gap-1 mt-0.5">
@@ -206,7 +204,9 @@ function GmailHeader({
 
         <div className="flex items-center gap-2.5 shrink-0 pt-0.5">
           {formattedDate && (
-            <span className="text-[12px] text-slate-500 font-normal hidden sm:inline">{formattedDate}</span>
+            <span className="text-[12px] text-slate-500 font-normal hidden sm:inline">
+              {formattedDate}
+            </span>
           )}
           <ViewModeSwitcher viewMode={viewMode} setViewMode={setViewMode} hasHtml={hasHtml} />
         </div>
@@ -291,7 +291,9 @@ function EmailBody({
     return (
       <div className="p-4 sm:p-5 text-[13px] text-slate-800 leading-relaxed font-sans">
         {cleanText ? (
-          <div className="space-y-3 whitespace-pre-wrap leading-relaxed text-[#064E3B]">{cleanText}</div>
+          <div className="space-y-3 whitespace-pre-wrap leading-relaxed text-[#064E3B]">
+            {cleanText}
+          </div>
         ) : (
           <p className="text-slate-400 italic text-xs">No email body text available.</p>
         )}
@@ -333,13 +335,20 @@ function ViewerChrome({
 }: {
   showHeader: boolean;
   showViewModeSwitcher: boolean;
-  header: { subject?: string | null | undefined; displayName: string; displayEmail: string; formattedDate: string };
+  header: {
+    subject?: string | null | undefined;
+    displayName: string;
+    displayEmail: string;
+    formattedDate: string;
+  };
   viewMode: ViewMode;
   setViewMode: (mode: ViewMode) => void;
   hasHtml: boolean;
 }) {
   if (showHeader) {
-    return <GmailHeader {...header} viewMode={viewMode} setViewMode={setViewMode} hasHtml={hasHtml} />;
+    return (
+      <GmailHeader {...header} viewMode={viewMode} setViewMode={setViewMode} hasHtml={hasHtml} />
+    );
   }
   if (!showViewModeSwitcher) return null;
   return (
@@ -381,14 +390,22 @@ export function GmailEmailViewer({
 
   const cleanText = useMemo(() => cleanTextForReader(html, text), [html, text]);
   const processedHtml = useMemo(() => prepareGmailHtml(html, text), [html, text]);
-  const quickCandidates = useMemo(() => extractQuickCandidates(cleanText || subject || ''), [cleanText, subject]);
+  const quickCandidates = useMemo(
+    () => extractQuickCandidates(cleanText || subject || ''),
+    [cleanText, subject]
+  );
   const senderInfo = useMemo(
     () => parseSenderInfo(sender, senderEmail, cleanText || html || ''),
     [sender, senderEmail, cleanText, html]
   );
 
   return (
-    <div className={cn('bg-white border border-[#064E3B]/15 rounded-xl shadow-xs overflow-hidden flex flex-col', className)}>
+    <div
+      className={cn(
+        'bg-white border border-[#064E3B]/15 rounded-xl shadow-xs overflow-hidden flex flex-col',
+        className
+      )}
+    >
       <ViewerChrome
         showHeader={showHeader}
         showViewModeSwitcher={showViewModeSwitcher}

@@ -189,9 +189,9 @@ export function useStatementEvents(modals: Modals) {
         filename?: string;
         issuer?: string;
         reason?: string;
-      // Extraction could not attribute the statement to an account. The dialog
-      // opens regardless of batch mode -- this needs an answer to proceed, so it
-      // cannot be deferred to a summary.
+        // Extraction could not attribute the statement to an account. The dialog
+        // opens regardless of batch mode -- this needs an answer to proceed, so it
+        // cannot be deferred to a summary.
       }>('statement_instrument_confirmation_required', (event) => {
         const payload = event.payload;
         openInstrumentModal(

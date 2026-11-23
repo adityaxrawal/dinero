@@ -28,7 +28,14 @@ vi.mock('@/hooks/queries/useTransactionSearch', () => ({
 }));
 vi.mock('@/hooks/queries/useInstrumentsList', () => ({
   useInstrumentsList: () => ({
-    data: [{ id: 'inst1', issuer_name: 'HDFC Bank', masked_identifier: '8841', instrument_type: 'credit_card' }],
+    data: [
+      {
+        id: 'inst1',
+        issuer_name: 'HDFC Bank',
+        masked_identifier: '8841',
+        instrument_type: 'credit_card',
+      },
+    ],
   }),
 }));
 vi.mock('@/hooks/queries/useCategoriesList', () => ({ useCategoriesList: () => ({ data: [] }) }));

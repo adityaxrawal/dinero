@@ -87,7 +87,10 @@ describe('subscribed sync events', () => {
 
   it('records the reported failure message', () => {
     emit('scan_failed', { error_message: 'Gmail rate limited' });
-    expect(store.getState()).toMatchObject({ scanStatus: 'error', scanError: 'Gmail rate limited' });
+    expect(store.getState()).toMatchObject({
+      scanStatus: 'error',
+      scanError: 'Gmail rate limited',
+    });
   });
 
   it('falls back to a generic message when none is reported', () => {

@@ -5,11 +5,7 @@ import { useEffect, useState } from 'react';
 import { API, DebugMetrics, ReleaseReadinessSnapshot } from '../../lib/ipc';
 import { detectRegressions } from './releaseReadinessRegressions';
 import GoNoGoPanel from './GoNoGoPanel';
-import {
-  LocalMetricsPanel,
-  QualityGatePanel,
-  OutOfRepoPanel,
-} from './ReleaseReadinessPanels';
+import { LocalMetricsPanel, QualityGatePanel, OutOfRepoPanel } from './ReleaseReadinessPanels';
 
 interface ReleaseReadinessViewerProps {
   metrics: DebugMetrics | null;

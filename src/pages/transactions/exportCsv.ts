@@ -24,7 +24,13 @@ const quote = (cell: unknown) => `"${String(cell).replace(/"/g, '""')}"`;
 
 /** Builds the CSV text, header first. */
 function toCsv(transactions: ExportRow[]): string {
-  const rows = transactions.map((t) => [t.date, t.merchant, t.category, t.amount.toFixed(2), t.status]);
+  const rows = transactions.map((t) => [
+    t.date,
+    t.merchant,
+    t.category,
+    t.amount.toFixed(2),
+    t.status,
+  ]);
   return [HEADER, ...rows].map((row) => row.map(quote).join(',')).join('\n');
 }
 

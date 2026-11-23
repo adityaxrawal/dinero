@@ -53,9 +53,7 @@ describe('StatementPasswordSettings', () => {
   });
 
   it('singularises a single successful use and omits an absent last-used date', async () => {
-    asMock(API.pdfPasswords.list).mockResolvedValue([
-      pw({ success_count: 1, last_used_at: null }),
-    ]);
+    asMock(API.pdfPasswords.list).mockResolvedValue([pw({ success_count: 1, last_used_at: null })]);
     render(<StatementPasswordSettings />);
 
     await waitFor(() => expect(screen.getByText(/Used successfully 1 time/)).toBeInTheDocument());
@@ -104,7 +102,9 @@ describe('StatementPasswordSettings', () => {
     fireEvent.click(forgetButton());
 
     await waitFor(() =>
-      expect(window.alert).toHaveBeenCalledWith(expect.stringContaining('Failed to delete password'))
+      expect(window.alert).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to delete password')
+      )
     );
     expect(screen.getByText('HDFC Bank')).toBeInTheDocument();
     await waitFor(() => expect(forgetButton()).toBeEnabled());

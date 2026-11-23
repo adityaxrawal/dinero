@@ -4,7 +4,9 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import RestoreLicenseForm from '@/pages/settings/RestoreLicenseForm';
 
 const restore = vi.fn();
-vi.mock('@/lib/ipc', () => ({ API: { licensing: { restore: (...a: unknown[]) => restore(...a) } } }));
+vi.mock('@/lib/ipc', () => ({
+  API: { licensing: { restore: (...a: unknown[]) => restore(...a) } },
+}));
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -29,7 +31,9 @@ describe('RestoreLicenseForm', () => {
     fireEvent.change(screen.getByLabelText('Restore email'), { target: { value: 'u@e.com' } });
     fireEvent.change(screen.getByLabelText('Restore payment ID'), { target: { value: 'pay_x' } });
     fireEvent.click(screen.getByRole('button', { name: /^Restore licence$/ }));
-    await waitFor(() => expect(setError).toHaveBeenLastCalledWith(expect.stringMatching(/No licence/)));
+    await waitFor(() =>
+      expect(setError).toHaveBeenLastCalledWith(expect.stringMatching(/No licence/))
+    );
     expect(screen.getByLabelText('Restore email')).toBeInTheDocument();
   });
 });

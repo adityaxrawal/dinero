@@ -117,10 +117,7 @@ export default function AppLayout() {
           </span>
         </div>
 
-        <SidebarNav
-          unresolvedClusters={reconciliationClusters.length}
-          badgePulse={badgePulse}
-        />
+        <SidebarNav unresolvedClusters={reconciliationClusters.length} badgePulse={badgePulse} />
 
         {/* System messages (Gmail disconnected, license grace/locked, and
             similar). These sit in the normal flow rather than floating over the

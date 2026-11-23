@@ -79,7 +79,9 @@ export default function InstrumentInspector({
         }}
       />
 
-      <div className={cn('flex-1 overflow-y-auto', inline ? 'p-6 max-w-4xl mx-auto w-full' : 'p-4')}>
+      <div
+        className={cn('flex-1 overflow-y-auto', inline ? 'p-6 max-w-4xl mx-auto w-full' : 'p-4')}
+      >
         <InspectorBody
           form={form}
           inst={inst}

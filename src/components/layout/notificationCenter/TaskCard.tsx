@@ -20,7 +20,9 @@ const FAILED_ICON = (
 /** Progress bar, indeterminate until a total is known. */
 function ProgressBar({ task }: { task: UnifiedTask }) {
   const counts =
-    task.total > 0 ? `${task.current}/${task.total} (${task.progressPct}%)` : `${task.progressPct}%`;
+    task.total > 0
+      ? `${task.current}/${task.total} (${task.progressPct}%)`
+      : `${task.progressPct}%`;
 
   return (
     <div className="flex flex-col gap-1 mt-0.5">

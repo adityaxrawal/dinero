@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { extractQuickCandidates, parseSenderInfo, prepareGmailHtml } from '@/components/common/gmailParsing';
+import {
+  extractQuickCandidates,
+  parseSenderInfo,
+  prepareGmailHtml,
+} from '@/components/common/gmailParsing';
 
 // Characterization tests: these pin down the behaviour of the two parsers that
 // read money, dates and sender identity out of bank alert emails. They were
@@ -60,7 +64,9 @@ describe('extractQuickCandidates', () => {
     // it matches lowercase too and \s lets it run past the merchant name.
     // Pinned as-is: pre-existing behaviour, not introduced by the refactor.
     const got = extractQuickCandidates('spent at SWIGGY and paid to YOUR');
-    expect(got.filter((c) => c.type === 'merchant').map((c) => c.value)).toEqual(['SWIGGY and paid to']);
+    expect(got.filter((c) => c.type === 'merchant').map((c) => c.value)).toEqual([
+      'SWIGGY and paid to',
+    ]);
   });
 
   it('caps the candidate list at six', () => {

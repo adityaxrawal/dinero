@@ -19,7 +19,8 @@ import type { ClusterRecord, UnassignedTransactionRecord } from '@/lib/ipc';
 const ROW_CLASS =
   'flex flex-col w-full text-left px-3.5 py-3 mx-2 rounded-xl transition-all max-w-[calc(100%-16px)] cursor-pointer select-none border';
 const ROW_SELECTED = 'bg-[#064E3B] text-[#F8E7C9] border-[#064E3B] shadow-sm';
-const ROW_IDLE = 'bg-white/60 hover:bg-white text-[#064E3B] border-[#064E3B]/10 hover:border-[#064E3B]/20';
+const ROW_IDLE =
+  'bg-white/60 hover:bg-white text-[#064E3B] border-[#064E3B]/10 hover:border-[#064E3B]/20';
 
 const CLUSTER_TONES = {
   selected: {
@@ -51,7 +52,9 @@ function ClusterListItem({
   const tone = CLUSTER_TONES[isSelected ? 'selected' : 'idle'];
   const incoming = cluster.members.find((m) => m.member_role === 'incoming');
   const isDebit = incoming?.direction === 'debit';
-  const amountStr = incoming ? `${isDebit ? '-' : '+'} ₹${Math.abs(incoming.amount).toFixed(2)}` : null;
+  const amountStr = incoming
+    ? `${isDebit ? '-' : '+'} ₹${Math.abs(incoming.amount).toFixed(2)}`
+    : null;
   const ageStr = cluster.created_at ? formatRelativeDate(cluster.created_at) : null;
   const isStale = cluster.created_at ? isOlderThanDays(cluster.created_at, 3) : false;
   const amountTone = isSelected ? 'text-[#F8E7C9]' : isDebit ? 'text-red-700' : 'text-emerald-700';
@@ -59,12 +62,22 @@ function ClusterListItem({
   return (
     <button onClick={onSelect} className={cn(ROW_CLASS, tone.row)}>
       <div className="flex items-center justify-between gap-2 mb-1.5 w-full">
-        <span className={cn('text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider', tone.badge)}>
+        <span
+          className={cn(
+            'text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider',
+            tone.badge
+          )}
+        >
           Ambiguous
         </span>
-        <span className={cn('flex items-center gap-1.5 text-[10px] font-medium shrink-0', tone.meta)}>
+        <span
+          className={cn('flex items-center gap-1.5 text-[10px] font-medium shrink-0', tone.meta)}
+        >
           {ageStr && (
-            <span className={cn(isStale && tone.age)} title={isStale ? 'Pending more than 3 days' : undefined}>
+            <span
+              className={cn(isStale && tone.age)}
+              title={isStale ? 'Pending more than 3 days' : undefined}
+            >
               {ageStr}
             </span>
           )}
@@ -74,7 +87,9 @@ function ClusterListItem({
       <p className={cn('text-[13px] font-bold truncate mb-0.5', tone.merchant)}>
         {incoming?.merchant || 'Match requires review'}
       </p>
-      {amountStr && <p className={cn('text-[12px] font-mono font-semibold', amountTone)}>{amountStr}</p>}
+      {amountStr && (
+        <p className={cn('text-[12px] font-mono font-semibold', amountTone)}>{amountStr}</p>
+      )}
     </button>
   );
 }
@@ -104,7 +119,10 @@ function UnassignedListItem({
             {info.avatarLetter}
           </div>
           <span
-            className={cn('text-[13px] font-bold truncate tracking-tight', isSelected ? 'text-white' : 'text-slate-900')}
+            className={cn(
+              'text-[13px] font-bold truncate tracking-tight',
+              isSelected ? 'text-white' : 'text-slate-900'
+            )}
           >
             {info.name}
           </span>
@@ -124,23 +142,40 @@ function UnassignedListItem({
         </span>
       </div>
 
-      <p className={cn('text-[11px] line-clamp-1 mb-2 font-normal', isSelected ? 'text-[#F8E7C9]/80' : 'text-slate-600')}>
+      <p
+        className={cn(
+          'text-[11px] line-clamp-1 mb-2 font-normal',
+          isSelected ? 'text-[#F8E7C9]/80' : 'text-slate-600'
+        )}
+      >
         {info.snippet}
       </p>
 
       <div className="flex items-center justify-between text-[11px] font-medium pt-1 border-t border-current/10 w-full">
         {info.amountStr ? (
-          <span className={cn('font-semibold font-mono text-[12px]', isSelected ? 'text-[#F8E7C9]' : 'text-emerald-700')}>
+          <span
+            className={cn(
+              'font-semibold font-mono text-[12px]',
+              isSelected ? 'text-[#F8E7C9]' : 'text-emerald-700'
+            )}
+          >
             {info.amountStr}
           </span>
         ) : (
-          <span className={cn('italic text-[10px]', isSelected ? 'text-[#F8E7C9]/60' : 'text-slate-400')}>
+          <span
+            className={cn(
+              'italic text-[10px]',
+              isSelected ? 'text-[#F8E7C9]/60' : 'text-slate-400'
+            )}
+          >
             Amount missing
           </span>
         )}
 
         {info.dateStr && (
-          <span className={cn('text-[10px]', isSelected ? 'text-[#F8E7C9]/70' : 'text-slate-400')}>{info.dateStr}</span>
+          <span className={cn('text-[10px]', isSelected ? 'text-[#F8E7C9]/70' : 'text-slate-400')}>
+            {info.dateStr}
+          </span>
         )}
       </div>
     </button>
@@ -304,7 +339,11 @@ function InspectorPane({
   if (selectedUnassignedId && currentSection === 'unassigned') {
     return (
       <div className="w-full h-full flex flex-col">
-        <UnassignedInspector record={selectedUnassigned} onClose={() => onSelectUnassigned(null)} inline={true} />
+        <UnassignedInspector
+          record={selectedUnassigned}
+          onClose={() => onSelectUnassigned(null)}
+          inline={true}
+        />
       </div>
     );
   }
@@ -320,7 +359,9 @@ function InspectorPlaceholder({ currentSection }: { currentSection: string }) {
         <Layers className="w-6 h-6 text-[#064E3B]" />
       </div>
       <p className="text-[#064E3B] font-medium text-sm">
-        {currentSection === 'clusters' ? 'Select a cluster to resolve' : 'Select an item to view details'}
+        {currentSection === 'clusters'
+          ? 'Select a cluster to resolve'
+          : 'Select an item to view details'}
       </p>
     </div>
   );

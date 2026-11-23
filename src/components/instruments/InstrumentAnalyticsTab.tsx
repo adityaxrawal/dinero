@@ -2,7 +2,7 @@
  * Spending analytics scoped to one instrument.
  */
 import { useMemo } from 'react';
-import {PieChart, ShoppingBag, ArrowUpRight, ArrowDownRight} from 'lucide-react';
+import { PieChart, ShoppingBag, ArrowUpRight, ArrowDownRight } from 'lucide-react';
 import type { TransactionRecord } from '@/lib/ipc';
 
 interface InstrumentAnalyticsTabProps {
@@ -61,7 +61,9 @@ export default function InstrumentAnalyticsTab({ transactions }: InstrumentAnaly
       <div className="grid grid-cols-2 gap-3">
         <div className="bg-[#F8E7C9]/70 border border-[#064E3B]/10 rounded-2xl p-3.5 space-y-1">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70">Total Outflow</span>
+            <span className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70">
+              Total Outflow
+            </span>
             <div className="w-6 h-6 rounded-full bg-red-500/15 text-red-700 flex items-center justify-center">
               <ArrowUpRight className="w-3.5 h-3.5" />
             </div>
@@ -73,7 +75,9 @@ export default function InstrumentAnalyticsTab({ transactions }: InstrumentAnaly
 
         <div className="bg-[#F8E7C9]/70 border border-[#064E3B]/10 rounded-2xl p-3.5 space-y-1">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70">Total Inflow</span>
+            <span className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70">
+              Total Inflow
+            </span>
             <div className="w-6 h-6 rounded-full bg-emerald-500/15 text-emerald-700 flex items-center justify-center">
               <ArrowDownRight className="w-3.5 h-3.5" />
             </div>
@@ -86,11 +90,17 @@ export default function InstrumentAnalyticsTab({ transactions }: InstrumentAnaly
 
       <div className="grid grid-cols-2 gap-3">
         <div className="bg-[#F8E7C9]/50 border border-[#064E3B]/10 rounded-2xl p-3">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-[#064E3B]/60 block">Total Activity</span>
-          <span className="text-sm font-extrabold font-mono text-[#064E3B]">{stats.totalCount} transactions</span>
+          <span className="text-[10px] font-bold uppercase tracking-wider text-[#064E3B]/60 block">
+            Total Activity
+          </span>
+          <span className="text-sm font-extrabold font-mono text-[#064E3B]">
+            {stats.totalCount} transactions
+          </span>
         </div>
         <div className="bg-[#F8E7C9]/50 border border-[#064E3B]/10 rounded-2xl p-3">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-[#064E3B]/60 block">Avg Transaction</span>
+          <span className="text-[10px] font-bold uppercase tracking-wider text-[#064E3B]/60 block">
+            Avg Transaction
+          </span>
           <span className="text-sm font-extrabold font-mono text-[#064E3B]">
             ₹{stats.avgTx.toLocaleString(undefined, { maximumFractionDigits: 2 })}
           </span>
@@ -99,7 +109,9 @@ export default function InstrumentAnalyticsTab({ transactions }: InstrumentAnaly
 
       <div className="bg-[#F8E7C9]/60 border border-[#064E3B]/10 rounded-2xl p-4 space-y-3">
         <div className="flex items-center justify-between border-b border-[#064E3B]/10 pb-2">
-          <h4 className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]">Top Volume Items</h4>
+          <h4 className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]">
+            Top Volume Items
+          </h4>
           <ShoppingBag className="w-4 h-4 text-[#064E3B]/60" />
         </div>
 

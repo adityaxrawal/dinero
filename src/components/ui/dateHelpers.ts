@@ -1,4 +1,3 @@
-
 /**
  * ISO date parsing and formatting for the pickers.
  *

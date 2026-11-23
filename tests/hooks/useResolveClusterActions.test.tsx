@@ -157,9 +157,12 @@ describe('useResolveClusterActions', () => {
   });
 
   describe('post-resolution feedback', () => {
-    const runSuccess = async (method: 'handleConfirmMatch' | 'handleReviewLater' | 'handleKeepSeparate') => {
+    const runSuccess = async (
+      method: 'handleConfirmMatch' | 'handleReviewLater' | 'handleKeepSeparate'
+    ) => {
       const { result, onSuccess } = setup();
-      if (method === 'handleConfirmMatch') act(() => result.current.setSelectedCandidateId('canon1'));
+      if (method === 'handleConfirmMatch')
+        act(() => result.current.setSelectedCandidateId('canon1'));
       await act(async () => result.current[method]());
       await waitFor(() => expect(mutate).toHaveBeenCalled());
       act(() => mutate.mock.calls[0][1].onSuccess());
@@ -168,7 +171,9 @@ describe('useResolveClusterActions', () => {
 
     it('tells the user a review-later cluster stays queued', async () => {
       await runSuccess('handleReviewLater');
-      expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Marked for Later Review' }));
+      expect(toast).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Marked for Later Review' })
+      );
     });
 
     it('offers an Undo action after a confirmed match', async () => {

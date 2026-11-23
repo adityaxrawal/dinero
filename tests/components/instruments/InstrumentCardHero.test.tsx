@@ -19,7 +19,9 @@ const instrument = (over: Partial<InstrumentRecord> = {}): InstrumentRecord => (
 // The hero's gradient is the only place issuer branding is expressed, so the
 // theme lookup is asserted through the rendered class list.
 const gradientOf = (issuer: string) => {
-  const { container } = render(<InstrumentCardHero instrument={instrument({ issuer_name: issuer })} />);
+  const { container } = render(
+    <InstrumentCardHero instrument={instrument({ issuer_name: issuer })} />
+  );
   return container.firstElementChild!.className;
 };
 
@@ -58,7 +60,9 @@ describe('InstrumentCardHero', () => {
   });
 
   it('prefers the full identifier when one is stored', () => {
-    render(<InstrumentCardHero instrument={instrument({ full_identifier: '4532 7603 1920 8841' })} />);
+    render(
+      <InstrumentCardHero instrument={instrument({ full_identifier: '4532 7603 1920 8841' })} />
+    );
     expect(screen.getByText('4532 7603 1920 8841')).toBeTruthy();
   });
 
@@ -106,22 +110,38 @@ describe('InstrumentCardHero', () => {
     });
 
     it('reports the used percentage', () => {
-      render(<InstrumentCardHero instrument={instrument({ current_balance: -25000, credit_limit: 100000 })} />);
+      render(
+        <InstrumentCardHero
+          instrument={instrument({ current_balance: -25000, credit_limit: 100000 })}
+        />
+      );
       expect(screen.getByText(/25\.0% used/)).toBeTruthy();
     });
 
     it('warns only once utilisation passes 80%', () => {
-      render(<InstrumentCardHero instrument={instrument({ current_balance: -50000, credit_limit: 100000 })} />);
+      render(
+        <InstrumentCardHero
+          instrument={instrument({ current_balance: -50000, credit_limit: 100000 })}
+        />
+      );
       expect(screen.queryByText(/High credit utilization/)).toBeNull();
     });
 
     it('warns at high utilisation', () => {
-      render(<InstrumentCardHero instrument={instrument({ current_balance: -90000, credit_limit: 100000 })} />);
+      render(
+        <InstrumentCardHero
+          instrument={instrument({ current_balance: -90000, credit_limit: 100000 })}
+        />
+      );
       expect(screen.getByText(/High credit utilization/)).toBeTruthy();
     });
 
     it('caps the reported ratio at 100% when over limit', () => {
-      render(<InstrumentCardHero instrument={instrument({ current_balance: -150000, credit_limit: 100000 })} />);
+      render(
+        <InstrumentCardHero
+          instrument={instrument({ current_balance: -150000, credit_limit: 100000 })}
+        />
+      );
       expect(screen.getByText(/100\.0% used/)).toBeTruthy();
     });
   });

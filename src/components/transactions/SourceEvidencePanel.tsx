@@ -223,9 +223,7 @@ export default function SourceEvidencePanel({
         </Card>
       )}
 
-      {(isLoadingLog || sourceLog) && (
-        <SourceLogCard isLoading={isLoadingLog} log={sourceLog} />
-      )}
+      {(isLoadingLog || sourceLog) && <SourceLogCard isLoading={isLoadingLog} log={sourceLog} />}
     </div>
   );
 }

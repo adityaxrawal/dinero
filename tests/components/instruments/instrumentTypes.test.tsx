@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { render } from '@testing-library/react';
-import { INSTRUMENT_TYPES, instrumentTypeLabel, instrumentIcon } from '@/components/instruments/instrumentTypes';
+import {
+  INSTRUMENT_TYPES,
+  instrumentTypeLabel,
+  instrumentIcon,
+} from '@/components/instruments/instrumentTypes';
 
 describe('instrumentTypeLabel', () => {
   it.each(INSTRUMENT_TYPES)('labels $value as $label', ({ value, label }) => {

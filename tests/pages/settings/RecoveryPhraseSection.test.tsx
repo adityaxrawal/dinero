@@ -60,9 +60,7 @@ describe('RecoveryPhraseSection', () => {
 
     await waitFor(() => expect(screen.getByText(PHRASE)).toBeInTheDocument());
     // The button is gone, so the phrase cannot be re-fetched by a stray click.
-    expect(
-      screen.queryByRole('button', { name: /View Recovery Phrase/ })
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /View Recovery Phrase/ })).not.toBeInTheDocument();
   });
 
   it('surfaces a retrieval failure and stays re-armed', async () => {

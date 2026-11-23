@@ -81,5 +81,14 @@ export function useOnboardingSteps({
     }
   };
 
-  return { step, setStep, loading, oauthError, handleNext, handleBack, handleConnectGmail, handleSkipGmail };
+  return {
+    step,
+    setStep,
+    loading,
+    oauthError,
+    handleNext,
+    handleBack,
+    handleConnectGmail,
+    handleSkipGmail,
+  };
 }

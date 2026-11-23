@@ -42,10 +42,7 @@ interface BatchToast {
  * separately because it is the number of files the user selected, which stays
  * larger than succeeded + failed while the batch is still running.
  */
-export function batchSummaryToast(
-  outcome: BatchOutcome | null,
-  total: number
-): BatchToast | null {
+export function batchSummaryToast(outcome: BatchOutcome | null, total: number): BatchToast | null {
   if (!outcome || (outcome.succeeded === 0 && outcome.failed === 0)) return null;
 
   // Only the first failure reason is shown. Several files usually fail for the

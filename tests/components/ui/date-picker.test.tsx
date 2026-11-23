@@ -46,13 +46,7 @@ describe('DatePicker Component', () => {
 
 describe('DateRangePicker Component', () => {
   it('renders start and end date pickers and presets', () => {
-    render(
-      <DateRangePicker
-        startDate="2026-06-01"
-        endDate="2026-07-26"
-        onChange={() => {}}
-      />
-    );
+    render(<DateRangePicker startDate="2026-06-01" endDate="2026-07-26" onChange={() => {}} />);
     expect(screen.getByText('30 Days')).toBeInTheDocument();
     expect(screen.getByText('90 Days')).toBeInTheDocument();
     expect(screen.getByText('This Month')).toBeInTheDocument();
@@ -60,13 +54,7 @@ describe('DateRangePicker Component', () => {
 
   it('triggers onChange when preset button is clicked', () => {
     const handleChange = vi.fn();
-    render(
-      <DateRangePicker
-        startDate="2026-06-01"
-        endDate="2026-07-26"
-        onChange={handleChange}
-      />
-    );
+    render(<DateRangePicker startDate="2026-06-01" endDate="2026-07-26" onChange={handleChange} />);
     fireEvent.click(screen.getByText('30 Days'));
     expect(handleChange).toHaveBeenCalled();
   });

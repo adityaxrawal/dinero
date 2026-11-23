@@ -39,11 +39,16 @@ export default function ScanProgressPanel({
       ? estimateEtaSeconds(scanProgress.processed, scanProgress.total, elapsedSeconds ?? 0)
       : null;
   const percent =
-    scanProgress && scanProgress.total > 0 ? (scanProgress.processed / scanProgress.total) * 100 : 0;
+    scanProgress && scanProgress.total > 0
+      ? (scanProgress.processed / scanProgress.total) * 100
+      : 0;
 
   return (
     <div
-      className={cn('p-5 rounded-xl border', PANEL_TONE[scanStatus] ?? 'bg-[#064E3B]/5 border-[#064E3B]/10')}
+      className={cn(
+        'p-5 rounded-xl border',
+        PANEL_TONE[scanStatus] ?? 'bg-[#064E3B]/5 border-[#064E3B]/10'
+      )}
     >
       <ScanStatusLine scanStatus={scanStatus} scanProgress={scanProgress} />
 

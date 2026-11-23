@@ -28,7 +28,9 @@ function Badges({
     <>
       {isActive && <span className={cn(BADGE, 'bg-[#064E3B] text-[#F8E7C9]')}>Active</span>}
       {isDownloaded && !isActive && (
-        <span className={cn(BADGE, 'bg-emerald-500/10 text-emerald-700 border border-emerald-500/20')}>
+        <span
+          className={cn(BADGE, 'bg-emerald-500/10 text-emerald-700 border border-emerald-500/20')}
+        >
           Downloaded
         </span>
       )}

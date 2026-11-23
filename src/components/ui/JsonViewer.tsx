@@ -7,8 +7,10 @@
 export function JsonViewer({ data }: { data: unknown }) {
   if (typeof data === 'string') return <span className="text-green-400 break-all">"{data}"</span>;
   if (typeof data === 'number') return <span className="text-orange-400">{data}</span>;
-  if (typeof data === 'boolean') return <span className="text-purple-400">{data ? 'true' : 'false'}</span>;
-  if (data === null || data === undefined) return <span className="text-muted-foreground">null</span>;
+  if (typeof data === 'boolean')
+    return <span className="text-purple-400">{data ? 'true' : 'false'}</span>;
+  if (data === null || data === undefined)
+    return <span className="text-muted-foreground">null</span>;
   if (Array.isArray(data)) {
     if (data.length === 0) return <span className="text-muted-foreground">[]</span>;
     return (

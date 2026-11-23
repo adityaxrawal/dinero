@@ -1,6 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { MerchantField, EmptyTagsNotice, TransactionAuditRows } from '@/components/transactions/TransactionFields';
+import {
+  MerchantField,
+  EmptyTagsNotice,
+  TransactionAuditRows,
+} from '@/components/transactions/TransactionFields';
 import type { CanonicalTransaction } from '@/lib/ipc';
 
 const tx = (over: Partial<CanonicalTransaction> = {}): CanonicalTransaction =>

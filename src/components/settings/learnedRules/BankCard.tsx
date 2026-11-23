@@ -10,7 +10,13 @@ import { cn } from '@/lib/utils';
 import type { BankGroup, FormatGroup } from '../groupRules';
 import { ConfidenceMeter, RelativeDate } from '../SettingsPrimitives';
 import { FieldChip, StatusBadge } from './RuleBadges';
-import { describeOrigin, describeReliability, describeRule, rulePattern, shortHash } from './labels';
+import {
+  describeOrigin,
+  describeReliability,
+  describeRule,
+  rulePattern,
+  shortHash,
+} from './labels';
 
 /** Collapsible technical detail for one rule. */
 function TechnicalDetail({ rule }: { rule: LearnedRule }) {

@@ -33,7 +33,9 @@ export default function LicenseStatusGrid({ status }: { status: LicenseStatusRes
         <p className="text-[11px] font-bold uppercase tracking-wider mb-1 text-[#064E3B]/60">
           Status
         </p>
-        <p className={cn('text-[15px] font-bold', stateTone(status))}>{status.state || 'Unknown'}</p>
+        <p className={cn('text-[15px] font-bold', stateTone(status))}>
+          {status.state || 'Unknown'}
+        </p>
       </div>
 
       {status.plan_id && (

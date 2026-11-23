@@ -24,10 +24,16 @@ interface CategorySelectProps {
 }
 
 /** Category chooser for a transaction. */
-export function CategorySelect({ categoryId, onChange, categories, id, triggerClassName }: CategorySelectProps) {
+export function CategorySelect({
+  categoryId,
+  onChange,
+  categories,
+  id,
+  triggerClassName,
+}: CategorySelectProps) {
   return (
     <Select value={categoryId} onValueChange={onChange}>
-      <SelectTrigger id={id} className={triggerClassName || "w-[180px]"}>
+      <SelectTrigger id={id} className={triggerClassName || 'w-[180px]'}>
         <SelectValue placeholder="Select category" />
       </SelectTrigger>
       <SelectContent>

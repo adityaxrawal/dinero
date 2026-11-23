@@ -25,7 +25,9 @@ function EmptyInspector() {
       <p className="text-[#064E3B] font-semibold text-sm">
         Select a transaction to inspect details &amp; edit
       </p>
-      <p className="text-[#064E3B]/60 text-xs font-mono">Use ↑ / ↓ arrow keys to quickly navigate</p>
+      <p className="text-[#064E3B]/60 text-xs font-mono">
+        Use ↑ / ↓ arrow keys to quickly navigate
+      </p>
     </div>
   );
 }

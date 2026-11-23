@@ -91,7 +91,9 @@ describe('extractionBadge', () => {
     expect(extractionBadge(record({ confidence_score: 0.85 })).confidenceBadgeStyle).toMatch(
       /emerald/
     );
-    expect(extractionBadge(record({ confidence_score: 0.2 })).confidenceBadgeStyle).toMatch(/amber/);
+    expect(extractionBadge(record({ confidence_score: 0.2 })).confidenceBadgeStyle).toMatch(
+      /amber/
+    );
   });
 
   it('reports nothing extracted when there is no method and no score', () => {

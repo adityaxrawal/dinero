@@ -53,7 +53,10 @@ export function useUnprocessedQueue(onEnterPassword: (statementId: string) => vo
     }
     retry.mutate(item.statement_id, {
       onSuccess: () =>
-        toast({ title: 'Retrying', description: `${entryLabel(item)} queued for another attempt.` }),
+        toast({
+          title: 'Retrying',
+          description: `${entryLabel(item)} queued for another attempt.`,
+        }),
       onError: (err) => toast({ variant: 'destructive', ...getErrorToast(err) }),
     });
   };

@@ -17,8 +17,7 @@ export default function ScanControls({ hasAccount }: { hasAccount: boolean }) {
     failedScanCount,
     handleRetryFailed,
   } = useGlobalState();
-  const isFinished =
-    scanStatus === 'done' || scanStatus === 'error' || scanStatus === 'cancelled';
+  const isFinished = scanStatus === 'done' || scanStatus === 'error' || scanStatus === 'cancelled';
 
   return (
     <div className="flex gap-3">

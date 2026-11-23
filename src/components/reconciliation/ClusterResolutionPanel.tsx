@@ -47,11 +47,7 @@ export default function ClusterResolutionPanel({
     <div className="space-y-6">
       <VerdictHeader cluster={cluster} verdict={verdict} candidateCount={candidates.length}>
         {queueClusters && (
-          <QueueNav
-            queueClusters={queueClusters}
-            clusterId={clusterId}
-            onNavigate={onNavigate}
-          />
+          <QueueNav queueClusters={queueClusters} clusterId={clusterId} onNavigate={onNavigate} />
         )}
       </VerdictHeader>
 

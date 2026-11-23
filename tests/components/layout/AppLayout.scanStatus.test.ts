@@ -3,7 +3,10 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const source = readFileSync(join(__dirname, '../../../src/components/layout/AppLayout.tsx'), 'utf-8');
+const source = readFileSync(
+  join(__dirname, '../../../src/components/layout/AppLayout.tsx'),
+  'utf-8'
+);
 
 describe('AppLayout notification center placement', () => {
   it('mounts SidebarNotificationCenter in the main sidebar', () => {

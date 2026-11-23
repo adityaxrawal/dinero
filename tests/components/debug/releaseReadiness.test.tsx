@@ -72,12 +72,8 @@ describe('ReleaseReadinessViewer', () => {
   it('captures a snapshot and then re-reads the list', async () => {
     render(<ReleaseReadinessViewer metrics={null} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Capture Snapshot' }));
-    await waitFor(() =>
-      expect(API.debug.captureReleaseReadinessSnapshot).toHaveBeenCalled()
-    );
-    await waitFor(() =>
-      expect(API.debug.listReleaseReadinessSnapshots).toHaveBeenCalledTimes(2)
-    );
+    await waitFor(() => expect(API.debug.captureReleaseReadinessSnapshot).toHaveBeenCalled());
+    await waitFor(() => expect(API.debug.listReleaseReadinessSnapshots).toHaveBeenCalledTimes(2));
   });
 
   it('shows the locally-measured metrics, or a loading note without them', async () => {

@@ -44,7 +44,10 @@ describe('EditableDetailsCard', () => {
     unmount();
 
     render(
-      <EditableDetailsCard form={form()} inst={inst({ current_balance: null, credit_limit: null })} />
+      <EditableDetailsCard
+        form={form()}
+        inst={inst({ current_balance: null, credit_limit: null })}
+      />
     );
     expect(screen.getByText('—')).toBeInTheDocument();
     expect(screen.queryByText('Credit Limit')).not.toBeInTheDocument();
@@ -73,10 +76,12 @@ describe('SavedPasswordsCard', () => {
     const onForget = vi.fn();
     render(
       <SavedPasswordsCard
-        passwords={[
-          { id: 'p1', success_count: 1 },
-          { id: 'p2', success_count: 4 },
-        ] as never}
+        passwords={
+          [
+            { id: 'p1', success_count: 1 },
+            { id: 'p2', success_count: 4 },
+          ] as never
+        }
         onForget={onForget}
         isForgetting={false}
       />

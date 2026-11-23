@@ -47,7 +47,11 @@ const EMPTY_FORM = {
 };
 
 /** Dialog for registering a new payment instrument. */
-export default function AddInstrumentModal({ open, onOpenChange, onSuccess }: AddInstrumentModalProps) {
+export default function AddInstrumentModal({
+  open,
+  onOpenChange,
+  onSuccess,
+}: AddInstrumentModalProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [form, setForm] = useState(EMPTY_FORM);
