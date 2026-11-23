@@ -778,7 +778,11 @@ pub async fn save_history_id(
         processing_checkpoints::upsert_checkpoint(c, &checkpoint)?;
         if let Ok(Some(mut acc)) = connected_accounts::get_account(c, &acc_id) {
             acc.last_history_id = Some(history_id);
-            let _ = connected_accounts::update_account(c, &acc);
+            // The checkpoint above is the cursor the poller reads; this is the
+            // fallback copy, so a failure is logged rather than failing the poll.
+            if let Err(e) = connected_accounts::update_account(c, &acc) {
+                tracing::warn!("Could not mirror the history cursor to the account: {}", e);
+            }
         }
         Ok::<(), anyhow::Error>(())
     })

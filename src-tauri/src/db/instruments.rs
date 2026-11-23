@@ -219,6 +219,10 @@ pub fn delete_instrument(conn: &Connection, id: &str) -> Result<()> {
 /// Repairs damage from an earlier extraction bug that produced instruments keyed
 /// on fragments of a VPA rather than the identifier itself.
 pub fn cleanup_corrupted_vpa_instruments(conn: &Connection) -> Result<usize> {
+    // Both steps or neither: soft-deleting the instruments without clearing
+    // the transactions that point at them would leave dangling references.
+    let tx = conn.unchecked_transaction()?;
+    let conn: &Connection = &tx;
     let count = conn.execute(
         "UPDATE instruments \
          SET is_deleted = 1 \
@@ -233,13 +237,14 @@ pub fn cleanup_corrupted_vpa_instruments(conn: &Connection) -> Result<usize> {
     )?;
 
     if count > 0 {
-        let _ = conn.execute(
+        conn.execute(
             "UPDATE transactions \
              SET instrument_id = NULL \
              WHERE instrument_id IN (SELECT id FROM instruments WHERE is_deleted = 1 AND (type = 'upi_vpa' OR upi_vpa IS NOT NULL))",
             [],
-        );
+        )?;
     }
+    tx.commit()?;
 
     Ok(count)
 }

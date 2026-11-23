@@ -127,7 +127,9 @@ impl ScanDbBatcher {
                     after_json: Some(json!({ "reason": r.reason })),
                     created_at: Utc::now(),
                 };
-                let _ = crate::db::audit_log::insert(&tx, &row);
+                if let Err(e) = crate::db::audit_log::insert(&tx, &row) {
+                    tracing::warn!("Failed to audit a rejected message: {}", e);
+                }
                 let _ = crate::db::processed_messages::record(
                     &tx,
                     &r.message_id,

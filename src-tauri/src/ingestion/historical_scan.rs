@@ -663,19 +663,24 @@ pub(crate) async fn start_historical_scan<R: tauri::Runtime>(
             tracing::error!("Historical scan failed: {}", e);
 
             if let Ok(conn) = pool.get().await {
-                let _ = conn
+                // If this does not persist, the checkpoint stays in_progress
+                // and refuses new scans until the next restart, so log it.
+                let marked = conn
                     .interact({
                         let acc_id = account_id.clone();
-                        move |c| {
-                            if let Ok(Some(mut cp)) = get_checkpoint(c, "historical_scan", &acc_id)
-                            {
+                        move |c| -> anyhow::Result<()> {
+                            if let Some(mut cp) = get_checkpoint(c, "historical_scan", &acc_id)? {
                                 cp.status = "failed".to_string();
                                 cp.updated_at = Some(chrono::Utc::now().naive_utc());
-                                let _ = upsert_checkpoint(c, &cp);
+                                upsert_checkpoint(c, &cp)?;
                             }
+                            Ok(())
                         }
                     })
                     .await;
+                if !matches!(marked, Ok(Ok(()))) {
+                    tracing::error!("Could not mark the failed scan for '{}' as failed", account_id);
+                }
             }
 
             let _ = crate::ipc::events::emit_event(
