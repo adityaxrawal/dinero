@@ -566,7 +566,8 @@ impl MessageProcessor {
                         // leaving the observation with no counterparty at all.
                         Self::apply_balance_update_placeholder(&content_class, &mut obs);
 
-                        if obs.passes_gate3() {
+                        let confident = crate::extraction::ladder::meets_confidence_floor(obs.confidence_score);
+                        if obs.passes_gate3() && confident {
                             trace.info("  ↳ ✅ Gate 3 Passed: All mandatory fields present. Routing to Transaction Queue.");
                             Self::append_to_scan_log(
                                 app_dir.as_deref(),
@@ -585,7 +586,11 @@ impl MessageProcessor {
                         } else {
                             crate::ingestion::gmail_telemetry::gmail_telemetry()
                                 .record_gate_rejection("gate3");
-                            let reason = Self::gate3_failure_reason(&obs);
+                            let reason = if obs.passes_gate3() {
+                                "low_confidence"
+                            } else {
+                                Self::gate3_failure_reason(&obs)
+                            };
                             trace.info(format!(
                                 "  ↳ ❌ Gate 3 Failed: {}. Routing to Unassigned Queue.",
                                 reason

@@ -595,7 +595,7 @@ fn spawn_layer6_workers(
     });
 }
 
-const LAYER6_AUTO_RESOLVE_CONFIDENCE_THRESHOLD: f64 = 0.75;
+const LAYER6_AUTO_RESOLVE_CONFIDENCE_THRESHOLD: f64 = crate::extraction::ladder::MIN_LEDGER_CONFIDENCE;
 
 /// Clears the durable row for a job that has genuinely finished.
 ///

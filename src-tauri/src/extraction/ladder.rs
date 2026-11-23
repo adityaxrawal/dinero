@@ -56,6 +56,17 @@ pub struct ExtractionResult {
     pub channel: Option<String>,
 }
 
+/// The one confidence floor for booking an extraction into the ledger, for
+/// every layer (review M1). Below it -- including results the amount
+/// cross-check downgraded -- the extraction goes to the review queue,
+/// prefilled, instead. A result with no score (deterministic layers) passes.
+pub const MIN_LEDGER_CONFIDENCE: f64 = 0.75;
+
+/// Whether an extraction is confident enough to book without review.
+pub fn meets_confidence_floor(confidence: Option<f64>) -> bool {
+    confidence.is_none_or(|c| c >= MIN_LEDGER_CONFIDENCE)
+}
+
 pub fn evaluate_gate3(
     has_amount: bool,
     has_entity: bool,

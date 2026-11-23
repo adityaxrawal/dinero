@@ -2707,3 +2707,13 @@
         assert_eq!(result.direction, Some("debit".to_string()));
         assert_eq!(result.reference_id, Some("644708657028".to_string()));
     }
+
+/// Review M1: one confidence floor for every layer.
+#[test]
+fn one_confidence_floor_for_every_layer() {
+    use crate::extraction::ladder::meets_confidence_floor;
+    assert!(meets_confidence_floor(None), "deterministic layers carry no score");
+    assert!(meets_confidence_floor(Some(0.75)));
+    assert!(!meets_confidence_floor(Some(0.7)));
+    assert!(!meets_confidence_floor(Some(0.4)), "cross-check downgrades go to review");
+}
