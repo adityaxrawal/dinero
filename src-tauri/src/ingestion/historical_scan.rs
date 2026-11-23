@@ -419,6 +419,11 @@ pub struct ScanCheckpointState {
     /// Absent in older checkpoints, which fall back to `processed_count`.
     #[serde(default)]
     pub resume_from: Option<usize>,
+    /// When this scan first started (UTC, `YYYY-MM-DD HH:MM:SS`). Cancel
+    /// rolls back only rows created since then, never older or user-triaged
+    /// ones (review M3).
+    #[serde(default)]
+    pub started_at: Option<String>,
 }
 
 #[tauri::command]
@@ -731,6 +736,10 @@ async fn run_scan<R: tauri::Runtime>(
         }
     };
 
+    if state.started_at.is_none() {
+        state.started_at = Some(Utc::now().format("%Y-%m-%d %H:%M:%S").to_string());
+    }
+
     if state.all_message_ids.is_empty() {
         let parsed_end = chrono::NaiveDate::parse_from_str(&end_date, "%Y-%m-%d")
             .unwrap_or_else(|_| chrono::Utc::now().naive_utc().date());
@@ -849,6 +858,10 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
 ) -> anyhow::Result<()> {
     let total = state.all_message_ids.len();
     let to_process = state.all_message_ids.clone();
+    let started_at = state
+        .started_at
+        .get_or_insert_with(|| Utc::now().format("%Y-%m-%d %H:%M:%S").to_string())
+        .clone();
     let resume_from = state.resume_from.unwrap_or(state.processed_count).min(total);
     // On resume the counter restarts at the low-water mark, since ids between
     // it and the old count are processed (and counted) again.
@@ -1356,6 +1369,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
         if let Ok(conn) = pool.get().await {
             let acct_id = account_id.clone();
             let msg_ids = state.all_message_ids.clone();
+            let started_at = started_at.clone();
 
             let _ = conn.interact(move |c| {
                 if let Ok(tx) = c.transaction() {
@@ -1365,37 +1379,48 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                     );
 
                     for chunk in msg_ids.chunks(900) {
-                        let placeholders = vec!["?"; chunk.len()].join(", ");
+                        // ?1 is the scan's start time: only rows this scan
+                        // created are rolled back.
+                        let params = || {
+                            std::iter::once(started_at.as_str()).chain(chunk.iter().map(String::as_str))
+                        };
+                        let placeholders = (2..chunk.len() + 2)
+                            .map(|i| format!("?{i}"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
 
                         let sql_unassigned = format!(
-                            "DELETE FROM unassigned_transactions WHERE observation_id IN (
+                            "DELETE FROM unassigned_transactions WHERE created_at >= ?1 AND observation_id IN (
                                 SELECT id FROM transaction_observations WHERE source_record_id IN ({})
                             )",
                             placeholders
                         );
-                        let _ = tx.execute(&sql_unassigned, rusqlite::params_from_iter(chunk.iter()));
+                        let _ = tx.execute(&sql_unassigned, rusqlite::params_from_iter(params()));
 
                         let sql_obs = format!(
                             "DELETE FROM transaction_observations
-                             WHERE source_record_id IN ({})
+                             WHERE created_at >= ?1
+                             AND source_record_id IN ({})
                              AND canonical_transaction_id IS NULL
                              AND id NOT IN (SELECT observation_id FROM match_decisions)",
                             placeholders
                         );
-                        let _ = tx.execute(&sql_obs, rusqlite::params_from_iter(chunk.iter()));
+                        let _ = tx.execute(&sql_obs, rusqlite::params_from_iter(params()));
 
-                        let sql_ignored = format!(
-                            "DELETE FROM ignored_messages WHERE message_id IN ({})",
-                            placeholders
-                        );
-                        let _ = tx.execute(&sql_ignored, rusqlite::params_from_iter(chunk.iter()));
-
-                        let sql_unproc = format!(
-                            "DELETE FROM unprocessed_statements WHERE json_extract(statement_source_json, '$.message_id') IN ({})",
-                            placeholders
-                        );
-                        let _ = tx.execute(&sql_unproc, rusqlite::params_from_iter(chunk.iter()));
+                        for table_sql in [
+                            "DELETE FROM ignored_messages WHERE created_at >= ?1 AND message_id IN ({})",
+                            "DELETE FROM processed_messages WHERE created_at >= ?1 AND message_id IN ({})",
+                            "DELETE FROM unprocessed_statements WHERE created_at >= ?1 AND json_extract(statement_source_json, '$.message_id') IN ({})",
+                        ] {
+                            let sql = table_sql.replace("{}", &placeholders);
+                            let _ = tx.execute(&sql, rusqlite::params_from_iter(params()));
+                        }
                     }
+                    // Layer 6 jobs whose unassigned row was rolled back.
+                    let _ = tx.execute(
+                        "DELETE FROM layer6_pending_jobs WHERE id NOT IN (SELECT id FROM unassigned_transactions)",
+                        [],
+                    );
 
                     let _ = tx.commit();
                 }
@@ -1662,6 +1687,7 @@ mod tests {
             pending_enrichment: 0,
             retry_of_failed: false,
             resume_from: None,
+            started_at: None,
         };
         let cp = ProcessingCheckpointRow {
             id: "cp_status".into(),
@@ -1851,6 +1877,7 @@ mod tests {
             pending_enrichment: 0,
             retry_of_failed: false,
             resume_from: None,
+            started_at: None,
         };
 
         let gmail = mock_gmail(200).await;
@@ -2154,6 +2181,58 @@ mod tests {
         let _ = fs::remove_dir_all(&temp_dir);
     }
 
+    /// Review M3: cancel rolls back only rows this scan created; a row that
+    /// existed before the scan (for example one the user already triaged)
+    /// survives even though its message id was in the scan.
+    #[tokio::test]
+    async fn test_cancel_keeps_rows_older_than_the_scan() {
+        let app = mock_builder()
+            .build(mock_context(tauri::test::noop_assets()))
+            .unwrap()
+            .handle()
+            .clone();
+        app.manage(test_queue_handles());
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let pool = init_db(temp_dir.join("t.db")).await.expect("DB init failed");
+        let account_id = format!("gmail_{}", uuid::Uuid::new_v4());
+
+        let conn = pool.get().await.unwrap();
+        conn.interact(|c| {
+            c.execute(
+                "INSERT INTO processed_messages (message_id, decision, created_at)
+                 VALUES ('old_msg', 'rejected:x', datetime('now', '-1 day')),
+                        ('new_msg', 'rejected:x', datetime('now', '+1 minute'))",
+                [],
+            )
+            .unwrap();
+        })
+        .await
+        .unwrap();
+
+        scans_cancel(account_id.clone()).await.unwrap();
+        let state = ScanCheckpointState {
+            start_date: "2023-01-01".into(),
+            end_date: "2023-01-31".into(),
+            all_message_ids: vec!["old_msg".into(), "new_msg".into()],
+            ..Default::default()
+        };
+        let gmail = mock_gmail(200).await;
+        let client =
+            GmailClient::new_with_base_url("fake_token".into(), pool.clone(), gmail.url(), None);
+        run_scan_batches(app, pool.clone(), account_id, state, client).await.unwrap();
+
+        let left: Vec<String> = conn
+            .interact(|c| {
+                let mut s = c.prepare("SELECT message_id FROM processed_messages").unwrap();
+                s.query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect()
+            })
+            .await
+            .unwrap();
+        assert_eq!(left, vec!["old_msg".to_string()]);
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
     #[tokio::test]
     async fn test_historical_scan_cancellation_emits_scan_cancelled_not_scan_completed() {
         use tauri::Listener;
@@ -2188,6 +2267,7 @@ mod tests {
             pending_enrichment: 0,
             retry_of_failed: false,
             resume_from: None,
+            started_at: None,
         };
 
         let gmail = mock_gmail(200).await;
@@ -2270,6 +2350,7 @@ mod tests {
             pending_enrichment: 0,
             retry_of_failed: false,
             resume_from: None,
+            started_at: None,
         };
 
         let gmail = mock_gmail(200).await;
