@@ -187,6 +187,9 @@ fn should_checkpoint(batch_count: usize) -> bool {
 /// once tripped Gmail's per-user concurrency limit (403 rateLimitExceeded).
 const MAX_CONCURRENT_FETCHES: usize = 8;
 
+/// Statement-attachment downloads in flight at once during a scan.
+const MAX_CONCURRENT_ATTACHMENT_FETCHES: usize = 2;
+
 /// Concurrency for retrying failed messages, kept low since they most likely
 /// failed from throttling.
 const RETRY_CONCURRENCY: usize = 2;
@@ -907,6 +910,8 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
 
     let mut was_cancelled = false;
     let mut batch_count = 0;
+    // Statement attachment downloads in flight at once (follow-up to C1).
+    let attachment_slots = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_ATTACHMENT_FETCHES));
 
     let mut batch_start_time = std::time::Instant::now();
 
@@ -1103,7 +1108,14 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                             let msg_id = msg_id.clone();
                             let email_meta = email_meta.clone();
                             let attachments = extracted.pdf_attachments.clone();
+                            let attachment_slots = Arc::clone(&attachment_slots);
                             tokio::spawn(async move {
+                                // Bounded like the message fetches: each
+                                // statement email used to start its own
+                                // unthrottled download task.
+                                let Ok(_slot) = attachment_slots.acquire_owned().await else {
+                                    return;
+                                };
                                 for att in &attachments {
                                     let filename = &att.filename;
                                     let fetch_result: anyhow::Result<Vec<u8>> =
