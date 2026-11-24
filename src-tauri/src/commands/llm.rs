@@ -83,12 +83,12 @@ async fn persist_if_changed(
         Some(id) => conn
             .interact(move |c| crate::db::local_profile::set_llm_model(c, &id))
             .await
-            .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+            .map_err(|e| crate::error::AppError::Internal(e.to_string()))?
             .map_err(|e| crate::error::AppError::Db(e.to_string())),
         None => conn
             .interact(|c| crate::db::local_profile::clear_llm_model(c))
             .await
-            .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+            .map_err(|e| crate::error::AppError::Internal(e.to_string()))?
             .map_err(|e| crate::error::AppError::Db(e.to_string())),
     }
 }
@@ -116,7 +116,7 @@ pub async fn llm_delete_model(
     let stored = conn
         .interact(|c| crate::db::local_profile::get_llm_model(c))
         .await
-        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Internal(e.to_string()))?
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
 
     let resolved = llm_manager::resolve_active_model(&downloaded, stored.as_deref());
@@ -159,7 +159,7 @@ pub async fn llm_get_active_model(
     let stored = conn
         .interact(|c| crate::db::local_profile::get_llm_model(c))
         .await
-        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Internal(e.to_string()))?
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
 
     let downloaded = downloaded_model_ids(&app_dir);
@@ -188,7 +188,7 @@ pub async fn llm_set_active_model(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(move |c| crate::db::local_profile::set_llm_model(c, &model_id))
         .await
-        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Internal(e.to_string()))?
         .map_err(|e| crate::error::AppError::Db(e.to_string()))
 }
 
@@ -219,7 +219,7 @@ pub async fn llm_get_hardware_info(
     let stored = conn
         .interact(|c| crate::db::local_profile::get_llm_model(c))
         .await
-        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Internal(e.to_string()))?
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     let active_model_id = llm_manager::resolve_active_model(&downloaded, stored.as_deref());
 

@@ -471,7 +471,7 @@ pub async fn is_gmail_connected(
             count > 0
         })
         .await
-        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
+        .map_err(|e| crate::error::AppError::Internal(e.to_string()))?;
     Ok(is_connected)
 }
 
@@ -514,7 +514,7 @@ pub async fn settings_get_connected_accounts(
         Ok(accounts)
     })
     .await
-    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+    .map_err(|e| crate::error::AppError::Internal(e.to_string()))?
     .map_err(crate::error::AppError::Db)
 }
 
@@ -539,7 +539,7 @@ pub async fn auth_google_disconnect(
     let acc_id_clone = account_id.clone();
     conn.interact(move |c| apply_disconnect(c, &acc_id_clone))
         .await
-        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Internal(e.to_string()))?
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     emit_accounts_changed(&app);
 

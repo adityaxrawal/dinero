@@ -429,7 +429,7 @@ pub async fn transactions_search(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(move |c| do_transactions_search(c, &query, filters.as_ref()))
         .await
-        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Internal(e.to_string()))?
         .map_err(crate::error::AppError::Db)
 }
 
@@ -776,7 +776,7 @@ pub async fn check_backend_status(
             .map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+    .map_err(|e| crate::error::AppError::Internal(e.to_string()))?
     .map(|_| BackendStatus {
         status: "healthy".to_string(),
     })
@@ -810,7 +810,7 @@ pub async fn settings_export_backup(
         .map_err(|e| anyhow::anyhow!(e.to_string()))
     })
     .await
-    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+    .map_err(|e| crate::error::AppError::Internal(e.to_string()))?
     .map_err(|e| crate::error::AppError::Validation(e.to_string()))?;
 
     tracing::info!(
@@ -878,7 +878,7 @@ async fn stage_restore_and_swap(
         let safety_str = safety.to_string_lossy().to_string();
         conn.interact(move |c| c.execute("VACUUM INTO ?1", [safety_str]))
             .await
-            .map_err(|e| AppError::Unknown(e.to_string()))?
+            .map_err(|e| AppError::Internal(e.to_string()))?
             .map_err(|e| AppError::Io(format!("Pre-restore backup failed: {e}")))?;
         crate::db::backup::verify_backup_integrity(&safety)
             .map_err(|e| AppError::Io(format!("Pre-restore backup failed verification: {e}")))
@@ -1890,7 +1890,7 @@ pub async fn statements_get_pdf(
 ) -> Result<String, crate::error::AppError> {
     crate::ipc::validation::validate_uuid("statement_id", &statement_id)?;
     let app_data_dir = app.path().app_data_dir().map_err(|_| {
-        crate::error::AppError::Unknown("Failed to determine app data directory".to_string())
+        crate::error::AppError::Io("Failed to determine app data directory".to_string())
     })?;
     let bytes = get_pdf_bytes_for_statement(&app_data_dir, &statement_id, pool.inner()).await?;
     let viewable = crate::statements::password::ensure_viewable_pdf_bytes(bytes, pool.inner())
@@ -1909,7 +1909,7 @@ pub async fn statements_delete_pdf(
     crate::ipc::validation::validate_uuid("statement_id", &statement_id)?;
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
     let app_data_dir = app.path().app_data_dir().map_err(|_| {
-        crate::error::AppError::Unknown("Failed to determine app data directory".to_string())
+        crate::error::AppError::Io("Failed to determine app data directory".to_string())
     })?;
     delete_pdf_for_statement(&app_data_dir, &statement_id, pool.inner()).await
 }

@@ -147,7 +147,7 @@ pub async fn submit_user_feedback(
             crate::diagnostics::generate_diagnostic_bundle(&app_dir, c, Some(&text))
         })
         .await
-        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Internal(e.to_string()))?
         .map_err(|e| crate::error::AppError::Io(e.to_string()))
         .map(|p| p.display().to_string())
     } else {

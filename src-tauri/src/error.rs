@@ -526,3 +526,39 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod classification_tests {
+    use super::*;
+
+    /// Audit F-5: worker-thread failures are Internal and app-dir failures Io,
+    /// not Unknown; the frontend contract (code) is unchanged.
+    #[test]
+    fn interact_failures_are_classified_and_the_code_is_unchanged() {
+        assert_eq!(AppError::Internal(String::new()).code(), AppError::Unknown(String::new()).code());
+        assert_eq!(AppError::Io(String::new()).code(), "INTERNAL_ERROR");
+        let re = regex::Regex::new(
+            r"\.interact\([^;]*?\)\s*\.await\s*\.map_err\(\|e\|\s*(?:crate::error::)?AppError::Unknown\(e\.to_string\(\)\)\)",
+        )
+        .unwrap();
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut stack = vec![src];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    let prod = text.split("#[cfg(test)]").next().unwrap();
+                    assert!(!re.is_match(prod), "{} maps an interact failure to Unknown", path.display());
+                    assert!(
+                        !prod.contains("AppError::Unknown(\"Failed to determine app data directory\""),
+                        "{}: app-dir failures are Io",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+}

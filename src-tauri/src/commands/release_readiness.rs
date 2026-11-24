@@ -186,7 +186,7 @@ pub async fn release_readiness_capture_snapshot(
         })
     })
     .await
-    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+    .map_err(|e| crate::error::AppError::Internal(e.to_string()))?
     .map_err(|e| crate::error::AppError::Db(e.to_string()))
 }
 
@@ -201,7 +201,7 @@ pub async fn release_readiness_list_snapshots(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     conn.interact(|c| list_snapshots(c, 20))
         .await
-        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Internal(e.to_string()))?
         .map_err(|e| crate::error::AppError::Db(e.to_string()))
 }
 

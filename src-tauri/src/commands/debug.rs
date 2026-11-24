@@ -28,7 +28,7 @@ pub async fn debug_fetch_parse_errors(
             results.push(r?);
         }
         Ok::<_, rusqlite::Error>(results)
-    }).await.map_err(|e| AppError::Unknown(e.to_string()))?.map_err(|e| AppError::Db(e.to_string()))?;
+    }).await.map_err(|e| AppError::Internal(e.to_string()))?.map_err(|e| AppError::Db(e.to_string()))?;
 
     Ok(rows)
 }
@@ -42,7 +42,7 @@ pub async fn debug_fetch_unprocessed_statements(
     let rows = conn
         .interact(|c| db::unprocessed_statements::select_pending(c))
         .await
-        .map_err(|e| AppError::Unknown(e.to_string()))?
+        .map_err(|e| AppError::Internal(e.to_string()))?
         .map_err(|e| AppError::Db(e.to_string()))?;
 
     Ok(rows)
@@ -60,7 +60,7 @@ pub async fn debug_fetch_audit_log(
     let rows = conn
         .interact(move |c| db::audit_log::fetch_all(c, resource_type_filter, limit, offset))
         .await
-        .map_err(|e| AppError::Unknown(e.to_string()))?
+        .map_err(|e| AppError::Internal(e.to_string()))?
         .map_err(|e| AppError::Db(e.to_string()))?;
 
     Ok(rows)
@@ -75,7 +75,7 @@ pub async fn debug_fetch_reconciliation_clusters(
     let rows = conn
         .interact(|c| db::reconciliation_clusters::select_all(c))
         .await
-        .map_err(|e| AppError::Unknown(e.to_string()))?
+        .map_err(|e| AppError::Internal(e.to_string()))?
         .map_err(|e| AppError::Db(e.to_string()))?;
 
     Ok(rows)

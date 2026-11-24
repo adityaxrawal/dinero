@@ -144,7 +144,7 @@ pub async fn scans_status(
     let checkpoint = conn
         .interact(move |c| get_checkpoint(c, "historical_scan", &account_id))
         .await
-        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Internal(e.to_string()))?
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     Ok(checkpoint_to_status(checkpoint))
 }
@@ -166,7 +166,7 @@ pub async fn scans_resume<R: tauri::Runtime>(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?
         .interact(move |c| get_checkpoint(c, "historical_scan", &account_id_clone))
         .await
-        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Internal(e.to_string()))?
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
 
     let cp = checkpoint.ok_or_else(|| {
@@ -458,7 +458,7 @@ pub async fn scans_historical<R: tauri::Runtime>(
             .map_err(|e| crate::error::AppError::Db(e.to_string()))?
             .interact(|c| crate::db::processed_messages::forget_rejections(c))
             .await
-            .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+            .map_err(|e| crate::error::AppError::Internal(e.to_string()))?
             .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     }
 
@@ -485,7 +485,7 @@ pub async fn scans_failed_count(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?
         .interact(move |c| crate::db::scan_failed_messages::distinct_msg_ids(c, &account_id))
         .await
-        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Internal(e.to_string()))?
         .map(|ids| ids.len())
         .map_err(|e| crate::error::AppError::Db(e.to_string()))
 }
@@ -543,7 +543,7 @@ pub async fn scans_retry_failed<R: tauri::Runtime>(
                 Ok(Some(n))
             })
             .await
-            .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+            .map_err(|e| crate::error::AppError::Internal(e.to_string()))?
             .map_err(|e| crate::error::AppError::Db(e.to_string()))?
     };
     match seeded {

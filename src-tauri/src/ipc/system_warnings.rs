@@ -213,7 +213,7 @@ pub async fn settings_dismiss_system_warning(
     let (wt, msg) = (warning_type.clone(), active.message.clone());
     conn.interact(move |c| crate::db::dismissed_warnings::record_dismissal(c, &wt, &msg))
         .await
-        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Internal(e.to_string()))?
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
 
     remember_dismissal(&warning_type, &active.message);

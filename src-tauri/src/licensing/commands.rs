@@ -91,7 +91,7 @@ pub async fn license_get_status(
     let conn = pool.get().await.map_err(|e| AppError::Db(e.to_string()))?;
     conn.interact(|c| compute_license_status(&*c))
         .await
-        .map_err(|e| AppError::Unknown(e.to_string()))?
+        .map_err(|e| AppError::Internal(e.to_string()))?
 }
 
 /// Notifies the frontend that licence state changed.
@@ -196,7 +196,7 @@ async fn stored_license_jwt(pool: &deadpool_sqlite::Pool) -> Result<String, AppE
     let conn = pool.get().await.map_err(|e| AppError::Db(e.to_string()))?;
     conn.interact(|c| crate::licensing::state::get_license_state(c))
         .await
-        .map_err(|e| AppError::Unknown(e.to_string()))?
+        .map_err(|e| AppError::Internal(e.to_string()))?
         .map_err(|e| AppError::Db(e.to_string()))?
         .map(|s| s.license_jwt)
         .filter(|j| !j.is_empty())
@@ -226,7 +226,7 @@ pub async fn deactivate_license_internal(
         )
     })
     .await
-    .map_err(|e| AppError::Unknown(e.to_string()))?
+    .map_err(|e| AppError::Internal(e.to_string()))?
     .map_err(|e| AppError::Db(e.to_string()))?;
 
     Ok(LicenseDeactivateResponse {
@@ -272,7 +272,7 @@ pub async fn license_refresh(
         crate::licensing::state_machine::apply_server_validation(c, &status, &response.jwt, expires_at)
     })
     .await
-    .map_err(|e| AppError::Unknown(e.to_string()))?
+    .map_err(|e| AppError::Internal(e.to_string()))?
     .map_err(|e| AppError::Db(e.to_string()))?;
 
     emit_license_state_changed(&app_handle, pool.inner()).await;
@@ -373,7 +373,7 @@ async fn store_server_license(
     };
     conn.interact(move |c| upsert_license_state(c, &row))
         .await
-        .map_err(|e| AppError::Unknown(e.to_string()))?
+        .map_err(|e| AppError::Internal(e.to_string()))?
         .map_err(|e| AppError::Db(e.to_string()))?;
 
     emit_license_state_changed(app_handle, pool).await;

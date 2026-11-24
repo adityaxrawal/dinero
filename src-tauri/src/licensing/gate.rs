@@ -76,7 +76,7 @@ pub async fn assert_write_allowed(pool: &deadpool_sqlite::Pool) -> Result<(), Ap
         signed_state_entitles(&claims)
     })
     .await
-    .map_err(|e| AppError::Unknown(e.to_string()))?
+    .map_err(|e| AppError::Internal(e.to_string()))?
 }
 
 /// Confirms the trial has not expired.

@@ -69,7 +69,7 @@ pub async fn settings_get_network_activity(
     let (rows, total) = conn
         .interact(move |conn| network_activity_log::list_paginated(conn, page, page_size))
         .await
-        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Internal(e.to_string()))?
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
 
     let entries: Vec<NetworkActivityEntry> = rows.into_iter().map(to_entry).collect();
