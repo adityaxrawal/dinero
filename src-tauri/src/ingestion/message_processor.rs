@@ -188,6 +188,12 @@ impl MessageProcessor {
             None => (Vec::new(), Vec::new()),
         };
 
+        // A sender the user approved but the registry does not verify is
+        // still read, but what it yields goes to review, never straight to
+        // the ledger (audit E-3, owner decision).
+        let review_only = sender_domain
+            .as_deref()
+            .is_some_and(|domain| Self::is_review_only_sender(domain, &approved_senders));
         let gate_result =
             Self::evaluate_metadata_gate(&metadata_msg, &approved_senders, &bank_overrides);
 
@@ -589,7 +595,7 @@ impl MessageProcessor {
                         Self::apply_balance_update_placeholder(&content_class, &mut obs);
 
                         let confident = crate::extraction::ladder::meets_confidence_floor(obs.confidence_score);
-                        if obs.passes_gate3() && confident {
+                        if obs.passes_gate3() && confident && !review_only {
                             trace.info("  ↳ ✅ Gate 3 Passed: All mandatory fields present. Routing to Transaction Queue.");
                             Self::append_to_scan_log(
                                 app_dir.as_deref(),
@@ -608,7 +614,9 @@ impl MessageProcessor {
                         } else {
                             crate::ingestion::gmail_telemetry::gmail_telemetry()
                                 .record_gate_rejection("gate3");
-                            let reason = if obs.passes_gate3() {
+                            let reason = if obs.passes_gate3() && confident {
+                                "unverified_sender"
+                            } else if obs.passes_gate3() {
                                 "low_confidence"
                             } else {
                                 Self::gate3_failure_reason(&obs)
@@ -950,6 +958,22 @@ impl MessageProcessor {
             crate::ingestion::auth_results::apply_auth_results_check(verify_result, headers);
 
         Self::apply_bank_override(verify_result, &domain, bank_overrides)
+    }
+
+    /// Whether a sender is trusted only by the user's approval, not by the
+    /// verified registry: its mail is read, but goes to review (audit E-3).
+    pub(crate) fn is_review_only_sender(
+        domain: &str,
+        approved_senders: &[crate::db::sender_reputation::PendingSenderRow],
+    ) -> bool {
+        approved_senders
+            .iter()
+            .any(|p| Self::normalize_domain(&p.domain) == Self::normalize_domain(domain))
+            && !matches!(
+                get_sender_validator().verify_sender(&format!("sender@{domain}"), None),
+                SenderVerificationResult::VerifiedTransactionCandidate(_)
+                    | SenderVerificationResult::VerifiedStatementCandidate(_)
+            )
     }
 
     /// Applies a user-configured sender-to-bank override.

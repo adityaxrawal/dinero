@@ -142,21 +142,27 @@ fn test_unknown_sender_rejected() {
     }
 }
 
-/// Suffix-anchored subdomain fix: a genuine, never-registered subdomain of
-/// an already-verified apex domain ("hdfcbank.net" is registered as
-/// transaction_candidate) must now resolve as verified instead of being
-/// falsely SpoofRejected by the old raw-substring nesting check -- the old
-/// `domain.contains(&config.domain)` check couldn't distinguish this from a
-/// real nesting attack, so every legitimate subdomain rotation required a
-/// hand-added registry row.
+/// Audit E-3 (owner decision): a subdomain is trusted only when the registry
+/// lists it for the bank. An unlisted subdomain of a verified apex may be a
+/// third-party mailer, so it is no longer verified; a listed one is, and the
+/// look-alike checks also run on UTS #39 skeletons.
 #[test]
-fn test_unregistered_subdomain_of_verified_apex_now_verified() {
+fn test_only_listed_subdomains_are_verified() {
     let validator = SenderValidator::new();
-    let result = validator.verify_sender("noreply@notifications.hdfcbank.net", None);
+    assert!(matches!(
+        validator.verify_sender("noreply@notifications.hdfcbank.net", None),
+        SenderVerificationResult::SpoofReject(_)
+    ));
     assert_eq!(
-        result,
+        validator.verify_sender("alerts@mailers.hdfcbank.net", None),
         SenderVerificationResult::VerifiedTransactionCandidate("HDFC Bank".to_string())
     );
+    // Mixed-script look-alike that also drops a letter: Cyrillic "а" for
+    // "a" plus a missing "k" ("hdfcbаnk.net" -> "hdfcbаn.net").
+    assert!(matches!(
+        validator.verify_sender("alerts@hdfcb\u{0430}n.net", None),
+        SenderVerificationResult::SpoofReject(_)
+    ));
 }
 
 /// True nesting attacks (the verified domain as a substring, NOT at the

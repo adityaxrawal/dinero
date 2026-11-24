@@ -13,6 +13,7 @@ const REASON_TITLE: Record<string, string> = {
   'gate3_failed:missing_counterparty': 'Missing Counterparty / Merchant',
   'gate3_failed:missing_instrument': 'Missing Instrument Details',
   instrument_archived: 'Archived Payment Instrument',
+  unverified_sender: 'Sender You Approved (Not Verified)',
   gate3_failed: 'Mandatory Field Gate Failed',
 };
 
@@ -65,6 +66,11 @@ const REASON_GUIDANCE: Record<string, ReasonGuidance> = {
     description:
       'Amount, merchant, and date were extracted, but no bank name, card last-4 digits, or UPI ID signal was present in the email.',
     tip: 'Select the payment instrument used for this transaction from the Instrument dropdown below.',
+  },
+  unverified_sender: {
+    description:
+      'This came from a sender you approved, which is not in the verified bank registry, so it is never booked automatically.',
+    tip: 'Check the details against the email below, then save it if it is genuine.',
   },
   instrument_archived: {
     description:

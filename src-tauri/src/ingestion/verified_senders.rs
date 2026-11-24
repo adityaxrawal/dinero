@@ -21,6 +21,10 @@ pub struct VerifiedSenderConfig {
     pub bank_name: String,
     pub display_names: Vec<String>,
     pub classification: String,
+    /// Subdomains this bank is known to send from; only these are trusted
+    /// besides `domain` itself (audit E-3).
+    #[serde(default)]
+    pub subdomains: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -134,17 +138,16 @@ impl SenderValidator {
             };
         }
 
-        let mut best_suffix_match: Option<&VerifiedSenderConfig> = None;
-        for config in &self.registry.senders {
-            if domain.ends_with(&format!(".{}", config.domain))
-                && best_suffix_match
-                    .map(|c| config.domain.len() > c.domain.len())
-                    .unwrap_or(true)
-            {
-                best_suffix_match = Some(config);
-            }
-        }
-        if let Some(config) = best_suffix_match {
+        // Subdomains are trusted only when listed for the bank (audit E-3,
+        // owner decision): a bank may hand a subdomain to a third-party
+        // mailer, so "any *.bank.com" is not proof of the bank. An unlisted
+        // subdomain falls through to the spoof checks below.
+        if let Some(config) = self
+            .registry
+            .senders
+            .iter()
+            .find(|s| s.subdomains.iter().any(|sub| *sub == domain))
+        {
             return match config.classification.as_str() {
                 "transaction_candidate" => {
                     SenderVerificationResult::VerifiedTransactionCandidate(config.bank_name.clone())
@@ -183,9 +186,15 @@ impl SenderValidator {
             );
         }
 
+        // Compared on UTS #39 skeletons, so a mixed-script look-alike that
+        // also adds or drops a character is still measured against the
+        // domain it imitates (audit E-3).
         const TYPOSQUAT_SIMILARITY_THRESHOLD: f64 = 0.85;
+        let domain_skeleton: String = unicode_security::skeleton(&domain).collect();
         for config in &self.registry.senders {
-            let similarity = strsim::normalized_damerau_levenshtein(&domain, &config.domain);
+            let registry_skeleton: String = unicode_security::skeleton(&config.domain).collect();
+            let similarity =
+                strsim::normalized_damerau_levenshtein(&domain_skeleton, &registry_skeleton);
             if similarity >= TYPOSQUAT_SIMILARITY_THRESHOLD && domain != config.domain {
                 return SenderVerificationResult::SpoofReject(format!(
                     "Typo-squatted domain similar to {}",

@@ -885,3 +885,20 @@ fn rejected_and_mandate_messages_count_as_processed() {
     assert!(message_already_processed(&conn, "m2").unwrap());
     assert!(!message_already_processed(&conn, "m3").unwrap());
 }
+
+/// Audit E-3: a sender the user approved, but the registry does not verify,
+/// is review-only; a registry-verified bank is not, even if also approved.
+#[test]
+fn approved_but_unverified_senders_are_review_only() {
+    let approved = |domain: &str| crate::db::sender_reputation::PendingSenderRow {
+        id: "p".into(),
+        domain: domain.into(),
+        bank_name: "Some Bank".into(),
+        classification: "transaction_candidate".into(),
+        status: "approved".into(),
+        reject_count: 0,
+    };
+    assert!(MessageProcessor::is_review_only_sender("newbank-alerts.in", &[approved("newbank-alerts.in")]));
+    assert!(!MessageProcessor::is_review_only_sender("hdfcbank.net", &[approved("hdfcbank.net")]));
+    assert!(!MessageProcessor::is_review_only_sender("newbank-alerts.in", &[]));
+}

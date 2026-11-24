@@ -32,7 +32,11 @@
       "display_names": [
         "SBI Card"
       ],
-      "classification": "transaction_candidate"
+      "classification": "transaction_candidate",
+      "subdomains": [
+        "emailer.sbicard.com",
+        "offers.sbicard.com"
+      ]
     },
     {
       "domain": "bankofbaroda.in",
@@ -414,7 +418,11 @@
         "HDFC Bank",
         "HDFCBank"
       ],
-      "classification": "transaction_candidate"
+      "classification": "transaction_candidate",
+      "subdomains": [
+        "applications.hdfcbank.net",
+        "mailers.hdfcbank.net"
+      ]
     },
     {
       "domain": "hdfcbank.com",
@@ -457,7 +465,11 @@
       "display_names": [
         "IndusInd Bank"
       ],
-      "classification": "transaction_candidate"
+      "classification": "transaction_candidate",
+      "subdomains": [
+        "connect.indusind.com",
+        "mail.indusind.com"
+      ]
     },
     {
       "domain": "indusind.bank.in",
@@ -465,7 +477,10 @@
       "display_names": [
         "IndusInd Bank"
       ],
-      "classification": "transaction_candidate"
+      "classification": "transaction_candidate",
+      "subdomains": [
+        "mail.indusind.bank.in"
+      ]
     },
     {
       "domain": "idfcfirstbank.com",
@@ -473,7 +488,14 @@
       "display_names": [
         "IDFC FIRST Bank"
       ],
-      "classification": "transaction_candidate"
+      "classification": "transaction_candidate",
+      "subdomains": [
+        "emailer.idfcfirstbank.com",
+        "emailers.idfcfirstbank.com",
+        "hr.idfcfirstbank.com",
+        "jobs.idfcfirstbank.com",
+        "marketing.idfcfirstbank.com"
+      ]
     },
     {
       "domain": "idfcbank.com",
@@ -659,7 +681,10 @@
       "display_names": [
         "Yes Bank"
       ],
-      "classification": "transaction_candidate"
+      "classification": "transaction_candidate",
+      "subdomains": [
+        "email.yesbank.in"
+      ]
     },
     {
       "domain": "yes.bank.in",
@@ -667,7 +692,10 @@
       "display_names": [
         "Yes Bank"
       ],
-      "classification": "transaction_candidate"
+      "classification": "transaction_candidate",
+      "subdomains": [
+        "custcom.yes.bank.in"
+      ]
     },
     {
       "domain": "idbibank.in",
@@ -959,7 +987,10 @@
       "display_names": [
         "HSBC"
       ],
-      "classification": "transaction_candidate"
+      "classification": "transaction_candidate",
+      "subdomains": [
+        "notification.hsbc.co.in"
+      ]
     },
     {
       "domain": "hsbc.com",
@@ -967,7 +998,11 @@
       "display_names": [
         "HSBC"
       ],
-      "classification": "transaction_candidate"
+      "classification": "transaction_candidate",
+      "subdomains": [
+        "careers.hsbc.com",
+        "mycareer.hsbc.com"
+      ]
     },
     {
       "domain": "hsbc.bank.in",
@@ -1016,7 +1051,10 @@
       "display_names": [
         "Barclays"
       ],
-      "classification": "transaction_candidate"
+      "classification": "transaction_candidate",
+      "subdomains": [
+        "talentacquisition.barclays.com"
+      ]
     },
     {
       "domain": "dbs.com",
@@ -1024,7 +1062,10 @@
       "display_names": [
         "DBS"
       ],
-      "classification": "transaction_candidate"
+      "classification": "transaction_candidate",
+      "subdomains": [
+        "recruitment.dbs.com"
+      ]
     },
     {
       "domain": "dbs.bank.in",
@@ -1082,7 +1123,10 @@
       "display_names": [
         "Morgan Stanley"
       ],
-      "classification": "transaction_candidate"
+      "classification": "transaction_candidate",
+      "subdomains": [
+        "careers.morganstanley.com"
+      ]
     },
     {
       "domain": "usbank.com",
@@ -1474,7 +1518,10 @@
       "display_names": [
         "BBVA"
       ],
-      "classification": "transaction_candidate"
+      "classification": "transaction_candidate",
+      "subdomains": [
+        "tc.bbva.com"
+      ]
     },
     {
       "domain": "banorte.com",
@@ -1708,7 +1755,10 @@
         "Axis Bank",
         "Axis"
       ],
-      "classification": "transaction_candidate"
+      "classification": "transaction_candidate",
+      "subdomains": [
+        "digital.axisbankmail.com"
+      ]
     },
     {
       "domain": "axisbankmail.in",
@@ -1717,7 +1767,10 @@
         "Axis Bank",
         "Axis"
       ],
-      "classification": "transaction_candidate"
+      "classification": "transaction_candidate",
+      "subdomains": [
+        "alerts.axisbankmail.in"
+      ]
     },
     {
       "domain": "sliceit.com",
@@ -1770,7 +1823,10 @@
       "display_names": [
         "Yes Bank"
       ],
-      "classification": "transaction_candidate"
+      "classification": "transaction_candidate",
+      "subdomains": [
+        "custcom.yesbank.email"
+      ]
     },
     {
       "domain": "getonecard.app",
@@ -1796,7 +1852,11 @@
         "INDmoney",
         "IndMoney"
       ],
-      "classification": "transaction_candidate"
+      "classification": "transaction_candidate",
+      "subdomains": [
+        "transactions.indmoney.com",
+        "updates.indmoney.com"
+      ]
     },
     {
       "domain": "freo.money",
@@ -1804,7 +1864,10 @@
       "display_names": [
         "Freo"
       ],
-      "classification": "transaction_candidate"
+      "classification": "transaction_candidate",
+      "subdomains": [
+        "updates.freo.money"
+      ]
     },
     {
       "domain": "freopay.com",
@@ -1828,7 +1891,10 @@
       "display_names": [
         "Paytm"
       ],
-      "classification": "transaction_candidate"
+      "classification": "transaction_candidate",
+      "subdomains": [
+        "info.paytm.com"
+      ]
     }
   ]
 }
