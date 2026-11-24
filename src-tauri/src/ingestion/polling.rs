@@ -462,6 +462,10 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                             Ok(None) => {}
                             Ok(Some(crate::ingestion::message_processor::ProcessResult::EnqueuedForEnrichment)) => {
                                 tracing::info!("Realtime poll: msg_id='{}' enqueued for background Layer 6 enrichment", msg_id);
+                                notify_unassigned_changed(app, &msg_id);
+                            }
+                            Ok(Some(crate::ingestion::message_processor::ProcessResult::SentToReview)) => {
+                                notify_unassigned_changed(app, &msg_id);
                             }
                             Err(e) => {
                                 tracing::error!("Failed to process message {} for account {}: {}", msg_id, account.id, e);
@@ -694,4 +698,13 @@ pub async fn save_history_id(
     .map_err(|e| anyhow::anyhow!("Interact error: {}", e))??;
 
     Ok(())
+}
+
+/// Tells the UI a review entry was filed for this message (audit B-1).
+pub(crate) fn notify_unassigned_changed<R: tauri::Runtime>(app: &tauri::AppHandle<R>, msg_id: &str) {
+    let _ = crate::ipc::events::emit_event(
+        app,
+        crate::ipc::events::AppEvent::UnassignedChanged,
+        serde_json::json!({ "source_record_id": msg_id }),
+    );
 }

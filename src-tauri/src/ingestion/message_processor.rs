@@ -59,6 +59,8 @@ pub enum ProcessResult {
         MandateEventType,
     ),
     EnqueuedForEnrichment,
+    /// Filed in the review queue (Gate 3 failed); callers notify the UI.
+    SentToReview,
 }
 
 pub struct MessageProcessor;
@@ -630,6 +632,7 @@ impl MessageProcessor {
                                 Some(&current_bank_name),
                             )
                             .await?;
+                            let filed = ids.is_some();
                             let recoverable_by_llm = matches!(
                                 reason,
                                 "gate3_failed:missing_counterparty"
@@ -663,7 +666,7 @@ impl MessageProcessor {
                                 Some(body_text),
                             )
                             .await;
-                            return Ok(None);
+                            return Ok(filed.then_some(ProcessResult::SentToReview));
                         }
                     } else if llm_eligible {
                         Self::log_rejection(
@@ -683,6 +686,7 @@ impl MessageProcessor {
                             Some(&current_bank_name),
                         )
                         .await?;
+                        let filed = ids.is_some();
                         let enqueued =
                             if let (Some((observation_id, unassigned_id)), Some(dir), Some(tx)) =
                                 (ids, app_dir.clone(), layer6_tx.as_ref())
@@ -717,12 +721,12 @@ impl MessageProcessor {
                         return Ok(if enqueued {
                             Some(ProcessResult::EnqueuedForEnrichment)
                         } else {
-                            None
+                            filed.then_some(ProcessResult::SentToReview)
                         });
                     } else {
                         Self::log_rejection(pool, scan_batcher, message_id, "extraction_failed")
                             .await?;
-                        Self::record_unassigned_transaction(
+                        let filed = Self::record_unassigned_transaction(
                             pool,
                             message_id,
                             crate::extraction::ladder::ExtractionResult::default(),
@@ -731,7 +735,8 @@ impl MessageProcessor {
                             "extraction_failed",
                             Some(&current_bank_name),
                         )
-                        .await?;
+                        .await?
+                        .is_some();
                         Self::append_to_scan_log(
                             app_dir.as_deref(),
                             message_id,
@@ -741,7 +746,7 @@ impl MessageProcessor {
                             Some(body_text),
                         )
                         .await;
-                        return Ok(None);
+                        return Ok(filed.then_some(ProcessResult::SentToReview));
                     }
                 }
             }

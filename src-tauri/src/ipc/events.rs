@@ -20,6 +20,9 @@ pub enum AppEvent {
     StatementPasswordRequired,
     StatementUpcomingBillSet,
     ReconciliationCluster,
+    /// A review (unassigned) entry was created, relabelled or settled by the
+    /// backend (audit B-1).
+    UnassignedChanged,
     AlertThresholdCrossed,
     DbCorrupted,
     DbSizeWarning,
@@ -58,6 +61,7 @@ impl AppEvent {
             Self::StatementPasswordRequired => "statement_password_required",
             Self::StatementUpcomingBillSet => "statement_upcoming_bill_set",
             Self::ReconciliationCluster => "reconciliation_cluster",
+            Self::UnassignedChanged => "unassigned_changed",
             Self::AlertThresholdCrossed => "alert_threshold_crossed",
             Self::DbCorrupted => "db_corrupted",
             Self::DbSizeWarning => "db_size_warning",

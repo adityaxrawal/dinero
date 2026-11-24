@@ -1152,6 +1152,13 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                             msg_id
                         );
                         state.pending_enrichment += 1;
+                        crate::ingestion::polling::notify_unassigned_changed(&app, &msg_id);
+                    }
+                    // Counted as before (non_financial): the scan summary has
+                    // no review counter; the UI is told (audit B-1).
+                    Ok(Some(ProcessResult::SentToReview)) => {
+                        state.non_financial += 1;
+                        crate::ingestion::polling::notify_unassigned_changed(&app, &msg_id);
                     }
                     Err(e) if retrying => {
                         tracing::error!("Retry failed for message {}: {}", msg_id, e);

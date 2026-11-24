@@ -560,7 +560,7 @@ pub fn spawn_queues<R: tauri::Runtime>(
     spawn_transaction_workers(transaction_rx, pool.clone(), app.clone());
     spawn_statement_dispatcher(statement_rx, pool.clone(), app.clone());
     spawn_mandate_workers(mandate_rx, pool.clone());
-    spawn_layer6_workers(layer6_rx, layer6_tx.clone(), pool, learning);
+    spawn_layer6_workers(app.clone(), layer6_rx, layer6_tx.clone(), pool, learning);
 
     let handles = QueueHandles {
         transaction_tx,
@@ -648,7 +648,8 @@ fn spawn_queue_monitor<R: tauri::Runtime>(
     });
 }
 
-fn spawn_layer6_workers(
+fn spawn_layer6_workers<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     rx: mpsc::Receiver<Layer6Job>,
     tx: mpsc::Sender<Layer6Job>,
     pool: Pool,
@@ -663,6 +664,7 @@ fn spawn_layer6_workers(
         let pool = pool.clone();
         let learning = learning.clone();
         let tx = tx.clone();
+        let app = app.clone();
         tauri::async_runtime::spawn(async move {
             loop {
                 let job = { rx.lock().await.recv().await };
@@ -670,11 +672,27 @@ fn spawn_layer6_workers(
                 crate::security::incident_response::wait_while_ingestion_paused().await;
                 ACTIVE_LAYER6_JOBS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let (id, app_dir) = (job.unassigned_id.clone(), job.app_dir.clone());
-                if process_layer6_job(job, &pool, &learning).await {
+                let done = process_layer6_job(job, &pool, &learning).await;
+                if done.completed {
                     if let Ok(mut claimed) = LAYER6_CLAIMED.lock() {
                         claimed.remove(&id);
                     }
                 }
+                // Tell the UI (audit B-1): any outcome can change the review
+                // entry; a booking adds a ledger row.
+                let payload = serde_json::json!({ "unassigned_id": id });
+                if done.booked {
+                    let _ = crate::ipc::events::emit_event(
+                        &app,
+                        crate::ipc::events::AppEvent::TransactionCreated,
+                        payload.clone(),
+                    );
+                }
+                let _ = crate::ipc::events::emit_event(
+                    &app,
+                    crate::ipc::events::AppEvent::UnassignedChanged,
+                    payload,
+                );
                 ACTIVE_LAYER6_JOBS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                 refill_layer6_queue(&pool, &tx, &app_dir).await;
             }
@@ -711,6 +729,13 @@ async fn delete_persisted_layer6_job(pool: &Pool, unassigned_id: &str) {
     }
 }
 
+/// What a Layer-6 job did: whether it is finished (its row deleted) and
+/// whether it booked a transaction.
+struct Layer6Done {
+    completed: bool,
+    booked: bool,
+}
+
 /// Processes one LLM extraction job.
 ///
 /// The durable row survives until the outcome is committed: extraction runs for a
@@ -720,7 +745,7 @@ async fn process_layer6_job(
     job: Layer6Job,
     pool: &Pool,
     learning: &crate::learning::LearningHandle,
-) -> bool {
+) -> Layer6Done {
     use crate::extraction::llm::Layer6Outcome;
 
     let layer = crate::extraction::ladder::Layer6LlmLayer {
@@ -728,6 +753,7 @@ async fn process_layer6_job(
         fallback_event_time: job.internal_date_seconds,
     };
     let result = layer.run(pool, &job.bank_name, &job.body_text).await;
+    let mut booked = false;
     let completed = match result {
         Layer6Outcome::Extracted(enriched) => {
             let mut enriched = *enriched;
@@ -758,7 +784,8 @@ async fn process_layer6_job(
             )
             .await
             {
-                Ok(()) => {
+                Ok(did_book) => {
+                    booked = did_book;
                     // A committed, grounded LLM value is the evidence pending
                     // drift rules need to be promoted or retired (M10).
                     let (bank, body) = (job.bank_name.clone(), job.body_text.clone());
@@ -834,13 +861,13 @@ async fn process_layer6_job(
                 "Layer 6 background worker: no model available for observation_id='{}' — waiting",
                 job.observation_id
             );
-            return false;
+            return Layer6Done { completed: false, booked: false };
         }
     };
 
     if completed {
         delete_persisted_layer6_job(pool, &job.unassigned_id).await;
-        return true;
+        return Layer6Done { completed: true, booked };
     } else {
         // A timeout, a dead sidecar or a failed write is what the durable queue
         // is for: keep the row so the next launch retries it -- but only up to
@@ -871,7 +898,7 @@ async fn process_layer6_job(
             );
         }
     }
-    false
+    Layer6Done { completed: false, booked: false }
 }
 
 /// Re-labels a review entry still waiting on enrichment as
@@ -919,11 +946,11 @@ async fn apply_layer6_success(
     unassigned_id: &str,
     enriched: ExtractionResult,
     internal_date_seconds: Option<i64>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     let observation_id = observation_id.to_string();
     let unassigned_id = unassigned_id.to_string();
     let conn = pool.get().await?;
-    conn.interact(move |c| -> anyhow::Result<()> {
+    let booked = conn.interact(move |c| -> anyhow::Result<bool> {
         // Extraction takes minutes, so the user may have resolved or dismissed
         // the entry while it ran. Booking a transaction for an entry they
         // dismissed overrules them with money, so the job stops here -- and
@@ -933,7 +960,7 @@ async fn apply_layer6_success(
                 "Layer 6 result for observation '{}' arrived after the entry left the queue — dropping it",
                 observation_id
             );
-            return Ok(());
+            return Ok(false);
         }
 
         let row_opt = crate::db::transaction_observations::get_observation(c, &observation_id)?;
@@ -948,7 +975,7 @@ async fn apply_layer6_success(
                     "Layer 6 result for observation '{}' — observation no longer exists (cleared by user?); resolving job",
                     observation_id
                 );
-                return Ok(());
+                return Ok(false);
             }
         };
 
@@ -961,7 +988,7 @@ async fn apply_layer6_success(
                 observation_id
             );
             crate::db::unassigned_transactions::settle_if_open(c, &unassigned_id, "resolved")?;
-            return Ok(());
+            return Ok(false);
         }
 
         // Layer 6 exists to fill in what layers 1-5 could not, so a field the model
@@ -1067,14 +1094,14 @@ async fn apply_layer6_success(
             Some("gate3_failed:low_confidence")
         };
         // One transaction for update + reconcile + settle (audit A-9).
-        crate::db::retry_on_busy(c, || {
+        let decision = crate::db::retry_on_busy(c, || {
             crate::reconciliation::engine::complete_observation(c, &row, &unassigned_id, review_reason)
         })?;
-        Ok(())
+        Ok(decision.is_some())
     })
     .await
     .map_err(|e| anyhow::anyhow!("Interact error: {}", e))??;
-    Ok(())
+    Ok(booked)
 }
 
 fn transaction_job_key(job: &TransactionJob) -> String {
@@ -1689,6 +1716,14 @@ async fn process_transaction_job<R: tauri::Runtime>(
             return false;
         }
     };
+    if outcome.is_none() {
+        // Stored without a decision: it went to review (or was a duplicate).
+        let _ = crate::ipc::events::emit_event(
+            app,
+            crate::ipc::events::AppEvent::UnassignedChanged,
+            serde_json::json!({ "source_record_id": source_record_id }),
+        );
+    }
     if let Some((decision, obs_id)) = outcome {
         if let crate::reconciliation::audit::DecisionType::AmbiguousPending(cluster_id) = &decision
         {

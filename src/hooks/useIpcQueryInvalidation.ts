@@ -44,6 +44,8 @@ export const EVENT_INVALIDATIONS: ReadonlyArray<{ event: string; keys: readonly 
     event: 'reconciliation_cluster',
     keys: [queryKeys.reconciliation.all(), queryKeys.dashboard.all()],
   },
+  // A review entry was filed, relabelled or settled in the background (B-1).
+  { event: 'unassigned_changed', keys: [queryKeys.reconciliation.all()] },
   {
     event: 'statement_upcoming_bill_set',
     keys: [queryKeys.dashboard.all(), queryKeys.instruments.all()],

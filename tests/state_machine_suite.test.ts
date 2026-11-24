@@ -82,6 +82,14 @@ describe('test_events_update_correct_ui_regions', () => {
     );
   });
 
+  it('a background review-queue change refreshes the Review Inbox (audit B-1)', () => {
+    const entry = EVENT_INVALIDATIONS.find((e) => e.event === 'unassigned_changed');
+    expect(entry).toBeDefined();
+    expect(entry!.keys.map((k) => k[0])).toContain('reconciliation');
+    const events = readFileSync(join(__dirname, '../src-tauri/src/ipc/events.rs'), 'utf-8');
+    expect(events).toContain('"unassigned_changed"');
+  });
+
   it('each of the 5 documented key events has at least one real subscriber in the frontend source', () => {
     const keyEvents = [
       { event: 'transaction_created', file: 'hooks/useIpcQueryInvalidation.ts' },
