@@ -1118,6 +1118,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                             let email_meta = email_meta.clone();
                             let attachments = extracted.pdf_attachments.clone();
                             let attachment_slots = Arc::clone(&attachment_slots);
+                            let account_id = account_id.clone();
                             tokio::spawn(async move {
                                 // Bounded like the message fetches: each
                                 // statement email used to start its own
@@ -1125,121 +1126,16 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                                 let Ok(_slot) = attachment_slots.acquire_owned().await else {
                                     return;
                                 };
-                                for att in &attachments {
-                                    let filename = &att.filename;
-                                    let fetch_result: anyhow::Result<Vec<u8>> =
-                                        if let Some(bytes) = &att.inline_bytes {
-                                            Ok(bytes.clone())
-                                        } else if let Some(att_id) = &att.attachment_id {
-                                            client.fetch_attachment(&msg_id, att_id).await
-                                        } else {
-                                            continue;
-                                        };
-                                    match fetch_result {
-                                        Ok(pdf_bytes) => {
-                                            let file_hash = match crate::statements::duplicate_check::hash_email_attachment_if_new(
-                                                &pdf_bytes, filename, &msg_id, &pool,
-                                            )
-                                            .await
-                                            {
-                                                Some(h) => h,
-                                                None => continue,
-                                            };
-
-                                            let stmt_id = uuid::Uuid::new_v4().to_string();
-
-                                            let password = match crate::statements::password::resolve_statement_password(
-                                                &stmt_id,
-                                                &pdf_bytes,
-                                                filename,
-                                                &msg_id,
-                                                &pool,
-                                                &app,
-                                                email_meta.clone(),
-                                            )
-                                            .await
-                                            {
-                                                Ok(crate::statements::password::StatementPasswordResolution::Proceed(password)) => password,
-                                                Ok(crate::statements::password::StatementPasswordResolution::PromptCreated) => {
-                                                    continue;
-                                                }
-                                                Err(e) => {
-                                                    tracing::error!(
-                                                        "Password resolution failed for msg_id='{}' file='{}': {}",
-                                                        msg_id, filename, e
-                                                    );
-                                                    continue;
-                                                }
-                                            };
-
-                                            if let Ok(conn) = pool.get().await {
-                                                let id = stmt_id.clone();
-                                                let msg_id_for_row = msg_id.clone();
-                                                let name = filename.clone();
-                                                let _ = conn
-                                                    .interact(move |c| {
-                                                        crate::db::statements::insert_queued(
-                                                            c,
-                                                            &id,
-                                                            "gmail_email",
-                                                            Some(&msg_id_for_row),
-                                                            None,
-                                                        )?;
-                                                        crate::db::statements::set_source_filename(c, &id, &name)
-                                                    })
-                                                    .await;
-                                            }
-                                            if let Ok(dir) = app.path().app_data_dir() {
-                                                if let Err(e) =
-                                                    crate::statements::pdf_storage::store_pdf(
-                                                        &dir, &stmt_id, &pdf_bytes,
-                                                    )
-                                                {
-                                                    tracing::warn!(
-                                                        "Failed to stage statement PDF for stmt_id='{}': {} — skipping",
-                                                        stmt_id, e
-                                                    );
-                                                    continue;
-                                                }
-                                            } else {
-                                                tracing::warn!(
-                                                    "Could not resolve app data dir to stage statement PDF for stmt_id='{}' — skipping",
-                                                    stmt_id
-                                                );
-                                                continue;
-                                            }
-                                            drop(pdf_bytes);
-
-                                            let job = crate::ingestion::queues::StatementJob {
-                                                filename: filename.clone(),
-                                                file_hash,
-                                                stmt_id,
-                                                batch_progress: None,
-                                                password,
-                                                origin: "email_scan".to_string(),
-                                            };
-                                            let st_tx = app
-                                                .state::<crate::ingestion::queues::QueueHandles>()
-                                                .statement_tx
-                                                .clone();
-                                            if st_tx.send(job).await.is_err() {
-                                                tracing::error!(
-                                                        "Statement Queue closed — dropping job for msg_id='{}' file='{}'",
-                                                        msg_id, filename
-                                                    );
-                                            }
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                "Failed to fetch PDF attachment '{}' for \
-                                                     msg_id='{}': {}",
-                                                filename,
-                                                msg_id,
-                                                e
-                                            );
-                                        }
-                                    }
-                                }
+                                crate::ingestion::statement_intake::intake_email_statement(
+                                    &app,
+                                    &pool,
+                                    &client,
+                                    &account_id,
+                                    &msg_id,
+                                    &attachments,
+                                    email_meta,
+                                )
+                                .await;
                             });
                         }
                     }
