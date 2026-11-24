@@ -202,3 +202,12 @@ fn full_llm_payload_log_is_debug_only() {
     let logger = fs::read_to_string(src_tauri_dir().join("src/logging/llm_logger.rs")).unwrap();
     assert!(logger.contains("if !full_payloads {\n        return;\n    }"));
 }
+
+/// Audit F-4: no CI job may depend on a placeholder corpus repository; the
+/// labelled corpus is private and the quality gate runs locally.
+#[test]
+fn benchmark_workflow_has_no_placeholder_corpus_checkout() {
+    let wf = fs::read_to_string(src_tauri_dir().join("../.github/workflows/benchmark.yml")).unwrap();
+    assert!(!wf.contains("your-org/"), "placeholder corpus repo is back in CI");
+    assert!(wf.contains("reconciliation_regression"), "the in-repo regression gate must still run nightly");
+}

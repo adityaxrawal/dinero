@@ -63,50 +63,24 @@ mod tests {
     // extraction ladder / reconciliation engine, and enforce Document 34
     // §10.2's thresholds — failing the build on violation as required.
 
+    /// Owner decision (audit F-4): the labelled corpus is private financial
+    /// data, so it never leaves this Mac. It is read from
+    /// `BENCHMARK_CORPUS_DIR`, or by default from the git-ignored
+    /// `real-test-data/benchmark/` (layout above); run the gate locally with
+    /// `cargo test phase10_quality_gates -- --nocapture`.
     fn corpus_root() -> Option<PathBuf> {
-        let dir = env::var("BENCHMARK_CORPUS_DIR").ok()?;
-        let path = PathBuf::from(dir);
-        if path.is_dir() {
-            Some(path)
-        } else {
-            None
-        }
+        let path = env::var("BENCHMARK_CORPUS_DIR").map(PathBuf::from).unwrap_or_else(|_| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../real-test-data/benchmark")
+        });
+        path.is_dir().then_some(path)
     }
 
-    /// Doc 30 TASK-TXN-014 follow-up (per Aditya's decision, 2026-07-16):
-    /// a silently-skipped gate provides no real protection if the *nightly*
-    /// workflow itself is the one silently skipping -- that job always sets
-    /// `BENCHMARK_CORPUS_DIR` before this test runs
-    /// (`.github/workflows/benchmark.yml`), so if the corpus is still
-    /// missing there, provisioning genuinely failed (bad LFS token, wrong
-    /// checkout path, quota) and the job should fail loudly, not report
-    /// green having run zero real assertions. Detected via `GITHUB_WORKFLOW`
-    /// (GitHub Actions sets this to the workflow's `name:` automatically),
-    /// so local dev runs and the separate, required Rust CI workflow --
-    /// neither of which ever sets `BENCHMARK_CORPUS_DIR` by design (Document
-    /// 32 §4) -- are unaffected and still skip quietly.
+    /// No labelled corpus on this machine: skip with a clear diagnostic.
     fn skip_no_corpus(context: &str) {
-        let in_nightly_benchmark_workflow = env::var("GITHUB_WORKFLOW")
-            .map(|w| w == "Nightly Benchmark Run")
-            .unwrap_or(false);
-        if in_nightly_benchmark_workflow {
-            panic!(
-                "FAIL [{}]: BENCHMARK_CORPUS_DIR is unset or does not point at an existing \
-                 directory, but this IS the Nightly Benchmark Run workflow, which always sets \
-                 BENCHMARK_CORPUS_DIR before running this test. A silent skip here would mean \
-                 this job reports green without running any real quality-gate assertions. \
-                 Check the 'Checkout Benchmark Corpus' step (LFS token, repo access, checkout \
-                 path) instead of assuming this gate ran.",
-                context
-            );
-        }
         eprintln!(
-            "SKIP [{}]: BENCHMARK_CORPUS_DIR is unset or does not point at an existing \
-             directory. The real benchmark corpus (Document 34 §5, stored in the private \
-             `dinero-benchmarks` repo) is not provisioned in this environment — this is an \
-             environment/CI-provisioning gap, not a code defect. Only the nightly benchmark \
-             workflow (.github/workflows/benchmark.yml) sets this variable; Rust CI does not, \
-             by design (Document 32 §4). Skipping the real quality-gate computation.",
+            "SKIP [{}]: no labelled benchmark corpus at BENCHMARK_CORPUS_DIR or \
+             real-test-data/benchmark/. The corpus is private and local-only (audit F-4); \
+             skipping the real quality-gate computation.",
             context
         );
     }

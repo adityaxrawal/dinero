@@ -5,16 +5,9 @@ on:
     - cron: '0 2 * * *' # Run at 2 AM every day
   workflow_dispatch: # Allow manual trigger
 
-# audit_09 #8: these used to be two steps of one job, with the private-corpus
-# checkout first. `repository: your-org/dinero-benchmarks` is still a
-# placeholder (see the quality-gates job), so that checkout has been failing
-# every night — and because it was step 2 of a single job, it took the
-# *corpus-independent* reconciliation regression gate down with it. Neither
-# gate has ever actually run, which is exactly the "regression is invisible"
-# outcome the finding describes, one level deeper than it looked.
-#
-# Split into two jobs so the placeholder only blocks what genuinely needs the
-# corpus. The reconciliation gate depends on nothing external and runs tonight.
+# Nightly reconciliation regression gate (TASK-DEDUP-010). Its fixtures live
+# in this repo. The extraction quality gate needs the private labelled corpus
+# and runs locally only (audit F-4).
 
 jobs:
   reconciliation-regression:
@@ -43,70 +36,6 @@ jobs:
         run: cargo test --test reconciliation_regression -- --nocapture
         working-directory: src-tauri
 
-  check-secret:
-    name: Check Benchmark Secret
-    runs-on: ubuntu-latest
-    outputs:
-      has-token: ${{ steps.check.outputs.has-token }}
-    steps:
-      - name: Check if BENCHMARK_REPO_TOKEN is set
-        id: check
-        env:
-          TOKEN: ${{ secrets.BENCHMARK_REPO_TOKEN }}
-        run: |
-          if [ -n "$TOKEN" ]; then
-            echo "has-token=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has-token=false" >> "$GITHUB_OUTPUT"
-          fi
-
-  quality-gates:
-    # Requires the private labelled-email corpus. `repository:` below is a
-    # PLACEHOLDER — this job cannot pass until it names the real corpus repo
-    # and BENCHMARK_REPO_TOKEN is set in repository secrets.
-    #
-    # Gated on BENCHMARK_REPO_TOKEN availability via check-secret because the
-    # `secrets` context is not directly accessible in job-level `if` conditions.
-    name: Run Quality Gates
-    needs: check-secret
-    if: needs.check-secret.outputs.has-token == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Checkout Benchmark Corpus
-        uses: actions/checkout@v4
-        with:
-          # TODO(corpus): replace with the real corpus repository.
-          repository: your-org/dinero-benchmarks
-          path: dinero-benchmarks
-          lfs: true
-          token: ${{ secrets.BENCHMARK_REPO_TOKEN }}
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
-
-      - name: Run Quality Gate Tests
-        run: cargo test phase10_quality_gates -- --nocapture
-        working-directory: src-tauri
-        env:
-          BENCHMARK_CORPUS_DIR: ${{ github.workspace }}/dinero-benchmarks
-          BENCHMARK_REPORT_DIR: ${{ github.workspace }}/benchmark-reports
-
-      - name: Upload benchmark reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: benchmark-reports-${{ github.run_id }}
-          path: benchmark-reports/
-          retention-days: 90
+  # The extraction quality gate (phase10_quality_gates, TASK-TXN-014) needs
+  # the private labelled corpus, which stays on the owner's machine (audit
+  # F-4): run it locally with `cargo test phase10_quality_gates`.
