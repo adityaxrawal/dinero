@@ -1067,7 +1067,9 @@ async fn apply_layer6_success(
             Some("gate3_failed:low_confidence")
         };
         // One transaction for update + reconcile + settle (audit A-9).
-        crate::reconciliation::engine::complete_observation(c, &row, &unassigned_id, review_reason)?;
+        crate::db::retry_on_busy(c, || {
+            crate::reconciliation::engine::complete_observation(c, &row, &unassigned_id, review_reason)
+        })?;
         Ok(())
     })
     .await
@@ -1647,7 +1649,9 @@ async fn process_transaction_job<R: tauri::Runtime>(
                     ));
                 }
 
-                match crate::reconciliation::engine::ingest_observation(c, &row, unresolved_reason) {
+                match crate::db::retry_on_busy(c, || {
+                    crate::reconciliation::engine::ingest_observation(c, &row, unresolved_reason)
+                }) {
                     Ok((_, Some(decision))) => {
                         tracing::debug!(
                             "Reconciliation decision for obs '{}': {:?}",

@@ -145,6 +145,43 @@ fn is_keychain_access_denied(msg: &str) -> bool {
     msg.contains("KEYCHAIN_ACCESS_DENIED")
 }
 
+/// Connections in the pool (audit D-1). Unset, deadpool used CPUs × 4 (32 on
+/// an 8-core Mac): each new connection pays SQLCipher's key derivation, and
+/// more connections only means more writers queueing on SQLite's one write
+/// lock. Eight covers the ingest workers plus UI reads.
+pub const POOL_MAX_SIZE: usize = 8;
+
+/// Runs a write that owns its transaction, retrying it when SQLite reports
+/// the database busy (audit D-1). Retried only when the failure left no
+/// transaction open on the connection, so nothing half-done is re-run.
+pub fn retry_on_busy<T>(
+    conn: &rusqlite::Connection,
+    mut write: impl FnMut() -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    const BACKOFF_MS: [u64; 3] = [50, 200, 800];
+    let mut attempt = 0;
+    loop {
+        match write() {
+            Err(e) if attempt < BACKOFF_MS.len() && is_busy(&e) && conn.is_autocommit() => {
+                std::thread::sleep(std::time::Duration::from_millis(BACKOFF_MS[attempt]));
+                attempt += 1;
+            }
+            other => return other,
+        }
+    }
+}
+
+/// Whether an error is SQLite reporting the database busy or locked.
+pub fn is_busy(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<rusqlite::Error>(),
+            Some(rusqlite::Error::SqliteFailure(e, _))
+                if matches!(e.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+        )
+    })
+}
+
 pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
     let db_key = crypto::derive_database_key().map_err(|e| {
         let msg = e.to_string();
@@ -160,7 +197,8 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
     })?;
     let db_key_for_migration = db_key.clone();
 
-    let cfg = Config::new(&db_path);
+    let mut cfg = Config::new(&db_path);
+    cfg.pool = Some(deadpool_sqlite::PoolConfig::new(POOL_MAX_SIZE));
     let pool = cfg
         .builder(Runtime::Tokio1)
         // The builder's error type has no values (it cannot fail), so the
@@ -455,6 +493,52 @@ mod migration_rollback_tests {
 
         assert!(restore_backup_file(&db_path, &missing_backup).is_err());
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod busy_retry_tests {
+    use super::*;
+
+    fn busy() -> anyhow::Error {
+        rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY), None).into()
+    }
+
+    /// Audit D-1: a busy database is retried; other errors are not; and a
+    /// failure that left a transaction open is never re-run.
+    #[test]
+    fn busy_writes_are_retried_only_when_nothing_is_left_open() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let mut calls = 0;
+        let result = retry_on_busy(&conn, || {
+            calls += 1;
+            if calls < 3 { Err(busy()) } else { Ok(calls) }
+        });
+        assert_eq!(result.unwrap(), 3);
+
+        let mut calls = 0;
+        let _ = retry_on_busy(&conn, || -> anyhow::Result<()> {
+            calls += 1;
+            Err(anyhow::anyhow!("not busy"))
+        });
+        assert_eq!(calls, 1);
+
+        conn.execute_batch("BEGIN").unwrap();
+        let mut calls = 0;
+        let _ = retry_on_busy(&conn, || -> anyhow::Result<()> {
+            calls += 1;
+            Err(busy())
+        });
+        assert_eq!(calls, 1, "an open transaction is not retried");
+    }
+
+    #[tokio::test]
+    async fn pool_is_bounded() {
+        let dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pool = init_db(dir.join("t.db")).await.unwrap();
+        assert_eq!(pool.status().max_size, POOL_MAX_SIZE);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
