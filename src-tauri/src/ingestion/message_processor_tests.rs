@@ -1030,3 +1030,44 @@ async fn failed_review_filing_leaves_message_retryable() {
     );
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+/// Audit N-D2 (owner decision): filing a review row survives a write lock held
+/// past SQLite's 5 s busy_timeout (as a long statement commit can) by retrying.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn review_filing_retries_while_the_write_lock_is_held() {
+    let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+
+    // Two pooled connections exist before the lock is taken: opening a new
+    // connection under a held write lock is a separate issue (see N-D3).
+    let holder = pool.get().await.unwrap();
+    drop(pool.get().await.unwrap());
+    let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
+    let hold = tokio::spawn(async move {
+        holder
+            .interact(move |c| {
+                c.execute_batch("BEGIN IMMEDIATE").unwrap();
+                locked_tx.send(()).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(5600));
+                c.execute_batch("COMMIT").unwrap();
+            })
+            .await
+            .unwrap();
+    });
+    locked_rx.await.unwrap();
+
+    let filed = MessageProcessor::record_unassigned_transaction(
+        &pool,
+        "msg_busy",
+        crate::extraction::ladder::ExtractionResult::default(),
+        "body",
+        None,
+        "extraction_failed",
+        Some("HDFC Bank"),
+    )
+    .await;
+    hold.await.unwrap();
+    assert!(matches!(filed, Ok(Some(_))), "expected a filed review row, got {:?}", filed);
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}

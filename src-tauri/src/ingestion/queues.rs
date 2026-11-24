@@ -1123,7 +1123,10 @@ async fn persist_job(
 ) -> anyhow::Result<()> {
     let payload = payload.map_err(|e| anyhow::anyhow!("could not serialise {kind} job '{id}': {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow::anyhow!("pool error: {e}"))?;
-    conn.interact(move |c| crate::db::pending_ingest_jobs::upsert(c, &id, kind, &payload))
+    // Retried while a long statement commit holds the write lock (audit N-D2).
+    conn.interact(move |c| {
+        crate::db::retry_on_busy(c, || crate::db::pending_ingest_jobs::upsert(c, &id, kind, &payload))
+    })
         .await
         .map_err(|e| anyhow::anyhow!("interact error: {e}"))?
         .map_err(|e| e.context(format!("could not persist {kind} job")))

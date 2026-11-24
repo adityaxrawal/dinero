@@ -1277,9 +1277,16 @@ impl MessageProcessor {
         let conn = pool.get().await?;
         let decision = format!("rejected:{}", reason);
         let msg_id = message_id.to_string();
+        // One transaction, retried while a long statement commit holds the
+        // write lock (audit N-D2).
         conn.interact(move |c| -> anyhow::Result<()> {
-            audit_log::insert(c, &row)?;
-            crate::db::processed_messages::record(c, &msg_id, &decision)
+            crate::db::retry_on_busy(c, || {
+                let tx = c.unchecked_transaction()?;
+                audit_log::insert(&tx, &row)?;
+                crate::db::processed_messages::record(&tx, &msg_id, &decision)?;
+                tx.commit()?;
+                Ok(())
+            })
         })
         .await
         .map_err(|e| anyhow::anyhow!("Interact error: {}", e))??;
@@ -1325,12 +1332,15 @@ impl MessageProcessor {
                 let unassigned_id = unassigned_id.clone();
                 let observation_id = observation_id.clone();
                 move |c| -> Result<bool> {
+                    // Retried while a long statement commit holds the write
+                    // lock (audit N-D2); a failed attempt rolls back first.
+                    crate::db::retry_on_busy(c, || {
                     use crate::db::transaction_observations::InsertObservationOutcome;
                     // One transaction around both inserts. The observation is
                     // what makes a rescan treat the message as already seen, so
                     // committing it without its unassigned row would hide the
                     // message from the queue permanently.
-                    let tx = c.transaction()?;
+                    let tx = c.unchecked_transaction()?;
                     let outcome =
                         crate::db::transaction_observations::insert_observation_idempotent(
                             &tx, &obs_row,
@@ -1339,9 +1349,9 @@ impl MessageProcessor {
                         crate::db::unassigned_transactions::insert(
                             &tx,
                             &crate::db::unassigned_transactions::UnassignedTransactionRow {
-                                id: unassigned_id,
-                                observation_id,
-                                reason: reason_owned,
+                                id: unassigned_id.clone(),
+                                observation_id: observation_id.clone(),
+                                reason: reason_owned.clone(),
                                 status: "open".to_string(),
                                 created_at: None,
                             },
@@ -1352,6 +1362,7 @@ impl MessageProcessor {
                     };
                     tx.commit()?;
                     Ok(inserted)
+                    })
                 }
             })
             .await
