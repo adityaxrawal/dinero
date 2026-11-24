@@ -10,6 +10,20 @@ use chrono::Utc;
 
 pub const TRIAL_WINDOW_DAYS: i64 = 14;
 
+/// The token's signed `state` decides entitlement when it has one (audit
+/// E-1): the cached status column is locally editable, so a genuine but
+/// LOCKED-state token must not pass because the column says ACTIVE. Tokens
+/// minted before the claim existed fall back to the cached-row check above.
+fn signed_state_entitles(claims: &crate::licensing::jwt::LicenseClaims) -> Result<(), AppError> {
+    match claims.state.as_deref().map(LicenseStatus::from_server_state) {
+        Some(status) if !status.is_entitled() => Err(AppError::LicenseLocked(format!(
+            "License is {} — writes are blocked until it is renewed or refreshed",
+            status.as_str()
+        ))),
+        _ => Ok(()),
+    }
+}
+
 /// Refuses a write when the licence does not permit it.
 ///
 /// Applied to writes only. Reads stay available deliberately -- a lapsed
@@ -59,7 +73,7 @@ pub async fn assert_write_allowed(pool: &deadpool_sqlite::Pool) -> Result<(), Ap
             ));
         }
 
-        Ok(())
+        signed_state_entitles(&claims)
     })
     .await
     .map_err(|e| AppError::Unknown(e.to_string()))?
@@ -92,6 +106,34 @@ pub fn trial_days_remaining(c: &rusqlite::Connection) -> Result<i64, AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn claims(state: Option<&str>) -> crate::licensing::jwt::LicenseClaims {
+        crate::licensing::jwt::LicenseClaims {
+            sub: "user@example.com".into(),
+            device_id: "device".into(),
+            plan: "full".into(),
+            billing_interval: "monthly".into(),
+            exp: Utc::now().timestamp() + 3600,
+            state: state.map(str::to_string),
+        }
+    }
+
+    /// Audit E-1: a verified token whose signed state is not entitling blocks
+    /// writes whatever the cached column says; no claim defers to the column.
+    #[test]
+    fn signed_state_decides_entitlement() {
+        assert!(signed_state_entitles(&claims(Some("ACTIVE"))).is_ok());
+        assert!(signed_state_entitles(&claims(Some("PAST_DUE"))).is_ok());
+        assert!(matches!(
+            signed_state_entitles(&claims(Some("LOCKED"))),
+            Err(AppError::LicenseLocked(_))
+        ));
+        assert!(matches!(
+            signed_state_entitles(&claims(Some("CANCELED"))),
+            Err(AppError::LicenseLocked(_))
+        ));
+        assert!(signed_state_entitles(&claims(None)).is_ok());
+    }
     use crate::licensing::state::{upsert_license_state, LicenseStateRow};
 
     async fn pool_with_trial(jwt: &str) -> deadpool_sqlite::Pool {
