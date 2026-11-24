@@ -215,6 +215,38 @@ async fn reject_unknown_applied_versions(
 mod tests {
     use super::*;
 
+    /// Audit C-2: hot lookups use an index rather than scanning the table.
+    #[tokio::test]
+    async fn hot_path_queries_use_indexes() {
+        let path = crate::db::test_helpers::fresh_temp_db_path();
+        run_migrations(&path, None).await.unwrap();
+        let conn = Connection::open(&path).unwrap();
+        for (query, index) in [
+            ("SELECT id FROM transaction_observations WHERE canonical_transaction_id = 'x'", "idx_obs_canonical"),
+            (
+                "SELECT SUM(amount_minor) FROM transactions WHERE is_deleted = 0 \
+                 AND best_event_time >= '2026-01-01' AND best_event_time < '2026-02-01'",
+                "idx_transactions_event_time",
+            ),
+            ("SELECT id FROM unassigned_transactions WHERE observation_id = 'x'", "idx_unassigned_observation"),
+            (
+                "SELECT cluster_id FROM reconciliation_cluster_members WHERE observation_id = 'x'",
+                "idx_cluster_members_observation",
+            ),
+            ("SELECT * FROM layer6_pending_jobs WHERE observation_id = 'x'", "idx_layer6_jobs_observation"),
+        ] {
+            let plan: String = conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {query}"))
+                .unwrap()
+                .query_map([], |r| r.get::<_, String>(3))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect::<Vec<_>>()
+                .join("; ");
+            assert!(plan.contains(index), "{query} -> {plan}");
+        }
+    }
+
     /// Audit C-5: a table-rebuild migration must not cascade-delete the
     /// children of the parent it drops.
     #[tokio::test]
