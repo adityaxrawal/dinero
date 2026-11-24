@@ -1162,6 +1162,51 @@ pub async fn send_transaction_job(pool: &Pool, tx: &mpsc::Sender<TransactionJob>
     }
 }
 
+/// Queues a Gmail transaction alert: the one copy shared by live polling and
+/// historical scans (audit F-3).
+pub async fn dispatch_transaction_alert<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    pool: &Pool,
+    account_id: &str,
+    msg_id: &str,
+    raw_body: Option<String>,
+    obs: crate::extraction::ladder::ExtractionResult,
+    email_meta: crate::ingestion::message_processor::EmailMetadata,
+) {
+    let job = TransactionJob {
+        obs,
+        source_pipeline: "gmail_transaction".to_string(),
+        source_record_id: msg_id.to_string(),
+        connected_account_id: account_id.to_string(),
+        raw_body,
+        email_meta: Some(email_meta),
+    };
+    let tx = tauri::Manager::state::<QueueHandles>(app).transaction_tx.clone();
+    send_transaction_job(pool, &tx, job).await;
+}
+
+/// Queues a Gmail mandate event; shared like `dispatch_transaction_alert`.
+pub async fn dispatch_mandate_event<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    pool: &Pool,
+    account_id: &str,
+    msg_id: &str,
+    raw_body: Option<String>,
+    extraction: crate::extraction::mandate_extractor::MandateExtraction,
+    event_type: crate::ingestion::message_processor::MandateEventType,
+) {
+    let job = MandateJob {
+        extraction,
+        event_type,
+        source_pipeline: "gmail_transaction".to_string(),
+        source_record_id: msg_id.to_string(),
+        connected_account_id: account_id.to_string(),
+        raw_body,
+    };
+    let tx = tauri::Manager::state::<QueueHandles>(app).mandate_tx.clone();
+    send_mandate_job(pool, &tx, job).await;
+}
+
 /// Persists a mandate job, then queues it (review H4).
 pub async fn send_mandate_job(pool: &Pool, tx: &mpsc::Sender<MandateJob>, job: MandateJob) {
     let payload = serde_json::to_string(&job).map_err(anyhow::Error::from);
@@ -2810,6 +2855,65 @@ mod ingest_failure_tests {
             .unwrap();
         assert_eq!(instrument, None);
         assert_eq!(reason, "instrument_archived");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+    use tauri::test::{mock_builder, mock_context};
+    use tauri::Manager;
+
+    /// Audit F-3: the shared alert dispatch persists the job before queueing
+    /// it, keyed by the Gmail message, for both polling and scans.
+    #[tokio::test]
+    async fn transaction_alert_is_persisted_and_queued() {
+        let dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pool = crate::db::init_db(dir.join("t.db")).await.unwrap();
+        let app = mock_builder().build(mock_context(tauri::test::noop_assets())).unwrap();
+        let (transaction_tx, mut transaction_rx) = mpsc::channel(1);
+        let (statement_tx, _) = mpsc::channel(1);
+        let (mandate_tx, _) = mpsc::channel(1);
+        let (layer6_tx, _) = mpsc::channel(1);
+        app.manage(QueueHandles { transaction_tx, statement_tx, mandate_tx, layer6_tx });
+
+        dispatch_transaction_alert(
+            app.handle(),
+            &pool,
+            "acc",
+            "msg_f3",
+            Some("body".into()),
+            crate::extraction::ladder::ExtractionResult { amount_minor: Some(100), ..Default::default() },
+            crate::ingestion::message_processor::EmailMetadata {
+                sender: "alerts@hdfcbank.net".into(),
+                recipient: "me@example.com".into(),
+                subject: "Alert".into(),
+                date: "Mon, 1 Jun 2026".into(),
+                snippet: "Rs 100".into(),
+                html: None,
+                sender_email: None,
+                sender_domain: None,
+                recipient_email: None,
+                recipient_domain: None,
+            },
+        )
+        .await;
+
+        let job = transaction_rx.try_recv().expect("queued");
+        assert_eq!((job.source_record_id.as_str(), job.connected_account_id.as_str()), ("msg_f3", "acc"));
+        let persisted: i64 = pool
+            .get()
+            .await
+            .unwrap()
+            .interact(|c| {
+                c.query_row("SELECT COUNT(*) FROM pending_ingest_jobs WHERE id = 'transaction:msg_f3'", [], |r| r.get(0))
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -426,19 +426,10 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                             None,
                         ).await {
                             Ok(Some(crate::ingestion::message_processor::ProcessResult::TransactionAlert(extracted, boxed_obs, email_meta))) => {
-                                let job = crate::ingestion::queues::TransactionJob {
-                                    obs: *boxed_obs,
-                                    source_pipeline: "gmail_transaction".to_string(),
-                                    source_record_id: msg_id.clone(),
-                                    connected_account_id: account.id.clone(),
-                                    raw_body: extracted.text_body.clone(),
-                                    email_meta: Some(email_meta),
-                                };
-                                let tx = app
-                                    .state::<crate::ingestion::queues::QueueHandles>()
-                                    .transaction_tx
-                                    .clone();
-                                crate::ingestion::queues::send_transaction_job(pool, &tx, job).await;
+                                crate::ingestion::queues::dispatch_transaction_alert(
+                                    app, pool, &account.id, &msg_id, extracted.text_body, *boxed_obs, email_meta,
+                                )
+                                .await;
                             }
                             Ok(Some(crate::ingestion::message_processor::ProcessResult::StatementEmail(extracted, email_meta))) => {
                             if extracted.pdf_attachments.is_empty() {
@@ -463,19 +454,10 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                 }
                             }
                             Ok(Some(crate::ingestion::message_processor::ProcessResult::MandateEvent(extracted, mandate_extraction, event_type))) => {
-                                let job = crate::ingestion::queues::MandateJob {
-                                    extraction: mandate_extraction,
-                                    event_type,
-                                    source_pipeline: "gmail_transaction".to_string(),
-                                    source_record_id: msg_id.clone(),
-                                    connected_account_id: account.id.clone(),
-                                    raw_body: extracted.text_body.clone(),
-                                };
-                                let mandate_tx = app
-                                    .state::<crate::ingestion::queues::QueueHandles>()
-                                    .mandate_tx
-                                    .clone();
-                                crate::ingestion::queues::send_mandate_job(pool, &mandate_tx, job).await;
+                                crate::ingestion::queues::dispatch_mandate_event(
+                                    app, pool, &account.id, &msg_id, extracted.text_body, mandate_extraction, event_type,
+                                )
+                                .await;
                             }
                             Ok(None) => {}
                             Ok(Some(crate::ingestion::message_processor::ProcessResult::EnqueuedForEnrichment)) => {

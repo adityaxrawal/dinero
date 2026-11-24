@@ -1085,19 +1085,10 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                     Ok(Some(ProcessResult::TransactionAlert(extracted, boxed_obs, email_meta))) => {
                         tracing::info!("Classified msg_id='{}' as Transaction", msg_id);
                         state.transactions_found += 1;
-                        let job = crate::ingestion::queues::TransactionJob {
-                            obs: *boxed_obs,
-                            source_pipeline: "gmail_transaction".to_string(),
-                            source_record_id: msg_id.clone(),
-                            connected_account_id: account_id.clone(),
-                            raw_body: extracted.text_body.clone(),
-                            email_meta: Some(email_meta),
-                        };
-                        let tx = app
-                            .state::<crate::ingestion::queues::QueueHandles>()
-                            .transaction_tx
-                            .clone();
-                        crate::ingestion::queues::send_transaction_job(&pool, &tx, job).await;
+                        crate::ingestion::queues::dispatch_transaction_alert(
+                            &app, &pool, &account_id, &msg_id, extracted.text_body, *boxed_obs, email_meta,
+                        )
+                        .await;
                     }
                     Ok(Some(ProcessResult::StatementEmail(extracted, email_meta))) => {
                         tracing::info!("Classified msg_id='{}' as Statement", msg_id);
@@ -1146,19 +1137,10 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                     ))) => {
                         tracing::info!("Classified msg_id='{}' as Mandate", msg_id);
                         state.mandate_events_found += 1;
-                        let job = crate::ingestion::queues::MandateJob {
-                            extraction: mandate_extraction,
-                            event_type,
-                            source_pipeline: "gmail_transaction".to_string(),
-                            source_record_id: msg_id.clone(),
-                            connected_account_id: account_id.clone(),
-                            raw_body: extracted.text_body.clone(),
-                        };
-                        let mandate_tx = app
-                            .state::<crate::ingestion::queues::QueueHandles>()
-                            .mandate_tx
-                            .clone();
-                        crate::ingestion::queues::send_mandate_job(&pool, &mandate_tx, job).await;
+                        crate::ingestion::queues::dispatch_mandate_event(
+                            &app, &pool, &account_id, &msg_id, extracted.text_body, mandate_extraction, event_type,
+                        )
+                        .await;
                     }
                     Ok(None) => {
                         tracing::info!("Classified msg_id='{}' as Non-Financial", msg_id);
