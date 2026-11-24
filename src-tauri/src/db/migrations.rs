@@ -113,17 +113,26 @@ fn prune_old_pre_migration_backups(backup_dir: &Path) {
 /// know: an older app on a newer schema would otherwise see "nothing pending"
 /// and run against tables it does not understand.
 ///
-/// Note: sqlx enables `foreign_keys` on this connection by default and runs each
-/// migration in a transaction, where SQLite ignores `PRAGMA foreign_keys`. A
-/// migration that rebuilds a table (create-copy-drop-rename) therefore runs with
-/// foreign keys ON, and dropping a parent table can fire `ON DELETE` actions on
-/// its children. New rebuild migrations should account for that (or this
-/// connection should set `.foreign_keys(false)` once existing migrations are
-/// verified not to depend on it).
+/// Foreign keys are OFF on this connection (audit C-5): sqlx runs each
+/// migration in a transaction, where `PRAGMA foreign_keys` cannot be changed,
+/// so a table rebuild (create-copy-drop-rename) would otherwise fire
+/// `ON DELETE CASCADE` on the children of the dropped parent. This is SQLite's
+/// documented rebuild procedure; `foreign_key_check` afterwards fails the
+/// migration if it left new violations. No existing migration relies on a
+/// cascade firing.
 pub async fn run_migrations(db_path: &Path, sqlcipher_key: Option<&str>) -> Result<()> {
+    run_migrations_with(db_path, sqlcipher_key, sqlx::migrate!("./migrations")).await
+}
+
+async fn run_migrations_with(
+    db_path: &Path,
+    sqlcipher_key: Option<&str>,
+    migrator: sqlx::migrate::Migrator,
+) -> Result<()> {
     let mut opts = SqliteConnectOptions::from_str(&format!("sqlite://{}", db_path.display()))
         .context("Invalid database path for sqlx migration connection")?
-        .create_if_missing(true);
+        .create_if_missing(true)
+        .foreign_keys(false);
 
     if let Some(key) = sqlcipher_key {
         opts = opts
@@ -137,16 +146,33 @@ pub async fn run_migrations(db_path: &Path, sqlcipher_key: Option<&str>) -> Resu
         .await
         .context("Failed to open sqlx connection for migrations")?;
 
-    let migrator = sqlx::migrate!("./migrations");
     reject_unknown_applied_versions(&migrator, &mut conn).await?;
 
+    let violations_before = foreign_key_violations(&mut conn).await?;
     migrator
         .run(&mut conn)
         .await
         .context("sqlx migration run failed")?;
+    let violations_after = foreign_key_violations(&mut conn).await?;
+    if violations_after > violations_before {
+        anyhow::bail!(
+            "migration left {} new foreign-key violation(s)",
+            violations_after - violations_before
+        );
+    }
+    if violations_after > 0 {
+        tracing::warn!("{} foreign-key violation(s) predate this migration run", violations_after);
+    }
 
     let _ = conn.close().await;
     Ok(())
+}
+
+async fn foreign_key_violations(conn: &mut SqliteConnection) -> Result<i64> {
+    sqlx::query_scalar("SELECT COUNT(*) FROM pragma_foreign_key_check")
+        .fetch_one(&mut *conn)
+        .await
+        .context("foreign_key_check failed")
 }
 
 const NEWER_SCHEMA_MESSAGE: &str =
@@ -188,6 +214,42 @@ async fn reject_unknown_applied_versions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Audit C-5: a table-rebuild migration must not cascade-delete the
+    /// children of the parent it drops.
+    #[tokio::test]
+    async fn table_rebuild_migration_keeps_child_rows() {
+        let dir = std::env::temp_dir().join(format!("dinero_mig_{}", uuid::Uuid::new_v4()));
+        let migrations = dir.join("migrations");
+        std::fs::create_dir_all(&migrations).unwrap();
+        std::fs::write(
+            migrations.join("1_create.sql"),
+            "CREATE TABLE parent (id TEXT PRIMARY KEY);
+             CREATE TABLE child (id TEXT PRIMARY KEY,
+                                 parent_id TEXT REFERENCES parent(id) ON DELETE CASCADE);
+             INSERT INTO parent VALUES ('p');
+             INSERT INTO child VALUES ('c', 'p');",
+        )
+        .unwrap();
+        std::fs::write(
+            migrations.join("2_rebuild.sql"),
+            "CREATE TABLE parent_new (id TEXT PRIMARY KEY, note TEXT);
+             INSERT INTO parent_new (id) SELECT id FROM parent;
+             DROP TABLE parent;
+             ALTER TABLE parent_new RENAME TO parent;",
+        )
+        .unwrap();
+        let path = dir.join("t.db");
+        let migrator = sqlx::migrate::Migrator::new(migrations.as_path()).await.unwrap();
+        run_migrations_with(&path, None, migrator).await.unwrap();
+
+        let children: i64 = Connection::open(&path)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM child", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(children, 1, "dropping the old parent must not cascade");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[tokio::test]
     async fn refuses_database_with_migration_from_newer_build() {
