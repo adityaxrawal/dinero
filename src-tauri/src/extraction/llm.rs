@@ -15,6 +15,27 @@ pub struct LlmEngine {
     model_id: String,
 }
 
+/// Characters of email body per prompt. A slot has 2048 tokens; the fixed
+/// prompt takes about 1,100 and the JSON answer up to ~200, leaving ~750 for
+/// the body, which is ~2,000 characters at a conservative 3 chars/token for
+/// number-heavy bank mail (audit A-10).
+pub const BODY_BUDGET_CHARS: usize = 2000;
+
+/// The first chunk of `body`, and the last one when the body is over budget.
+/// Splits on char boundaries.
+pub fn body_chunks(body: &str) -> (&str, Option<&str>) {
+    let chars = body.chars().count();
+    if chars <= BODY_BUDGET_CHARS {
+        return (body, None);
+    }
+    let first_end = body.char_indices().nth(BODY_BUDGET_CHARS).map_or(body.len(), |(i, _)| i);
+    let last_start = body
+        .char_indices()
+        .nth(chars - BODY_BUDGET_CHARS)
+        .map_or(0, |(i, _)| i);
+    (&body[..first_end], Some(&body[last_start..]))
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Layer6Outcome {
     Extracted(Box<ExtractionResult>),
@@ -153,8 +174,39 @@ impl LlmEngine {
         )
     }
 
-    /// Runs extraction, retrying once with a correction prompt if validation fails.
+    /// Runs extraction on a body that fits the model's context.
+    ///
+    /// A body longer than `BODY_BUDGET_CHARS` is chunked (Doc 12 §6.3, audit
+    /// A-10): the first chunk is tried, then the last, and the first valid
+    /// transaction wins. Middle chunks are not sent; alerts put the
+    /// transaction near the top or in a closing summary.
     pub async fn extract(
+        &self,
+        bank_name: &str,
+        body_text: &str,
+        fallback_event_time: Option<i64>,
+    ) -> Layer6Outcome {
+        let (first, last) = body_chunks(body_text);
+        let outcome = self.extract_chunk(bank_name, first, fallback_event_time).await;
+        match (outcome, last) {
+            (Layer6Outcome::Extracted(result), _) => Layer6Outcome::Extracted(result),
+            (outcome, None) => outcome,
+            (first_outcome, Some(last)) => {
+                match self.extract_chunk(bank_name, last, fallback_event_time).await {
+                    Layer6Outcome::Extracted(result) => Layer6Outcome::Extracted(result),
+                    // Neither chunk had a transaction: report the more
+                    // retryable outcome so a timeout is not finalised.
+                    last_outcome => match (&first_outcome, &last_outcome) {
+                        (Layer6Outcome::TimedOut | Layer6Outcome::Failed, _) => first_outcome,
+                        _ => last_outcome,
+                    },
+                }
+            }
+        }
+    }
+
+    /// Runs extraction, retrying once with a correction prompt if validation fails.
+    async fn extract_chunk(
         &self,
         bank_name: &str,
         body_text: &str,
@@ -743,5 +795,25 @@ mod tests {
             r#"{{"amount": 500.00, "currency": "INR", "direction": "debit", "merchant": "Swiggy", "datetime": "{slightly_ahead_dt}"}}"#
         ))
         .is_ok());
+    }
+}
+
+#[cfg(test)]
+mod body_chunk_tests {
+    use super::*;
+
+    /// Audit A-10: a short body is sent whole; a long one as its first and
+    /// last budget-sized chunks, split on char boundaries.
+    #[test]
+    fn long_bodies_are_chunked_first_and_last() {
+        assert_eq!(body_chunks("Rs 500 at Amazon"), ("Rs 500 at Amazon", None));
+
+        let body = format!("{}{}{}", "₹".repeat(BODY_BUDGET_CHARS), "middle", "z".repeat(BODY_BUDGET_CHARS));
+        let (first, last) = body_chunks(&body);
+        assert_eq!(first.chars().count(), BODY_BUDGET_CHARS);
+        assert!(first.chars().all(|c| c == '₹'));
+        let last = last.expect("over budget");
+        assert_eq!(last.chars().count(), BODY_BUDGET_CHARS);
+        assert!(last.chars().all(|c| c == 'z'));
     }
 }
