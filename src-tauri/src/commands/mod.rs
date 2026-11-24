@@ -3439,75 +3439,152 @@ mod tests {
         None
     }
 
+    /// Commands that deliberately do not call the licence write gate, each
+    /// with its reason (audit E-4). Every other registered command must call
+    /// it, so a new write command cannot slip through by being left off a list.
+    const UNGATED: &[(&str, &str)] = &[
+            ("analytics_pending_review_count", "read-only query"),
+            ("analytics_recurring_payments_summary", "read-only query"),
+            ("analytics_spend_trend", "read-only query"),
+            ("analytics_top_merchants", "read-only query"),
+            ("auth_get_consent_history", "read-only query"),
+            ("categories_list", "read-only query"),
+            ("dashboard_categories", "read-only query"),
+            ("dashboard_summary", "read-only query"),
+            ("dashboard_upcoming_bills", "read-only query"),
+            ("fetch_spending_limits", "read-only query"),
+            ("fetch_transaction_observations", "read-only query"),
+            ("fetch_transaction_source_log", "read-only query"),
+            ("fetch_transaction_tags", "read-only query"),
+            ("get_active_background_tasks", "read-only query"),
+            ("get_active_system_warnings", "read-only query"),
+            ("get_debug_metrics", "read-only query"),
+            ("get_health_report", "read-only query"),
+            ("instruments_get", "read-only query"),
+            ("instruments_list", "read-only query"),
+            ("is_gmail_connected", "read-only query"),
+            ("license_get_status", "read-only query"),
+            ("llm_get_active_model", "read-only query"),
+            ("llm_get_available_models", "read-only query"),
+            ("llm_get_downloaded_models", "read-only query"),
+            ("llm_get_hardware_info", "read-only query"),
+            ("merchant_cleanup_preview", "read-only query"),
+            ("merchant_cleanup_runs", "read-only query"),
+            ("onboarding_status", "read-only query"),
+            ("pipeline_status", "read-only query"),
+            ("reconciliation_clusters_get", "read-only query"),
+            ("reconciliation_clusters_list", "read-only query"),
+            ("reconciliation_get_unassigned_transactions", "read-only query"),
+            ("release_readiness_list_snapshots", "read-only query"),
+            ("scans_failed_count", "read-only query"),
+            ("scans_status", "read-only query"),
+            ("settings_get_background_sync_enabled", "read-only query"),
+            ("settings_get_connected_accounts", "read-only query"),
+            ("settings_get_launch_at_login", "read-only query"),
+            ("settings_get_low_battery_poll_threshold_percent", "read-only query"),
+            ("settings_get_menu_bar_extra_enabled", "read-only query"),
+            ("settings_get_network_activity", "read-only query"),
+            ("settings_known_bank_names", "read-only query"),
+            ("settings_learned_rules_list", "read-only query"),
+            ("settings_pdf_passwords_list", "read-only query"),
+            ("settings_profile_get", "read-only query"),
+            ("settings_sender_overrides_list", "read-only query"),
+            ("statements_get_draft", "read-only query"),
+            ("statements_get_draft_pdf", "read-only query"),
+            ("statements_get_entries", "read-only query"),
+            ("statements_get_pdf", "read-only query"),
+            ("statements_list", "read-only query"),
+            ("statements_list_unprocessed", "read-only query"),
+            ("tags_list", "read-only query"),
+            ("transactions_get", "read-only query"),
+            ("transactions_get_emi_group", "read-only query"),
+            ("transactions_list", "read-only query"),
+            ("transactions_search", "read-only query"),
+            ("check_backend_status", "read-only query"),
+            ("check_system_ram", "read-only query"),
+            ("auth_get_recovery_phrase", "read-only query"),
+            ("license_activate", "licensing itself: must work while locked to (re)activate, restore or pay"),
+            ("license_deactivate", "licensing itself: must work while locked to (re)activate, restore or pay"),
+            ("license_refresh", "licensing itself: must work while locked to (re)activate, restore or pay"),
+            ("license_restore", "licensing itself: must work while locked to (re)activate, restore or pay"),
+            ("billing_start_checkout", "licensing itself: must work while locked to (re)activate, restore or pay"),
+            ("app_recovery_mode", "recovery and backup: the user's way out, never held hostage"),
+            ("auth_restore_from_recovery_phrase", "recovery and backup: the user's way out, never held hostage"),
+            ("db_restore_backup", "recovery and backup: the user's way out, never held hostage"),
+            ("recovery_restart", "recovery and backup: the user's way out, never held hostage"),
+            ("settings_export_backup", "recovery and backup: the user's way out, never held hostage"),
+            ("record_consent_event", "consent and diagnostics records, not financial data"),
+            ("log_frontend_event", "consent and diagnostics records, not financial data"),
+            ("log_renderer_error", "consent and diagnostics records, not financial data"),
+            ("export_logs", "consent and diagnostics records, not financial data"),
+            ("submit_user_feedback", "consent and diagnostics records, not financial data"),
+            ("release_readiness_capture_snapshot", "consent and diagnostics records, not financial data"),
+            ("settings_dismiss_system_warning", "consent and diagnostics records, not financial data"),
+            ("llm_set_active_model", "app/machine preference, not ledger data"),
+            ("llm_set_parallel_slots", "app/machine preference, not ledger data"),
+            ("llm_download_model", "app/machine preference, not ledger data"),
+            ("llm_delete_model", "app/machine preference, not ledger data"),
+            ("llm_cancel_download", "app/machine preference, not ledger data"),
+            ("settings_set_background_sync_enabled", "app/machine preference, not ledger data"),
+            ("settings_set_launch_at_login", "app/machine preference, not ledger data"),
+            ("settings_set_low_battery_poll_threshold_percent", "app/machine preference, not ledger data"),
+            ("settings_set_menu_bar_extra_enabled", "app/machine preference, not ledger data"),
+            ("updater_confirm_install", "app/machine preference, not ledger data"),
+            ("scans_cancel", "stops or pauses work rather than starting it"),
+            ("merchant_cleanup_cancel", "stops or pauses work rather than starting it"),
+            ("pipeline_pause", "stops or pauses work rather than starting it"),
+            ("pipeline_resume", "stops or pauses work rather than starting it"),
+            ("debug_audit_scan_coverage", "debug-build diagnostics"),
+            ("debug_fetch_audit_log", "debug-build diagnostics"),
+            ("debug_fetch_parse_errors", "debug-build diagnostics"),
+            ("debug_fetch_reconciliation_clusters", "debug-build diagnostics"),
+            ("debug_fetch_unprocessed_statements", "debug-build diagnostics"),
+            ("debug_get_pipeline_state", "debug-build diagnostics"),
+            ("debug_set_gmail_poll_paused", "debug-build diagnostics"),
+            ("debug_set_scan_queue_paused", "debug-build diagnostics"),
+    ];
+
     #[test]
     fn test_write_commands_check_license_locked() {
-        let write_commands = [
-            "transactions_create",
-            "transactions_update",
-            "transactions_delete",
-            "transactions_add_tag",
-            "transactions_remove_tag",
-            "instruments_create",
-            "instruments_update",
-            "instruments_archive",
-            "categories_create",
-            "categories_update",
-            "categories_delete",
-            "tags_create",
-            "tags_delete",
-            "statements_upload",
-            "statements_confirm_instrument",
-            "statements_submit_password",
-            "statements_discard",
-            "statements_retry_unprocessed",
-            "reconciliation_clusters_resolve",
-            "reconciliation_clusters_unmerge",
-            "reconciliation_clusters_bulk_resolve",
-            "reconciliation_dismiss_unassigned_transaction",
-            "reconciliation_resolve_unassigned_transaction_manually",
-            "correct_match",
-            "auth_google_start",
-            "auth_google_disconnect",
-            "settings_pdf_passwords_delete",
-            "settings_learned_rules_revert",
-            "feedback_report_wrong_bank",
-            "settings_sender_overrides_revert",
-            "settings_delete_account",
-            "settings_profile_update",
-            "update_spending_limits",
-            "onboarding_save_preferences",
-            "scans_historical",
-            "sync_force_poll_now",
-        ];
+        let caps: serde_json::Value = serde_json::from_str(include_str!("../../capabilities/app-commands.json"))
+            .expect("generated capability file");
+        let commands: Vec<String> = caps["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p.as_str()?.strip_prefix("allow-").map(|c| c.replace('-', "_")))
+            .collect();
+        assert!(commands.len() > 100, "capability file looks incomplete");
 
         const GATE_ENFORCING_DELEGATES: [&str; 1] = ["perform_account_deletion"];
-
-        let delegates_to_gated_helper = |body: &str| {
-            GATE_ENFORCING_DELEGATES.iter().any(|delegate| {
-                body.contains(delegate)
-                    && find_function_body(delegate)
-                        .is_some_and(|d| d.contains("assert_write_allowed"))
-            })
+        let gated = |body: &str| {
+            body.contains("assert_write_allowed")
+                || GATE_ENFORCING_DELEGATES.iter().any(|delegate| {
+                    body.contains(delegate)
+                        && find_function_body(delegate).is_some_and(|d| d.contains("assert_write_allowed"))
+                })
         };
 
-        let mut missing = Vec::new();
-        for name in write_commands {
+        let mut problems = Vec::new();
+        for name in &commands {
+            let allowed = UNGATED.iter().any(|(n, _)| n == name);
             match find_function_body(name) {
-                Some(body)
-                    if body.contains("assert_write_allowed")
-                        || delegates_to_gated_helper(&body) => {}
-                Some(_) => {
-                    missing.push(format!("{name} (found, but no assert_write_allowed call)"))
+                None => problems.push(format!("{name}: function not found by the source scan")),
+                Some(body) if gated(&body) && allowed => {
+                    problems.push(format!("{name}: gated, so remove it from UNGATED"))
                 }
-                None => missing.push(format!("{name} (function not found by the source scan)")),
+                Some(body) if !gated(&body) && !allowed => problems.push(format!(
+                    "{name}: calls no assert_write_allowed and is not on UNGATED (add the gate, or list it with a reason)"
+                )),
+                Some(_) => {}
             }
         }
-
-        assert!(
-            missing.is_empty(),
-            "every write-path command must call assert_write_allowed to enforce LicenseLocked: {:#?}",
-            missing
-        );
+        for (name, _) in UNGATED {
+            if !commands.iter().any(|c| c == name) {
+                problems.push(format!("{name}: on UNGATED but not a registered command"));
+            }
+        }
+        assert!(problems.is_empty(), "write-gate coverage problems: {problems:#?}");
     }
 
     #[test]

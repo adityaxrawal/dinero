@@ -157,6 +157,8 @@ pub async fn scans_resume<R: tauri::Runtime>(
     account_id: String,
 ) -> Result<String, crate::error::AppError> {
     crate::ipc::validation::validate_account_id("account_id", &account_id)?;
+    // Resuming is ingestion, which a lapsed licence stops (audit E-4).
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
     let account_id_clone = account_id.clone();
     let checkpoint = pool
         .get()

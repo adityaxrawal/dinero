@@ -189,6 +189,8 @@ pub async fn merchant_cleanup_start(
     app: tauri::AppHandle,
     pool: tauri::State<'_, Pool>,
 ) -> Result<String, AppError> {
+    // Rewrites ledger merchant names: an edit (audit E-4).
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
     let eligible = app
         .try_state::<crate::startup::LlmEligibility>()
         .map(|e| e.eligible)
@@ -252,6 +254,7 @@ pub async fn merchant_cleanup_revert(
     pool: tauri::State<'_, Pool>,
     run_id: String,
 ) -> Result<usize, AppError> {
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
     let conn = pool.get().await.map_err(|e| AppError::Db(e.to_string()))?;
     conn.interact(move |c| merchant_cleanup::revert_run(c, &run_id))
         .await
