@@ -1031,19 +1031,40 @@ async fn persist_job(pool: &Pool, id: String, kind: &'static str, payload: anyho
 }
 
 /// Counts a failed attempt for a persisted job; after MAX_ATTEMPTS it is
-/// marked dead and no longer replayed (H4 follow-up).
-async fn record_failed_job_attempt(pool: &Pool, id: String) {
+/// marked dead and no longer replayed (H4 follow-up). A dead job is also
+/// recorded in `scan_failed_messages` for its Gmail message, so it shows up
+/// under "Retry failed" instead of disappearing (audit A-1).
+async fn record_failed_job_attempt(pool: &Pool, id: String, account_id: String, msg_id: String) {
     let Ok(conn) = pool.get().await else { return };
     let key = id.clone();
     let dead = conn
-        .interact(move |c| crate::db::pending_ingest_jobs::record_failed_attempt(c, &key))
+        .interact(move |c| -> anyhow::Result<bool> {
+            let dead = crate::db::pending_ingest_jobs::record_failed_attempt(c, &key)?;
+            if dead {
+                crate::db::scan_failed_messages::delete_for_message(c, &account_id, &msg_id)?;
+                crate::db::scan_failed_messages::insert(
+                    c,
+                    &crate::db::scan_failed_messages::ScanFailedMessageRow {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        account_id,
+                        msg_id,
+                        error: format!(
+                            "ingest failed {} times",
+                            crate::db::pending_ingest_jobs::MAX_ATTEMPTS
+                        ),
+                        failed_at: None,
+                    },
+                )?;
+            }
+            Ok(dead)
+        })
         .await
         .ok()
         .and_then(|r| r.ok())
         .unwrap_or(false);
     if dead {
         tracing::warn!(
-            "Ingest job '{}' failed {} times — marked dead, no longer replayed",
+            "Ingest job '{}' failed {} times — marked dead, listed under Retry failed",
             id,
             crate::db::pending_ingest_jobs::MAX_ATTEMPTS
         );
@@ -1130,10 +1151,12 @@ fn spawn_mandate_workers(mut rx: mpsc::Receiver<MandateJob>, pool: Pool) {
         while let Some(job) = rx.recv().await {
             crate::security::incident_response::wait_while_ingestion_paused().await;
             let key = mandate_job_key(&job);
+            let account_id = job.connected_account_id.clone();
+            let msg_id = job.source_record_id.clone();
             if process_mandate_job(job, &pool).await {
                 delete_persisted_job(&pool, key).await;
             } else {
-                record_failed_job_attempt(&pool, key).await;
+                record_failed_job_attempt(&pool, key, account_id, msg_id).await;
             }
         }
     });
@@ -1297,10 +1320,12 @@ fn spawn_transaction_workers<R: tauri::Runtime>(
                         // process one more job while the queue reports "paused".
                         wait_while_transaction_queue_paused().await;
                         let key = transaction_job_key(&job);
+                        let account_id = job.connected_account_id.clone();
+                        let msg_id = job.source_record_id.clone();
                         if process_transaction_job(job, &pool, &app).await {
                             delete_persisted_job(&pool, key).await;
                         } else {
-                            record_failed_job_attempt(&pool, key).await;
+                            record_failed_job_attempt(&pool, key, account_id, msg_id).await;
                         }
                     }
                     None => break,
@@ -1466,7 +1491,7 @@ async fn process_transaction_job<R: tauri::Runtime>(
 
     let outcome = conn
         .interact(
-            move |c| -> Option<(crate::reconciliation::audit::DecisionType, String)> {
+            move |c| -> Result<Option<(crate::reconciliation::audit::DecisionType, String)>, String> {
                 match crate::db::instruments::resolve_instrument(
                     c,
                     instrument_type.as_deref(),
@@ -1507,27 +1532,38 @@ async fn process_transaction_job<R: tauri::Runtime>(
                             row.id,
                             decision
                         );
-                        Some((decision, row.id.clone()))
+                        Ok(Some((decision, row.id.clone())))
                     }
-                    Ok((_, None)) => None,
-                    Err(e) => {
-                        tracing::warn!("Observation ingest failed: {}", e);
-                        None
-                    }
+                    Ok((_, None)) => Ok(None),
+                    // Nothing was stored (the observation insert is inside the
+                    // failed transaction), so this is not "done": keep the job
+                    // so it is retried rather than lost (audit A-1).
+                    Err(e) => Err(e.to_string()),
                 }
             },
         )
         .await;
 
-    if let Err(e) = &outcome {
-        tracing::error!(
-            "Transaction Queue: DB interact failed — keeping observation for replay, source_record_id='{}': {}",
-            source_record_id,
-            e
-        );
-        return false;
-    }
-    if let Ok(Some((decision, obs_id))) = outcome {
+    let outcome = match outcome {
+        Ok(Ok(outcome)) => outcome,
+        Ok(Err(e)) => {
+            tracing::error!(
+                "Transaction Queue: observation ingest failed — keeping job for retry, source_record_id='{}': {}",
+                source_record_id,
+                e
+            );
+            return false;
+        }
+        Err(e) => {
+            tracing::error!(
+                "Transaction Queue: DB interact failed — keeping observation for replay, source_record_id='{}': {}",
+                source_record_id,
+                e
+            );
+            return false;
+        }
+    };
+    if let Some((decision, obs_id)) = outcome {
         if let crate::reconciliation::audit::DecisionType::AmbiguousPending(cluster_id) = &decision
         {
             let _ = crate::ipc::events::emit_event(
@@ -2551,6 +2587,102 @@ mod queued_statement_recovery_tests {
 }
 
 #[cfg(test)]
+mod ingest_failure_tests {
+    use super::*;
+    use tauri::test::{mock_builder, mock_context};
+
+    fn job() -> TransactionJob {
+        TransactionJob {
+            obs: crate::extraction::ladder::ExtractionResult {
+                amount_minor: Some(50000),
+                direction: Some("debit".into()),
+                merchant_raw: Some("CAFE".into()),
+                extraction_method: "layer1".into(),
+                ..Default::default()
+            },
+            source_pipeline: "gmail_transaction".into(),
+            source_record_id: "msg_fail".into(),
+            connected_account_id: "acc".into(),
+            raw_body: None,
+            email_meta: None,
+        }
+    }
+
+    /// Audit A-1: an `ingest_observation` error must not count as success, so
+    /// the persisted job survives; after MAX_ATTEMPTS it is listed for retry.
+    #[tokio::test]
+    async fn failed_ingest_keeps_the_job_and_dead_jobs_are_listed_for_retry() {
+        let dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pool = crate::db::init_db(dir.join("t.db")).await.unwrap();
+        let app = mock_builder().build(mock_context(tauri::test::noop_assets())).unwrap();
+        let conn = pool.get().await.unwrap();
+        conn.interact(|c| {
+            c.execute_batch(
+                "CREATE TRIGGER force_fail BEFORE INSERT ON transaction_observations
+                 BEGIN SELECT RAISE(ABORT, 'forced failure'); END;",
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert!(
+            !process_transaction_job(job(), &pool, app.handle()).await,
+            "a failed ingest must not report success"
+        );
+
+        let (tx, _rx) = mpsc::channel::<TransactionJob>(4);
+        send_transaction_job(&pool, &tx, job()).await;
+        let key = transaction_job_key(&job());
+        for _ in 0..crate::db::pending_ingest_jobs::MAX_ATTEMPTS {
+            assert!(!process_transaction_job(job(), &pool, app.handle()).await);
+            record_failed_job_attempt(&pool, key.clone(), "acc".into(), "msg_fail".into()).await;
+        }
+        let (jobs, failed): (i64, Vec<String>) = conn
+            .interact(|c| {
+                let jobs = c.query_row("SELECT COUNT(*) FROM pending_ingest_jobs", [], |r| r.get(0))?;
+                let failed = crate::db::scan_failed_messages::distinct_msg_ids(c, "acc").unwrap();
+                Ok::<_, rusqlite::Error>((jobs, failed))
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(jobs, 1, "the job is kept, not deleted");
+        assert_eq!(failed, vec!["msg_fail".to_string()], "a dead job is listed under Retry failed");
+
+        // A retry re-enqueues the job with a fresh attempt count, and once the
+        // cause is gone it is ingested.
+        send_transaction_job(&pool, &tx, job()).await;
+        let (attempts, dead): (i64, bool) = conn
+            .interact(|c| {
+                c.query_row("SELECT attempts, dead_at IS NOT NULL FROM pending_ingest_jobs", [], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((attempts, dead), (0, false));
+        conn.interact(|c| c.execute_batch("DROP TRIGGER force_fail")).await.unwrap().unwrap();
+        assert!(process_transaction_job(job(), &pool, app.handle()).await);
+        let stored: i64 = conn
+            .interact(|c| {
+                c.query_row(
+                    "SELECT COUNT(*) FROM transaction_observations WHERE source_record_id = 'msg_fail'",
+                    [],
+                    |r| r.get(0),
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
 mod pending_ingest_job_tests {
     use super::*;
 
@@ -2591,7 +2723,13 @@ mod pending_ingest_job_tests {
         // A job that keeps failing is marked dead after MAX_ATTEMPTS and no
         // longer replayed, but kept for diagnosis.
         for _ in 0..crate::db::pending_ingest_jobs::MAX_ATTEMPTS {
-            record_failed_job_attempt(&pool, transaction_job_key(&replayed)).await;
+            record_failed_job_attempt(
+                &pool,
+                transaction_job_key(&replayed),
+                replayed.connected_account_id.clone(),
+                replayed.source_record_id.clone(),
+            )
+            .await;
         }
         let (txd, mut rxd) = mpsc::channel::<TransactionJob>(4);
         replay_pending_ingest_jobs(&pool, &txd, &mtx, later).await;

@@ -6,11 +6,14 @@
 use anyhow::Result;
 use rusqlite::{params, Connection};
 
-/// Persists a job; re-enqueuing the same id replaces the payload.
+/// Persists a job; re-enqueuing the same id replaces the payload and starts
+/// its attempt count again (a user "Retry failed" re-enqueues a dead job).
 pub fn upsert(conn: &Connection, id: &str, kind: &str, payload_json: &str) -> Result<()> {
     conn.execute(
         "INSERT INTO pending_ingest_jobs (id, kind, payload_json) VALUES (?1, ?2, ?3)
-         ON CONFLICT(id) DO UPDATE SET payload_json = excluded.payload_json",
+         ON CONFLICT(id) DO UPDATE SET payload_json = excluded.payload_json,
+                                       attempts = 0,
+                                       dead_at = NULL",
         params![id, kind, payload_json],
     )?;
     Ok(())
