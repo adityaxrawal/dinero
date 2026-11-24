@@ -110,18 +110,30 @@ pub fn prune_old_logs(log_dir: &Path) {
 /// Applied at the writer rather than at call sites, which is what makes it
 /// reliable: no log statement anywhere can bypass it by forgetting to sanitise.
 pub fn redact(text: &str) -> String {
-    let email_re = Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}").unwrap();
-    let card_re = Regex::new(r"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b").unwrap();
-    let rupee_amount_re = Regex::new(r"₹\s?[\d,]+(\.\d{1,2})?").unwrap();
-    let digits_re = Regex::new(r"\d{6,}").unwrap();
-    let bearer_re = Regex::new(r"(?i)(bearer|token|password|secret)\s*[:=]\s*\S+").unwrap();
-
-    let text = email_re.replace_all(text, "[REDACTED_EMAIL]");
-    let text = card_re.replace_all(&text, "[REDACTED_CARD]");
-    let text = rupee_amount_re.replace_all(&text, "[REDACTED_AMOUNT]");
-    let text = digits_re.replace_all(&text, "[REDACTED_NUMBER]");
-    let text = bearer_re.replace_all(&text, "$1: [REDACTED]");
-    text.into_owned()
+    // Compiled once (audit C-7): this runs on every log line.
+    static PATTERNS: std::sync::OnceLock<[(Regex, &str); 7]> = std::sync::OnceLock::new();
+    let patterns = PATTERNS.get_or_init(|| {
+        [
+            (Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}").unwrap(), "[REDACTED_EMAIL]"),
+            // UPI handles have no TLD ("name@okhdfcbank").
+            (Regex::new(r"\b[A-Za-z0-9._-]{2,}@[A-Za-z]{2,}\b").unwrap(), "[REDACTED_VPA]"),
+            (Regex::new(r"\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b").unwrap(), "[REDACTED_CARD]"),
+            // Masked cards and accounts ("XX1234", "xxxx-1234", "**1234").
+            (Regex::new(r"(?i)(?:x|\*){2,}[\s-]?\d{3,6}\b").unwrap(), "[REDACTED_CARD]"),
+            // Amounts as Indian bank mail writes them: ₹, Rs, Rs., INR.
+            (
+                Regex::new(r"(?i)(?:₹|\bRs\.?|\bINR)\s?[\d,]+(?:\.\d{1,2})?").unwrap(),
+                "[REDACTED_AMOUNT]",
+            ),
+            (Regex::new(r"\d{6,}").unwrap(), "[REDACTED_NUMBER]"),
+            (Regex::new(r"(?i)(bearer|token|password|secret)\s*[:=]\s*\S+").unwrap(), "$1: [REDACTED]"),
+        ]
+    });
+    let mut out = text.to_string();
+    for (re, replacement) in patterns {
+        out = re.replace_all(&out, *replacement).into_owned();
+    }
+    out
 }
 
 #[derive(Clone)]
@@ -287,6 +299,18 @@ impl<'a> MakeWriter<'a> for CategorizedLogWriters {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Audit C-7: the formats Indian bank mail uses are redacted too.
+    #[test]
+    fn redact_catches_rs_inr_vpa_and_masked_cards() {
+        let out = redact("Rs. 1,250.00 and INR 300 paid to ravi.k@okhdfcbank from card XX1234");
+        for leaked in ["1,250.00", "300", "ravi.k@okhdfcbank", "XX1234"] {
+            assert!(!out.contains(leaked), "{leaked} leaked: {out}");
+        }
+        assert!(out.contains("[REDACTED_AMOUNT]") && out.contains("[REDACTED_VPA]"));
+        assert!(out.contains("[REDACTED_CARD]"));
+        assert_eq!(redact("polled 3 accounts"), "polled 3 accounts", "ordinary text is untouched");
+    }
 
     #[test]
     fn redact_catches_email_card_and_rupee_amount() {
