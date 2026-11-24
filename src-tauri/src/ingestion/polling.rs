@@ -683,15 +683,16 @@ pub async fn save_history_id(
 
     let acc_id = account_id.to_string();
     conn.interact(move |c| {
-        processing_checkpoints::upsert_checkpoint(c, &checkpoint)?;
-        if let Ok(Some(mut acc)) = connected_accounts::get_account(c, &acc_id) {
-            acc.last_history_id = Some(history_id);
-            // The checkpoint above is the cursor the poller reads; this is the
-            // fallback copy, so a failure is logged rather than failing the poll.
-            if let Err(e) = connected_accounts::update_account(c, &acc) {
-                tracing::warn!("Could not mirror the history cursor to the account: {}", e);
-            }
-        }
+        // One transaction, and only the cursor column: rewriting the whole
+        // account row from an earlier read could revert a concurrent status
+        // change, e.g. `degraded` set by a token refresh (audit B-4).
+        let tx = c.unchecked_transaction()?;
+        processing_checkpoints::upsert_checkpoint(&tx, &checkpoint)?;
+        tx.execute(
+            "UPDATE connected_accounts SET last_history_id = ?1 WHERE id = ?2",
+            rusqlite::params![history_id, acc_id],
+        )?;
+        tx.commit()?;
         Ok::<(), anyhow::Error>(())
     })
     .await
@@ -707,4 +708,53 @@ pub(crate) fn notify_unassigned_changed<R: tauri::Runtime>(app: &tauri::AppHandl
         crate::ipc::events::AppEvent::UnassignedChanged,
         serde_json::json!({ "source_record_id": msg_id }),
     );
+}
+
+#[cfg(test)]
+mod cursor_mirror_tests {
+    use super::*;
+
+    /// Audit B-4: saving the cursor touches only `last_history_id` (with the
+    /// checkpoint), so it cannot overwrite a status set by someone else.
+    #[tokio::test]
+    async fn saving_the_cursor_leaves_account_status_alone() {
+        let dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pool = crate::db::init_db(dir.join("t.db")).await.unwrap();
+        pool.get()
+            .await
+            .unwrap()
+            .interact(|c| {
+                c.execute(
+                    "INSERT INTO connected_accounts (id, email_address, account_status, last_history_id)
+                     VALUES ('acc', 'me@example.com', 'degraded', '1')",
+                    [],
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+
+        save_history_id(&pool, "acc", "42".into()).await.unwrap();
+
+        let (status, cursor, checkpoint): (String, String, String) = pool
+            .get()
+            .await
+            .unwrap()
+            .interact(|c| {
+                c.query_row(
+                    "SELECT a.account_status, a.last_history_id, p.last_processed_token
+                     FROM connected_accounts a JOIN processing_checkpoints p
+                       ON p.job_key = a.id AND p.job_type = 'gmail_history'
+                     WHERE a.id = 'acc'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((status.as_str(), cursor.as_str(), checkpoint.as_str()), ("degraded", "42", "42"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
