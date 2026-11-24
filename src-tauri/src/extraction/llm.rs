@@ -15,6 +15,24 @@ pub struct LlmEngine {
     model_id: String,
 }
 
+/// Whether `number` occurs in `text` as a whole number: not preceded by a
+/// digit or decimal point, and not followed by a digit or a decimal fraction,
+/// so 100 does not match inside 1000, 2100 or 100.50 (audit A-14).
+fn contains_number(text: &str, number: &str) -> bool {
+    let bytes = text.as_bytes();
+    text.match_indices(number).any(|(i, _)| {
+        let end = i + number.len();
+        let before_ok = i == 0 || !(bytes[i - 1].is_ascii_digit() || bytes[i - 1] == b'.');
+        let after_ok = match bytes.get(end) {
+            None => true,
+            Some(b) if b.is_ascii_digit() => false,
+            Some(b'.') => !bytes.get(end + 1).is_some_and(u8::is_ascii_digit),
+            Some(_) => true,
+        };
+        before_ok && after_ok
+    })
+}
+
 /// Characters of email body per prompt. A slot has 2048 tokens; the fixed
 /// prompt takes about 1,100 and the JSON answer up to ~200, leaving ~750 for
 /// the body, which is ~2,000 characters at a conservative 3 chars/token for
@@ -377,12 +395,14 @@ impl LlmEngine {
     /// units. Whole amounts are also checked without decimals, since banks commonly
     /// print `1200` rather than `1200.00`.
     fn amount_appears_in_source(amount_minor: i64, source_body: &str) -> bool {
-        let normalized_source: String = source_body.chars().filter(|c| !c.is_whitespace() && *c != ',').collect();
+        // Commas are dropped (thousands separators); whitespace stays, as a
+        // boundary between numbers.
+        let normalized_source: String = source_body.chars().filter(|c| *c != ',').collect();
         let whole_part = amount_minor / 100;
         let frac_part = amount_minor % 100;
 
         let with_decimals = format!("{}.{:02}", whole_part, frac_part);
-        if normalized_source.contains(&with_decimals) {
+        if contains_number(&normalized_source, &with_decimals) {
             return true;
         }
 
@@ -392,15 +412,12 @@ impl LlmEngine {
             with_decimals.clone()
         };
 
-        if frac_part != 0 && normalized_source.contains(&without_padded_zeros) {
+        if frac_part != 0 && contains_number(&normalized_source, &without_padded_zeros) {
             return true;
         }
 
-        if frac_part == 0 {
-            let whole = format!("{}", whole_part);
-            if normalized_source.contains(&whole) {
-                return true;
-            }
+        if frac_part == 0 && contains_number(&normalized_source, &whole_part.to_string()) {
+            return true;
         }
         false
     }
@@ -801,6 +818,21 @@ mod tests {
 #[cfg(test)]
 mod body_chunk_tests {
     use super::*;
+
+    /// Audit A-14: amount grounding matches whole numbers only.
+    #[test]
+    fn amount_grounding_respects_digit_boundaries() {
+        let check = LlmEngine::amount_appears_in_source;
+        assert!(check(10000, "Rs 100 spent at Cafe"));
+        assert!(check(10000, "Rs. 100.00 debited"));
+        assert!(check(120000, "INR 1,200 debited"));
+        assert!(!check(10000, "Rs 1000 spent"), "100 is not inside 1000");
+        assert!(!check(10000, "Call 1800 2100"), "nor inside 2100");
+        assert!(!check(10000, "Rs 100.50 spent"), "nor the whole part of 100.50");
+        assert!(!check(500, "OTP 456789 for txn"), "₹5 is not any digit 5");
+        assert!(check(500, "Rs 5 cashback on 12-05"));
+        assert!(check(50000, "Rs 500 1200"), "whitespace still separates numbers");
+    }
 
     /// Audit A-10: a short body is sent whole; a long one as its first and
     /// last budget-sized chunks, split on char boundaries.
