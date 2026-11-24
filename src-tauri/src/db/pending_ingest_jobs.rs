@@ -59,13 +59,36 @@ pub fn record_failed_attempt(conn: &Connection, id: &str) -> Result<bool> {
 }
 
 /// Jobs persisted before `cutoff` (UTC, `YYYY-MM-DD HH:MM:SS`), oldest first.
-pub fn select_before(conn: &Connection, cutoff: &str) -> Result<Vec<(String, String, String)>> {
+///
+/// Paged (audit D-3): returns at most `limit` jobs ordered by
+/// `(created_at, id)`, starting after `after` (the last row of the previous
+/// page), so a large backlog is never held in memory at once.
+pub fn select_before(
+    conn: &Connection,
+    cutoff: &str,
+    after: Option<&(String, String)>,
+    limit: usize,
+) -> Result<Vec<PendingJob>> {
+    let (after_at, after_id) = after.map_or(("", ""), |(at, id)| (at.as_str(), id.as_str()));
     let mut stmt = conn.prepare(
-        "SELECT id, kind, payload_json FROM pending_ingest_jobs
-         WHERE created_at < ?1 AND dead_at IS NULL ORDER BY created_at",
+        "SELECT id, kind, payload_json, created_at FROM pending_ingest_jobs
+         WHERE created_at < ?1 AND dead_at IS NULL
+           AND (created_at > ?2 OR (created_at = ?2 AND id > ?3))
+         ORDER BY created_at, id
+         LIMIT ?4",
     )?;
     let rows = stmt
-        .query_map(params![cutoff], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .query_map(params![cutoff, after_at, after_id, limit as i64], |r| {
+            Ok(PendingJob { id: r.get(0)?, kind: r.get(1)?, payload_json: r.get(2)?, created_at: r.get(3)? })
+        })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
+}
+
+/// A persisted job as read back for replay.
+pub struct PendingJob {
+    pub id: String,
+    pub kind: String,
+    pub payload_json: String,
+    pub created_at: String,
 }

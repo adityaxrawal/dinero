@@ -1290,43 +1290,61 @@ pub async fn replay_pending_ingest_jobs(
     launched_before: chrono::NaiveDateTime,
 ) {
     let cutoff = launched_before.format("%Y-%m-%d %H:%M:%S").to_string();
-    let rows = match pool.get().await {
-        Ok(conn) => conn
-            .interact(move |c| crate::db::pending_ingest_jobs::select_before(c, &cutoff))
-            .await
-            .ok()
-            .and_then(|r| r.ok())
-            .unwrap_or_default(),
-        Err(_) => return,
-    };
-    if rows.is_empty() {
-        return;
-    }
-    tracing::info!("Replaying {} ingest job(s) persisted before the last restart", rows.len());
-    for (id, kind, payload) in rows {
-        let sent = match kind.as_str() {
-            "transaction" => match serde_json::from_str::<TransactionJob>(&payload) {
-                Ok(job) => transaction_tx.send(job).await.is_ok(),
-                Err(e) => {
-                    tracing::error!("Unreadable persisted job '{}' ({}), discarding", id, e);
-                    delete_persisted_job(pool, id).await;
-                    continue;
-                }
-            },
-            "mandate" => match serde_json::from_str::<MandateJob>(&payload) {
-                Ok(job) => mandate_tx.send(job).await.is_ok(),
-                Err(e) => {
-                    tracing::error!("Unreadable persisted job '{}' ({}), discarding", id, e);
-                    delete_persisted_job(pool, id).await;
-                    continue;
-                }
-            },
-            _ => continue,
+    const PAGE: usize = 100;
+    let mut after: Option<(String, String)> = None;
+    let mut replayed = 0usize;
+    // Paged (audit D-3): a fresh connection per page, released before the
+    // sends, which can wait on workers that need connections of their own.
+    loop {
+        let page = match pool.get().await {
+            Ok(conn) => {
+                let (cutoff, after) = (cutoff.clone(), after.clone());
+                conn.interact(move |c| {
+                    crate::db::pending_ingest_jobs::select_before(c, &cutoff, after.as_ref(), PAGE)
+                })
+                .await
+                .ok()
+                .and_then(|r| r.ok())
+                .unwrap_or_default()
+            }
+            Err(_) => return,
         };
-        if !sent {
-            tracing::error!("Queue closed during ingest job replay");
+        let Some(last) = page.last() else { break };
+        after = Some((last.created_at.clone(), last.id.clone()));
+        let full_page = page.len() == PAGE;
+        for job in page {
+            let (id, kind, payload) = (job.id, job.kind, job.payload_json);
+            let sent = match kind.as_str() {
+                "transaction" => match serde_json::from_str::<TransactionJob>(&payload) {
+                    Ok(job) => transaction_tx.send(job).await.is_ok(),
+                    Err(e) => {
+                        tracing::error!("Unreadable persisted job '{}' ({}), discarding", id, e);
+                        delete_persisted_job(pool, id).await;
+                        continue;
+                    }
+                },
+                "mandate" => match serde_json::from_str::<MandateJob>(&payload) {
+                    Ok(job) => mandate_tx.send(job).await.is_ok(),
+                    Err(e) => {
+                        tracing::error!("Unreadable persisted job '{}' ({}), discarding", id, e);
+                        delete_persisted_job(pool, id).await;
+                        continue;
+                    }
+                },
+                _ => continue,
+            };
+            if !sent {
+                tracing::error!("Queue closed during ingest job replay");
+                return;
+            }
+            replayed += 1;
+        }
+        if !full_page {
             break;
         }
+    }
+    if replayed > 0 {
+        tracing::info!("Replayed {} ingest job(s) persisted before the last restart", replayed);
     }
 }
 
@@ -3139,6 +3157,38 @@ mod layer6_attempt_policy_tests {
 #[cfg(test)]
 mod pending_ingest_job_tests {
     use super::*;
+
+    /// Audit D-3: replay pages through a large backlog, delivering every job
+    /// exactly once.
+    #[tokio::test]
+    async fn replay_pages_through_a_large_backlog() {
+        let dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pool = crate::db::init_db(dir.join("t.db")).await.unwrap();
+        let (tx, _hold) = mpsc::channel::<TransactionJob>(300);
+        for i in 0..250 {
+            let job = TransactionJob {
+                obs: Default::default(),
+                source_pipeline: "gmail_transaction".into(),
+                source_record_id: format!("m{i:03}"),
+                connected_account_id: "acc".into(),
+                raw_body: None,
+                email_meta: None,
+            };
+            send_transaction_job(&pool, &tx, job).await;
+        }
+        drop(_hold);
+        let (tx2, mut rx2) = mpsc::channel::<TransactionJob>(300);
+        let (mtx, _mrx) = mpsc::channel::<MandateJob>(4);
+        let later = chrono::Utc::now().naive_utc() + chrono::Duration::minutes(1);
+        replay_pending_ingest_jobs(&pool, &tx2, &mtx, later).await;
+        let mut seen = std::collections::HashSet::new();
+        while let Ok(job) = rx2.try_recv() {
+            assert!(seen.insert(job.source_record_id), "no job is replayed twice");
+        }
+        assert_eq!(seen.len(), 250);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// Review H4: a queued transaction job is persisted before it is sent and
     /// replayed after a restart until a worker finishes it.
