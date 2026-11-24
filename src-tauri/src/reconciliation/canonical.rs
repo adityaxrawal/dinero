@@ -24,6 +24,25 @@ fn source_mix_for_new_canonical(source_pipeline: &str) -> &'static str {
 }
 
 /// Creates a canonical transaction from an incoming observation.
+/// What the ledger shows as the counterparty: the observation's stored label
+/// (`merchant_normalized`, e.g. "Internal Transfer (A/c 1527)") when it has
+/// one, otherwise its `merchant_raw` span (audit A-6). Both engine entry
+/// points store the observation before reconciling, so the row is there.
+fn display_name(conn: &Connection, obs: &IncomingObservation) -> Option<String> {
+    use rusqlite::OptionalExtension;
+    let label: Option<String> = conn
+        .query_row(
+            "SELECT merchant_normalized FROM transaction_observations WHERE id = ?1",
+            [&obs.id],
+            |r| r.get(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+        .flatten();
+    label.or_else(|| obs.merchant_raw.clone())
+}
+
 pub fn create_canonical_transaction(conn: &Connection, obs: &IncomingObservation) -> Result<()> {
     let tx_id = Uuid::new_v4().to_string();
 
@@ -65,7 +84,7 @@ pub fn create_canonical_transaction(conn: &Connection, obs: &IncomingObservation
             .or_else(|| Some("high".to_string())),
         best_posting_date: event_time_dt.map(|dt| dt.date()),
         posting_date_confidence: None,
-        merchant_display_name: obs.merchant_raw.clone(),
+        merchant_display_name: display_name(conn, obs),
         merchant_normalized_name,
         merchant_entity_id,
         reference_id: obs.reference_id.clone(),
@@ -327,7 +346,7 @@ pub fn apply_match_precedence_and_link(
             conn,
             matched_id,
             obs.reference_id.as_deref(),
-            obs.merchant_raw.as_deref(),
+            display_name(conn, obs).as_deref(),
         )?;
     } else if obs.source_pipeline == "gmail_transaction" && matched_source_mix == Some("email_only")
     {

@@ -892,7 +892,7 @@ async fn apply_layer6_success(
                     row.merchant_raw.as_deref(),
                 )
             {
-                row.merchant_raw = Some(format!("Internal Transfer (A/c {dest_account})"));
+                row.merchant_normalized = Some(format!("Internal Transfer (A/c {dest_account})"));
             }
         }
         // The LLM supplies event_time, so out-of-range values are expected input,
@@ -2410,11 +2410,25 @@ mod layer6_tests {
             updated.event_time.is_some(),
             "a promoted Layer 6 observation must carry a real event_time, not NULL"
         );
+        // The label matches the Layer 1-5 path, but lives in
+        // merchant_normalized; merchant_raw keeps the model's span (audit A-6).
         assert_eq!(
-            updated.merchant_raw.as_deref(),
+            updated.merchant_normalized.as_deref(),
             Some("Internal Transfer (A/c 1527)"),
-            "merchant_raw must get the same placeholder as the Layer 1-5 path, not the raw account string"
+            "the self-transfer label must match the Layer 1-5 path"
         );
+        assert_eq!(updated.merchant_raw.as_deref(), Some("account 1527"));
+        let display: String = conn
+            .interact({
+                let id = updated.canonical_transaction_id.clone().unwrap();
+                move |c| {
+                    c.query_row("SELECT merchant_display_name FROM transactions WHERE id = ?1", [id], |r| r.get(0))
+                }
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(display, "Internal Transfer (A/c 1527)", "the ledger shows the label");
 
         let open = conn
             .interact(|c| crate::db::unassigned_transactions::select_open(c))

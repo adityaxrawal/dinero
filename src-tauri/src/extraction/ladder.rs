@@ -54,6 +54,12 @@ pub struct ExtractionResult {
     pub event_time_ambiguous: bool,
     pub date_cross_check_flag: Option<String>,
     pub channel: Option<String>,
+    /// Display label for a counterparty the message has no span for
+    /// ("Internal Transfer (A/c 1527)", "Balance Update"). `merchant_raw` only
+    /// ever holds text found in the source (audit A-6); the label is stored as
+    /// the observation's `merchant_normalized` and shown as the display name.
+    #[serde(default)]
+    pub merchant_label: Option<String>,
 }
 
 /// The one confidence floor for booking an extraction into the ledger, for

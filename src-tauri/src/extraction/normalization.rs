@@ -93,7 +93,7 @@ pub fn normalize_observation(
         event_time_confidence: raw.date_cross_check_flag.clone(),
         posting_date: None,
         merchant_raw,
-        merchant_normalized: None,
+        merchant_normalized: raw.merchant_label.clone(),
         reference_id: raw.reference_id,
         original_amount_minor: raw.original_amount_minor,
         original_currency: raw.original_currency,

@@ -557,9 +557,11 @@ impl MessageProcessor {
                         if let Some(dest_account) =
                             Self::self_transfer_destination_account(obs.merchant_raw.as_deref())
                         {
-                            obs.merchant_raw =
+                            obs.merchant_label =
                                 Some(format!("Internal Transfer (A/c {dest_account})"));
                         }
+
+                        Self::drop_merchant_not_in_source(&mut obs, body_text);
 
                         if let Some(raw) = obs.merchant_raw.clone() {
                             let cleaned =
@@ -788,6 +790,28 @@ impl MessageProcessor {
     ///
     /// Some alerts report a balance without any transaction. Keeping the balance is
     /// still useful, so it is stored without fabricating a transaction to attach it to.
+    ///
+    /// The placeholder is a display label only; `merchant_raw` is never
+    /// invented (audit A-6).
+    /// Drops a `merchant_raw` that is not an exact span of the message (Doc 12
+    /// §6.4, audit A-6), so it is never stored as if the email said it.
+    /// Layer 5 is exempt: its merchant comes from the matched statement entry.
+    pub(crate) fn drop_merchant_not_in_source(
+        obs: &mut crate::extraction::ladder::ExtractionResult,
+        body_text: &str,
+    ) {
+        if obs.extraction_method == "layer5_statement_crossref" {
+            return;
+        }
+        if obs.merchant_raw.as_deref().is_some_and(|raw| !body_text.contains(raw)) {
+            tracing::warn!(
+                method = %obs.extraction_method,
+                "merchant_raw is not a span of the message; dropped"
+            );
+            obs.merchant_raw = None;
+        }
+    }
+
     pub(crate) fn apply_balance_update_placeholder(
         content_class: &ContentClass,
         obs: &mut crate::extraction::ladder::ExtractionResult,
@@ -796,12 +820,13 @@ impl MessageProcessor {
             return;
         }
         if *content_class == ContentClass::BalanceUpdate {
-            obs.merchant_raw = Some("Balance Update".to_string());
+            obs.merchant_raw = None;
+            obs.merchant_label = Some("Balance Update".to_string());
             obs.amount_minor = Some(0);
             obs.direction = Some("unknown".to_string());
             obs.currency = Some("INR".to_string());
         } else if obs.merchant_raw.is_none() {
-            obs.merchant_raw = Some("Balance Update".to_string());
+            obs.merchant_label = Some("Balance Update".to_string());
             if obs.amount_minor.is_none() {
                 obs.amount_minor = Some(0);
             }

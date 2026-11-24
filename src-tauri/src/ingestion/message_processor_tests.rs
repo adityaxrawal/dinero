@@ -317,8 +317,33 @@ fn test_balance_update_placeholder_discards_misfired_merchant_and_amount() {
         ..Default::default()
     };
     MessageProcessor::apply_balance_update_placeholder(&ContentClass::BalanceUpdate, &mut obs);
-    assert_eq!(obs.merchant_raw, Some("Balance Update".to_string()));
+    // The misfired merchant is discarded and the placeholder is a display
+    // label, never an invented merchant_raw (audit A-6).
+    assert_eq!(obs.merchant_raw, None);
+    assert_eq!(obs.merchant_label, Some("Balance Update".to_string()));
     assert_eq!(obs.amount_minor, Some(0));
+}
+
+/// Audit A-6: a merchant that is not an exact span of the message is dropped;
+/// a real span is kept; Layer 5 (merchant from the statement) is exempt.
+#[test]
+fn merchant_raw_must_be_a_span_of_the_message() {
+    let body = "Rs 500 spent at AMAZON PAY on your card";
+    let mut kept = ExtractionResult { merchant_raw: Some("AMAZON PAY".into()), extraction_method: "nlp".into(), ..Default::default() };
+    MessageProcessor::drop_merchant_not_in_source(&mut kept, body);
+    assert_eq!(kept.merchant_raw.as_deref(), Some("AMAZON PAY"));
+
+    let mut invented = ExtractionResult { merchant_raw: Some("Amazon".into()), extraction_method: "nlp".into(), ..Default::default() };
+    MessageProcessor::drop_merchant_not_in_source(&mut invented, body);
+    assert_eq!(invented.merchant_raw, None);
+
+    let mut crossref = ExtractionResult {
+        merchant_raw: Some("AMAZON SELLER SERVICES".into()),
+        extraction_method: "layer5_statement_crossref".into(),
+        ..Default::default()
+    };
+    MessageProcessor::drop_merchant_not_in_source(&mut crossref, body);
+    assert!(crossref.merchant_raw.is_some());
 }
 
 /// A `TransactionAlert` email that genuinely extracted no merchant but did
@@ -334,7 +359,8 @@ fn test_transaction_alert_balance_fallback_only_fills_missing_fields() {
         ..Default::default()
     };
     MessageProcessor::apply_balance_update_placeholder(&ContentClass::TransactionAlert, &mut obs);
-    assert_eq!(obs.merchant_raw, Some("Balance Update".to_string()));
+    assert_eq!(obs.merchant_raw, None, "no merchant is invented (audit A-6)");
+    assert_eq!(obs.merchant_label, Some("Balance Update".to_string()));
     assert_eq!(
         obs.amount_minor,
         Some(24543),
