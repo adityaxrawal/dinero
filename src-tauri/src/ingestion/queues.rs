@@ -557,9 +557,9 @@ pub fn spawn_queues<R: tauri::Runtime>(
     let (mandate_tx, mandate_rx) = mpsc::channel::<MandateJob>(MANDATE_QUEUE_CAPACITY);
     let (layer6_tx, layer6_rx) = mpsc::channel::<Layer6Job>(LAYER6_QUEUE_CAPACITY);
 
-    spawn_transaction_workers(transaction_rx, pool.clone(), app.clone());
+    spawn_transaction_workers(transaction_rx, transaction_tx.clone(), pool.clone(), app.clone());
     spawn_statement_dispatcher(statement_rx, pool.clone(), app.clone());
-    spawn_mandate_workers(mandate_rx, pool.clone());
+    spawn_mandate_workers(mandate_rx, mandate_tx.clone(), pool.clone());
     spawn_layer6_workers(app.clone(), layer6_rx, layer6_tx.clone(), pool, learning);
 
     let handles = QueueHandles {
@@ -1137,8 +1137,8 @@ async fn persist_job(pool: &Pool, id: String, kind: &'static str, payload: anyho
 /// marked dead and no longer replayed (H4 follow-up). A dead job is also
 /// recorded in `scan_failed_messages` for its Gmail message, so it shows up
 /// under "Retry failed" instead of disappearing (audit A-1).
-async fn record_failed_job_attempt(pool: &Pool, id: String, account_id: String, msg_id: String) {
-    let Ok(conn) = pool.get().await else { return };
+async fn record_failed_job_attempt(pool: &Pool, id: String, account_id: String, msg_id: String) -> bool {
+    let Ok(conn) = pool.get().await else { return false };
     let key = id.clone();
     let dead = conn
         .interact(move |c| -> anyhow::Result<bool> {
@@ -1172,6 +1172,43 @@ async fn record_failed_job_attempt(pool: &Pool, id: String, account_id: String, 
             crate::db::pending_ingest_jobs::MAX_ATTEMPTS
         );
     }
+    dead
+}
+
+/// Delay before a failed ingest job is retried in the same session.
+const INGEST_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Re-queues a failed, still-live job after `delay` (audit B-5); it used to
+/// wait for the next launch. Read back from `pending_ingest_jobs`, so a job
+/// finished, retried or marked dead meanwhile is not sent again. If the app
+/// quits first, launch replay picks it up as before.
+fn schedule_ingest_retry<J>(pool: Pool, tx: mpsc::Sender<J>, key: String, delay: std::time::Duration)
+where
+    J: serde::de::DeserializeOwned + Send + 'static,
+{
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(delay).await;
+        let payload = match pool.get().await {
+            Ok(conn) => {
+                let id = key.clone();
+                conn.interact(move |c| crate::db::pending_ingest_jobs::select_live_payload(c, &id))
+                    .await
+                    .ok()
+                    .and_then(|r| r.ok())
+                    .flatten()
+            }
+            Err(_) => None,
+        };
+        match payload.map(|p| serde_json::from_str::<J>(&p)) {
+            Some(Ok(job)) => {
+                if tx.send(job).await.is_err() {
+                    tracing::warn!("Queue closed — job '{}' left for launch replay", key);
+                }
+            }
+            Some(Err(e)) => tracing::error!("Unreadable persisted job '{}' on retry: {}", key, e),
+            None => {}
+        }
+    });
 }
 
 async fn delete_persisted_job(pool: &Pool, id: String) {
@@ -1294,7 +1331,7 @@ pub async fn replay_pending_ingest_jobs(
 }
 
 /// Spawns the mandate-processing workers.
-fn spawn_mandate_workers(mut rx: mpsc::Receiver<MandateJob>, pool: Pool) {
+fn spawn_mandate_workers(mut rx: mpsc::Receiver<MandateJob>, tx: mpsc::Sender<MandateJob>, pool: Pool) {
     tauri::async_runtime::spawn(async move {
         while let Some(job) = rx.recv().await {
             crate::security::incident_response::wait_while_ingestion_paused().await;
@@ -1303,8 +1340,8 @@ fn spawn_mandate_workers(mut rx: mpsc::Receiver<MandateJob>, pool: Pool) {
             let msg_id = job.source_record_id.clone();
             if process_mandate_job(job, &pool).await {
                 delete_persisted_job(&pool, key).await;
-            } else {
-                record_failed_job_attempt(&pool, key, account_id, msg_id).await;
+            } else if !record_failed_job_attempt(&pool, key.clone(), account_id, msg_id).await {
+                schedule_ingest_retry(pool.clone(), tx.clone(), key, INGEST_RETRY_DELAY);
             }
         }
     });
@@ -1450,12 +1487,14 @@ async fn process_mandate_job(
 /// Spawns the transaction-processing workers.
 fn spawn_transaction_workers<R: tauri::Runtime>(
     rx: mpsc::Receiver<TransactionJob>,
+    tx: mpsc::Sender<TransactionJob>,
     pool: Pool,
     app: tauri::AppHandle<R>,
 ) {
     let rx = Arc::new(Mutex::new(rx));
     for _ in 0..TRANSACTION_QUEUE_WORKERS {
         let rx = Arc::clone(&rx);
+        let tx = tx.clone();
         let pool = pool.clone();
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
@@ -1472,8 +1511,8 @@ fn spawn_transaction_workers<R: tauri::Runtime>(
                         let msg_id = job.source_record_id.clone();
                         if process_transaction_job(job, &pool, &app).await {
                             delete_persisted_job(&pool, key).await;
-                        } else {
-                            record_failed_job_attempt(&pool, key, account_id, msg_id).await;
+                        } else if !record_failed_job_attempt(&pool, key.clone(), account_id, msg_id).await {
+                            schedule_ingest_retry(pool.clone(), tx.clone(), key, INGEST_RETRY_DELAY);
                         }
                     }
                     None => break,
@@ -2853,6 +2892,37 @@ mod ingest_failure_tests {
             .unwrap()
             .unwrap();
         assert_eq!(stored, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Audit B-5: a failed job that is still live is re-queued in the same
+    /// session; one marked dead is not.
+    #[tokio::test]
+    async fn failed_job_is_retried_in_session_unless_dead() {
+        let dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pool = crate::db::init_db(dir.join("t.db")).await.unwrap();
+        let (tx, mut rx) = mpsc::channel::<TransactionJob>(4);
+        send_transaction_job(&pool, &tx, job()).await;
+        rx.try_recv().unwrap();
+        let key = transaction_job_key(&job());
+
+        assert!(!record_failed_job_attempt(&pool, key.clone(), "acc".into(), "msg_fail".into()).await);
+        schedule_ingest_retry(pool.clone(), tx.clone(), key.clone(), std::time::Duration::from_millis(10));
+        let retried = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("retried in session")
+            .unwrap();
+        assert_eq!(retried.source_record_id, "msg_fail");
+
+        for _ in 0..crate::db::pending_ingest_jobs::MAX_ATTEMPTS {
+            record_failed_job_attempt(&pool, key.clone(), "acc".into(), "msg_fail".into()).await;
+        }
+        schedule_ingest_retry(pool.clone(), tx.clone(), key, std::time::Duration::from_millis(10));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await.is_err(),
+            "a dead job is not retried"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

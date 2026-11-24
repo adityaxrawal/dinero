@@ -19,6 +19,18 @@ pub fn upsert(conn: &Connection, id: &str, kind: &str, payload_json: &str) -> Re
     Ok(())
 }
 
+/// The payload of a job that is still live (not dead), if it exists.
+pub fn select_live_payload(conn: &Connection, id: &str) -> Result<Option<String>> {
+    use rusqlite::OptionalExtension;
+    Ok(conn
+        .query_row(
+            "SELECT payload_json FROM pending_ingest_jobs WHERE id = ?1 AND dead_at IS NULL",
+            params![id],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
 /// Removes a job once its worker has finished it.
 pub fn delete(conn: &Connection, id: &str) -> Result<()> {
     conn.execute("DELETE FROM pending_ingest_jobs WHERE id = ?1", params![id])?;
