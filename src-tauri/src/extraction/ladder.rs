@@ -59,12 +59,13 @@ pub struct ExtractionResult {
 /// The one confidence floor for booking an extraction into the ledger, for
 /// every layer (review M1). Below it -- including results the amount
 /// cross-check downgraded -- the extraction goes to the review queue,
-/// prefilled, instead. A result with no score (deterministic layers) passes.
+/// prefilled, instead. A result with no score fails: every layer scores its
+/// output, so a missing score means nothing vouches for it (audit A-5).
 pub const MIN_LEDGER_CONFIDENCE: f64 = 0.75;
 
 /// Whether an extraction is confident enough to book without review.
 pub fn meets_confidence_floor(confidence: Option<f64>) -> bool {
-    confidence.is_none_or(|c| c >= MIN_LEDGER_CONFIDENCE)
+    confidence.is_some_and(|c| c >= MIN_LEDGER_CONFIDENCE)
 }
 
 pub fn evaluate_gate3(
@@ -1060,6 +1061,10 @@ impl ExtractionLayer for BankTemplateLayer {
 
 const LAYER3_BASE_CONFIDENCE: f64 = 0.5;
 const LAYER3_MAX_CONFIDENCE: f64 = 0.7;
+/// Layer 4 (NLP heuristics) is weaker than Layer 3, so it scores below it and
+/// below the ledger floor: its results are always prefilled for review
+/// (audit A-5, owner decision).
+const LAYER4_CONFIDENCE: f64 = 0.5;
 const LAYER3_AMOUNT_CURRENCY_BONUS: f64 = 0.10;
 const LAYER3_EXPLICIT_DIRECTION_BONUS: f64 = 0.10;
 const LAYER3_STRICT_MERCHANT_BONUS: f64 = 0.15;
@@ -1379,6 +1384,7 @@ impl ExtractionLayer for NlpLayer {
         Box::pin(async move {
             let mut result = ExtractionResult {
                 extraction_method: "nlp".to_string(),
+                confidence_score: Some(LAYER4_CONFIDENCE),
                 ..Default::default()
             };
 

@@ -1669,6 +1669,17 @@
         assert_eq!(result.extraction_method, "nlp");
     }
 
+    /// Audit A-5: an NLP (Layer 4) result carries a score below the ledger
+    /// floor, so it is prefilled for review instead of booked.
+    #[tokio::test]
+    async fn nlp_result_is_scored_below_the_ledger_floor() {
+        let pool = dummy_pool();
+        let body = "Rs 500.00 debited from HDFC Bank A/c ending 1234 at Amazon on 25-May-23 Bal Rs 1000.00";
+        let result = NlpLayer.extract(&pool, "HDFC Bank", body).await.unwrap();
+        assert_eq!(result.confidence_score, Some(0.5));
+        assert!(!crate::extraction::ladder::meets_confidence_floor(result.confidence_score));
+    }
+
     #[tokio::test]
     async fn test_nlp_parser_upi_alert_with_vpa() {
         let pool = dummy_pool();
@@ -2717,7 +2728,7 @@
 #[test]
 fn one_confidence_floor_for_every_layer() {
     use crate::extraction::ladder::meets_confidence_floor;
-    assert!(meets_confidence_floor(None), "deterministic layers carry no score");
+    assert!(!meets_confidence_floor(None), "a result nothing scored is not booked (audit A-5)");
     assert!(meets_confidence_floor(Some(0.75)));
     assert!(!meets_confidence_floor(Some(0.7)));
     assert!(!meets_confidence_floor(Some(0.4)), "cross-check downgrades go to review");
