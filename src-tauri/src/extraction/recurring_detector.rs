@@ -93,13 +93,8 @@ pub fn detect_and_update_recurring(
     )?;
 
     let mut occurrences: Vec<(NaiveDateTime, i64)> = priors
-        .iter()
-        .filter(|t| {
-            t.amount_minor
-                .map(|a| amount_within_tolerance(a, amount_minor))
-                .unwrap_or(false)
-        })
-        .filter_map(|t| t.best_event_time.map(|dt| (dt, t.amount_minor.unwrap())))
+        .into_iter()
+        .filter(|&(_, a)| amount_within_tolerance(a, amount_minor))
         .collect();
     occurrences.push((event_time, amount_minor));
     occurrences.sort_by_key(|(dt, _)| *dt);
@@ -256,6 +251,26 @@ mod tests {
         assert!(
             row.confidence.unwrap() > 0.9,
             "near-perfectly-regular monthly interval should score high confidence"
+        );
+    }
+
+    /// Audit N-D2: the narrowed prior-occurrence query must keep the same
+    /// result -- priors outside the amount tolerance do not count.
+    #[test]
+    fn test_out_of_tolerance_priors_do_not_count() {
+        let conn = setup_db();
+        insert_occurrence(&conn, "tx_1", 99900, "2026-03-15");
+        insert_occurrence(&conn, "tx_2", 49900, "2026-04-15");
+        insert_occurrence(&conn, "tx_3", 49900, "2026-05-15");
+        let event_time =
+            NaiveDateTime::parse_from_str("2026-05-15 10:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
+        detect_and_update_recurring(&conn, "inst_1", Some("merch_1"), "tx_3", 49900, "debit", event_time)
+            .unwrap();
+        assert!(
+            recurring_payments::find_by_instrument_and_merchant(&conn, "inst_1", "merch_1")
+                .unwrap()
+                .is_none(),
+            "only two occurrences are within tolerance; three are required"
         );
     }
 

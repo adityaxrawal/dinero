@@ -458,28 +458,29 @@ pub fn find_parent_for_refund(
 /// Feeds recurring-payment detection and anomaly comparison. Excludes the
 /// transaction under consideration so it cannot match itself, and orders oldest
 /// first so intervals can be measured across the series.
+///
+/// Returns only `(best_event_time, amount_minor)`: this runs for every booked
+/// debit, inside the booking transaction, and mapping whole rows for a
+/// merchant's full history made a large statement commit hold the write lock
+/// for many seconds (audit N-D2).
 pub fn find_prior_occurrences_for_merchant(
     conn: &Connection,
     instrument_id: &str,
     merchant_entity_id: &str,
     exclude_transaction_id: &str,
-) -> Result<Vec<TransactionsRow>> {
-    let mut stmt = conn.prepare(
-        "SELECT * FROM transactions
+) -> Result<Vec<(NaiveDateTime, i64)>> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT best_event_time, amount_minor FROM transactions
          WHERE instrument_id = ?1 AND merchant_entity_id = ?2 AND direction = 'debit'
            AND is_deleted = 0 AND id != ?3 AND best_event_time IS NOT NULL
+           AND amount_minor IS NOT NULL
          ORDER BY best_event_time ASC",
     )?;
     let rows = stmt.query_map(
         params![instrument_id, merchant_entity_id, exclude_transaction_id],
-        row_to_transaction,
+        |r| Ok((r.get::<_, NaiveDateTime>(0)?, r.get::<_, i64>(1)?)),
     )?;
-
-    let mut transactions = Vec::new();
-    for row in rows {
-        transactions.push(row?);
-    }
-    Ok(transactions)
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 /// Average spend with a merchant over the trailing 30 days.
