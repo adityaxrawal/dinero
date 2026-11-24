@@ -5,6 +5,7 @@
 //! the form the reconciliation pipeline consumes.
 use crate::statements::parser::ParsedPage;
 use anyhow::Result;
+use std::sync::OnceLock;
 use regex::Regex;
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -180,11 +181,16 @@ pub(crate) fn parse_amount_minor(s: &str) -> Option<i64> {
 /// not itself begin with a date, which is what prevents two genuine consecutive
 /// transactions being collapsed into one.
 fn merge_broken_line_boundaries(text: &str) -> String {
-    let date_only_re = Regex::new(r"^\s*(?:\d{2}[/\-]\d{2}[/\-]\d{4}|\d{2}-[A-Za-z]{3}-\d{4})\s*$")
-        .expect("static regex must compile");
-    let starts_with_date_re =
+    static DATE_ONLY: OnceLock<Regex> = OnceLock::new();
+    static STARTS_WITH_DATE: OnceLock<Regex> = OnceLock::new();
+    let date_only_re = DATE_ONLY.get_or_init(|| {
+        Regex::new(r"^\s*(?:\d{2}[/\-]\d{2}[/\-]\d{4}|\d{2}-[A-Za-z]{3}-\d{4})\s*$")
+            .expect("static regex must compile")
+    });
+    let starts_with_date_re = STARTS_WITH_DATE.get_or_init(|| {
         Regex::new(r"^\s*(?:\d{2}[/\-]\d{2}[/\-]\d{4}|\d{2}-[A-Za-z]{3}-\d{4})")
-            .expect("static regex must compile");
+            .expect("static regex must compile")
+    });
 
     let lines: Vec<&str> = text.lines().collect();
     let mut merged_lines: Vec<String> = Vec::with_capacity(lines.len());
@@ -708,9 +714,11 @@ fn wrapped_description(lines: &[&str], is_row: &[bool], index: usize) -> String 
 
 /// Whether a line looks like a total rather than a transaction.
 fn looks_like_a_total(line: &str) -> bool {
-    Regex::new(r"\d[\d,]*\.\d{2}")
-        .map(|re| re.is_match(line))
-        .unwrap_or(false)
+    // Runs per line: compiled once (audit D-2).
+    static AMOUNT: OnceLock<Regex> = OnceLock::new();
+    AMOUNT
+        .get_or_init(|| Regex::new(r"\d[\d,]*\.\d{2}").expect("static regex must compile"))
+        .is_match(line)
 }
 
 /// Resolves debit or credit from an explicit marker or a sign.
@@ -755,8 +763,11 @@ fn has_enough_letters(description: &str) -> bool {
 
 /// Extracts a twelve-digit reference id from a description.
 pub(crate) fn extract_reference_id(description: &str) -> Option<String> {
-    let re = Regex::new(r"\b(\d{12})\b").ok()?;
-    re.captures(description)
+    // Runs per row: compiled once (audit D-2).
+    static REFERENCE: OnceLock<Regex> = OnceLock::new();
+    REFERENCE
+        .get_or_init(|| Regex::new(r"\b(\d{12})\b").expect("static regex must compile"))
+        .captures(description)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().to_string())
 }
