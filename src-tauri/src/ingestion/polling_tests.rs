@@ -1067,4 +1067,100 @@ mod tests {
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
+
+    /// A transaction alert that passes Gates 1-3 (audit N-A2 tests).
+    const HDFC_ALERT: &str = r#"{"id":"msg_ok","threadId":"t","internalDate":"1750000000000","snippet":"Rs 450.00 spent",
+        "payload":{"mimeType":"text/plain","headers":[
+        {"name":"From","value":"\"HDFC Bank\" <alerts@hdfcbank.net>"},
+        {"name":"Subject","value":"Payment Notification"},
+        {"name":"Authentication-Results","value":"mx.google.com; dkim=pass header.i=@hdfcbank.net; spf=pass; dmarc=pass header.from=hdfcbank.net"}],
+        "body":{"data":"UnMgNDUwLjAwIHNwZW50IG9uIHlvdXIgSERGQyBCYW5rIENSRURJVCBDYXJkIGVuZGluZyAxMjM0IGF0IE1lcmNoYW50NyBvbiAwNS1KdW4tMjYu"}}}"#;
+
+    async fn poll_once_with_failing_table(table: &'static str, message_body: &'static str, status: usize) -> (String, bool) {
+        let mut server = mockito::Server::new_async().await;
+        let account_id = format!("acc_na2_{}", uuid::Uuid::new_v4());
+        write_dev_token(&account_id);
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let pool = init_db(temp_dir.join("test.db")).await.expect("DB init failed");
+        setup_account_for_poll(&pool, &account_id, Some("h1")).await;
+        let _history = server
+            .mock("GET", "/gmail/v1/users/me/history")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                serde_json::json!({
+                    "historyId": "h2",
+                    "history": [{ "messagesAdded": [{ "message": { "id": "msg_ok" } }] }]
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let _message = server
+            .mock("GET", mockito::Matcher::Regex("^/gmail/v1/users/me/messages/".into()))
+            .match_query(mockito::Matcher::Any)
+            .with_status(status)
+            .with_header("content-type", "application/json")
+            .with_body(message_body)
+            .create_async()
+            .await;
+        let sql = format!(
+            "CREATE TRIGGER fail_write BEFORE INSERT ON {table} BEGIN SELECT RAISE(ABORT, 'injected failure'); END;"
+        );
+        pool.get().await.unwrap().interact(move |c| c.execute_batch(&sql)).await.unwrap().unwrap();
+
+        let app = mock_builder().build(mock_context(tauri::test::noop_assets())).unwrap();
+        app.manage(crate::security::incident_response::IncidentMonitor::default());
+        app.manage(test_queue_handles());
+        let _ = poll_all_accounts(&app.handle().clone(), &pool, &server.url()).await;
+
+        let acc = account_id.clone();
+        let (cursor, queued) = pool
+            .get()
+            .await
+            .unwrap()
+            .interact(move |c| {
+                let cursor: String = c.query_row(
+                    "SELECT last_history_id FROM connected_accounts WHERE id = ?1",
+                    [&acc],
+                    |r| r.get(0),
+                )?;
+                let queued: i64 =
+                    c.query_row("SELECT COUNT(*) FROM pending_ingest_jobs", [], |r| r.get(0))?;
+                Ok::<_, rusqlite::Error>((cursor, queued > 0))
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        let _ = fs::remove_dir_all(&temp_dir);
+        (cursor, queued)
+    }
+
+    /// Audit N-A2 (owner decision): a job that could not be saved stops the
+    /// cycle with the old cursor, so the next cycle reads the message again.
+    #[tokio::test]
+    async fn test_unsaved_job_keeps_the_cursor() {
+        let (cursor, queued) = poll_once_with_failing_table("pending_ingest_jobs", HDFC_ALERT, 200).await;
+        assert_eq!(cursor, "h1", "cursor must not move past an unsaved job");
+        assert!(!queued);
+    }
+
+    /// Control for the test above: the same alert with no injected failure is
+    /// saved and the cursor moves on.
+    #[tokio::test]
+    async fn test_saved_job_advances_the_cursor() {
+        let (cursor, queued) = poll_once_with_failing_table("feedback_log", HDFC_ALERT, 200).await;
+        assert_eq!(cursor, "h2");
+        assert!(queued);
+    }
+
+    /// Audit N-A2: a failed message whose failure record cannot be written
+    /// also keeps the old cursor (it used to be dropped with `let _`).
+    #[tokio::test]
+    async fn test_unrecorded_failure_keeps_the_cursor() {
+        let (cursor, _) = poll_once_with_failing_table("scan_failed_messages", "{}", 404).await;
+        assert_eq!(cursor, "h1");
+    }
 }

@@ -1072,25 +1072,20 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                     }
                 }
                 let retrying = manual_retry || auto_retry_pass;
-                if retrying && result.is_ok() {
-                    state.errors = state.errors.saturating_sub(1);
-                    let (acc, id) = (account_id.clone(), msg_id.clone());
-                    if let Ok(conn) = pool.get().await {
-                        let _ = conn
-                            .interact(move |c| {
-                                crate::db::scan_failed_messages::delete_for_message(c, &acc, &id)
-                            })
-                            .await;
-                    }
-                }
+                // A message whose job could not be saved is a failed message
+                // like any other (owner decision, audit N-A2).
+                let mut failure: Option<String> = None;
                 match result {
                     Ok(Some(ProcessResult::TransactionAlert(extracted, boxed_obs, email_meta))) => {
                         tracing::info!("Classified msg_id='{}' as Transaction", msg_id);
                         state.transactions_found += 1;
-                        crate::ingestion::queues::dispatch_transaction_alert(
+                        if let Err(e) = crate::ingestion::queues::dispatch_transaction_alert(
                             &app, &pool, &account_id, &msg_id, extracted.text_body, *boxed_obs, email_meta,
                         )
-                        .await;
+                        .await
+                        {
+                            failure = Some(format!("{e:#}"));
+                        }
                     }
                     Ok(Some(ProcessResult::StatementEmail(extracted, email_meta))) => {
                         tracing::info!("Classified msg_id='{}' as Statement", msg_id);
@@ -1139,10 +1134,13 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                     ))) => {
                         tracing::info!("Classified msg_id='{}' as Mandate", msg_id);
                         state.mandate_events_found += 1;
-                        crate::ingestion::queues::dispatch_mandate_event(
+                        if let Err(e) = crate::ingestion::queues::dispatch_mandate_event(
                             &app, &pool, &account_id, &msg_id, extracted.text_body, mandate_extraction, event_type,
                         )
-                        .await;
+                        .await
+                        {
+                            failure = Some(format!("{e:#}"));
+                        }
                     }
                     Ok(None) => {
                         tracing::info!("Classified msg_id='{}' as Non-Financial", msg_id);
@@ -1162,11 +1160,28 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                         state.non_financial += 1;
                         crate::ingestion::polling::notify_unassigned_changed(&app, &msg_id);
                     }
-                    Err(e) if retrying => {
+                    Err(e) => failure = Some(e.to_string()),
+                }
+                match failure {
+                    // A retried message that now went through: its failure
+                    // row is cleared only after its job is saved.
+                    None if retrying => {
+                        state.errors = state.errors.saturating_sub(1);
+                        let (acc, id) = (account_id.clone(), msg_id.clone());
+                        if let Ok(conn) = pool.get().await {
+                            let _ = conn
+                                .interact(move |c| {
+                                    crate::db::scan_failed_messages::delete_for_message(c, &acc, &id)
+                                })
+                                .await;
+                        }
+                    }
+                    None => {}
+                    Some(e) if retrying => {
                         tracing::error!("Retry failed for message {}: {}", msg_id, e);
                         failed_this_pass.push(msg_id.clone());
                     }
-                    Err(e) => {
+                    Some(e) => {
                         state.errors += 1;
                         tracing::error!("Failed to process message {}: {}", msg_id, e);
                         failed_this_pass.push(msg_id.clone());
@@ -1175,7 +1190,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                             id: Uuid::new_v4().to_string(),
                             account_id: account_id.clone(),
                             msg_id: msg_id.clone(),
-                            error: e.to_string(),
+                            error: e,
                             failed_at: None,
                         };
                         if let Ok(conn) = pool.get().await {
@@ -1495,6 +1510,79 @@ mod tests {
             .await;
         server
     }
+
+    /// Audit N-A2 (owner decision): a message whose job cannot be saved is a
+    /// failed message -- listed under Retry failed, scan completed_with_errors.
+    #[tokio::test]
+    async fn test_unsaved_job_is_recorded_as_failed_message() {
+        let app = mock_builder()
+            .build(mock_context(tauri::test::noop_assets()))
+            .unwrap()
+            .handle()
+            .clone();
+        app.manage(test_queue_handles());
+        let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).unwrap();
+        let pool = init_db(temp_dir.join("t.db")).await.expect("DB init failed");
+        pool.get()
+            .await
+            .unwrap()
+            .interact(|c| {
+                c.execute_batch(
+                    "CREATE TRIGGER fail_jobs BEFORE INSERT ON pending_ingest_jobs \
+                     BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+
+        let mut gmail = mockito::Server::new_async().await;
+        gmail
+            .mock("GET", mockito::Matcher::Regex("^/gmail/v1/users/me/messages/".into()))
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(HDFC_ALERT)
+            .create_async()
+            .await;
+        let client = GmailClient::new_with_base_url("fake_token".into(), pool.clone(), gmail.url(), None);
+        let account_id = "acc_na2_scan".to_string();
+        let state = ScanCheckpointState {
+            start_date: "2026-06-01".into(),
+            end_date: "2026-06-30".into(),
+            all_message_ids: vec!["msg_ok".to_string()],
+            ..Default::default()
+        };
+        run_scan_batches(app, pool.clone(), account_id.clone(), state, client)
+            .await
+            .expect("run_scan_batches failed");
+
+        let acc = account_id.clone();
+        let (failed, status) = pool
+            .get()
+            .await
+            .unwrap()
+            .interact(move |c| {
+                let failed = crate::db::scan_failed_messages::select_by_account(c, &acc).unwrap();
+                let cp = get_checkpoint(c, "historical_scan", &acc).unwrap().unwrap();
+                (failed, cp.status)
+            })
+            .await
+            .unwrap();
+        assert_eq!(failed.len(), 1, "the unsaved message must be listed for retry");
+        assert_eq!(failed[0].msg_id, "msg_ok");
+        assert!(failed[0].error.contains("persist"), "got: {}", failed[0].error);
+        assert_eq!(status, "completed_with_errors");
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    const HDFC_ALERT: &str = r#"{"id":"msg_ok","threadId":"t","internalDate":"1750000000000","snippet":"Rs 450.00 spent",
+        "payload":{"mimeType":"text/plain","headers":[
+        {"name":"From","value":"\"HDFC Bank\" <alerts@hdfcbank.net>"},
+        {"name":"Subject","value":"Payment Notification"},
+        {"name":"Authentication-Results","value":"mx.google.com; dkim=pass header.i=@hdfcbank.net; spf=pass; dmarc=pass header.from=hdfcbank.net"}],
+        "body":{"data":"UnMgNDUwLjAwIHNwZW50IG9uIHlvdXIgSERGQyBCYW5rIENSRURJVCBDYXJkIGVuZGluZyAxMjM0IGF0IE1lcmNoYW50NyBvbiAwNS1KdW4tMjYu"}}}"#;
 
     const MINIMAL_MESSAGE: &str = r#"{"id":"m","threadId":"t","snippet":"hello",
         "payload":{"mimeType":"text/plain","headers":[{"name":"From","value":"friend@example.com"},

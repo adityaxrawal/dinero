@@ -1112,25 +1112,21 @@ fn mandate_job_key(job: &MandateJob) -> String {
     format!("mandate:{}", job.source_record_id)
 }
 
-async fn persist_job(pool: &Pool, id: String, kind: &'static str, payload: anyhow::Result<String>) {
-    let payload = match payload {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::error!("Could not serialise {} job '{}' for persistence: {}", kind, id, e);
-            return;
-        }
-    };
-    let res = match pool.get().await {
-        Ok(conn) => conn
-            .interact(move |c| crate::db::pending_ingest_jobs::upsert(c, &id, kind, &payload))
-            .await
-            .map_err(|e| anyhow::anyhow!("interact error: {}", e))
-            .and_then(|r| r),
-        Err(e) => Err(anyhow::anyhow!("pool error: {}", e)),
-    };
-    if let Err(e) = res {
-        tracing::error!("Could not persist {} job (it may be lost on quit): {:#}", kind, e);
-    }
+/// Saves a job to `pending_ingest_jobs`. A failure is returned, not just
+/// logged (audit N-A2): the caller must not move past a message whose job
+/// is not durable.
+async fn persist_job(
+    pool: &Pool,
+    id: String,
+    kind: &'static str,
+    payload: anyhow::Result<String>,
+) -> anyhow::Result<()> {
+    let payload = payload.map_err(|e| anyhow::anyhow!("could not serialise {kind} job '{id}': {e}"))?;
+    let conn = pool.get().await.map_err(|e| anyhow::anyhow!("pool error: {e}"))?;
+    conn.interact(move |c| crate::db::pending_ingest_jobs::upsert(c, &id, kind, &payload))
+        .await
+        .map_err(|e| anyhow::anyhow!("interact error: {e}"))?
+        .map_err(|e| e.context(format!("could not persist {kind} job")))
 }
 
 /// Counts a failed attempt for a persisted job; after MAX_ATTEMPTS it is
@@ -1219,13 +1215,19 @@ async fn delete_persisted_job(pool: &Pool, id: String) {
     }
 }
 
-/// Persists a transaction job, then queues it (review H4).
-pub async fn send_transaction_job(pool: &Pool, tx: &mpsc::Sender<TransactionJob>, job: TransactionJob) {
+/// Persists a transaction job, then queues it (review H4). Nothing is queued
+/// when the job could not be persisted (audit N-A2).
+pub async fn send_transaction_job(
+    pool: &Pool,
+    tx: &mpsc::Sender<TransactionJob>,
+    job: TransactionJob,
+) -> anyhow::Result<()> {
     let payload = serde_json::to_string(&job).map_err(anyhow::Error::from);
-    persist_job(pool, transaction_job_key(&job), "transaction", payload).await;
+    persist_job(pool, transaction_job_key(&job), "transaction", payload).await?;
     if tx.send(job).await.is_err() {
         tracing::error!("Transaction Queue closed — job kept for replay at next launch");
     }
+    Ok(())
 }
 
 /// Queues a Gmail transaction alert: the one copy shared by live polling and
@@ -1238,7 +1240,7 @@ pub async fn dispatch_transaction_alert<R: tauri::Runtime>(
     raw_body: Option<String>,
     obs: crate::extraction::ladder::ExtractionResult,
     email_meta: crate::ingestion::message_processor::EmailMetadata,
-) {
+) -> anyhow::Result<()> {
     let job = TransactionJob {
         obs,
         source_pipeline: "gmail_transaction".to_string(),
@@ -1248,7 +1250,7 @@ pub async fn dispatch_transaction_alert<R: tauri::Runtime>(
         email_meta: Some(email_meta),
     };
     let tx = tauri::Manager::state::<QueueHandles>(app).transaction_tx.clone();
-    send_transaction_job(pool, &tx, job).await;
+    send_transaction_job(pool, &tx, job).await
 }
 
 /// Queues a Gmail mandate event; shared like `dispatch_transaction_alert`.
@@ -1260,7 +1262,7 @@ pub async fn dispatch_mandate_event<R: tauri::Runtime>(
     raw_body: Option<String>,
     extraction: crate::extraction::mandate_extractor::MandateExtraction,
     event_type: crate::ingestion::message_processor::MandateEventType,
-) {
+) -> anyhow::Result<()> {
     let job = MandateJob {
         extraction,
         event_type,
@@ -1270,16 +1272,22 @@ pub async fn dispatch_mandate_event<R: tauri::Runtime>(
         raw_body,
     };
     let tx = tauri::Manager::state::<QueueHandles>(app).mandate_tx.clone();
-    send_mandate_job(pool, &tx, job).await;
+    send_mandate_job(pool, &tx, job).await
 }
 
-/// Persists a mandate job, then queues it (review H4).
-pub async fn send_mandate_job(pool: &Pool, tx: &mpsc::Sender<MandateJob>, job: MandateJob) {
+/// Persists a mandate job, then queues it (review H4). Nothing is queued when
+/// the job could not be persisted (audit N-A2).
+pub async fn send_mandate_job(
+    pool: &Pool,
+    tx: &mpsc::Sender<MandateJob>,
+    job: MandateJob,
+) -> anyhow::Result<()> {
     let payload = serde_json::to_string(&job).map_err(anyhow::Error::from);
-    persist_job(pool, mandate_job_key(&job), "mandate", payload).await;
+    persist_job(pool, mandate_job_key(&job), "mandate", payload).await?;
     if tx.send(job).await.is_err() {
         tracing::error!("Mandate Queue closed — job kept for replay at next launch");
     }
+    Ok(())
 }
 
 /// Re-queues transaction and mandate jobs persisted before this launch.
@@ -2865,7 +2873,7 @@ mod ingest_failure_tests {
         );
 
         let (tx, _rx) = mpsc::channel::<TransactionJob>(4);
-        send_transaction_job(&pool, &tx, job()).await;
+        send_transaction_job(&pool, &tx, job()).await.unwrap();
         let key = transaction_job_key(&job());
         for _ in 0..crate::db::pending_ingest_jobs::MAX_ATTEMPTS {
             assert!(!process_transaction_job(job(), &pool, app.handle()).await);
@@ -2885,7 +2893,7 @@ mod ingest_failure_tests {
 
         // A retry re-enqueues the job with a fresh attempt count, and once the
         // cause is gone it is ingested.
-        send_transaction_job(&pool, &tx, job()).await;
+        send_transaction_job(&pool, &tx, job()).await.unwrap();
         let (attempts, dead): (i64, bool) = conn
             .interact(|c| {
                 c.query_row("SELECT attempts, dead_at IS NOT NULL FROM pending_ingest_jobs", [], |r| {
@@ -2921,7 +2929,7 @@ mod ingest_failure_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let pool = crate::db::init_db(dir.join("t.db")).await.unwrap();
         let (tx, mut rx) = mpsc::channel::<TransactionJob>(4);
-        send_transaction_job(&pool, &tx, job()).await;
+        send_transaction_job(&pool, &tx, job()).await.unwrap();
         rx.try_recv().unwrap();
         let key = transaction_job_key(&job());
 
@@ -3026,7 +3034,8 @@ mod dispatch_tests {
                 recipient_domain: None,
             },
         )
-        .await;
+        .await
+        .unwrap();
 
         let job = transaction_rx.try_recv().expect("queued");
         assert_eq!((job.source_record_id.as_str(), job.connected_account_id.as_str()), ("msg_f3", "acc"));
@@ -3175,7 +3184,7 @@ mod pending_ingest_job_tests {
                 raw_body: None,
                 email_meta: None,
             };
-            send_transaction_job(&pool, &tx, job).await;
+            send_transaction_job(&pool, &tx, job).await.unwrap();
         }
         drop(_hold);
         let (tx2, mut rx2) = mpsc::channel::<TransactionJob>(300);
@@ -3213,7 +3222,7 @@ mod pending_ingest_job_tests {
             raw_body: None,
             email_meta: None,
         };
-        send_transaction_job(&pool, &tx, job).await;
+        send_transaction_job(&pool, &tx, job).await.unwrap();
         drop(rx);
 
         let (tx2, mut rx2) = mpsc::channel::<TransactionJob>(4);

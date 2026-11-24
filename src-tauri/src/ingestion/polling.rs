@@ -426,10 +426,14 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                             None,
                         ).await {
                             Ok(Some(crate::ingestion::message_processor::ProcessResult::TransactionAlert(extracted, boxed_obs, email_meta))) => {
+                                // A job that is not durable would be lost on
+                                // quit once the cursor moves past it: stop the
+                                // cycle and keep the old cursor (owner decision,
+                                // audit N-A2); the next cycle re-reads it.
                                 crate::ingestion::queues::dispatch_transaction_alert(
                                     app, pool, &account.id, &msg_id, extracted.text_body, *boxed_obs, email_meta,
                                 )
-                                .await;
+                                .await?;
                             }
                             Ok(Some(crate::ingestion::message_processor::ProcessResult::StatementEmail(extracted, email_meta))) => {
                             if extracted.pdf_attachments.is_empty() {
@@ -454,10 +458,14 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                 }
                             }
                             Ok(Some(crate::ingestion::message_processor::ProcessResult::MandateEvent(extracted, mandate_extraction, event_type))) => {
+                                // A job that is not durable would be lost on
+                                // quit once the cursor moves past it: stop the
+                                // cycle and keep the old cursor (owner decision,
+                                // audit N-A2); the next cycle re-reads it.
                                 crate::ingestion::queues::dispatch_mandate_event(
                                     app, pool, &account.id, &msg_id, extracted.text_body, mandate_extraction, event_type,
                                 )
-                                .await;
+                                .await?;
                             }
                             Ok(None) => {}
                             Ok(Some(crate::ingestion::message_processor::ProcessResult::EnqueuedForEnrichment)) => {
@@ -479,11 +487,15 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                     error: e.to_string(),
                                     failed_at: None,
                                 };
-                                if let Ok(conn) = pool.get().await {
-                                    let _ = conn
-                                        .interact(move |c| crate::db::scan_failed_messages::insert(c, &row))
-                                        .await;
-                                }
+                                // If even that record cannot be written, keep the
+                                // old cursor instead (owner decision, audit N-A2).
+                                pool.get()
+                                    .await
+                                    .map_err(|e| anyhow::anyhow!("pool error: {e}"))?
+                                    .interact(move |c| crate::db::scan_failed_messages::insert(c, &row))
+                                    .await
+                                    .map_err(|e| anyhow::anyhow!("interact error: {e}"))?
+                                    .map_err(|e| e.context("could not record the failed message; cursor kept"))?;
                             }
                         }
                     }
