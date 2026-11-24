@@ -155,12 +155,72 @@ pub async fn cleanup_expired_pdfs(app_data_dir: &Path, pool: &deadpool_sqlite::P
             .await;
     }
 
+    // Committed statements keep their PDF for 30 days after commit, then it
+    // is deleted (Doc 15 §14.9/§17.4, audit C-4). The file is keyed by the
+    // draft id; the draft row itself is swept later (db::retention).
+    let committed_ids: Vec<String> = conn
+        .interact(|c| {
+            let mut stmt = c.prepare(
+                "SELECT id FROM statement_drafts
+                 WHERE status = 'committed'
+                   AND updated_at < datetime('now', ?1)",
+            )?;
+            let ids = stmt
+                .query_map([COMMITTED_PDF_RETENTION], |row| row.get(0))?
+                .collect::<rusqlite::Result<Vec<String>>>()?;
+            Ok::<_, rusqlite::Error>(ids)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("DB interact error: {}", e))?
+        .map_err(|e| anyhow::anyhow!("SQL error: {}", e))?;
+    for id in &committed_ids {
+        if let Err(e) = delete_pdf(app_data_dir, id) {
+            tracing::warn!("Failed to delete committed statement PDF for draft_id='{}': {}", id, e);
+        }
+    }
+
     Ok(())
 }
+
+/// How long a committed statement's PDF is kept after commit.
+const COMMITTED_PDF_RETENTION: &str = "-30 days";
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Audit C-4: a committed statement's PDF is deleted 30 days after commit;
+    /// a recent one is kept.
+    #[tokio::test]
+    async fn committed_statement_pdf_is_purged_after_thirty_days() {
+        let dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pool = crate::db::init_db(dir.join("t.db")).await.unwrap();
+        pool.get()
+            .await
+            .unwrap()
+            .interact(|c| {
+                c.execute_batch(
+                    "INSERT INTO statement_drafts (id, origin, file_hash, rows_json, status, updated_at)
+                     VALUES ('old', 'manual_upload', 'h1', '[]', 'committed', datetime('now', '-31 days')),
+                            ('new', 'manual_upload', 'h2', '[]', 'committed', datetime('now', '-29 days')),
+                            ('pending', 'manual_upload', 'h3', '[]', 'pending_review', datetime('now', '-60 days'));",
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        for id in ["old", "new", "pending"] {
+            store_pdf(&dir, id, b"%PDF-1.4 test").unwrap();
+        }
+
+        cleanup_expired_pdfs(&dir, &pool).await.unwrap();
+
+        assert!(read_pdf(&dir, "old").unwrap().is_none(), "committed > 30 days ago: purged");
+        assert!(read_pdf(&dir, "new").unwrap().is_some(), "committed < 30 days ago: kept");
+        assert!(read_pdf(&dir, "pending").unwrap().is_some(), "not committed: kept");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn storage_key_is_stable_and_pdfs_round_trip() {
