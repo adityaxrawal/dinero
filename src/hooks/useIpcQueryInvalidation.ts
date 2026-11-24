@@ -52,6 +52,39 @@ export const EVENT_INVALIDATIONS: ReadonlyArray<{ event: string; keys: readonly 
   },
 ];
 
+/** How long invalidations are collected before refetching (audit B-2). */
+export const INVALIDATION_BATCH_MS = 500;
+
+/**
+ * Collects query keys and invalidates each once per batch window. A scan emits
+ * one `transaction_created` per job; invalidating on every event refetched the
+ * dashboard aggregates continuously (audit B-2).
+ */
+export function createInvalidationBatcher(
+  invalidate: (key: QueryKey) => void,
+  delayMs = INVALIDATION_BATCH_MS
+): { add: (keys: readonly QueryKey[]) => void; cancel: () => void } {
+  const pending = new Map<string, QueryKey>();
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const flush = () => {
+    timer = null;
+    const keys = [...pending.values()];
+    pending.clear();
+    keys.forEach(invalidate);
+  };
+  return {
+    add(keys) {
+      for (const key of keys) pending.set(JSON.stringify(key), key);
+      if (timer === null) timer = setTimeout(flush, delayMs);
+    },
+    cancel() {
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+      pending.clear();
+    },
+  };
+}
+
 /** Invalidates the matching caches when the backend reports a change. */
 export function useIpcQueryInvalidation(): void {
   const queryClient = useQueryClient();
@@ -61,16 +94,15 @@ export function useIpcQueryInvalidation(): void {
 
     let cancelled = false;
     const unlisteners: Array<() => void> = [];
+    const batcher = createInvalidationBatcher((queryKey) =>
+      queryClient.invalidateQueries({ queryKey })
+    );
 
     /** Subscribes to every event in the invalidation table. */
     const subscribe = async () => {
       const { listen } = await import('@tauri-apps/api/event');
       for (const { event, keys } of EVENT_INVALIDATIONS) {
-        const unlisten = await listen(event, () => {
-          for (const key of keys) {
-            queryClient.invalidateQueries({ queryKey: key });
-          }
-        });
+        const unlisten = await listen(event, () => batcher.add(keys));
         // Unsubscribing can reject if the listener is already gone, which is
         // harmless during teardown. Wrapped so that one failure cannot abort
         // the cleanup loop and strand the remaining subscriptions.
@@ -97,6 +129,7 @@ export function useIpcQueryInvalidation(): void {
 
     return () => {
       cancelled = true;
+      batcher.cancel();
       unlisteners.forEach((fn) => fn());
     };
   }, [queryClient]);

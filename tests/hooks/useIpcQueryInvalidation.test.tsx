@@ -52,7 +52,37 @@ describe('useIpcQueryInvalidation inside the Tauri runtime', () => {
     await waitFor(() => expect(listenHandlers['transaction_created']).toBeDefined());
     listenHandlers['transaction_created']({ payload: { observation_id: 'obs_1' } });
 
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: queryKeys.transactions.all() });
-    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: queryKeys.dashboard.all() });
+    // Invalidations are batched (audit B-2), so they land within the window.
+    await waitFor(
+      () => {
+        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: queryKeys.transactions.all() });
+        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: queryKeys.dashboard.all() });
+      },
+      { timeout: 2000 }
+    );
+  });
+});
+
+describe('createInvalidationBatcher (audit B-2)', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('collapses a burst of events into one invalidation per key', async () => {
+    vi.useFakeTimers();
+    const { createInvalidationBatcher, INVALIDATION_BATCH_MS } = await import(
+      '@/hooks/useIpcQueryInvalidation'
+    );
+    const invalidate = vi.fn();
+    const batcher = createInvalidationBatcher(invalidate);
+    for (let i = 0; i < 50; i++) {
+      batcher.add([queryKeys.transactions.all(), queryKeys.dashboard.all()]);
+    }
+    expect(invalidate).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(INVALIDATION_BATCH_MS);
+    expect(invalidate).toHaveBeenCalledTimes(2);
+
+    batcher.add([queryKeys.transactions.all()]);
+    batcher.cancel();
+    vi.advanceTimersByTime(INVALIDATION_BATCH_MS);
+    expect(invalidate).toHaveBeenCalledTimes(2);
   });
 });
