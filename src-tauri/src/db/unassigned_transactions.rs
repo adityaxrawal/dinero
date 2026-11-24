@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 
 const BODY_SNIPPET_MAX_CHARS: usize = 240;
 
+/// Review reason for an observation that has no instrument key.
+pub const MISSING_INSTRUMENT: &str = "gate3_failed:missing_instrument";
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UnassignedTransactionRow {
     pub id: String,

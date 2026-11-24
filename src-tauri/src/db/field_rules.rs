@@ -577,6 +577,7 @@ pub fn historical_samples(
          ORDER BY o.created_at DESC
          LIMIT ?4"
     );
+    let bank_name = crate::db::instruments::canonical_issuer(bank_name);
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(
         params![bank_name, pipeline, exclude_observation_id, limit as i64],

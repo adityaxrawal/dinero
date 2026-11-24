@@ -410,34 +410,13 @@ pub async fn write_statement_row(
     Ok(stmt_id.to_string())
 }
 
-/// Resolves the statement's instrument, creating one if warranted.
+/// Resolves the statement's instrument through the single shared resolver
+/// (`db::instruments::get_or_create_instrument`, audit A-3), so a statement
+/// and an email alert for the same card land on one instrument.
 ///
-/// Where identification is not confident the user is asked instead. A
-/// misattributed statement corrupts the balances of two accounts at once, so
-/// guessing is the worse option.
-/// Finds or creates an instrument on a caller-supplied connection.
-pub fn resolve_or_create_instrument_sync(
-    c: &rusqlite::Connection,
-    new_id: &str,
-    instrument_type: &str,
-    issuer_name: &str,
-    masked_identifier: &str,
-    network: Option<&str>,
-) -> rusqlite::Result<String> {
-    c.execute(
-        "INSERT OR IGNORE INTO instruments \
-         (id, type, issuer_name, masked_identifier, network, status, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, 'active', datetime('now'), datetime('now'))",
-        rusqlite::params![new_id, instrument_type, issuer_name, masked_identifier, network],
-    )?;
-    c.query_row(
-        "SELECT id FROM instruments \
-         WHERE type = ? AND issuer_name = ? AND masked_identifier = ?",
-        rusqlite::params![instrument_type, issuer_name, masked_identifier],
-        |row| row.get::<_, String>(0),
-    )
-}
-
+/// Where identification is not confident the user is asked instead (the
+/// Instrument Gate, before this is called). A misattributed statement corrupts
+/// the balances of two accounts at once, so guessing is the worse option.
 pub async fn resolve_or_create_instrument(
     instrument_type: &str,
     issuer_name: &str,
@@ -445,7 +424,6 @@ pub async fn resolve_or_create_instrument(
     network: Option<&str>,
     pool: &deadpool_sqlite::Pool,
 ) -> Result<String> {
-    let id = uuid::Uuid::new_v4().to_string();
     let itype = instrument_type.to_string();
     let issuer = issuer_name.to_string();
     let masked = masked_identifier.to_string();
@@ -454,7 +432,7 @@ pub async fn resolve_or_create_instrument(
     let conn = pool.get().await?;
     let instrument_id = conn
         .interact(move |c| {
-            resolve_or_create_instrument_sync(c, &id, &itype, &issuer, &masked, net.as_deref())
+            crate::db::instruments::get_or_create_instrument(c, &itype, &issuer, &masked, net.as_deref())
         })
         .await
         .map_err(|e| anyhow::anyhow!("DB interact error (resolve_or_create_instrument): {}", e))??;

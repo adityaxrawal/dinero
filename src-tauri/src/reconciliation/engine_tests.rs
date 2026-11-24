@@ -2975,7 +2975,7 @@ fn observation_without_event_time_goes_to_review_not_lost() {
         fingerprint: Some("fp_no_time".into()),
         ..Default::default()
     };
-    let (_, decision) = crate::reconciliation::engine::ingest_observation(&conn, &row, true).unwrap();
+    let (_, decision) = crate::reconciliation::engine::ingest_observation(&conn, &row, "gate3_failed:missing_instrument").unwrap();
     assert!(decision.is_none());
     let kept: i64 = conn
         .query_row("SELECT COUNT(*) FROM transaction_observations WHERE id = 'obs_no_time'", [], |r| r.get(0))
@@ -3078,4 +3078,32 @@ fn p1_cross_source_pair_still_merges() {
     let d = p1_ingest(&conn, &p1_obs("row_1", "statement_pdf", "2026-11-10 00:00:00", None));
     assert_eq!(d, DecisionType::AutoMatchedScored);
     assert_eq!(txn_count(&conn), 1);
+}
+
+/// Audit A-2 guard: `ingest_observation` never stores an observation that has
+/// neither an instrument nor a review entry.
+#[test]
+fn observation_without_instrument_always_gets_a_review_entry() {
+    let conn = crate::db::test_helpers::setup_test_db();
+    let row = crate::db::transaction_observations::TransactionObservationsRow {
+        id: "obs_no_instrument".into(),
+        source_pipeline: Some("gmail_transaction".into()),
+        source_record_id: Some("msg_no_instrument".into()),
+        instrument_id: None,
+        direction: Some("debit".into()),
+        amount_minor: Some(1000),
+        currency: Some("INR".into()),
+        ..Default::default()
+    };
+    let (_, decision) =
+        crate::reconciliation::engine::ingest_observation(&conn, &row, "instrument_archived").unwrap();
+    assert!(decision.is_none());
+    let reason: String = conn
+        .query_row(
+            "SELECT reason FROM unassigned_transactions WHERE observation_id = 'obs_no_instrument' AND status = 'open'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(reason, "instrument_archived");
 }

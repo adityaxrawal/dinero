@@ -616,14 +616,44 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
             crate::statements::metadata_extractor::classify_statement_instrument(&parse_result.pages, &meta);
         (issuer, masked, instrument_type.to_string())
     };
-    let instrument_id = resolve_or_create_instrument(
+    let instrument_id = match resolve_or_create_instrument(
         &instrument_type,
         &issuer,
         &masked,
         meta.network.as_deref(),
         pool,
     )
-    .await?;
+    .await
+    {
+        Ok(id) => id,
+        // The statement's card is archived: hold it for the user's
+        // confirmation like an unidentified one, never link it silently
+        // (owner decision, audit A-2).
+        Err(e) if e.downcast_ref::<crate::db::instruments::InstrumentArchived>().is_some() => {
+            delete_orphaned_queued_row(stmt_id.as_deref(), pool).await;
+            let unprocessed_id = uuid::Uuid::new_v4().to_string();
+            create_awaiting_instrument_row(&unprocessed_id, file_hash, _filename, password, pool)
+                .await
+                .map_err(|e| anyhow::anyhow!("DB error creating awaiting_instrument row: {}", e))?;
+            if let Ok(app_data_dir) = app.path().app_data_dir() {
+                let _ = crate::statements::pdf_storage::store_pdf(&app_data_dir, &unprocessed_id, bytes);
+            }
+            let payload = serde_json::json!({
+                "statement_id": unprocessed_id,
+                "filename": _filename,
+                "issuer": issuer,
+                "reason": "This statement belongs to an archived card or account. Unarchive it in Settings, or confirm a different instrument.",
+            });
+            events::emit(events::INSTRUMENT_CONFIRMATION_REQUIRED, payload.clone());
+            app.emit(events::INSTRUMENT_CONFIRMATION_REQUIRED, payload).ok();
+            tracing::warn!(
+                "Statement Instrument Gate BLOCKED (instrument archived) — statement_id='{}'",
+                unprocessed_id
+            );
+            return Ok(PipelineOutcome::BlockedAwaitingInstrument(unprocessed_id));
+        }
+        Err(e) => return Err(e),
+    };
     tracing::info!("Instrument resolved: id='{}'", instrument_id);
 
     if let Some(pwd) = password {
@@ -884,14 +914,8 @@ async fn commit_claimed_draft<R: tauri::Runtime>(
         conn.interact(move |c| -> anyhow::Result<(String, Vec<String>, Vec<String>)> {
             c.execute_batch("BEGIN IMMEDIATE")?;
             let result = (|| -> anyhow::Result<(String, Vec<String>, Vec<String>)> {
-                let instrument_id = crate::statements::metadata_extractor::resolve_or_create_instrument_sync(
-                    c,
-                    &uuid::Uuid::new_v4().to_string(),
-                    &itype,
-                    &issuer,
-                    &masked,
-                    None,
-                )?;
+                let instrument_id =
+                    crate::db::instruments::get_or_create_instrument(c, &itype, &issuer, &masked, None)?;
                 crate::statements::metadata_extractor::write_statement_row_sync(
                     c,
                     &stmt_id,
@@ -952,7 +976,7 @@ async fn commit_claimed_draft<R: tauri::Runtime>(
                     created_at: None,
                     updated_at: None,
                 };
-                    crate::reconciliation::engine::ingest_observation(c, &row, true).map_err(|e| {
+                    crate::reconciliation::engine::ingest_observation(c, &row, crate::db::unassigned_transactions::MISSING_INSTRUMENT).map_err(|e| {
                         anyhow::anyhow!("statement row {} could not be booked: {}", obs.source_record_id, e)
                     })?;
                 }
@@ -2297,7 +2321,7 @@ pub(crate) async fn create_manual_transaction<R: tauri::Runtime>(
                 created_at: None,
                 updated_at: None,
             };
-            crate::reconciliation::engine::ingest_observation(conn, &obs_row, true).map(|res| res.1)
+            crate::reconciliation::engine::ingest_observation(conn, &obs_row, crate::db::unassigned_transactions::MISSING_INSTRUMENT).map(|res| res.1)
                 .map(|opt| opt.unwrap_or(crate::reconciliation::audit::DecisionType::NewCanonical))
         })
         .await

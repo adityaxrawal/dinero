@@ -156,7 +156,7 @@ fn rollback_scope(conn: &Connection, nested: bool) -> rusqlite::Result<()> {
 pub fn ingest_observation(
     conn: &Connection,
     row: &TransactionObservationsRow,
-    should_reconcile: bool,
+    unresolved_reason: &str,
 ) -> Result<(crate::db::transaction_observations::InsertObservationOutcome, Option<DecisionType>)> {
     // Inside a caller's transaction (a statement commit) this runs as a
     // savepoint, so the caller can make many observations all-or-nothing
@@ -167,7 +167,24 @@ pub fn ingest_observation(
     
     match insert_outcome {
         Ok(crate::db::transaction_observations::InsertObservationOutcome::Inserted) => {
-            if !should_reconcile || row.instrument_id.is_none() {
+            // Guard (audit A-2): an observation with no instrument cannot be
+            // reconciled, so it never lands without a review entry; otherwise
+            // it is stored but shown nowhere. `unresolved_reason` says why.
+            if row.instrument_id.is_none() {
+                let routed = crate::db::unassigned_transactions::insert(
+                    conn,
+                    &crate::db::unassigned_transactions::UnassignedTransactionRow {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        observation_id: row.id.clone(),
+                        reason: unresolved_reason.to_string(),
+                        status: "open".to_string(),
+                        created_at: None,
+                    },
+                );
+                if let Err(e) = routed {
+                    let _ = rollback_scope(conn, nested);
+                    return Err(e);
+                }
                 commit_scope(conn, nested)?;
                 return Ok((crate::db::transaction_observations::InsertObservationOutcome::Inserted, None));
             }

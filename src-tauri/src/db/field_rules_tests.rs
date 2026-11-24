@@ -399,7 +399,7 @@ fn historical_samples_pairs_body_with_accepted_value() {
     let conn = setup_db();
     conn.execute(
         "INSERT INTO instruments (id, type, issuer_name, masked_identifier)
-         VALUES ('inst_1', 'credit_card', 'HDFC Bank', '1234')",
+         VALUES ('inst_1', 'credit_card', 'HDFC', '1234')",
         [],
     )
     .unwrap();

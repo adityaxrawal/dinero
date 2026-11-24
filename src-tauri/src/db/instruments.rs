@@ -140,6 +140,8 @@ pub fn find_instrument_by_key(
     issuer_name: &str,
     masked_identifier: &str,
 ) -> Result<Option<String>> {
+    let issuer_name = canonical_issuer(issuer_name);
+    let masked_identifier = clean_masked_identifier(masked_identifier);
     let id: Option<String> = conn
         .query_row(
             "SELECT id FROM instruments \
@@ -275,10 +277,66 @@ fn row_to_instrument(row: &Row) -> rusqlite::Result<InstrumentsRow> {
     })
 }
 
-/// Returns the id of a matching instrument, creating one if none exists.
+/// Canonical issuer key for an instrument (audit A-3).
 ///
-/// The identifier is cleaned first, so the same account written differently by
-/// two banks converges on one row rather than creating duplicates.
+/// Emails name the bank as the sender registry does ("HDFC Bank") and
+/// statements as their header parser does ("HDFC"). Both go through this, so
+/// one card resolves to one instrument whichever source sees it first. Exact
+/// (case-insensitive) aliases only: an unknown name is kept as written rather
+/// than guessed at.
+pub fn canonical_issuer(name: &str) -> String {
+    const ALIASES: &[(&str, &str)] = &[
+        ("hdfc", "HDFC"),
+        ("hdfc bank", "HDFC"),
+        ("icici", "ICICI"),
+        ("icici bank", "ICICI"),
+        ("axis", "Axis"),
+        ("axis bank", "Axis"),
+        ("sbi", "SBI"),
+        ("sbi card", "SBI"),
+        ("state bank of india", "SBI"),
+        ("kotak", "Kotak"),
+        ("kotak mahindra", "Kotak"),
+        ("kotak mahindra bank", "Kotak"),
+        ("indusind", "IndusInd"),
+        ("indusind bank", "IndusInd"),
+        ("yes bank", "Yes Bank"),
+        ("idfc", "IDFC"),
+        ("idfc first", "IDFC"),
+        ("idfc first bank", "IDFC"),
+        ("amex", "AMEX"),
+        ("american express", "AMEX"),
+    ];
+    let trimmed = name.trim();
+    let lower = trimmed.to_lowercase();
+    ALIASES
+        .iter()
+        .find(|(alias, _)| *alias == lower)
+        .map(|(_, canonical)| canonical.to_string())
+        .unwrap_or_else(|| trimmed.to_string())
+}
+
+/// The instrument for this key exists but the user archived it. New activity
+/// is not booked against it, nor does it create a duplicate (audit A-2).
+#[derive(Debug)]
+pub struct InstrumentArchived {
+    pub instrument_id: String,
+}
+
+impl std::fmt::Display for InstrumentArchived {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "instrument {} is archived", self.instrument_id)
+    }
+}
+
+impl std::error::Error for InstrumentArchived {}
+
+/// Returns the id of a matching instrument, creating one if none exists. The
+/// single instrument resolver for email, mandate, Layer 6 and statements.
+///
+/// The issuer and identifier are canonicalised first, so the same account
+/// written differently by two sources converges on one row. An archived match
+/// is an `InstrumentArchived` error, never a silent link or a duplicate.
 ///
 /// INSERT OR IGNORE followed by a SELECT makes this safe under concurrency: two
 /// ingestion workers seeing the same new instrument both end up with the same id
@@ -290,82 +348,51 @@ pub fn get_or_create_instrument(
     masked_identifier: &str,
     network: Option<&str>,
 ) -> Result<String> {
-    let masked_identifier_cleaned = clean_masked_identifier(masked_identifier);
-    let masked_identifier = masked_identifier_cleaned.as_str();
+    let issuer_name = canonical_issuer(issuer_name);
+    let masked_identifier = clean_masked_identifier(masked_identifier);
+    let select = |conn: &Connection| {
+        conn.query_row(
+            "SELECT id, is_deleted FROM instruments
+             WHERE type = ?1 AND issuer_name = ?2 AND masked_identifier = ?3",
+            params![instrument_type, issuer_name, masked_identifier],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)),
+        )
+        .optional()
+    };
 
-    // 1. Initial SELECT to avoid write-path contention for existing instruments
-    let existing_id: rusqlite::Result<String> = conn.query_row(
-        "SELECT id FROM instruments
-         WHERE type = ?1
-           AND issuer_name = ?2
-           AND masked_identifier = ?3
-           AND is_deleted = 0
-         LIMIT 1",
-        rusqlite::params![instrument_type, issuer_name, masked_identifier],
-        |row| row.get(0),
-    );
-
-    if let Ok(id) = existing_id {
-        return Ok(id);
+    let found = match select(conn)? {
+        Some(found) => found,
+        None => {
+            conn.execute(
+                "INSERT OR IGNORE INTO instruments (
+                     id, type, issuer_name, masked_identifier, network,
+                     status, created_at, updated_at, is_deleted
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'active',
+                         CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0)",
+                params![
+                    uuid::Uuid::new_v4().to_string(),
+                    instrument_type,
+                    issuer_name,
+                    masked_identifier,
+                    network,
+                ],
+            )?;
+            // Another worker may have inserted between the SELECT and here.
+            select(conn)?.ok_or_else(|| anyhow::anyhow!("instrument insert left no row"))?
+        }
+    };
+    match found {
+        (id, false) => Ok(id),
+        (instrument_id, true) => Err(InstrumentArchived { instrument_id }.into()),
     }
-
-    // 2. If it misses, attempt INSERT OR IGNORE
-    let new_id = uuid::Uuid::new_v4().to_string();
-    conn.execute(
-        "INSERT OR IGNORE INTO instruments (
-             id, type, issuer_name, masked_identifier, network,
-             status, created_at, updated_at, is_deleted
-         )
-         VALUES (?1, ?2, ?3, ?4, ?5, 'active',
-                 CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0)",
-        rusqlite::params![
-            new_id,
-            instrument_type,
-            issuer_name,
-            masked_identifier,
-            network,
-        ],
-    )?;
-
-    // 3. Final SELECT (handles the case where another worker inserted between our 1 and 2)
-    let id: String = conn.query_row(
-        "SELECT id FROM instruments
-         WHERE type = ?1
-           AND issuer_name = ?2
-           AND masked_identifier = ?3
-           AND is_deleted = 0
-         LIMIT 1",
-        rusqlite::params![instrument_type, issuer_name, masked_identifier],
-        |row| row.get(0),
-    )?;
-
-    Ok(id)
 }
 
-/// Resolves an issuer name to an instrument, but only when it is unambiguous.
+/// Instrument resolution for an extracted observation.
 ///
-/// Returns None when the issuer matches several instruments. That refusal is the
-/// point: guessing between two cards from the same bank would silently attribute
-/// spending to the wrong account, which is worse than asking the user.
-pub fn resolve_single_instrument_by_issuer(
-    conn: &Connection,
-    issuer_name: &str,
-) -> Result<Option<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT id FROM instruments
-         WHERE issuer_name = ?1 COLLATE NOCASE AND is_deleted = 0",
-    )?;
-    let mut ids = stmt
-        .query_map(rusqlite::params![issuer_name], |row| {
-            row.get::<_, String>(0)
-        })?
-        .collect::<rusqlite::Result<Vec<String>>>()?;
-    Ok(if ids.len() == 1 { ids.pop() } else { None })
-}
-
-/// Single instrument resolution path used by all ingestion pipelines.
-///
-/// Ensures exactly one instrument is yielded deterministically.
+/// Needs the full key; with any part missing there is no instrument and the
+/// observation goes to review. Resolving from the issuer alone was removed:
+/// it guessed (audit A-3, owner decision).
 pub fn resolve_instrument(
     conn: &Connection,
     instrument_type: Option<&str>,
@@ -377,13 +404,111 @@ pub fn resolve_instrument(
         (Some(itype), Some(iname), Some(masked)) => {
             get_or_create_instrument(conn, itype, iname, masked, network).map(Some)
         }
-        (None, Some(iname), None) => {
-            resolve_single_instrument_by_issuer(conn, iname)
-        }
         _ => Ok(None),
     }
 }
 
+/// Tables whose `instrument_id` references `instruments.id`.
+const INSTRUMENT_REFERENCES: &[&str] = &[
+    "transactions",
+    "transaction_observations",
+    "statements",
+    "statement_drafts",
+    "pdf_passwords",
+    "recurring_payments",
+];
+
+/// Rows whose stored key differs from the canonical one, with that key.
+fn non_canonical_instruments(
+    conn: &Connection,
+) -> Result<Vec<(String, String, String, String, bool, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, type, issuer_name, masked_identifier, is_deleted, IFNULL(created_at, '')
+         FROM instruments",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, bool>(4)?,
+                r.get::<_, String>(5)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Whether any instrument is stored under a non-canonical key.
+pub fn needs_key_canonicalization(conn: &Connection) -> Result<bool> {
+    Ok(non_canonical_instruments(conn)?.iter().any(|(_, _, issuer, masked, _, _)| {
+        canonical_issuer(issuer) != *issuer || clean_masked_identifier(masked) != *masked
+    }))
+}
+
+/// One-time repair for the split instrument keys (audit A-3, owner decision).
+///
+/// Rewrites every instrument to its canonical key and merges rows that then
+/// collide: references move to one keeper (live before archived, then oldest),
+/// fields the keeper lacks are copied from the duplicates, and the duplicates
+/// are deleted. Already-canonical data is left untouched. Returns the number
+/// of instruments merged away.
+pub fn canonicalize_instrument_keys(conn: &Connection) -> Result<usize> {
+    let tx = conn.unchecked_transaction()?;
+    let rows = non_canonical_instruments(&tx)?;
+    let mut groups: std::collections::BTreeMap<(String, String, String), Vec<(String, bool, String, bool)>> =
+        Default::default();
+    for (id, itype, issuer, masked, deleted, created) in rows {
+        let key = (itype, canonical_issuer(&issuer), clean_masked_identifier(&masked));
+        let canonical = key.1 == issuer && key.2 == masked;
+        groups.entry(key).or_default().push((id, deleted, created, canonical));
+    }
+
+    let mut merged = 0;
+    for ((_, issuer, masked), mut members) in groups {
+        if members.len() == 1 && members[0].3 {
+            continue;
+        }
+        // Live first, then the oldest; id breaks ties deterministically.
+        members.sort_by(|a, b| a.1.cmp(&b.1).then(a.2.cmp(&b.2)).then(a.0.cmp(&b.0)));
+        let keeper = members[0].0.clone();
+        for (dup, _, _, _) in &members[1..] {
+            for table in INSTRUMENT_REFERENCES {
+                tx.execute(
+                    &format!("UPDATE {table} SET instrument_id = ?1 WHERE instrument_id = ?2"),
+                    params![keeper, dup],
+                )?;
+            }
+            tx.execute(
+                "UPDATE instruments SET
+                     network = COALESCE(network, (SELECT network FROM instruments WHERE id = ?2)),
+                     credit_limit = COALESCE(credit_limit, (SELECT credit_limit FROM instruments WHERE id = ?2)),
+                     current_balance = COALESCE(current_balance, (SELECT current_balance FROM instruments WHERE id = ?2)),
+                     statement_due_date = COALESCE(statement_due_date, (SELECT statement_due_date FROM instruments WHERE id = ?2)),
+                     minimum_due = COALESCE(minimum_due, (SELECT minimum_due FROM instruments WHERE id = ?2)),
+                     bank_ifsc = COALESCE(bank_ifsc, (SELECT bank_ifsc FROM instruments WHERE id = ?2)),
+                     account_type = COALESCE(account_type, (SELECT account_type FROM instruments WHERE id = ?2)),
+                     upi_vpa = COALESCE(upi_vpa, (SELECT upi_vpa FROM instruments WHERE id = ?2)),
+                     nickname = COALESCE(nickname, (SELECT nickname FROM instruments WHERE id = ?2)),
+                     rewards_summary = COALESCE(rewards_summary, (SELECT rewards_summary FROM instruments WHERE id = ?2)),
+                     full_identifier = COALESCE(full_identifier, (SELECT full_identifier FROM instruments WHERE id = ?2)),
+                     billing_cycle_day = COALESCE(billing_cycle_day, (SELECT billing_cycle_day FROM instruments WHERE id = ?2))
+                 WHERE id = ?1",
+                params![keeper, dup],
+            )?;
+            tx.execute("DELETE FROM instruments WHERE id = ?1", params![dup])?;
+            merged += 1;
+        }
+        tx.execute(
+            "UPDATE instruments SET issuer_name = ?2, masked_identifier = ?3 WHERE id = ?1",
+            params![keeper, issuer, masked],
+        )?;
+    }
+    tx.commit()?;
+    Ok(merged)
+}
 
 #[cfg(test)]
 mod tests {
@@ -427,7 +552,7 @@ mod tests {
         let existing_id = "aaaa-bbbb-cccc-dddd";
         conn.execute(
             "INSERT INTO instruments (id, type, issuer_name, masked_identifier, status, created_at, updated_at, is_deleted)
-             VALUES (?1, 'credit_card', 'HDFC Bank', '1234', 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0)",
+             VALUES (?1, 'credit_card', 'HDFC', '1234', 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0)",
             rusqlite::params![existing_id],
         )
         .unwrap();
@@ -458,7 +583,7 @@ mod tests {
 
         let count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM instruments WHERE type = 'credit_card' AND issuer_name = 'ICICI Bank' AND masked_identifier = '5678'",
+                "SELECT COUNT(*) FROM instruments WHERE type = 'credit_card' AND issuer_name = 'ICICI' AND masked_identifier = '5678'",
                 [],
                 |r| r.get(0),
             )
@@ -497,6 +622,92 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM instruments", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1, "Unique constraint must prevent duplicate rows");
+    }
+
+    /// Audit A-3: an email alert ("HDFC Bank", "XXXX1234") and a statement
+    /// ("HDFC", "1234") for the same card resolve to one instrument.
+    #[test]
+    fn email_and_statement_spellings_share_one_instrument() {
+        let conn = setup_test_db();
+        let from_email =
+            get_or_create_instrument(&conn, "credit_card", "HDFC Bank", "XXXX1234", None).unwrap();
+        let from_statement =
+            get_or_create_instrument(&conn, "credit_card", "HDFC", "1234", None).unwrap();
+        assert_eq!(from_email, from_statement);
+        assert_eq!(canonical_issuer("State Bank of India"), "SBI");
+        assert_eq!(canonical_issuer("SBI Card"), "SBI");
+        assert_eq!(canonical_issuer(" Citibank India "), "Citibank India", "unknown names are kept");
+        assert_eq!(
+            find_instrument_by_key(&conn, "credit_card", "HDFC Bank", "xx1234").unwrap(),
+            Some(from_email)
+        );
+    }
+
+    /// Audit A-2/A-3: an archived instrument is reported, never linked to
+    /// silently and never duplicated.
+    #[test]
+    fn archived_instrument_is_reported_not_duplicated() {
+        let conn = setup_test_db();
+        let id = get_or_create_instrument(&conn, "credit_card", "HDFC", "1234", None).unwrap();
+        delete_instrument(&conn, &id).unwrap();
+        let err = get_or_create_instrument(&conn, "credit_card", "HDFC Bank", "XXXX1234", None)
+            .unwrap_err();
+        let archived = err.downcast_ref::<InstrumentArchived>().expect("typed archived error");
+        assert_eq!(archived.instrument_id, id);
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM instruments", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    /// Owner decision on A-3: the issuer alone never resolves an instrument.
+    #[test]
+    fn issuer_alone_does_not_resolve_an_instrument() {
+        let conn = setup_test_db();
+        get_or_create_instrument(&conn, "credit_card", "HDFC", "1234", None).unwrap();
+        assert_eq!(resolve_instrument(&conn, None, Some("HDFC Bank"), None, None).unwrap(), None);
+    }
+
+    /// Audit A-3: the one-time repair merges split instruments and moves
+    /// every reference to the keeper.
+    #[tokio::test]
+    async fn split_instruments_are_merged_with_their_references() {
+        let dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pool = crate::db::init_db(dir.join("t.db")).await.unwrap();
+        let conn = pool.get().await.unwrap();
+        conn.interact(|c| {
+            c.execute_batch(
+                "INSERT INTO instruments (id, type, issuer_name, masked_identifier, created_at, nickname)
+                     VALUES ('email', 'credit_card', 'HDFC Bank', '1234', '2026-01-01', NULL),
+                            ('stmt', 'credit_card', 'HDFC', 'XXXX1234', '2026-02-01', 'Regalia'),
+                            ('solo', 'bank_account', 'Axis Bank', '9999', '2026-01-01', NULL),
+                            ('other', 'credit_card', 'Citibank India', '5555', '2026-01-01', NULL);
+                 INSERT INTO pdf_passwords (id, instrument_id, password_ciphertext) VALUES ('s1', 'stmt', x'00');",
+            )?;
+            assert!(needs_key_canonicalization(c).unwrap());
+            assert_eq!(canonicalize_instrument_keys(c).unwrap(), 1);
+            assert!(!needs_key_canonicalization(c).unwrap());
+            assert_eq!(canonicalize_instrument_keys(c).unwrap(), 0, "idempotent");
+            let rows: Vec<(String, String, String, Option<String>)> = c
+                .prepare("SELECT id, issuer_name, masked_identifier, nickname FROM instruments ORDER BY id")?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            assert_eq!(
+                rows,
+                vec![
+                    ("email".into(), "HDFC".into(), "1234".into(), Some("Regalia".into())),
+                    ("other".into(), "Citibank India".into(), "5555".into(), None),
+                    ("solo".into(), "Axis".into(), "9999".into(), None),
+                ]
+            );
+            let moved: String =
+                c.query_row("SELECT instrument_id FROM pdf_passwords WHERE id = 's1'", [], |r| r.get(0))?;
+            assert_eq!(moved, "email");
+            Ok::<_, rusqlite::Error>(())
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn insert_with_due_date(conn: &Connection, id: &str, due_date: Option<&str>) {

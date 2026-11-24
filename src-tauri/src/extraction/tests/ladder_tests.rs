@@ -1849,7 +1849,7 @@
                 .unwrap();
             c.execute(
                 "INSERT INTO instruments (id, type, issuer_name, masked_identifier, status) \
-                 VALUES ('inst_1', 'credit_card', 'HDFC Bank', '1234', 'active')",
+                 VALUES ('inst_1', 'credit_card', 'HDFC', '1234', 'active')",
                 [],
             )
             .unwrap();

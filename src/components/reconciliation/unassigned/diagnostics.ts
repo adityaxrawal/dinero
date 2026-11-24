@@ -12,6 +12,7 @@ const REASON_TITLE: Record<string, string> = {
   'gate3_failed:missing_amount': 'Missing Transaction Amount',
   'gate3_failed:missing_counterparty': 'Missing Counterparty / Merchant',
   'gate3_failed:missing_instrument': 'Missing Instrument Details',
+  instrument_archived: 'Archived Payment Instrument',
   gate3_failed: 'Mandatory Field Gate Failed',
 };
 
@@ -64,6 +65,11 @@ const REASON_GUIDANCE: Record<string, ReasonGuidance> = {
     description:
       'Amount, merchant, and date were extracted, but no bank name, card last-4 digits, or UPI ID signal was present in the email.',
     tip: 'Select the payment instrument used for this transaction from the Instrument dropdown below.',
+  },
+  instrument_archived: {
+    description:
+      'This message is for a card or account you archived, so it was not booked automatically.',
+    tip: 'Assign it to an instrument below, or unarchive the card in Settings → Payment Instruments if it is still in use.',
   },
 };
 

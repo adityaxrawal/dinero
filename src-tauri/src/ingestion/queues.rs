@@ -918,13 +918,20 @@ async fn apply_layer6_success(
         row.extraction_method = Some("llm_layer6".to_string());
         row.confidence_score = enriched.confidence_score;
 
-        let instrument_id = crate::db::instruments::resolve_instrument(
+        let resolved = crate::db::instruments::resolve_instrument(
             c,
             enriched.instrument_type.as_deref(),
             enriched.issuer_name.as_deref(),
             enriched.masked_identifier.as_deref(),
             enriched.network.as_deref(),
-        ).unwrap_or(None);
+        );
+        let instrument_archived = matches!(&resolved, Err(e)
+            if e.downcast_ref::<crate::db::instruments::InstrumentArchived>().is_some());
+        let instrument_id = match resolved {
+            Ok(id) => id,
+            Err(_) if instrument_archived => None,
+            Err(e) => return Err(e),
+        };
         row.instrument_id = instrument_id.clone();
 
         let confident_enough = is_self_transfer
@@ -987,6 +994,8 @@ async fn apply_layer6_success(
                 "gate3_failed:missing_amount"
             } else if row.merchant_raw.is_none() {
                 "gate3_failed:missing_counterparty"
+            } else if instrument_archived {
+                "instrument_archived"
             } else if !has_instrument {
                 "gate3_failed:missing_instrument"
             } else {
@@ -1492,6 +1501,7 @@ async fn process_transaction_job<R: tauri::Runtime>(
     let outcome = conn
         .interact(
             move |c| -> Result<Option<(crate::reconciliation::audit::DecisionType, String)>, String> {
+                let mut unresolved_reason = crate::db::unassigned_transactions::MISSING_INSTRUMENT;
                 match crate::db::instruments::resolve_instrument(
                     c,
                     instrument_type.as_deref(),
@@ -1503,9 +1513,12 @@ async fn process_transaction_job<R: tauri::Runtime>(
                         row.instrument_id = Some(instr_id);
                     }
                     Ok(None) => {}
-                    Err(e) => {
-                        tracing::warn!("Failed to resolve instrument: {}", e);
+                    // An archived card's new alert goes to review (owner
+                    // decision, audit A-2); ingest_observation files it.
+                    Err(e) if e.downcast_ref::<crate::db::instruments::InstrumentArchived>().is_some() => {
+                        unresolved_reason = "instrument_archived";
                     }
+                    Err(e) => return Err(format!("instrument resolution failed: {e}")),
                 }
 
                 if let (Some(ref instrument_id), Some(ref direction), Some(amount_minor)) =
@@ -1524,8 +1537,7 @@ async fn process_transaction_job<R: tauri::Runtime>(
                     ));
                 }
 
-                let should_reconcile = row.instrument_id.is_some();
-                match crate::reconciliation::engine::ingest_observation(c, &row, should_reconcile) {
+                match crate::reconciliation::engine::ingest_observation(c, &row, unresolved_reason) {
                     Ok((_, Some(decision))) => {
                         tracing::debug!(
                             "Reconciliation decision for obs '{}': {:?}",
@@ -2678,6 +2690,47 @@ mod ingest_failure_tests {
             .unwrap()
             .unwrap();
         assert_eq!(stored, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Audit A-2 (owner decision: review): an alert for an archived card is
+    /// stored and filed for review, never left as an invisible orphan.
+    #[tokio::test]
+    async fn alert_for_an_archived_instrument_goes_to_review() {
+        let dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pool = crate::db::init_db(dir.join("t.db")).await.unwrap();
+        let app = mock_builder().build(mock_context(tauri::test::noop_assets())).unwrap();
+        let conn = pool.get().await.unwrap();
+        conn.interact(|c| {
+            let id = crate::db::instruments::get_or_create_instrument(c, "credit_card", "HDFC", "1234", None)?;
+            crate::db::instruments::delete_instrument(c, &id)
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+        let mut archived = job();
+        archived.obs.instrument_type = Some("credit_card".into());
+        archived.obs.issuer_name = Some("HDFC Bank".into());
+        archived.obs.masked_identifier = Some("XXXX1234".into());
+        assert!(process_transaction_job(archived, &pool, app.handle()).await);
+
+        let (instrument, reason): (Option<String>, String) = conn
+            .interact(|c| {
+                c.query_row(
+                    "SELECT o.instrument_id, u.reason FROM transaction_observations o
+                     JOIN unassigned_transactions u ON u.observation_id = o.id
+                     WHERE o.source_record_id = 'msg_fail'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(instrument, None);
+        assert_eq!(reason, "instrument_archived");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

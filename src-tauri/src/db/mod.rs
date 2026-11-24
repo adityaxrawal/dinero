@@ -301,6 +301,7 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
         }
     }
 
+    let db_path_for_merge = db_path.clone();
     conn.interact(move |c| -> anyhow::Result<()> {
         // The profile row is required: without it the trial check finds no
         // profile and every write is refused, so a failure here must stop
@@ -325,6 +326,26 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
 
         if let Err(e) = instruments::cleanup_corrupted_vpa_instruments(c) {
             tracing::warn!("Startup instrument cleanup failed: {}", e);
+        }
+
+        // One-time merge of instruments split across issuer spellings (audit
+        // A-3). It rewrites ledger references, so it runs only behind a
+        // verified backup; once the keys are canonical it is a no-op.
+        let merge = || -> anyhow::Result<()> {
+            if instruments::needs_key_canonicalization(c)? {
+                let backup = migrations::create_pre_migration_backup(c, &db_path_for_merge)
+                    .context("backup before the instrument merge failed, merge skipped")?;
+                let merged = instruments::canonicalize_instrument_keys(c)?;
+                tracing::info!(
+                    "Instrument keys canonicalised; {} duplicate(s) merged (backup {})",
+                    merged,
+                    backup.display()
+                );
+            }
+            Ok(())
+        };
+        if let Err(e) = merge() {
+            tracing::error!("Instrument key canonicalisation failed: {:#}", e);
         }
         Ok(())
     })
