@@ -9,6 +9,7 @@ vi.mock('@/lib/ipc', () => ({
     llm: {
       getHardwareInfo: vi.fn(),
       getAvailableModels: vi.fn(),
+      getActiveModel: vi.fn(),
       setActiveModel: vi.fn(),
       setParallelSlots: vi.fn(),
     },
@@ -35,6 +36,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
   asMock(API.llm.getAvailableModels).mockResolvedValue(MODELS);
+  asMock(API.llm.getActiveModel).mockResolvedValue('');
   asMock(API.llm.setActiveModel).mockResolvedValue(undefined);
   asMock(API.llm.setParallelSlots).mockResolvedValue(undefined);
   vi.stubGlobal(
@@ -49,27 +51,25 @@ describe('syncLlmState', () => {
     asMock(API.llm.getHardwareInfo).mockResolvedValue(hw());
     await syncLlmState();
     expect(API.llm.setActiveModel).toHaveBeenCalledWith('small');
-    expect(localStorage.getItem('llm_model')).toBe('small');
   });
 
   it('keeps a stored model this Mac can run', async () => {
-    localStorage.setItem('llm_model', 'large');
+    asMock(API.llm.getActiveModel).mockResolvedValue('large');
     asMock(API.llm.getHardwareInfo).mockResolvedValue(hw({ ram_gb: 64 }));
     await syncLlmState();
     expect(API.llm.setActiveModel).toHaveBeenCalledWith('large');
   });
 
   it('falls back to the lightest model when the user declines the RAM warning', async () => {
-    localStorage.setItem('llm_model', 'large');
+    asMock(API.llm.getActiveModel).mockResolvedValue('large');
     asMock(API.llm.getHardwareInfo).mockResolvedValue(hw({ ram_gb: 16 }));
     await syncLlmState();
     expect(API.llm.setActiveModel).toHaveBeenCalledWith('small');
-    expect(localStorage.getItem('llm_model')).toBe('small');
     expect(alert).toHaveBeenCalled();
   });
 
   it('records a persistent override when the user accepts the risk', async () => {
-    localStorage.setItem('llm_model', 'large');
+    asMock(API.llm.getActiveModel).mockResolvedValue('large');
     vi.stubGlobal(
       'confirm',
       vi.fn(() => true)
@@ -81,12 +81,24 @@ describe('syncLlmState', () => {
   });
 
   it('does not warn again once the override is stored', async () => {
-    localStorage.setItem('llm_model', 'large');
+    asMock(API.llm.getActiveModel).mockResolvedValue('large');
     localStorage.setItem('llm_ram_override', 'true');
     asMock(API.llm.getHardwareInfo).mockResolvedValue(hw({ ram_gb: 16 }));
     await syncLlmState();
     expect(confirm).not.toHaveBeenCalled();
     expect(API.llm.setActiveModel).toHaveBeenCalledWith('large');
+  });
+
+  it('the database preference wins over the hardware recommendation (audit B-3)', async () => {
+    // A portable backup restored onto a new Mac carries its model choice in
+    // the database; localStorage on the new Mac is empty.
+    asMock(API.llm.getActiveModel).mockResolvedValue('large');
+    asMock(API.llm.getHardwareInfo).mockResolvedValue(
+      hw({ ram_gb: 64, recommended_model_id: 'small' })
+    );
+    await syncLlmState();
+    expect(API.llm.setActiveModel).toHaveBeenCalledWith('large');
+    expect(localStorage.getItem('llm_model')).toBeNull();
   });
 
   it('adopts the recommended slot count, then persists it', async () => {

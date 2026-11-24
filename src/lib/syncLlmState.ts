@@ -8,8 +8,9 @@
  * time, this module validates the choice up front and, when the machine cannot
  * support it, gives the user an explicit decision to make.
  *
- * The resolved model and slot count are pushed into the Rust backend, which owns
- * the actual inference runtime; localStorage holds only the preference.
+ * The model preference lives in the database (`local_profile.llm_model`), read
+ * through the backend, so a restored backup keeps its choice on a new Mac
+ * (audit B-3). localStorage holds only the RAM override and slot count.
  */
 import { API, type LlmHardwareInfo, type LlmModelInfo } from '@/lib/ipc';
 import {
@@ -18,8 +19,6 @@ import {
   clampSlots,
   storedSlots,
 } from '@/components/settings/localLlm/format';
-
-const MODEL_STORAGE_KEY = 'llm_model';
 
 /** The model with the smallest RAM requirement -- the safe fallback for any machine. */
 function lightestModel(models: LlmModelInfo[]): LlmModelInfo {
@@ -34,11 +33,10 @@ function lightestModel(models: LlmModelInfo[]): LlmModelInfo {
  * decision determines what the backend loads, so it must be settled before the
  * app proceeds rather than surfaced asynchronously afterwards.
  */
-function resolveModelId(hw: LlmHardwareInfo, models: LlmModelInfo[]): string {
-  // Preference order: what the user last chose, else the backend's hardware-based
-  // recommendation, else the first available model.
-  const selectedId =
-    localStorage.getItem(MODEL_STORAGE_KEY) || hw.recommended_model_id || models[0].id;
+function resolveModelId(hw: LlmHardwareInfo, models: LlmModelInfo[], preferred: string): string {
+  // Preference order: what the user last chose (stored in the database), else
+  // the backend's hardware-based recommendation, else the first available model.
+  const selectedId = preferred || hw.recommended_model_id || models[0].id;
   const selected = models.find((m) => m.id === selectedId);
 
   // A previously accepted override is remembered, so the user is warned about a
@@ -50,7 +48,6 @@ function resolveModelId(hw: LlmHardwareInfo, models: LlmModelInfo[]): string {
   // known model (in which case the backend, not this function, decides how to
   // handle it).
   if (!selected || overridden || hw.ram_gb >= selected.min_ram_gb) {
-    localStorage.setItem(MODEL_STORAGE_KEY, selectedId);
     return selectedId;
   }
 
@@ -68,7 +65,6 @@ function resolveModelId(hw: LlmHardwareInfo, models: LlmModelInfo[]): string {
   // Declined: silently downgrading would be confusing, so the switch is both
   // persisted and announced, with a pointer to where it can be changed back.
   const fallback = lightestModel(models);
-  localStorage.setItem(MODEL_STORAGE_KEY, fallback.id);
   alert(
     `Model automatically switched to a lighter version (${fallback.name}). You can change this in Settings.`
   );
@@ -84,16 +80,18 @@ function resolveModelId(hw: LlmHardwareInfo, models: LlmModelInfo[]): string {
 export async function syncLlmState(): Promise<void> {
   try {
     // Independent queries, so they run concurrently rather than in sequence.
-    const [hw, models] = await Promise.all([
+    const [hw, models, preferred] = await Promise.all([
       API.llm.getHardwareInfo(),
       API.llm.getAvailableModels(),
+      API.llm.getActiveModel().catch(() => ''),
     ]);
 
     // No models installed yet -- nothing to configure, and prompting about
     // hardware for a feature the user has not set up would be noise.
     if (models.length === 0) return;
 
-    await API.llm.setActiveModel(resolveModelId(hw, models));
+    // setActiveModel persists the resolved choice back to the database.
+    await API.llm.setActiveModel(resolveModelId(hw, models, preferred));
 
     // Parallel slots follow the same preference-then-recommendation pattern as
     // the model. clampSlots bounds the backend's suggestion to a range the UI

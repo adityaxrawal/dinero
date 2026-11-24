@@ -43,9 +43,8 @@ export function useOnboardingPreferences() {
    * Saves the collected preferences; throws if the backend save fails.
    *
    * The backend write also marks onboarding complete, so a failed save leaves
-   * the user in onboarding instead of half-onboarded (review P4). `llm_model`
-   * is still mirrored to localStorage because syncLlmState reads the model
-   * preference from there.
+   * the user in onboarding instead of half-onboarded (review P4). The model
+   * preference lives only in the database (audit B-3).
    */
   const persist = async () => {
     await API.onboarding.savePreferences({
@@ -55,7 +54,6 @@ export function useOnboardingPreferences() {
       llmModel: llmConfig,
       statementPreference: statementPref,
     });
-    localStorage.setItem('llm_model', llmConfig);
   };
 
   return {
