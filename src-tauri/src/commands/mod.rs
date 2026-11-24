@@ -425,7 +425,6 @@ async fn upload_one_statement(
 
 async fn llm_rows_for_unparsed_pages<R: tauri::Runtime>(
     pages: &[crate::statements::parser::ParsedPage],
-    parser: crate::statements::row_extractor::BankParser,
     issuer: &str,
     pool: &deadpool_sqlite::Pool,
     app: &tauri::AppHandle<R>,
@@ -460,7 +459,6 @@ async fn llm_rows_for_unparsed_pages<R: tauri::Runtime>(
 
     crate::statements::row_llm::extract_unparsed_pages(
         pages,
-        parser,
         issuer,
         &app_dir,
         &model_id,
@@ -491,7 +489,7 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
         duplicate_check::{check_billing_cycle_duplicate, DuplicateCheckResult},
         metadata_extractor::{extract_metadata, resolve_or_create_instrument},
         parser::parse_in_memory_with_password,
-        row_extractor::{extract_rows, BankParser},
+        row_extractor::extract_rows,
     };
 
     let draft_id = stmt_id
@@ -691,19 +689,12 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
         50,
     );
 
-    let bank_parser = BankParser::detect(&issuer, &instrument_type);
-    let mut rows = extract_rows(&parse_result.pages, bank_parser)?;
-    tracing::info!(
-        "Extracted {} statement rows via parser={:?}",
-        rows.len(),
-        bank_parser
-    );
+    let mut rows = extract_rows(&parse_result.pages)?;
 
     crate::statements::learned_rows::apply_learned_rules_to_rows(pool, &issuer, &mut rows).await;
 
     let llm_rows = llm_rows_for_unparsed_pages(
         &parse_result.pages,
-        bank_parser,
         &issuer,
         pool,
         app,
@@ -1193,7 +1184,7 @@ pub async fn statements_confirm_instrument(
     crate::security::incident_response::assert_ingestion_allowed()?;
 
     let app_data_dir = app.path().app_data_dir().map_err(|_| {
-        crate::error::AppError::Unknown("Failed to determine app data directory".to_string())
+        crate::error::AppError::Io("Failed to determine app data directory".to_string())
     })?;
     let bytes = crate::statements::pdf_storage::read_pdf(&app_data_dir, &statement_id)
         .map_err(|_| {
@@ -1370,7 +1361,7 @@ pub async fn statements_submit_password(
     };
 
     let app_data_dir = app.path().app_data_dir().map_err(|_| {
-        crate::error::AppError::Unknown("Failed to determine app data directory".to_string())
+        crate::error::AppError::Io("Failed to determine app data directory".to_string())
     })?;
     let pdf_bytes = crate::statements::pdf_storage::read_pdf(&app_data_dir, &statement_id)
         .map_err(|_| {
@@ -1998,7 +1989,7 @@ pub async fn statements_discard_draft(
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
 
     let app_data_dir = app.path().app_data_dir().map_err(|_| {
-        crate::error::AppError::Unknown("Failed to determine app data directory".to_string())
+        crate::error::AppError::Io("Failed to determine app data directory".to_string())
     })?;
     discard_staged_draft(&draft_id, &app_data_dir, pool.inner())
         .await
@@ -2033,7 +2024,7 @@ pub async fn statements_get_draft_pdf(
     }
 
     let app_data_dir = app.path().app_data_dir().map_err(|_| {
-        crate::error::AppError::Unknown("Failed to determine app data directory".to_string())
+        crate::error::AppError::Io("Failed to determine app data directory".to_string())
     })?;
     let bytes = crate::statements::pdf_storage::read_pdf(&app_data_dir, &draft_id)
         .map_err(|_| {

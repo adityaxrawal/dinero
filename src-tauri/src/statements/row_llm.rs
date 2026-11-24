@@ -144,7 +144,6 @@ fn collapse(text: &str) -> String {
 /// Runs the model over pages the deterministic parser could not read.
 pub async fn extract_unparsed_pages(
     pages: &[ParsedPage],
-    parser: crate::statements::row_extractor::BankParser,
     issuer: &str,
     app_dir: &std::path::Path,
     model_id: &str,
@@ -162,7 +161,7 @@ pub async fn extract_unparsed_pages(
             break;
         }
         let already =
-            crate::statements::row_extractor::extract_rows(std::slice::from_ref(page), parser)
+            crate::statements::row_extractor::extract_rows(std::slice::from_ref(page))
                 .unwrap_or_default();
         if !already.is_empty() || !looks_like_a_transaction_table(&page.text) {
             continue;
