@@ -638,7 +638,9 @@ impl MessageProcessor {
                             for line in debug_str.lines() {
                                 trace.info(format!("         {}", line));
                             }
-                            Self::log_rejection(pool, scan_batcher, message_id, reason).await?;
+                            // Review row first, rejection second (audit N-A1): a recorded
+                            // rejection makes every later pass skip the message, so it must
+                            // never exist without the review row it points to.
                             let ids = Self::record_unassigned_transaction(
                                 pool,
                                 message_id,
@@ -649,6 +651,7 @@ impl MessageProcessor {
                                 Some(&current_bank_name),
                             )
                             .await?;
+                            Self::log_rejection(pool, scan_batcher, message_id, reason).await?;
                             let filed = ids.is_some();
                             let recoverable_by_llm = matches!(
                                 reason,
@@ -686,13 +689,9 @@ impl MessageProcessor {
                             return Ok(filed.then_some(ProcessResult::SentToReview));
                         }
                     } else if llm_eligible {
-                        Self::log_rejection(
-                            pool,
-                            scan_batcher,
-                            message_id,
-                            "pending_llm_enrichment",
-                        )
-                        .await?;
+                        // Review row first, rejection second (audit N-A1): a recorded
+                        // rejection makes every later pass skip the message, so it must
+                        // never exist without the review row it points to.
                         let ids = Self::record_unassigned_transaction(
                             pool,
                             message_id,
@@ -701,6 +700,13 @@ impl MessageProcessor {
                             Some(&email_meta),
                             "pending_llm_enrichment",
                             Some(&current_bank_name),
+                        )
+                        .await?;
+                        Self::log_rejection(
+                            pool,
+                            scan_batcher,
+                            message_id,
+                            "pending_llm_enrichment",
                         )
                         .await?;
                         let filed = ids.is_some();
@@ -741,8 +747,9 @@ impl MessageProcessor {
                             filed.then_some(ProcessResult::SentToReview)
                         });
                     } else {
-                        Self::log_rejection(pool, scan_batcher, message_id, "extraction_failed")
-                            .await?;
+                        // Review row first, rejection second (audit N-A1): a recorded
+                        // rejection makes every later pass skip the message, so it must
+                        // never exist without the review row it points to.
                         let filed = Self::record_unassigned_transaction(
                             pool,
                             message_id,
@@ -754,6 +761,8 @@ impl MessageProcessor {
                         )
                         .await?
                         .is_some();
+                        Self::log_rejection(pool, scan_batcher, message_id, "extraction_failed")
+                            .await?;
                         Self::append_to_scan_log(
                             app_dir.as_deref(),
                             message_id,

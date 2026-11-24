@@ -942,3 +942,91 @@ fn approved_but_unverified_senders_are_review_only() {
     assert!(!MessageProcessor::is_review_only_sender("hdfcbank.net", &[approved("hdfcbank.net")]));
     assert!(!MessageProcessor::is_review_only_sender("newbank-alerts.in", &[]));
 }
+
+/// Audit N-A1: when filing the review row fails, the message must not be
+/// recorded as rejected -- a recorded rejection makes every later pass
+/// (including "Retry failed") skip it, and the transaction would be lost.
+#[tokio::test]
+async fn failed_review_filing_leaves_message_retryable() {
+    let mut server = mockito::Server::new_async().await;
+    let headers = serde_json::json!([
+        {"name": "From", "value": "\"HDFC Bank\" <alerts@hdfcbank.net>"},
+        {"name": "Subject", "value": "Rs 500 debited from your account"},
+        {"name": "Authentication-Results", "value": "mx.google.com; dkim=pass header.i=@hdfcbank.net; spf=pass; dmarc=pass header.from=hdfcbank.net"}
+    ]);
+    for (format, mime, body) in [
+        ("metadata", "multipart/mixed", serde_json::Value::Null),
+        ("full", "text/plain", serde_json::json!({"data": ""})),
+    ] {
+        server
+            .mock("GET", "/gmail/v1/users/me/messages/msg1")
+            .match_query(mockito::Matcher::UrlEncoded("format".into(), format.into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                serde_json::json!({
+                    "id": "msg1",
+                    "threadId": "t1",
+                    "snippet": "Rs 500.00 debited from your account.",
+                    "payload": {"mimeType": mime, "headers": headers, "body": body}
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+    }
+
+    let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+    let client =
+        GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
+    let exec = |sql: &'static str| {
+        let pool = pool.clone();
+        async move {
+            pool.get().await.unwrap().interact(move |c| c.execute_batch(sql)).await.unwrap().unwrap();
+        }
+    };
+    let count = |sql: &'static str| {
+        let pool = pool.clone();
+        async move {
+            pool.get()
+                .await
+                .unwrap()
+                .interact(move |c| c.query_row(sql, [], |r| r.get::<_, i64>(0)))
+                .await
+                .unwrap()
+                .unwrap()
+        }
+    };
+
+    exec("CREATE TRIGGER fail_review BEFORE INSERT ON unassigned_transactions \
+          BEGIN SELECT RAISE(ABORT, 'injected failure'); END;")
+        .await;
+    let first =
+        MessageProcessor::process_message(&pool, &client, "msg1", None, false, None, None).await;
+    assert!(first.is_err(), "the failed filing must surface, got {:?}", first.ok());
+    assert_eq!(
+        count("SELECT COUNT(*) FROM processed_messages WHERE message_id = 'msg1'").await,
+        0,
+        "no rejection may be recorded without its review row"
+    );
+
+    exec("DROP TRIGGER fail_review;").await;
+    let retry =
+        MessageProcessor::process_message(&pool, &client, "msg1", None, false, None, None).await;
+    assert!(
+        matches!(retry, Ok(Some(ProcessResult::SentToReview))),
+        "the retry must file the message for review, got {:?}",
+        retry
+    );
+    assert_eq!(
+        count(
+            "SELECT COUNT(*) FROM unassigned_transactions u JOIN transaction_observations o \
+             ON o.id = u.observation_id WHERE o.source_record_id = 'msg1' AND u.status = 'open'"
+        )
+        .await,
+        1
+    );
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
