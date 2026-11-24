@@ -215,6 +215,36 @@ async fn reject_unknown_applied_versions(
 mod tests {
     use super::*;
 
+    /// Audit C-3: one open review entry per observation, and the closed
+    /// lifecycles reject unknown states.
+    #[tokio::test]
+    async fn lifecycle_constraints_hold() {
+        let path = crate::db::test_helpers::fresh_temp_db_path();
+        run_migrations(&path, None).await.unwrap();
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = OFF;
+             INSERT INTO unassigned_transactions (id, observation_id, reason, status)
+             VALUES ('u1', 'o1', 'r', 'open'), ('u2', 'o1', 'r', 'resolved');",
+        )
+        .unwrap();
+        let dup = conn.execute(
+            "INSERT INTO unassigned_transactions (id, observation_id, reason, status) VALUES ('u3', 'o1', 'r', 'open')",
+            [],
+        );
+        assert!(dup.is_err(), "a second open entry for one observation is rejected");
+        let bad = conn.execute(
+            "INSERT INTO unassigned_transactions (id, observation_id, reason, status) VALUES ('u4', 'o2', 'r', 'dismissed')",
+            [],
+        );
+        assert!(bad.is_err());
+        let bad_draft = conn.execute(
+            "INSERT INTO statement_drafts (id, origin, file_hash, rows_json, status) VALUES ('d', 'manual_upload', 'h', '[]', 'done')",
+            [],
+        );
+        assert!(bad_draft.is_err());
+    }
+
     /// Audit C-2: hot lookups use an index rather than scanning the table.
     #[tokio::test]
     async fn hot_path_queries_use_indexes() {
