@@ -15,6 +15,17 @@ use tokio::time;
 
 const GRACE_PERIOD: ChronoDuration = ChronoDuration::days(7);
 
+/// Whether a validation error is the server explicitly rejecting this
+/// device or licence (403 revoked, 404 not found), as opposed to an outage.
+/// 401 is excluded on purpose: a proof/clock glitch keeps the offline grace
+/// (owner decision, audit E-2).
+fn is_explicit_rejection(err: &anyhow::Error) -> bool {
+    err.chain()
+        .filter_map(|cause| cause.downcast_ref::<reqwest::Error>())
+        .filter_map(|e| e.status())
+        .any(|status| matches!(status.as_u16(), 403 | 404))
+}
+
 /// Whether the grace period has elapsed.
 ///
 /// Grace exists so a failed card does not instantly destroy access for a paying
@@ -208,10 +219,17 @@ pub async fn start_background_validation<R: tauri::Runtime>(
                                 }
 
                                 let now = Utc::now();
+                                let rejected = is_explicit_rejection(&e);
 
                                 let _ = conn
                                     .interact(move |c| {
-                                        if state.subscription_status_cached == LicenseStatus::Active
+                                        // The server answered and said no:
+                                        // not an outage, so no offline grace
+                                        // (Doc 15 §2.12, audit E-2).
+                                        if rejected {
+                                            tracing::warn!("Licence explicitly rejected by the server. Locking license.");
+                                            transition_to_locked(c, false)?;
+                                        } else if state.subscription_status_cached == LicenseStatus::Active
                                         {
                                             tracing::warn!(
                                                 "Transitioning license to GRACE period."
@@ -261,6 +279,25 @@ pub async fn start_background_validation<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Audit E-2: 403/404 are explicit rejections; 401, 5xx and network
+    /// failures are not.
+    #[tokio::test]
+    async fn explicit_rejections_are_403_and_404_only() {
+        let mut server = mockito::Server::new_async().await;
+        for status in [403, 404, 401, 500, 503] {
+            let path = format!("/s{status}");
+            let _m = server.mock("GET", path.as_str()).with_status(status).create_async().await;
+            let err: anyhow::Error = reqwest::get(format!("{}{path}", server.url()))
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap_err()
+                .into();
+            assert_eq!(is_explicit_rejection(&err), matches!(status, 403 | 404), "status {status}");
+        }
+        assert!(!is_explicit_rejection(&anyhow::anyhow!("connection refused")));
+    }
 
     #[test]
     fn test_is_grace_period_expired() {
