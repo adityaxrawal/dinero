@@ -1,8 +1,10 @@
 //! The matching engine: fetch candidates, score them, act on the verdict.
 //!
-//! `reconcile_transactionally` is the entry point that matters. Matching and the
-//! write that follows happen in one transaction, so a crash midway cannot leave
-//! an observation half-merged into a canonical record.
+//! Two entry points, both owning their transaction so matching and the writes
+//! that follow commit together (audit A-9): `ingest_observation` for a new
+//! observation, `complete_observation` for one held in review whose missing
+//! fields have arrived (Layer 6). Human cluster resolution is the only other
+//! canonical writer (`cluster::resolve_cluster`).
 use crate::reconciliation::audit::{append_match_decision, DecisionType};
 use crate::reconciliation::canonical::create_canonical_transaction;
 use crate::reconciliation::cluster::create_ambiguity_cluster;
@@ -274,24 +276,72 @@ pub fn ingest_observation(
     }
 }
 
-/// Reconciles within a transaction, so matching and the resulting write commit together.
+/// Completes an observation held in review once its missing fields have been
+/// filled in (Layer 6). The observation update, the reconciliation and the
+/// settlement of the review entry commit as one transaction, so a crash cannot
+/// leave a booked transaction beside a still-open review item (audit A-9).
 ///
-/// Atomicity matters here: a crash between deciding a match and writing it would
-/// leave an observation half-merged into a canonical record.
-pub fn reconcile_transactionally(
+/// With `review_reason` set, the observation is updated and stays in review
+/// under that reason. Returns the reconciliation decision, or None when it
+/// stays in review or the user already settled the entry.
+pub fn complete_observation(
     conn: &Connection,
-    obs: &IncomingObservation,
-) -> Result<DecisionType> {
-    conn.execute_batch("BEGIN IMMEDIATE")?;
-    let result =
-        fetch_candidates(conn, obs).and_then(|candidates| reconcile(conn, obs, candidates));
+    row: &TransactionObservationsRow,
+    unassigned_id: &str,
+    review_reason: Option<&str>,
+) -> Result<Option<DecisionType>> {
+    let nested = begin_scope(conn)?;
+    let result = (|| -> Result<Option<DecisionType>> {
+        // Checked inside the write transaction: the user may have resolved or
+        // dismissed the entry while the enrichment ran.
+        if !crate::db::unassigned_transactions::is_open(conn, unassigned_id)? {
+            return Ok(None);
+        }
+        crate::db::transaction_observations::update_observation(conn, row)?;
+        if let Some(reason) = review_reason {
+            crate::db::unassigned_transactions::update_reason(conn, unassigned_id, reason)?;
+            return Ok(None);
+        }
+        let instrument_id = row
+            .instrument_id
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("observation '{}' has no instrument", row.id))?;
+        let incoming = IncomingObservation {
+            id: row.id.clone(),
+            instrument_id,
+            amount_minor: row.amount_minor.unwrap_or(0),
+            currency: row.currency.clone().unwrap_or_else(|| "INR".to_string()),
+            direction: row.direction.clone().unwrap_or_else(|| "debit".to_string()),
+            event_time: row
+                .event_time
+                .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+                .unwrap_or_default(),
+            reference_id: row.reference_id.clone(),
+            merchant_raw: row.merchant_raw.clone(),
+            source_pipeline: row
+                .source_pipeline
+                .clone()
+                .unwrap_or_else(|| "gmail_transaction".to_string()),
+            source_record_id: row.source_record_id.clone().unwrap_or_default(),
+            emi_total_installments: row.emi_total_installments,
+            emi_original_amount_minor: row.emi_original_amount_minor,
+            fingerprint: row.fingerprint.clone(),
+            confidence_score: row.confidence_score,
+            event_time_confidence: row.event_time_confidence.clone(),
+            channel: row.channel.clone(),
+        };
+        let decision =
+            fetch_candidates(conn, &incoming).and_then(|candidates| reconcile(conn, &incoming, candidates))?;
+        crate::db::unassigned_transactions::settle_if_open(conn, unassigned_id, "resolved")?;
+        Ok(Some(decision))
+    })();
     match result {
         Ok(decision) => {
-            conn.execute_batch("COMMIT")?;
+            commit_scope(conn, nested)?;
             Ok(decision)
         }
         Err(e) => {
-            let _ = conn.execute_batch("ROLLBACK");
+            let _ = rollback_scope(conn, nested);
             Err(e)
         }
     }

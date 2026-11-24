@@ -15,7 +15,7 @@ use dinero_app_lib::commands::{
 use dinero_app_lib::db;
 use dinero_app_lib::db::statement_drafts;
 use dinero_app_lib::reconciliation::audit::DecisionType;
-use dinero_app_lib::reconciliation::engine::{reconcile_transactionally, IncomingObservation};
+use dinero_app_lib::reconciliation::engine::IncomingObservation;
 use dinero_app_lib::statements::metadata_extractor::resolve_or_create_instrument;
 use dinero_app_lib::statements::row_extractor::StatementRow;
 use tauri::test::{mock_builder, mock_context, noop_assets};
@@ -297,11 +297,11 @@ async fn test_statement_overrides_email_where_both_exist() {
     let decision = conn
         .interact({
             let obs = email_obs.clone();
-            move |c| reconcile_transactionally(c, &obs)
+            move |c| reconcile_in_transaction(c, &obs)
         })
         .await
         .unwrap()
-        .expect("reconcile_transactionally failed for the email observation");
+        .expect("reconcile_in_transaction failed for the email observation");
     assert_eq!(decision, DecisionType::NewCanonical);
 
     let canonical_id: String = conn
@@ -464,4 +464,17 @@ async fn test_page_render_for_ocr_runs_in_the_sidecar() {
             .is_err(),
         "a page past the end is an error, not an empty image"
     );
+}
+
+/// Reconciles an observation already inserted, in one transaction: the same
+/// matching ingest_observation runs, used here on a hand-built observation.
+fn reconcile_in_transaction(
+    c: &rusqlite::Connection,
+    obs: &IncomingObservation,
+) -> anyhow::Result<dinero_app_lib::reconciliation::audit::DecisionType> {
+    c.execute_batch("BEGIN IMMEDIATE")?;
+    let result = dinero_app_lib::reconciliation::engine::fetch_candidates(c, obs)
+        .and_then(|candidates| dinero_app_lib::reconciliation::engine::reconcile(c, obs, candidates));
+    c.execute_batch(if result.is_ok() { "COMMIT" } else { "ROLLBACK" })?;
+    result
 }

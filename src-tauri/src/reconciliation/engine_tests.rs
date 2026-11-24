@@ -3107,3 +3107,73 @@ fn observation_without_instrument_always_gets_a_review_entry() {
         .unwrap();
     assert_eq!(reason, "instrument_archived");
 }
+
+fn held_observation(conn: &rusqlite::Connection) -> crate::db::transaction_observations::TransactionObservationsRow {
+    conn.execute("PRAGMA foreign_keys = OFF", []).unwrap();
+    let row = crate::db::transaction_observations::TransactionObservationsRow {
+        id: "obs_held".into(),
+        source_pipeline: Some("gmail_transaction".into()),
+        source_record_id: Some("msg_held".into()),
+        direction: Some("debit".into()),
+        amount_minor: Some(2500),
+        currency: Some("INR".into()),
+        ..Default::default()
+    };
+    crate::db::transaction_observations::insert_observation_idempotent(conn, &row).unwrap();
+    conn.execute(
+        "INSERT INTO unassigned_transactions (id, observation_id, reason, status)
+         VALUES ('u_held', 'obs_held', 'pending_llm_enrichment', 'open')",
+        [],
+    )
+    .unwrap();
+    row
+}
+
+/// Audit A-9: Layer-6 completion books the transaction and settles the
+/// review entry in one transaction.
+#[test]
+fn complete_observation_books_and_settles_together() {
+    let conn = crate::db::test_helpers::setup_test_db();
+    let mut row = held_observation(&conn);
+    row.instrument_id = Some("inst_1".into());
+    row.merchant_raw = Some("CAFE".into());
+    row.event_time = chrono::NaiveDateTime::parse_from_str("2026-06-01 10:00:00", "%Y-%m-%d %H:%M:%S").ok();
+
+    let decision =
+        crate::reconciliation::engine::complete_observation(&conn, &row, "u_held", None).unwrap();
+    assert!(decision.is_some());
+    let (canonical, status): (Option<String>, String) = conn
+        .query_row(
+            "SELECT o.canonical_transaction_id, u.status FROM transaction_observations o
+             JOIN unassigned_transactions u ON u.observation_id = o.id WHERE o.id = 'obs_held'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert!(canonical.is_some());
+    assert_eq!(status, "resolved");
+}
+
+/// Audit A-9: if reconciliation fails, the observation update is rolled back
+/// with it and the review entry stays open — no half-applied state.
+#[test]
+fn complete_observation_failure_leaves_nothing_half_applied() {
+    let conn = crate::db::test_helpers::setup_test_db();
+    let mut row = held_observation(&conn);
+    row.instrument_id = Some("inst_1".into());
+    row.merchant_raw = Some("CAFE".into());
+    row.event_time = None; // breaks the candidate lookup
+    conn.execute_batch("DROP TABLE transactions").unwrap();
+
+    assert!(crate::reconciliation::engine::complete_observation(&conn, &row, "u_held", None).is_err());
+    let (merchant, status): (Option<String>, String) = conn
+        .query_row(
+            "SELECT o.merchant_raw, u.status FROM transaction_observations o
+             JOIN unassigned_transactions u ON u.observation_id = o.id WHERE o.id = 'obs_held'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(merchant, None, "the observation update was rolled back");
+    assert_eq!(status, "open");
+}

@@ -2192,40 +2192,6 @@ pub async fn correct_match(
     Ok("Correction recorded".to_string())
 }
 
-#[tauri::command]
-pub async fn trigger_reconciliation(
-    observation: crate::reconciliation::engine::IncomingObservation,
-    pool: tauri::State<'_, deadpool_sqlite::Pool>,
-    app_handle: tauri::AppHandle,
-) -> Result<String, crate::error::AppError> {
-    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
-
-    let conn = pool
-        .get()
-        .await
-        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-
-    let app_handle_clone = app_handle.clone();
-    let observation_id = observation.id.clone();
-    let decision = conn
-        .interact(move |conn| {
-            crate::reconciliation::engine::reconcile_transactionally(conn, &observation)
-        })
-        .await
-        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
-        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
-
-    if let crate::reconciliation::audit::DecisionType::AmbiguousPending(cluster_id) = &decision {
-        let _ = crate::ipc::events::emit_event(
-            &app_handle_clone,
-            crate::ipc::events::AppEvent::ReconciliationCluster,
-            serde_json::json!({ "cluster_id": cluster_id, "observation_id": observation_id }),
-        );
-    }
-
-    Ok(decision.as_str().to_string())
-}
-
 #[derive(serde::Deserialize)]
 pub struct ManualTransactionPayload {
     pub amount_minor: i64,
@@ -3230,7 +3196,6 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         data::settings_set_low_battery_poll_threshold_percent,
         auth_google_start,
         reconciliation_clusters_resolve,
-        trigger_reconciliation,
         transactions_create,
         transactions_update,
         transactions_delete,
@@ -3501,7 +3466,6 @@ mod tests {
             "reconciliation_dismiss_unassigned_transaction",
             "reconciliation_resolve_unassigned_transaction_manually",
             "correct_match",
-            "trigger_reconciliation",
             "auth_google_start",
             "auth_google_disconnect",
             "settings_pdf_passwords_delete",

@@ -3,7 +3,7 @@
 //! Drives the real Gate 2 (`ContentClassifier::classify`), full extraction
 //! ladder (`run_extraction_ladder`), Gate 3 (mandatory-field check),
 //! instrument resolution, fingerprinting, and reconciliation
-//! (`reconcile_transactionally`) -- the same functions
+//! (`fetch_candidates` + `reconcile` in one transaction) -- the same functions
 //! `ingestion::message_processor::MessageProcessor::process_message` and
 //! `ingestion::queues::process_transaction_job` call in production -- against
 //! a labeled gold-standard corpus (`tests/fixtures/transaction_goldens.jsonl`)
@@ -31,7 +31,7 @@ use dinero_app_lib::extraction::normalization::normalize_observation;
 use dinero_app_lib::ingestion::content_classifier::{ContentClass, ContentClassifier};
 use dinero_app_lib::ingestion::verified_senders::{SenderValidator, SenderVerificationResult};
 use dinero_app_lib::reconciliation::audit::DecisionType;
-use dinero_app_lib::reconciliation::engine::{reconcile_transactionally, IncomingObservation};
+use dinero_app_lib::reconciliation::engine::IncomingObservation;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -286,11 +286,11 @@ async fn process_record(pool: &deadpool_sqlite::Pool, rec: &GoldenRecord) -> Pip
                 channel: None,
             };
 
-            reconcile_transactionally(c, &incoming)
+            reconcile_in_transaction(c, &incoming)
         })
         .await
         .expect("interact")
-        .expect("reconcile_transactionally failed");
+        .expect("reconcile_in_transaction failed");
 
     PipelineOutcome::Reconciled {
         decision,
@@ -458,4 +458,17 @@ async fn test_no_canonical_row_created_for_rejected_examples() {
             rec.id
         );
     }
+}
+
+/// Reconciles an observation already inserted, in one transaction: the same
+/// matching ingest_observation runs, used here on a hand-built observation.
+fn reconcile_in_transaction(
+    c: &rusqlite::Connection,
+    obs: &IncomingObservation,
+) -> anyhow::Result<dinero_app_lib::reconciliation::audit::DecisionType> {
+    c.execute_batch("BEGIN IMMEDIATE")?;
+    let result = dinero_app_lib::reconciliation::engine::fetch_candidates(c, obs)
+        .and_then(|candidates| dinero_app_lib::reconciliation::engine::reconcile(c, obs, candidates));
+    c.execute_batch(if result.is_ok() { "COMMIT" } else { "ROLLBACK" })?;
+    result
 }

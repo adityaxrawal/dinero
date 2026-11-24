@@ -940,69 +940,40 @@ async fn apply_layer6_success(
                 .map(|s| s >= LAYER6_AUTO_RESOLVE_CONFIDENCE_THRESHOLD)
                 .unwrap_or(false);
 
-        crate::db::transaction_observations::update_observation(c, &row)?;
-
         let has_instrument = instrument_id.is_some();
         // A balance-update placeholder carries amount_minor = 0 and merchant_raw =
         // "Balance Update". evaluate_gate3 sees both as present and would auto-reconcile
         // it as a real ₹0 transaction. Guard against that: only promote observations
         // whose amount is actually positive.
         let has_nonzero_amount = row.amount_minor.map(|a| a > 0).unwrap_or(false);
-        let ready_instrument_id = instrument_id.filter(|_| {
-            has_nonzero_amount
-                && confident_enough
-                && crate::extraction::ladder::evaluate_gate3(
-                    row.amount_minor.is_some(),
-                    row.merchant_raw.is_some(),
-                    false, // LLM does not extract balance_after
-                    true,  // has_instrument is true within the filter closure
-                )
-        });
-        if let Some(instrument_id) = ready_instrument_id {
-            let incoming_obs = crate::reconciliation::engine::IncomingObservation {
-                id: row.id.clone(),
-                instrument_id,
-                amount_minor: row.amount_minor.unwrap_or(0),
-                currency: row.currency.clone().unwrap_or_else(|| "INR".to_string()),
-                direction: row.direction.clone().unwrap_or_else(|| "debit".to_string()),
-                event_time: row
-                    .event_time
-                    .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-                    .unwrap_or_default(),
-                reference_id: row.reference_id.clone(),
-                merchant_raw: row.merchant_raw.clone(),
-                source_pipeline: row
-                    .source_pipeline
-                    .clone()
-                    .unwrap_or_else(|| "gmail_transaction".to_string()),
-                source_record_id: row.source_record_id.clone().unwrap_or_default(),
-                emi_total_installments: row.emi_total_installments,
-                emi_original_amount_minor: row.emi_original_amount_minor,
-                fingerprint: row.fingerprint.clone(),
-                confidence_score: row.confidence_score,
-                event_time_confidence: row.event_time_confidence.clone(),
-                channel: row.channel.clone(),
-            };
-            crate::reconciliation::engine::reconcile_transactionally(c, &incoming_obs)?;
-            crate::db::unassigned_transactions::settle_if_open(c, &unassigned_id, "resolved")?;
+        let ready = has_instrument
+            && has_nonzero_amount
+            && confident_enough
+            && crate::extraction::ladder::evaluate_gate3(
+                row.amount_minor.is_some(),
+                row.merchant_raw.is_some(),
+                false, // LLM does not extract balance_after
+                true,
+            );
+        // Same order of blame as `gate3_failure_reason`, which is what wrote
+        // the reason in the first place. Without the amount arm an entry the
+        // LLM left with no amount was filed as "low_confidence", sending the
+        // user looking for a confidence problem that was not the reason.
+        let review_reason = if ready {
+            None
+        } else if row.amount_minor.is_none() {
+            Some("gate3_failed:missing_amount")
+        } else if row.merchant_raw.is_none() {
+            Some("gate3_failed:missing_counterparty")
+        } else if instrument_archived {
+            Some("instrument_archived")
+        } else if !has_instrument {
+            Some("gate3_failed:missing_instrument")
         } else {
-            // Same order of blame as `gate3_failure_reason`, which is what wrote
-            // the reason in the first place. Without the amount arm an entry the
-            // LLM left with no amount was filed as "low_confidence", sending the
-            // user looking for a confidence problem that was not the reason.
-            let reason = if row.amount_minor.is_none() {
-                "gate3_failed:missing_amount"
-            } else if row.merchant_raw.is_none() {
-                "gate3_failed:missing_counterparty"
-            } else if instrument_archived {
-                "instrument_archived"
-            } else if !has_instrument {
-                "gate3_failed:missing_instrument"
-            } else {
-                "gate3_failed:low_confidence"
-            };
-            crate::db::unassigned_transactions::update_reason(c, &unassigned_id, reason)?;
-        }
+            Some("gate3_failed:low_confidence")
+        };
+        // One transaction for update + reconcile + settle (audit A-9).
+        crate::reconciliation::engine::complete_observation(c, &row, &unassigned_id, review_reason)?;
         Ok(())
     })
     .await

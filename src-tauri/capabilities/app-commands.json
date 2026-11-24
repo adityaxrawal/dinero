@@ -149,7 +149,6 @@
     "allow-transactions-remove-tag",
     "allow-transactions-search",
     "allow-transactions-update",
-    "allow-trigger-reconciliation",
     "allow-update-spending-limits",
     "allow-updater-confirm-install"
   ]
