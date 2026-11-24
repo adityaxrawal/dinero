@@ -244,8 +244,11 @@ impl CategorizedLogWriters {
             ingestion_extraction: ingestion_extraction_w,
         };
 
+        // Full prompts and outputs carry email bodies and statement text, so
+        // they are written only in debug builds (audit C-1, owner decision).
+        // Release keeps the redacted one-line metadata per call above.
         let llm_log_path = logs_folder.join(format!("{}_llm_calls.md", ts_prefix));
-        crate::logging::llm_logger::init_direct_writer(llm_log_path);
+        crate::logging::llm_logger::init_direct_writer(llm_log_path, cfg!(debug_assertions));
 
         (writers, vec![g1, g2, g3, g4, g5, g6, g7])
     }

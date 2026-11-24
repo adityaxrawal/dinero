@@ -189,3 +189,16 @@ fn test_app_command_capability_matches_registered_commands() {
         .iter()
         .any(|c| c == "app-commands"));
 }
+
+/// Audit C-1: release builds must not write full LLM prompts or outputs
+/// (email bodies, statement text) to the log directory.
+#[test]
+fn full_llm_payload_log_is_debug_only() {
+    let setup = fs::read_to_string(src_tauri_dir().join("src/logging/mod.rs")).unwrap();
+    assert!(
+        setup.contains("init_direct_writer(llm_log_path, cfg!(debug_assertions))"),
+        "the full LLM call log must be gated on debug_assertions"
+    );
+    let logger = fs::read_to_string(src_tauri_dir().join("src/logging/llm_logger.rs")).unwrap();
+    assert!(logger.contains("if !full_payloads {\n        return;\n    }"));
+}

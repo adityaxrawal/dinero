@@ -312,8 +312,13 @@ use std::sync::{Mutex, OnceLock};
 static LLM_LOG_PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
 static LLM_LOG_WRITER: OnceLock<Mutex<std::fs::File>> = OnceLock::new();
 
-/// Initialises the direct writer for the LLM log.
-pub fn init_direct_writer(path: std::path::PathBuf) {
+/// Initialises the direct writer for full LLM prompts and outputs. With
+/// `full_payloads` false (release builds) nothing is opened, so no prompt or
+/// output text reaches disk.
+pub fn init_direct_writer(path: std::path::PathBuf, full_payloads: bool) {
+    if !full_payloads {
+        return;
+    }
     let _ = LLM_LOG_PATH.set(path.clone());
     if let Ok(file) = OpenOptions::new().create(true).append(true).open(&path) {
         let _ = LLM_LOG_WRITER.set(Mutex::new(file));
@@ -332,6 +337,14 @@ fn with_llm_writer<F: FnOnce(&mut dyn IoWrite)>(f: F) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Audit C-1: with full payloads off (release) no LLM log file is opened.
+    #[test]
+    fn disabled_direct_writer_creates_no_file() {
+        let path = std::env::temp_dir().join(format!("dinero_llm_{}.md", uuid::Uuid::new_v4()));
+        init_direct_writer(path.clone(), false);
+        assert!(!path.exists());
+    }
 
     #[test]
     fn request_block_renders_without_panicking() {
