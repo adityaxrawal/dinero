@@ -1,4 +1,4 @@
-use crate::ingestion::auth_results::{apply_auth_results_check, parse_authentication_results};
+use crate::ingestion::auth_results::{apply_auth_results_check, parse_authentication_results, sender_unverifiable};
 use crate::ingestion::gmail_client::MessagePartHeader;
 use crate::ingestion::verified_senders::SenderVerificationResult;
 
@@ -69,7 +69,7 @@ fn test_verified_result_downgraded_on_auth_failure() {
     )];
 
     let verified = SenderVerificationResult::VerifiedTransactionCandidate("HDFC Bank".to_string());
-    let result = apply_auth_results_check(verified, &headers);
+    let result = apply_auth_results_check(verified, &headers, "hdfcbank.net");
 
     match result {
         SenderVerificationResult::SpoofReject(reason) => {
@@ -90,7 +90,7 @@ fn test_verified_result_unchanged_on_auth_pass() {
     )];
 
     let verified = SenderVerificationResult::VerifiedTransactionCandidate("HDFC Bank".to_string());
-    let result = apply_auth_results_check(verified.clone(), &headers);
+    let result = apply_auth_results_check(verified.clone(), &headers, "hdfcbank.net");
     assert_eq!(result, verified);
 }
 
@@ -101,7 +101,7 @@ fn test_verified_result_unchanged_on_auth_pass() {
 fn test_verified_result_unchanged_when_no_auth_header() {
     let headers = vec![header("From", "alerts@hdfcbank.net")];
     let verified = SenderVerificationResult::VerifiedTransactionCandidate("HDFC Bank".to_string());
-    let result = apply_auth_results_check(verified.clone(), &headers);
+    let result = apply_auth_results_check(verified.clone(), &headers, "hdfcbank.net");
     assert_eq!(result, verified);
 }
 
@@ -116,6 +116,50 @@ fn test_unverified_result_never_promoted_by_auth_pass() {
     )];
 
     let rejected = SenderVerificationResult::UnverifiedReject("Unknown sender domain".to_string());
-    let result = apply_auth_results_check(rejected.clone(), &headers);
+    let result = apply_auth_results_check(rejected.clone(), &headers, "totally-unrelated.example");
     assert_eq!(result, rejected);
+}
+
+/// Audit N-E1: Gmail authenticated a different From domain than the one Gate 1
+/// matched (a crafted display name), so the verified verdict is downgraded.
+#[test]
+fn test_verified_result_downgraded_when_header_from_mismatches() {
+    let headers = vec![header(
+        "Authentication-Results",
+        "mx.google.com; dkim=pass header.i=@evil.example; spf=pass smtp.mailfrom=x@evil.example; dmarc=pass header.from=evil.example",
+    )];
+    let verified = SenderVerificationResult::VerifiedTransactionCandidate("HDFC Bank".to_string());
+    match apply_auth_results_check(verified, &headers, "hdfcbank.net") {
+        SenderVerificationResult::SpoofReject(reason) => assert!(reason.contains("does not match")),
+        other => panic!("Expected SpoofReject, got {:?}", other),
+    }
+}
+
+/// Audit N-E1 (owner decision): mail Gmail's verdict cannot tie to the From
+/// domain is unverifiable and goes to review; aligned mail is not.
+#[test]
+fn test_sender_unverifiable_cases() {
+    let aligned = vec![header(
+        "Authentication-Results",
+        "mx.google.com; dkim=pass header.i=@hdfcbank.net; spf=pass; dmarc=pass header.from=HDFCBank.net.",
+    )];
+    assert!(!sender_unverifiable(&aligned, "hdfcbank.net"));
+
+    let no_header = vec![header("From", "alerts@hdfcbank.net")];
+    assert!(sender_unverifiable(&no_header, "hdfcbank.net"));
+
+    let no_dmarc_from = vec![header("Authentication-Results", "mx.google.com; dkim=pass; spf=pass")];
+    assert!(sender_unverifiable(&no_dmarc_from, "hdfcbank.net"));
+
+    let untrusted = vec![header(
+        "Authentication-Results",
+        "relay.evil.example; dmarc=pass header.from=hdfcbank.net",
+    )];
+    assert!(sender_unverifiable(&untrusted, "hdfcbank.net"));
+
+    let other_domain = vec![header(
+        "Authentication-Results",
+        "mx.google.com; dmarc=pass header.from=evil.example",
+    )];
+    assert!(sender_unverifiable(&other_domain, "hdfcbank.net"));
 }

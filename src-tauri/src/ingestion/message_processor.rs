@@ -191,9 +191,17 @@ impl MessageProcessor {
         // A sender the user approved but the registry does not verify is
         // still read, but what it yields goes to review, never straight to
         // the ledger (audit E-3, owner decision).
-        let review_only = sender_domain
-            .as_deref()
-            .is_some_and(|domain| Self::is_review_only_sender(domain, &approved_senders));
+        // So is mail Gmail's own authentication cannot tie to the From domain
+        // (no trusted Authentication-Results, or no DMARC header.from): owner
+        // decision, audit N-E1.
+        let review_only = sender_domain.as_deref().is_some_and(|domain| {
+            Self::is_review_only_sender(domain, &approved_senders)
+                || metadata_msg
+                    .payload
+                    .as_ref()
+                    .and_then(|p| p.headers.as_deref())
+                    .is_none_or(|h| crate::ingestion::auth_results::sender_unverifiable(h, domain))
+        });
         let gate_result =
             Self::evaluate_metadata_gate(&metadata_msg, &approved_senders, &bank_overrides);
 
@@ -955,7 +963,7 @@ impl MessageProcessor {
         };
 
         let verify_result =
-            crate::ingestion::auth_results::apply_auth_results_check(verify_result, headers);
+            crate::ingestion::auth_results::apply_auth_results_check(verify_result, headers, &domain);
 
         Self::apply_bank_override(verify_result, &domain, bank_overrides)
     }
@@ -1092,8 +1100,31 @@ impl MessageProcessor {
     /// Bounded by the first `>` after the opening bracket rather than the last
     /// one in the string, so a header listing several recipients yields the
     /// first address instead of everything between the outermost brackets.
+    ///
+    /// A `<` inside a quoted display name or a `( )` comment is not an
+    /// address (RFC 5322 §3.2.4-3.2.5): `"HDFC <alerts@hdfcbank.net>"
+    /// <x@evil.example>` is from evil.example, not hdfcbank.net (audit N-E1).
     fn first_angle_addr(value: &str) -> Option<&str> {
-        let start = value.find('<')? + 1;
+        let (mut in_quote, mut comment_depth, mut escaped) = (false, 0usize, false);
+        let mut start = None;
+        for (i, c) in value.char_indices() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match c {
+                '\\' if in_quote || comment_depth > 0 => escaped = true,
+                '"' if comment_depth == 0 => in_quote = !in_quote,
+                '(' if !in_quote => comment_depth += 1,
+                ')' if !in_quote && comment_depth > 0 => comment_depth -= 1,
+                '<' if !in_quote && comment_depth == 0 => {
+                    start = Some(i + 1);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let start = start?;
         let end = value[start..].find('>')? + start;
         Some(&value[start..end])
     }

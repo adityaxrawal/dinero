@@ -219,6 +219,46 @@ fn test_extract_email_and_domain_handles_commas_and_multiple_addresses() {
     );
 }
 
+/// Audit N-E1: a `<address>` inside a quoted display name is not the sender.
+/// This header is from evil.example, so Gate 1 must not verify it as HDFC.
+#[test]
+fn test_metadata_gate_ignores_address_inside_quoted_display_name() {
+    let spoof = "\"HDFC <alerts@hdfcbank.net>\" <x@evil.example>";
+    assert_eq!(
+        MessageProcessor::extract_sender_domain(&create_metadata_message(vec![("From", spoof)])),
+        Some("evil.example".to_string())
+    );
+    assert!(!matches!(
+        MessageProcessor::evaluate_metadata_gate(
+            &create_metadata_message(vec![("From", spoof), ("Subject", "Debit alert")]),
+            &[],
+            &[]
+        ),
+        SenderVerificationResult::VerifiedTransactionCandidate(_)
+            | SenderVerificationResult::VerifiedStatementCandidate(_)
+    ));
+    // A comment holding an angle address is skipped the same way.
+    assert_eq!(
+        MessageProcessor::extract_email_and_domain("(<alerts@hdfcbank.net>) <x@evil.example>").1,
+        Some("evil.example".to_string())
+    );
+}
+
+/// Audit N-E1: with Gmail's DMARC result naming another domain, a registry
+/// From address is downgraded to SpoofReject at Gate 1.
+#[test]
+fn test_metadata_gate_rejects_dmarc_header_from_mismatch() {
+    let msg = create_metadata_message(vec![
+        ("From", "\"HDFC Bank\" <alerts@hdfcbank.net>"),
+        ("Subject", "Your Transaction"),
+        ("Authentication-Results", "mx.google.com; spf=pass; dkim=pass; dmarc=pass header.from=evil.example"),
+    ]);
+    assert!(matches!(
+        MessageProcessor::evaluate_metadata_gate(&msg, &[], &[]),
+        SenderVerificationResult::SpoofReject(_)
+    ));
+}
+
 use crate::extraction::ladder::ExtractionResult;
 
 #[test]

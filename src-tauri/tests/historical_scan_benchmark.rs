@@ -108,6 +108,9 @@ fn synthetic_message_json(idx: usize) -> serde_json::Value {
             "mimeType": "text/plain",
             "headers": [
                 {"name": "From", "value": "\"HDFC Bank\" <alerts@hdfcbank.net>"},
+                // Gmail stamps this on delivered mail; without it the sender is
+                // unverifiable and the result goes to review (audit N-E1).
+                {"name": "Authentication-Results", "value": "mx.google.com; dkim=pass header.i=@hdfcbank.net; spf=pass smtp.mailfrom=alerts@hdfcbank.net; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=hdfcbank.net"},
                 {"name": "Subject", "value": "Payment Notification"},
                 {"name": "Date", "value": "Mon, 1 Jun 2026 12:00:00 +0000"}
             ],
