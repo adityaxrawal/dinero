@@ -548,8 +548,9 @@ impl MessageProcessor {
                         None,
                         &mut trace,
                     )
-                    .await
-                    .unwrap_or(None);
+                    // An error is a failed message (recorded for retry by the
+                    // caller), not "nothing extracted" (audit A-11).
+                    .await?;
 
                     if let Some(mut obs) = extracted_data {
                         if obs.event_time.is_none() {
