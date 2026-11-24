@@ -21,6 +21,9 @@ pub enum Layer6Outcome {
     NotATransaction,
     TimedOut,
     Failed,
+    /// No model can run (none downloaded / no app dir): nothing about the
+    /// message failed, so a queued job waits without using an attempt (A-8).
+    Unavailable,
     Rejected,
 }
 

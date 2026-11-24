@@ -701,45 +701,11 @@ async fn process_layer6_job(
                 }
             }
         }
-        Layer6Outcome::Rejected | Layer6Outcome::TimedOut => {
-            let mark_result: anyhow::Result<()> = async {
-                let unassigned_id = job.unassigned_id.clone();
-                let conn = pool.get().await?;
-                conn.interact(move |c| -> anyhow::Result<()> {
-                    use rusqlite::OptionalExtension;
-                    let current_reason: Option<String> = c
-                        .query_row(
-                            "SELECT reason FROM unassigned_transactions WHERE id = ?1",
-                            rusqlite::params![unassigned_id],
-                            |row| row.get(0),
-                        )
-                        .optional()?;
-
-                    if current_reason.as_deref() == Some("pending_llm_enrichment") {
-                        crate::db::unassigned_transactions::update_reason(
-                            c,
-                            &unassigned_id,
-                            "extraction_failed",
-                        )?;
-                    }
-                    Ok(())
-                })
-                .await
-                .map_err(|e| anyhow::anyhow!("Interact error: {}", e))??;
-                Ok(())
-            }
-            .await;
-            match mark_result {
-                Ok(()) => true,
-                Err(e) => {
-                    tracing::error!(
-                        "Layer 6 background worker: failed to update reason for unassigned_id='{}': {}",
-                        job.unassigned_id, e
-                    );
-                    false
-                }
-            }
-        }
+        // The model looked at the message and could not produce a grounded
+        // result: content-caused, so final (audit A-8).
+        Layer6Outcome::Rejected => mark_extraction_failed(pool, &job.unassigned_id).await,
+        // A timeout says nothing about the message; retried up to MAX_ATTEMPTS.
+        Layer6Outcome::TimedOut => false,
         Layer6Outcome::NotATransaction => {
             let mark_result: anyhow::Result<()> = async {
                 let unassigned_id = job.unassigned_id.clone();
@@ -780,6 +746,15 @@ async fn process_layer6_job(
             );
             false
         }
+        // No model to run: keep the job for the next launch without using an
+        // attempt, so a missing download never kills it (audit A-8).
+        Layer6Outcome::Unavailable => {
+            tracing::info!(
+                "Layer 6 background worker: no model available for observation_id='{}' — waiting",
+                job.observation_id
+            );
+            return;
+        }
     };
 
     if completed {
@@ -800,6 +775,8 @@ async fn process_layer6_job(
             Err(_) => false,
         };
         if dead {
+            // Out of attempts: the entry stops claiming enrichment is pending.
+            mark_extraction_failed(pool, &job.unassigned_id).await;
             tracing::warn!(
                 "Layer 6 job for unassigned_id='{}' failed {} times — marked dead, left for manual review",
                 job.unassigned_id,
@@ -812,6 +789,40 @@ async fn process_layer6_job(
             );
         }
     }
+}
+
+/// Re-labels a review entry still waiting on enrichment as
+/// `extraction_failed`; returns whether the write succeeded.
+async fn mark_extraction_failed(pool: &Pool, unassigned_id: &str) -> bool {
+    let id = unassigned_id.to_string();
+    let result = match pool.get().await {
+        Ok(conn) => conn
+            .interact(move |c| -> anyhow::Result<()> {
+                use rusqlite::OptionalExtension;
+                let current_reason: Option<String> = c
+                    .query_row(
+                        "SELECT reason FROM unassigned_transactions WHERE id = ?1",
+                        rusqlite::params![id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if current_reason.as_deref() == Some("pending_llm_enrichment") {
+                    crate::db::unassigned_transactions::update_reason(c, &id, "extraction_failed")?;
+                }
+                Ok(())
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("Interact error: {}", e))
+            .and_then(|r| r),
+        Err(e) => Err(anyhow::anyhow!("DB pool error: {}", e)),
+    };
+    if let Err(e) = &result {
+        tracing::error!(
+            "Layer 6 background worker: failed to update reason for unassigned_id='{}': {}",
+            unassigned_id, e
+        );
+    }
+    result.is_ok()
 }
 
 /// Applies a successful LLM extraction.
@@ -2716,6 +2727,75 @@ mod ingest_failure_tests {
             .unwrap();
         assert_eq!(instrument, None);
         assert_eq!(reason, "instrument_archived");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod layer6_attempt_policy_tests {
+    use super::*;
+
+    /// Audit A-8: with no model to run, a Layer-6 job waits for the next
+    /// launch without using an attempt or giving up on the review entry.
+    #[tokio::test]
+    async fn missing_model_does_not_use_up_attempts() {
+        let dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pool = crate::db::init_db(dir.join("t.db")).await.unwrap();
+        pool.get()
+            .await
+            .unwrap()
+            .interact(|c| {
+                c.execute_batch(
+                    "PRAGMA foreign_keys = OFF;
+                     INSERT INTO unassigned_transactions (id, observation_id, reason, status)
+                     VALUES ('u1', 'o1', 'pending_llm_enrichment', 'open');",
+                )?;
+                crate::db::layer6_jobs::insert(
+                    c,
+                    &crate::db::layer6_jobs::PendingLayer6Job {
+                        id: "u1".into(),
+                        observation_id: "o1".into(),
+                        bank_name: "HDFC Bank".into(),
+                        body_text: "Rs 500 spent".into(),
+                        internal_date_seconds: None,
+                    },
+                )
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        let learning = crate::learning::LearningHandle { tx };
+        let job = Layer6Job {
+            observation_id: "o1".into(),
+            unassigned_id: "u1".into(),
+            bank_name: "HDFC Bank".into(),
+            body_text: "Rs 500 spent".into(),
+            app_dir: dir.clone(), // no model downloaded here
+            internal_date_seconds: None,
+        };
+
+        process_layer6_job(job, &pool, &learning).await;
+
+        let (attempts, dead, reason): (i64, bool, String) = pool
+            .get()
+            .await
+            .unwrap()
+            .interact(|c| {
+                c.query_row(
+                    "SELECT j.attempts, j.dead_at IS NOT NULL, u.reason FROM layer6_pending_jobs j
+                     JOIN unassigned_transactions u ON u.id = j.id WHERE j.id = 'u1'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((attempts, dead), (0, false), "no attempt is used without a model");
+        assert_eq!(reason, "pending_llm_enrichment");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

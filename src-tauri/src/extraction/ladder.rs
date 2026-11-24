@@ -1722,7 +1722,7 @@ impl Layer6LlmLayer {
             Some(dir) => dir,
             None => {
                 tracing::warn!("Layer 6: No app_dir provided, cannot locate LLM model");
-                return Layer6Outcome::Failed;
+                return Layer6Outcome::Unavailable;
             }
         };
 
@@ -1744,7 +1744,7 @@ impl Layer6LlmLayer {
             crate::llm_manager::resolve_active_model(&downloaded, stored.as_deref())
         else {
             tracing::warn!("Layer 6: No downloaded LLM model available");
-            return Layer6Outcome::Failed;
+            return Layer6Outcome::Unavailable;
         };
 
         tracing::info!(bank_name = bank_name, "Layer 6 (LLM) extraction invoked");
@@ -1779,7 +1779,11 @@ impl ExtractionLayer for Layer6LlmLayer {
         Box::pin(async move {
             match self.run(pool, bank_name, body).await {
                 Layer6Outcome::Extracted(result) => Some(*result),
-                Layer6Outcome::TimedOut | Layer6Outcome::Failed | Layer6Outcome::Rejected | Layer6Outcome::NotATransaction => None,
+                Layer6Outcome::TimedOut
+                | Layer6Outcome::Failed
+                | Layer6Outcome::Unavailable
+                | Layer6Outcome::Rejected
+                | Layer6Outcome::NotATransaction => None,
             }
         })
     }
@@ -2084,7 +2088,9 @@ pub async fn run_extraction_ladder(
             *layer6_timed_out = true;
             Err(anyhow::anyhow!("Layer 6 LLM extraction timed out"))
         }
-        Layer6Outcome::Failed => Err(anyhow::anyhow!("Layer 6 LLM extraction failed due to infrastructure error")),
+        Layer6Outcome::Failed | Layer6Outcome::Unavailable => {
+            Err(anyhow::anyhow!("Layer 6 LLM extraction failed due to infrastructure error"))
+        }
         Layer6Outcome::Rejected => Ok(None),
         Layer6Outcome::NotATransaction => {
             trace.info("    ↳ ⏭️ Layer 6 (LLM) explicitly classified this as a non-transaction email.");
