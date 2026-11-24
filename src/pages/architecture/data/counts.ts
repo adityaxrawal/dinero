@@ -15,6 +15,9 @@ export const COUNTS = {
   gatedCommands: 48,
   dbSourceFiles: 61,
   appEvents: 30,
+  /** TanStack query and mutation hook call sites in src/ (excluding tests). */
+  queryHooks: 20,
+  mutationHooks: 12,
 } as const;
 
 /** Commands available in release builds (debug_* commands are debug-only). */

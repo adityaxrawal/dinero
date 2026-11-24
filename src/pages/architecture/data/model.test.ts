@@ -46,7 +46,46 @@ const fkTargets = (table: string) =>
     db.prepare(`SELECT "table" AS t FROM pragma_foreign_key_list(?)`).all(table) as { t: string }[]
   ).map((r) => r.t);
 
+/** `name(` call sites in src/, excluding test files. */
+const hookCalls = (name: string): number => {
+  const walk = (dir: string): string[] =>
+    readdirSync(dir).flatMap((f) => {
+      const p = join(dir, f);
+      if (statSync(p).isDirectory()) return walk(p);
+      return /\.(ts|tsx)$/.test(f) && !/\.test\.tsx?$/.test(f) ? [p] : [];
+    });
+  const re = new RegExp(`\\b${name}\\(`, 'g');
+  return walk(join(ROOT, 'src')).reduce(
+    (n, f) => n + (readFileSync(f, 'utf8').match(re)?.length ?? 0),
+    0
+  );
+};
+
 describe('architecture model ↔ codebase', () => {
+  // Audit G: every spec section a component cites exists. dinero-docs is
+  // git-ignored, so this only runs where the corpus is present.
+  it.skipIf(!existsSync(join(ROOT, 'dinero-docs/final-documents')))(
+    'cites only spec sections that exist',
+    () => {
+      const docs = join(ROOT, 'dinero-docs/final-documents');
+      const missing = MODEL.components.flatMap((c) =>
+        (c.specRefs ?? [])
+          .filter((ref) => {
+            const m = ref.match(/^Doc (\d+) §([\w.]+)$/);
+            if (!m) return true;
+            const file = readdirSync(docs).find((f) => f.startsWith(`${m[1]}_`));
+            if (!file) return true;
+            const section = m[2].replace(/\./g, '\\.');
+            return !new RegExp(`^#{1,6} ${section}(\\.|\\s)`, 'm').test(
+              readFileSync(join(docs, file), 'utf8')
+            );
+          })
+          .map((ref) => `${c.id}: ${ref}`)
+      );
+      expect(missing).toEqual([]);
+    }
+  );
+
   // Audit G: every number the section states is recomputed from the code.
   it('states counts that match the code', () => {
     const tables = (
@@ -85,6 +124,8 @@ describe('architecture model ↔ codebase', () => {
       gatedCommands: commands.length - ungated,
       dbSourceFiles: dbFiles,
       appEvents: events,
+      queryHooks: hookCalls('useQuery'),
+      mutationHooks: hookCalls('useMutation'),
     }).toEqual(COUNTS);
   });
 

@@ -92,6 +92,8 @@ export interface ComponentDef {
   confidence: Confidence;
   /** Optional notes on known gaps / discrepancies found during verification. */
   notes?: string[];
+  /** Spec sections this component implements, as `Doc NN §X` (checked by model.test.ts when dinero-docs is present). */
+  specRefs?: string[];
 }
 
 /** A directed relationship between two components. */

@@ -40,7 +40,12 @@ const CORE: ComponentDef[] = [
     inputs: ['IPC query results', 'Tauri events', 'localStorage LLM preferences'],
     outputs: ['IPC invocations', 'Rendered ledger + review UI'],
     sources: ['src/routes/index.tsx', 'src/pages/', 'src/components/', 'src/stores/', 'src/hooks/'],
-    apiSurface: ['12 pages', '6 Zustand stores', '21 query hooks', '13 mutation hooks'],
+    apiSurface: [
+      '12 pages',
+      '6 Zustand stores',
+      `${COUNTS.queryHooks} query hooks`,
+      `${COUNTS.mutationHooks} mutation hooks`,
+    ],
     facts: [
       'Sidebar labels differ from page names: Command Center = Dashboard, Review Inbox = Reconciliation, Accounts = Instruments',
     ],
@@ -406,6 +411,7 @@ const CORE: ComponentDef[] = [
       'Rejections and mandates are recorded in processed_messages; an accepted message is recognised by its observation row, so rescans skip both',
       'email_scan_selected/rejected.log are debug-build only and hold metadata, never the body',
     ],
+    specRefs: ['Doc 12 §6.2', 'Doc 12 §6.2a'],
     confidence: 'verified',
   },
   {
@@ -465,6 +471,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     ],
     apiSurface: ['18 extraction modules'],
     facts: ['Six rungs, cheapest first', 'Merchant confidence is scored on read, not stored'],
+    specRefs: ['Doc 12 §6.3', 'Doc 12 §6.4'],
     confidence: 'inferred',
     notes: ['Extraction/AI pipeline is the largest undocumented subsystem (Doc 05 §13 gap list).'],
   },
@@ -664,6 +671,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
       'The UNIQUE constraint is what stops two concurrent workers creating duplicate instruments',
       'An archived instrument is never linked silently: email/Layer-6 activity goes to review (instrument_archived), a statement is parked for confirmation',
     ],
+    specRefs: ['Doc 12 §7.2a', 'Doc 12 §10.4a'],
     confidence: 'verified',
   },
   {
@@ -731,6 +739,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
       'PDFs awaiting a password are kept 7 days (pdf_retained_until), then removed',
       'A committed statement keeps its encrypted PDF for 30 days after commit, then it is deleted',
     ],
+    specRefs: ['Doc 15 §9', 'Doc 12 §7.4'],
     confidence: 'verified',
   },
 
@@ -758,6 +767,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
       'A failed job is kept: retried in-session after 30 s and replayed at launch; after 3 failed attempts it is marked dead and listed under Retry failed',
       'An observation that cannot be reconciled (no instrument, archived instrument, reconciliation error) is kept with a review entry, never dropped',
     ],
+    specRefs: ['Doc 12 §6.2a', 'Doc 12 §8.2a'],
     confidence: 'verified',
   },
   {
@@ -806,6 +816,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
       'No ₹0 transactions: migration 064 soft-deleted the ones older builds booked',
       'A failed mandate write is logged and the job kept for replay',
     ],
+    specRefs: ['Doc 12 §6.3a'],
     confidence: 'verified',
   },
   {
@@ -833,6 +844,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
       'Success is applied by engine::complete_observation: observation update, reconciliation and settling the review entry commit in one transaction',
       'Bodies over 2,000 characters are sent as first and last chunks',
     ],
+    specRefs: ['Doc 12 §6.3'],
     confidence: 'verified',
   },
 
@@ -875,6 +887,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
       'Ledger rows are created only via canonical.rs, called only from engine.rs and cluster.rs (human cluster resolution); a source-scan test in CI enforces it (tests/single_write_path.rs)',
       'Gate 3 failures write their observation + review entry directly (record_unassigned_transaction): they are never reconciled',
     ],
+    specRefs: ['Doc 12 §8.2', 'Doc 12 §8.2a'],
     confidence: 'inferred',
     notes: ['Reconciliation engine has no dedicated design doc (Doc 05 §13 gap list).'],
   },
@@ -1001,6 +1014,7 @@ const INFRA: ComponentDef[] = [
       'Startup backs up before migrating only when a migration is pending',
       'Startup stops with an error if the default profile row cannot be created',
     ],
+    specRefs: ['Doc 15 §3.2'],
     confidence: 'verified',
   },
   {
@@ -1096,7 +1110,7 @@ const INFRA: ComponentDef[] = [
     kind: 'worker',
     purpose: '24h cadence: backup, integrity check, retention, archival, reminders, permissions.',
     description:
-      'One of the 12 boot-spawned workers. Batches expensive whole-DB operations onto a predictable schedule. Scheduled from the last recorded run (last_maintenance_at), not from launch, so it runs at startup once 24h have passed even if the app is never open that long.',
+      'A boot-spawned loop (lib.rs). Batches expensive whole-DB operations onto a predictable schedule. Scheduled from the last recorded run (last_maintenance_at), not from launch, so it runs at startup once 24h have passed even if the app is never open that long.',
     responsibilities: [
       'Encrypted backup + verification',
       'PRAGMA integrity_check + incremental vacuum',
@@ -1123,7 +1137,7 @@ const INFRA: ComponentDef[] = [
     kind: 'worker',
     purpose: '60s SELECT 1 probe feeding incident response and the menu/tray status.',
     description:
-      'One of the 12 boot-spawned workers. A failed probe raises a BackendStartupFailure incident trigger; recovery clears the warning. The same loop is the stale-sync watchdog.',
+      'A boot-spawned loop (lib.rs). A failed probe raises a BackendStartupFailure incident trigger; recovery clears the warning. The same loop is the stale-sync watchdog.',
     responsibilities: [
       'SELECT 1 every 60s',
       'Feed IncidentMonitor',

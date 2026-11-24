@@ -113,8 +113,8 @@ export const STAGES: Stage[] = [
   },
   {
     id: 'gate3',
-    label: 'Gate 3',
-    sub: 'extract (6-layer ladder)',
+    label: 'Ladder + Gate 3',
+    sub: 'ladder, then mandatory fields',
     color: DF_COLORS.gate,
     shape: 'decision',
     x: 700,

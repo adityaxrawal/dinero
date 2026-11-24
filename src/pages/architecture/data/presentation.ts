@@ -237,7 +237,7 @@ export const ANALYSIS = {
     },
     {
       k: 'Workers',
-      v: '12 boot-spawned loops (polling 60s, health + stale-sync watchdog 60s, maintenance daily and at launch when due, licensing 6h, updates ~6h)',
+      v: 'Long-running loops started at boot (lib.rs): polling 60s, health + stale-sync watchdog 60s, battery-aware poll interval, missing-data alerts, maintenance daily and at launch when due, licensing 6h, updates ~6h, menu-bar status, learning worker — plus the queue workers and four one-shot startup tasks (crash recovery, Layer-6 replay, PDF cleanup, notification permission)',
     },
     {
       k: 'Storage',
