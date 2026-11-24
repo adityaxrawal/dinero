@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
+import { COUNTS } from './counts';
 import { MODEL, danglingComponentIds } from './index';
 
 const ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
@@ -46,6 +47,47 @@ const fkTargets = (table: string) =>
   ).map((r) => r.t);
 
 describe('architecture model ↔ codebase', () => {
+  // Audit G: every number the section states is recomputed from the code.
+  it('states counts that match the code', () => {
+    const tables = (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table'
+             AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'transactions_fts%'`
+        )
+        .get() as { n: number }
+    ).n;
+    const triggers = (
+      db.prepare(`SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'trigger'`).get() as {
+        n: number;
+      }
+    ).n;
+    const capabilities = JSON.parse(
+      readFileSync(join(ROOT, 'src-tauri/capabilities/app-commands.json'), 'utf8')
+    ) as { permissions: string[] };
+    const commands = capabilities.permissions.filter((p) => p.startsWith('allow-'));
+    const commandsRs = readFileSync(join(ROOT, 'src-tauri/src/commands/mod.rs'), 'utf8');
+    const ungated = (commandsRs.match(/const UNGATED[\s\S]*?\n {4}\];/)?.[0].match(/\("/g) ?? [])
+      .length;
+    const events = (
+      readFileSync(join(ROOT, 'src-tauri/src/ipc/events.rs'), 'utf8').match(/Self::\w+ => "/g) ?? []
+    ).length;
+    const dbFiles = readdirSync(join(ROOT, 'src-tauri/src/db')).filter((f) =>
+      f.endsWith('.rs')
+    ).length;
+
+    expect({
+      tables,
+      migrations: migrationFiles.length,
+      triggers,
+      commands: commands.length,
+      debugCommands: commands.filter((p) => p.startsWith('allow-debug-')).length,
+      gatedCommands: commands.length - ungated,
+      dbSourceFiles: dbFiles,
+      appEvents: events,
+    }).toEqual(COUNTS);
+  });
+
   it('references only known components', () => {
     expect(danglingComponentIds()).toEqual([]);
   });

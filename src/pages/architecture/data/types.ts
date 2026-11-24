@@ -2,7 +2,9 @@
  * Type definitions for the interactive architecture model.
  *
  * The model is plain data — components, connections, workflows, schema and
- * state machines — derived from `docs/design/00-05` (verified 2026-08-01).
+ * state machines — describing the code as built (the authority for behaviour;
+ * design intent and decisions live in dinero-docs and its ADR log). Counts are
+ * in ./counts.ts and checked against the code by model.test.ts.
  * Every view (system map, data flow, workflows, ER, state machines) renders
  * from these structures, so the diagrams cannot drift from one another.
  */

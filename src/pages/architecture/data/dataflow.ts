@@ -121,7 +121,7 @@ export const STAGES: Stage[] = [
     y: 380,
     components: ['extraction-ladder', 'learning', 'merchant-norm', 'fingerprint'],
     detail:
-      'Learned rules → bank template → generic regex → NLP → statement cross-ref, then a mandatory-field gate and one confidence floor (0.75) for every layer.',
+      'Learned rules → bank template → generic regex → NLP → statement cross-ref, then a mandatory-field gate and one confidence floor (0.75; an unscored result fails) for every layer.',
   },
   {
     id: 'l6',
@@ -133,7 +133,7 @@ export const STAGES: Stage[] = [
     y: 540,
     components: ['layer6-queue', 'llm-manager', 'llama-sidecar'],
     detail:
-      'When Layers 1–5 fail on an LLM-eligible machine (enough RAM and a downloaded model), the job is deferred here. Jobs survive restart (layer6_pending_jobs); a fixed pool of 6 workers runs them, at most 3 attempts each.',
+      'When Layers 1–5 fail on an LLM-eligible machine (enough RAM and a downloaded model), the job is deferred here. Jobs survive restart (layer6_pending_jobs); a fixed pool of 6 workers runs them; enqueue never blocks the scan (overflow waits in the table). Timeouts and sidecar failures retry up to 3 times.',
   },
   {
     id: 'obs',
@@ -157,7 +157,7 @@ export const STAGES: Stage[] = [
     y: 560,
     components: ['sqlite'],
     detail:
-      'Partial data is salvaged into unassigned_transactions for user resolution; results below the 0.75 confidence floor land here too.',
+      'Partial data is salvaged into unassigned_transactions for user resolution; results below the 0.75 confidence floor, observations with no or an archived instrument, and mail from approved-but-unverified senders land here too.',
   },
   {
     id: 'upload',

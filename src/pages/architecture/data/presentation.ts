@@ -13,6 +13,7 @@
  * emerald for selection. Node cards carry a role glyph (cylinder / queue /
  * cloud / shield / rack) so components read like a system-design blueprint.
  */
+import { COUNTS, RELEASE_COMMANDS } from './counts';
 
 /**
  * UI theme tokens — the application's global design system (App.css "Global
@@ -227,7 +228,7 @@ export const ANALYSIS = {
     '**One processing path per job type** — historical scan, live polling and manual upload all converge on the same queues and the same Gate 1→2→3 / password-resolution logic.',
     '**Async acknowledgment, event-driven outcome** — expensive operations return immediately and report results via named events; the UI never blocks on multi-minute work.',
     '**Checkpoint everything long-running** — scans, Gmail history cursors, statement drafts and queued ingest jobs are durably resumable across crashes.',
-    '**Precision over recall** — Gate 3 never accepts a partial extraction and holds every layer to one 0.75 confidence floor; the Instrument Gate never defaults a missing identifier; a wrong PDF password re-prompts without losing context.',
+    '**Precision over recall** — Gate 3 never accepts a partial extraction and holds every layer to one 0.75 confidence floor (an unscored result fails it); the Instrument Gate never defaults a missing identifier; a wrong PDF password re-prompts without losing context.',
   ],
   profile: [
     {
@@ -240,7 +241,7 @@ export const ANALYSIS = {
     },
     {
       k: 'Storage',
-      v: 'SQLCipher SQLite — 45 tables + FTS5 search index, 68 migrations, append-only audit + match trails; daily verified backup, 7 generations',
+      v: `SQLCipher SQLite — ${COUNTS.tables} tables + FTS5 search index, ${COUNTS.migrations} migrations, append-only audit + match trails; daily verified backup, 7 generations`,
     },
     {
       k: 'Sidecars',
@@ -248,7 +249,7 @@ export const ANALYSIS = {
     },
     {
       k: 'IPC',
-      v: '149 registered Tauri commands (141 in release builds), each needing an explicit permission; 39 writes test-enforced through assert_write_allowed',
+      v: `${COUNTS.commands} registered Tauri commands (${RELEASE_COMMANDS} in release builds), each needing an explicit permission; ${COUNTS.gatedCommands} call assert_write_allowed and every other one is allow-listed with a reason (test-enforced)`,
     },
     {
       k: 'Licensing',
@@ -257,9 +258,9 @@ export const ANALYSIS = {
   ],
   gaps: [
     '**ADR-024 — NetworkClient coverage.** The updater check is the one remaining outbound path that leaves no Network Activity row. Gmail, Google OAuth, licensing and both model downloads are logged.',
-    '**IPC command-count discrepancy.** The code registers 149 commands in generate_handler!; the design docs quote 143 and 151; figures are recorded rather than silently reconciled.',
+    `**IPC command-count discrepancy.** The code registers ${COUNTS.commands} commands in generate_handler!; the design docs quote 143 and 151; figures are recorded rather than silently reconciled.`,
     '**License state machine.** Two write paths: 8 local, time-driven edges (is_legal_transition) and server-verified updates (apply_server_validation) that can set any server state. Locked has no local exit but a renewal lifts it at the next validation.',
-    '**Statement row extraction.** All seven bank-specific parsers matched zero of nine real statements; `parse_universal` took the corpus 0→79 rows.',
+    '**Statement row extraction.** All seven bank-specific parsers matched zero of nine real statements and were removed (audit F-2); `parse_universal` (0→79 rows on that corpus) is the one deterministic parser, with the LLM fallback for pages it cannot read.',
   ],
   help: 'Click any component to inspect it. Use **Impact** for the downstream blast radius, **Labels** to pin connector labels, and the workflow rail to step through an end-to-end flow — the participating components light up as you go.',
 };

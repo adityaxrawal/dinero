@@ -6,6 +6,7 @@
  * exercise the connection so the workflow views can highlight exactly the
  * relevant subgraph.
  */
+import { COUNTS } from './counts';
 import type { ConnectionDef } from './types';
 
 export const CONNECTIONS: ConnectionDef[] = [
@@ -43,7 +44,7 @@ export const CONNECTIONS: ConnectionDef[] = [
     from: 'ipc-bridge',
     to: 'license-gate',
     kind: 'gate',
-    label: 'assert_write_allowed (39 writes)',
+    label: `assert_write_allowed (${COUNTS.gatedCommands} commands)`,
     detail: 'Every mutating command passes the write-gate before touching the DB or network.',
   },
   {
@@ -490,7 +491,7 @@ export const CONNECTIONS: ConnectionDef[] = [
     from: 'tx-queue',
     to: 'events',
     kind: 'event',
-    label: 'transaction_created / reconciliation_cluster',
+    label: 'transaction_created / reconciliation_cluster / unassigned_changed',
   },
 
   // ── licensing ────────────────────────────────────────────────────────────
@@ -501,7 +502,7 @@ export const CONNECTIONS: ConnectionDef[] = [
     kind: 'sync',
     label: 'verify JWT + device',
     detail:
-      'Cached status is never trusted alone; the JWT is re-verified and device-bound on every check.',
+      'Cached status is never trusted alone; the JWT is re-verified and device-bound on every check, and its signed state decides entitlement.',
   },
   {
     id: 'licstate-db',

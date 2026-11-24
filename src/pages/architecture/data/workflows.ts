@@ -5,6 +5,7 @@
  *
  * Sources: docs/design/00 §3 (master lifecycle), Documents 01–05.
  */
+import { COUNTS } from './counts';
 import type { WorkflowDef } from './types';
 import { CONNECTIONS } from './connections';
 
@@ -249,7 +250,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'gate-1',
         title: 'Gate 1 — sender verification',
         detail:
-          'Registry match against verified_senders_registry.json plus homoglyph / punycode / typo-squat detection (Damerau-Levenshtein 0.85). Verified senders get an SPF/DKIM/DMARC cross-check that can only downgrade, never promote.',
+          'Registry match against verified_senders_registry.json (subdomains only when listed) plus homoglyph / punycode / typo-squat detection (Damerau-Levenshtein 0.85 on UTS #39 skeletons). Verified senders get an SPF/DKIM/DMARC cross-check that can only downgrade, never promote.',
         components: ['message-processor'],
         relations: ['sync'],
         outcomes: [
@@ -275,9 +276,9 @@ const AUTHORED: WorkflowDef[] = [
       },
       {
         id: 'gate-3',
-        title: 'Gate 3 — extraction ladder',
+        title: 'Extraction ladder + Gate 3 (mandatory fields)',
         detail:
-          'Layers 1→5 (learned rules → bank template → generic regex → NLP → statement cross-ref), cheapest first. A mandatory-field check rejects partial extractions, and every layer must reach MIN_LEDGER_CONFIDENCE = 0.75 to enter the ledger. Ladder exhaustion on an LLM-eligible machine (enough RAM and a downloaded model) defers to the durable Layer 6 queue.',
+          'Layers 1→5 (learned rules → bank template → generic regex → NLP → statement cross-ref), cheapest first. A mandatory-field check (Gate 3) rejects partial extractions, and every layer must reach MIN_LEDGER_CONFIDENCE = 0.75 to enter the ledger (an unscored result fails). Mail from a sender the user approved but the registry does not verify always goes to review. Ladder exhaustion on an LLM-eligible machine (enough RAM and a downloaded model) defers to the durable Layer 6 queue.',
         components: [
           'extraction-ladder',
           'learning',
@@ -382,7 +383,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'instrument',
         title: 'Instrument Gate',
         detail:
-          'Issuer + masked-ID are MANDATORY — never defaulted. Missing metadata parks the statement as awaiting_instrument and emits INSTRUMENT_CONFIRMATION_REQUIRED. resolve_or_create_instrument runs an atomic INSERT OR IGNORE on UNIQUE(type, issuer_name, masked_identifier).',
+          'Issuer + masked-ID are MANDATORY — never defaulted. Missing metadata parks the statement as awaiting_instrument and emits INSTRUMENT_CONFIRMATION_REQUIRED. The shared resolver canonicalises issuer and masked id, then runs an atomic INSERT OR IGNORE on UNIQUE(type, issuer_name, masked_identifier); an archived instrument parks the statement for confirmation.',
         components: ['instrument-gate', 'sqlite'],
         relations: ['gate', 'db'],
         outcomes: [
@@ -394,7 +395,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'dedup-rows',
         title: 'Duplicate check + row extraction',
         detail:
-          'check_billing_cycle_duplicate (authoritative, post-metadata) rejects and audits duplicates. Row extraction runs per-bank parsers then parse_universal; pages with no deterministic rows fall back to row_llm with a verbatim-quote hallucination guard.',
+          'check_billing_cycle_duplicate (authoritative, post-metadata) rejects and audits duplicates. Row extraction runs parse_universal (the one deterministic parser); pages with no deterministic rows fall back to row_llm with a verbatim-quote hallucination guard.',
         components: ['statement-pipeline', 'row-extractor', 'llm-manager'],
         relations: ['sync'],
       },
@@ -460,8 +461,7 @@ const AUTHORED: WorkflowDef[] = [
       {
         id: 'gate-check',
         title: 'assert_write_allowed',
-        detail:
-          'Fail-closed license check: the cached status is never trusted alone — the backing JWT is cryptographically re-verified and device-bound. Invalid JWT is treated as Locked. 39 write commands are test-enforced to call this.',
+        detail: `Fail-closed license check: the cached status is never trusted alone — the backing JWT is cryptographically re-verified and device-bound, and its signed state decides. Invalid JWT is treated as Locked. ${COUNTS.gatedCommands} commands call it; every other one is allow-listed with a reason (test-enforced).`,
         components: ['license-gate', 'license-state'],
         relations: ['gate'],
         outcomes: [
@@ -516,7 +516,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'durable',
         title: 'Durable queue drain',
         detail:
-          'layer6_pending_jobs backs the queue, so jobs survive app restart. A fixed pool of 6 workers drains the channel (cap 256), so at most 6 jobs are in flight. A job is tried at most 3 times, then marked dead and left in review.',
+          'layer6_pending_jobs backs the queue, so jobs survive app restart. A fixed pool of 6 workers drains the channel (cap 256), so at most 6 jobs are in flight; enqueue never waits — overflow stays in the table and workers refill. Timeouts and sidecar failures retry up to 3 times; a missing model uses no attempt; a dead job is re-labelled extraction_failed.',
         components: ['layer6-queue', 'sqlite'],
         relations: ['db'],
       },

@@ -1,12 +1,13 @@
 /**
  * Component inventory for the Dinero architecture.
  *
- * Derived from `docs/design/00-master-system-design.md` and Documents 01–05
- * (re-verified against the tree 2026-08-01; updated 2026-11-23 for every
- * fix from the 2026-11-22 system design review). Every `sources` entry points at a
+ * Describes the code as built (first derived from `docs/design/00-05`;
+ * updated 2026-11-23 for the system design review and 2026-11-24 for the
+ * architecture audit remediation, see ADR-025). Every `sources` entry points at a
  * real file in the repository. `confidence: 'gap'` marks known gaps or
  * discrepancies the verification surfaced.
  */
+import { COUNTS, RELEASE_COMMANDS } from './counts';
 import type { ComponentDef } from './types';
 
 const CORE: ComponentDef[] = [
@@ -140,7 +141,7 @@ const CORE: ComponentDef[] = [
       'src-tauri/capabilities/app-commands.json',
     ],
     apiSurface: [
-      '149 commands registered in generate_handler! (141 in release builds: the 8 debug_* commands are debug-only)',
+      `${COUNTS.commands} commands registered in generate_handler! (${RELEASE_COMMANDS} in release builds: the ${COUNTS.debugCommands} debug_* commands are debug-only)`,
     ],
     facts: [
       'Write commands are test-enforced to call assert_write_allowed (39 named writes)',
@@ -168,10 +169,7 @@ const CORE: ComponentDef[] = [
     technologies: ['Rust', 'AppError contract'],
     inputs: ['Raw command args'],
     outputs: ['AppError::Validation or validated args'],
-    sources: [
-      'src-tauri/src/ipc/validation.rs',
-      'src-tauri/src/ipc/system_warnings.rs',
-    ],
+    sources: ['src-tauri/src/ipc/validation.rs', 'src-tauri/src/ipc/system_warnings.rs'],
     apiSurface: ['validate_account_id', 'validate_date_range'],
     facts: [
       'Re-derived warnings (gmail_sync_stale, gmail_token_degraded, low_ram, clock_skew) are not restored on launch; their checks raise them again',
@@ -185,10 +183,10 @@ const CORE: ComponentDef[] = [
     kind: 'gate',
     purpose: 'Fail-closed seam — every mutating command must pass assert_write_allowed.',
     description:
-      'Single enforcement point for license states. Only Active, Grace, PastDue and an unexpired Trial may write; Locked, Canceled, Expired and AnonymousEval are read-only. A lapsed licence also stops background ingestion (polling checks the gate each cycle). Cached status is never trusted alone: the backing JWT is cryptographically re-verified and device-bound on every check. Invalid JWT is treated as Locked.',
+      'Single enforcement point for license states. Only Active, Grace, PastDue and an unexpired Trial may write; Locked, Canceled, Expired and AnonymousEval are read-only. A lapsed licence also stops background ingestion (polling checks the gate each cycle). Cached status is never trusted alone: the backing JWT is cryptographically re-verified and device-bound, and its signed state decides entitlement when present. Invalid JWT is treated as Locked.',
     responsibilities: [
-      'assert_write_allowed for 39 named write commands (test-enforced)',
-      'Deliberately exempt: license_activate / license_deactivate (escape hatch from Locked) and backup export/import',
+      `assert_write_allowed in ${COUNTS.gatedCommands} commands; every other registered command is on an UNGATED allow-list with a reason (test-enforced over the whole capability file)`,
+      'Deliberately exempt: licensing and billing (escape hatch from Locked), recovery and backup, consent and diagnostics, machine preferences, stop/pause',
       'Fail closed on unverifiable state',
     ],
     technologies: ['jsonwebtoken (RS256)', 'device binding (machine-uid)'],
@@ -298,6 +296,7 @@ const CORE: ComponentDef[] = [
       'Resume from the contiguous finished prefix (low-water mark), not a processed count',
       'Cancel rolls back only rows this scan created, in one all-or-nothing transaction; triaged review entries are kept',
       'Statement attachments downloaded at most 2 at a time per scan',
+      'Attachments go through the same statement intake as live polling (statement_intake.rs); any failure is recorded in scan_failed_messages',
       'Optional re-check of previously rejected emails',
     ],
     technologies: ['tokio JoinSet', 'processing_checkpoints table', 'BackgroundTaskRegistry'],
@@ -361,6 +360,7 @@ const CORE: ComponentDef[] = [
       'Per-cycle retry budget 8 (1,2,4,8,16,32,60,60 + ±15% jitter) for rate limits (429 and 403 rateLimitExceeded) and 5xx',
       'Each poll cycle checks the license gate; a lapsed licence stops background polling',
       'Transaction and mandate jobs are persisted (pending_ingest_jobs) before the cursor advances and replayed at launch',
+      'Statement attachments go through statement_intake.rs: the PDF is staged before the row that marks the email processed, and any failure is recorded in scan_failed_messages for Retry failed',
       'A message that fails processing gets a scan_failed_messages row (retryable via Retry failed)',
       'History 404/400: cursor re-seeded from users.getProfile + catch-up scan (deferred and retried if a scan is already running)',
       'Degraded accounts are skipped; transient token errors keep the account ACTIVE',
@@ -398,10 +398,12 @@ const CORE: ComponentDef[] = [
     apiSurface: ['process_message', 'SenderVerificationResult', 'ContentClass'],
     facts: [
       'SPF/DKIM/DMARC only trusts authserv-id naming a Google host (anti-relay-injection)',
-      'Unverified-but-known-history senders are "rescued" as unknown bank',
+      'Senders the user approved but the registry does not verify are read, but what they yield goes to review (unverified_sender), never straight to the ledger',
+      'A bank subdomain is trusted only if the registry lists it; look-alike distance is measured on UTS #39 skeletons',
       'Gate 3 never accepts a partial extraction (precision over recall)',
-      'One confidence floor for every layer: below MIN_LEDGER_CONFIDENCE = 0.75 a result goes to review, not the ledger',
-      'Every decision (accepted, rejected, mandate) is recorded in processed_messages so rescans skip it',
+      'One confidence floor for every layer: below MIN_LEDGER_CONFIDENCE = 0.75, or with no score at all, a result goes to review, not the ledger (Layer 3 is capped at 0.7 and NLP scores 0.5, so both always go to review)',
+      'merchant_raw is always an exact span of the message; labels such as "Internal Transfer (A/c 1527)" or "Balance Update" are display labels (merchant_normalized)',
+      'Rejections and mandates are recorded in processed_messages; an accepted message is recognised by its observation row, so rescans skip both',
       'email_scan_selected/rejected.log are debug-build only and hold metadata, never the body',
     ],
     confidence: 'verified',
@@ -650,7 +652,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
       'Mandatory metadata gate after parsing: if issuer or masked identifier is missing, the statement is parked as awaiting_instrument and INSTRUMENT_CONFIRMATION_REQUIRED is emitted. The user confirms the instrument; nothing is defaulted silently.',
     responsibilities: [
       'Require issuer_name + masked_identifier',
-      'resolve_or_create_instrument (atomic INSERT OR IGNORE)',
+      'One shared resolver (db::instruments::get_or_create_instrument) for statements and email: canonical issuer ("HDFC Bank" → "HDFC") + cleaned masked id, atomic INSERT OR IGNORE',
       'Save working password only after the gate passes',
     ],
     technologies: ['instruments table UNIQUE(type, issuer_name, masked_identifier)'],
@@ -660,6 +662,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     apiSurface: ['statements_confirm_instrument'],
     facts: [
       'The UNIQUE constraint is what stops two concurrent workers creating duplicate instruments',
+      'An archived instrument is never linked silently: email/Layer-6 activity goes to review (instrument_archived), a statement is parked for confirmation',
     ],
     confidence: 'verified',
   },
@@ -670,9 +673,9 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     kind: 'service',
     purpose: 'Extract transaction rows from parsed statement text (deterministic first, LLM last).',
     description:
-      'row_extractor.rs runs per-bank parsers then parse_universal as the primary path; layout.rs rebuilds column layout from character geometry. Pages with zero deterministic rows that look like tables fall back to row_llm.rs, where every row must quote amount and description verbatim (hallucination guard).',
+      'row_extractor.rs runs parse_universal, the one deterministic row parser (the bank-specific parsers were removed, audit F-2); layout.rs rebuilds column layout from character geometry. Pages with zero deterministic rows that look like tables fall back to row_llm.rs, where every row must quote amount and description verbatim (hallucination guard).',
     responsibilities: [
-      'BankParser::detect + extract_rows',
+      'extract_rows (parse_universal)',
       'parse_universal fallback',
       'wrapped_description reassembly',
       'Per-page row_llm fallback with verbatim-quote guard',
@@ -688,7 +691,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     ],
     apiSurface: ['statement_drafts.rows_json (column)'],
     facts: [
-      'Verification correction (2026-08-01): all seven bank-specific parsers matched zero of nine real statements; parse_universal took the corpus 0→79 rows',
+      'Verification correction (2026-08-01): all seven bank-specific parsers matched zero of nine real statements; parse_universal took the corpus 0→79 rows. The bank parsers were removed on 2026-11-24 (audit F-2)',
       'OCR_TEXT_THRESHOLD = 50 non-whitespace chars triggers Tesseract per page',
     ],
     confidence: 'verified',
@@ -726,6 +729,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     facts: [
       'Retried statements work because the encrypted PDF was persisted at intake',
       'PDFs awaiting a password are kept 7 days (pdf_retained_until), then removed',
+      'A committed statement keeps its encrypted PDF for 30 days after commit, then it is deleted',
     ],
     confidence: 'verified',
   },
@@ -738,7 +742,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     kind: 'queue',
     purpose: 'Normalize + fingerprint + reconcile every transaction observation.',
     description:
-      'Tokio mpsc channel (capacity 256) with 4 persistent workers routing to reconcile_transactionally. Fed by Gate 3 routing and by statement commits. Jobs from Gmail are persisted in pending_ingest_jobs until processed, so a quit or crash never loses them.',
+      'Tokio mpsc channel (capacity 256) with 4 persistent workers calling reconciliation::engine::ingest_observation. Fed by Gate 3 routing; statement commits call the same entry point directly. Jobs from Gmail are persisted in pending_ingest_jobs until processed, so a quit or crash never loses them.',
     responsibilities: [
       'Normalize + fingerprint observations',
       'Write idempotent observations',
@@ -751,8 +755,8 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     apiSurface: ['pipeline_pause / pipeline_resume / pipeline_status (covers this queue)'],
     facts: [
       '4 workers, capacity 256',
-      'Persisted jobs are replayed at launch; after 3 failed attempts a job is marked dead',
-      'An observation whose reconciliation fails is kept (unassigned for review), never dropped',
+      'A failed job is kept: retried in-session after 30 s and replayed at launch; after 3 failed attempts it is marked dead and listed under Retry failed',
+      'An observation that cannot be reconciled (no instrument, archived instrument, reconciliation error) is kept with a review entry, never dropped',
     ],
     confidence: 'verified',
   },
@@ -809,7 +813,8 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     name: 'Layer 6 Queue (LLM)',
     layer: 'queues',
     kind: 'queue',
-    purpose: 'Durable deferred-LLM work so slow inference never stalls a scan.',
+    purpose:
+      'Durable deferred-LLM work so slow inference never stalls a scan (enqueue never waits; overflow stays in the table).',
     description:
       'Tokio mpsc channel (capacity 256) drained by a fixed pool of 6 workers, backed by the layer6_pending_jobs table so jobs survive restart. Not a routing destination — a Transaction Queue worker enqueues here after ladder Layers 1–5 all failed.',
     responsibilities: [
@@ -823,8 +828,10 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     sources: ['src-tauri/src/ingestion/queues.rs', 'src-tauri/src/db/layer6_jobs.rs'],
     apiSurface: ['layer6_pending_jobs'],
     facts: [
-      'At most 6 jobs in flight; the channel capacity is the backpressure',
-      'A job is tried at most 3 times, then marked dead and left in review',
+      'At most 6 jobs in flight; a full queue does not block the scan — overflow waits in layer6_pending_jobs and workers refill as it drains',
+      'Rejections are final; timeouts and sidecar failures retry up to 3 times; no attempt is used while no model is available; a dead job is re-labelled extraction_failed',
+      'Success is applied by engine::complete_observation: observation update, reconciliation and settling the review entry commit in one transaction',
+      'Bodies over 2,000 characters are sent as first and last chunks',
     ],
     confidence: 'verified',
   },
@@ -860,7 +867,14 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
       'src-tauri/src/reconciliation/prefilter.rs',
     ],
     apiSurface: ['useReconciliationClusters', 'useResolveCluster'],
-    facts: ['10 modules', 'Deliberate refusal to auto-resolve an ambiguous cluster'],
+    facts: [
+      '10 modules',
+      'Deliberate refusal to auto-resolve an ambiguous cluster',
+      'Two entry points, each owning its transaction: ingest_observation (new observation) and complete_observation (Layer-6 completion of an observation held in review)',
+      'ingest_observation never stores an observation with neither an instrument nor a review entry',
+      'Ledger rows are created only via canonical.rs, called only from engine.rs and cluster.rs (human cluster resolution); a source-scan test in CI enforces it (tests/single_write_path.rs)',
+      'Gate 3 failures write their observation + review entry directly (record_unassigned_transaction): they are never reconciled',
+    ],
     confidence: 'inferred',
     notes: ['Reconciliation engine has no dedicated design doc (Doc 05 §13 gap list).'],
   },
@@ -953,16 +967,21 @@ const INFRA: ComponentDef[] = [
     name: 'Local SQLite (SQLCipher)',
     layer: 'persistence',
     kind: 'store',
-    purpose: 'The canonical ledger — 45 tables, 68 migrations, append-only audit trails.',
+    purpose: `The canonical ledger — ${COUNTS.tables} tables, ${COUNTS.migrations} migrations, append-only audit trails.`,
     description:
       'rusqlite with bundled-sqlcipher, pooled via deadpool-sqlite, migrations via sqlx. transactions.amount is a generated virtual column (display only); all arithmetic uses amount_minor. audit_log and match_decisions carry BEFORE UPDATE/DELETE triggers so append-only is enforced by SQLite itself.',
     responsibilities: [
       'Store ledger, observations, statements, instruments, checkpoints, audit',
-      '45 tables plus the transactions_fts FTS5 virtual table',
+      `${COUNTS.tables} tables plus the transactions_fts FTS5 virtual table`,
       '2 immutability triggers: immutable_audit_log, immutable_match_decisions',
       'Failure/deferral tables: unassigned_transactions, unprocessed_statements, scan_failed_messages, layer6_pending_jobs, pending_ingest_jobs',
     ],
-    technologies: ['rusqlite (bundled-sqlcipher)', 'deadpool-sqlite', 'sqlx migrations', 'FTS5'],
+    technologies: [
+      'rusqlite (bundled-sqlcipher)',
+      'deadpool-sqlite (8 connections)',
+      'sqlx migrations (foreign keys off, foreign_key_check after)',
+      'FTS5',
+    ],
     inputs: ['All pipeline writes'],
     outputs: ['Ledger query results'],
     sources: [
@@ -971,7 +990,11 @@ const INFRA: ComponentDef[] = [
       'src-tauri/src/db/backup.rs',
       'src-tauri/src/db/maintenance.rs',
     ],
-    apiSurface: ['63 db/ source files', '68 migrations', '17 triggers'],
+    apiSurface: [
+      `${COUNTS.dbSourceFiles} db/ source files`,
+      `${COUNTS.migrations} migrations`,
+      `${COUNTS.triggers} triggers`,
+    ],
     facts: [
       'transactions.amount = GENERATED ALWAYS AS (amount_minor / 100.0) VIRTUAL — unwritable',
       'instruments UNIQUE(type, issuer_name, masked_identifier) enables atomic INSERT OR IGNORE',
@@ -1180,7 +1203,8 @@ const INFRA: ComponentDef[] = [
     name: 'Logging & Diagnostics',
     layer: 'workers',
     kind: 'service',
-    purpose: 'PII-redacting structured logs, crash reporting, integrity diagnostics.',
+    purpose:
+      'PII-redacting structured logs, crash reporting, integrity diagnostics. Full LLM prompts are logged in debug builds only.',
     description:
       'app-logs.log is wrapped in a RedactingWriter — redaction happens at write time, not lazy export. Release builds write to ~/Library/Logs/com.dinero.app (debug builds: the repository root). Daily rotation with bounded retention (default 15 days). Global panic hook writes to the log; tokio task boundaries isolate panics; a lock poisoned by a panic is recovered rather than crashing later callers. dev_review.rs was removed (it recorded PII).',
     responsibilities: [

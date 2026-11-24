@@ -1,5 +1,5 @@
 /**
- * Verified database model — 45 tables built by applying all 68 migrations
+ * Verified database model — the tables built by applying every migration (counts in ./counts.ts)
  * (recounted 2026-11-23). Only the architecturally significant entities and
  * their relationships are modelled here; the five failure/deferral tables and
  * the two immutability triggers are called out explicitly because they change
@@ -22,7 +22,11 @@ export const ENTITIES: EntityDef[] = [
       { name: 'historical_scan_months', type: 'INTEGER' },
       { name: 'llm_model', type: 'TEXT' },
       { name: 'statement_preference', type: 'TEXT', note: 'auto | manual' },
-      { name: 'onboarded_at', type: 'DATETIME', note: 'onboarding gate; set by the preferences save' },
+      {
+        name: 'onboarded_at',
+        type: 'DATETIME',
+        note: 'onboarding gate; set by the preferences save',
+      },
     ],
   },
   {
@@ -155,7 +159,11 @@ export const ENTITIES: EntityDef[] = [
       { name: 'masked_identifier', type: 'TEXT' },
       { name: 'rows_json', type: 'TEXT' },
       { name: 'status', type: 'TEXT', note: 'pending_review | committing | committed …' },
-      { name: 'missing_pages', type: 'TEXT', note: 'JSON page numbers; commit needs acknowledge_partial' },
+      {
+        name: 'missing_pages',
+        type: 'TEXT',
+        note: 'JSON page numbers; commit needs acknowledge_partial',
+      },
     ],
   },
   {
@@ -364,7 +372,7 @@ export const ENTITIES: EntityDef[] = [
  * `logical: true` marks a relationship the schema does not enforce: either the
  * column has no FOREIGN KEY constraint, or the link is a lifecycle step with no
  * stored reference. These render dashed. Everything else is a real FK
- * (verified with pragma_foreign_key_list against all 68 migrations).
+ * (verified with pragma_foreign_key_list against every migration).
  */
 export const ENTITY_RELATIONS: EntityRelation[] = [
   { from: 'local_profile', to: 'connected_accounts', cardinality: '||--o{', label: 'has' },
@@ -501,7 +509,7 @@ export const SCHEMA_FACTS = [
   {
     fact: 'instruments has UNIQUE(type, issuer_name, masked_identifier)',
     consequence:
-      "What resolve_instrument()'s atomic INSERT OR IGNORE depends on to avoid duplicates.",
+      'What the one shared resolver (get_or_create_instrument, canonical issuer + cleaned masked id) depends on to avoid duplicates; archived rows hold their key, so an archived card is reported, never duplicated.',
   },
   {
     fact: 'transaction_observations.source_pipeline is CHECK-constrained',
@@ -511,6 +519,6 @@ export const SCHEMA_FACTS = [
   {
     fact: 'Five failure/deferral tables exist',
     consequence:
-      'unassigned_transactions, unprocessed_statements, scan_failed_messages, layer6_pending_jobs, pending_ingest_jobs. The two job tables mark a job dead after 3 attempts; there is no generic dead-letter table.',
+      'unassigned_transactions, unprocessed_statements, scan_failed_messages, layer6_pending_jobs, pending_ingest_jobs. The two job tables mark a job dead after 3 attempts (a dead ingest job is listed in scan_failed_messages); there is no generic dead-letter table. At most one open review entry per observation (partial unique index); unassigned and draft statuses are CHECK-constrained.',
   },
 ];
