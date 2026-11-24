@@ -273,9 +273,16 @@ mod tests {
 
         let benchmark_yml = fs::read_to_string(PathBuf::from("../.github/workflows/benchmark.yml"))
             .expect("benchmark.yml missing");
+        // Owner decision (audit F-4): the labelled corpus is private and is
+        // read locally, never checked out in CI.
         assert!(
-            benchmark_yml.contains("lfs: true"),
-            "Must checkout with Git LFS"
+            !benchmark_yml.contains("lfs: true"),
+            "the private corpus must not be checked out in CI"
+        );
+        let gate = fs::read_to_string(PathBuf::from("src/tests/phase10_quality_gates_tests.rs")).unwrap();
+        assert!(
+            gate.contains("real-test-data/benchmark"),
+            "the quality gate must read the local corpus"
         );
         assert!(benchmark_yml.contains("cron:"), "Must run as a cron job");
     }
