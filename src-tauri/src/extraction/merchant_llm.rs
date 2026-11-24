@@ -133,10 +133,15 @@ pub fn validate(raw_output: &str, body: &str, categories: &[String]) -> Option<M
     }
 
     if crate::extraction::rule_synthesis::find_ignore_case(body, &in_email).is_none() {
-        tracing::debug!(
-            merchant_in_email = %in_email,
-            "merchant cleanup: rejected, claimed span absent from source body"
-        );
+        // The span is email content: debug builds only (audit N-C1).
+        if cfg!(debug_assertions) {
+            tracing::debug!(
+                merchant_in_email = %in_email,
+                "merchant cleanup: rejected, claimed span absent from source body"
+            );
+        } else {
+            tracing::debug!("merchant cleanup: rejected, claimed span absent from source body");
+        }
         return None;
     }
 

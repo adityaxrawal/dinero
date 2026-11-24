@@ -80,8 +80,9 @@ pub fn run() {
     use tracing_subscriber::util::SubscriberInitExt;
     // RUST_LOG wins when set; otherwise a default that keeps this app's own
     // targets verbose while leaving dependencies at info.
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,dinero_app_lib=trace,dinero_app=trace,frontend=trace,api_calls=trace,network=trace,llm_calls=info,ingestion_extraction=info"));
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        tracing_subscriber::EnvFilter::new(crate::logging::default_log_filter(cfg!(debug_assertions)))
+    });
 
     tracing_subscriber::registry()
         .with(env_filter)

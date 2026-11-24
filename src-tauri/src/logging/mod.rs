@@ -469,15 +469,55 @@ impl EmailTrace {
     }
 }
 
-impl Drop for EmailTrace {
-    fn drop(&mut self) {
-        if self.lines.is_empty() {
-            return;
+impl EmailTrace {
+    /// The block to log, or `None` when nothing may be logged. Debug builds
+    /// only (owner decision, audit N-C1): the trace carries subjects, snippets
+    /// and extracted values, and log files are plaintext.
+    fn report(&self, debug_build: bool) -> Option<String> {
+        if !debug_build || self.lines.is_empty() {
+            return None;
         }
         let mut report = format!("### Processing Email ID: `{}`\n", self.message_id);
         for line in &self.lines {
             report.push_str(&format!("- {}\n", line));
         }
-        tracing::info!(target: "ingestion_extraction", "\n{}", report);
+        Some(report)
+    }
+}
+
+impl Drop for EmailTrace {
+    fn drop(&mut self) {
+        if let Some(report) = self.report(cfg!(debug_assertions)) {
+            tracing::info!(target: "ingestion_extraction", "\n{}", report);
+        }
+    }
+}
+
+/// The log filter used when RUST_LOG is not set. The per-email ingestion
+/// trace is off in release builds (owner decision, audit N-C1).
+pub fn default_log_filter(debug_build: bool) -> String {
+    let ingestion_extraction = if debug_build { "info" } else { "off" };
+    format!(
+        "info,dinero_app_lib=trace,dinero_app=trace,frontend=trace,api_calls=trace,network=trace,llm_calls=info,ingestion_extraction={ingestion_extraction}"
+    )
+}
+
+#[cfg(test)]
+mod release_privacy_tests {
+    use super::*;
+
+    #[test]
+    fn email_trace_is_never_emitted_in_release() {
+        let mut trace = EmailTrace::new("msg1");
+        trace.info("Rejected Subject: Rs 500 debited at SWIGGY");
+        assert!(trace.report(false).is_none());
+        assert!(trace.report(true).unwrap().contains("SWIGGY"));
+        trace.lines.clear(); // keep Drop from logging during the test
+    }
+
+    #[test]
+    fn release_filter_turns_the_ingestion_trace_off() {
+        assert!(default_log_filter(false).ends_with("ingestion_extraction=off"));
+        assert!(default_log_filter(true).ends_with("ingestion_extraction=info"));
     }
 }

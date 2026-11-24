@@ -586,10 +586,14 @@ impl MessageProcessor {
                             if !crate::extraction::merchant_normalizer::is_plausible_merchant_name(
                                 &cleaned,
                             ) {
-                                tracing::debug!(
-                                    merchant_raw = %raw,
-                                    "Rejected generic merchant candidate; routing as missing counterparty"
-                                );
+                                // The merchant is email content: debug builds
+                                // only (audit N-C1).
+                                if cfg!(debug_assertions) {
+                                    tracing::debug!(
+                                        merchant_raw = %raw,
+                                        "Rejected generic merchant candidate; routing as missing counterparty"
+                                    );
+                                }
                                 obs.merchant_raw = None;
                             }
                         }
