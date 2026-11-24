@@ -168,15 +168,88 @@ pub(crate) async fn enqueue_layer6_job(pool: &Pool, tx: &mpsc::Sender<Layer6Job>
     };
     if let Err(e) = persisted {
         // Still queued: processing it in this session beats dropping it outright,
-        // but it is no longer replayable if the app exits first.
+        // but it is no longer replayable if the app exits first -- so this one
+        // waits for a slot rather than being left behind.
         tracing::error!(
             "Failed to persist Layer 6 job for unassigned_id='{}' — queueing without durability: {:#}",
             job.unassigned_id,
             e
         );
+        if tx.send(job).await.is_err() {
+            tracing::error!("Layer 6 Queue closed — dropping job");
+        }
+        return;
     }
-    if tx.send(job).await.is_err() {
-        tracing::error!("Layer 6 Queue closed — dropping job");
+    // Durable, so never wait for a slot: a full queue used to block the scan
+    // at LLM speed (audit A-7). Overflow stays in the table and a worker
+    // refills the queue once it drains.
+    offer_layer6_job(tx, job);
+}
+
+/// Jobs queued or running in this session, by unassigned id, so a refill
+/// never queues one twice. Removed when a job completes; a job that did not
+/// complete stays claimed and waits for the next launch, as before.
+static LAYER6_CLAIMED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(Default::default);
+/// Set when a durable job did not fit in the queue.
+static LAYER6_OVERFLOW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Queues a persisted job without waiting; returns false if it did not fit
+/// (it stays in `layer6_pending_jobs` and the overflow flag is set).
+fn offer_layer6_job(tx: &mpsc::Sender<Layer6Job>, job: Layer6Job) -> bool {
+    let id = job.unassigned_id.clone();
+    if let Ok(mut claimed) = LAYER6_CLAIMED.lock() {
+        claimed.insert(id.clone());
+    }
+    match tx.try_send(job) {
+        Ok(()) => true,
+        Err(e) => {
+            if let Ok(mut claimed) = LAYER6_CLAIMED.lock() {
+                claimed.remove(&id);
+            }
+            match e {
+                mpsc::error::TrySendError::Full(_) => {
+                    LAYER6_OVERFLOW.store(true, std::sync::atomic::Ordering::SeqCst);
+                    tracing::debug!("Layer 6 queue full — unassigned_id='{}' waits in the table", id);
+                }
+                mpsc::error::TrySendError::Closed(_) => tracing::error!("Layer 6 Queue closed"),
+            }
+            false
+        }
+    }
+}
+
+/// Moves overflowed jobs from the table into the queue until it is full
+/// again (audit A-7). Only one worker refills at a time.
+async fn refill_layer6_queue(pool: &Pool, tx: &mpsc::Sender<Layer6Job>, app_dir: &std::path::Path) {
+    if !LAYER6_OVERFLOW.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let pending = match pool.get().await {
+        Ok(conn) => conn
+            .interact(|c| crate::db::layer6_jobs::select_all(c))
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    for job in pending {
+        let claimed = LAYER6_CLAIMED.lock().map(|c| c.contains(&job.id)).unwrap_or(true);
+        if claimed {
+            continue;
+        }
+        let layer6_job = Layer6Job {
+            observation_id: job.observation_id,
+            unassigned_id: job.id,
+            bank_name: job.bank_name,
+            body_text: job.body_text,
+            app_dir: app_dir.to_path_buf(),
+            internal_date_seconds: job.internal_date_seconds,
+        };
+        if !offer_layer6_job(tx, layer6_job) {
+            break;
+        }
     }
 }
 
@@ -334,8 +407,8 @@ pub async fn replay_pending_layer6_jobs(
             app_dir: app_dir.clone(),
             internal_date_seconds: job.internal_date_seconds,
         };
-        if tx.send(layer6_job).await.is_err() {
-            tracing::error!("Layer 6 Queue closed during startup replay");
+        // What does not fit is refilled by the workers as they drain.
+        if !offer_layer6_job(tx, layer6_job) {
             break;
         }
     }
@@ -487,7 +560,7 @@ pub fn spawn_queues<R: tauri::Runtime>(
     spawn_transaction_workers(transaction_rx, pool.clone(), app.clone());
     spawn_statement_dispatcher(statement_rx, pool.clone(), app.clone());
     spawn_mandate_workers(mandate_rx, pool.clone());
-    spawn_layer6_workers(layer6_rx, pool, learning);
+    spawn_layer6_workers(layer6_rx, layer6_tx.clone(), pool, learning);
 
     let handles = QueueHandles {
         transaction_tx,
@@ -577,6 +650,7 @@ fn spawn_queue_monitor<R: tauri::Runtime>(
 
 fn spawn_layer6_workers(
     rx: mpsc::Receiver<Layer6Job>,
+    tx: mpsc::Sender<Layer6Job>,
     pool: Pool,
     learning: crate::learning::LearningHandle,
 ) {
@@ -588,14 +662,21 @@ fn spawn_layer6_workers(
         let rx = Arc::clone(&rx);
         let pool = pool.clone();
         let learning = learning.clone();
+        let tx = tx.clone();
         tauri::async_runtime::spawn(async move {
             loop {
                 let job = { rx.lock().await.recv().await };
                 let Some(job) = job else { break };
                 crate::security::incident_response::wait_while_ingestion_paused().await;
                 ACTIVE_LAYER6_JOBS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                process_layer6_job(job, &pool, &learning).await;
+                let (id, app_dir) = (job.unassigned_id.clone(), job.app_dir.clone());
+                if process_layer6_job(job, &pool, &learning).await {
+                    if let Ok(mut claimed) = LAYER6_CLAIMED.lock() {
+                        claimed.remove(&id);
+                    }
+                }
                 ACTIVE_LAYER6_JOBS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                refill_layer6_queue(&pool, &tx, &app_dir).await;
             }
         });
     }
@@ -639,7 +720,7 @@ async fn process_layer6_job(
     job: Layer6Job,
     pool: &Pool,
     learning: &crate::learning::LearningHandle,
-) {
+) -> bool {
     use crate::extraction::llm::Layer6Outcome;
 
     let layer = crate::extraction::ladder::Layer6LlmLayer {
@@ -753,12 +834,13 @@ async fn process_layer6_job(
                 "Layer 6 background worker: no model available for observation_id='{}' — waiting",
                 job.observation_id
             );
-            return;
+            return false;
         }
     };
 
     if completed {
         delete_persisted_layer6_job(pool, &job.unassigned_id).await;
+        return true;
     } else {
         // A timeout, a dead sidecar or a failed write is what the durable queue
         // is for: keep the row so the next launch retries it -- but only up to
@@ -789,6 +871,7 @@ async fn process_layer6_job(
             );
         }
     }
+    false
 }
 
 /// Re-labels a review entry still waiting on enrichment as
@@ -2727,6 +2810,46 @@ mod ingest_failure_tests {
             .unwrap();
         assert_eq!(instrument, None);
         assert_eq!(reason, "instrument_archived");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod layer6_overflow_tests {
+    use super::*;
+
+    fn job(id: &str, dir: &std::path::Path) -> Layer6Job {
+        Layer6Job {
+            observation_id: format!("obs-{id}"),
+            unassigned_id: id.to_string(),
+            bank_name: "HDFC Bank".into(),
+            body_text: "Rs 100 debited".into(),
+            app_dir: dir.to_path_buf(),
+            internal_date_seconds: None,
+        }
+    }
+
+    /// Audit A-7: a full Layer-6 queue never blocks the producer (the scan);
+    /// the overflow waits in the table and is refilled once there is room.
+    #[tokio::test]
+    async fn full_queue_does_not_block_and_overflow_is_refilled() {
+        let dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pool = crate::db::init_db(dir.join("t.db")).await.unwrap();
+        let (tx, mut rx) = mpsc::channel::<Layer6Job>(1);
+
+        enqueue_layer6_job(&pool, &tx, job("a7-first", &dir)).await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            enqueue_layer6_job(&pool, &tx, job("a7-overflow", &dir)),
+        )
+        .await
+        .expect("enqueue must not wait for a queue slot");
+
+        assert_eq!(rx.recv().await.unwrap().unassigned_id, "a7-first");
+        assert!(rx.try_recv().is_err(), "the overflow job is not in the queue yet");
+        refill_layer6_queue(&pool, &tx, &dir).await;
+        assert_eq!(rx.try_recv().unwrap().unassigned_id, "a7-overflow");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
