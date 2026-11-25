@@ -62,6 +62,13 @@ pub fn record_failed_attempt(conn: &Connection, id: &str) -> Result<bool> {
     Ok(dead)
 }
 
+/// Failed attempts recorded so far for a job (0 if it has no row).
+pub fn attempts(conn: &Connection, id: &str) -> Result<i64> {
+    Ok(conn
+        .query_row("SELECT attempts FROM layer6_pending_jobs WHERE id = ?1", params![id], |r| r.get(0))
+        .unwrap_or(0))
+}
+
 /// Outstanding (not dead) jobs, replayed at startup.
 pub fn select_all(conn: &Connection) -> Result<Vec<PendingLayer6Job>> {
     let mut stmt = conn.prepare(

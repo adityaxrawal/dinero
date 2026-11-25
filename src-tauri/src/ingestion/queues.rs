@@ -130,6 +130,7 @@ pub struct MandateJob {
     pub raw_body: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct Layer6Job {
     pub observation_id: String,
     pub unassigned_id: String,
@@ -672,7 +673,17 @@ fn spawn_layer6_workers<R: tauri::Runtime>(
                 crate::security::incident_response::wait_while_ingestion_paused().await;
                 ACTIVE_LAYER6_JOBS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let (id, app_dir) = (job.unassigned_id.clone(), job.app_dir.clone());
+                let retry_job = job.clone();
                 let done = process_layer6_job(job, &pool, &learning).await;
+                // Offered again after the delay; the claim is kept meanwhile so
+                // a refill cannot queue it twice (owner decision, audit N-A3).
+                if let Some(delay) = done.retry_after {
+                    let tx = tx.clone();
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(delay).await;
+                        offer_layer6_job(&tx, retry_job);
+                    });
+                }
                 if done.completed {
                     if let Ok(mut claimed) = LAYER6_CLAIMED.lock() {
                         claimed.remove(&id);
@@ -734,6 +745,19 @@ async fn delete_persisted_layer6_job(pool: &Pool, unassigned_id: &str) {
 struct Layer6Done {
     completed: bool,
     booked: bool,
+    /// When to offer the job again this session (audit N-A3); `None` when it
+    /// is finished or dead.
+    retry_after: Option<std::time::Duration>,
+}
+
+/// How long a job that found no model waits before checking again; no
+/// attempt is used (owner decision, audit N-A3).
+const LAYER6_NO_MODEL_RECHECK: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Delay before the next in-session attempt after `attempts` failed ones
+/// (owner decision, audit N-A3): 1 minute, then 5.
+fn layer6_retry_delay(attempts: i64) -> std::time::Duration {
+    std::time::Duration::from_secs(if attempts <= 1 { 60 } else { 300 })
 }
 
 /// Processes one LLM extraction job.
@@ -849,39 +873,44 @@ async fn process_layer6_job(
         }
         Layer6Outcome::Failed => {
             tracing::info!(
-                "Layer 6 background worker: infra failure for observation_id='{}' — leaving for replay",
+                "Layer 6 background worker: infra failure for observation_id='{}' — will retry",
                 job.observation_id
             );
             false
         }
-        // No model to run: keep the job for the next launch without using an
-        // attempt, so a missing download never kills it (audit A-8).
+        // No model to run: re-checked every few minutes without using an
+        // attempt, so a missing download never kills it (audit A-8) and a model
+        // downloaded mid-session drains the backlog (audit N-A3).
         Layer6Outcome::Unavailable => {
             tracing::info!(
                 "Layer 6 background worker: no model available for observation_id='{}' — waiting",
                 job.observation_id
             );
-            return Layer6Done { completed: false, booked: false };
+            return Layer6Done { completed: false, booked: false, retry_after: Some(LAYER6_NO_MODEL_RECHECK) };
         }
     };
 
     if completed {
         delete_persisted_layer6_job(pool, &job.unassigned_id).await;
-        return Layer6Done { completed: true, booked };
+        return Layer6Done { completed: true, booked, retry_after: None };
     } else {
         // A timeout, a dead sidecar or a failed write is what the durable queue
-        // is for: keep the row so the next launch retries it -- but only up to
+        // is for: keep the row and retry it this session after a delay (audit
+        // N-A3; launch replay still covers a quit) -- but only up to
         // MAX_ATTEMPTS, after which it is marked dead and left in the review
         // queue rather than replayed forever.
         let id = job.unassigned_id.clone();
-        let dead = match pool.get().await {
+        let (dead, attempts) = match pool.get().await {
             Ok(conn) => conn
-                .interact(move |c| crate::db::layer6_jobs::record_failed_attempt(c, &id))
+                .interact(move |c| -> anyhow::Result<(bool, i64)> {
+                    let dead = crate::db::layer6_jobs::record_failed_attempt(c, &id)?;
+                    Ok((dead, crate::db::layer6_jobs::attempts(c, &id)?))
+                })
                 .await
                 .ok()
                 .and_then(|r| r.ok())
-                .unwrap_or(false),
-            Err(_) => false,
+                .unwrap_or((false, 0)),
+            Err(_) => (false, 0),
         };
         if dead {
             // Out of attempts: the entry stops claiming enrichment is pending.
@@ -891,14 +920,16 @@ async fn process_layer6_job(
                 job.unassigned_id,
                 crate::db::layer6_jobs::MAX_ATTEMPTS
             );
-        } else {
-            tracing::warn!(
-                "Layer 6 job for unassigned_id='{}' did not complete — kept for replay at next launch",
-                job.unassigned_id
-            );
+            return Layer6Done { completed: false, booked: false, retry_after: None };
         }
+        let delay = layer6_retry_delay(attempts);
+        tracing::warn!(
+            "Layer 6 job for unassigned_id='{}' did not complete — retrying in {:?}",
+            job.unassigned_id,
+            delay
+        );
+        return Layer6Done { completed: false, booked: false, retry_after: Some(delay) };
     }
-    Layer6Done { completed: false, booked: false }
 }
 
 /// Re-labels a review entry still waiting on enrichment as
@@ -3101,8 +3132,9 @@ mod layer6_overflow_tests {
 mod layer6_attempt_policy_tests {
     use super::*;
 
-    /// Audit A-8: with no model to run, a Layer-6 job waits for the next
-    /// launch without using an attempt or giving up on the review entry.
+    /// Audit A-8: with no model to run, a Layer-6 job waits without using an
+    /// attempt or giving up on the review entry; audit N-A3: it is re-checked
+    /// this session rather than only at the next launch.
     #[tokio::test]
     async fn missing_model_does_not_use_up_attempts() {
         let dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
@@ -3143,7 +3175,9 @@ mod layer6_attempt_policy_tests {
             internal_date_seconds: None,
         };
 
-        process_layer6_job(job, &pool, &learning).await;
+        let done = process_layer6_job(job, &pool, &learning).await;
+        assert!(!done.completed);
+        assert_eq!(done.retry_after, Some(LAYER6_NO_MODEL_RECHECK));
 
         let (attempts, dead, reason): (i64, bool, String) = pool
             .get()
@@ -3163,6 +3197,15 @@ mod layer6_attempt_policy_tests {
         assert_eq!((attempts, dead), (0, false), "no attempt is used without a model");
         assert_eq!(reason, "pending_llm_enrichment");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Audit N-A3 (owner decision): in-session retries wait 1 minute after
+    /// the first failed attempt and 5 after the second; the third is final.
+    #[test]
+    fn failed_attempts_retry_after_one_then_five_minutes() {
+        assert_eq!(layer6_retry_delay(1), std::time::Duration::from_secs(60));
+        assert_eq!(layer6_retry_delay(2), std::time::Duration::from_secs(300));
+        assert_eq!(crate::db::layer6_jobs::MAX_ATTEMPTS, 3);
     }
 }
 
