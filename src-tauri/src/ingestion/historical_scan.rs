@@ -912,7 +912,6 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
     );
 
     let app_dir = app.path().app_data_dir().ok();
-    let llm_eligible = crate::startup::llm_ready(&app);
     let layer6_tx = app
         .state::<crate::ingestion::queues::QueueHandles>()
         .layer6_tx
@@ -955,7 +954,6 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
         pool_arc: Arc<Pool>,
         msg_id: String,
         app_dir: Option<std::path::PathBuf>,
-        llm_eligible: bool,
         layer6_tx: tokio::sync::mpsc::Sender<crate::ingestion::queues::Layer6Job>,
         scan_batcher: crate::ingestion::message_processor::ScanBatcherHandle,
     ) {
@@ -966,7 +964,6 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                 &client,
                 &msg_id,
                 app_dir,
-                llm_eligible,
                 Some(layer6_tx),
                 Some(&scan_batcher),
             )
@@ -1002,7 +999,6 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                 Arc::clone(&pool_arc),
                 msg_id,
                 app_dir.clone(),
-                llm_eligible,
                 layer6_tx.clone(),
                 Arc::clone(&scan_batcher),
             ),
@@ -1040,7 +1036,6 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                                 Arc::clone(&pool_arc),
                                 msg_id,
                                 app_dir.clone(),
-                                llm_eligible,
                                 layer6_tx.clone(),
                                 Arc::clone(&scan_batcher),
                             );
@@ -1298,7 +1293,6 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                 Arc::clone(&pool_arc),
                 next_id,
                 app_dir.clone(),
-                llm_eligible,
                 layer6_tx.clone(),
                 Arc::clone(&scan_batcher),
             );

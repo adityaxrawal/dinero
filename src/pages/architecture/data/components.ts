@@ -270,7 +270,7 @@ const CORE: ComponentDef[] = [
     description:
       'Wraps messages.list / messages.get / attachments.get / users.getProfile and history.list. A process-global token bucket (225 quota units/s) paces calls; concurrency is bounded by the callers (historical scan: 8 concurrent fetches). All calls route through NetworkClient so they land in the local audit trail.',
     responsibilities: [
-      'execute_with_retry (3 attempts, exponential backoff 2s base; rate limits — 429 and 403 rateLimitExceeded — get 6)',
+      'execute_with_retry through the shared GmailGate (≤100 units/s, ≤4 in flight; a 429 or 403 rateLimitExceeded pauses every caller and halves the rate, honouring Retry-After); rate limits are waited out (15-min cap), other failures get 3 attempts with 2s exponential backoff',
       'Global quota token bucket (225 units/s)',
       'Metadata-first gating to minimise quota use',
     ],
@@ -455,7 +455,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     purpose:
       'Deterministic-first field extraction: learned rules → templates → regex → NLP → cross-ref → LLM.',
     description:
-      'Layers 1–5 are cheap and deterministic. Layer 6 (LLM) runs on an LLM-eligible machine when layers 1–5 extract nothing, or when their result fails Gate 3 only for a missing merchant or instrument; where it returns a field, its value is used. Each rung fills amount, merchant, date and other fields; a mandatory-field gate rejects partial extractions.',
+      'Layers 1–5 are cheap and deterministic. Whatever they cannot complete (any Gate 3 failure or low confidence) goes to Layer 6 (LLM), except mail from a review-only sender; where it returns a field, its value is used, and a null is its verdict that the email lacks the field. Each rung fills amount, merchant, date, instrument and other fields; a mandatory-field gate rejects partial extractions.',
     responsibilities: [
       'Layer 1 LearnedFieldLayer — user-corrected field rules',
       'Layer 2 BankTemplateLayer — per-bank message templates',
@@ -591,7 +591,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
       'llm_manager.rs performs resumable, hash-verified GGUF downloads from Hugging Face and maintains the model catalogue; llama_sidecar.rs spawns/monitors the pinned llama.cpp release (b10068) as a loopback-bound llama-server process.',
     responsibilities: [
       'Resumable GGUF download with SHA-256 verification (15 s connect / 60 s read timeouts; logged to network_activity_log)',
-      'Model catalogue + parallel-slot context sizing (2048 × slots)',
+      'Model catalogue + parallel-slot context sizing (3072 × slots)',
       'Spawn/supervise llama-server on 127.0.0.1:<ephemeral> with allowed-origin lock',
     ],
     technologies: ['llama.cpp llama-server (b10068)', 'GGUF weights', 'reqwest'],
@@ -831,7 +831,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     purpose:
       'Durable deferred-LLM work so slow inference never stalls a scan (enqueue never waits; overflow stays in the table).',
     description:
-      'Tokio mpsc channel (capacity 256) drained by a fixed pool of 6 workers, backed by the layer6_pending_jobs table so jobs survive restart. Not a routing destination — the Message Processor enqueues here on its Gate 3 failure path, after filing the observation and its review entry.',
+      'Tokio mpsc channel (capacity 256) drained by a fixed pool of 6 workers, backed by the layer6_pending_jobs table so jobs survive restart. The Message Processor files the observation, its review entry and the job row in one transaction on its Gate 3 failure path; the review entry stays hidden from the queue while the job is live and appears only if the LLM verdict leaves it there.',
     responsibilities: [
       'Run Layer 6 LLM extraction off the hot path',
       'Persist jobs across restarts',
@@ -844,7 +844,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     apiSurface: ['layer6_pending_jobs'],
     facts: [
       'At most 6 jobs in flight; a full queue does not block the scan — overflow waits in layer6_pending_jobs and workers refill as it drains',
-      'Rejections are final; a timeout, sidecar failure or failed write is retried in-session after 1 min, then 5 min, up to 3 attempts; with no model the job is re-checked every 5 min without using an attempt; a dead job is re-labelled extraction_failed',
+      'Rejections are final (reviewed as llm_value_not_in_email); a timeout, sidecar failure or failed write is never final — retried after 1 min, 5 min, then every 15 min; while the device cannot run a model (none downloaded, or under the RAM floor) the job is held and re-checked every 5 min without using an attempt',
       'Success is applied by engine::complete_observation: observation update, reconciliation and settling the review entry commit in one transaction',
       'Bodies over 2,000 characters are sent as first and last chunks',
     ],
@@ -1276,7 +1276,7 @@ const INFRA: ComponentDef[] = [
     kind: 'process',
     purpose: 'Long-lived loopback-bound llama-server for all on-device LLM work.',
     description:
-      'Spawns the pinned llama.cpp release (b10068) as llama-server on 127.0.0.1:<ephemeral> with an allowed-origin lock and a per-run --api-key. The downloaded archive is re-checked against the compiled-in SHA-256 and re-extracted before every start. Context size scales with parallel slots (2048 × slots). Serves exactly four integration points.',
+      'Spawns the pinned llama.cpp release (b10068) as llama-server on 127.0.0.1:<ephemeral> with an allowed-origin lock and a per-run --api-key. The downloaded archive is re-checked against the compiled-in SHA-256 and re-extracted before every start. Context size scales with parallel slots (3072 × slots). After start-up it calibrates on a real near-maximum Layer 6 prompt on every slot: timeout = 3 × that latency, clamped to 120–600 s (1 slot and 600 s if calibration fails). A timed-out request restarts the server only if /health also fails. Serves exactly four integration points.',
     responsibilities: [
       'Supervise llama-server process: restart when it exits or after 3 consecutive timeouts',
       'Kill it on app exit (llama_sidecar::shutdown)',

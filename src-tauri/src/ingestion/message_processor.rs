@@ -80,6 +80,34 @@ const IGNORED_SNIPPET_MAX_CHARS: usize = 500;
 /// The shared sender validator, built once.
 ///
 /// Holds the compiled registry, so it is not rebuilt per message during a scan.
+/// Where a newly filed review entry starts.
+#[derive(Clone, Copy)]
+pub(crate) enum ReviewRoute {
+    /// Visible in the review queue now.
+    Review,
+    /// Hidden behind an LLM job, written in the same transaction; it shows in
+    /// the review queue only if the model's verdict leaves it there.
+    AwaitLlm { internal_date_seconds: Option<i64> },
+}
+
+/// A message that reached Gate 3 without a bookable result.
+struct Incomplete<'a> {
+    pool: &'a Pool,
+    scan_batcher: Option<&'a ScanBatcherHandle>,
+    message_id: &'a str,
+    obs: crate::extraction::ladder::ExtractionResult,
+    /// Why the rule layers could not book it.
+    reason: &'a str,
+    body_text: &'a str,
+    email_meta: &'a EmailMetadata,
+    bank_name: &'a str,
+    internal_date_seconds: Option<i64>,
+    review_only: bool,
+    app_dir: Option<&'a std::path::Path>,
+    layer6_tx: Option<&'a tokio::sync::mpsc::Sender<crate::ingestion::queues::Layer6Job>>,
+    full_msg: &'a Message,
+}
+
 pub(crate) fn get_sender_validator() -> &'static SenderValidator {
     static VALIDATOR: OnceLock<SenderValidator> = OnceLock::new();
     VALIDATOR.get_or_init(SenderValidator::new)
@@ -151,7 +179,6 @@ impl MessageProcessor {
         client: &GmailClient,
         message_id: &str,
         app_dir: Option<std::path::PathBuf>,
-        llm_eligible: bool,
         layer6_tx: Option<tokio::sync::mpsc::Sender<crate::ingestion::queues::Layer6Job>>,
         scan_batcher: Option<&ScanBatcherHandle>,
     ) -> Result<Option<ProcessResult>> {
@@ -652,141 +679,42 @@ impl MessageProcessor {
                             for line in debug_str.lines() {
                                 trace.info(format!("         {}", line));
                             }
-                            // Review row first, rejection second (audit N-A1): a recorded
-                            // rejection makes every later pass skip the message, so it must
-                            // never exist without the review row it points to.
-                            let ids = Self::record_unassigned_transaction(
-                                pool,
-                                message_id,
-                                obs.clone(),
-                                body_text,
-                                Some(&email_meta),
-                                reason,
-                                Some(&current_bank_name),
-                            )
-                            .await?;
-                            Self::log_rejection(pool, scan_batcher, message_id, reason).await?;
-                            let filed = ids.is_some();
-                            let recoverable_by_llm = matches!(
-                                reason,
-                                "gate3_failed:missing_counterparty"
-                                    | "gate3_failed:missing_instrument"
-                            );
-                            if recoverable_by_llm && llm_eligible {
-                                if let (
-                                    Some((observation_id, unassigned_id)),
-                                    Some(dir),
-                                    Some(tx),
-                                ) = (ids, app_dir.clone(), layer6_tx.as_ref())
-                                {
-                                    let job = crate::ingestion::queues::Layer6Job {
-                                        observation_id,
-                                        unassigned_id,
-                                        bank_name: current_bank_name.clone(),
-                                        body_text: body_text.to_string(),
-                                        app_dir: dir,
-                                        internal_date_seconds,
-                                    };
-                                    crate::ingestion::queues::enqueue_layer6_job(pool, tx, job)
-                                        .await;
-                                }
-                            }
-                            Self::append_to_scan_log(
-                                app_dir.as_deref(),
-                                message_id,
-                                "REJECTED",
-                                reason,
-                                Some(&full_msg),
-                                Some(body_text),
+                            return Self::file_incomplete(
+                                Incomplete {
+                                    pool,
+                                    scan_batcher,
+                                    message_id,
+                                    obs,
+                                    reason,
+                                    body_text,
+                                    email_meta: &email_meta,
+                                    bank_name: &current_bank_name,
+                                    internal_date_seconds,
+                                    review_only,
+                                    app_dir: app_dir.as_deref(),
+                                    layer6_tx: layer6_tx.as_ref(),
+                                    full_msg: &full_msg,
+                                },
                             )
                             .await;
-                            return Ok(filed.then_some(ProcessResult::SentToReview));
                         }
-                    } else if llm_eligible {
-                        // Review row first, rejection second (audit N-A1): a recorded
-                        // rejection makes every later pass skip the message, so it must
-                        // never exist without the review row it points to.
-                        let ids = Self::record_unassigned_transaction(
-                            pool,
-                            message_id,
-                            crate::extraction::ladder::ExtractionResult::default(),
-                            body_text,
-                            Some(&email_meta),
-                            "pending_llm_enrichment",
-                            Some(&current_bank_name),
-                        )
-                        .await?;
-                        Self::log_rejection(
+                    } else {
+                        return Self::file_incomplete(Incomplete {
                             pool,
                             scan_batcher,
                             message_id,
-                            "pending_llm_enrichment",
-                        )
-                        .await?;
-                        let filed = ids.is_some();
-                        let enqueued =
-                            if let (Some((observation_id, unassigned_id)), Some(dir), Some(tx)) =
-                                (ids, app_dir.clone(), layer6_tx.as_ref())
-                            {
-                                let job = crate::ingestion::queues::Layer6Job {
-                                    observation_id,
-                                    unassigned_id,
-                                    bank_name: current_bank_name.clone(),
-                                    body_text: body_text.to_string(),
-                                    app_dir: dir,
-                                    internal_date_seconds,
-                                };
-                                crate::ingestion::queues::enqueue_layer6_job(pool, tx, job).await;
-                                true
-                            } else {
-                                false
-                            };
-                        // Only claim enrichment when a job really was queued. A
-                        // duplicate observation, a missing app directory or an
-                        // absent queue all land here having enqueued nothing,
-                        // and reporting them as pending leaves the scan counting
-                        // work that will never complete.
-                        Self::append_to_scan_log(
-                            app_dir.as_deref(),
-                            message_id,
-                            if enqueued { "PENDING" } else { "REJECTED" },
-                            "pending_llm_enrichment",
-                            Some(&full_msg),
-                            Some(body_text),
-                        )
-                        .await;
-                        return Ok(if enqueued {
-                            Some(ProcessResult::EnqueuedForEnrichment)
-                        } else {
-                            filed.then_some(ProcessResult::SentToReview)
-                        });
-                    } else {
-                        // Review row first, rejection second (audit N-A1): a recorded
-                        // rejection makes every later pass skip the message, so it must
-                        // never exist without the review row it points to.
-                        let filed = Self::record_unassigned_transaction(
-                            pool,
-                            message_id,
-                            crate::extraction::ladder::ExtractionResult::default(),
+                            obs: crate::extraction::ladder::ExtractionResult::default(),
+                            reason: "extraction_failed",
                             body_text,
-                            Some(&email_meta),
-                            "extraction_failed",
-                            Some(&current_bank_name),
-                        )
-                        .await?
-                        .is_some();
-                        Self::log_rejection(pool, scan_batcher, message_id, "extraction_failed")
-                            .await?;
-                        Self::append_to_scan_log(
-                            app_dir.as_deref(),
-                            message_id,
-                            "REJECTED",
-                            "extraction_failed",
-                            Some(&full_msg),
-                            Some(body_text),
-                        )
+                            email_meta: &email_meta,
+                            bank_name: &current_bank_name,
+                            internal_date_seconds,
+                            review_only,
+                            app_dir: app_dir.as_deref(),
+                            layer6_tx: layer6_tx.as_ref(),
+                            full_msg: &full_msg,
+                        })
                         .await;
-                        return Ok(filed.then_some(ProcessResult::SentToReview));
                     }
                 }
             }
@@ -803,6 +731,73 @@ impl MessageProcessor {
         }
 
         Ok(None)
+    }
+
+    /// Files a transaction alert the rule layers could not complete.
+    ///
+    /// Mail from a review-only sender goes straight to review (audit E-3 /
+    /// N-E1): its result is never booked, so enrichment cannot change where it
+    /// ends up. Everything else waits for the LLM, hidden from the review queue
+    /// until the model gives its verdict, whether or not a model can run yet
+    /// (owner decision 2026-11-25). Only without a queue to hand it to (tests,
+    /// replay tools) is it filed for review directly.
+    async fn file_incomplete(m: Incomplete<'_>) -> Result<Option<ProcessResult>> {
+        let llm = if m.review_only { None } else { m.app_dir.zip(m.layer6_tx) };
+        let (reason, route) = match llm {
+            Some(_) => (
+                "pending_llm_enrichment",
+                ReviewRoute::AwaitLlm { internal_date_seconds: m.internal_date_seconds },
+            ),
+            None => (m.reason, ReviewRoute::Review),
+        };
+        // Review row first, rejection second (audit N-A1): a recorded
+        // rejection makes every later pass skip the message, so it must
+        // never exist without the review row it points to.
+        let ids = Self::record_unassigned_transaction(
+            m.pool,
+            m.message_id,
+            m.obs,
+            m.body_text,
+            Some(m.email_meta),
+            reason,
+            Some(m.bank_name),
+            route,
+        )
+        .await?;
+        Self::log_rejection(m.pool, m.scan_batcher, m.message_id, reason).await?;
+        // The job row was written with the review row; this only hands it to
+        // a worker now (overflow is refilled from the table).
+        let queued = match (&ids, llm) {
+            (Some((observation_id, unassigned_id)), Some((dir, tx))) => {
+                crate::ingestion::queues::offer_layer6_job(
+                    tx,
+                    crate::ingestion::queues::Layer6Job {
+                        observation_id: observation_id.clone(),
+                        unassigned_id: unassigned_id.clone(),
+                        bank_name: m.bank_name.to_string(),
+                        body_text: m.body_text.to_string(),
+                        app_dir: dir.to_path_buf(),
+                        internal_date_seconds: m.internal_date_seconds,
+                    },
+                );
+                true
+            }
+            _ => false,
+        };
+        Self::append_to_scan_log(
+            m.app_dir,
+            m.message_id,
+            if queued { "PENDING" } else { "REJECTED" },
+            if queued { reason } else { m.reason },
+            Some(m.full_msg),
+            Some(m.body_text),
+        )
+        .await;
+        Ok(if queued {
+            Some(ProcessResult::EnqueuedForEnrichment)
+        } else {
+            ids.is_some().then_some(ProcessResult::SentToReview)
+        })
     }
 
     /// Falls back to the message's own timestamp when no date was extracted.
@@ -1308,6 +1303,7 @@ impl MessageProcessor {
     ///
     /// Held for the user to resolve rather than guessed into an account, which would
     /// silently corrupt that account's balance.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn record_unassigned_transaction(
         pool: &Pool,
         message_id: &str,
@@ -1316,7 +1312,10 @@ impl MessageProcessor {
         email_meta: Option<&EmailMetadata>,
         reason: &str,
         bank_name: Option<&str>,
+        route: ReviewRoute,
     ) -> Result<Option<(String, String)>> {
+        let body_owned = body_text.to_string();
+        let bank_owned = bank_name.unwrap_or_default().to_string();
         let mut obs_row = crate::extraction::normalization::normalize_observation(
             obs,
             "gmail_transaction",
@@ -1366,6 +1365,20 @@ impl MessageProcessor {
                                 created_at: None,
                             },
                         )?;
+                        // Same transaction, so the entry is never visible in
+                        // the review queue before its LLM job exists.
+                        if let ReviewRoute::AwaitLlm { internal_date_seconds } = route {
+                            crate::db::layer6_jobs::insert(
+                                &tx,
+                                &crate::db::layer6_jobs::PendingLayer6Job {
+                                    id: unassigned_id.clone(),
+                                    observation_id: observation_id.clone(),
+                                    bank_name: bank_owned.clone(),
+                                    body_text: body_owned.clone(),
+                                    internal_date_seconds,
+                                },
+                            )?;
+                        }
                         true
                     } else {
                         false

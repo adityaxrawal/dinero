@@ -117,7 +117,7 @@ fn test_llm_output_parsed_invalid_direction_normalized() {
 }
 
 #[test]
-fn test_llm_output_parsed_missing_mandatory_fields_rejected() {
+fn test_llm_output_missing_fields_are_reported_absent_not_bookable() {
     let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
 
     let json = r#"{
@@ -125,11 +125,13 @@ fn test_llm_output_parsed_missing_mandatory_fields_rejected() {
         "merchant": "Netflix"
     }"#; // Missing currency, direction, event_time
 
-    let result = engine.parse_json_to_result(json, None);
-    assert!(
-        result.is_err(),
-        "Output missing mandatory fields must be rejected"
-    );
+    // A null is the model saying the email does not contain the field: an
+    // answer, kept as absent, never defaulted. Booking is gated downstream.
+    let result = engine
+        .parse_json_to_result(json, None)
+        .expect("a partial answer is still an answer");
+    assert!(result.currency.is_none() && result.direction.is_none());
+    assert!(!result.is_valid(), "a partial answer must not be bookable");
 }
 
 #[tokio::test]

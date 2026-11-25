@@ -599,9 +599,11 @@ fn layer6_json_schema() -> serde_json::Value {
             "merchant": {"type": ["string", "null"]},
             "datetime": {"type": ["string", "null"]},
             "reference_id": {"type": ["string", "null"]},
+            "instrument_type": {"enum": ["credit_card", "debit_card", "bank_account", null]},
+            "account_last_digits": {"type": ["string", "null"]},
             "confidence": {"type": ["number", "null"]}
         },
-        "required": ["is_transaction", "amount", "currency", "direction", "merchant", "datetime", "reference_id", "confidence"]
+        "required": ["is_transaction", "amount", "currency", "direction", "merchant", "datetime", "reference_id", "instrument_type", "account_last_digits", "confidence"]
     })
 }
 

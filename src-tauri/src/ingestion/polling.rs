@@ -272,7 +272,6 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
     let network = NetworkClient::new(pool.clone());
 
     let app_dir = app.path().app_data_dir().ok();
-    let llm_eligible = crate::startup::llm_ready(&app);
     let layer6_tx = app
         .state::<crate::ingestion::queues::QueueHandles>()
         .layer6_tx
@@ -427,7 +426,6 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                             &gmail_client,
                             &msg_id,
                             app_dir.clone(),
-                            llm_eligible,
                             Some(layer6_tx.clone()),
                             None,
                         ).await {

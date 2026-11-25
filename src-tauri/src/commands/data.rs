@@ -59,10 +59,13 @@ pub fn compute_unassigned_amount_pending_review(
 
     let (unassigned_count, unassigned_amount_minor): (i64, i64) = conn
         .query_row(
-            "SELECT COUNT(*), COALESCE(SUM(o.amount_minor), 0)
-             FROM unassigned_transactions u
-             JOIN transaction_observations o ON o.id = u.observation_id
-             WHERE u.status = 'open'",
+            &format!(
+                "SELECT COUNT(*), COALESCE(SUM(o.amount_minor), 0)
+                 FROM unassigned_transactions u
+                 JOIN transaction_observations o ON o.id = u.observation_id
+                 WHERE {}",
+                crate::db::unassigned_transactions::VISIBLE_OPEN
+            ),
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -3269,6 +3272,11 @@ mod tests {
         .unwrap();
         conn.execute(
             "CREATE TABLE unassigned_transactions (id TEXT PRIMARY KEY, observation_id TEXT, reason TEXT, status TEXT, created_at TEXT)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "CREATE TABLE layer6_pending_jobs (id TEXT PRIMARY KEY, dead_at TEXT)",
             [],
         )
         .unwrap();

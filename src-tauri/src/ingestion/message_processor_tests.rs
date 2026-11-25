@@ -455,7 +455,7 @@ async fn test_metadata_fetch_before_full_fetch() {
     let client =
         GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
 
-    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, false, None, None)
+    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, None, None)
         .await
         .unwrap();
     assert!(
@@ -518,7 +518,7 @@ async fn test_gate2a_rejects_marketing_subject_without_full_fetch() {
     let client =
         GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
 
-    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, false, None, None)
+    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, None, None)
         .await
         .unwrap();
     assert!(
@@ -579,7 +579,7 @@ async fn test_gate2a_noise_routes_to_ignored_table() {
     let client =
         GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
 
-    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, false, None, None)
+    let result = MessageProcessor::process_message(&pool, &client, "msg1", None, None, None)
         .await
         .unwrap();
     assert!(result.is_none());
@@ -667,7 +667,7 @@ async fn test_gate2a_proceeds_to_full_fetch_for_transactional_subject() {
         GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
 
     let result =
-        MessageProcessor::process_message(&pool, &client, "msg1", None, false, None, None).await;
+        MessageProcessor::process_message(&pool, &client, "msg1", None, None, None).await;
     assert!(result.is_ok(), "must not error: {:?}", result.err());
 
     full_mock.assert_async().await;
@@ -699,7 +699,8 @@ async fn transaction_needing_layer6_enqueues_job_instead_of_blocking() {
                     "mimeType": "multipart/mixed",
                     "headers": [
                         {"name": "From", "value": "\"HDFC Bank\" <alerts@hdfcbank.net>"},
-                        {"name": "Subject", "value": "Rs 500 debited from your account"}
+                        {"name": "Subject", "value": "Rs 500 debited from your account"},
+                        {"name": "Authentication-Results", "value": "mx.google.com; dkim=pass header.i=@hdfcbank.net; spf=pass; dmarc=pass header.from=hdfcbank.net"}
                     ]
                 }
             })
@@ -722,7 +723,8 @@ async fn transaction_needing_layer6_enqueues_job_instead_of_blocking() {
                     "mimeType": "text/plain",
                     "headers": [
                         {"name": "From", "value": "\"HDFC Bank\" <alerts@hdfcbank.net>"},
-                        {"name": "Subject", "value": "Rs 500 debited from your account"}
+                        {"name": "Subject", "value": "Rs 500 debited from your account"},
+                        {"name": "Authentication-Results", "value": "mx.google.com; dkim=pass header.i=@hdfcbank.net; spf=pass; dmarc=pass header.from=hdfcbank.net"}
                     ],
                     "body": {"data": ""}
                 }
@@ -746,7 +748,6 @@ async fn transaction_needing_layer6_enqueues_job_instead_of_blocking() {
         &client,
         "msg1",
         Some(temp_dir.clone()),
-        /* llm_eligible */ true,
         Some(layer6_tx),
         None,
     )
@@ -766,6 +767,86 @@ async fn transaction_needing_layer6_enqueues_job_instead_of_blocking() {
     assert!(!job.observation_id.is_empty());
     assert!(!job.unassigned_id.is_empty());
 
+    // Owner decision 2026-11-25: the job is durable with the entry, and the
+    // entry stays out of the review queue until the LLM's verdict.
+    let conn = pool.get().await.unwrap();
+    let (jobs, visible) = conn
+        .interact(|c| {
+            Ok::<_, anyhow::Error>((
+                crate::db::layer6_jobs::select_all(c)?.len(),
+                crate::db::unassigned_transactions::select_open_with_context(c)?.len(),
+            ))
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(jobs, 1, "the job row is written with the review row");
+    assert_eq!(visible, 0, "hidden from Reconciliation while the LLM works");
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+/// Audit E-3 / N-E1: mail whose sender cannot be authenticated is never
+/// booked, so it is not sent to the LLM (whose result could book it); it
+/// goes straight to review, visible, with no job.
+#[tokio::test]
+async fn unverifiable_sender_goes_to_review_without_an_llm_job() {
+    let mut server = mockito::Server::new_async().await;
+    let headers = serde_json::json!([
+        {"name": "From", "value": "\"HDFC Bank\" <alerts@hdfcbank.net>"},
+        {"name": "Subject", "value": "Rs 500 debited from your account"}
+    ]);
+    let _meta = server
+        .mock("GET", "/gmail/v1/users/me/messages/msg1")
+        .match_query(mockito::Matcher::UrlEncoded("format".into(), "metadata".into()))
+        .with_status(200)
+        .with_body(
+            serde_json::json!({"id": "msg1", "threadId": "t1",
+                "snippet": "Rs 500.00 debited from your account.",
+                "payload": {"mimeType": "multipart/mixed", "headers": headers}})
+            .to_string(),
+        )
+        .create_async()
+        .await;
+    let _full = server
+        .mock("GET", "/gmail/v1/users/me/messages/msg1")
+        .match_query(mockito::Matcher::UrlEncoded("format".into(), "full".into()))
+        .with_status(200)
+        .with_body(
+            serde_json::json!({"id": "msg1", "threadId": "t1",
+                "snippet": "Rs 500.00 debited from your account.",
+                "payload": {"mimeType": "text/plain", "headers": headers, "body": {"data": ""}}})
+            .to_string(),
+        )
+        .create_async()
+        .await;
+
+    let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+    let client = GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
+    let (layer6_tx, mut layer6_rx) = tokio::sync::mpsc::channel(4);
+
+    let result = MessageProcessor::process_message(
+        &pool, &client, "msg1", Some(temp_dir.clone()), Some(layer6_tx), None,
+    )
+    .await
+    .unwrap();
+
+    assert!(matches!(result, Some(ProcessResult::SentToReview)), "{result:?}");
+    assert!(layer6_rx.try_recv().is_err(), "no LLM job for a review-only sender");
+    let conn = pool.get().await.unwrap();
+    let (jobs, visible) = conn
+        .interact(|c| {
+            Ok::<_, anyhow::Error>((
+                crate::db::layer6_jobs::select_all(c)?.len(),
+                crate::db::unassigned_transactions::select_open_with_context(c)?.len(),
+            ))
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((jobs, visible), (0, 1));
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
 
@@ -801,6 +882,7 @@ async fn test_gate3_partial_extraction_salvaged_to_unassigned_queue() {
         None,
         reason,
         None,
+        crate::ingestion::message_processor::ReviewRoute::Review,
     )
     .await
     .unwrap();
@@ -856,6 +938,7 @@ async fn record_unassigned_transaction_returns_ids_on_fresh_insert() {
         None,
         "pending_llm_enrichment",
         None,
+        crate::ingestion::message_processor::ReviewRoute::Review,
     )
     .await
     .unwrap();
@@ -888,6 +971,7 @@ async fn record_unassigned_transaction_returns_none_on_duplicate() {
         None,
         "pending_llm_enrichment",
         None,
+        crate::ingestion::message_processor::ReviewRoute::Review,
     )
     .await
     .unwrap();
@@ -901,6 +985,7 @@ async fn record_unassigned_transaction_returns_none_on_duplicate() {
         None,
         "pending_llm_enrichment",
         None,
+        crate::ingestion::message_processor::ReviewRoute::Review,
     )
     .await
     .unwrap();
@@ -1004,7 +1089,7 @@ async fn failed_review_filing_leaves_message_retryable() {
           BEGIN SELECT RAISE(ABORT, 'injected failure'); END;")
         .await;
     let first =
-        MessageProcessor::process_message(&pool, &client, "msg1", None, false, None, None).await;
+        MessageProcessor::process_message(&pool, &client, "msg1", None, None, None).await;
     assert!(first.is_err(), "the failed filing must surface, got {:?}", first.ok());
     assert_eq!(
         count("SELECT COUNT(*) FROM processed_messages WHERE message_id = 'msg1'").await,
@@ -1014,7 +1099,7 @@ async fn failed_review_filing_leaves_message_retryable() {
 
     exec("DROP TRIGGER fail_review;").await;
     let retry =
-        MessageProcessor::process_message(&pool, &client, "msg1", None, false, None, None).await;
+        MessageProcessor::process_message(&pool, &client, "msg1", None, None, None).await;
     assert!(
         matches!(retry, Ok(Some(ProcessResult::SentToReview))),
         "the retry must file the message for review, got {:?}",
@@ -1065,6 +1150,7 @@ async fn review_filing_retries_while_the_write_lock_is_held() {
         None,
         "extraction_failed",
         Some("HDFC Bank"),
+        crate::ingestion::message_processor::ReviewRoute::Review,
     )
     .await;
     hold.await.unwrap();
@@ -1107,7 +1193,7 @@ async fn transaction_alert_carries_the_rfc822_message_id() {
     let client =
         GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
     let result =
-        MessageProcessor::process_message(&pool, &client, "msg1", None, false, None, None).await;
+        MessageProcessor::process_message(&pool, &client, "msg1", None, None, None).await;
     match result {
         Ok(Some(ProcessResult::TransactionAlert(_, _, meta))) => {
             assert_eq!(meta.rfc822_message_id.as_deref(), Some("<alert-77@hdfcbank.net>"));

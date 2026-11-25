@@ -278,7 +278,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'gate-3',
         title: 'Extraction ladder + Gate 3 (mandatory fields)',
         detail:
-          "Layers 1→5 (learned rules → bank template → generic regex → NLP → statement cross-ref), cheapest first. A mandatory-field check (Gate 3) rejects partial extractions, and every layer must reach MIN_LEDGER_CONFIDENCE = 0.75 to enter the ledger (an unscored result fails). Mail from a sender the user approved but the registry does not verify, or that Gmail's authentication cannot tie to its From domain, always goes to review. On an LLM-eligible machine (enough RAM and a downloaded model) the processor defers to the durable Layer 6 queue when the ladder extracts nothing, or when its result lacks only the merchant or the instrument.",
+          "Layers 1→5 (learned rules → bank template → generic regex → NLP → statement cross-ref), cheapest first. A mandatory-field check (Gate 3) rejects partial extractions, and every layer must reach MIN_LEDGER_CONFIDENCE = 0.75 to enter the ledger (an unscored result fails). Mail from a sender the user approved but the registry does not verify, or that Gmail's authentication cannot tie to its From domain, always goes to review. Anything else the ladder cannot complete (any Gate 3 failure or low confidence) is deferred to the durable Layer 6 queue, its review entry hidden until the LLM verdict; with no runnable model it waits there.",
         components: [
           'extraction-ladder',
           'learning',
@@ -517,7 +517,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'durable',
         title: 'Durable queue drain',
         detail:
-          'layer6_pending_jobs backs the queue, so jobs survive app restart. A fixed pool of 6 workers drains the channel (cap 256), so at most 6 jobs are in flight; enqueue never waits — overflow stays in the table and workers refill. A timeout, sidecar failure or failed write is retried in-session after 1 min, then 5 min, up to 3 attempts; with no model the job is re-checked every 5 min without using an attempt; a dead job is re-labelled extraction_failed.',
+          'layer6_pending_jobs backs the queue, so jobs survive app restart. A fixed pool of 6 workers drains the channel (cap 256), so at most 6 jobs are in flight; enqueue never waits — overflow stays in the table and workers refill. Rejections are final (reviewed as llm_value_not_in_email); a timeout, sidecar failure or failed write is never final — retried after 1 min, 5 min, then every 15 min; while the device cannot run a model (none downloaded, or under the RAM floor) the job is held and re-checked every 5 min without using an attempt.',
         components: ['layer6-queue', 'sqlite'],
         relations: ['db'],
       },

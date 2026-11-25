@@ -134,7 +134,7 @@ export const STAGES: Stage[] = [
     y: 540,
     components: ['layer6-queue', 'llm-manager', 'llama-sidecar'],
     detail:
-      'On an LLM-eligible machine (enough RAM and a downloaded model) the Message Processor defers here when Layers 1–5 extract nothing, or lack only the merchant or instrument. Jobs survive restart (layer6_pending_jobs); a fixed pool of 6 workers runs them; enqueue never blocks the scan (overflow waits in the table). Failures retry in-session after 1, then 5 minutes (3 attempts); with no model the job is re-checked every 5 minutes.',
+      'The Message Processor defers here whenever Layers 1–5 cannot complete a result (any Gate 3 failure or low confidence), except mail from a review-only sender; its review entry is hidden until the LLM verdict. Jobs survive restart (layer6_pending_jobs); a fixed pool of 6 workers runs them; enqueue never blocks the scan (overflow waits in the table). Infrastructure failures retry after 1, 5, then every 15 minutes and are never final; while no model can run, jobs are held and re-checked every 5 minutes.',
   },
   {
     id: 'obs',

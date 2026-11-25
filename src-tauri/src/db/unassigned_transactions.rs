@@ -123,13 +123,20 @@ fn current_status(conn: &Connection, id: &str) -> Result<Option<String>> {
         .optional()?)
 }
 
-/// Unresolved entries, for the reconciliation queue.
+/// SQL condition (on alias `u`) for an open entry the user should see: one
+/// still waiting on its LLM job is not shown, because the job may yet book it
+/// or confirm what is missing (owner decision 2026-11-25). Jobs marked dead by
+/// the old attempt cap no longer hold an entry back.
+pub const VISIBLE_OPEN: &str = "u.status = 'open' AND NOT EXISTS (\
+     SELECT 1 FROM layer6_pending_jobs j WHERE j.id = u.id AND j.dead_at IS NULL)";
+
+/// Unresolved entries awaiting the user, for the reconciliation queue.
 pub fn select_open(conn: &Connection) -> Result<Vec<UnassignedTransactionRow>> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare(&format!(
         "SELECT id, observation_id, reason, status, created_at \
-         FROM unassigned_transactions WHERE status = 'open' \
-         ORDER BY created_at DESC, id DESC",
-    )?;
+         FROM unassigned_transactions u WHERE {VISIBLE_OPEN} \
+         ORDER BY created_at DESC, id DESC"
+    ))?;
     let rows = stmt.query_map([], |row| {
         Ok(UnassignedTransactionRow {
             id: row.get(0)?,
@@ -170,16 +177,16 @@ pub struct UnassignedTransactionDetail {
 /// Fetching the context alongside lets the resolver show the original email
 /// beside the form, so the user can answer from the source rather than memory.
 pub fn select_open_with_context(conn: &Connection) -> Result<Vec<UnassignedTransactionDetail>> {
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare(&format!(
         "SELECT u.id, u.observation_id, u.reason, u.status, u.created_at, \
                 o.merchant_raw, o.amount_minor, o.currency, o.direction, o.event_time, \
                 o.source_message_id, o.raw_payload_json, \
                 o.extraction_method, o.confidence_score \
          FROM unassigned_transactions u \
          JOIN transaction_observations o ON o.id = u.observation_id \
-         WHERE u.status = 'open' \
-         ORDER BY u.created_at DESC, u.id DESC",
-    )?;
+         WHERE {VISIBLE_OPEN} \
+         ORDER BY u.created_at DESC, u.id DESC"
+    ))?;
     let rows = stmt.query_map([], |row| {
         let raw_payload_json: Option<String> = row.get(11)?;
         let body_snippet = raw_payload_json.as_deref().and_then(extract_body_snippet);

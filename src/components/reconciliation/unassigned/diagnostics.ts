@@ -12,6 +12,10 @@ const REASON_TITLE: Record<string, string> = {
   'gate3_failed:missing_amount': 'Missing Transaction Amount',
   'gate3_failed:missing_counterparty': 'Missing Counterparty / Merchant',
   'gate3_failed:missing_instrument': 'Missing Instrument Details',
+  'gate3_failed:missing_direction': 'Missing Debit / Credit',
+  'gate3_failed:missing_currency': 'Missing Currency',
+  'gate3_failed:low_confidence': 'Low-Confidence Extraction',
+  llm_value_not_in_email: 'AI Answer Not Found in Email',
   instrument_archived: 'Archived Payment Instrument',
   unverified_sender: 'Sender You Approved (Not Verified)',
   gate3_failed: 'Mandatory Field Gate Failed',
@@ -54,18 +58,37 @@ const REASON_GUIDANCE: Record<string, ReasonGuidance> = {
   },
   'gate3_failed:missing_amount': {
     description:
-      'Merchant name and date were identified, but no valid transaction amount figure could be parsed from the email body.',
+      'The rule engine and the AI both read this email and found no transaction amount in it.',
     tip: 'Look at the email text in Source Email Evidence below and enter the amount in the form.',
   },
   'gate3_failed:missing_counterparty': {
     description:
-      'Transaction amount and date were found, but no counterparty or merchant name could be extracted, or candidate was rejected as generic boilerplate.',
+      'The rule engine and the AI both read this email and found no merchant or counterparty name in it.',
     tip: 'Type the merchant name into the Merchant field below or use Quick-Fill.',
   },
   'gate3_failed:missing_instrument': {
     description:
-      'Amount, merchant, and date were extracted, but no bank name, card last-4 digits, or UPI ID signal was present in the email.',
+      'The rule engine and the AI both read this email and found no card or account number (last digits) in it.',
     tip: 'Select the payment instrument used for this transaction from the Instrument dropdown below.',
+  },
+  'gate3_failed:missing_direction': {
+    description:
+      'The AI read this email but could not tell whether money left or entered the account, so it was not guessed.',
+    tip: 'Check the email below and choose debit or credit before saving.',
+  },
+  'gate3_failed:missing_currency': {
+    description: 'The AI read this email but found no currency for the amount, so it was not assumed.',
+    tip: 'Check the email below and set the currency before saving.',
+  },
+  'gate3_failed:low_confidence': {
+    description:
+      'All details were found in the email, but the AI was not confident they are right, so they were not booked automatically.',
+    tip: 'Check the pre-filled fields against the email below, then save.',
+  },
+  llm_value_not_in_email: {
+    description:
+      'The AI answered with a value (amount, merchant or card digits) that does not appear in this email, even after being asked to correct it, so its answer was discarded.',
+    tip: 'Fill in the fields from the email below.',
   },
   unverified_sender: {
     description:

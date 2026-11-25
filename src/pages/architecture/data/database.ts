@@ -282,7 +282,7 @@ export const ENTITIES: EntityDef[] = [
     columns: [
       { name: 'id', type: 'TEXT', key: 'PK' },
       { name: 'observation_id', type: 'TEXT', note: 'logical ref, no FK constraint' },
-      { name: 'attempts', type: 'INTEGER', note: 'dead after 3' },
+      { name: 'attempts', type: 'INTEGER', note: 'failed attempts, paces retries; never dead (legacy dead_at rows only)' },
       { name: 'dead_at', type: 'TEXT' },
     ],
   },
@@ -769,6 +769,6 @@ export const SCHEMA_FACTS = [
   {
     fact: 'Five failure/deferral tables exist',
     consequence:
-      'unassigned_transactions, unprocessed_statements, scan_failed_messages, layer6_pending_jobs, pending_ingest_jobs. The two job tables mark a job dead after 3 attempts (a dead ingest job is listed in scan_failed_messages); there is no generic dead-letter table. At most one open review entry per observation (partial unique index); unassigned and draft statuses are CHECK-constrained.',
+      'unassigned_transactions, unprocessed_statements, scan_failed_messages, layer6_pending_jobs, pending_ingest_jobs. pending_ingest_jobs marks a job dead after 3 attempts (a dead ingest job is listed in scan_failed_messages); layer6_pending_jobs never does, since its failures are infrastructure, and an open review entry with a live job stays hidden from the queue; there is no generic dead-letter table. At most one open review entry per observation (partial unique index); unassigned and draft statuses are CHECK-constrained.',
   },
 ];

@@ -144,10 +144,9 @@ pub(crate) const LAYER6_QUEUE_CAPACITY: usize = 256;
 
 pub static ACTIVE_LAYER6_JOBS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// Persists an LLM job before queueing it.
-///
-/// Written to the database first, so work still pending when the app exits is
-/// replayed at the next launch rather than lost with the in-memory queue.
+/// Persists a job, then offers it: what `record_unassigned_transaction`
+/// (with `ReviewRoute::AwaitLlm`) plus `offer_layer6_job` do in production.
+#[cfg(test)]
 pub(crate) async fn enqueue_layer6_job(pool: &Pool, tx: &mpsc::Sender<Layer6Job>, job: Layer6Job) {
     let pending = crate::db::layer6_jobs::PendingLayer6Job {
         id: job.unassigned_id.clone(),
@@ -156,34 +155,13 @@ pub(crate) async fn enqueue_layer6_job(pool: &Pool, tx: &mpsc::Sender<Layer6Job>
         body_text: job.body_text.clone(),
         internal_date_seconds: job.internal_date_seconds,
     };
-    // Both the pool handout and the insert itself can fail, and the insert's own
-    // error sits inside the interact result -- checking only the outer one reports
-    // a job as durable when nothing was written.
-    let persisted = match pool.get().await {
-        Ok(conn) => conn
-            .interact(move |c| crate::db::layer6_jobs::insert(c, &pending))
-            .await
-            .map_err(|e| anyhow::anyhow!("Interact error: {}", e))
-            .and_then(|inner| inner),
-        Err(e) => Err(anyhow::anyhow!("DB pool error: {}", e)),
-    };
-    if let Err(e) = persisted {
-        // Still queued: processing it in this session beats dropping it outright,
-        // but it is no longer replayable if the app exits first -- so this one
-        // waits for a slot rather than being left behind.
-        tracing::error!(
-            "Failed to persist Layer 6 job for unassigned_id='{}' — queueing without durability: {:#}",
-            job.unassigned_id,
-            e
-        );
-        if tx.send(job).await.is_err() {
-            tracing::error!("Layer 6 Queue closed — dropping job");
-        }
-        return;
-    }
-    // Durable, so never wait for a slot: a full queue used to block the scan
-    // at LLM speed (audit A-7). Overflow stays in the table and a worker
-    // refills the queue once it drains.
+    pool.get()
+        .await
+        .unwrap()
+        .interact(move |c| crate::db::layer6_jobs::insert(c, &pending))
+        .await
+        .unwrap()
+        .unwrap();
     offer_layer6_job(tx, job);
 }
 
@@ -197,7 +175,7 @@ static LAYER6_OVERFLOW: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 
 /// Queues a persisted job without waiting; returns false if it did not fit
 /// (it stays in `layer6_pending_jobs` and the overflow flag is set).
-fn offer_layer6_job(tx: &mpsc::Sender<Layer6Job>, job: Layer6Job) -> bool {
+pub(crate) fn offer_layer6_job(tx: &mpsc::Sender<Layer6Job>, job: Layer6Job) -> bool {
     let id = job.unassigned_id.clone();
     if let Ok(mut claimed) = LAYER6_CLAIMED.lock() {
         claimed.insert(id.clone());
@@ -674,7 +652,15 @@ fn spawn_layer6_workers<R: tauri::Runtime>(
                 ACTIVE_LAYER6_JOBS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let (id, app_dir) = (job.unassigned_id.clone(), job.app_dir.clone());
                 let retry_job = job.clone();
-                let done = process_layer6_job(job, &pool, &learning).await;
+                // Held, not failed, while this device cannot run the model (no
+                // download yet, or under the RAM floor): re-checked every few
+                // minutes without using an attempt (owner decision 2026-11-25:
+                // incomplete mail always waits for the LLM).
+                let done = if crate::startup::llm_ready(&app) {
+                    process_layer6_job(job, &pool, &learning).await
+                } else {
+                    Layer6Done { completed: false, booked: false, retry_after: Some(LAYER6_NO_MODEL_RECHECK) }
+                };
                 // Offered again after the delay; the claim is kept meanwhile so
                 // a refill cannot queue it twice (owner decision, audit N-A3).
                 if let Some(delay) = done.retry_after {
@@ -838,9 +824,10 @@ async fn process_layer6_job(
                 }
             }
         }
-        // The model looked at the message and could not produce a grounded
-        // result: content-caused, so final (audit A-8).
-        Layer6Outcome::Rejected => mark_extraction_failed(pool, &job.unassigned_id).await,
+        // The model answered, but with a value the email does not contain,
+        // even after the correction retry: content-caused, so final (audit
+        // A-8), and the entry goes to review (owner decision 2026-11-25).
+        Layer6Outcome::Rejected => mark_llm_rejected(pool, &job.unassigned_id).await,
         // A timeout says nothing about the message; retried until it answers.
         Layer6Outcome::TimedOut => false,
         Layer6Outcome::NotATransaction => {
@@ -923,9 +910,12 @@ async fn process_layer6_job(
     }
 }
 
+/// Review reason for an LLM answer that named a value absent from the email.
+pub(crate) const LLM_VALUE_NOT_IN_EMAIL: &str = "llm_value_not_in_email";
+
 /// Re-labels a review entry still waiting on enrichment as
-/// `extraction_failed`; returns whether the write succeeded.
-async fn mark_extraction_failed(pool: &Pool, unassigned_id: &str) -> bool {
+/// `llm_value_not_in_email`; returns whether the write succeeded.
+async fn mark_llm_rejected(pool: &Pool, unassigned_id: &str) -> bool {
     let id = unassigned_id.to_string();
     let result = match pool.get().await {
         Ok(conn) => conn
@@ -939,7 +929,7 @@ async fn mark_extraction_failed(pool: &Pool, unassigned_id: &str) -> bool {
                     )
                     .optional()?;
                 if current_reason.as_deref() == Some("pending_llm_enrichment") {
-                    crate::db::unassigned_transactions::update_reason(c, &id, "extraction_failed")?;
+                    crate::db::unassigned_transactions::update_reason(c, &id, LLM_VALUE_NOT_IN_EMAIL)?;
                 }
                 Ok(())
             })
@@ -1075,6 +1065,13 @@ async fn apply_layer6_success(
             Err(_) if instrument_archived => None,
             Err(e) => return Err(e),
         };
+        // An instrument the earlier layers already resolved stands when the
+        // model named none: the enrichment fills gaps, it does not erase.
+        let instrument_id = if instrument_archived {
+            None
+        } else {
+            instrument_id.or(row.instrument_id.take())
+        };
         row.instrument_id = instrument_id.clone();
 
         let confident_enough = is_self_transfer
@@ -1089,8 +1086,13 @@ async fn apply_layer6_success(
         // it as a real ₹0 transaction. Guard against that: only promote observations
         // whose amount is actually positive.
         let has_nonzero_amount = row.amount_minor.map(|a| a > 0).unwrap_or(false);
+        // Booking defaults a missing direction to debit and a missing currency
+        // to INR, so both must be present: a guess is never written to the
+        // ledger, the entry goes to review instead.
         let ready = has_instrument
             && has_nonzero_amount
+            && row.direction.is_some()
+            && row.currency.is_some()
             && confident_enough
             && crate::extraction::ladder::evaluate_gate3(
                 row.amount_minor.is_some(),
@@ -1108,6 +1110,10 @@ async fn apply_layer6_success(
             Some("gate3_failed:missing_amount")
         } else if row.merchant_raw.is_none() {
             Some("gate3_failed:missing_counterparty")
+        } else if row.direction.is_none() {
+            Some("gate3_failed:missing_direction")
+        } else if row.currency.is_none() {
+            Some("gate3_failed:missing_currency")
         } else if instrument_archived {
             Some("instrument_archived")
         } else if !has_instrument {
@@ -2009,6 +2015,112 @@ mod layer6_tests {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    async fn reason_of(conn: &deadpool_sqlite::Object, unassigned_id: &str) -> String {
+        let id = unassigned_id.to_string();
+        conn.interact(move |c| {
+            c.query_row("SELECT reason FROM unassigned_transactions WHERE id = ?1", [id], |r| r.get(0))
+        })
+        .await
+        .unwrap()
+        .unwrap()
+    }
+
+    async fn visible_ids(conn: &deadpool_sqlite::Object) -> Vec<String> {
+        conn.interact(|c| crate::db::unassigned_transactions::select_open(c))
+            .await
+            .unwrap()
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect()
+    }
+
+    /// Owner decision 2026-11-25: an entry waiting on its LLM job is not in
+    /// the review queue; it appears only with the model's verdict, here
+    /// "no direction in this email". Booking would default the direction to
+    /// debit, so it must not book.
+    #[tokio::test]
+    async fn an_llm_verdict_of_missing_direction_reviews_after_the_job_and_never_books() {
+        let dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let pool = init_db(dir.join("test.db")).await.unwrap();
+        let conn = pool.get().await.unwrap();
+        seed_pending_observation(&conn, "obs-dir", "u-dir", "msg-dir").await;
+        conn.interact(|c| {
+            crate::db::layer6_jobs::insert(
+                c,
+                &crate::db::layer6_jobs::PendingLayer6Job {
+                    id: "u-dir".into(),
+                    observation_id: "obs-dir".into(),
+                    bank_name: "HDFC Bank".into(),
+                    body_text: "Rs 500 at Amazon on card XX1234".into(),
+                    internal_date_seconds: None,
+                },
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(!visible_ids(&conn).await.contains(&"u-dir".to_string()), "hidden while the job is live");
+
+        let enriched = crate::extraction::ladder::ExtractionResult {
+            amount_minor: Some(50000),
+            currency: Some("INR".into()),
+            direction: None,
+            merchant_raw: Some("Amazon".into()),
+            event_time: Some(1_704_412_200),
+            extraction_method: "llm_layer6".into(),
+            confidence_score: Some(0.95),
+            instrument_type: Some("credit_card".into()),
+            issuer_name: Some("HDFC Bank".into()),
+            masked_identifier: Some("1234".into()),
+            ..Default::default()
+        };
+        let booked = apply_layer6_success(&pool, "obs-dir", "u-dir", enriched, None).await.unwrap();
+        assert!(!booked, "a missing direction must never be booked as a default debit");
+        assert_eq!(reason_of(&conn, "u-dir").await, "gate3_failed:missing_direction");
+
+        delete_persisted_layer6_job(&pool, "u-dir").await;
+        assert!(visible_ids(&conn).await.contains(&"u-dir".to_string()), "visible once the verdict is in");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Owner decision 2026-11-25: an answer naming a value the email does not
+    /// contain (after the correction retry) goes to review under its own reason.
+    #[tokio::test]
+    async fn a_rejected_llm_answer_is_reviewed_as_value_not_in_email() {
+        let dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let pool = init_db(dir.join("test.db")).await.unwrap();
+        let conn = pool.get().await.unwrap();
+        seed_pending_observation(&conn, "obs-rej", "u-rej", "msg-rej").await;
+        assert!(mark_llm_rejected(&pool, "u-rej").await);
+        assert_eq!(reason_of(&conn, "u-rej").await, LLM_VALUE_NOT_IN_EMAIL);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Jobs left dead by the old 3-attempt cap no longer hide their entry.
+    #[tokio::test]
+    async fn an_entry_behind_a_dead_job_is_visible() {
+        let dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let pool = init_db(dir.join("test.db")).await.unwrap();
+        let conn = pool.get().await.unwrap();
+        seed_pending_observation(&conn, "obs-dead", "u-dead", "msg-dead").await;
+        conn.interact(|c| {
+            c.execute(
+                "INSERT INTO layer6_pending_jobs (id, observation_id, bank_name, body_text, dead_at)
+                 VALUES ('u-dead', 'obs-dead', 'HDFC Bank', 'x', datetime('now'))",
+                [],
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(visible_ids(&conn).await.contains(&"u-dead".to_string()));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// A `missing_counterparty` entry reaches Layer 6 with an amount, a currency

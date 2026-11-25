@@ -314,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn test_11_2_parse_missing_mandatory_fields_rejected() {
+    fn test_11_2_parse_missing_mandatory_fields_kept_absent() {
         let engine = LlmEngine::new(&PathBuf::from("dummy"), "dummy");
 
         let json_missing_currency = r#"{
@@ -324,12 +324,8 @@ mod tests {
             "datetime": "05-Jan-24"
         }"#;
 
-        assert!(
-            engine
-                .parse_json_to_result(json_missing_currency, None)
-                .is_err(),
-            "Output missing currency must be rejected"
-        );
+        let r = engine.parse_json_to_result(json_missing_currency, None).unwrap();
+        assert!(r.currency.is_none() && !r.is_valid(), "missing currency stays absent, unbookable");
 
         let json_missing_amount = r#"{
             "currency": "USD",
@@ -338,12 +334,8 @@ mod tests {
             "datetime": "05-Jan-24"
         }"#;
 
-        assert!(
-            engine
-                .parse_json_to_result(json_missing_amount, None)
-                .is_err(),
-            "Output missing amount must be rejected"
-        );
+        let r = engine.parse_json_to_result(json_missing_amount, None).unwrap();
+        assert!(r.amount_minor.is_none() && !r.is_valid(), "missing amount stays absent, unbookable");
 
         let json_missing_direction = r#"{
             "amount": 50.0,
@@ -352,11 +344,10 @@ mod tests {
             "datetime": "05-Jan-24"
         }"#;
 
+        let r = engine.parse_json_to_result(json_missing_direction, None).unwrap();
         assert!(
-            engine
-                .parse_json_to_result(json_missing_direction, None)
-                .is_err(),
-            "Output missing direction must be rejected"
+            r.direction.is_none() && !r.is_valid(),
+            "missing direction stays absent, never defaulted to debit"
         );
     }
 
