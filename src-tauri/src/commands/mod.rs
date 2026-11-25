@@ -207,13 +207,6 @@ pub fn log_renderer_error(message: String, stack: Option<String>, source: String
     );
 }
 
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UploadFile {
-    pub file_bytes: Vec<u8>,
-    pub filename: String,
-}
-
 #[derive(serde::Serialize)]
 pub struct UploadResult {
     pub statement_id: String,
@@ -221,8 +214,8 @@ pub struct UploadResult {
     pub status: String,
 }
 
-fn validate_upload_files_non_empty(files: &[UploadFile]) -> Result<(), crate::error::AppError> {
-    if files.is_empty() {
+fn validate_upload_files_non_empty(paths: &[String]) -> Result<(), crate::error::AppError> {
+    if paths.is_empty() {
         return Err(crate::error::AppError::Validation(
             "at least one file is required".to_string(),
         ));
@@ -230,14 +223,32 @@ fn validate_upload_files_non_empty(files: &[UploadFile]) -> Result<(), crate::er
     Ok(())
 }
 
+/// Reads one picked statement from disk (owner decision, audit N-D1: the
+/// webview sends paths, not bytes). Only a regular file within the size limit
+/// is read; its type is then checked from the `%PDF` magic bytes by
+/// `validate_and_hash`, as before.
+fn read_upload(path: &str) -> Result<Vec<u8>, crate::error::AppError> {
+    let meta = std::fs::metadata(path)
+        .map_err(|e| crate::error::AppError::Io(format!("File access denied: {e}")))?;
+    if !meta.is_file() {
+        return Err(crate::error::AppError::Validation("not a file".to_string()));
+    }
+    if meta.len() > crate::statements::validator::MAX_PDF_BYTES as u64 {
+        return Err(crate::error::AppError::FileTooLarge(
+            crate::statements::validator::ValidationError::FileTooLarge.to_string(),
+        ));
+    }
+    std::fs::read(path).map_err(|e| crate::error::AppError::Io(format!("File access denied: {e}")))
+}
+
 #[tauri::command]
 pub async fn statements_upload(
-    files: Vec<UploadFile>,
+    paths: Vec<String>,
     app: tauri::AppHandle,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
     queues: tauri::State<'_, crate::ingestion::queues::QueueHandles>,
 ) -> Result<serde_json::Value, crate::error::AppError> {
-    validate_upload_files_non_empty(&files)?;
+    validate_upload_files_non_empty(&paths)?;
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
     // Statement imports pause with the rest of ingestion (review P5).
     crate::security::incident_response::assert_ingestion_allowed()?;
@@ -250,26 +261,34 @@ pub async fn statements_upload(
         }
     }
 
-    let batch_progress = if files.len() > 10 {
+    let batch_progress = if paths.len() > 10 {
         Some(std::sync::Arc::new(
-            crate::ingestion::queues::BatchProgressTracker::new(files.len()),
+            crate::ingestion::queues::BatchProgressTracker::new(paths.len()),
         ))
     } else {
         None
     };
 
-    let mut results = Vec::with_capacity(files.len());
-    for file in files {
-        let filename = file.filename.clone();
-        let result = upload_one_statement(
-            file.file_bytes,
-            filename.clone(),
-            &app,
-            pool.inner(),
-            &queues,
-            batch_progress.clone(),
-        )
-        .await;
+    let mut results = Vec::with_capacity(paths.len());
+    for path in paths {
+        let filename = std::path::Path::new(&path)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.clone());
+        let result = match read_upload(&path) {
+            Ok(bytes) => {
+                upload_one_statement(
+                    bytes,
+                    filename.clone(),
+                    &app,
+                    pool.inner(),
+                    &queues,
+                    batch_progress.clone(),
+                )
+                .await
+            }
+            Err(e) => Err(e),
+        };
         // The tracker is seeded with the file count, but a duplicate, a
         // password-protected file or a failed upload never becomes a queued job
         // and so never records a completion of its own. Counting it here is what
@@ -3858,11 +3877,29 @@ mod tests {
     #[test]
     fn test_upload_command_rejects_missing_file() {
         assert!(validate_upload_files_non_empty(&[]).is_err());
-        let one_file = vec![UploadFile {
-            file_bytes: vec![1, 2, 3],
-            filename: "a.pdf".to_string(),
-        }];
-        assert!(validate_upload_files_non_empty(&one_file).is_ok());
+        assert!(validate_upload_files_non_empty(&["/tmp/a.pdf".to_string()]).is_ok());
+    }
+
+    /// Audit N-D1: the size limit is checked from the file's metadata before
+    /// anything is read; a missing path or a directory is refused.
+    #[test]
+    fn test_read_upload_checks_size_before_reading() {
+        let dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ok = dir.join("ok.pdf");
+        std::fs::write(&ok, b"%PDF-1.4 small").unwrap();
+        assert_eq!(read_upload(ok.to_str().unwrap()).unwrap(), b"%PDF-1.4 small");
+
+        let big = dir.join("big.pdf");
+        let f = std::fs::File::create(&big).unwrap();
+        f.set_len(crate::statements::validator::MAX_PDF_BYTES as u64 + 1).unwrap();
+        assert!(matches!(
+            read_upload(big.to_str().unwrap()),
+            Err(crate::error::AppError::FileTooLarge(_))
+        ));
+        assert!(read_upload(dir.join("missing.pdf").to_str().unwrap()).is_err());
+        assert!(read_upload(dir.to_str().unwrap()).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

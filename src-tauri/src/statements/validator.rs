@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 pub enum ValidationError {
     #[error("invalid_file_type: file must be application/pdf")]
     InvalidFileType,
-    #[error("file_too_large: file must not exceed 5 MB")]
+    #[error("file_too_large: file must not exceed 25 MB")]
     FileTooLarge,
     #[error("empty_file: file must not be zero bytes")]
     EmptyFile,
@@ -24,6 +24,10 @@ pub enum ValidationError {
 /// a malicious file can make the parser allocate.
 ///
 /// The returned hash is what duplicate detection is keyed on.
+/// Largest PDF accepted from either entry point (owner decision, audit N-D1:
+/// 25 MB, raised from the specs' 5 MB to match the upload picker).
+pub const MAX_PDF_BYTES: usize = 25 * 1024 * 1024;
+
 pub fn validate_and_hash(bytes: &[u8]) -> Result<String> {
     if bytes.is_empty() {
         return Err(anyhow!(ValidationError::EmptyFile));
@@ -33,8 +37,7 @@ pub fn validate_and_hash(bytes: &[u8]) -> Result<String> {
         return Err(anyhow!(ValidationError::InvalidFileType));
     }
 
-    const MAX_BYTES: usize = 5 * 1024 * 1024;
-    if bytes.len() > MAX_BYTES {
+    if bytes.len() > MAX_PDF_BYTES {
         return Err(anyhow!(ValidationError::FileTooLarge));
     }
 
@@ -67,11 +70,17 @@ mod tests {
         assert_eq!(result.unwrap().len(), 64);
     }
 
+    /// Owner decision (audit N-D1): the limit is 25 MB; a 6 MB statement,
+    /// rejected under the old 5 MB limit, is accepted.
     #[test]
-    fn test_pdf_over_5mb_rejected() {
-        let mut pdf = Vec::with_capacity(5 * 1024 * 1024 + 10);
+    fn test_pdf_over_limit_rejected() {
+        let mut ok = b"%PDF-1.4 ".to_vec();
+        ok.resize(6 * 1024 * 1024, 0);
+        assert!(validate_and_hash(&ok).is_ok());
+
+        let mut pdf = Vec::with_capacity(MAX_PDF_BYTES + 10);
         pdf.extend_from_slice(b"%PDF-1.4 ");
-        pdf.resize(5 * 1024 * 1024 + 5, 0);
+        pdf.resize(MAX_PDF_BYTES + 5, 0);
 
         let result = validate_and_hash(&pdf);
         assert!(result.is_err());

@@ -20,7 +20,6 @@
  */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { invoke } from '@tauri-apps/api/core';
-import { readFile } from '@tauri-apps/plugin-fs';
 import type { AppError } from '@/types/ipc';
 import { logger } from './logger';
 
@@ -696,14 +695,9 @@ export const API = {
   // PDF statement ingestion, from upload through password unlock, parsing and
   // draft review, to the retry paths for statements that failed.
   statements: {
-    upload: async (filePaths: string[]) => {
-      const files = await Promise.all(
-        filePaths.map(async (path) => {
-          const bytes = await readFile(path);
-          const filename = path.split(/[/\\]/).pop() || path;
-          return { file_bytes: Array.from(bytes), filename };
-        })
-      );
+    // Paths from the file picker; Rust reads and validates each file (audit
+    // N-D1), so the bytes never cross IPC as a JSON number array.
+    upload: async (paths: string[]) => {
       const response = await invokeCommand<{
         results: Array<{
           status: string;
@@ -711,7 +705,7 @@ export const API = {
           filename?: string;
           error?: string;
         }>;
-      }>('statements_upload', { files });
+      }>('statements_upload', { paths });
       return response.results;
     },
     submitPassword: (statementId: string, instrumentId: string, password: string) =>

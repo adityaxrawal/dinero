@@ -9,7 +9,6 @@ import {
 import {
   validateDroppedFiles,
   isPdf,
-  basename,
   MAX_FILE_SIZE_BYTES,
 } from '@/components/statements/upload/validation';
 
@@ -115,11 +114,5 @@ describe('validation', () => {
 
   it('passes a valid batch through', () => {
     expect(validateDroppedFiles([file('a.pdf', 100), file('b.pdf', 200)])).toBeNull();
-  });
-
-  it('takes the last path segment on either separator', () => {
-    expect(basename('/Users/x/a.pdf')).toBe('a.pdf');
-    expect(basename('C:\\docs\\b.pdf')).toBe('b.pdf');
-    expect(basename('c.pdf')).toBe('c.pdf');
   });
 });

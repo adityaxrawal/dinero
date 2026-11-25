@@ -37,8 +37,3 @@ export function validateDroppedFiles(files: File[]): ValidationError | null {
   const tooLarge = files.find((file) => file.size > MAX_FILE_SIZE_BYTES);
   return tooLarge ? tooLargeError([tooLarge.name]) : null;
 }
-
-/** Filename without its directory path. */
-export function basename(path: string): string {
-  return path.split(/[/\\]/).pop() || path;
-}

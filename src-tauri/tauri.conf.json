@@ -36,7 +36,6 @@
             "core:default",
             "opener:default",
             "dialog:default",
-            "fs:allow-read-file",
             "notification:default"
           ]
         }

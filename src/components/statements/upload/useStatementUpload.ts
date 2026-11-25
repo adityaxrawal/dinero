@@ -3,21 +3,12 @@
  */
 import { useCallback, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
-import { readFile } from '@tauri-apps/plugin-fs';
 import { API } from '@/lib/ipc';
 import { useToast } from '@/hooks/use-toast';
 import { getErrorMessage, getErrorToast } from '@/lib/errorMapping';
 import { useGlobalState } from '@/lib/GlobalStateContext';
 import { classifyUploadResults, emptyOutcome, uploadToasts } from './uploadOutcome';
-import {
-  MAX_FILE_SIZE_BYTES,
-  NON_PDF_ERROR,
-  basename,
-  isPdf,
-  tooLargeError,
-  validateDroppedFiles,
-  type ValidationError,
-} from './validation';
+import { NON_PDF_ERROR, isPdf, validateDroppedFiles, type ValidationError } from './validation';
 
 /** Handles selecting and uploading statement files, including batches. */
 export function useStatementUpload(onUploaded: () => void) {
@@ -61,14 +52,9 @@ export function useStatementUpload(onUploaded: () => void) {
       const paths = Array.isArray(selected) ? selected : [selected];
       if (paths.length === 0) return;
 
-      const tooLarge: string[] = [];
-      for (const path of paths) {
-        if (!isPdf(path)) return reject(NON_PDF_ERROR);
-        const bytes = await readFile(path);
-        if (bytes.byteLength > MAX_FILE_SIZE_BYTES) tooLarge.push(basename(path));
-      }
-      if (tooLarge.length > 0) return reject(tooLargeError(tooLarge));
-
+      if (paths.some((path) => !isPdf(path))) return reject(NON_PDF_ERROR);
+      // The size limit is enforced by Rust before it reads a file (audit
+      // N-D1); an oversize file comes back as a per-file error.
       await uploadPaths(paths);
     } catch (err) {
       toast({ variant: 'destructive', ...getErrorToast(err) });
