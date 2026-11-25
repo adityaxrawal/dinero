@@ -174,18 +174,87 @@ async fn test_search_messages_caps_at_max_search_pages() {
     assert_eq!(page_count.load(Ordering::SeqCst), 500);
 }
 
-/// Doc 2026-07-26 mail scan performance: proves the limiter itself blocks
-/// correctly under real elapsed time (a small, deliberately real sleep
-/// budget — not `start_paused`, since this test also drives a real mockito
-/// socket in the same file, and paused virtual time breaks real TCP
-/// connections).
+/// The gate paces a drained bucket under real elapsed time (not
+/// `start_paused`: this file drives real mockito sockets, which paused virtual
+/// time breaks).
 #[tokio::test]
-async fn quota_limiter_paces_a_drained_bucket_before_the_request_fires() {
-    let limiter = crate::ingestion::gmail_client::QuotaLimiter::new_for_test(2.0); // 2 units/sec, capacity 2
-    limiter.acquire(2.0).await; // drain the starting bucket
+async fn gmail_gate_paces_a_drained_bucket_before_the_request_fires() {
+    let gate = crate::ingestion::gmail_client::GmailGate::new_for_test(2.0, 1.0, 4);
+    drop(gate.acquire(2.0).await); // drain the starting bucket
     let start = std::time::Instant::now();
-    limiter.acquire(1.0).await; // needs 0.5s of real refill at 2/sec
+    drop(gate.acquire(1.0).await); // needs 0.5s of real refill at 2/sec
     assert!(start.elapsed() >= Duration::from_millis(400));
+}
+
+/// Gmail's `Retry-After` is honoured: the retry waits at least that long
+/// and then succeeds.
+#[tokio::test]
+async fn test_429_retry_after_is_honoured_before_retrying() {
+    let mut server = mockito::Server::new_async().await;
+    let limited = server
+        .mock("GET", "/gmail/v1/users/me/messages/msg1")
+        .match_query(mockito::Matcher::Any)
+        .with_status(429)
+        .with_header("retry-after", "1")
+        .with_body(r#"{"error":{"code":429,"errors":[{"reason":"rateLimitExceeded"}]}}"#)
+        .expect(1)
+        .create_async()
+        .await;
+    let ok = server
+        .mock("GET", "/gmail/v1/users/me/messages/msg1")
+        .match_query(mockito::Matcher::Any)
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(serde_json::json!({ "id": "msg1", "threadId": "t1" }).to_string())
+        .expect(1)
+        .create_async()
+        .await;
+
+    let client = client_with_temp_db(server.url()).await;
+    let start = std::time::Instant::now();
+    let message = client
+        .fetch_message("msg1", crate::ingestion::gmail_client::FetchFormat::Metadata)
+        .await
+        .expect("the fetch must succeed after the hinted wait");
+    assert_eq!(message.id, "msg1");
+    assert!(start.elapsed() >= Duration::from_millis(900), "{:?}", start.elapsed());
+    limited.assert_async().await;
+    ok.assert_async().await;
+}
+
+/// A rate limit is not a failed message. The old client gave up after 6
+/// throttled attempts and the scan recorded the email as failed; now it
+/// keeps waiting until Gmail lets it through.
+#[tokio::test]
+async fn test_rate_limit_does_not_fail_the_message_after_six_attempts() {
+    let mut server = mockito::Server::new_async().await;
+    let limited = server
+        .mock("GET", "/gmail/v1/users/me/messages/msg1")
+        .match_query(mockito::Matcher::Any)
+        .with_status(429)
+        .with_header("retry-after", "1")
+        .with_body(r#"{"error":{"code":429,"errors":[{"reason":"rateLimitExceeded"}]}}"#)
+        .expect(7)
+        .create_async()
+        .await;
+    let ok = server
+        .mock("GET", "/gmail/v1/users/me/messages/msg1")
+        .match_query(mockito::Matcher::Any)
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(serde_json::json!({ "id": "msg1", "threadId": "t1" }).to_string())
+        .expect(1)
+        .create_async()
+        .await;
+
+    let client = client_with_temp_db(server.url()).await;
+    let message = client
+        .fetch_message("msg1", crate::ingestion::gmail_client::FetchFormat::Metadata)
+        .await
+        .expect("seven rate limits in a row must still end in success");
+    assert_eq!(message.id, "msg1");
+    limited.assert_async().await;
+    ok.assert_async().await;
 }
 
 /// Doc 30 TASK-GMAIL-008: "PDF bytes are never written to disk or SQLite at

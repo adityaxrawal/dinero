@@ -27,82 +27,211 @@ use crate::network_client::NetworkClient;
 
 pub const GMAIL_API_BASE_URL: &str = "https://gmail.googleapis.com";
 
-pub(crate) struct QuotaLimiter {
-    burst_ceiling: f64,
-    refill_per_sec: f64,
-    state: tokio::sync::Mutex<QuotaState>,
+/// The one gate every Gmail request passes through, retries included.
+///
+/// Three controls, because each covers a failure the others miss:
+/// - a token bucket keeps the average rate well under Gmail's per-user budget
+///   (250 quota units/second);
+/// - an in-flight cap keeps the number of concurrent requests low, since Gmail
+///   also throttles on concurrency regardless of rate;
+/// - a shared cooldown: when Gmail answers 429 (or 403 rateLimitExceeded),
+///   *every* caller pauses, not just the one that was refused, and the rate is
+///   halved. Without it the other workers keep firing into a limit that is
+///   already tripped, and all of them back off and retry in lockstep.
+///
+/// Each success raises the rate a little again (additive increase,
+/// multiplicative decrease), so a scan settles just below whatever this account
+/// tolerates.
+pub(crate) struct GmailGate {
+    max_rate: f64,
+    min_rate: f64,
+    in_flight: tokio::sync::Semaphore,
+    state: tokio::sync::Mutex<GateState>,
 }
 
-struct QuotaState {
+struct GateState {
     tokens: f64,
+    rate: f64,
     last_refill: tokio::time::Instant,
+    paused_until: Option<tokio::time::Instant>,
+    /// The cooldown used for the last 429 that carried no Retry-After hint;
+    /// doubles per consecutive 429 and resets on success.
+    backoff: Duration,
 }
 
-impl QuotaLimiter {
-    const MAX_BURST_UNITS: f64 = 30.0;
-    /// Builds a token-bucket limiter at the given refill rate.
-    ///
-    /// Burst capacity is capped separately from the refill rate, so a long idle period
-    /// cannot accumulate enough tokens to fire a burst large enough to trip Gmail's
-    /// own rate limiting.
+/// Steady-state ceiling: 40% of Gmail's 250 units/second per-user budget, so
+/// polling, statement downloads and a scan together still stay clear of it.
+const GATE_MAX_UNITS_PER_SEC: f64 = 100.0;
+/// The rate never drops below this however many 429s arrive (2 requests/s).
+const GATE_MIN_UNITS_PER_SEC: f64 = 10.0;
+/// Requests in flight at once, across every Gmail caller.
+const GATE_MAX_IN_FLIGHT: usize = 4;
+/// Burst ceiling, so an idle period cannot bank a large burst.
+const GATE_MAX_BURST_UNITS: f64 = 20.0;
+/// Rate regained per successful request after a slowdown.
+const GATE_RECOVERY_UNITS: f64 = 1.0;
+/// Bounds on one cooldown. The floor stops a `Retry-After: 0` from becoming a
+/// tight loop; the ceiling stops a bogus hint from stalling ingestion for hours.
+const GATE_MIN_COOLDOWN: Duration = if cfg!(test) {
+    Duration::from_millis(10)
+} else {
+    Duration::from_secs(1)
+};
+const GATE_MAX_COOLDOWN: Duration = Duration::from_secs(15 * 60);
+/// First and largest computed cooldown when Gmail gives no hint.
+const GATE_FIRST_BACKOFF: Duration = if cfg!(test) {
+    Duration::from_millis(10)
+} else {
+    Duration::from_secs(2)
+};
+const GATE_MAX_BACKOFF: Duration = Duration::from_secs(64);
 
-    fn new(units_per_sec: f64) -> Self {
-        let burst_ceiling = units_per_sec.min(Self::MAX_BURST_UNITS);
+impl GmailGate {
+    fn new(max_rate: f64, min_rate: f64, max_in_flight: usize) -> Self {
         Self {
-            burst_ceiling,
-            refill_per_sec: units_per_sec,
-            state: tokio::sync::Mutex::new(QuotaState {
-                tokens: burst_ceiling,
+            max_rate,
+            min_rate,
+            in_flight: tokio::sync::Semaphore::new(max_in_flight),
+            state: tokio::sync::Mutex::new(GateState {
+                tokens: max_rate.min(GATE_MAX_BURST_UNITS),
+                rate: max_rate,
                 last_refill: tokio::time::Instant::now(),
+                paused_until: None,
+                backoff: Duration::ZERO,
             }),
         }
     }
-    /// Waits until enough quota is available, then consumes it.
-    ///
-    /// Tokens refill continuously from elapsed time rather than on a timer, so the
-    /// limiter needs no background task. Loops rather than sleeping once, because
-    /// several callers may wake to compete for the same refilled tokens.
 
-    pub(crate) async fn acquire(&self, cost: f64) {
+    /// Waits for an in-flight slot, any shared cooldown, and `cost` quota units.
+    ///
+    /// Hold the returned permit until the response status is known; dropping it
+    /// frees the slot.
+    pub(crate) async fn acquire(&self, cost: f64) -> tokio::sync::SemaphorePermit<'_> {
+        let permit = self
+            .in_flight
+            .acquire()
+            .await
+            .expect("the Gmail gate semaphore is never closed");
         loop {
             let wait = {
-                let mut state = self.state.lock().await;
+                let mut st = self.state.lock().await;
                 let now = tokio::time::Instant::now();
-                let elapsed = now.duration_since(state.last_refill).as_secs_f64();
-                state.tokens =
-                    (state.tokens + elapsed * self.refill_per_sec).min(self.burst_ceiling);
-                state.last_refill = now;
-
-                if state.tokens >= cost {
-                    state.tokens -= cost;
-                    None
-                } else {
-                    let deficit = cost - state.tokens;
-                    Some(std::time::Duration::from_secs_f64(
-                        deficit / self.refill_per_sec,
-                    ))
+                match st.paused_until {
+                    Some(until) if until > now => Some(until - now),
+                    _ => {
+                        let ceiling = st.rate.min(GATE_MAX_BURST_UNITS);
+                        let elapsed = now.saturating_duration_since(st.last_refill).as_secs_f64();
+                        st.tokens = (st.tokens + elapsed * st.rate).min(ceiling);
+                        st.last_refill = now;
+                        if st.tokens >= cost {
+                            st.tokens -= cost;
+                            None
+                        } else {
+                            Some(Duration::from_secs_f64((cost - st.tokens) / st.rate))
+                        }
+                    }
                 }
             };
             match wait {
-                None => return,
+                None => return permit,
                 Some(d) => tokio::time::sleep(d).await,
             }
         }
     }
+
+    /// Records a rate-limit response: pauses every caller and halves the rate.
+    ///
+    /// A burst of 429s from requests that were already in flight is one event,
+    /// not several: while a cooldown is running, a later 429 can only extend it
+    /// to honour a longer `Retry-After`, never halve the rate again.
+    pub(crate) async fn on_rate_limited(&self, retry_after: Option<Duration>) {
+        let mut st = self.state.lock().await;
+        let now = tokio::time::Instant::now();
+        let cooling = st.paused_until.is_some_and(|until| until > now);
+        let cooldown = if cooling {
+            match retry_after {
+                Some(hint) => hint.clamp(GATE_MIN_COOLDOWN, GATE_MAX_COOLDOWN),
+                None => return,
+            }
+        } else {
+            st.backoff = if st.backoff.is_zero() {
+                GATE_FIRST_BACKOFF
+            } else {
+                (st.backoff * 2).min(GATE_MAX_BACKOFF)
+            };
+            st.rate = (st.rate / 2.0).max(self.min_rate);
+            retry_after
+                .unwrap_or_else(|| jittered(st.backoff))
+                .clamp(GATE_MIN_COOLDOWN, GATE_MAX_COOLDOWN)
+        };
+        let until = now + cooldown;
+        if st.paused_until.is_none_or(|current| until > current) {
+            st.paused_until = Some(until);
+            // Restart from an empty bucket once the cooldown ends, so the first
+            // requests after it trickle out instead of bursting.
+            st.tokens = 0.0;
+            st.last_refill = until;
+        }
+        tracing::warn!(
+            cooldown_ms = cooldown.as_millis() as u64,
+            rate_units_per_sec = st.rate,
+            hinted = retry_after.is_some(),
+            "Gmail rate limit: pausing all Gmail requests"
+        );
+    }
+
+    /// Records a successful response: clears the backoff and regains some rate.
+    pub(crate) async fn on_success(&self) {
+        let mut st = self.state.lock().await;
+        st.backoff = Duration::ZERO;
+        st.rate = (st.rate + GATE_RECOVERY_UNITS).min(self.max_rate);
+    }
 }
 
 #[cfg(test)]
-impl QuotaLimiter {
-    pub(crate) fn new_for_test(units_per_sec: f64) -> Self {
-        Self::new(units_per_sec)
+impl GmailGate {
+    pub(crate) fn new_for_test(max_rate: f64, min_rate: f64, max_in_flight: usize) -> Self {
+        Self::new(max_rate, min_rate, max_in_flight)
     }
+
+    pub(crate) async fn rate_for_test(&self) -> f64 {
+        self.state.lock().await.rate
+    }
+}
+
+/// The process-wide gate: scans, polling and statement downloads share one
+/// Gmail budget, so they must share one gate.
+pub(crate) fn gmail_gate() -> &'static GmailGate {
+    static GATE: std::sync::OnceLock<GmailGate> = std::sync::OnceLock::new();
+    GATE.get_or_init(|| {
+        // Tests share this one gate across parallel mock servers; production
+        // pacing there only makes unrelated tests wait on each other's 429s.
+        // Pacing itself is tested on dedicated gates (`new_for_test`).
+        if cfg!(test) {
+            GmailGate::new(1_000_000.0, 1_000_000.0, 64)
+        } else {
+            GmailGate::new(GATE_MAX_UNITS_PER_SEC, GATE_MIN_UNITS_PER_SEC, GATE_MAX_IN_FLIGHT)
+        }
+    })
+}
+
+/// Quota cost of each Gmail method used, in Gmail's quota units.
+pub(crate) mod quota_cost {
+    pub const MESSAGES_GET: f64 = 5.0;
+    pub const MESSAGES_LIST: f64 = 5.0;
+    pub const ATTACHMENTS_GET: f64 = 5.0;
+    pub const HISTORY_LIST: f64 = 2.0;
+    pub const GET_PROFILE: f64 = 1.0;
 }
 
 /// Timeout for one attachment download (review L1).
 const ATTACHMENT_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Attempts allowed for a rate-limited request before giving up.
-const RATE_LIMIT_MAX_ATTEMPTS: u32 = 6;
+/// How long a request keeps waiting out rate limits before it is reported as
+/// failed. A rate limit says nothing about the message, so it is waited out
+/// rather than counted against it; this cap only stops a persistently refused
+/// account from hanging a scan forever.
+const RATE_LIMIT_GIVE_UP_AFTER: Duration = Duration::from_secs(15 * 60);
 
 /// Whether a response is Gmail asking the client to slow down.
 ///
@@ -115,9 +244,27 @@ pub(crate) fn is_rate_limited(status: reqwest::StatusCode, body: &str) -> bool {
             && (body.contains("rateLimitExceeded") || body.contains("userRateLimitExceeded")))
 }
 
-pub(crate) fn gmail_quota_limiter() -> &'static QuotaLimiter {
-    static LIMITER: std::sync::OnceLock<QuotaLimiter> = std::sync::OnceLock::new();
-    LIMITER.get_or_init(|| QuotaLimiter::new(225.0))
+/// How long Gmail asked us to wait, if it said.
+///
+/// Either a `Retry-After` header in seconds, or the timestamp Gmail puts in a
+/// `userRateLimitExceeded` message ("... Retry after 2026-11-25T10:00:00.000Z").
+pub(crate) fn retry_after_hint(headers: &reqwest::header::HeaderMap, body: &str) -> Option<Duration> {
+    if let Some(secs) = headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+    {
+        return Some(Duration::from_secs(secs));
+    }
+    const MARKER: &str = "Retry after ";
+    let rest = &body[body.find(MARKER)? + MARKER.len()..];
+    let stamp = rest
+        .split(|c: char| c.is_whitespace() || c == '"')
+        .next()?
+        .trim_end_matches([',', '.']);
+    let at = chrono::DateTime::parse_from_rfc3339(stamp).ok()?;
+    let millis = (at.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_milliseconds();
+    Some(Duration::from_millis(millis.max(0) as u64))
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -220,49 +367,62 @@ impl GmailClient {
         }
     }
 
+    /// Sends one Gmail request through the shared gate, retrying what is worth
+    /// retrying.
+    ///
+    /// Every attempt, retries included, waits for the gate and pays `cost`
+    /// quota units: a retry is a real request against Gmail's budget.
+    /// Rate limits are waited out (the gate pauses every caller) and do not
+    /// count as failed attempts; timeouts, dropped connections, 401s and 5xx
+    /// get `MAX_FAILED_ATTEMPTS`.
     async fn execute_with_retry<F, Fut>(
         &self,
         operation: &str,
+        cost: f64,
         make_req: F,
     ) -> Result<reqwest::Response>
     where
         F: Fn(String) -> Fut,
         Fut: std::future::Future<Output = reqwest::RequestBuilder>,
     {
-        let max_retries = 3;
-        let mut attempts = 0;
+        const MAX_FAILED_ATTEMPTS: u32 = 3;
+        let gate = gmail_gate();
+        let mut failed_attempts = 0;
         let mut backoff = Duration::from_secs(2);
+        let mut throttled_since: Option<std::time::Instant> = None;
 
         loop {
-            attempts += 1;
+            let permit = gate.acquire(cost).await;
             let token = self.access_token.read().await.clone();
             let builder = make_req(token).await;
 
             let res = match self.network.execute("gmail_api", builder).await {
                 Ok(r) => r,
                 Err(e) => {
-                    if attempts >= max_retries {
-                        tracing::warn!(operation, attempts, error = %e, "gmail request failed, retries exhausted");
+                    drop(permit);
+                    failed_attempts += 1;
+                    if failed_attempts >= MAX_FAILED_ATTEMPTS {
+                        tracing::warn!(operation, failed_attempts, error = %e, "gmail request failed, retries exhausted");
                         return Err(e).context(format!("Failed to send {} request", operation));
                     }
-                    if e.is_timeout() {
-                        tracing::warn!(operation, attempts, error = %e, ?backoff, "gmail request timed out, retrying");
-                        tokio::time::sleep(jittered(backoff)).await;
-                        backoff *= 2;
-                    } else {
-                        tracing::warn!(operation, attempts, error = %e, "gmail request failed (stale connection), retrying immediately");
-                    }
+                    tracing::warn!(operation, failed_attempts, error = %e, ?backoff, "gmail request failed to send, retrying");
+                    tokio::time::sleep(jittered(backoff)).await;
+                    backoff *= 2;
                     continue;
                 }
             };
 
             let status = res.status();
             if status.is_success() {
+                drop(permit);
+                gate.on_success().await;
                 return Ok(res);
             }
 
             if status == reqwest::StatusCode::UNAUTHORIZED {
-                if attempts >= max_retries {
+                drop(permit);
+                failed_attempts += 1;
+                if failed_attempts >= MAX_FAILED_ATTEMPTS {
                     anyhow::bail!(
                         "{} failed with status 401 Unauthorized (retries exhausted)",
                         operation
@@ -291,15 +451,31 @@ impl GmailClient {
                 }
             }
 
+            let headers = res.headers().clone();
             let error_text = res.text().await.unwrap_or_default();
-            let rate_limited = is_rate_limited(status, &error_text);
-            if rate_limited || status.is_server_error() {
-                // Rate limits get more, longer retries (2s..32s, ~1 min in
-                // total): Gmail asks clients to back off, and giving up early
-                // is what dropped most of a historical scan.
-                let limit = if rate_limited { RATE_LIMIT_MAX_ATTEMPTS } else { max_retries };
-                if attempts >= limit {
-                    tracing::warn!(operation, attempts, %status, "gmail request failed, retries exhausted");
+            drop(permit);
+
+            if is_rate_limited(status, &error_text) {
+                let since = *throttled_since.get_or_insert_with(std::time::Instant::now);
+                if since.elapsed() >= RATE_LIMIT_GIVE_UP_AFTER {
+                    tracing::error!(operation, %status, waited_secs = since.elapsed().as_secs(), "gmail still rate-limiting after the give-up window");
+                    anyhow::bail!(
+                        "{} failed with status {} after {:?} of rate limiting: {}",
+                        operation,
+                        status,
+                        RATE_LIMIT_GIVE_UP_AFTER,
+                        error_text
+                    );
+                }
+                crate::ingestion::gmail_telemetry::gmail_telemetry().record_quota_exhausted();
+                gate.on_rate_limited(retry_after_hint(&headers, &error_text)).await;
+                continue;
+            }
+
+            if status.is_server_error() {
+                failed_attempts += 1;
+                if failed_attempts >= MAX_FAILED_ATTEMPTS {
+                    tracing::warn!(operation, failed_attempts, %status, "gmail request failed, retries exhausted");
                     anyhow::bail!(
                         "{} failed with status {}: {}",
                         operation,
@@ -307,7 +483,7 @@ impl GmailClient {
                         error_text
                     );
                 }
-                tracing::warn!(operation, attempts, %status, ?backoff, "gmail request throttled/errored, retrying");
+                tracing::warn!(operation, failed_attempts, %status, ?backoff, "gmail server error, retrying");
                 tokio::time::sleep(jittered(backoff)).await;
                 backoff *= 2;
                 continue;
@@ -325,6 +501,7 @@ impl GmailClient {
     async fn execute_with_retry_and_parse<F, Fut, T>(
         &self,
         operation: &str,
+        cost: f64,
         make_req: F,
     ) -> Result<T>
     where
@@ -338,7 +515,7 @@ impl GmailClient {
 
         loop {
             attempts += 1;
-            let res = self.execute_with_retry(operation, make_req.clone()).await?;
+            let res = self.execute_with_retry(operation, cost, make_req.clone()).await?;
 
             let text = match res.text().await {
                 Ok(t) => t,
@@ -372,15 +549,13 @@ impl GmailClient {
     }
 
     pub async fn fetch_message(&self, message_id: &str, format: FetchFormat) -> Result<Message> {
-        gmail_quota_limiter().acquire(5.0).await;
-
         let url = format!(
             "{}/gmail/v1/users/me/messages/{}?format={}",
             self.base_url,
             message_id,
             format.as_str()
         );
-        self.execute_with_retry_and_parse("fetch_message", |token| {
+        self.execute_with_retry_and_parse("fetch_message", quota_cost::MESSAGES_GET, |token| {
             let url = url.clone();
             async move { self.network.client().get(&url).bearer_auth(token) }
         })
@@ -408,9 +583,8 @@ impl GmailClient {
                 url.push_str(&format!("&pageToken={}", token));
             }
 
-            gmail_quota_limiter().acquire(5.0).await;
             let search_response = self
-                .execute_with_retry_and_parse::<_, _, SearchResponse>("search_messages", |token| {
+                .execute_with_retry_and_parse::<_, _, SearchResponse>("search_messages", quota_cost::MESSAGES_LIST, |token| {
                     let url = url.clone();
                     async move { self.network.client().get(&url).bearer_auth(token) }
                 })
@@ -452,7 +626,7 @@ impl GmailClient {
             data: Option<String>,
         }
         let att: AttachmentResponse = self
-            .execute_with_retry_and_parse("fetch_attachment", |token| {
+            .execute_with_retry_and_parse("fetch_attachment", quota_cost::ATTACHMENTS_GET, |token| {
                 let url = url.clone();
                 // Statement PDFs can take longer than the 15s default.
                 async move {
@@ -474,7 +648,7 @@ impl GmailClient {
 
     pub async fn get_profile(&self) -> Result<GmailProfile> {
         let url = format!("{}/gmail/v1/users/me/profile", self.base_url);
-        self.execute_with_retry_and_parse("get_profile", |token| {
+        self.execute_with_retry_and_parse("get_profile", quota_cost::GET_PROFILE, |token| {
             let url = url.clone();
             async move { self.network.client().get(&url).bearer_auth(token) }
         })
@@ -491,48 +665,112 @@ pub struct GmailProfile {
 }
 
 #[cfg(test)]
-mod quota_limiter_tests {
-    use super::QuotaLimiter;
+mod gmail_gate_tests {
+    use super::{retry_after_hint, GmailGate, GATE_MAX_BURST_UNITS};
+    use std::time::Duration;
+    use tokio::time::Instant;
 
     #[tokio::test(start_paused = true)]
     async fn acquire_does_not_wait_when_tokens_available() {
-        let limiter = QuotaLimiter::new(250.0);
-        let start = tokio::time::Instant::now();
-        limiter.acquire(5.0).await;
-        assert_eq!(start.elapsed(), std::time::Duration::ZERO);
+        let gate = GmailGate::new_for_test(100.0, 10.0, 4);
+        let start = Instant::now();
+        let _p = gate.acquire(5.0).await;
+        assert_eq!(start.elapsed(), Duration::ZERO);
     }
 
     #[tokio::test(start_paused = true)]
     async fn acquire_waits_for_refill_when_bucket_drained() {
-        let limiter = QuotaLimiter::new(10.0);
-        limiter.acquire(10.0).await;
-        let start = tokio::time::Instant::now();
-        limiter.acquire(5.0).await;
-        assert!(start.elapsed() >= std::time::Duration::from_millis(500));
+        let gate = GmailGate::new_for_test(10.0, 1.0, 4);
+        drop(gate.acquire(10.0).await);
+        let start = Instant::now();
+        let _p = gate.acquire(5.0).await;
+        assert!(start.elapsed() >= Duration::from_millis(500));
     }
 
     #[tokio::test(start_paused = true)]
-    async fn acquire_never_exceeds_capacity_even_after_long_idle() {
-        let limiter = QuotaLimiter::new(10.0);
-        limiter.acquire(10.0).await;
-        tokio::time::advance(std::time::Duration::from_secs(3600)).await;
-        let start = tokio::time::Instant::now();
-        limiter.acquire(10.0).await;
-        assert_eq!(start.elapsed(), std::time::Duration::ZERO);
+    async fn an_idle_period_cannot_bank_more_than_the_burst_ceiling() {
+        let gate = GmailGate::new_for_test(100.0, 10.0, 4);
+        drop(gate.acquire(GATE_MAX_BURST_UNITS).await);
+        tokio::time::advance(Duration::from_secs(3600)).await;
+        drop(gate.acquire(GATE_MAX_BURST_UNITS).await);
+        let start = Instant::now();
+        drop(gate.acquire(1.0).await);
+        assert!(start.elapsed() > Duration::ZERO, "the bucket must cap at the burst ceiling");
     }
 
     #[tokio::test(start_paused = true)]
-    async fn acquire_caps_the_burst_below_capacity_for_a_large_budget() {
-        let limiter = QuotaLimiter::new(225.0);
-        let start = tokio::time::Instant::now();
-        limiter.acquire(30.0).await;
-        assert_eq!(start.elapsed(), std::time::Duration::ZERO);
+    async fn in_flight_requests_are_capped() {
+        let gate = GmailGate::new_for_test(1000.0, 10.0, 2);
+        let _a = gate.acquire(1.0).await;
+        let _b = gate.acquire(1.0).await;
+        let third = tokio::time::timeout(Duration::from_secs(1), gate.acquire(1.0)).await;
+        assert!(third.is_err(), "a third request must wait while two are in flight");
+    }
 
-        let start = tokio::time::Instant::now();
-        limiter.acquire(1.0).await;
-        assert!(
-            start.elapsed() > std::time::Duration::ZERO,
-            "starting bucket must be capped at MAX_BURST_UNITS, not the full 225/sec budget"
+    #[tokio::test(start_paused = true)]
+    async fn a_rate_limit_pauses_every_caller_for_the_hinted_time() {
+        let gate = GmailGate::new_for_test(100.0, 10.0, 4);
+        gate.on_rate_limited(Some(Duration::from_secs(30))).await;
+        let start = Instant::now();
+        drop(gate.acquire(5.0).await);
+        assert!(start.elapsed() >= Duration::from_secs(30));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_burst_of_429s_halves_the_rate_once_and_success_recovers_it() {
+        let gate = GmailGate::new_for_test(100.0, 10.0, 4);
+        // Several in-flight requests refused together are one event.
+        for _ in 0..4 {
+            gate.on_rate_limited(None).await;
+        }
+        assert_eq!(gate.rate_for_test().await, 50.0);
+        for _ in 0..100 {
+            gate.on_success().await;
+        }
+        assert_eq!(gate.rate_for_test().await, 100.0, "recovery stops at the ceiling");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_rate_never_drops_below_the_floor() {
+        let gate = GmailGate::new_for_test(100.0, 10.0, 4);
+        for _ in 0..10 {
+            gate.on_rate_limited(None).await;
+            tokio::time::advance(Duration::from_secs(120)).await;
+        }
+        assert_eq!(gate.rate_for_test().await, 10.0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_longer_hint_during_a_cooldown_extends_it() {
+        let gate = GmailGate::new_for_test(100.0, 10.0, 4);
+        gate.on_rate_limited(Some(Duration::from_secs(5))).await;
+        gate.on_rate_limited(Some(Duration::from_secs(40))).await;
+        let start = Instant::now();
+        drop(gate.acquire(5.0).await);
+        assert!(start.elapsed() >= Duration::from_secs(40));
+        assert_eq!(gate.rate_for_test().await, 50.0, "still one halving");
+    }
+
+    #[test]
+    fn retry_after_header_in_seconds_is_read() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::RETRY_AFTER, "17".parse().unwrap());
+        assert_eq!(retry_after_hint(&headers, ""), Some(Duration::from_secs(17)));
+    }
+
+    #[test]
+    fn gmail_retry_after_timestamp_in_the_body_is_read() {
+        let at = chrono::Utc::now() + chrono::Duration::seconds(90);
+        let body = format!(
+            r#"{{"error":{{"code":429,"message":"User-rate limit exceeded.  Retry after {}","errors":[{{"reason":"rateLimitExceeded"}}]}}}}"#,
+            at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
         );
+        let hint = retry_after_hint(&reqwest::header::HeaderMap::new(), &body).unwrap();
+        assert!(hint > Duration::from_secs(80) && hint <= Duration::from_secs(90), "{hint:?}");
+    }
+
+    #[test]
+    fn no_hint_when_gmail_gives_none() {
+        assert_eq!(retry_after_hint(&reqwest::header::HeaderMap::new(), "rateLimitExceeded"), None);
     }
 }

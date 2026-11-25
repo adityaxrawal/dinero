@@ -16,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::db::connected_accounts::{self, ConnectedAccountsRow};
 use crate::db::processing_checkpoints::{self, ProcessingCheckpointRow};
+use crate::ingestion::gmail_client::{gmail_gate, quota_cost};
 use crate::ingestion::oauth::{get_valid_access_token, handle_invalid_history_id};
 use crate::network_client::NetworkClient;
 
@@ -292,12 +293,17 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
 
         let response = loop {
             let builder = network.client().get(&url).bearer_auth(&token);
-            let resp = network.execute("gmail_api", builder).await;
+            // Shares the scan's Gmail budget (one gate for every caller).
+            let resp = {
+                let _permit = gmail_gate().acquire(quota_cost::HISTORY_LIST).await;
+                network.execute("gmail_api", builder).await
+            };
 
             match resp {
                 Ok(res) => {
                     let status = res.status();
                     if status.is_success() {
+                        gmail_gate().on_success().await;
                         break Ok::<reqwest::Response, anyhow::Error>(res);
                     } else if status == StatusCode::NOT_FOUND || status == StatusCode::BAD_REQUEST {
                         tracing::warn!(
@@ -536,15 +542,21 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
 /// Whether a failed history.list response should be retried: `Some(true)`
 /// for a Gmail rate limit (429, or 403 rateLimitExceeded /
 /// userRateLimitExceeded), `Some(false)` for a 5xx, `None` for anything else.
-/// Only a 403 body is read, since that is where the rate-limit reason is.
+/// Only a 403 or 429 body is read: that is where the rate-limit reason and
+/// Gmail's "Retry after" time are.
+/// A rate limit is also reported to the shared gate, so the scan pauses too.
 async fn retryable_failure(res: reqwest::Response) -> Option<bool> {
     let status = res.status();
-    let body = if status == StatusCode::FORBIDDEN {
+    let headers = res.headers().clone();
+    let body = if status == StatusCode::FORBIDDEN || status == StatusCode::TOO_MANY_REQUESTS {
         res.text().await.unwrap_or_default()
     } else {
         String::new()
     };
     if crate::ingestion::gmail_client::is_rate_limited(status, &body) {
+        gmail_gate()
+            .on_rate_limited(crate::ingestion::gmail_client::retry_after_hint(&headers, &body))
+            .await;
         Some(true)
     } else if status.is_server_error() {
         Some(false)
@@ -565,7 +577,10 @@ async fn recover_from_expired_history<R: tauri::Runtime>(
         .client()
         .get(format!("{}/gmail/v1/users/me/profile", base_url))
         .bearer_auth(token);
-    let res = network.execute("gmail_api", builder).await?;
+    let res = {
+        let _permit = gmail_gate().acquire(quota_cost::GET_PROFILE).await;
+        network.execute("gmail_api", builder).await?
+    };
     if !res.status().is_success() {
         anyhow::bail!("Gmail profile fetch failed with {}", res.status());
     }

@@ -188,8 +188,9 @@ fn should_checkpoint(batch_count: usize) -> bool {
     batch_count >= CHECKPOINT_INTERVAL
 }
 
-/// Concurrent message fetches. Each message costs two Gmail calls, and 25 at
-/// once tripped Gmail's per-user concurrency limit (403 rateLimitExceeded).
+/// Messages being processed at once. Gmail traffic itself is paced by the
+/// shared gate in `gmail_client` (rate, in-flight cap, shared cooldown); this
+/// only lets local work (gates, extraction, DB writes) overlap the fetches.
 const MAX_CONCURRENT_FETCHES: usize = 8;
 
 /// Statement-attachment downloads in flight at once during a scan.
