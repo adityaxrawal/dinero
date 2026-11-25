@@ -1076,7 +1076,11 @@ mod tests {
         {"name":"Authentication-Results","value":"mx.google.com; dkim=pass header.i=@hdfcbank.net; spf=pass; dmarc=pass header.from=hdfcbank.net"}],
         "body":{"data":"UnMgNDUwLjAwIHNwZW50IG9uIHlvdXIgSERGQyBCYW5rIENSRURJVCBDYXJkIGVuZGluZyAxMjM0IGF0IE1lcmNoYW50NyBvbiAwNS1KdW4tMjYu"}}}"#;
 
-    async fn poll_once_with_failing_table(table: &'static str, message_body: &'static str, status: usize) -> (String, bool) {
+    async fn poll_once_with_failing_table(
+        table: &'static str,
+        message_body: &'static str,
+        status: usize,
+    ) -> (String, bool, Option<String>) {
         let mut server = mockito::Server::new_async().await;
         let account_id = format!("acc_na2_{}", uuid::Uuid::new_v4());
         write_dev_token(&account_id);
@@ -1117,7 +1121,7 @@ mod tests {
         let _ = poll_all_accounts(&app.handle().clone(), &pool, &server.url()).await;
 
         let acc = account_id.clone();
-        let (cursor, queued) = pool
+        let (cursor, queued, decision) = pool
             .get()
             .await
             .unwrap()
@@ -1129,20 +1133,27 @@ mod tests {
                 )?;
                 let queued: i64 =
                     c.query_row("SELECT COUNT(*) FROM pending_ingest_jobs", [], |r| r.get(0))?;
-                Ok::<_, rusqlite::Error>((cursor, queued > 0))
+                let decision: Option<String> = c
+                    .query_row(
+                        "SELECT decision FROM processed_messages WHERE message_id = 'msg_ok'",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .ok();
+                Ok::<_, rusqlite::Error>((cursor, queued > 0, decision))
             })
             .await
             .unwrap()
             .unwrap();
         let _ = fs::remove_dir_all(&temp_dir);
-        (cursor, queued)
+        (cursor, queued, decision)
     }
 
     /// Audit N-A2 (owner decision): a job that could not be saved stops the
     /// cycle with the old cursor, so the next cycle reads the message again.
     #[tokio::test]
     async fn test_unsaved_job_keeps_the_cursor() {
-        let (cursor, queued) = poll_once_with_failing_table("pending_ingest_jobs", HDFC_ALERT, 200).await;
+        let (cursor, queued, _) = poll_once_with_failing_table("pending_ingest_jobs", HDFC_ALERT, 200).await;
         assert_eq!(cursor, "h1", "cursor must not move past an unsaved job");
         assert!(!queued);
     }
@@ -1151,7 +1162,7 @@ mod tests {
     /// saved and the cursor moves on.
     #[tokio::test]
     async fn test_saved_job_advances_the_cursor() {
-        let (cursor, queued) = poll_once_with_failing_table("feedback_log", HDFC_ALERT, 200).await;
+        let (cursor, queued, _) = poll_once_with_failing_table("feedback_log", HDFC_ALERT, 200).await;
         assert_eq!(cursor, "h2");
         assert!(queued);
     }
@@ -1160,7 +1171,34 @@ mod tests {
     /// also keeps the old cursor (it used to be dropped with `let _`).
     #[tokio::test]
     async fn test_unrecorded_failure_keeps_the_cursor() {
-        let (cursor, _) = poll_once_with_failing_table("scan_failed_messages", "{}", 404).await;
+        let (cursor, _, _) = poll_once_with_failing_table("scan_failed_messages", "{}", 404).await;
+        assert_eq!(cursor, "h1");
+    }
+
+    /// A statement email whose PDF cannot be downloaded (audit N-F3 tests).
+    const LINK_ONLY_STATEMENT: &str = r#"{"id":"msg_ok","threadId":"t","internalDate":"1750000000000","snippet":"Your statement is ready",
+        "payload":{"mimeType":"text/plain","headers":[
+        {"name":"From","value":"\"HDFC Bank\" <alerts@hdfcbank.net>"},
+        {"name":"Subject","value":"Your HDFC Bank Credit Card statement is ready"},
+        {"name":"Authentication-Results","value":"mx.google.com; dkim=pass header.i=@hdfcbank.net; spf=pass; dmarc=pass header.from=hdfcbank.net"}],
+        "body":{"data":"WW91ciBzdGF0ZW1lbnQgaXMgcmVhZHkuIFZpZXcgaXQgaW4gTmV0QmFua2luZy4"}}}"#;
+
+    /// Audit N-F3 (owner decision): a statement email with no downloadable
+    /// PDF is recorded in processed_messages, so it is traceable and skipped.
+    #[tokio::test]
+    async fn test_statement_without_attachment_is_recorded() {
+        let (cursor, _, decision) =
+            poll_once_with_failing_table("feedback_log", LINK_ONLY_STATEMENT, 200).await;
+        assert_eq!(decision.as_deref(), Some(crate::db::processed_messages::STATEMENT_NO_ATTACHMENT));
+        assert_eq!(cursor, "h2");
+    }
+
+    /// Audit N-F3 + N-A2: if that record cannot be written, the cursor stays.
+    #[tokio::test]
+    async fn test_unrecorded_statement_without_attachment_keeps_the_cursor() {
+        let (cursor, _, decision) =
+            poll_once_with_failing_table("processed_messages", LINK_ONLY_STATEMENT, 200).await;
+        assert_eq!(decision, None);
         assert_eq!(cursor, "h1");
     }
 }

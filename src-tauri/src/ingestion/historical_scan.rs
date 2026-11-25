@@ -1098,6 +1098,15 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                                 msg_id,
                                 extracted.skipped_pdf_parts.join("; ")
                             );
+                            // Recorded so it is traceable and rescans skip it
+                            // (audit N-F3); a failed write is a failed message
+                            // (audit N-A2).
+                            if let Err(e) =
+                                crate::db::processed_messages::record_statement_without_attachment(&pool, &msg_id)
+                                    .await
+                            {
+                                failure = Some(format!("{e:#}"));
+                            }
                         } else {
                             let client = Arc::clone(&client);
                             let pool = pool.clone();

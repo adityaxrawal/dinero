@@ -444,6 +444,11 @@ pub(crate) async fn poll_single_account<R: tauri::Runtime>(
                                         msg_id,
                                         extracted.skipped_pdf_parts.join("; ")
                                     );
+                                // Recorded so it is traceable and rescans skip it
+                                // (audit N-F3); a failed write keeps the cursor
+                                // (audit N-A2).
+                                crate::db::processed_messages::record_statement_without_attachment(pool, &msg_id)
+                                    .await?;
                                 } else {
                                     crate::ingestion::statement_intake::intake_email_statement(
                                         app,

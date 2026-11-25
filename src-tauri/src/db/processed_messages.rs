@@ -12,10 +12,33 @@ pub fn record(conn: &Connection, message_id: &str, decision: &str) -> Result<()>
     Ok(())
 }
 
-/// Forgets rejection decisions so the next scan evaluates those emails again.
-/// Mandate events stay recorded. Returns how many were cleared.
+/// Decision for a statement email with no downloadable PDF (audit N-F3): the
+/// one outcome that used to leave no trace in the database.
+pub const STATEMENT_NO_ATTACHMENT: &str = "statement_no_attachment";
+
+/// Records a statement email that had no downloadable PDF, so it can be
+/// traced and rescans skip it (owner decision, audit N-F3).
+pub async fn record_statement_without_attachment(
+    pool: &deadpool_sqlite::Pool,
+    message_id: &str,
+) -> Result<()> {
+    let id = message_id.to_string();
+    pool.get()
+        .await
+        .map_err(|e| anyhow::anyhow!("pool error: {e}"))?
+        .interact(move |c| record(c, &id, STATEMENT_NO_ATTACHMENT))
+        .await
+        .map_err(|e| anyhow::anyhow!("interact error: {e}"))?
+}
+
+/// Forgets rejection decisions, and statement emails that had no attachment,
+/// so the next scan evaluates those emails again. Mandate events stay
+/// recorded. Returns how many were cleared.
 pub fn forget_rejections(conn: &Connection) -> Result<usize> {
-    Ok(conn.execute("DELETE FROM processed_messages WHERE decision LIKE 'rejected:%'", [])?)
+    Ok(conn.execute(
+        "DELETE FROM processed_messages WHERE decision LIKE 'rejected:%' OR decision = ?1",
+        [STATEMENT_NO_ATTACHMENT],
+    )?)
 }
 
 #[cfg(test)]
@@ -25,7 +48,8 @@ mod tests {
         let conn = crate::db::test_helpers::setup_test_db();
         super::record(&conn, "r1", "rejected:gate2_not_financial").unwrap();
         super::record(&conn, "m1", "mandate_event").unwrap();
-        assert_eq!(super::forget_rejections(&conn).unwrap(), 1);
+        super::record(&conn, "s1", super::STATEMENT_NO_ATTACHMENT).unwrap();
+        assert_eq!(super::forget_rejections(&conn).unwrap(), 2);
         let left: String = conn
             .query_row("SELECT message_id FROM processed_messages", [], |r| r.get(0))
             .unwrap();
