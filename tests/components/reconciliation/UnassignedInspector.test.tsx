@@ -1,8 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import { waitFor } from '@testing-library/react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import UnassignedInspector from '@/components/reconciliation/UnassignedInspector';
-import type { UnassignedTransactionRecord } from '@/lib/ipc';
+import { API, type UnassignedTransactionRecord } from '@/lib/ipc';
 
 function renderWithQuery(ui: React.ReactElement) {
   const queryClient = new QueryClient();
@@ -56,5 +57,56 @@ describe('UnassignedInspector resolve actions', () => {
     expect(screen.getByText('AI Layer 6 LLM')).toBeInTheDocument();
     expect(screen.getByText('Ingestion Diagnostic Checklist')).toBeInTheDocument();
     expect(screen.getByText('Card/Account Unmatched in Settings')).toBeInTheDocument();
+  });
+});
+
+describe('UnassignedInspector re-check (current-issues #3)', () => {
+  it('disables Re-check for an entry with no stored email', () => {
+    renderWithQuery(<UnassignedInspector record={baseRecord} onClose={() => {}} />);
+    const button = screen.getByRole('button', { name: /^re-check$/i });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute('title', expect.stringMatching(/no stored email/i));
+  });
+
+  it('re-checks the entry and closes it once it leaves the queue', async () => {
+    const spy = vi
+      .spyOn(API.reconciliation, 'recheckUnassigned')
+      .mockResolvedValue('queued_for_ai');
+    const onClose = vi.fn();
+    renderWithQuery(
+      <UnassignedInspector record={{ ...baseRecord, can_recheck: true }} onClose={onClose} />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /^re-check$/i }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(spy).toHaveBeenCalledWith('u1');
+    spy.mockRestore();
+  });
+
+  it('keeps the entry open when nothing new was found', async () => {
+    const spy = vi
+      .spyOn(API.reconciliation, 'recheckUnassigned')
+      .mockResolvedValue('no_ai_available');
+    const onClose = vi.fn();
+    renderWithQuery(
+      <UnassignedInspector record={{ ...baseRecord, can_recheck: true }} onClose={onClose} />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /^re-check$/i }));
+    await waitFor(() => expect(spy).toHaveBeenCalled());
+    expect(onClose).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it('offers the re-check prompt inside the missing-instrument diagnosis only', () => {
+    const missing = { ...baseRecord, can_recheck: true, reason: 'gate3_failed:missing_instrument' };
+    const { unmount } = renderWithQuery(
+      <UnassignedInspector record={missing} onClose={() => {}} />
+    );
+    expect(screen.getAllByRole('button', { name: /^re-check$/i })).toHaveLength(2);
+    expect(screen.getByText(/learned a pattern for this bank since/i)).toBeInTheDocument();
+    unmount();
+    renderWithQuery(
+      <UnassignedInspector record={{ ...baseRecord, can_recheck: true }} onClose={() => {}} />
+    );
+    expect(screen.getAllByRole('button', { name: /^re-check$/i })).toHaveLength(1);
   });
 });

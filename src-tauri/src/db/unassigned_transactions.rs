@@ -130,6 +130,27 @@ fn current_status(conn: &Connection, id: &str) -> Result<Option<String>> {
 pub const VISIBLE_OPEN: &str = "u.status = 'open' AND NOT EXISTS (\
      SELECT 1 FROM layer6_pending_jobs j WHERE j.id = u.id AND j.dead_at IS NULL)";
 
+/// Marks an entry resolved for a manual save, before the save books anything;
+/// false if it is no longer open or an AI job is running on it. Claiming
+/// first is what stops a manual save and an AI booking of the same entry
+/// from both creating a transaction.
+pub fn claim_for_manual_resolve(conn: &Connection, id: &str) -> Result<bool> {
+    let claimed = conn.execute(
+        &format!("UPDATE unassigned_transactions AS u SET status = 'resolved' WHERE u.id = ?1 AND {VISIBLE_OPEN}"),
+        params![id],
+    )?;
+    Ok(claimed == 1)
+}
+
+/// Gives back a claim whose manual save then failed to book.
+pub fn release_manual_claim(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE unassigned_transactions SET status = 'open' WHERE id = ?1 AND status = 'resolved'",
+        params![id],
+    )?;
+    Ok(())
+}
+
 /// Unresolved entries awaiting the user, for the reconciliation queue.
 pub fn select_open(conn: &Connection) -> Result<Vec<UnassignedTransactionRow>> {
     let mut stmt = conn.prepare(&format!(
@@ -170,6 +191,9 @@ pub struct UnassignedTransactionDetail {
     pub raw_payload_json: Option<String>,
     pub extraction_method: Option<String>,
     pub confidence_score: Option<f64>,
+    /// Whether the entry keeps the email and bank a re-check needs (entries
+    /// from statements or the reconciliation engine do not).
+    pub can_recheck: bool,
 }
 
 /// Unresolved entries together with their source evidence.
@@ -181,7 +205,9 @@ pub fn select_open_with_context(conn: &Connection) -> Result<Vec<UnassignedTrans
         "SELECT u.id, u.observation_id, u.reason, u.status, u.created_at, \
                 o.merchant_raw, o.amount_minor, o.currency, o.direction, o.event_time, \
                 o.source_message_id, o.raw_payload_json, \
-                o.extraction_method, o.confidence_score \
+                o.extraction_method, o.confidence_score, \
+                (json_extract(o.raw_payload_json, '$.body') IS NOT NULL \
+                 AND json_extract(o.raw_payload_json, '$.bank') IS NOT NULL) \
          FROM unassigned_transactions u \
          JOIN transaction_observations o ON o.id = u.observation_id \
          WHERE {VISIBLE_OPEN} \
@@ -206,6 +232,7 @@ pub fn select_open_with_context(conn: &Connection) -> Result<Vec<UnassignedTrans
             raw_payload_json,
             extraction_method: row.get(12)?,
             confidence_score: row.get(13)?,
+            can_recheck: row.get(14)?,
         })
     })?;
     let mut results = Vec::new();

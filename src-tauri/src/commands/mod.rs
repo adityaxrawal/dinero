@@ -3273,6 +3273,8 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         data::reconciliation_clusters_get,
         data::reconciliation_get_unassigned_transactions,
         data::reconciliation_dismiss_unassigned_transaction,
+        data::reconciliation_recheck_unassigned_transaction,
+        data::reconciliation_recheck_all_unassigned_transactions,
         data::reconciliation_resolve_unassigned_transaction_manually,
         data::reconciliation_clusters_unmerge,
         data::reconciliation_clusters_bulk_resolve,

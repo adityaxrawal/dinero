@@ -965,7 +965,7 @@ async fn mark_llm_rejected(pool: &Pool, unassigned_id: &str) -> bool {
 /// The caller clears the persisted job only once this has committed, so a crash
 /// between the two replays the job rather than losing it -- which is why applying
 /// an already-promoted observation is a no-op rather than a second promotion.
-async fn apply_layer6_success(
+pub(crate) async fn apply_layer6_success(
     pool: &Pool,
     observation_id: &str,
     unassigned_id: &str,
@@ -1061,8 +1061,18 @@ async fn apply_layer6_success(
                 observation_id
             );
         }
-        row.extraction_method = Some("llm_layer6".to_string());
+        // The layer that produced the values: the LLM, or the rule ladder
+        // when a re-check (`ingestion::recheck`) applies through here.
+        row.extraction_method = Some(enriched.extraction_method.clone())
+            .filter(|m| !m.is_empty())
+            .or(row.extraction_method.take());
         row.confidence_score = enriched.confidence_score;
+        // An untrusted sender (audit E-3 / N-E1) is only ever pre-filled.
+        let review_only = row
+            .raw_payload_json
+            .as_deref()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+            .is_some_and(|v| v["review_only"] == serde_json::Value::Bool(true));
 
         let resolved = crate::db::instruments::resolve_instrument(
             c,
@@ -1102,7 +1112,8 @@ async fn apply_layer6_success(
         // Booking defaults a missing direction to debit and a missing currency
         // to INR, so both must be present: a guess is never written to the
         // ledger, the entry goes to review instead.
-        let ready = has_instrument
+        let ready = !review_only
+            && has_instrument
             && has_nonzero_amount
             && row.direction.is_some()
             && row.currency.is_some()
@@ -1131,6 +1142,8 @@ async fn apply_layer6_success(
             Some("instrument_archived")
         } else if !has_instrument {
             Some("gate3_failed:missing_instrument")
+        } else if review_only {
+            Some("unverified_sender")
         } else {
             Some("gate3_failed:low_confidence")
         };

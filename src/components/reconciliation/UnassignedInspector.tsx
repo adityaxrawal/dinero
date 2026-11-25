@@ -15,6 +15,9 @@ import FailureDiagnosis from './unassigned/FailureDiagnosis';
 import ExtractedDataForm from './unassigned/ExtractedDataForm';
 import SourceEmailEvidence from './unassigned/SourceEmailEvidence';
 import UnassignedActions from './unassigned/UnassignedActions';
+import { useToast } from '@/hooks/use-toast';
+import { getErrorToast } from '@/lib/errorMapping';
+import { recheckMessage, useRecheckUnassigned } from '@/hooks/mutations/useRecheckUnassigned';
 
 interface UnassignedInspectorProps {
   record: UnassignedTransactionRecord | undefined;
@@ -70,6 +73,8 @@ export default function UnassignedInspector({
   const isOpen = !!record;
   const { data: instruments = [] } = useInstrumentsList();
   const form = useUnassignedForm(record, onClose);
+  const recheck = useRecheckUnassigned();
+  const { toast } = useToast();
 
   const asideClasses = inspectorPanelClasses(inline, isOpen);
   const asideStyle = inspectorPanelStyle(inline, isOpen);
@@ -79,6 +84,18 @@ export default function UnassignedInspector({
       <aside className={asideClasses} role="complementary" aria-hidden={true} style={asideStyle} />
     );
   }
+
+  const recordId = record.id;
+  /** Re-checks this entry; it leaves the queue unless nothing changed. */
+  const handleRecheck = () =>
+    recheck.mutate(recordId, {
+      onSuccess: (outcome) => {
+        toast(recheckMessage(outcome));
+        if (outcome !== 'no_ai_available') onClose();
+      },
+      onError: (err) => toast({ variant: 'destructive', ...getErrorToast(err) }),
+    });
+  const busy = form.isPending || recheck.isPending;
 
   const evidence = parseEmailEvidence(record);
   const hasEvidence = Boolean(evidence.html || evidence.text || record.body_snippet);
@@ -100,7 +117,11 @@ export default function UnassignedInspector({
         )}
       >
         <div className="flex-1 space-y-6">
-          <FailureDiagnosis record={record} />
+          <FailureDiagnosis
+            record={record}
+            onRecheck={handleRecheck}
+            isRechecking={recheck.isPending}
+          />
 
           <ExtractedDataForm
             form={form}
@@ -119,7 +140,9 @@ export default function UnassignedInspector({
 
         <UnassignedActions
           canSubmit={form.canSubmit}
-          isPending={form.isPending}
+          isPending={busy}
+          canRecheck={record.can_recheck === true}
+          onRecheck={handleRecheck}
           onDismiss={form.handleDismiss}
           onSave={form.handleSave}
         />

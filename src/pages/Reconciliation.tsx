@@ -6,11 +6,14 @@
  */
 import { useState, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { ShieldAlert, HelpCircle, Loader2, CheckCircle2, Layers } from 'lucide-react';
+import { ShieldAlert, HelpCircle, Loader2, CheckCircle2, Layers, RefreshCw } from 'lucide-react';
 
 import { useReconciliationClusters } from '@/hooks/queries/useReconciliationClusters';
 import { useLlmPendingCount } from '@/hooks/queries/useLlmPendingCount';
 import { useUnassignedTransactions } from '@/hooks/queries/useUnassignedTransactions';
+import { recheckAllMessage, useRecheckAllUnassigned } from '@/hooks/mutations/useRecheckUnassigned';
+import { useToast } from '@/hooks/use-toast';
+import { getErrorToast } from '@/lib/errorMapping';
 import ReconciliationInspector from '@/components/reconciliation/ReconciliationInspector';
 import UnassignedInspector from '@/components/reconciliation/UnassignedInspector';
 import { cn, formatRelativeDate, isOlderThanDays } from '@/lib/utils';
@@ -388,6 +391,15 @@ export default function Reconciliation() {
   const { data: clusters = [], isLoading: clustersLoading } = useReconciliationClusters();
   const { data: unassigned = [], isLoading: unassignedLoading } = useUnassignedTransactions();
   const { data: llmPending = 0 } = useLlmPendingCount();
+  const recheckAll = useRecheckAllUnassigned();
+  const { toast } = useToast();
+  const canRecheckAll = unassigned.some((u) => u.can_recheck === true);
+  /** Re-checks every entry that keeps its email (current-issues #3). */
+  const handleRecheckAll = () =>
+    recheckAll.mutate(undefined, {
+      onSuccess: (summary) => toast(recheckAllMessage(summary)),
+      onError: (err) => toast({ variant: 'destructive', ...getErrorToast(err) }),
+    });
 
   const [selectedClusterId, setSelectedClusterId] = useState<string | null>(null);
   const [selectedUnassignedId, setSelectedUnassignedId] = useState<string | null>(null);
@@ -421,6 +433,21 @@ export default function Reconciliation() {
             <h1 className="text-[14px] font-semibold text-[#064E3B] tracking-tight">
               Reconciliation
             </h1>
+            {currentSection === 'unassigned' && canRecheckAll && (
+              <button
+                type="button"
+                onClick={handleRecheckAll}
+                disabled={recheckAll.isPending}
+                className="flex items-center gap-1 text-[11px] font-medium text-[#064E3B] px-2 py-1 rounded-full hover:bg-[#064E3B]/10 disabled:opacity-50"
+                title="Run your learned patterns again on every entry, then the local AI"
+              >
+                <RefreshCw
+                  className={cn('w-3 h-3', recheckAll.isPending && 'animate-spin')}
+                  aria-hidden="true"
+                />
+                Re-check all
+              </button>
+            )}
           </div>
           {llmPending > 0 && (
             <p className="flex items-center gap-1.5 text-[11px] text-[#064E3B]/70" role="status">

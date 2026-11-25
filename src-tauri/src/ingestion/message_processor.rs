@@ -85,6 +85,10 @@ const IGNORED_SNIPPET_MAX_CHARS: usize = 500;
 pub(crate) enum ReviewRoute {
     /// Visible in the review queue now.
     Review,
+    /// Visible now, and flagged `review_only` in the observation's payload:
+    /// the sender cannot be trusted (audit E-3 / N-E1), so neither the LLM
+    /// nor a re-check may ever book it, only pre-fill it.
+    ReviewOnlySender,
     /// Hidden behind an LLM job, written in the same transaction; it shows in
     /// the review queue only if the model's verdict leaves it there.
     AwaitLlm { internal_date_seconds: Option<i64> },
@@ -615,25 +619,7 @@ impl MessageProcessor {
                                 Some(format!("Internal Transfer (A/c {dest_account})"));
                         }
 
-                        Self::drop_merchant_not_in_source(&mut obs, body_text);
-
-                        if let Some(raw) = obs.merchant_raw.clone() {
-                            let cleaned =
-                                crate::extraction::merchant_normalizer::strip_noise_tokens(&raw);
-                            if !crate::extraction::merchant_normalizer::is_plausible_merchant_name(
-                                &cleaned,
-                            ) {
-                                // The merchant is email content: debug builds
-                                // only (audit N-C1).
-                                if cfg!(debug_assertions) {
-                                    tracing::debug!(
-                                        merchant_raw = %raw,
-                                        "Rejected generic merchant candidate; routing as missing counterparty"
-                                    );
-                                }
-                                obs.merchant_raw = None;
-                            }
-                        }
+                        Self::clean_merchant(&mut obs, body_text);
 
                         // After the plausibility filter, not before it. The
                         // placeholder exists to stand in for a merchant that is
@@ -748,6 +734,7 @@ impl MessageProcessor {
                 "pending_llm_enrichment",
                 ReviewRoute::AwaitLlm { internal_date_seconds: m.internal_date_seconds },
             ),
+            None if m.review_only => (m.reason, ReviewRoute::ReviewOnlySender),
             None => (m.reason, ReviewRoute::Review),
         };
         // Review row first, rejection second (audit N-A1): a recorded
@@ -798,6 +785,29 @@ impl MessageProcessor {
         } else {
             ids.is_some().then_some(ProcessResult::SentToReview)
         })
+    }
+
+    /// Drops a merchant the email does not contain, or one too generic to be
+    /// a counterparty, so it routes as missing instead of being booked.
+    /// Shared by the scan and the review re-check.
+    pub(crate) fn clean_merchant(
+        obs: &mut crate::extraction::ladder::ExtractionResult,
+        body_text: &str,
+    ) {
+        Self::drop_merchant_not_in_source(obs, body_text);
+        if let Some(raw) = obs.merchant_raw.clone() {
+            let cleaned = crate::extraction::merchant_normalizer::strip_noise_tokens(&raw);
+            if !crate::extraction::merchant_normalizer::is_plausible_merchant_name(&cleaned) {
+                // The merchant is email content: debug builds only (audit N-C1).
+                if cfg!(debug_assertions) {
+                    tracing::debug!(
+                        merchant_raw = %raw,
+                        "Rejected generic merchant candidate; routing as missing counterparty"
+                    );
+                }
+                obs.merchant_raw = None;
+            }
+        }
     }
 
     /// Falls back to the message's own timestamp when no date was extracted.
@@ -1324,10 +1334,17 @@ impl MessageProcessor {
             email_meta,
         );
         // The bank is kept with the review entry so that resolving it can
-        // score pending learned rules for that bank (M10 follow-up).
-        if let (Some(bank), Some(raw)) = (bank_name, obs_row.raw_payload_json.as_deref()) {
+        // score pending learned rules for that bank (M10 follow-up) and a
+        // re-check can rerun extraction; `review_only` is what stops either
+        // the LLM or a re-check from booking an untrusted sender.
+        if let Some(raw) = obs_row.raw_payload_json.as_deref() {
             if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(raw) {
-                v["bank"] = serde_json::json!(bank);
+                if let Some(bank) = bank_name {
+                    v["bank"] = serde_json::json!(bank);
+                }
+                if matches!(route, ReviewRoute::ReviewOnlySender) {
+                    v["review_only"] = serde_json::json!(true);
+                }
                 obs_row.raw_payload_json = Some(v.to_string());
             }
         }

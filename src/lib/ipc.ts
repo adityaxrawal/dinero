@@ -418,6 +418,19 @@ export interface UnassignedTransactionRecord {
   raw_payload_json: string | null;
   extraction_method?: string | null;
   confidence_score?: number | null;
+  /** False for entries with no stored email (statements, reconciliation engine). */
+  can_recheck?: boolean;
+}
+
+/** What a re-check did with one review entry. */
+export type RecheckOutcome = 'booked' | 'queued_for_ai' | 'no_ai_available' | 'already_queued';
+
+/** Totals for "Re-check all". */
+export interface RecheckSummary {
+  booked: number;
+  queued_for_ai: number;
+  no_ai_available: number;
+  skipped: number;
 }
 
 export interface InstrumentRecord {
@@ -789,6 +802,10 @@ export const API = {
       invokeCommand<{ llm_pending_jobs: number }>('pipeline_status').then(
         (s) => s.llm_pending_jobs
       ),
+    recheckUnassigned: (id: string) =>
+      invokeCommand<RecheckOutcome>('reconciliation_recheck_unassigned_transaction', { id }),
+    recheckAllUnassigned: () =>
+      invokeCommand<RecheckSummary>('reconciliation_recheck_all_unassigned_transactions'),
     dismissUnassigned: (id: string) =>
       invokeCommand<void>('reconciliation_dismiss_unassigned_transaction', { id }),
     resolveUnassignedManually: (

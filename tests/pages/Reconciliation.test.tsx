@@ -19,6 +19,12 @@ vi.mock('@/hooks/queries/useReconciliationClusters', () => ({
   useReconciliationClusters: () => ({ data: clusters, isLoading: clustersLoading }),
 }));
 let llmPending = 0;
+const recheckAllMutate = vi.fn();
+vi.mock('@/hooks/mutations/useRecheckUnassigned', () => ({
+  useRecheckAllUnassigned: () => ({ mutate: recheckAllMutate, isPending: false }),
+  recheckAllMessage: () => ({ title: 'Re-check finished', description: '' }),
+}));
+vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: vi.fn() }) }));
 vi.mock('@/hooks/queries/useLlmPendingCount', () => ({
   useLlmPendingCount: () => ({ data: llmPending }),
 }));
@@ -236,5 +242,25 @@ describe('inspector pane', () => {
   it('shows no AI line when nothing is pending', () => {
     render(<Reconciliation />);
     expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('offers Re-check all on the unassigned tab when an entry keeps its email', () => {
+    section = 'unassigned';
+    unassigned = [item({ can_recheck: true })];
+    render(<Reconciliation />);
+    fireEvent.click(screen.getByText('Re-check all'));
+    expect(recheckAllMutate).toHaveBeenCalledTimes(1);
+  });
+
+  it('hides Re-check all when no entry can be re-checked, or on the clusters tab', () => {
+    section = 'unassigned';
+    unassigned = [item({ can_recheck: false })];
+    const { unmount } = render(<Reconciliation />);
+    expect(screen.queryByText('Re-check all')).toBeNull();
+    unmount();
+    section = 'clusters';
+    unassigned = [item({ can_recheck: true })];
+    render(<Reconciliation />);
+    expect(screen.queryByText('Re-check all')).toBeNull();
   });
 });

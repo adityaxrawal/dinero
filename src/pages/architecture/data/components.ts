@@ -19,7 +19,7 @@ const CORE: ComponentDef[] = [
     kind: 'ui',
     purpose: 'Local-first UI shell rendering the ledger, dashboards and review queues.',
     description:
-      'React 19 + TypeScript single-page app served inside the Tauri WebView. Hash router (filesystem serving, no server rewrites), TanStack Query for server state over IPC, Zustand for UI state. 12 top-level pages, 6 stores, 21 query hooks and 13 mutation hooks.',
+      'React 19 + TypeScript single-page app served inside the Tauri WebView. Hash router (filesystem serving, no server rewrites), TanStack Query for server state over IPC, Zustand for UI state. 12 top-level pages, 6 stores, 21 query hooks and 14 mutation hooks.',
     responsibilities: [
       'Render dashboard, transactions, instruments, statements, reconciliation and settings',
       'Route via createHashRouter under AppLayout (onboarding sits outside the shell)',
@@ -845,6 +845,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     facts: [
       'At most 6 jobs in flight; a full queue does not block the scan — overflow waits in layer6_pending_jobs and workers refill as it drains',
       'Pending count (live jobs) is reported by pipeline_status.llm_pending_jobs and shown on the Reconciliation page, since those entries are hidden until the AI verdict',
+      'A review entry can be re-checked on demand (ingestion::recheck, per entry or Re-check all): learned patterns and layers 1–5 rerun on the stored email and book it if complete, otherwise it is queued here; an IMMEDIATE transaction checks open + no live job, and a manual save claims the entry before booking, so neither can double-book. Review-only senders are pre-filled, never booked',
       'Rejections are final (reviewed as llm_value_not_in_email); a timeout, sidecar failure or failed write is never final — retried after 1 min, 5 min, then every 15 min; while the device cannot run a model (none downloaded, or under the RAM floor) the job is held and re-checked every 5 min without using an attempt',
       'Success is applied by engine::complete_observation: observation update, reconciliation and settling the review entry commit in one transaction',
       'Bodies over 2,000 characters are sent as first and last chunks',

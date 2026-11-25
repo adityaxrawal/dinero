@@ -85,6 +85,8 @@
     "allow-reconciliation-clusters-unmerge",
     "allow-reconciliation-dismiss-unassigned-transaction",
     "allow-reconciliation-get-unassigned-transactions",
+    "allow-reconciliation-recheck-all-unassigned-transactions",
+    "allow-reconciliation-recheck-unassigned-transaction",
     "allow-reconciliation-resolve-unassigned-transaction-manually",
     "allow-record-consent-event",
     "allow-recovery-reset-app-data",

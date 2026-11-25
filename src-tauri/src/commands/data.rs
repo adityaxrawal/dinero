@@ -2015,19 +2015,37 @@ pub(crate) async fn resolve_unassigned_transaction_manually<R: tauri::Runtime>(
         ..Default::default()
     };
     let instrument_id = payload.instrument_id.to_string();
-    let decision = crate::commands::create_manual_transaction(payload, pool, app_handle).await?;
-
     let conn = pool
         .get()
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+
+    // Claim the entry before booking (re-check race, current-issues #3): it
+    // used to book first and then mark the entry resolved, which silently did
+    // nothing if the AI had booked it meanwhile -- a duplicate transaction.
+    // Claimed only while open with no live AI job; released if booking fails.
     let id_clone = id.clone();
-    conn.interact(move |c| {
-        crate::db::unassigned_transactions::update_status(c, &id_clone, "resolved")
-    })
-    .await
-    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
-    .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let claimed = conn
+        .interact(move |c| crate::db::unassigned_transactions::claim_for_manual_resolve(c, &id_clone))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    if !claimed {
+        return Err(crate::error::AppError::Validation(
+            "This entry was already resolved, or the AI is re-checking it. Refresh and try again."
+                .to_string(),
+        ));
+    }
+    let decision = match crate::commands::create_manual_transaction(payload, pool, app_handle).await {
+        Ok(decision) => decision,
+        Err(e) => {
+            let id_clone = id.clone();
+            let _ = conn
+                .interact(move |c| crate::db::unassigned_transactions::release_manual_claim(c, &id_clone))
+                .await;
+            return Err(e);
+        }
+    };
 
     // What the user entered is confirmed truth for this email: score pending
     // learned rules against it (M10 follow-up). Best effort -- entries
@@ -2037,6 +2055,79 @@ pub(crate) async fn resolve_unassigned_transaction_manually<R: tauri::Runtime>(
         .await;
 
     Ok(decision)
+}
+
+/// Reruns learned patterns and the rule layers on a review entry, booking it
+/// if they complete it, otherwise handing it to the local AI (current-issues
+/// #3).
+#[tauri::command]
+pub async fn reconciliation_recheck_unassigned_transaction(
+    id: String,
+    pool: State<'_, deadpool_sqlite::Pool>,
+    app_handle: tauri::AppHandle,
+) -> Result<crate::ingestion::recheck::RecheckOutcome, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("id", &id)?;
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    let (app_dir, tx, ready) = recheck_context(&app_handle);
+    let ai = crate::ingestion::recheck::AiHandle { ready, app_dir: app_dir.as_deref(), tx: &tx };
+    let outcome = crate::ingestion::recheck::recheck_entry(pool.inner(), &ai, &id)
+        .await
+        .map_err(recheck_error)?;
+    notify_recheck(&app_handle, outcome == crate::ingestion::recheck::RecheckOutcome::Booked);
+    Ok(outcome)
+}
+
+/// Re-checks every review entry that keeps its email.
+#[tauri::command]
+pub async fn reconciliation_recheck_all_unassigned_transactions(
+    pool: State<'_, deadpool_sqlite::Pool>,
+    app_handle: tauri::AppHandle,
+) -> Result<crate::ingestion::recheck::RecheckSummary, crate::error::AppError> {
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    let (app_dir, tx, ready) = recheck_context(&app_handle);
+    let ai = crate::ingestion::recheck::AiHandle { ready, app_dir: app_dir.as_deref(), tx: &tx };
+    let summary = crate::ingestion::recheck::recheck_all(pool.inner(), &ai)
+        .await
+        .map_err(recheck_error)?;
+    notify_recheck(&app_handle, summary.booked > 0);
+    Ok(summary)
+}
+
+/// App directory, Layer 6 queue and model readiness, for a re-check.
+fn recheck_context(
+    app: &tauri::AppHandle,
+) -> (
+    Option<std::path::PathBuf>,
+    tokio::sync::mpsc::Sender<crate::ingestion::queues::Layer6Job>,
+    bool,
+) {
+    use tauri::Manager;
+    (
+        app.path().app_data_dir().ok(),
+        app.state::<crate::ingestion::queues::QueueHandles>().layer6_tx.clone(),
+        crate::startup::llm_ready(app),
+    )
+}
+
+fn recheck_error(e: crate::ingestion::recheck::RecheckError) -> crate::error::AppError {
+    use crate::ingestion::recheck::RecheckError;
+    match e {
+        RecheckError::NotOpen | RecheckError::NoEmail => crate::error::AppError::Validation(e.to_string()),
+        RecheckError::Internal(msg) => crate::error::AppError::Db(msg),
+    }
+}
+
+/// Tells the UI the review queue (and, after a booking, the ledger) changed.
+fn notify_recheck(app: &tauri::AppHandle, booked: bool) {
+    let payload = serde_json::json!({});
+    if booked {
+        let _ = crate::ipc::events::emit_event(
+            app,
+            crate::ipc::events::AppEvent::TransactionCreated,
+            payload.clone(),
+        );
+    }
+    let _ = crate::ipc::events::emit_event(app, crate::ipc::events::AppEvent::UnassignedChanged, payload);
 }
 
 /// Shadow-evaluates pending rules against a user-resolved review entry.

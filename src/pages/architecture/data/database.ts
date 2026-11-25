@@ -282,7 +282,11 @@ export const ENTITIES: EntityDef[] = [
     columns: [
       { name: 'id', type: 'TEXT', key: 'PK' },
       { name: 'observation_id', type: 'TEXT', note: 'logical ref, no FK constraint' },
-      { name: 'attempts', type: 'INTEGER', note: 'failed attempts, paces retries; never dead (legacy dead_at rows only)' },
+      {
+        name: 'attempts',
+        type: 'INTEGER',
+        note: 'failed attempts, paces retries; never dead (legacy dead_at rows only)',
+      },
       { name: 'dead_at', type: 'TEXT' },
     ],
   },

@@ -1,14 +1,28 @@
 /**
  * Explains in plain language why a transaction could not be attributed.
  */
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, RefreshCw } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import type { UnassignedTransactionRecord } from '@/lib/ipc';
 import { cn } from '@/lib/utils';
 import { buildChecks, extractionBadge, reasonGuidance } from './diagnostics';
 import DiagnosticChecklist from './DiagnosticChecklist';
 
 /** Explains in plain language why attribution failed. */
-export default function FailureDiagnosis({ record }: { record: UnassignedTransactionRecord }) {
+export default function FailureDiagnosis({
+  record,
+  onRecheck,
+  isRechecking = false,
+}: {
+  record: UnassignedTransactionRecord;
+  /** Offered for a missing instrument (current-issues #3); omit to hide. */
+  onRecheck?: () => void;
+  isRechecking?: boolean;
+}) {
+  const offerRecheck =
+    onRecheck !== undefined &&
+    record.can_recheck === true &&
+    record.reason === 'gate3_failed:missing_instrument';
   const { engineLabel, confidenceLabel, confidenceBadgeStyle } = extractionBadge(record);
   const { description, tip } = reasonGuidance(record.reason);
 
@@ -41,6 +55,23 @@ export default function FailureDiagnosis({ record }: { record: UnassignedTransac
       <div className="bg-red-50/60 rounded-lg p-3 text-xs text-red-900/90 font-medium border border-red-100">
         <strong>Tip:</strong> {tip}
       </div>
+
+      {offerRecheck && (
+        <div className="flex items-center justify-between gap-3 rounded-lg p-3 bg-[#064E3B]/5 border border-[#064E3B]/15">
+          <p className="text-xs text-[#064E3B]">
+            Learned a pattern for this bank since? Re-check runs your learned patterns again, then
+            the local AI.
+          </p>
+          <Button
+            size="sm"
+            className="h-8 text-[12px] bg-[#064E3B] text-[#F8E7C9] hover:bg-[#064E3B]/90 shrink-0"
+            onClick={onRecheck}
+            disabled={isRechecking}
+          >
+            <RefreshCw className="w-3.5 h-3.5 mr-1.5" /> Re-check
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

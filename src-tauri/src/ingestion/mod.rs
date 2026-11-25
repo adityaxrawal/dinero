@@ -19,6 +19,7 @@ pub mod mime_sanitization;
 pub mod oauth;
 pub mod polling;
 pub mod queues;
+pub mod recheck;
 pub mod scan_db_batcher;
 pub mod statement_intake;
 pub mod verified_senders;
