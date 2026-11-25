@@ -742,22 +742,25 @@ async fn transaction_needing_layer6_enqueues_job_instead_of_blocking() {
 
     let (layer6_tx, mut layer6_rx) = tokio::sync::mpsc::channel(4);
 
-    let start = std::time::Instant::now();
-    let result = MessageProcessor::process_message(
-        &pool,
-        &client,
-        "msg1",
-        Some(temp_dir.clone()),
-        Some(layer6_tx),
-        None,
+    // Must not wait on the LLM inline. No llama-server exists here, so an
+    // inline LLM call would sit in the sidecar's "starting" wait for up to 15
+    // minutes; a 30s ceiling catches that. (It was a 2s wall-clock assert, but
+    // this call takes ~1.5s in a debug build anyway, so it failed whenever
+    // the machine was busy.)
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        MessageProcessor::process_message(
+            &pool,
+            &client,
+            "msg1",
+            Some(temp_dir.clone()),
+            Some(layer6_tx),
+            None,
+        ),
     )
     .await
+    .expect("process_message must not wait on the LLM inline")
     .unwrap();
-
-    // Must return promptly — no inline LLM wait. This test never spawns a
-    // real llama-server, so any accidental inline await would hang/timeout
-    // this test rather than merely being slow; 2s is generous headroom.
-    assert!(start.elapsed() < std::time::Duration::from_secs(2));
     assert!(matches!(result, Some(ProcessResult::EnqueuedForEnrichment)));
 
     let job = layer6_rx
