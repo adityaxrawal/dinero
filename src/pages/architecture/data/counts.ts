@@ -16,7 +16,7 @@ export const COUNTS = {
   dbSourceFiles: 61,
   appEvents: 30,
   /** TanStack query and mutation hook call sites in src/ (excluding tests). */
-  queryHooks: 20,
+  queryHooks: 21,
   mutationHooks: 12,
 } as const;
 

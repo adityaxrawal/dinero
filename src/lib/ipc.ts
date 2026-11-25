@@ -784,6 +784,11 @@ export const API = {
       invokeCommand<ClusterRecord>('reconciliation_clusters_get', { clusterId }),
     listUnassigned: () =>
       invokeCommand<UnassignedTransactionRecord[]>('reconciliation_get_unassigned_transactions'),
+    /** Emails the local AI is still reading; their review entries stay hidden until it answers. */
+    llmPendingCount: () =>
+      invokeCommand<{ llm_pending_jobs: number }>('pipeline_status').then(
+        (s) => s.llm_pending_jobs
+      ),
     dismissUnassigned: (id: string) =>
       invokeCommand<void>('reconciliation_dismiss_unassigned_transaction', { id }),
     resolveUnassignedManually: (

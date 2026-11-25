@@ -244,19 +244,21 @@ async fn test_1000_email_scan_p95_under_target() {
     // Was 15 minutes, which a 48-minute real scan still "passed" because the
     // regression it needed to catch (`dev_review`'s O(n^2) rewrite pinning
     // every tokio worker) lived behind `cfg!(debug_assertions)` and an
-    // unbounded on-disk buffer this harness never grew. 60s is the actual
-    // product target for 1000 mails. This runs against a local mock, so it
-    // measures fetch-loop + extraction + DB, not real Gmail latency or quota
-    // pacing -- treat it as the floor the code must not regress past, not as
-    // a prediction of end-to-end wall time.
-    const TARGET: Duration = Duration::from_secs(60);
+    // unbounded on-disk buffer this harness never grew. 120s is the product
+    // target for 1000 mails (owner decision 2026-11-25). It includes quota
+    // pacing: the shared Gmail gate allows 100 units/s, so 1000 mails x 2
+    // calls x 5 units take ~100s even against this local mock. The target was
+    // 60s before the gate; it was raised rather than the gate loosened, since
+    // never tripping Gmail's 429 matters more than 40s of scan time next to
+    // hours of LLM work. Not a prediction of real Gmail latency.
+    const TARGET: Duration = Duration::from_secs(120);
     println!(
         "1000-email p95 extrapolated total: {:?} (per-batch p95 {:?}, target {:?})",
         extrapolated_total, p95_per_batch, TARGET
     );
     assert!(
         extrapolated_total <= TARGET,
-        "p95 extrapolated total ({:?}) exceeds the 60s-per-1000-email target ({:?}); per-batch samples: {:?}",
+        "p95 extrapolated total ({:?}) exceeds the 120s-per-1000-email target ({:?}); per-batch samples: {:?}",
         extrapolated_total,
         TARGET,
         samples

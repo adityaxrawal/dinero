@@ -844,6 +844,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     apiSurface: ['layer6_pending_jobs'],
     facts: [
       'At most 6 jobs in flight; a full queue does not block the scan — overflow waits in layer6_pending_jobs and workers refill as it drains',
+      'Pending count (live jobs) is reported by pipeline_status.llm_pending_jobs and shown on the Reconciliation page, since those entries are hidden until the AI verdict',
       'Rejections are final (reviewed as llm_value_not_in_email); a timeout, sidecar failure or failed write is never final — retried after 1 min, 5 min, then every 15 min; while the device cannot run a model (none downloaded, or under the RAM floor) the job is held and re-checked every 5 min without using an attempt',
       'Success is applied by engine::complete_observation: observation update, reconciliation and settling the review entry commit in one transaction',
       'Bodies over 2,000 characters are sent as first and last chunks',

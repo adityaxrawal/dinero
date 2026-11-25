@@ -58,6 +58,15 @@ pub fn record_failed_attempt(conn: &Connection, id: &str) -> Result<i64> {
         .unwrap_or(0))
 }
 
+/// Emails waiting on the LLM: outstanding (not dead) jobs.
+pub fn count_pending(conn: &Connection) -> Result<i64> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM layer6_pending_jobs WHERE dead_at IS NULL",
+        [],
+        |r| r.get(0),
+    )?)
+}
+
 /// Outstanding (not dead) jobs, replayed at startup.
 pub fn select_all(conn: &Connection) -> Result<Vec<PendingLayer6Job>> {
     let mut stmt = conn.prepare(
@@ -144,5 +153,6 @@ mod tests {
             assert_eq!(select_all(&conn).unwrap().len(), 1, "still replayed after {attempt} failures");
         }
         assert_eq!(record_failed_attempt(&conn, "no-such-job").unwrap(), 0);
+        assert_eq!(count_pending(&conn).unwrap(), 1, "a failing job still counts as waiting");
     }
 }

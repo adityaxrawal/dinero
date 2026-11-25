@@ -9,6 +9,7 @@ import { useSearchParams } from 'react-router-dom';
 import { ShieldAlert, HelpCircle, Loader2, CheckCircle2, Layers } from 'lucide-react';
 
 import { useReconciliationClusters } from '@/hooks/queries/useReconciliationClusters';
+import { useLlmPendingCount } from '@/hooks/queries/useLlmPendingCount';
 import { useUnassignedTransactions } from '@/hooks/queries/useUnassignedTransactions';
 import ReconciliationInspector from '@/components/reconciliation/ReconciliationInspector';
 import UnassignedInspector from '@/components/reconciliation/UnassignedInspector';
@@ -386,6 +387,7 @@ export default function Reconciliation() {
 
   const { data: clusters = [], isLoading: clustersLoading } = useReconciliationClusters();
   const { data: unassigned = [], isLoading: unassignedLoading } = useUnassignedTransactions();
+  const { data: llmPending = 0 } = useLlmPendingCount();
 
   const [selectedClusterId, setSelectedClusterId] = useState<string | null>(null);
   const [selectedUnassignedId, setSelectedUnassignedId] = useState<string | null>(null);
@@ -420,6 +422,13 @@ export default function Reconciliation() {
               Reconciliation
             </h1>
           </div>
+          {llmPending > 0 && (
+            <p className="flex items-center gap-1.5 text-[11px] text-[#064E3B]/70" role="status">
+              <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />
+              AI is reading {llmPending} {llmPending === 1 ? 'email' : 'emails'}. They appear here
+              only if it can't find the details.
+            </p>
+          )}
 
           <SectionTabs sections={SECTIONS} currentSection={currentSection} onSelect={setSection} />
         </div>

@@ -481,13 +481,25 @@ pub struct StatementQueueStatus {
 pub struct PipelineStatusResponse {
     pub transaction_queue: TransactionQueueStatus,
     pub statement_queue: StatementQueueStatus,
+    /// Emails waiting on the LLM. Their review entries are hidden until the
+    /// verdict, so the UI shows this count instead.
+    pub llm_pending_jobs: i64,
 }
 
 #[tauri::command]
 /// Reports queue depth and pause state.
 pub async fn pipeline_status(
     handles: tauri::State<'_, QueueHandles>,
+    pool: tauri::State<'_, Pool>,
 ) -> Result<PipelineStatusResponse, crate::error::AppError> {
+    let llm_pending_jobs = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+        .interact(|c| crate::db::layer6_jobs::count_pending(c))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     let tx_paused = TRANSACTION_QUEUE_PAUSED.load(std::sync::atomic::Ordering::Relaxed);
     let stmt_paused = STATEMENT_QUEUE_PAUSED.load(std::sync::atomic::Ordering::Relaxed);
     Ok(PipelineStatusResponse {
@@ -517,6 +529,7 @@ pub async fn pipeline_status(
                 .max_capacity()
                 .saturating_sub(handles.statement_tx.capacity()),
         },
+        llm_pending_jobs,
     })
 }
 

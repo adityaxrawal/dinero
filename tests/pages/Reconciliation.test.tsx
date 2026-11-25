@@ -18,6 +18,10 @@ vi.mock('react-router-dom', () => ({
 vi.mock('@/hooks/queries/useReconciliationClusters', () => ({
   useReconciliationClusters: () => ({ data: clusters, isLoading: clustersLoading }),
 }));
+let llmPending = 0;
+vi.mock('@/hooks/queries/useLlmPendingCount', () => ({
+  useLlmPendingCount: () => ({ data: llmPending }),
+}));
 vi.mock('@/hooks/queries/useUnassignedTransactions', () => ({
   useUnassignedTransactions: () => ({ data: unassigned, isLoading: unassignedLoading }),
 }));
@@ -80,6 +84,7 @@ beforeEach(() => {
   clustersLoading = false;
   unassignedLoading = false;
   section = 'clusters';
+  llmPending = 0;
 });
 
 describe('Reconciliation queue', () => {
@@ -217,5 +222,19 @@ describe('inspector pane', () => {
     render(<Reconciliation />);
     fireEvent.click(screen.getByText('HDFC Bank'));
     expect(screen.getByTestId('unassigned-inspector').textContent).toBe('u1');
+  });
+
+  it('shows how many emails the AI is still reading, even when the queue is empty', () => {
+    clusters = [];
+    unassigned = [];
+    llmPending = 3;
+    render(<Reconciliation />);
+    expect(screen.getByRole('status').textContent).toContain('AI is reading 3 emails');
+    expect(screen.getByText('All Caught Up!')).toBeTruthy();
+  });
+
+  it('shows no AI line when nothing is pending', () => {
+    render(<Reconciliation />);
+    expect(screen.queryByRole('status')).toBeNull();
   });
 });

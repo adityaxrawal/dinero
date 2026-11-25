@@ -77,7 +77,8 @@ const REASON_GUIDANCE: Record<string, ReasonGuidance> = {
     tip: 'Check the email below and choose debit or credit before saving.',
   },
   'gate3_failed:missing_currency': {
-    description: 'The AI read this email but found no currency for the amount, so it was not assumed.',
+    description:
+      'The AI read this email but found no currency for the amount, so it was not assumed.',
     tip: 'Check the email below and set the currency before saving.',
   },
   'gate3_failed:low_confidence': {
