@@ -261,9 +261,9 @@ const AUTHORED: WorkflowDef[] = [
       },
       {
         id: 'gate-2',
-        title: 'Gate 2 — content classification',
+        title: 'Gate 2 — content classification (2a, then 2b)',
         detail:
-          'Classify as TransactionAlert / BalanceUpdate / StatementEmail / Mandate* / Noise / Otp / Kyc / Marketing / Reminder / Unknown.',
+          'Gate 2a classifies from the subject and snippet (metadata only) and rejects non-transactional mail before the full body is fetched; Gate 2b classifies the full body as TransactionAlert / BalanceUpdate / StatementEmail / Mandate* / Noise / Otp / Kyc / Marketing / Reminder / Unknown.',
         components: ['message-processor'],
         relations: ['sync'],
         outcomes: [
@@ -278,7 +278,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'gate-3',
         title: 'Extraction ladder + Gate 3 (mandatory fields)',
         detail:
-          'Layers 1→5 (learned rules → bank template → generic regex → NLP → statement cross-ref), cheapest first. A mandatory-field check (Gate 3) rejects partial extractions, and every layer must reach MIN_LEDGER_CONFIDENCE = 0.75 to enter the ledger (an unscored result fails). Mail from a sender the user approved but the registry does not verify always goes to review. Ladder exhaustion on an LLM-eligible machine (enough RAM and a downloaded model) defers to the durable Layer 6 queue.',
+          "Layers 1→5 (learned rules → bank template → generic regex → NLP → statement cross-ref), cheapest first. A mandatory-field check (Gate 3) rejects partial extractions, and every layer must reach MIN_LEDGER_CONFIDENCE = 0.75 to enter the ledger (an unscored result fails). Mail from a sender the user approved but the registry does not verify, or that Gmail's authentication cannot tie to its From domain, always goes to review. On an LLM-eligible machine (enough RAM and a downloaded model) the processor defers to the durable Layer 6 queue when the ladder extracts nothing, or when its result lacks only the merchant or the instrument.",
         components: [
           'extraction-ladder',
           'learning',
@@ -341,7 +341,7 @@ const AUTHORED: WorkflowDef[] = [
         id: 'intake',
         title: 'Intake (email or upload)',
         detail:
-          'Manual: statements_upload validates (non-empty, type, size, SHA-256) and checks file-hash + filename billing-cycle duplicates. Email: the Gate 2 statement branch calls the same resolve_statement_password choke point and enqueues the same StatementJob.',
+          'Manual: statements_upload receives the picked file paths, reads each in Rust (regular file, at most 25 MB, checked before reading), validates (non-empty, %PDF type, SHA-256) and checks file-hash + filename billing-cycle duplicates. Email: the Gate 2 statement branch calls the same resolve_statement_password choke point and enqueues the same StatementJob.',
         components: [
           'react-ui',
           'ipc-client',
@@ -494,29 +494,30 @@ const AUTHORED: WorkflowDef[] = [
     id: 'layer6-enrichment',
     name: 'Layer 6 Deferred LLM Enrichment',
     summary:
-      'When the deterministic ladder fails, the message is parked in a durable queue and a local llama-server extracts it off the hot path — so a slow inference never stalls a scan.',
+      'When the deterministic ladder extracts nothing, or lacks only the merchant or instrument, the message is parked in a durable queue and a local llama-server extracts it off the hot path — so a slow inference never stalls a scan.',
     participants: [
+      'message-processor',
       'extraction-ladder',
       'layer6-queue',
       'llm-manager',
       'llama-sidecar',
-      'tx-queue',
+      'recon-engine',
       'sqlite',
     ],
     steps: [
       {
         id: 'defer',
-        title: 'Ladder exhausted → enqueue',
+        title: 'Gate 3 failure → enqueue',
         detail:
-          'Layers 1–5 all failed and the machine is LLM-eligible. The observation + unassigned_transactions row are ALREADY persisted (partial data salvaged); process_message enqueues a Layer6Job and returns EnqueuedForEnrichment.',
-        components: ['extraction-ladder', 'layer6-queue', 'sqlite'],
+          'Layers 1–5 extracted nothing, or their result failed Gate 3 only for a missing merchant or instrument, and the machine is LLM-eligible. The observation + unassigned_transactions row are ALREADY persisted (partial data salvaged); the Message Processor enqueues a Layer6Job (not a Transaction Queue worker).',
+        components: ['message-processor', 'extraction-ladder', 'layer6-queue', 'sqlite'],
         relations: ['async', 'db'],
       },
       {
         id: 'durable',
         title: 'Durable queue drain',
         detail:
-          'layer6_pending_jobs backs the queue, so jobs survive app restart. A fixed pool of 6 workers drains the channel (cap 256), so at most 6 jobs are in flight; enqueue never waits — overflow stays in the table and workers refill. Timeouts and sidecar failures retry up to 3 times; a missing model uses no attempt; a dead job is re-labelled extraction_failed.',
+          'layer6_pending_jobs backs the queue, so jobs survive app restart. A fixed pool of 6 workers drains the channel (cap 256), so at most 6 jobs are in flight; enqueue never waits — overflow stays in the table and workers refill. A timeout, sidecar failure or failed write is retried in-session after 1 min, then 5 min, up to 3 attempts; with no model the job is re-checked every 5 min without using an attempt; a dead job is re-labelled extraction_failed.',
         components: ['layer6-queue', 'sqlite'],
         relations: ['db'],
       },
@@ -532,8 +533,8 @@ const AUTHORED: WorkflowDef[] = [
         id: 'apply',
         title: 'Apply result',
         detail:
-          'Success: fill the event time, complete the observation and route through the Transaction Queue canonical path. Failure: leave it in unassigned_transactions for user review.',
-        components: ['layer6-queue', 'tx-queue', 'sqlite'],
+          'Success: apply_layer6_success fills the fields the model returned (its values are used where it returns one) and calls engine::complete_observation, which updates the observation, reconciles it and settles the review entry in one transaction. Failure: leave it in unassigned_transactions for user review.',
+        components: ['layer6-queue', 'recon-engine', 'sqlite'],
         relations: ['db', 'async'],
         outcomes: [
           { label: 'pass', detail: 'Observation completed → canonical transaction' },

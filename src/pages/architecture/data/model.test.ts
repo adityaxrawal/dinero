@@ -33,6 +33,7 @@ const migrationFiles = readdirSync(MIGRATIONS)
   .sort();
 const sqlText = migrationFiles.map((f) => readFileSync(join(MIGRATIONS, f), 'utf8')).join('\n');
 const rustText = readTree(join(ROOT, 'src-tauri/src'), '.rs');
+const tsText = `${readTree(join(ROOT, 'src'), '.ts')}\n${readTree(join(ROOT, 'src'), '.tsx')}`;
 
 /** The real schema: every migration applied in order to an in-memory DB. */
 const db = new DatabaseSync(':memory:');
@@ -161,6 +162,34 @@ describe('architecture model ↔ codebase', () => {
         .map((tok) => `${c.id}: ${tok}`)
     );
     expect(unknown).toEqual([]);
+  });
+
+  // Audit N-G6: camelCase / PascalCase names (hooks, types, events, methods)
+  // must exist in the Rust or frontend code too.
+  it('names only camelCase / PascalCase API symbols that exist in the code', () => {
+    const corpus = `${rustText}\n${tsText}`;
+    const unknown = MODEL.components.flatMap((c) =>
+      c.apiSurface
+        .flatMap((entry) => entry.split(/[\s,()·/.=:]+/))
+        .filter((tok) => /^[A-Za-z][a-z0-9]+([A-Z][a-z0-9]*)+$/.test(tok))
+        .filter((tok) => !new RegExp(`\\b${tok}\\b`).test(corpus))
+        .map((tok) => `${c.id}: ${tok}`)
+    );
+    expect(unknown).toEqual([]);
+  });
+
+  // Audit N-G3: the Database tab draws every table the migrations create.
+  it('models every table the migrations create', () => {
+    const tables = (
+      db
+        .prepare(
+          `SELECT name FROM sqlite_master WHERE type = 'table'
+             AND name NOT LIKE 'sqlite_%' AND name NOT LIKE 'transactions_fts%'`
+        )
+        .all() as { name: string }[]
+    ).map((r) => r.name);
+    const modelled = new Set(MODEL.entities.map((e) => e.name));
+    expect(tables.filter((t) => !modelled.has(t)).sort()).toEqual([]);
   });
 
   it('draws ER entities and columns that exist in the migrated schema', () => {

@@ -235,7 +235,7 @@ export const CONNECTIONS: ConnectionDef[] = [
     from: 'message-processor',
     to: 'layer6-queue',
     kind: 'async',
-    label: 'defer (Layers 1–5 fail)',
+    label: 'defer (Gate 3 failure, LLM-eligible)',
   },
   {
     id: 'l6-llm',
@@ -314,11 +314,11 @@ export const CONNECTIONS: ConnectionDef[] = [
     label: 'reconcile',
   },
   {
-    id: 'l6-txq',
+    id: 'l6-recon',
     from: 'layer6-queue',
-    to: 'tx-queue',
-    kind: 'async',
-    label: 'enriched observation',
+    to: 'recon-engine',
+    kind: 'sync',
+    label: 'complete_observation',
   },
   {
     id: 'l6-unassigned',

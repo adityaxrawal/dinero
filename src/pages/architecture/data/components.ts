@@ -364,7 +364,8 @@ const CORE: ComponentDef[] = [
       'NORMAL_POLL_INTERVAL_SECS = 60; LOW_BATTERY_POLL_INTERVAL_SECS = 300',
       'Per-cycle retry budget 8 (1,2,4,8,16,32,60,60 + ±15% jitter) for rate limits (429 and 403 rateLimitExceeded) and 5xx',
       'Each poll cycle checks the license gate; a lapsed licence stops background polling',
-      'Transaction and mandate jobs are persisted (pending_ingest_jobs) before the cursor advances and replayed at launch',
+      'Transaction and mandate jobs are persisted (pending_ingest_jobs) before the cursor advances and replayed at launch; if a job, or a failure record, cannot be saved the cycle stops and the cursor stays where it was (audit N-A2)',
+      'A statement email with no downloadable PDF is recorded in processed_messages (statement_no_attachment), so it is traceable and rescans skip it',
       'Statement attachments go through statement_intake.rs: the PDF is staged before the row that marks the email processed, and any failure is recorded in scan_failed_messages for Retry failed',
       'A message that fails processing gets a scan_failed_messages row (retryable via Retry failed)',
       'History 404/400: cursor re-seeded from users.getProfile + catch-up scan (deferred and retried if a scan is already running)',
@@ -381,8 +382,8 @@ const CORE: ComponentDef[] = [
     description:
       'Identical for every entry point (historical scan, live polling). Gate 1 verifies sender authenticity; Gate 2 classifies the message; Gate 3 runs the extraction ladder with a mandatory-field gate. One processing path per job type regardless of entry point.',
     responsibilities: [
-      'Gate 1: sender registry match + homoglyph/punycode/typo-squat detection + SPF/DKIM/DMARC cross-check (downgrade-only)',
-      'Gate 2: classify as TransactionAlert / StatementEmail / MandateEvent / noise / otp / kyc / marketing',
+      'Gate 1: sender registry match + homoglyph/punycode/typo-squat detection + SPF/DKIM/DMARC cross-check (a failed or misaligned verdict downgrades to SpoofReject)',
+      'Gate 2a: subject + snippet classify before the full body is fetched; Gate 2b: full-body classify as TransactionAlert / StatementEmail / MandateEvent / noise / otp / kyc / marketing',
       'Gate 3: extraction ladder + mandatory-field check; defer to Layer 6 on ladder exhaustion',
     ],
     technologies: [
@@ -403,13 +404,15 @@ const CORE: ComponentDef[] = [
     apiSurface: ['process_message', 'SenderVerificationResult', 'ContentClass'],
     facts: [
       'SPF/DKIM/DMARC only trusts authserv-id naming a Google host (anti-relay-injection)',
+      "The From address is parsed per RFC 5322 (a <…> inside a quoted display name or comment is not the sender), and Gmail's DMARC header.from must equal that domain, else SpoofReject",
+      "Mail Gmail's verdict cannot tie to the From domain (no trusted Authentication-Results, or no header.from) is read, but what it yields goes to review (unverified_sender)",
       'Senders the user approved but the registry does not verify are read, but what they yield goes to review (unverified_sender), never straight to the ledger',
       'A bank subdomain is trusted only if the registry lists it; look-alike distance is measured on UTS #39 skeletons',
       'Gate 3 never accepts a partial extraction (precision over recall)',
       'One confidence floor for every layer: below MIN_LEDGER_CONFIDENCE = 0.75, or with no score at all, a result goes to review, not the ledger (Layer 3 is capped at 0.7 and NLP scores 0.5, so both always go to review)',
       'merchant_raw is always an exact span of the message; labels such as "Internal Transfer (A/c 1527)" or "Balance Update" are display labels (merchant_normalized)',
       'Rejections and mandates are recorded in processed_messages; an accepted message is recognised by its observation row, so rescans skip both',
-      'email_scan_selected/rejected.log are debug-build only and hold metadata, never the body',
+      'email_scan_selected/rejected.log and the per-email ingestion trace (ingestion_extraction log) are debug-build only; release logs carry no subjects, snippets or extracted values',
     ],
     specRefs: ['Doc 12 §6.2', 'Doc 12 §6.2a'],
     confidence: 'verified',
@@ -452,7 +455,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     purpose:
       'Deterministic-first field extraction: learned rules → templates → regex → NLP → cross-ref → LLM.',
     description:
-      'Layers 1–5 are cheap and deterministic; Layer 6 (LLM) runs only when all five fail and the machine is LLM-eligible. Each rung fills amount, merchant, date and other fields; a mandatory-field gate rejects partial extractions.',
+      'Layers 1–5 are cheap and deterministic. Layer 6 (LLM) runs on an LLM-eligible machine when layers 1–5 extract nothing, or when their result fails Gate 3 only for a missing merchant or instrument; where it returns a field, its value is used. Each rung fills amount, merchant, date and other fields; a mandatory-field gate rejects partial extractions.',
     responsibilities: [
       'Layer 1 LearnedFieldLayer — user-corrected field rules',
       'Layer 2 BankTemplateLayer — per-bank message templates',
@@ -507,7 +510,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     kind: 'service',
     purpose: 'Idempotent observation identity — the same bank event is never ingested twice.',
     description:
-      'fingerprint.rs computes a stable fingerprint per observation; the DB enforces UNIQUE(source_pipeline, source_record_id) so re-runs of a scan cannot double-count.',
+      'fingerprint.rs computes a stable fingerprint per observation; the DB enforces UNIQUE(source_pipeline, source_record_id) so re-runs of a scan cannot double-count, and a partial UNIQUE on rfc822_message_id so one email delivered to two connected inboxes is booked once.',
     responsibilities: [
       'Compute observation fingerprints',
       'Enforce unique_event_id on transactions',
@@ -645,6 +648,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
       'ParseMethod fallback chain: Pdfium → OcrFallback → LlmAssist; OCR pages are rendered inside pdf_sidecar, never in-process',
       'Pages neither the text layer nor OCR could read are recorded as statement_drafts.missing_pages; commit needs acknowledge_partial',
       'batch progress tracker activates above 10 files',
+      'Manual upload sends the picked file paths; Rust checks each is a regular file of at most 25 MB before reading it, then validates the %PDF bytes (one 25 MB limit for both entry points)',
       'Statements left queued by a crash are recovered at launch, keeping the original filename',
     ],
     confidence: 'verified',
@@ -827,7 +831,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     purpose:
       'Durable deferred-LLM work so slow inference never stalls a scan (enqueue never waits; overflow stays in the table).',
     description:
-      'Tokio mpsc channel (capacity 256) drained by a fixed pool of 6 workers, backed by the layer6_pending_jobs table so jobs survive restart. Not a routing destination — a Transaction Queue worker enqueues here after ladder Layers 1–5 all failed.',
+      'Tokio mpsc channel (capacity 256) drained by a fixed pool of 6 workers, backed by the layer6_pending_jobs table so jobs survive restart. Not a routing destination — the Message Processor enqueues here on its Gate 3 failure path, after filing the observation and its review entry.',
     responsibilities: [
       'Run Layer 6 LLM extraction off the hot path',
       'Persist jobs across restarts',
@@ -840,7 +844,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     apiSurface: ['layer6_pending_jobs'],
     facts: [
       'At most 6 jobs in flight; a full queue does not block the scan — overflow waits in layer6_pending_jobs and workers refill as it drains',
-      'Rejections are final; timeouts and sidecar failures retry up to 3 times; no attempt is used while no model is available; a dead job is re-labelled extraction_failed',
+      'Rejections are final; a timeout, sidecar failure or failed write is retried in-session after 1 min, then 5 min, up to 3 attempts; with no model the job is re-checked every 5 min without using an attempt; a dead job is re-labelled extraction_failed',
       'Success is applied by engine::complete_observation: observation update, reconciliation and settling the review entry commit in one transaction',
       'Bodies over 2,000 characters are sent as first and last chunks',
     ],
@@ -991,7 +995,7 @@ const INFRA: ComponentDef[] = [
     ],
     technologies: [
       'rusqlite (bundled-sqlcipher)',
-      'deadpool-sqlite (8 connections)',
+      'deadpool-sqlite (8 connections, 30 s wait timeout)',
       'sqlx migrations (foreign keys off, foreign_key_check after)',
       'FTS5',
     ],
@@ -1218,7 +1222,7 @@ const INFRA: ComponentDef[] = [
     layer: 'workers',
     kind: 'service',
     purpose:
-      'PII-redacting structured logs, crash reporting, integrity diagnostics. Full LLM prompts are logged in debug builds only.',
+      'PII-redacting structured logs, crash reporting, integrity diagnostics. Full LLM prompts and the per-email ingestion trace are logged in debug builds only.',
     description:
       'app-logs.log is wrapped in a RedactingWriter — redaction happens at write time, not lazy export. Release builds write to ~/Library/Logs/com.dinero.app (debug builds: the repository root). Daily rotation with bounded retention (default 15 days). Global panic hook writes to the log; tokio task boundaries isolate panics; a lock poisoned by a panic is recovered rather than crashing later callers. dev_review.rs was removed (it recorded PII).',
     responsibilities: [

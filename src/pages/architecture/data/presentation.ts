@@ -205,7 +205,7 @@ export const INVARIANTS: { title: string; body: string }[] = [
   },
   {
     title: 'Invariant 4 · Fail-Closed Trust Boundaries',
-    body: 'License JWT verification, PDF sidecar infrastructure errors and SPF/DKIM/DMARC checks all treat an unverifiable state as denied — never "assume OK".',
+    body: 'License JWT verification and PDF sidecar infrastructure errors treat an unverifiable state as denied. A sender Gmail\'s authentication cannot tie to its From domain is never trusted: its mail goes to review, and a failed or mismatched verdict is rejected — never "assume OK".',
   },
   {
     title: 'Invariant 5 · Process Isolation As Security',
@@ -258,7 +258,6 @@ export const ANALYSIS = {
   ],
   gaps: [
     '**ADR-024 — NetworkClient coverage.** The updater check is the one remaining outbound path that leaves no Network Activity row. Gmail, Google OAuth, licensing and both model downloads are logged.',
-    `**IPC command-count discrepancy.** The code registers ${COUNTS.commands} commands in generate_handler!; the design docs quote 143 and 151; figures are recorded rather than silently reconciled.`,
     '**License state machine.** Two write paths: 8 local, time-driven edges (is_legal_transition) and server-verified updates (apply_server_validation) that can set any server state. Locked has no local exit but a renewal lifts it at the next validation.',
     '**Statement row extraction.** All seven bank-specific parsers matched zero of nine real statements and were removed (audit F-2); `parse_universal` (0→79 rows on that corpus) is the one deterministic parser, with the LLM fallback for pages it cannot read.',
   ],

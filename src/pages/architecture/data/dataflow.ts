@@ -75,7 +75,7 @@ export const STAGES: Stage[] = [
     y: 260,
     components: ['message-processor'],
     detail:
-      'Registry match + homoglyph/punycode/typo-squat detection + SPF/DKIM/DMARC cross-check (downgrade-only).',
+      'Registry match on the RFC 5322 From address + homoglyph/punycode/typo-squat detection + SPF/DKIM/DMARC cross-check: a failed verdict, or a DMARC header.from naming another domain, is a spoof; mail Gmail cannot authenticate is read but goes to review.',
   },
   {
     id: 'drop1',
@@ -90,14 +90,15 @@ export const STAGES: Stage[] = [
   },
   {
     id: 'gate2',
-    label: 'Gate 2',
-    sub: 'classify',
+    label: 'Gate 2a / 2b',
+    sub: 'subject, then body',
     color: DF_COLORS.gate,
     shape: 'decision',
     x: 460,
     y: 260,
     components: ['message-processor'],
-    detail: 'Classify as transaction / statement / mandate / noise / otp / kyc / marketing.',
+    detail:
+      'Gate 2a classifies from the subject and snippet and rejects non-transactional mail before the body is fetched; Gate 2b classifies the full body as transaction / statement / mandate / noise / otp / kyc / marketing.',
   },
   {
     id: 'drop2',
@@ -133,7 +134,7 @@ export const STAGES: Stage[] = [
     y: 540,
     components: ['layer6-queue', 'llm-manager', 'llama-sidecar'],
     detail:
-      'When Layers 1–5 fail on an LLM-eligible machine (enough RAM and a downloaded model), the job is deferred here. Jobs survive restart (layer6_pending_jobs); a fixed pool of 6 workers runs them; enqueue never blocks the scan (overflow waits in the table). Timeouts and sidecar failures retry up to 3 times.',
+      'On an LLM-eligible machine (enough RAM and a downloaded model) the Message Processor defers here when Layers 1–5 extract nothing, or lack only the merchant or instrument. Jobs survive restart (layer6_pending_jobs); a fixed pool of 6 workers runs them; enqueue never blocks the scan (overflow waits in the table). Failures retry in-session after 1, then 5 minutes (3 attempts); with no model the job is re-checked every 5 minutes.',
   },
   {
     id: 'obs',
@@ -318,7 +319,7 @@ export const PATHS: { id: string; name: string; stages: StageId[] }[] = [
   },
   {
     id: 'p-l6',
-    name: 'Ladder exhausted → Layer 6 → ledger',
+    name: 'Gate 3 failure → Layer 6 → ledger',
     stages: ['gmail', 'gate1', 'gate2', 'gate3', 'l6', 'obs', 'recon', 'ledger', 'ui'],
   },
   {

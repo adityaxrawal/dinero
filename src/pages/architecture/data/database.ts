@@ -1,9 +1,9 @@
 /**
- * Verified database model — the tables built by applying every migration (counts in ./counts.ts)
- * (recounted 2026-11-23). Only the architecturally significant entities and
- * their relationships are modelled here; the five failure/deferral tables and
- * the two immutability triggers are called out explicitly because they change
- * how you may write against the schema.
+ * Verified database model — every table built by applying every migration
+ * (counts in ./counts.ts; model.test.ts fails if a table is missing here, audit
+ * N-G3). The five failure/deferral tables and the two immutability triggers are
+ * called out explicitly because they change how you may write against the
+ * schema.
  */
 import type { EntityDef, EntityRelation } from './types';
 
@@ -40,7 +40,11 @@ export const ENTITIES: EntityDef[] = [
       { name: 'profile_id', type: 'INTEGER', key: 'FK' },
       { name: 'email_address', type: 'TEXT' },
       { name: 'account_status', type: 'TEXT' },
-      { name: 'last_history_id', type: 'TEXT', note: 'polling cursor fallback' },
+      {
+        name: 'last_history_id',
+        type: 'TEXT',
+        note: 'connect-time cursor seed; the gmail_history checkpoint is the cursor of record (both written together)',
+      },
       { name: 'created_at', type: 'DATETIME' },
     ],
   },
@@ -131,7 +135,7 @@ export const ENTITIES: EntityDef[] = [
     name: 'transaction_observations',
     group: 'ledger',
     description:
-      'Raw extracted events. UNIQUE(source_pipeline, source_record_id) makes ingestion idempotent.',
+      'Raw extracted events. UNIQUE(source_pipeline, source_record_id) makes ingestion idempotent; a partial UNIQUE on rfc822_message_id books one email delivered to two connected inboxes once.',
     columns: [
       { name: 'id', type: 'TEXT', key: 'PK' },
       {
@@ -140,6 +144,12 @@ export const ENTITIES: EntityDef[] = [
         note: 'CHECK: gmail_transaction | statement_pdf | manual',
       },
       { name: 'source_record_id', type: 'TEXT', key: 'UQ' },
+      {
+        name: 'rfc822_message_id',
+        type: 'TEXT',
+        key: 'UQ',
+        note: 'email Message-ID; unique when present',
+      },
       { name: 'fingerprint', type: 'TEXT' },
       { name: 'extraction_method', type: 'TEXT' },
       { name: 'statement_id', type: 'TEXT', key: 'FK' },
@@ -365,6 +375,246 @@ export const ENTITIES: EntityDef[] = [
     description:
       'Learned extraction rules (Layer 1 of the ladder) with per-template-shape variants. Variant status: pending → active (3 successes) → trusted (10); inactive after 3 failures or a hit rate below 70%. One variant serves a template (active/trusted) with at most one pending challenger beside it; a challenger replaces the serving variant only by a better shadow hit rate, never one learned from a user correction.',
     columns: [{ name: 'id', type: 'TEXT', key: 'PK' }],
+  },
+  {
+    id: 'recurring_payments',
+    name: 'recurring_payments',
+    group: 'ledger',
+    description:
+      'Recurring payments and mandates, one row per instrument + merchant. Mandate events and recurring detection upsert it; mandates never book a ledger transaction.',
+    columns: [
+      { name: 'id', type: 'TEXT', key: 'PK' },
+      { name: 'instrument_id', type: 'TEXT', key: 'FK' },
+      { name: 'merchant_entity_id', type: 'TEXT', key: 'FK' },
+      { name: 'amount_minor', type: 'BIGINT' },
+      { name: 'cadence', type: 'TEXT' },
+      { name: 'next_predicted_date', type: 'DATE' },
+      { name: 'status', type: 'TEXT' },
+      { name: 'source', type: 'TEXT', note: 'inferred (detector) | explicit (mandate)' },
+      { name: 'external_mandate_id', type: 'TEXT' },
+    ],
+  },
+  {
+    id: 'unresolved_mandate_cancellations',
+    name: 'unresolved_mandate_cancellations',
+    group: 'ledger',
+    description:
+      'Mandate-cancellation emails that matched no single recurring payment, held for the user to resolve.',
+    columns: [
+      { name: 'id', type: 'TEXT', key: 'PK' },
+      { name: 'raw_signal', type: 'TEXT' },
+      { name: 'candidate_ids', type: 'TEXT' },
+      { name: 'status', type: 'TEXT' },
+    ],
+  },
+  {
+    id: 'categories',
+    name: 'categories',
+    group: 'ledger',
+    description:
+      'The fixed spending taxonomy transactions are classified into, with optional monthly budgets.',
+    columns: [
+      { name: 'id', type: 'TEXT', key: 'PK' },
+      { name: 'parent_id', type: 'TEXT', key: 'FK' },
+      { name: 'name', type: 'TEXT' },
+      { name: 'monthly_budget_minor', type: 'INTEGER' },
+      { name: 'is_deleted', type: 'BOOLEAN' },
+    ],
+  },
+  {
+    id: 'tags',
+    name: 'tags',
+    group: 'ledger',
+    description: 'User-defined tags.',
+    columns: [
+      { name: 'id', type: 'TEXT', key: 'PK' },
+      { name: 'name', type: 'TEXT' },
+      { name: 'color_hex', type: 'TEXT' },
+    ],
+  },
+  {
+    id: 'transaction_tags',
+    name: 'transaction_tags',
+    group: 'ledger',
+    description: 'Tag ↔ transaction links.',
+    columns: [
+      { name: 'transaction_id', type: 'TEXT', key: 'PK' },
+      { name: 'tag_id', type: 'TEXT', key: 'PK' },
+    ],
+  },
+  {
+    id: 'merchant_aliases',
+    name: 'merchant_aliases',
+    group: 'ledger',
+    description:
+      'Raw merchant strings mapped to a merchant entity (normalisation and merchant cleanup).',
+    columns: [
+      { name: 'id', type: 'TEXT', key: 'PK' },
+      { name: 'merchant_entity_id', type: 'TEXT', key: 'FK' },
+      { name: 'alias_raw', type: 'TEXT' },
+      { name: 'alias_normalized', type: 'TEXT' },
+      { name: 'confidence', type: 'REAL' },
+    ],
+  },
+  {
+    id: 'merchant_llm_corrections',
+    name: 'merchant_llm_corrections',
+    group: 'ledger',
+    description:
+      'Before/after record of every merchant-cleanup change, so a cleanup run can be reverted.',
+    columns: [
+      { name: 'id', type: 'TEXT', key: 'PK' },
+      { name: 'run_id', type: 'TEXT' },
+      { name: 'transaction_id', type: 'TEXT', key: 'FK' },
+      { name: 'prev_merchant_entity_id', type: 'TEXT' },
+      { name: 'new_merchant_entity_id', type: 'TEXT' },
+      { name: 'status', type: 'TEXT' },
+    ],
+  },
+  {
+    id: 'field_rule_variants',
+    name: 'field_rule_variants',
+    group: 'reconciliation',
+    description:
+      'Learned extraction rule versions: one serving variant per rule, challengers evaluated in shadow until they beat it (user edits take over at once).',
+    columns: [
+      { name: 'id', type: 'TEXT', key: 'PK' },
+      { name: 'field_rule_id', type: 'TEXT', key: 'FK' },
+      { name: 'template_hash', type: 'TEXT' },
+      { name: 'status', type: 'TEXT', note: 'pending | active | trusted | inactive | flagged' },
+      { name: 'success_count', type: 'INTEGER' },
+      { name: 'failure_count', type: 'INTEGER' },
+      { name: 'authored_by', type: 'TEXT' },
+    ],
+  },
+  {
+    id: 'rule_change_log',
+    name: 'rule_change_log',
+    group: 'reconciliation',
+    description: 'Audit trail of learned-rule changes and the feedback that triggered them.',
+    columns: [
+      { name: 'id', type: 'TEXT', key: 'PK' },
+      { name: 'field_rule_variant_id', type: 'TEXT', key: 'FK' },
+      { name: 'action', type: 'TEXT' },
+      { name: 'triggering_feedback_log_id', type: 'TEXT', key: 'FK' },
+      { name: 'reason', type: 'TEXT' },
+    ],
+  },
+  {
+    id: 'feedback_log',
+    name: 'feedback_log',
+    group: 'reconciliation',
+    description:
+      'Field corrections the user made; the input to rule learning and sender overrides.',
+    columns: [
+      { name: 'id', type: 'TEXT', key: 'PK' },
+      { name: 'transaction_id', type: 'TEXT', key: 'FK' },
+      { name: 'observation_id', type: 'TEXT', key: 'FK' },
+      { name: 'field_name', type: 'TEXT' },
+      { name: 'old_value', type: 'TEXT' },
+      { name: 'new_value', type: 'TEXT' },
+    ],
+  },
+  {
+    id: 'ignored_messages',
+    name: 'ignored_messages',
+    group: 'ops',
+    description:
+      'Gate 2 noise/unknown messages, kept 30 days so they can be recovered; rescans skip them.',
+    columns: [
+      { name: 'id', type: 'TEXT', key: 'PK' },
+      { name: 'message_id', type: 'TEXT' },
+      { name: 'bank_name', type: 'TEXT' },
+      { name: 'reason', type: 'TEXT' },
+      { name: 'subject', type: 'TEXT' },
+      { name: 'expires_at', type: 'DATETIME', note: '30 days' },
+    ],
+  },
+  {
+    id: 'sender_reputation',
+    name: 'sender_reputation',
+    group: 'ops',
+    description: 'Per-domain sighting counters that feed the "new sender" suggestions.',
+    columns: [
+      { name: 'domain', type: 'TEXT', key: 'PK' },
+      { name: 'message_count', type: 'INTEGER' },
+      { name: 'verified_pass_count', type: 'INTEGER' },
+      { name: 'last_verification_result', type: 'TEXT' },
+    ],
+  },
+  {
+    id: 'pending_senders',
+    name: 'pending_senders',
+    group: 'ops',
+    description:
+      'Unregistered sender domains offered to the user; an approved one is read but its results go to review.',
+    columns: [
+      { name: 'id', type: 'TEXT', key: 'PK' },
+      { name: 'domain', type: 'TEXT' },
+      { name: 'bank_name', type: 'TEXT' },
+      { name: 'status', type: 'TEXT', note: 'pending | approved' },
+      { name: 'reject_count', type: 'INTEGER' },
+    ],
+  },
+  {
+    id: 'sender_bank_overrides',
+    name: 'sender_bank_overrides',
+    group: 'ops',
+    description:
+      'User corrections of which bank a sender domain belongs to ("wrong bank" reports).',
+    columns: [
+      { name: 'id', type: 'TEXT', key: 'PK' },
+      { name: 'domain', type: 'TEXT' },
+      { name: 'bank_name', type: 'TEXT' },
+      { name: 'status', type: 'TEXT' },
+      { name: 'triggering_feedback_log_id', type: 'TEXT', key: 'FK' },
+    ],
+  },
+  {
+    id: 'alerts',
+    name: 'alerts',
+    group: 'ops',
+    description: 'Threshold alerts raised by the alert worker (e.g. an ambiguous cluster waiting).',
+    columns: [
+      { name: 'alert_id', type: 'TEXT', key: 'PK' },
+      { name: 'type', type: 'TEXT' },
+      { name: 'related_cluster_id', type: 'TEXT', key: 'FK' },
+      { name: 'status', type: 'TEXT' },
+    ],
+  },
+  {
+    id: 'dismissed_system_warnings',
+    name: 'dismissed_system_warnings',
+    group: 'ops',
+    description:
+      'System warnings the user dismissed, keyed by type and message hash so a changed warning shows again.',
+    columns: [
+      { name: 'warning_type', type: 'TEXT', key: 'PK' },
+      { name: 'message_hash', type: 'TEXT' },
+      { name: 'dismissed_at', type: 'DATETIME' },
+    ],
+  },
+  {
+    id: 'sync_metadata',
+    name: 'sync_metadata',
+    group: 'ops',
+    description: 'Last sync time per bank, for the missing-data alerts.',
+    columns: [
+      { name: 'bank_name', type: 'TEXT', key: 'PK' },
+      { name: 'last_synced_at', type: 'DATETIME' },
+    ],
+  },
+  {
+    id: 'release_readiness_snapshots',
+    name: 'release_readiness_snapshots',
+    group: 'ops',
+    description: 'Locally captured quality-gate metrics (release go/no-go), never transmitted.',
+    columns: [
+      { name: 'id', type: 'TEXT', key: 'PK' },
+      { name: 'captured_at', type: 'DATETIME' },
+      { name: 'metrics_json', type: 'TEXT' },
+      { name: 'go_no_go', type: 'INTEGER' },
+    ],
   },
 ];
 
