@@ -1,6 +1,6 @@
 //! Doc 30 TASK-OPS-005: Rollback and Incident Response Playbooks.
 //!
-//! `docs/incident-response.md` and `scripts/rollback_release.sh` are the
+//! `dinero-docs/operations/incident-response.md` and `scripts/rollback_release.sh` are the
 //! two deliverables Doc30 names for this task. Both are plain text/shell,
 //! so — same convention as `security_hardening_check.sh`'s real execution
 //! and the QA suite's source-scanning tests — these tests verify the real
@@ -12,10 +12,11 @@ use std::process::Command;
 fn incident_response_doc() -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
-        .join("docs")
+        .join("dinero-docs")
+        .join("operations")
         .join("incident-response.md");
     std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("docs/incident-response.md must exist: {e}"))
+        .unwrap_or_else(|e| panic!("dinero-docs/operations/incident-response.md must exist: {e}"))
 }
 
 /// Doc 30 TASK-OPS-005 acceptance: `test_rollback_runbook_covers_key_incidents`.
@@ -35,7 +36,7 @@ fn test_rollback_runbook_covers_key_incidents() {
     ] {
         assert!(
             doc.contains(class),
-            "docs/incident-response.md must cover the '{class}' incident class"
+            "dinero-docs/operations/incident-response.md must cover the '{class}' incident class"
         );
     }
 }

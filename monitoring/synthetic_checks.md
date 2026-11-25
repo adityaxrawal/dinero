@@ -40,7 +40,7 @@ in `licensing-backend/tests/health.test.ts`.
   through Prisma — cheap enough for continuous polling without adding load).
 - **Alert threshold**: 2 consecutive failures (a single blip is not
   actionable; 2 in a row against a 1–5 minute interval is).
-- **On alert**: follow `docs/incident-response.md`'s "validation outage"
+- **On alert**: follow `dinero-docs/operations/incident-response.md`'s "validation outage"
   playbook (TASK-OPS-005) — the desktop app's 7-day offline grace period
   means a short Licensing Backend outage does not lock any user out
   immediately, which should shape the urgency of the response.

@@ -94,7 +94,7 @@ mod tests {
     // --- 10.2 Beta Distribution ---
     #[test]
     fn test_beta_onboarding_guide_limitations() {
-        let guide_path = PathBuf::from("../dinero-docs/new-docs/Beta_Onboarding_Guide.md");
+        let guide_path = PathBuf::from("../dinero-docs/guides/beta-onboarding-guide.md");
         let content = fs::read_to_string(guide_path).expect("Beta onboarding guide must exist");
         assert!(content.contains("Gmail"), "Must document Gmail OAuth");
         assert!(
@@ -188,10 +188,10 @@ mod tests {
     // --- 10.4 Documentation ---
     #[test]
     fn test_documentation_completeness() {
-        let docs_dir = PathBuf::from("../dinero-docs/new-docs");
+        let docs_dir = PathBuf::from("../dinero-docs/guides");
 
         let user_help =
-            fs::read_to_string(docs_dir.join("User_Help.md")).expect("User_Help.md missing");
+            fs::read_to_string(docs_dir.join("user-help.md")).expect("guides/user-help.md missing");
         assert!(
             user_help.contains("**Version:**") && user_help.contains("**Release Date:**"),
             "Missing tags in User Help"
@@ -217,8 +217,8 @@ mod tests {
             "Missing spending limits help"
         );
 
-        let runbook = fs::read_to_string(docs_dir.join("Internal_Runbook.md"))
-            .expect("Internal_Runbook.md missing");
+        let runbook = fs::read_to_string(docs_dir.parent().unwrap().join("operations/internal-runbook.md"))
+            .expect("operations/internal-runbook.md missing");
         assert!(
             runbook.contains("**Version:**") && runbook.contains("**Release Date:**"),
             "Missing tags in Runbook"
@@ -228,8 +228,8 @@ mod tests {
             "Must contain support scenarios"
         );
 
-        let beta_guide = fs::read_to_string(docs_dir.join("Beta_Onboarding_Guide.md"))
-            .expect("Beta_Onboarding_Guide.md missing");
+        let beta_guide = fs::read_to_string(docs_dir.join("beta-onboarding-guide.md"))
+            .expect("guides/beta-onboarding-guide.md missing");
         assert!(
             beta_guide.contains("**Version:**") && beta_guide.contains("**Release Date:**"),
             "Missing tags in Beta Guide"
@@ -260,7 +260,7 @@ mod tests {
         );
 
         let runbook_content =
-            fs::read_to_string(PathBuf::from("../dinero-docs/new-docs/Internal_Runbook.md"))
+            fs::read_to_string(PathBuf::from("../dinero-docs/operations/internal-runbook.md"))
                 .unwrap();
         assert!(
             runbook_content.contains("5%") && runbook_content.contains("spot-check"),

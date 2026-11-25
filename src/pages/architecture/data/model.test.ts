@@ -8,7 +8,7 @@
  * or the enforced license transition graph changes.
  */
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
@@ -65,16 +65,18 @@ const hookCalls = (name: string): number => {
 describe('architecture model ↔ codebase', () => {
   // Audit G: every spec section a component cites exists. dinero-docs is
   // git-ignored, so this only runs where the corpus is present.
-  it.skipIf(!existsSync(join(ROOT, 'dinero-docs/final-documents')))(
+  it.skipIf(!existsSync(join(ROOT, 'dinero-docs/specs')))(
     'cites only spec sections that exist',
     () => {
-      const docs = join(ROOT, 'dinero-docs/final-documents');
+      const docs = join(ROOT, 'dinero-docs/specs');
       const missing = MODEL.components.flatMap((c) =>
         (c.specRefs ?? [])
           .filter((ref) => {
             const m = ref.match(/^Doc (\d+) §([\w.]+)$/);
             if (!m) return true;
-            const file = readdirSync(docs).find((f) => f.startsWith(`${m[1]}_`));
+            const file = readdirSync(docs, { recursive: true, encoding: 'utf8' }).find((f) =>
+              basename(f).startsWith(`${m[1]}-`)
+            );
             if (!file) return true;
             const section = m[2].replace(/\./g, '\\.');
             return !new RegExp(`^#{1,6} ${section}(\\.|\\s)`, 'm').test(

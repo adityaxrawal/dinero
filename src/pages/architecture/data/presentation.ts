@@ -2,7 +2,7 @@
  * Shared presentation specification for the Dinero architecture explorer.
  *
  * Both the in-app explorer (`src/pages/architecture/`) and the standalone
- * document (`docs/Dinero_Architecture.html`, emitted by
+ * document (`dinero-docs/architecture/dinero-architecture.html`, emitted by
  * `scripts/generate-architecture-doc.ts`) render from this spec, so the two
  * surfaces cannot disagree about how the architecture looks: same palette,
  * same layer display, same node-card anatomy, same connector vocabulary, same

@@ -68,7 +68,7 @@ export const STATE_MACHINES: StateMachineDef[] = [
     name: 'Statement Lifecycle',
     summary:
       'A parked statement never blocks the pipeline — awaiting_password is non-blocking by design.',
-    source: 'docs/design/03 §10 + src-tauri/src/statements/',
+    source: 'dinero-docs/design/03 §10 + src-tauri/src/statements/',
     notes: [
       'awaiting_password NEVER blocks: resolve_statement_password writes the row, stores the encrypted PDF, emits statement_password_required and returns PromptCreated — the caller moves to the next file.',
       'Re-entry points: statements_retry_unprocessed and statements_reparse_all, possible because the PDF bytes were persisted (encrypted) at intake.',

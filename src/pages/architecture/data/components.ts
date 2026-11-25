@@ -1,7 +1,7 @@
 /**
  * Component inventory for the Dinero architecture.
  *
- * Describes the code as built (first derived from `docs/design/00-05`;
+ * Describes the code as built (first derived from `dinero-docs/design/00-05`;
  * updated 2026-11-23 for the system design review and 2026-11-24 for the
  * architecture audit remediation, see ADR-025). Every `sources` entry points at a
  * real file in the repository. `confidence: 'gap'` marks known gaps or

@@ -1,10 +1,10 @@
 /**
  * Data-flow diagram definition — the master source → gates → queues → ledger
- * pipeline (docs/design/00 §4) with its parked/discarded branches and the
+ * pipeline (dinero-docs/design/00 §4) with its parked/discarded branches and the
  * seven traceable end-to-end paths.
  *
  * Lives in the shared model so the in-app explorer and the standalone
- * `docs/Dinero_Architecture.html` render exactly the same diagram.
+ * `dinero-docs/architecture/dinero-architecture.html` render exactly the same diagram.
  */
 
 export type StageId =

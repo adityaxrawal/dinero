@@ -5,7 +5,7 @@
  * Debug console) presenting the verified architecture model in the app's
  * champagne/emerald theme: layer-clustered graph, component inspector, end-to-end
  * workflow player, and dedicated data-flow / database / dependency /
- * state-machine views. The standalone `docs/Dinero_Architecture.html` mirrors
+ * state-machine views. The standalone `dinero-docs/architecture/dinero-architecture.html` mirrors
  * this screen exactly.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';

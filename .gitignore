@@ -52,9 +52,6 @@ lerna-debug.log*
 # ------------------------------------------------------------------------------
 # Local Development Data & Internal Documentation
 # ------------------------------------------------------------------------------
-docs/
-/docs/
-dinero-docs/
 /dinero-docs/
 audit.md
 fix-log.md

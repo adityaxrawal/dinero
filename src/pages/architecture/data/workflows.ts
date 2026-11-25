@@ -3,7 +3,7 @@
  * component model. The workflow view renders these as an interactive sequence
  * and highlights the participating components on the system map.
  *
- * Sources: docs/design/00 §3 (master lifecycle), Documents 01–05.
+ * Sources: dinero-docs/design/00 §3 (master lifecycle), Documents 01–05.
  */
 import { COUNTS } from './counts';
 import type { WorkflowDef } from './types';
