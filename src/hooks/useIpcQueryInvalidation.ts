@@ -28,7 +28,11 @@ import { isTauriRuntime } from '@/lib/tauriRuntime';
  * actually emits.
  */
 export const EVENT_INVALIDATIONS: ReadonlyArray<{ event: string; keys: readonly QueryKey[] }> = [
-  { event: 'transaction_created', keys: [queryKeys.transactions.all(), queryKeys.dashboard.all()] },
+  // A new alert can create the card it was paid with (audit N-B1).
+  {
+    event: 'transaction_created',
+    keys: [queryKeys.transactions.all(), queryKeys.dashboard.all(), queryKeys.instruments.all()],
+  },
   { event: 'transaction_updated', keys: [queryKeys.transactions.all(), queryKeys.dashboard.all()] },
   { event: 'transaction_deleted', keys: [queryKeys.transactions.all(), queryKeys.dashboard.all()] },
   {

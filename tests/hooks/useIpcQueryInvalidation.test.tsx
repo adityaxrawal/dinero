@@ -57,6 +57,8 @@ describe('useIpcQueryInvalidation inside the Tauri runtime', () => {
       () => {
         expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: queryKeys.transactions.all() });
         expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: queryKeys.dashboard.all() });
+        // Audit N-B1: a new alert can create a new card.
+        expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: queryKeys.instruments.all() });
       },
       { timeout: 2000 }
     );
