@@ -33,10 +33,10 @@ fn contains_number(text: &str, number: &str) -> bool {
     })
 }
 
-/// Characters of email body per prompt. A slot has 2048 tokens; the fixed
-/// prompt takes about 1,100 and the JSON answer up to ~200, leaving ~750 for
-/// the body, which is ~2,000 characters at a conservative 3 chars/token for
-/// number-heavy bank mail (audit A-10).
+/// Characters of email body per prompt: ~750 tokens at a conservative 3
+/// chars/token for number-heavy bank mail (audit A-10). With the ~1,100-token
+/// fixed prompt and the answer budget this fits a slot's 3072 tokens
+/// (`llama_sidecar::CONTEXT_TOKENS_PER_SLOT`) with room to spare.
 pub const BODY_BUDGET_CHARS: usize = 2000;
 
 /// The first chunk of `body`, and the last one when the body is over budget.
@@ -107,6 +107,31 @@ impl LlmEngine {
     ///
     /// The bank name is included because it materially improves accuracy: it tells
     /// the model which conventions to expect rather than leaving it to infer them.
+    /// A real extraction prompt over a synthetic alert near the body budget,
+    /// used to measure this machine's latency for the sidecar timeout.
+    ///
+    /// Near the budget on purpose: the timeout must cover the longest prompt
+    /// Layer 6 sends, not the average one.
+    pub fn calibration_prompt() -> String {
+        const ALERT: &str = "Dear Customer, Thank you for using your HDFC Bank Credit Card ending 4521. \
+            Rs. 12,499.00 has been spent on your card at AMAZON PAY INDIA PRIVATE LIMITED on \
+            14-11-2026 at 21:43:17. Authorization code: 004512. Available credit limit: \
+            Rs. 1,87,501.00. Total credit limit: Rs. 2,00,000.00. If you have not done this \
+            transaction, please call 1800-202-6161 or 1860-267-6161 immediately to block your \
+            card, or SMS BLOCK 4521 to 7308080808. ";
+        const FOOTER: &str = "This is a system-generated alert; please do not reply. For \
+            security reasons, never share your card number, CVV, expiry date, OTP, PIN or \
+            NetBanking password with anyone, including bank staff. HDFC Bank will never ask for \
+            these details over phone, email or SMS. Beware of fraudulent calls and messages \
+            offering cashback, reward points redemption or limit enhancement. Terms and \
+            conditions apply to all offers. ";
+        let mut body = String::from(ALERT);
+        while body.chars().count() + FOOTER.len() <= BODY_BUDGET_CHARS {
+            body.push_str(FOOTER);
+        }
+        Self::generate_prompt("HDFC Bank", &body)
+    }
+
     pub fn generate_prompt(bank_name: &str, body_text: &str) -> String {
         format!(
             "You are a strict, deterministic financial data extraction parser. Your task is to extract exactly ONE transaction from a bank alert email sent by {bank_name}.\n\
@@ -273,7 +298,10 @@ impl LlmEngine {
         let ctx = LlmCallContext::new(LlmCallType::Layer6Extraction, attempt);
         let mut retry_delay = std::time::Duration::from_millis(1000);
         let max_delay = std::time::Duration::from_millis(2000);
-        let max_total_wait = std::time::Duration::from_secs(120);
+        // Covers a cold start: loading the model plus calibrating it on every
+        // slot can take minutes on a slow machine. If it still is not ready,
+        // the job fails as infrastructure and is retried later, never final.
+        let max_total_wait = std::time::Duration::from_secs(15 * 60);
         let start_time = std::time::Instant::now();
         let mut timed_out = false;
 
@@ -836,6 +864,16 @@ mod body_chunk_tests {
 
     /// Audit A-10: a short body is sent whole; a long one as its first and
     /// last budget-sized chunks, split on char boundaries.
+    #[test]
+    fn calibration_prompt_is_near_the_body_budget() {
+        let prompt = LlmEngine::calibration_prompt();
+        let body_len = prompt.len() - LlmEngine::generate_prompt("HDFC Bank", "").len();
+        assert!(
+            body_len > BODY_BUDGET_CHARS * 3 / 4 && body_len <= BODY_BUDGET_CHARS,
+            "calibration body is {body_len} chars"
+        );
+    }
+
     #[test]
     fn long_bodies_are_chunked_first_and_last() {
         assert_eq!(body_chunks("Rs 500 at Amazon"), ("Rs 500 at Amazon", None));

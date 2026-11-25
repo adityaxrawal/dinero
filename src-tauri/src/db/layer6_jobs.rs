@@ -40,30 +40,19 @@ pub fn delete(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Failed attempts allowed before a job is marked dead.
-pub const MAX_ATTEMPTS: i64 = 3;
-
-/// Records a failed attempt; returns true once the job has been marked dead.
-pub fn record_failed_attempt(conn: &Connection, id: &str) -> Result<bool> {
+/// Records a failed attempt and returns the attempts recorded so far (0 if
+/// the job has no row).
+///
+/// A job is never marked dead for failing: every failure that reaches here
+/// is infrastructure (a timeout, a dead sidecar, a failed write) and says
+/// nothing about the message, so the job is retried until the model gives
+/// an answer (owner decision 2026-11-25, replacing audit N-A3's 3-attempt
+/// cap). The count only paces the retries.
+pub fn record_failed_attempt(conn: &Connection, id: &str) -> Result<i64> {
     conn.execute(
-        "UPDATE layer6_pending_jobs
-         SET attempts = attempts + 1,
-             dead_at = CASE WHEN attempts + 1 >= ?2 THEN datetime('now') ELSE dead_at END
-         WHERE id = ?1",
-        params![id, MAX_ATTEMPTS],
+        "UPDATE layer6_pending_jobs SET attempts = attempts + 1 WHERE id = ?1",
+        params![id],
     )?;
-    let dead: bool = conn
-        .query_row(
-            "SELECT dead_at IS NOT NULL FROM layer6_pending_jobs WHERE id = ?1",
-            params![id],
-            |r| r.get(0),
-        )
-        .unwrap_or(false);
-    Ok(dead)
-}
-
-/// Failed attempts recorded so far for a job (0 if it has no row).
-pub fn attempts(conn: &Connection, id: &str) -> Result<i64> {
     Ok(conn
         .query_row("SELECT attempts FROM layer6_pending_jobs WHERE id = ?1", params![id], |r| r.get(0))
         .unwrap_or(0))
@@ -137,7 +126,7 @@ mod tests {
     }
 
     #[test]
-    fn job_is_marked_dead_after_max_attempts_and_not_replayed() {
+    fn failed_attempts_are_counted_but_never_kill_the_job() {
         let conn = crate::db::test_helpers::setup_test_db();
         insert(
             &conn,
@@ -150,15 +139,10 @@ mod tests {
             },
         )
         .unwrap();
-        for attempt in 1..MAX_ATTEMPTS {
-            assert!(!record_failed_attempt(&conn, "u1").unwrap(), "attempt {attempt}");
-            assert_eq!(select_all(&conn).unwrap().len(), 1);
+        for attempt in 1..=10 {
+            assert_eq!(record_failed_attempt(&conn, "u1").unwrap(), attempt);
+            assert_eq!(select_all(&conn).unwrap().len(), 1, "still replayed after {attempt} failures");
         }
-        assert!(record_failed_attempt(&conn, "u1").unwrap());
-        assert!(select_all(&conn).unwrap().is_empty(), "dead jobs are not replayed");
-        let kept: i64 = conn
-            .query_row("SELECT COUNT(*) FROM layer6_pending_jobs", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(kept, 1, "dead jobs are kept for diagnosis");
+        assert_eq!(record_failed_attempt(&conn, "no-such-job").unwrap(), 0);
     }
 }

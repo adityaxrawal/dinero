@@ -754,10 +754,15 @@ struct Layer6Done {
 /// attempt is used (owner decision, audit N-A3).
 const LAYER6_NO_MODEL_RECHECK: std::time::Duration = std::time::Duration::from_secs(300);
 
-/// Delay before the next in-session attempt after `attempts` failed ones
-/// (owner decision, audit N-A3): 1 minute, then 5.
+/// Delay before the next attempt after `attempts` failed ones: 1 minute,
+/// then 5, then every 15 for as long as it takes (owner decision 2026-11-25:
+/// an infrastructure failure is never final).
 fn layer6_retry_delay(attempts: i64) -> std::time::Duration {
-    std::time::Duration::from_secs(if attempts <= 1 { 60 } else { 300 })
+    std::time::Duration::from_secs(match attempts {
+        ..=1 => 60,
+        2 => 300,
+        _ => 900,
+    })
 }
 
 /// Processes one LLM extraction job.
@@ -836,7 +841,7 @@ async fn process_layer6_job(
         // The model looked at the message and could not produce a grounded
         // result: content-caused, so final (audit A-8).
         Layer6Outcome::Rejected => mark_extraction_failed(pool, &job.unassigned_id).await,
-        // A timeout says nothing about the message; retried up to MAX_ATTEMPTS.
+        // A timeout says nothing about the message; retried until it answers.
         Layer6Outcome::TimedOut => false,
         Layer6Outcome::NotATransaction => {
             let mark_result: anyhow::Result<()> = async {
@@ -894,34 +899,20 @@ async fn process_layer6_job(
         delete_persisted_layer6_job(pool, &job.unassigned_id).await;
         return Layer6Done { completed: true, booked, retry_after: None };
     } else {
-        // A timeout, a dead sidecar or a failed write is what the durable queue
-        // is for: keep the row and retry it this session after a delay (audit
-        // N-A3; launch replay still covers a quit) -- but only up to
-        // MAX_ATTEMPTS, after which it is marked dead and left in the review
-        // queue rather than replayed forever.
+        // A timeout, a dead sidecar or a failed write says nothing about the
+        // message: keep the row and retry it this session after a growing
+        // delay, with no attempt cap (owner decision 2026-11-25). Launch
+        // replay still covers a quit.
         let id = job.unassigned_id.clone();
-        let (dead, attempts) = match pool.get().await {
+        let attempts = match pool.get().await {
             Ok(conn) => conn
-                .interact(move |c| -> anyhow::Result<(bool, i64)> {
-                    let dead = crate::db::layer6_jobs::record_failed_attempt(c, &id)?;
-                    Ok((dead, crate::db::layer6_jobs::attempts(c, &id)?))
-                })
+                .interact(move |c| crate::db::layer6_jobs::record_failed_attempt(c, &id))
                 .await
                 .ok()
                 .and_then(|r| r.ok())
-                .unwrap_or((false, 0)),
-            Err(_) => (false, 0),
+                .unwrap_or(0),
+            Err(_) => 0,
         };
-        if dead {
-            // Out of attempts: the entry stops claiming enrichment is pending.
-            mark_extraction_failed(pool, &job.unassigned_id).await;
-            tracing::warn!(
-                "Layer 6 job for unassigned_id='{}' failed {} times — marked dead, left for manual review",
-                job.unassigned_id,
-                crate::db::layer6_jobs::MAX_ATTEMPTS
-            );
-            return Layer6Done { completed: false, booked: false, retry_after: None };
-        }
         let delay = layer6_retry_delay(attempts);
         tracing::warn!(
             "Layer 6 job for unassigned_id='{}' did not complete — retrying in {:?}",
@@ -3203,13 +3194,14 @@ mod layer6_attempt_policy_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Audit N-A3 (owner decision): in-session retries wait 1 minute after
-    /// the first failed attempt and 5 after the second; the third is final.
+    /// Owner decision 2026-11-25: retries wait 1 minute, then 5, then 15
+    /// for as long as it takes; no attempt is final.
     #[test]
-    fn failed_attempts_retry_after_one_then_five_minutes() {
+    fn failed_attempts_retry_after_one_then_five_then_fifteen_minutes() {
         assert_eq!(layer6_retry_delay(1), std::time::Duration::from_secs(60));
         assert_eq!(layer6_retry_delay(2), std::time::Duration::from_secs(300));
-        assert_eq!(crate::db::layer6_jobs::MAX_ATTEMPTS, 3);
+        assert_eq!(layer6_retry_delay(3), std::time::Duration::from_secs(900));
+        assert_eq!(layer6_retry_delay(50), std::time::Duration::from_secs(900));
     }
 }
 

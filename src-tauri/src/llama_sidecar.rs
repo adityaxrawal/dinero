@@ -36,10 +36,17 @@ pub fn current_parallel_slots() -> usize {
     CURRENT_PARALLEL_SLOTS.load(Ordering::Relaxed)
 }
 
+/// Tokens of context per slot. The Layer 6 prompt is ~1,100 tokens of
+/// instructions plus up to ~750 of email body (`BODY_BUDGET_CHARS`). At 2048
+/// that left under 200 tokens for the answer, so a long email's JSON could be
+/// cut off mid-object and then rejected as invalid output; 3072 leaves room
+/// for the full `n_predict` budget.
+const CONTEXT_TOKENS_PER_SLOT: usize = 3072;
+
 // Context is allocated per slot, so the total scales with concurrency. This is
 // the main reason slot count is memory-bound.
 fn context_size_for(slots: usize) -> usize {
-    2048 * slots
+    CONTEXT_TOKENS_PER_SLOT * slots
 }
 
 // Startup can legitimately take a long time -- a multi-gigabyte model is being
@@ -115,16 +122,23 @@ pub(crate) fn calibrate_effective_slots(
     ((requested_slots as f64 * ratio).floor() as usize).clamp(1, requested_slots)
 }
 
-// Request timeout is derived from observed burst latency plus headroom, with a
-// floor so a fast machine does not end up with a timeout too tight to survive a
-// transient stall.
-const TIMEOUT_SAFETY_MARGIN: f64 = 1.5;
-const MIN_CALIBRATED_TIMEOUT: Duration = Duration::from_secs(20);
+// Request timeout is derived from the measured latency of a real extraction
+// prompt run on every slot at once. The timeout only starts once a slot is
+// held, so it guards against a stuck request rather than pacing work: a
+// generous one costs nothing on a healthy request, while a tight one turns a
+// slow-but-fine extraction into a failure. Hence a wide margin and a high floor;
+// the ceiling stops a pathological measurement from disabling the guard.
+const TIMEOUT_SAFETY_MARGIN: f64 = 3.0;
+const MIN_CALIBRATED_TIMEOUT: Duration = Duration::from_secs(120);
+const MAX_CALIBRATED_TIMEOUT: Duration = Duration::from_secs(600);
+/// Per-request limit during calibration itself, sized for a slow machine
+/// running a large model on every slot at once.
+const CALIBRATION_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// Derive a request timeout from measured latency, never below the floor.
+/// Derive a request timeout from measured latency, within the floor and ceiling.
 pub(crate) fn calibrate_timeout(burst_latency: Duration) -> Duration {
     let scaled = Duration::from_secs_f64(burst_latency.as_secs_f64() * TIMEOUT_SAFETY_MARGIN);
-    scaled.max(MIN_CALIBRATED_TIMEOUT)
+    scaled.clamp(MIN_CALIBRATED_TIMEOUT, MAX_CALIBRATED_TIMEOUT)
 }
 
 /// Root directory for sidecar files.
@@ -367,44 +381,57 @@ async fn start_server_task(app_dir: PathBuf, model_id: String, slots: usize) {
     .await;
 
     let calibration = if outcome.is_ok() {
-        const CALIBRATION_PROMPT: &str = "Reply with exactly the single word: OK";
+        // Measured on a real, long Layer 6 prompt with its JSON schema: a
+        // one-word prompt measured a fraction of the real prefill and
+        // generation cost and set every timeout to the floor.
+        let prompt = crate::extraction::llm::LlmEngine::calibration_prompt();
+        let calibrate = |prompt: String, model_id: String| async move {
+            raw_complete(
+                port,
+                model_id,
+                prompt,
+                CALIBRATION_REQUEST_TIMEOUT,
+                Some(layer6_json_schema()),
+                crate::logging::llm_logger::LlmCallContext::unclassified(),
+            )
+            .await
+            .is_ok()
+        };
 
-        let calibration_ctx = crate::logging::llm_logger::LlmCallContext::unclassified();
         let solo_start = Instant::now();
-        let _ = raw_complete(
-            port,
-            &model_id,
-            CALIBRATION_PROMPT,
-            Duration::from_secs(30),
-            None,
-            calibration_ctx,
-        )
-        .await;
+        let solo_ok = calibrate(prompt.clone(), model_id.clone()).await;
         let solo_latency = solo_start.elapsed();
 
-        let burst_latency = if slots > 1 {
+        let (burst_ok, burst_latency) = if slots > 1 {
             let burst_start = Instant::now();
             let mut set = tokio::task::JoinSet::new();
             for _ in 0..slots {
-                let mid = model_id.clone();
-                let cal_ctx = crate::logging::llm_logger::LlmCallContext::unclassified();
-                set.spawn(raw_complete(
-                    port,
-                    mid,
-                    CALIBRATION_PROMPT,
-                    Duration::from_secs(90),
-                    None,
-                    cal_ctx,
-                ));
+                set.spawn(calibrate(prompt.clone(), model_id.clone()));
             }
-            while set.join_next().await.is_some() {}
-            burst_start.elapsed()
+            let mut all_ok = true;
+            while let Some(res) = set.join_next().await {
+                all_ok &= res.unwrap_or(false);
+            }
+            (all_ok, burst_start.elapsed())
         } else {
-            solo_latency
+            (solo_ok, solo_latency)
         };
 
-        let effective_slots = calibrate_effective_slots(slots, solo_latency, burst_latency);
-        let calibrated_timeout = calibrate_timeout(burst_latency);
+        let (effective_slots, calibrated_timeout) = if solo_ok && burst_ok {
+            (
+                calibrate_effective_slots(slots, solo_latency, burst_latency),
+                calibrate_timeout(burst_latency),
+            )
+        } else {
+            // A failed measurement says nothing about speed: run safe (one
+            // slot, longest timeout) rather than trust a meaningless number.
+            tracing::warn!(
+                solo_ok,
+                burst_ok,
+                "Layer 6 sidecar calibration request failed — using one slot and the maximum timeout"
+            );
+            (1, MAX_CALIBRATED_TIMEOUT)
+        };
         tracing::info!(
             requested_slots = slots,
             effective_slots,
@@ -455,10 +482,6 @@ fn child_alive(child: &mut Option<Child>) -> bool {
     child.as_mut().is_some_and(|c| matches!(c.try_wait(), Ok(None)))
 }
 
-/// Timeouts in a row after which a Ready server is considered hung.
-const MAX_CONSECUTIVE_TIMEOUTS: usize = 3;
-static CONSECUTIVE_TIMEOUTS: AtomicUsize = AtomicUsize::new(0);
-
 /// Resets a Ready server whose port refuses connections or keeps timing out.
 ///
 /// A hung or crashed server that still looks Ready would otherwise fail every
@@ -466,15 +489,16 @@ static CONSECUTIVE_TIMEOUTS: AtomicUsize = AtomicUsize::new(0);
 async fn note_request_error(port: u16, err: &anyhow::Error) {
     let reqwest_err = err.downcast_ref::<reqwest::Error>();
     let refused = reqwest_err.is_some_and(|e| e.is_connect());
-    // A server that is alive but hung never refuses; it times out. Several
-    // timeouts in a row are treated like a crash (H9 follow-up).
+    // A timeout alone means one request was slow, not that the server is
+    // broken. Restarting on timeouts (it used to after 3 in a row) killed the
+    // requests running on every other slot too, so one slow batch cascaded
+    // into a wave of failures. A server is only restarted when it also stops
+    // answering its health check.
     let timed_out = reqwest_err.is_some_and(|e| e.is_timeout());
-    let hung = timed_out
-        && CONSECUTIVE_TIMEOUTS.fetch_add(1, Ordering::Relaxed) + 1 >= MAX_CONSECUTIVE_TIMEOUTS;
+    let hung = timed_out && !health_check(port).await;
     if !refused && !hung {
         return;
     }
-    CONSECUTIVE_TIMEOUTS.store(0, Ordering::Relaxed);
     let mut st = state().lock().await;
     if matches!(st.state, ServerState::Ready { port: p } if p == port) {
         tracing::warn!(
@@ -681,9 +705,8 @@ pub async fn complete(
         .context("llama-server semaphore closed")?;
     let ctx = crate::logging::llm_logger::LlmCallContext::unclassified();
     let result = raw_complete(port, model_id, prompt, timeout, None, ctx).await;
-    match &result {
-        Ok(_) => CONSECUTIVE_TIMEOUTS.store(0, Ordering::Relaxed),
-        Err(e) => note_request_error(port, e).await,
+    if let Err(e) = &result {
+        note_request_error(port, e).await;
     }
     result
 }
@@ -780,12 +803,9 @@ pub async fn complete_with_optional_schema_and_context(
     let (port, semaphore, calibrated_timeout) = ensure_server_ready(app_dir, model_id).await?;
     let _permit = acquire_slot(&semaphore, ctx.call_type).await?;
     
-    let effective_timeout = calibrated_timeout.min(Duration::from_secs(150));
-    
-    let result = raw_complete(port, model_id, prompt, effective_timeout, schema, ctx).await;
-    match &result {
-        Ok(_) => CONSECUTIVE_TIMEOUTS.store(0, Ordering::Relaxed),
-        Err(e) => note_request_error(port, e).await,
+    let result = raw_complete(port, model_id, prompt, calibrated_timeout, schema, ctx).await;
+    if let Err(e) = &result {
+        note_request_error(port, e).await;
     }
     result
 }
@@ -840,11 +860,9 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// H9 follow-up: a server that is alive but hung (only times out) is
-    /// reset after MAX_CONSECUTIVE_TIMEOUTS, so the next request restarts it.
-    #[tokio::test]
-    async fn repeated_timeouts_reset_a_hung_server() {
-        use anyhow::Context;
+    /// Accepts connections and never answers: a request to it times out, and
+    /// so does its health check. Returns the port.
+    async fn silent_server() -> u16 {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move {
@@ -853,20 +871,45 @@ mod tests {
                 held.push(sock);
             }
         });
-        super::state().lock().await.state = super::ServerState::Ready { port };
-        super::CONSECUTIVE_TIMEOUTS.store(0, std::sync::atomic::Ordering::Relaxed);
-        for i in 1..=super::MAX_CONSECUTIVE_TIMEOUTS {
-            let err = reqwest::Client::new()
-                .get(format!("http://127.0.0.1:{port}/"))
-                .timeout(std::time::Duration::from_millis(50))
-                .send()
-                .await
-                .context("llama-server /completion request failed")
-                .unwrap_err();
-            super::note_request_error(port, &err).await;
-            let reset = matches!(super::state().lock().await.state, super::ServerState::NotStarted);
-            assert_eq!(reset, i == super::MAX_CONSECUTIVE_TIMEOUTS, "after {i} timeouts");
+        port
+    }
+
+    async fn timeout_error(port: u16) -> anyhow::Error {
+        use anyhow::Context;
+        reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{port}/completion"))
+            .timeout(std::time::Duration::from_millis(50))
+            .send()
+            .await
+            .context("llama-server /completion request failed")
+            .unwrap_err()
+    }
+
+    /// One test, not two: both cases drive the process-wide sidecar state.
+    ///
+    /// A slow request on a healthy server must not restart it (that used to
+    /// kill every other slot's in-flight extraction). A server that times out
+    /// and also fails its health check is hung, and is reset so the next
+    /// request starts a fresh one.
+    #[tokio::test]
+    async fn only_a_timeout_on_an_unresponsive_server_resets_it() {
+        let mut server = mockito::Server::new_async().await;
+        let _health = server.mock("GET", "/health").with_status(200).create_async().await;
+        let healthy = server.socket_address().port();
+        super::state().lock().await.state = super::ServerState::Ready { port: healthy };
+        let err = timeout_error(silent_server().await).await;
+        for _ in 0..5 {
+            super::note_request_error(healthy, &err).await;
         }
+        assert!(
+            matches!(super::state().lock().await.state, super::ServerState::Ready { .. }),
+            "timeouts on a healthy server must not restart it"
+        );
+
+        let hung = silent_server().await;
+        super::state().lock().await.state = super::ServerState::Ready { port: hung };
+        super::note_request_error(hung, &timeout_error(hung).await).await;
+        assert!(matches!(super::state().lock().await.state, super::ServerState::NotStarted));
     }
 
     #[test]
@@ -961,14 +1004,20 @@ mod tests {
 
     #[test]
     fn calibrate_timeout_scales_with_measured_burst_latency() {
-        let timeout = calibrate_timeout(Duration::from_secs(40));
-        assert_eq!(timeout, Duration::from_secs(60));
+        let timeout = calibrate_timeout(Duration::from_secs(60));
+        assert_eq!(timeout, Duration::from_secs(180));
     }
 
     #[test]
     fn calibrate_timeout_never_goes_below_the_floor() {
         let timeout = calibrate_timeout(Duration::from_secs(2));
-        assert_eq!(timeout, Duration::from_secs(20));
+        assert_eq!(timeout, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn calibrate_timeout_never_exceeds_the_ceiling() {
+        let timeout = calibrate_timeout(Duration::from_secs(1000));
+        assert_eq!(timeout, Duration::from_secs(600));
     }
 
     #[test]
