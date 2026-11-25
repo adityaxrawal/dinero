@@ -151,6 +151,10 @@ fn is_keychain_access_denied(msg: &str) -> bool {
 /// lock. Eight covers the ingest workers plus UI reads.
 pub const POOL_MAX_SIZE: usize = 8;
 
+/// How long a caller waits for a free pooled connection before getting a pool
+/// error instead of hanging (owner decision, audit N-D3).
+pub const POOL_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Runs a write that owns its transaction, retrying it when SQLite reports
 /// the database busy (audit D-1). Retried only when the failure left no
 /// transaction open on the connection, so nothing half-done is re-run.
@@ -198,7 +202,9 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
     let db_key_for_migration = db_key.clone();
 
     let mut cfg = Config::new(&db_path);
-    cfg.pool = Some(deadpool_sqlite::PoolConfig::new(POOL_MAX_SIZE));
+    let mut pool_cfg = deadpool_sqlite::PoolConfig::new(POOL_MAX_SIZE);
+    pool_cfg.timeouts.wait = Some(POOL_WAIT_TIMEOUT);
+    cfg.pool = Some(pool_cfg);
     let pool = cfg
         .builder(Runtime::Tokio1)
         // The builder's error type has no values (it cannot fail), so the
@@ -224,7 +230,6 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
                         PRAGMA journal_mode = WAL;
                         PRAGMA synchronous = NORMAL;
                         PRAGMA foreign_keys = ON;
-                        PRAGMA auto_vacuum = INCREMENTAL;
                         PRAGMA busy_timeout = 5000;
                         ",
                     )?;
@@ -232,8 +237,12 @@ pub async fn init_db(db_path: PathBuf) -> Result<Pool, DbInitError> {
                         c.query_row("PRAGMA auto_vacuum", [], |r| r.get(0))?;
                     // auto_vacuum can only be changed by a full VACUUM, so a
                     // database created before this setting is rewritten once.
+                    // Set only when needed: the PRAGMA takes the write lock even
+                    // when the mode is already set, so running it on every new
+                    // connection failed whenever a long commit held the lock
+                    // (audit N-D3).
                     if auto_vacuum_mode != 2 {
-                        c.execute_batch("VACUUM;")?;
+                        c.execute_batch("PRAGMA auto_vacuum = INCREMENTAL; VACUUM;")?;
                     }
                     Ok::<(), rusqlite::Error>(())
                 })
@@ -539,6 +548,34 @@ mod busy_retry_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let pool = init_db(dir.join("t.db")).await.unwrap();
         assert_eq!(pool.status().max_size, POOL_MAX_SIZE);
+        // Audit N-D3 (owner decision): waiting for a connection times out.
+        assert_eq!(pool.timeouts().wait, Some(POOL_WAIT_TIMEOUT));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Audit N-D3: opening a new pooled connection no longer needs the write
+    /// lock, so it succeeds while another connection holds it (a long
+    /// statement commit), and a new database still gets incremental
+    /// auto-vacuum.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn new_connection_opens_while_the_write_lock_is_held() {
+        let dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pool = init_db(dir.join("t.db")).await.unwrap();
+        let holder = pool.get().await.unwrap();
+        holder.interact(|c| c.execute_batch("BEGIN IMMEDIATE")).await.unwrap().unwrap();
+
+        let started = std::time::Instant::now();
+        let fresh = pool.get().await.expect("a new connection must open under a held write lock");
+        assert!(started.elapsed() < std::time::Duration::from_secs(4), "it must not wait for the lock");
+        let mode: i64 = fresh
+            .interact(|c| c.query_row("PRAGMA auto_vacuum", [], |r| r.get(0)))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(mode, 2, "incremental auto-vacuum");
+
+        holder.interact(|c| c.execute_batch("COMMIT")).await.unwrap().unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
