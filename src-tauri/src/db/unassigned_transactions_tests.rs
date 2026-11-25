@@ -50,6 +50,7 @@ fn base_observation(id: &str) -> TransactionObservationsRow {
         is_deleted: false,
         created_at: None,
         updated_at: None,
+        rfc822_message_id: None,
     }
 }
 
@@ -95,6 +96,7 @@ fn test_unassigned_transactions_lifecycle() {
         is_deleted: false,
         created_at: None,
         updated_at: None,
+        rfc822_message_id: None,
     };
     insert_observation(&conn, &obs).unwrap();
 

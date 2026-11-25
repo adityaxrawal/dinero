@@ -985,6 +985,7 @@ async fn commit_claimed_draft<R: tauri::Runtime>(
                     is_deleted: false,
                     created_at: None,
                     updated_at: None,
+                    rfc822_message_id: None,
                 };
                     crate::reconciliation::engine::ingest_observation(c, &row, crate::db::unassigned_transactions::MISSING_INSTRUMENT).map_err(|e| {
                         anyhow::anyhow!("statement row {} could not be booked: {}", obs.source_record_id, e)
@@ -2296,6 +2297,7 @@ pub(crate) async fn create_manual_transaction<R: tauri::Runtime>(
                 is_deleted: false,
                 created_at: None,
                 updated_at: None,
+                rfc822_message_id: None,
             };
             crate::reconciliation::engine::ingest_observation(conn, &obs_row, crate::db::unassigned_transactions::MISSING_INSTRUMENT).map(|res| res.1)
                 .map(|opt| opt.unwrap_or(crate::reconciliation::audit::DecisionType::NewCanonical))

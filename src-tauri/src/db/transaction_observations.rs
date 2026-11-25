@@ -52,6 +52,10 @@ pub struct TransactionObservationsRow {
     pub is_deleted: bool,
     pub created_at: Option<NaiveDateTime>,
     pub updated_at: Option<NaiveDateTime>,
+    /// The email's RFC 822 Message-ID: one email delivered to two connected
+    /// inboxes is booked once (audit N-F4, unique when present).
+    #[serde(default)]
+    pub rfc822_message_id: Option<String>,
 }
 
 /// Insert a raw observation.
@@ -63,10 +67,11 @@ pub fn insert_observation(conn: &Connection, obs: &TransactionObservationsRow) -
             event_time, event_time_confidence, posting_date, merchant_raw, merchant_normalized, reference_id,
             original_amount_minor, original_currency, exchange_rate, balance_after_transaction, timezone_at_ingestion,
             fingerprint, extraction_method, confidence_score, raw_payload_json, parser_version,
-            emi_total_installments, emi_installment_number, emi_original_amount_minor, channel, is_deleted, created_at, updated_at
+            emi_total_installments, emi_installment_number, emi_original_amount_minor, channel, is_deleted, created_at, updated_at,
+            rfc822_message_id
         ) VALUES (
             ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20,
-            ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36
+            ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37
         )",
         params![
             obs.id, obs.canonical_transaction_id, obs.source_pipeline, obs.source_record_id, obs.source_message_id, obs.source_thread_id,
@@ -75,6 +80,7 @@ pub fn insert_observation(conn: &Connection, obs: &TransactionObservationsRow) -
             obs.original_amount_minor, obs.original_currency, obs.exchange_rate, obs.balance_after_transaction, obs.timezone_at_ingestion,
             obs.fingerprint, obs.extraction_method, obs.confidence_score, obs.raw_payload_json, obs.parser_version,
             obs.emi_total_installments, obs.emi_installment_number, obs.emi_original_amount_minor, obs.channel, obs.is_deleted, obs.created_at, obs.updated_at,
+            obs.rfc822_message_id,
         ],
     )?;
     Ok(())
@@ -104,7 +110,9 @@ pub fn insert_observation_idempotent(
                 .map(|re| match re {
                     rusqlite::Error::SqliteFailure(err, Some(msg)) => {
                         err.code == rusqlite::ErrorCode::ConstraintViolation
-                            && (msg.contains("source_pipeline") && msg.contains("source_record_id"))
+                            && ((msg.contains("source_pipeline") && msg.contains("source_record_id"))
+                                // Same email from another inbox (audit N-F4).
+                                || msg.contains("rfc822_message_id"))
                     }
                     _ => false,
                 })
@@ -249,6 +257,7 @@ pub fn row_to_observation(row: &Row) -> rusqlite::Result<TransactionObservations
         is_deleted: row.get("is_deleted")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
+        rfc822_message_id: row.get("rfc822_message_id")?,
     })
 }
 
@@ -346,6 +355,7 @@ mod tests {
             is_deleted: false,
             created_at: None,
             updated_at: None,
+            rfc822_message_id: None,
         }
     }
 

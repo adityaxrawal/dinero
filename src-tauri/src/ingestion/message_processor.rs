@@ -43,6 +43,10 @@ pub struct EmailMetadata {
     pub sender_domain: Option<String>,
     pub recipient_email: Option<String>,
     pub recipient_domain: Option<String>,
+    /// The RFC 822 Message-ID header (audit N-F4). Defaulted so jobs persisted
+    /// before it existed still load.
+    #[serde(default)]
+    pub rfc822_message_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -343,6 +347,7 @@ impl MessageProcessor {
         let mut sender = String::new();
         let mut recipient = String::new();
         let mut date = String::new();
+        let mut rfc822_message_id: Option<String> = None;
 
         if let Some(payload) = &full_msg.payload {
             if let Some(headers) = &payload.headers {
@@ -355,6 +360,10 @@ impl MessageProcessor {
                         recipient = header.value.clone();
                     } else if header.name.eq_ignore_ascii_case("date") {
                         date = header.value.clone();
+                    } else if header.name.eq_ignore_ascii_case("message-id") {
+                        // Identical in every inbox the email reached (audit N-F4).
+                        rfc822_message_id =
+                            Some(header.value.trim().to_string()).filter(|v| !v.is_empty());
                     }
                 }
             }
@@ -394,6 +403,7 @@ impl MessageProcessor {
             sender_domain,
             recipient_email,
             recipient_domain,
+            rfc822_message_id,
         };
 
         if let Some(extracted) = extracted_opt {

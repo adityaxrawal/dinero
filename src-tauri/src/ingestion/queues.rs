@@ -2180,6 +2180,7 @@ mod layer6_tests {
             is_deleted: false,
             created_at: Some(chrono::Utc::now().naive_utc()),
             updated_at: Some(chrono::Utc::now().naive_utc()),
+            rfc822_message_id: None,
         };
         conn.interact({
             let row = base_row.clone();
@@ -2388,6 +2389,7 @@ mod layer6_tests {
             is_deleted: false,
             created_at: Some(chrono::Utc::now().naive_utc()),
             updated_at: Some(chrono::Utc::now().naive_utc()),
+            rfc822_message_id: None,
         };
         conn.interact({
             let row = base_row.clone();
@@ -2618,6 +2620,7 @@ mod layer6_tests {
             is_deleted: false,
             created_at: Some(chrono::Utc::now().naive_utc()),
             updated_at: Some(chrono::Utc::now().naive_utc()),
+            rfc822_message_id: None,
         };
         conn.interact({
             let row = base_row.clone();
@@ -3066,6 +3069,7 @@ mod dispatch_tests {
                 sender_domain: None,
                 recipient_email: None,
                 recipient_domain: None,
+                rfc822_message_id: None,
             },
         )
         .await

@@ -112,6 +112,7 @@ pub fn normalize_observation(
         is_deleted: false,
         created_at: Some(Utc::now().naive_utc()),
         updated_at: Some(Utc::now().naive_utc()),
+        rfc822_message_id: email_meta.and_then(|m| m.rfc822_message_id.clone()),
     }
 }
 
@@ -275,6 +276,7 @@ mod tests {
             sender_domain: Some("bank.com".to_string()),
             recipient_email: Some("aditya@example.com".to_string()),
             recipient_domain: Some("example.com".to_string()),
+            rfc822_message_id: None,
         };
 
         let obs = normalize_observation(

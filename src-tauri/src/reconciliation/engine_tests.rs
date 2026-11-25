@@ -3177,3 +3177,55 @@ fn complete_observation_failure_leaves_nothing_half_applied() {
     assert_eq!(merchant, None, "the observation update was rolled back");
     assert_eq!(status, "open");
 }
+
+fn inbox_copy(id: &str, gmail_id: &str, message_id: &str) -> crate::db::transaction_observations::TransactionObservationsRow {
+    crate::db::transaction_observations::TransactionObservationsRow {
+        id: id.into(),
+        source_pipeline: Some("gmail_transaction".into()),
+        source_record_id: Some(gmail_id.into()),
+        instrument_id: Some("inst_1".into()),
+        direction: Some("debit".into()),
+        amount_minor: Some(25000),
+        currency: Some("INR".into()),
+        merchant_raw: Some("STARBUCKS".into()),
+        event_time: chrono::NaiveDateTime::parse_from_str("2026-11-10 09:00:00", "%Y-%m-%d %H:%M:%S").ok(),
+        confidence_score: Some(0.95),
+        rfc822_message_id: Some(message_id.into()),
+        ..Default::default()
+    }
+}
+
+/// Audit N-F4 (owner decision): the same email delivered to two connected
+/// inboxes (different Gmail ids, same RFC 822 Message-ID) books once; the
+/// second copy is a duplicate, not a second transaction.
+#[test]
+fn same_email_in_two_inboxes_books_once() {
+    let conn = crate::db::test_helpers::setup_test_db();
+    conn.execute("PRAGMA foreign_keys = OFF", []).unwrap();
+    let missing = crate::db::unassigned_transactions::MISSING_INSTRUMENT;
+    crate::reconciliation::engine::ingest_observation(&conn, &inbox_copy("obs_a", "gmail_a", "<alert-1@hdfcbank.net>"), missing)
+        .unwrap();
+    let (_, second) =
+        crate::reconciliation::engine::ingest_observation(&conn, &inbox_copy("obs_b", "gmail_b", "<alert-1@hdfcbank.net>"), missing)
+            .unwrap();
+    assert!(second.is_none(), "the second copy must not be reconciled: {second:?}");
+    assert_eq!(txn_count(&conn), 1);
+    let observations: i64 = conn
+        .query_row("SELECT COUNT(*) FROM transaction_observations", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(observations, 1);
+}
+
+/// Control (review P1 still holds): two different emails that look alike stay
+/// two transactions.
+#[test]
+fn different_emails_with_identical_fields_stay_separate() {
+    let conn = crate::db::test_helpers::setup_test_db();
+    conn.execute("PRAGMA foreign_keys = OFF", []).unwrap();
+    let missing = crate::db::unassigned_transactions::MISSING_INSTRUMENT;
+    crate::reconciliation::engine::ingest_observation(&conn, &inbox_copy("obs_a", "gmail_a", "<alert-1@hdfcbank.net>"), missing)
+        .unwrap();
+    crate::reconciliation::engine::ingest_observation(&conn, &inbox_copy("obs_b", "gmail_b", "<alert-2@hdfcbank.net>"), missing)
+        .unwrap();
+    assert_eq!(txn_count(&conn), 2);
+}

@@ -2568,6 +2568,7 @@ mod tests {
             is_deleted: false,
             created_at: Some(Utc::now().naive_utc()),
             updated_at: Some(Utc::now().naive_utc()),
+            rfc822_message_id: None,
         };
 
         let conn = pool.get().await.unwrap();

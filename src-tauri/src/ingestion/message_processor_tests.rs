@@ -1071,3 +1071,48 @@ async fn review_filing_retries_while_the_write_lock_is_held() {
     assert!(matches!(filed, Ok(Some(_))), "expected a filed review row, got {:?}", filed);
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+/// Audit N-F4: the RFC 822 Message-ID header is carried with the alert, so
+/// a copy of the same email from another inbox can be recognised.
+#[tokio::test]
+async fn transaction_alert_carries_the_rfc822_message_id() {
+    let mut server = mockito::Server::new_async().await;
+    let headers = serde_json::json!([
+        {"name": "From", "value": "\"HDFC Bank\" <alerts@hdfcbank.net>"},
+        {"name": "Subject", "value": "Payment Notification"},
+        {"name": "Message-Id", "value": " <alert-77@hdfcbank.net> "},
+        {"name": "Authentication-Results", "value": "mx.google.com; dkim=pass header.i=@hdfcbank.net; spf=pass; dmarc=pass header.from=hdfcbank.net"}
+    ]);
+    server
+        .mock("GET", "/gmail/v1/users/me/messages/msg1")
+        .match_query(mockito::Matcher::Any)
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            serde_json::json!({
+                "id": "msg1",
+                "threadId": "t1",
+                "internalDate": "1750000000000",
+                "snippet": "Rs 450.00 spent",
+                "payload": {"mimeType": "text/plain", "headers": headers,
+                    "body": {"data": "UnMgNDUwLjAwIHNwZW50IG9uIHlvdXIgSERGQyBCYW5rIENSRURJVCBDYXJkIGVuZGluZyAxMjM0IGF0IE1lcmNoYW50NyBvbiAwNS1KdW4tMjYu"}}
+            })
+            .to_string(),
+        )
+        .create_async()
+        .await;
+    let temp_dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let pool = crate::db::init_db(temp_dir.join("test.db")).await.unwrap();
+    let client =
+        GmailClient::new_with_base_url("fake_token".into(), pool.clone(), server.url(), None);
+    let result =
+        MessageProcessor::process_message(&pool, &client, "msg1", None, false, None, None).await;
+    match result {
+        Ok(Some(ProcessResult::TransactionAlert(_, _, meta))) => {
+            assert_eq!(meta.rfc822_message_id.as_deref(), Some("<alert-77@hdfcbank.net>"));
+        }
+        other => panic!("expected a transaction alert, got {other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}

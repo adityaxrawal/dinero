@@ -6,7 +6,7 @@
 export const COUNTS = {
   /** Base tables after all migrations (excluding the FTS5 index and its shadow tables). */
   tables: 44,
-  migrations: 74,
+  migrations: 75,
   triggers: 17,
   /** Entries in capabilities/app-commands.json (generated from generate_handler!). */
   commands: 147,

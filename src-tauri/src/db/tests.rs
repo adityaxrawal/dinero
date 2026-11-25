@@ -512,6 +512,7 @@ mod tests {
             is_deleted: false,
             created_at: None,
             updated_at: None,
+            rfc822_message_id: None,
         };
         transaction_observations::insert_observation(&conn, &obs).unwrap();
 
@@ -1342,6 +1343,7 @@ mod tests {
             is_deleted: false,
             created_at: None,
             updated_at: None,
+            rfc822_message_id: None,
         };
 
         transaction_observations::insert_observation(&conn, &obs).unwrap();
@@ -1575,6 +1577,7 @@ mod tests {
             is_deleted: false,
             created_at: None,
             updated_at: None,
+            rfc822_message_id: None,
         };
         crate::db::transaction_observations::insert_observation(&conn, &obs).unwrap();
 
