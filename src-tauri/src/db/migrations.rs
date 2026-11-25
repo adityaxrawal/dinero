@@ -264,6 +264,13 @@ mod tests {
                 "idx_cluster_members_observation",
             ),
             ("SELECT * FROM layer6_pending_jobs WHERE observation_id = 'x'", "idx_layer6_jobs_observation"),
+            // Audit N-C3.
+            ("SELECT 1 FROM statements WHERE source_message_id = 'x'", "idx_statements_source_message_id"),
+            (
+                "SELECT id, observation_id, reason, status, created_at FROM unassigned_transactions \
+                 WHERE status = 'open' ORDER BY created_at DESC, id DESC",
+                "idx_unassigned_status_created",
+            ),
         ] {
             let plan: String = conn
                 .prepare(&format!("EXPLAIN QUERY PLAN {query}"))
@@ -274,6 +281,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("; ");
             assert!(plan.contains(index), "{query} -> {plan}");
+            assert!(!plan.contains("TEMP B-TREE"), "{query} must not sort: {plan}");
         }
     }
 
