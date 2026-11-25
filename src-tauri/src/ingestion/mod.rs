@@ -21,7 +21,6 @@ pub mod polling;
 pub mod queues;
 pub mod scan_db_batcher;
 pub mod statement_intake;
-pub mod sender_risk;
 pub mod verified_senders;
 
 #[cfg(test)]
@@ -47,6 +46,3 @@ mod content_classifier_tests;
 
 #[cfg(test)]
 mod auth_results_tests;
-
-#[cfg(test)]
-mod sender_risk_tests;

@@ -914,7 +914,7 @@ impl MessageProcessor {
     }
 
 
-    /// Gate 2: verifies sender identity from message headers.
+    /// Gate 1: verifies sender identity from message headers.
     ///
     /// Missing headers are an immediate rejection -- authenticity cannot be
     /// established without them, and an unverifiable sender is treated as untrusted
@@ -932,10 +932,10 @@ impl MessageProcessor {
             None => return SenderVerificationResult::UnverifiedReject("No payload".into()),
         };
 
-        // First From header, not the last: `extract_sender_domain` and
-        // `header_value` both read the first, and a message carrying two From
-        // headers must not be verified against one domain while its reputation
-        // is recorded against the other.
+        // Exactly one From header: a message carrying two is rejected below,
+        // so it can never be verified against one domain while its reputation
+        // is recorded against the other (`extract_sender_domain` and
+        // `header_value` read the first).
         let from_headers: Vec<_> = headers
             .iter()
             .filter(|h| h.name.eq_ignore_ascii_case("from"))
