@@ -32,7 +32,7 @@ export default function ManualActivationForm({
 
   return (
     <div className="mt-8 pt-6 border-t border-emerald-ink/10 space-y-4">
-      <p className="text-[13px] font-medium text-emerald-ink/70">
+      <p className="text-[13px] font-medium text-emerald-ink/85">
         Enter the payment confirmation details from your Razorpay checkout.
       </p>
       <div className="grid gap-4 max-w-sm">

@@ -98,7 +98,7 @@ function SectionCard({
           onClick={collapsible ? onToggle : undefined}
         >
           <div className="flex items-center gap-2 min-w-0">
-            {icon && <span className="text-emerald-ink/70 shrink-0">{icon}</span>}
+            {icon && <span className="text-emerald-ink/85 shrink-0">{icon}</span>}
             <h3 className="text-[12px] font-semibold tracking-wider text-emerald-ink uppercase truncate">
               {title}
             </h3>
@@ -106,7 +106,7 @@ function SectionCard({
           <div className="flex items-center gap-2 shrink-0">
             {badge}
             {collapsible && (
-              <span className="text-emerald-ink/60">
+              <span className="text-emerald-ink/85">
                 {isExpanded ? (
                   <ChevronUp className="w-4 h-4" />
                 ) : (
@@ -237,7 +237,7 @@ function MetaChipRow({
   isForeignCurrency: boolean;
 }) {
   return (
-    <div className="flex items-center gap-2 flex-wrap text-[12px] text-emerald-ink/70 font-medium">
+    <div className="flex items-center gap-2 flex-wrap text-[12px] text-emerald-ink/85 font-medium">
       {category && (
         <MetaChip>
           <span
@@ -250,13 +250,13 @@ function MetaChipRow({
       )}
       {tx.transaction_subtype && (
         <MetaChip>
-          <Repeat className="w-3 h-3 text-emerald-ink/60" />
+          <Repeat className="w-3 h-3 text-emerald-ink/85" />
           {tx.transaction_subtype}
         </MetaChip>
       )}
       {tx.channel && (
         <MetaChip>
-          <ArrowLeftRight className="w-3 h-3 text-emerald-ink/60" />
+          <ArrowLeftRight className="w-3 h-3 text-emerald-ink/85" />
           {channelLabel(tx.channel)}
         </MetaChip>
       )}
@@ -300,7 +300,7 @@ function InspectorTabs({
               'flex items-center gap-1.5 px-3.5 py-1.5 text-[12px] font-semibold rounded-full transition-all whitespace-nowrap cursor-pointer',
               isActive
                 ? 'bg-emerald-ink text-champagne shadow-xs'
-                : 'text-emerald-ink/70 hover:bg-emerald-ink/10 hover:text-emerald-ink',
+                : 'text-emerald-ink/85 hover:bg-emerald-ink/10 hover:text-emerald-ink',
               tab.disabled && 'opacity-40 cursor-not-allowed hover:bg-transparent'
             )}
             onClick={() => !tab.disabled && onSelect(tab.id)}
@@ -363,7 +363,7 @@ function InspectorTagEditor({
                 type="button"
                 onClick={() => handleRemoveTag(tag)}
                 aria-label={`Remove tag ${tag}`}
-                className="rounded-full p-0.5 hover:bg-emerald-ink/20 text-emerald-ink/60 hover:text-emerald-ink cursor-pointer"
+                className="rounded-full p-0.5 hover:bg-emerald-ink/20 text-emerald-ink/85 hover:text-emerald-ink cursor-pointer"
               >
                 <X className="w-2.5 h-2.5" />
               </button>
@@ -433,7 +433,7 @@ function DetailsPanel({
               <div className="flex items-center justify-between">
                 <Label
                   htmlFor="insp-form.merchant"
-                  className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/70"
+                  className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/85"
                 >
                   Merchant Name
                 </Label>
@@ -441,7 +441,7 @@ function DetailsPanel({
                   <button
                     type="button"
                     onClick={() => form.setMerchant(tx.merchant_display_name ?? '')}
-                    className="text-[11px] font-semibold text-emerald-ink/60 hover:text-emerald-ink underline cursor-pointer"
+                    className="text-[11px] font-semibold text-emerald-ink/85 hover:text-emerald-ink underline cursor-pointer"
                   >
                     Reset
                   </button>
@@ -458,7 +458,7 @@ function DetailsPanel({
             <div className="space-y-1.5">
               <Label
                 htmlFor="insp-category"
-                className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/70"
+                className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/85"
               >
                 Category
               </Label>
@@ -475,7 +475,7 @@ function DetailsPanel({
           <div className="space-y-1.5">
             <Label
               htmlFor="insp-notes"
-              className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/70"
+              className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/85"
             >
               Notes
             </Label>
@@ -526,7 +526,7 @@ function DetailsPanel({
       </SectionCard>
 
       {(tx.created_at || tx.updated_at) && (
-        <p className="text-[11px] text-emerald-ink/50 text-center pt-1 font-mono">
+        <p className="text-[11px] text-emerald-ink/80 text-center pt-1 font-mono">
           {tx.created_at && `Recorded ${formatCustomDate(tx.created_at)}`}
           {tx.updated_at &&
             tx.updated_at !== tx.created_at &&
@@ -663,7 +663,7 @@ function InspectorHeader({
             {tx?.merchant_display_name || 'Transaction Details'}
           </h2>
           {tx?.best_event_time && (
-            <p className="text-[12px] font-medium text-emerald-ink/60 truncate">
+            <p className="text-[12px] font-medium text-emerald-ink/85 truncate">
               {formatCustomDate(tx.best_event_time)}
             </p>
           )}
@@ -673,7 +673,7 @@ function InspectorHeader({
       <div className="flex items-center gap-1.5 shrink-0">
         <button
           type="button"
-          className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-emerald-ink/10 text-emerald-ink/70 hover:text-emerald-ink"
+          className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-emerald-ink/10 text-emerald-ink/85 hover:text-emerald-ink"
           onClick={onOpenFullPage}
           aria-label="Open full page"
           title="Open full page view"
@@ -682,7 +682,7 @@ function InspectorHeader({
         </button>
         <button
           type="button"
-          className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-emerald-ink/10 text-emerald-ink/70 hover:text-emerald-ink"
+          className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-emerald-ink/10 text-emerald-ink/85 hover:text-emerald-ink"
           onClick={onClose}
           aria-label="Close inspector"
         >
@@ -698,7 +698,7 @@ function InspectorLoading() {
   return (
     <div className="flex flex-col items-center justify-center py-16 gap-3" role="status">
       <Loader2 className="w-6 h-6 animate-spin text-emerald-ink" />
-      <span className="text-[13px] font-medium text-emerald-ink/60">Loading transaction…</span>
+      <span className="text-[13px] font-medium text-emerald-ink/85">Loading transaction…</span>
     </div>
   );
 }

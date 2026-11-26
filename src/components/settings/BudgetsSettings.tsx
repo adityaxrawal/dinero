@@ -39,7 +39,7 @@ function GlobalLimitSection({
           <h2 className="text-xl font-bold flex items-center gap-2 text-emerald-ink">
             Global Monthly Limit
           </h2>
-          <p className="text-sm mt-1 text-emerald-ink/70">
+          <p className="text-sm mt-1 text-emerald-ink/85">
             Set the total amount you want to spend across all categories per month.
           </p>
         </div>
@@ -61,7 +61,7 @@ function GlobalLimitSection({
       <div className="flex items-center gap-4 max-w-xs">
         <Label
           htmlFor="global-limit"
-          className="shrink-0 text-[13px] font-bold uppercase tracking-wider text-emerald-ink/60"
+          className="shrink-0 text-[13px] font-bold uppercase tracking-wider text-emerald-ink/85"
         >
           ₹ Limit
         </Label>
@@ -92,7 +92,7 @@ function AlertThresholdsSection({
       <h2 className="text-xl font-bold flex items-center gap-2 mb-1 text-emerald-ink">
         <Bell className="w-5 h-5" /> Alert Thresholds
       </h2>
-      <p className="text-sm mb-6 text-emerald-ink/70">
+      <p className="text-sm mb-6 text-emerald-ink/85">
         Receive notifications when you cross these percentages of your spending limit.
       </p>
 
@@ -122,12 +122,12 @@ function CategoryBudgetsSection({
   return (
     <div>
       <h2 className="text-xl font-bold mb-1 text-emerald-ink">Per-Category Budgets</h2>
-      <p className="text-sm mb-6 text-emerald-ink/70">
+      <p className="text-sm mb-6 text-emerald-ink/85">
         Set monthly spending budgets for individual categories. Leave at 0 for no limit.
       </p>
 
       {categories.length === 0 ? (
-        <p className="text-[13px] font-medium text-emerald-ink/70">No categories configured.</p>
+        <p className="text-[13px] font-medium text-emerald-ink/85">No categories configured.</p>
       ) : (
         <div
           className="grid gap-4"

@@ -36,7 +36,7 @@ export function MerchantField({
         <button
           type="button"
           onClick={() => onChange('')}
-          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-emerald-ink/40 hover:text-emerald-ink"
+          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-emerald-ink/80 hover:text-emerald-ink"
           aria-label="Clear merchant name"
         >
           <X className="w-3.5 h-3.5" />
@@ -50,10 +50,10 @@ export function MerchantField({
 export function TagsHeader({ count }: { count: number }) {
   return (
     <div className="flex items-center justify-between">
-      <Label className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/70">
+      <Label className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/85">
         Tags
       </Label>
-      <span className="text-[11px] text-emerald-ink/50 font-mono">
+      <span className="text-[11px] text-emerald-ink/80 font-mono">
         {count} tag{count !== 1 ? 's' : ''}
       </span>
     </div>
@@ -62,7 +62,7 @@ export function TagsHeader({ count }: { count: number }) {
 
 /** Shown when a transaction has no tags. */
 export function EmptyTagsNotice() {
-  return <span className="text-[12px] italic text-emerald-ink/40">No tags added yet.</span>;
+  return <span className="text-[12px] italic text-emerald-ink/80">No tags added yet.</span>;
 }
 
 /** Badge showing the transaction's status. */

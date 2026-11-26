@@ -22,7 +22,7 @@ export default function PastRuns({
       <h3 className="font-bold text-[15px] text-emerald-ink flex items-center gap-2">
         <History className="w-4 h-4" /> Past runs
       </h3>
-      <p className="text-[13px] mt-1 mb-3 text-emerald-ink/65 leading-relaxed max-w-2xl">
+      <p className="text-[13px] mt-1 mb-3 text-emerald-ink/85 leading-relaxed max-w-2xl">
         Every run stays undoable — as a whole or one merchant at a time. Undoing also retires the
         extraction rules that run taught.
       </p>

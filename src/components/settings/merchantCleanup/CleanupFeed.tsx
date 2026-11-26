@@ -11,21 +11,21 @@ function FeedRow({ entry }: { entry: FeedEntry }) {
       {entry.after ? (
         <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-emerald-600" />
       ) : (
-        <MinusCircle className="w-3.5 h-3.5 shrink-0 text-emerald-ink/30" />
+        <MinusCircle className="w-3.5 h-3.5 shrink-0 text-emerald-ink/80" />
       )}
-      <span className="font-mono text-emerald-ink/55 truncate max-w-[40%]">{entry.before}</span>
-      <ArrowRight className="w-3 h-3 shrink-0 text-emerald-ink/30" />
+      <span className="font-mono text-emerald-ink/80 truncate max-w-[40%]">{entry.before}</span>
+      <ArrowRight className="w-3 h-3 shrink-0 text-emerald-ink/80" />
       {entry.after ? (
         <>
           <span className="font-semibold text-emerald-ink truncate">{entry.after}</span>
           {entry.category && (
-            <span className="text-[11px] font-semibold px-1.5 py-0.5 rounded bg-emerald-ink/[0.07] text-emerald-ink/70 shrink-0">
+            <span className="text-[11px] font-semibold px-1.5 py-0.5 rounded bg-emerald-ink/[0.07] text-emerald-ink/85 shrink-0">
               {entry.category}
             </span>
           )}
         </>
       ) : (
-        <span className="text-emerald-ink/45 italic">
+        <span className="text-emerald-ink/80 italic">
           left alone — no email kept, or the answer did not check out
         </span>
       )}

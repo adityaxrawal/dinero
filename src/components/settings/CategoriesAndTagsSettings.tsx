@@ -86,7 +86,7 @@ export default function CategoriesAndTagsSettings() {
 
         <ul className="divide-y divide-emerald-ink/10 rounded-xl border border-emerald-ink/10">
           {custom.length === 0 && (
-            <li className="p-3 text-[12px] text-emerald-ink/60">No custom categories yet.</li>
+            <li className="p-3 text-[12px] text-emerald-ink/85">No custom categories yet.</li>
           )}
           {custom.map((c) => (
             <li key={c.id} className="flex items-center gap-2 p-3 text-[13px] text-emerald-ink">
@@ -129,9 +129,9 @@ export default function CategoriesAndTagsSettings() {
         </ul>
 
         <div>
-          <p className="mb-2 text-[12px] font-medium text-emerald-ink/70">Tags</p>
+          <p className="mb-2 text-[12px] font-medium text-emerald-ink/85">Tags</p>
           {tags.length === 0 ? (
-            <p className="text-[12px] text-emerald-ink/60">No tags yet. Add them from a transaction.</p>
+            <p className="text-[12px] text-emerald-ink/85">No tags yet. Add them from a transaction.</p>
           ) : (
             <ul className="flex flex-wrap gap-2">
               {tags.map((t) => (
@@ -144,7 +144,7 @@ export default function CategoriesAndTagsSettings() {
                     type="button"
                     onClick={() => removeTag(t.id, t.name)}
                     aria-label={`Delete tag ${t.name}`}
-                    className="text-emerald-ink/50 hover:text-red-700"
+                    className="text-emerald-ink/80 hover:text-red-700"
                   >
                     <Trash2 className="h-3 w-3" aria-hidden="true" />
                   </button>

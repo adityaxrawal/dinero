@@ -8,7 +8,7 @@ import type { LicenseStatusResponse } from '@/lib/ipc';
 function Cell({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <p className="text-[11px] font-bold uppercase tracking-wider mb-1 text-emerald-ink/60">
+      <p className="text-[11px] font-bold uppercase tracking-wider mb-1 text-emerald-ink/85">
         {label}
       </p>
       <p className="text-[15px] font-bold">{children}</p>
@@ -30,7 +30,7 @@ export default function LicenseStatusGrid({ status }: { status: LicenseStatusRes
   return (
     <div className="grid grid-cols-2 sm:grid-cols-4 gap-6 p-6 rounded-xl border border-emerald-ink/10 bg-champagne/50">
       <div>
-        <p className="text-[11px] font-bold uppercase tracking-wider mb-1 text-emerald-ink/60">
+        <p className="text-[11px] font-bold uppercase tracking-wider mb-1 text-emerald-ink/85">
           Status
         </p>
         <p className={cn('text-[15px] font-bold', stateTone(status))}>

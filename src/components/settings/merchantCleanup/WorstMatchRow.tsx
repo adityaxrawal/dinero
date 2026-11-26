@@ -17,12 +17,12 @@ import GuessQuality from './GuessQuality';
 export default function WorstMatchRow({ sample }: { sample: MerchantCleanupSample }) {
   return (
     <div className="mt-4 pt-4 border-t border-emerald-ink/10 flex items-center gap-3 flex-wrap text-[13px]">
-      <span className="text-[11px] font-semibold uppercase tracking-wide text-emerald-ink/45">
+      <span className="text-[11px] font-semibold uppercase tracking-wide text-emerald-ink/80">
         Worst match
       </span>
       <span className="font-mono text-emerald-ink">{sample.merchant}</span>
-      <ArrowRight className="w-3.5 h-3.5 text-emerald-ink/35" />
-      <span className="text-emerald-ink/55 italic">read from the original email</span>
+      <ArrowRight className="w-3.5 h-3.5 text-emerald-ink/80" />
+      <span className="text-emerald-ink/80 italic">read from the original email</span>
       <GuessQuality confidence={sample.confidence} />
     </div>
   );

@@ -31,7 +31,7 @@ function GroupHeader({
         <Icon className="h-4 w-4" aria-hidden="true" />
         {label} ({count})
       </h3>
-      <p className="mt-0.5 text-xs text-emerald-ink/60">{hint}</p>
+      <p className="mt-0.5 text-xs text-emerald-ink/85">{hint}</p>
     </div>
   );
 }
@@ -91,17 +91,17 @@ function EntryRow({
       <div className="min-w-0">
         <p className="truncate font-mono text-[13px] font-medium text-emerald-ink">{name}</p>
         {item.display_name && item.filename && (
-          <p className="truncate text-xs text-emerald-ink/50">{item.filename}</p>
+          <p className="truncate text-xs text-emerald-ink/80">{item.filename}</p>
         )}
         {item.failure_reason && (
-          <p className="mt-0.5 truncate text-xs text-emerald-ink/60">{item.failure_reason}</p>
+          <p className="mt-0.5 truncate text-xs text-emerald-ink/85">{item.failure_reason}</p>
         )}
       </div>
       <div className="flex shrink-0 items-center gap-2">
         {item.failure_type && (
           <Badge
             variant="outline"
-            className="hidden border-emerald-ink/20 text-xs text-emerald-ink/70 sm:inline-flex"
+            className="hidden border-emerald-ink/20 text-xs text-emerald-ink/85 sm:inline-flex"
           >
             {item.failure_type}
           </Badge>

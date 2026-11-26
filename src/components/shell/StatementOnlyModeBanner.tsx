@@ -30,14 +30,14 @@ export default function StatementOnlyModeBanner() {
       className="flex flex-col gap-2 mx-4 mb-2 px-3 py-2.5 rounded-lg border border-champagne/15 bg-champagne/5"
     >
       <div className="flex items-start gap-2">
-        <FileUp className="w-3.5 h-3.5 text-champagne/70 shrink-0 mt-0.5" aria-hidden="true" />
-        <p className="flex-1 text-[11.5px] leading-snug text-champagne/70">
+        <FileUp className="w-3.5 h-3.5 text-champagne/80 shrink-0 mt-0.5" aria-hidden="true" />
+        <p className="flex-1 text-[11.5px] leading-snug text-champagne/80">
           Gmail sync isn't connected. Upload statements directly to keep transactions up to date.
         </p>
         <button
           onClick={() => setDismissed(true)}
           aria-label="Dismiss statement-only mode notice"
-          className="text-champagne/40 hover:text-champagne/80 shrink-0"
+          className="text-champagne/80 hover:text-champagne/80 shrink-0"
         >
           <X className="w-3.5 h-3.5" aria-hidden="true" />
         </button>

@@ -13,7 +13,7 @@ import DetailActions from './DetailActions';
 
 type Form = ReturnType<typeof useTransactionForm>;
 
-const FIELD_LABEL = 'text-[11px] font-bold uppercase tracking-wider text-emerald-ink/70';
+const FIELD_LABEL = 'text-[11px] font-bold uppercase tracking-wider text-emerald-ink/85';
 
 /** Merchant row, showing raw and normalised names. */
 function MerchantRow({ form, originalName }: { form: Form; originalName: string }) {
@@ -27,7 +27,7 @@ function MerchantRow({ form, originalName }: { form: Form; originalName: string 
           <button
             type="button"
             onClick={() => form.setMerchant(originalName)}
-            className="text-[11px] font-semibold text-emerald-ink/60 hover:text-emerald-ink underline cursor-pointer"
+            className="text-[11px] font-semibold text-emerald-ink/85 hover:text-emerald-ink underline cursor-pointer"
           >
             Reset
           </button>

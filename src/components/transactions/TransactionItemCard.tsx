@@ -61,7 +61,7 @@ export default function TransactionItemCard({
           </div>
 
           <div className="flex items-center gap-2 mt-0.5">
-            <span className="text-[11px] font-medium text-emerald-ink/65">
+            <span className="text-[11px] font-medium text-emerald-ink/85">
               {formatCustomDate(transaction.date)}
             </span>
 
@@ -103,12 +103,12 @@ export default function TransactionItemCard({
             </span>
           </div>
 
-          <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/50 block mt-0.5">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/80 block mt-0.5">
             {isExpense ? 'Expense' : 'Credit / Refund'}
           </span>
         </div>
 
-        <ChevronRight className="w-4 h-4 text-emerald-ink/40 group-hover:text-emerald-ink group-hover:translate-x-0.5 transition-all" />
+        <ChevronRight className="w-4 h-4 text-emerald-ink/80 group-hover:text-emerald-ink group-hover:translate-x-0.5 transition-all" />
       </div>
     </div>
   );

@@ -40,8 +40,8 @@ export function InfoRow({
         className
       )}
     >
-      <span className="flex items-center gap-2 text-[12px] font-medium text-emerald-ink/70 shrink-0 select-none">
-        {icon && <span className="text-emerald-ink/50">{icon}</span>}
+      <span className="flex items-center gap-2 text-[12px] font-medium text-emerald-ink/85 shrink-0 select-none">
+        {icon && <span className="text-emerald-ink/80">{icon}</span>}
         {label}
       </span>
       <div className="flex items-center gap-1.5 min-w-0 justify-end">
@@ -53,7 +53,7 @@ export function InfoRow({
             type="button"
             onClick={handleCopy}
             title={`Copy ${label}`}
-            className="p-1 rounded-md text-emerald-ink/40 hover:text-emerald-ink hover:bg-emerald-ink/10 transition-colors shrink-0"
+            className="p-1 rounded-md text-emerald-ink/80 hover:text-emerald-ink hover:bg-emerald-ink/10 transition-colors shrink-0"
           >
             {copied ? (
               <Check className="w-3.5 h-3.5 text-emerald-600 animate-in zoom-in-50 duration-150" />

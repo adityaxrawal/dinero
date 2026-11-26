@@ -101,7 +101,7 @@ export default function LifecycleSettings() {
           />
           Continue syncing when app is closed
         </label>
-        <p className="text-[13px] font-medium text-emerald-ink/70 pl-6">
+        <p className="text-[13px] font-medium text-emerald-ink/85 pl-6">
           When enabled, closing the window keeps Dinero running in the background (no Dock icon) so
           Gmail syncing continues. When disabled, closing the window quits Dinero.
         </p>
@@ -109,7 +109,7 @@ export default function LifecycleSettings() {
 
       {backgroundSync && (
         <div className="flex items-center gap-2 pl-6 mt-4">
-          <RefreshCw className="w-4 h-4 text-emerald-ink/50" aria-hidden="true" />
+          <RefreshCw className="w-4 h-4 text-emerald-ink/80" aria-hidden="true" />
           <label
             htmlFor="low-battery-threshold"
             className="text-[13px] font-semibold text-emerald-ink"
@@ -127,7 +127,7 @@ export default function LifecycleSettings() {
             onChange={(e) => handleThresholdChange(Number(e.target.value))}
             className="w-16 px-2 py-1.5 rounded-lg border text-[13px] font-medium bg-champagne/50 border-emerald-ink/20 text-emerald-ink focus:border-emerald-ink focus:ring-1 focus:ring-emerald-ink"
           />
-          <span className="text-[13px] font-medium text-emerald-ink/70">
+          <span className="text-[13px] font-medium text-emerald-ink/85">
             % battery on AC-disconnected
           </span>
         </div>

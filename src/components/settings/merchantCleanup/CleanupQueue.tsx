@@ -26,7 +26,7 @@ function BankBar({
           style={{ width: `${(bank.count / maxCount) * 100}%` }}
         />
       </div>
-      <span className="text-[11px] text-emerald-ink/55 tabular-nums shrink-0 w-24 text-right">
+      <span className="text-[11px] text-emerald-ink/80 tabular-nums shrink-0 w-24 text-right">
         {bank.count}
         {bank.no_evidence > 0 && <span className="text-amber-700"> · {bank.no_evidence} skip</span>}
       </span>
@@ -40,7 +40,7 @@ function SampleList({ preview }: { preview: MerchantCleanupPreview }) {
 
   return (
     <div className="mt-3 rounded-xl border border-emerald-ink/10 bg-white overflow-hidden">
-      <div className="px-4 py-2 bg-emerald-ink/[0.04] text-[11px] font-semibold uppercase tracking-wide text-emerald-ink/60">
+      <div className="px-4 py-2 bg-emerald-ink/[0.04] text-[11px] font-semibold uppercase tracking-wide text-emerald-ink/85">
         Worst {preview.samples.length} of {preview.candidate_count}
       </div>
       <ul className="divide-y divide-emerald-ink/[0.07]">
@@ -49,7 +49,7 @@ function SampleList({ preview }: { preview: MerchantCleanupPreview }) {
         ))}
       </ul>
       {remaining > 0 && (
-        <div className="px-4 py-2.5 text-[11px] text-emerald-ink/55 bg-emerald-ink/[0.02]">
+        <div className="px-4 py-2.5 text-[11px] text-emerald-ink/80 bg-emerald-ink/[0.02]">
           …and {remaining} more. The queue is worked out from confidence each time, so it refreshes
           itself after every run.
         </div>
@@ -71,12 +71,12 @@ export default function CleanupQueue({ preview }: { preview: MerchantCleanupPrev
       >
         <ChevronRight
           className={cn(
-            'w-4 h-4 shrink-0 text-emerald-ink/50 transition-transform',
+            'w-4 h-4 shrink-0 text-emerald-ink/80 transition-transform',
             showQueue && 'rotate-90'
           )}
         />
         <h3 className="font-bold text-[14px] text-emerald-ink">What is in the queue</h3>
-        <span className="text-[12px] text-emerald-ink/55">
+        <span className="text-[12px] text-emerald-ink/80">
           {preview.by_bank.length} bank{preview.by_bank.length === 1 ? '' : 's'}
         </span>
       </button>

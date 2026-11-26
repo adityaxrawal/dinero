@@ -53,12 +53,12 @@ export function TrendChart({ data }: { data: SpendTrendPoint[] }) {
           <CartesianGrid strokeDasharray="3 3" stroke="rgba(6,78,59,0.10)" vertical={false} />
           <XAxis
             dataKey="period"
-            tick={{ fontSize: 11, fill: '#6b8a7f' }}
+            tick={{ fontSize: 11, fill: '#46675b' }}
             axisLine={false}
             tickLine={false}
           />
           <YAxis
-            tick={{ fontSize: 11, fill: '#6b8a7f' }}
+            tick={{ fontSize: 11, fill: '#46675b' }}
             axisLine={false}
             tickLine={false}
             width={52}

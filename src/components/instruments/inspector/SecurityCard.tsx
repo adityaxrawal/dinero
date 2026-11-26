@@ -49,7 +49,7 @@ export default function SecurityCard({ fields, setField, onSave }: InstrumentFor
       {isCard && (
         <LabeledField label="Card Network">
           <Select value={fields.network || 'Visa'} onValueChange={(v) => setField('network', v)}>
-            <SelectTrigger className={FIELD_SELECT}>
+            <SelectTrigger aria-label="Card Network" className={FIELD_SELECT}>
               <SelectValue placeholder="Select network" />
             </SelectTrigger>
             <SelectContent>
@@ -69,7 +69,7 @@ export default function SecurityCard({ fields, setField, onSave }: InstrumentFor
             value={fields.accountType || 'Savings'}
             onValueChange={(v) => setField('accountType', v)}
           >
-            <SelectTrigger className={FIELD_SELECT}>
+            <SelectTrigger aria-label="Account Subtype" className={FIELD_SELECT}>
               <SelectValue placeholder="Select account type" />
             </SelectTrigger>
             <SelectContent>

@@ -72,7 +72,7 @@ export default function PortableBackupSettings() {
   return (
     <div className="space-y-4">
       <h3 className="text-[15px] font-bold text-emerald-ink">Portable backup</h3>
-      <p className="text-[13px] font-medium text-emerald-ink/70">
+      <p className="text-[13px] font-medium text-emerald-ink/85">
         Export your data protected by a password you choose. The file can be restored on any Mac. To
         restore, enter the password the backup was made with.
       </p>

@@ -44,7 +44,7 @@ function GranularityToggle({
           className="text-xs font-medium px-2.5 py-1 rounded-md transition-all"
           style={{
             background: value === g ? '#064E3B' : 'transparent',
-            color: value === g ? '#F8E7C9' : '#6b8a7f',
+            color: value === g ? '#F8E7C9' : 'var(--text-muted)',
           }}
           aria-pressed={value === g}
         >

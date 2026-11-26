@@ -5,7 +5,7 @@ import { X, ExternalLink } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const ICON_BUTTON =
-  'w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-emerald-ink/10 text-emerald-ink/70 hover:text-emerald-ink cursor-pointer';
+  'w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-emerald-ink/10 text-emerald-ink/85 hover:text-emerald-ink cursor-pointer';
 
 /** Header showing the instrument and close control. */
 export default function InspectorHeader({
@@ -32,7 +32,7 @@ export default function InspectorHeader({
         </div>
         <div className="min-w-0">
           <h2 className="text-[15px] font-bold text-emerald-ink truncate">{issuerName}</h2>
-          <p className="text-[11px] font-mono text-emerald-ink/60 truncate">••{maskedIdentifier}</p>
+          <p className="text-[11px] font-mono text-emerald-ink/85 truncate">••{maskedIdentifier}</p>
         </div>
       </div>
 

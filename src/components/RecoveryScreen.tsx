@@ -72,7 +72,7 @@ export default function RecoveryScreen() {
             Reset app data
           </Button>
         </div>
-        <p className="text-[12px] text-emerald-ink/60">
+        <p className="text-[12px] text-emerald-ink/85">
           Without a recovery phrase your data can't be decrypted. Resetting deletes it and starts
           fresh.
         </p>

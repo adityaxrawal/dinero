@@ -97,7 +97,7 @@ export default function ReportWrongBankDialog({
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="text-[11px] text-emerald-ink/60 hover:text-emerald-ink underline underline-offset-2"
+        className="text-[11px] text-emerald-ink/85 hover:text-emerald-ink underline underline-offset-2"
       >
         Wrong bank?
       </button>

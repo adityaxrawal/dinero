@@ -76,12 +76,12 @@ export default function PrivacySettings() {
           <ShieldAlert className="w-5 h-5 text-red-600" />
           <h3 className="text-xl font-bold text-red-600">Privacy &amp; Data</h3>
         </div>
-        <p className="text-sm text-emerald-ink/70 mb-5">
+        <p className="text-sm text-emerald-ink/85 mb-5">
           Your data is encrypted and stored locally on this device.
         </p>
 
         <div className="mb-6 pb-6 border-b border-emerald-ink/10">
-          <p className="text-sm text-emerald-ink/70 mb-4">
+          <p className="text-sm text-emerald-ink/85 mb-4">
             A diagnostic bundle (app logs and error reports) helps troubleshoot issues. It never
             includes your financial data, and it is{' '}
             <strong>saved locally on this device only</strong> — it is never automatically uploaded
@@ -96,7 +96,7 @@ export default function PrivacySettings() {
             {isExporting ? 'Exporting…' : 'Export Diagnostic Bundle'}
           </button>
           {exportedPath && (
-            <p className="text-[12px] font-medium text-emerald-ink/70 mt-3">
+            <p className="text-[12px] font-medium text-emerald-ink/85 mt-3">
               Saved locally to: {exportedPath}
             </p>
           )}

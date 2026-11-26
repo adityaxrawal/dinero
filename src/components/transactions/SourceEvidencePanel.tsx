@@ -106,7 +106,7 @@ function SourceLogCard({ isLoading, log }: { isLoading: boolean; log: string | n
       <CardContent>
         {isLoading ? (
           <div className="flex items-center justify-center py-4">
-            <Loader2 className="w-4 h-4 animate-spin text-emerald-ink/60" />
+            <Loader2 className="w-4 h-4 animate-spin text-emerald-ink/85" />
           </div>
         ) : log ? (
           <div className="bg-[#F3EBDD] rounded-md border border-emerald-ink/10 p-3 max-h-[300px] overflow-y-auto">

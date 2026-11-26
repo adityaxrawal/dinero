@@ -28,7 +28,7 @@ export default function CleanupProgressBar({
           style={{ width: `${pct}%` }}
         />
       </div>
-      <div className="flex items-center justify-between mt-1.5 text-[11px] font-semibold text-emerald-ink/60 tabular-nums">
+      <div className="flex items-center justify-between mt-1.5 text-[11px] font-semibold text-emerald-ink/85 tabular-nums">
         <span>
           {progress.processed} / {progress.total}
         </span>

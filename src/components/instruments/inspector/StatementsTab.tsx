@@ -34,7 +34,7 @@ function StatementCard({
           {statement.status}
         </span>
       </div>
-      <div className="flex items-center justify-between text-[11px] text-emerald-ink/70 font-medium pt-1 border-t border-emerald-ink/10">
+      <div className="flex items-center justify-between text-[11px] text-emerald-ink/85 font-medium pt-1 border-t border-emerald-ink/10">
         <span>Uploaded {formatCustomDate(statement.date)}</span>
         <button type="button" onClick={onView} className="font-bold text-emerald-ink hover:underline">
           View details →
@@ -53,7 +53,7 @@ export default function StatementsTab({ statements }: { statements: Statements }
   return (
     <div className="space-y-4 animate-in fade-in-50 duration-200">
       <div className="flex items-center justify-between">
-        <span className="text-xs font-bold uppercase tracking-wider text-emerald-ink/70 flex items-center gap-1.5">
+        <span className="text-xs font-bold uppercase tracking-wider text-emerald-ink/85 flex items-center gap-1.5">
           <FileText className="w-3.5 h-3.5" /> Uploaded Statements ({statements.length})
         </span>
         <button
@@ -67,8 +67,8 @@ export default function StatementsTab({ statements }: { statements: Statements }
 
       {statements.length === 0 ? (
         <div className="text-center py-12 bg-champagne/40 rounded-2xl border border-emerald-ink/10 space-y-3">
-          <FileText className="w-8 h-8 text-emerald-ink/40 mx-auto" />
-          <p className="text-xs text-emerald-ink/60 italic">
+          <FileText className="w-8 h-8 text-emerald-ink/80 mx-auto" />
+          <p className="text-xs text-emerald-ink/85 italic">
             No statements uploaded yet for this account.
           </p>
           <button

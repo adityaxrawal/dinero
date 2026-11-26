@@ -80,11 +80,11 @@ export default function DatePickerTrigger({
       <div className="flex items-center gap-2 overflow-hidden truncate">
         <CalendarIcon
           className={cn(
-            'flex-shrink-0 text-emerald-ink/70',
+            'flex-shrink-0 text-emerald-ink/85',
             size === 'sm' ? 'w-3.5 h-3.5' : 'w-4 h-4'
           )}
         />
-        <span className={cn('truncate font-medium', !value && 'text-emerald-ink/50 font-normal')}>
+        <span className={cn('truncate font-medium', !value && 'text-emerald-ink/80 font-normal')}>
           {value ? formatDisplayDate(value) : placeholder}
         </span>
       </div>
@@ -97,7 +97,7 @@ export default function DatePickerTrigger({
               e.stopPropagation();
               onClear();
             }}
-            className="p-0.5 rounded-full hover:bg-emerald-ink/10 text-emerald-ink/60 hover:text-emerald-ink"
+            className="p-0.5 rounded-full hover:bg-emerald-ink/10 text-emerald-ink/85 hover:text-emerald-ink"
             aria-label="Clear date"
           >
             <X className="w-3.5 h-3.5" />

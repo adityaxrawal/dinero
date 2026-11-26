@@ -48,9 +48,9 @@ export default function InstrumentAnalyticsTab({ transactions }: InstrumentAnaly
   if (transactions.length === 0) {
     return (
       <div className="text-center py-12 bg-champagne/40 rounded-2xl border border-emerald-ink/10 p-6">
-        <PieChart className="w-8 h-8 text-emerald-ink/40 mx-auto mb-2" />
+        <PieChart className="w-8 h-8 text-emerald-ink/80 mx-auto mb-2" />
         <h4 className="text-sm font-bold text-emerald-ink">No Analytics Data Available</h4>
-        <p className="text-xs text-emerald-ink/60 mt-1">
+        <p className="text-xs text-emerald-ink/85 mt-1">
           Upload statements or record transactions for this account to see spending insights.
         </p>
       </div>
@@ -62,7 +62,7 @@ export default function InstrumentAnalyticsTab({ transactions }: InstrumentAnaly
       <div className="grid grid-cols-2 gap-3">
         <div className="bg-champagne/70 border border-emerald-ink/10 rounded-2xl p-3.5 space-y-1">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/70">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/85">
               Total Outflow
             </span>
             <div className="w-6 h-6 rounded-full bg-red-500/15 text-red-700 flex items-center justify-center">
@@ -76,7 +76,7 @@ export default function InstrumentAnalyticsTab({ transactions }: InstrumentAnaly
 
         <div className="bg-champagne/70 border border-emerald-ink/10 rounded-2xl p-3.5 space-y-1">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/70">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/85">
               Total Inflow
             </span>
             <div className="w-6 h-6 rounded-full bg-emerald-500/15 text-emerald-700 flex items-center justify-center">
@@ -91,7 +91,7 @@ export default function InstrumentAnalyticsTab({ transactions }: InstrumentAnaly
 
       <div className="grid grid-cols-2 gap-3">
         <div className="bg-champagne/50 border border-emerald-ink/10 rounded-2xl p-3">
-          <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/60 block">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/85 block">
             Total Activity
           </span>
           <span className="text-sm font-extrabold font-mono text-emerald-ink">
@@ -99,7 +99,7 @@ export default function InstrumentAnalyticsTab({ transactions }: InstrumentAnaly
           </span>
         </div>
         <div className="bg-champagne/50 border border-emerald-ink/10 rounded-2xl p-3">
-          <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/60 block">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/85 block">
             Avg Transaction
           </span>
           <span className="text-sm font-extrabold font-mono text-emerald-ink">
@@ -113,7 +113,7 @@ export default function InstrumentAnalyticsTab({ transactions }: InstrumentAnaly
           <h4 className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink">
             Top Volume Items
           </h4>
-          <ShoppingBag className="w-4 h-4 text-emerald-ink/60" />
+          <ShoppingBag className="w-4 h-4 text-emerald-ink/85" />
         </div>
 
         <div className="space-y-2">

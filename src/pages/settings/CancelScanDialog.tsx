@@ -39,7 +39,7 @@ export default function CancelScanDialog({
           </DialogTitle>
           <DialogDescription
             id="cancel-scan-dialog-desc"
-            className="text-[13px] pt-2 text-emerald-ink/70"
+            className="text-[13px] pt-2 text-emerald-ink/85"
           >
             Cancel the in-progress scan? Emails already processed keep their imported transactions.
           </DialogDescription>

@@ -41,9 +41,9 @@ export function StatTile({
             : 'bg-white/70 border-emerald-ink/10'
       )}
     >
-      <div className="flex items-start gap-1.5 text-[11px] font-semibold uppercase tracking-wide leading-tight text-emerald-ink/55">
+      <div className="flex items-start gap-1.5 text-[11px] font-semibold uppercase tracking-wide leading-tight text-emerald-ink/80">
         {icon && (
-          <span className="shrink-0 mt-px text-emerald-ink/45 [&_svg]:w-3.5 [&_svg]:h-3.5">
+          <span className="shrink-0 mt-px text-emerald-ink/80 [&_svg]:w-3.5 [&_svg]:h-3.5">
             {icon}
           </span>
         )}
@@ -61,7 +61,7 @@ export function StatTile({
       >
         {value}
       </div>
-      {hint && <div className="mt-0.5 text-[11px] leading-snug text-emerald-ink/50">{hint}</div>}
+      {hint && <div className="mt-0.5 text-[11px] leading-snug text-emerald-ink/80">{hint}</div>}
     </div>
   );
 }
@@ -158,7 +158,7 @@ export function ConfirmDialog({
             {icon}
             {title}
           </DialogTitle>
-          <DialogDescription className="text-[13px] pt-2 text-emerald-ink/70 leading-relaxed">
+          <DialogDescription className="text-[13px] pt-2 text-emerald-ink/85 leading-relaxed">
             {description}
           </DialogDescription>
         </DialogHeader>

@@ -22,7 +22,7 @@ export default function LoadError({
       className={cn('flex flex-col items-center justify-center gap-2 p-6 text-center', className)}
     >
       <p className="text-[13px] font-semibold text-emerald-ink">Couldn't load {what}</p>
-      <p className="text-[12px] text-emerald-ink/70">Your data is safe; it just didn't load.</p>
+      <p className="text-[12px] text-emerald-ink/85">Your data is safe; it just didn't load.</p>
       {onRetry && (
         <button
           type="button"

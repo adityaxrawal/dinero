@@ -40,7 +40,7 @@ const CLUSTER_TONES = {
   idle: {
     row: ROW_IDLE,
     badge: 'bg-amber-100 text-amber-800 border border-amber-200',
-    meta: 'text-slate-400',
+    meta: 'text-slate-600',
     age: 'text-red-500 font-semibold',
     merchant: 'text-emerald-ink',
   },
@@ -185,7 +185,7 @@ function UnassignedListItem({
           <span
             className={cn(
               'italic text-[11px]',
-              isSelected ? 'text-champagne/60' : 'text-slate-400'
+              isSelected ? 'text-champagne/75' : 'text-slate-600'
             )}
           >
             Amount missing
@@ -193,7 +193,7 @@ function UnassignedListItem({
         )}
 
         {info.dateStr && (
-          <span className={cn('text-[11px]', isSelected ? 'text-champagne/70' : 'text-slate-400')}>
+          <span className={cn('text-[11px]', isSelected ? 'text-champagne/75' : 'text-slate-600')}>
             {info.dateStr}
           </span>
         )}
@@ -209,7 +209,7 @@ function UnassignedListItem({
 function LlmQueueLine({ pending, state }: { pending: number; state: LlmState }) {
   const emails = `${pending} ${pending === 1 ? 'email' : 'emails'}`;
   return (
-    <p className="flex items-center gap-1.5 text-[11px] text-emerald-ink/70" role="status">
+    <p className="flex items-center gap-1.5 text-[11px] text-emerald-ink/85" role="status">
       {state === 'ready' ? (
         <>
           <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />
@@ -235,7 +235,7 @@ function LlmQueueLine({ pending, state }: { pending: number; state: LlmState }) 
 
 /** Shown when a queue section has nothing left to resolve. */
 function EmptyQueueNotice({ message }: { message: string }) {
-  return <p className="text-[12px] text-center p-4 text-emerald-ink/60">{message}</p>;
+  return <p className="text-[12px] text-center p-4 text-emerald-ink/85">{message}</p>;
 }
 
 /** Switches between the clusters and unassigned queues, with counts. */
@@ -260,7 +260,7 @@ function SectionTabs({
             onClick={() => onSelect(section.id)}
             className={cn(
               'px-3 py-1.5 text-[12px] font-medium rounded-full transition-colors whitespace-nowrap flex items-center gap-1.5',
-              isActive ? 'bg-emerald-ink text-champagne' : 'text-emerald-ink/70 hover:bg-emerald-ink/10'
+              isActive ? 'bg-emerald-ink text-champagne' : 'text-emerald-ink/85 hover:bg-emerald-ink/10'
             )}
           >
             <section.icon className="w-3.5 h-3.5" />
@@ -291,8 +291,8 @@ function QueueStatus({ isLoading, onRetry }: { isLoading: boolean; onRetry?: () 
   if (isLoading) {
     return (
       <div className="flex flex-col items-center justify-center h-40 gap-2">
-        <Loader2 className="w-4 h-4 animate-spin text-emerald-ink/50" />
-        <span className="text-xs text-emerald-ink/50">Loading queue...</span>
+        <Loader2 className="w-4 h-4 animate-spin text-emerald-ink/80" />
+        <span className="text-xs text-emerald-ink/80">Loading queue...</span>
       </div>
     );
   }
@@ -416,7 +416,7 @@ function InspectorPane({
 /** Prompt shown when nothing is selected yet. */
 function InspectorPlaceholder({ currentSection }: { currentSection: string }) {
   return (
-    <div className="flex-1 flex flex-col items-center justify-center h-full opacity-30">
+    <div className="flex-1 flex flex-col items-center justify-center h-full [&_svg]:opacity-30">
       <div className="w-12 h-12 border-2 border-emerald-ink rounded-xl mb-4 border-dashed flex items-center justify-center">
         <Layers className="w-6 h-6 text-emerald-ink" />
       </div>

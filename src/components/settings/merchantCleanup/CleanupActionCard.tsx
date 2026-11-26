@@ -68,7 +68,7 @@ export default function CleanupActionCard({
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div className="min-w-0">
           <h3 className="font-bold text-[15px] text-emerald-ink">{headlineTitle(state)}</h3>
-          <p className="text-[12px] mt-1 text-emerald-ink/60 leading-relaxed max-w-xl">
+          <p className="text-[12px] mt-1 text-emerald-ink/85 leading-relaxed max-w-xl">
             {headlineBlurb(state)}
           </p>
         </div>

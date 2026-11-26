@@ -71,7 +71,7 @@ export default function RecentTransactionRow({
               tx.status.toLowerCase() === 'posted'
                 ? 'rgba(16,185,129,0.10)'
                 : 'rgba(107,138,127,0.10)',
-            color: tx.status.toLowerCase() === 'posted' ? '#10b981' : '#6b8a7f',
+            color: tx.status.toLowerCase() === 'posted' ? '#047857' : 'var(--text-muted)',
           }}
         >
           {tx.status}

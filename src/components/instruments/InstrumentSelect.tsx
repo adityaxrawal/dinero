@@ -82,9 +82,9 @@ export function InstrumentSelect({
             <div className="flex flex-col items-end text-right">
               <span className="font-semibold text-[13px] text-emerald-ink underline underline-offset-2 decoration-dashed decoration-emerald-ink/40 group-hover:decoration-emerald-ink flex items-center gap-1">
                 <span>{getInstrumentTitle(selectedInstrument)}</span>
-                <Pencil className="w-3 h-3 text-emerald-ink/70 shrink-0" />
+                <Pencil className="w-3 h-3 text-emerald-ink/85 shrink-0" />
               </span>
-              <span className="text-[11px] text-emerald-ink/60 font-normal">
+              <span className="text-[11px] text-emerald-ink/85 font-normal">
                 {getInstrumentSubtitle(selectedInstrument)}
               </span>
             </div>
@@ -96,16 +96,16 @@ export function InstrumentSelect({
           >
             <div className="px-2 pt-1 pb-2 border-b border-emerald-ink/10 space-y-2 mb-1">
               <div className="flex items-center justify-between">
-                <span className="text-[11px] font-extrabold uppercase tracking-wider text-emerald-ink/70">
+                <span className="text-[11px] font-extrabold uppercase tracking-wider text-emerald-ink/85">
                   Select Payment Instrument
                 </span>
-                <span className="text-[11px] font-mono text-emerald-ink/50">
+                <span className="text-[11px] font-mono text-emerald-ink/80">
                   {filtered.length} available
                 </span>
               </div>
 
               <div className="relative">
-                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-emerald-ink/50" />
+                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-emerald-ink/80" />
                 <input
                   type="text"
                   placeholder="Search bank, card, or UPI..."
@@ -117,7 +117,7 @@ export function InstrumentSelect({
                   <button
                     type="button"
                     onClick={() => setSearchQuery('')}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-emerald-ink/50 hover:text-emerald-ink"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-emerald-ink/80 hover:text-emerald-ink"
                   >
                     <X className="w-3 h-3" />
                   </button>
@@ -126,27 +126,27 @@ export function InstrumentSelect({
             </div>
 
             {filtered.length === 0 ? (
-              <div className="py-6 text-center text-[12px] italic text-emerald-ink/50">
+              <div className="py-6 text-center text-[12px] italic text-emerald-ink/80">
                 No matching instruments found.
               </div>
             ) : (
               <div className="space-y-2 overflow-y-auto max-h-[290px] pr-0.5">
                 <InstrumentOptionGroup
-                  icon={<CreditCard className="w-3 h-3 text-emerald-ink/60" />}
+                  icon={<CreditCard className="w-3 h-3 text-emerald-ink/85" />}
                   label="Credit Cards"
                   items={creditCards}
                   selectedId={instrumentId}
                   showDivider={false}
                 />
                 <InstrumentOptionGroup
-                  icon={<Landmark className="w-3 h-3 text-emerald-ink/60" />}
+                  icon={<Landmark className="w-3 h-3 text-emerald-ink/85" />}
                   label="Bank Accounts"
                   items={bankAccounts}
                   selectedId={instrumentId}
                   showDivider={creditCards.length > 0}
                 />
                 <InstrumentOptionGroup
-                  icon={<Zap className="w-3 h-3 text-emerald-ink/60" />}
+                  icon={<Zap className="w-3 h-3 text-emerald-ink/85" />}
                   label="UPI & Digital Payments"
                   items={upiAndOthers}
                   selectedId={instrumentId}

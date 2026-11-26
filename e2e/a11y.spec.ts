@@ -18,7 +18,11 @@ test.describe('Accessibility Compliance - Rigorous Verification', () => {
 
     if (criticalOrSerious.length > 0) {
       const summary = criticalOrSerious
-        .map((v) => `[${v.impact}] ${v.id}: ${v.help} — ${v.nodes.length} node(s)`)
+        .map(
+          (v) =>
+            `[${v.impact}] ${v.id}: ${v.help} — ${v.nodes.length} node(s)\n    ` +
+            v.nodes.map((n) => `${n.target.join(' ')} :: ${n.html.slice(0, 140)} :: ${n.failureSummary?.split('\n')[1]?.trim() ?? ''}`).join('\n    ')
+        )
         .join('\n');
       throw new Error(`Accessibility violations found on ${url}:\n${summary}`);
     }
@@ -119,7 +123,7 @@ test.describe('Accessibility Compliance - Rigorous Verification', () => {
   // proves it for a real one rather than trusting the library blindly.
   test('a normal modal (Add Instrument) closes on Escape and returns focus', async ({ page }) => {
     await page.goto('/#/instruments');
-    await page.locator('button:has-text("Add Instrument")').click();
+    await page.getByRole('button', { name: 'Add account' }).click();
 
     const dialog = page.locator('div[role="dialog"]');
     await expect(dialog).toBeVisible();

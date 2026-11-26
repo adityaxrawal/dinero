@@ -61,7 +61,7 @@ export default function InstrumentsSidebarHeader({
 
       <div className="bg-emerald-ink/[0.06] rounded-xl p-2.5 border border-emerald-ink/10 flex justify-between items-center text-[11px] font-mono">
         <div>
-          <span className="text-emerald-ink/60 font-medium block text-[11px] uppercase tracking-wider">
+          <span className="text-emerald-ink/85 font-medium block text-[11px] uppercase tracking-wider">
             Bank Balance
           </span>
           <span className="font-bold text-emerald-ink text-xs">
@@ -70,7 +70,7 @@ export default function InstrumentsSidebarHeader({
         </div>
         <div className="h-6 w-[1px] bg-emerald-ink/15" />
         <div className="text-right">
-          <span className="text-emerald-ink/60 font-medium block text-[11px] uppercase tracking-wider">
+          <span className="text-emerald-ink/85 font-medium block text-[11px] uppercase tracking-wider">
             Credit Spent
           </span>
           <span className="font-bold text-red-700 text-xs">
@@ -80,7 +80,7 @@ export default function InstrumentsSidebarHeader({
       </div>
 
       <div className="relative">
-        <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-emerald-ink/50" />
+        <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-emerald-ink/80" />
         <input
           type="text"
           placeholder="Search accounts, cards..."
@@ -92,7 +92,7 @@ export default function InstrumentsSidebarHeader({
           <button
             type="button"
             onClick={() => setSearchQuery('')}
-            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-emerald-ink/50 hover:text-emerald-ink"
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-emerald-ink/80 hover:text-emerald-ink"
           >
             <X className="w-3 h-3" />
           </button>
@@ -111,13 +111,13 @@ export default function InstrumentsSidebarHeader({
                 'flex items-center justify-center gap-1 px-1.5 py-1 text-[11px] font-bold rounded-lg transition-all cursor-pointer border truncate',
                 selectedFilter === pill.id
                   ? 'bg-emerald-ink text-champagne border-emerald-ink shadow-2xs'
-                  : 'bg-[#F3EBDD]/50 text-emerald-ink/70 border-emerald-ink/10 hover:bg-emerald-ink/10 hover:text-emerald-ink'
+                  : 'bg-[#F3EBDD]/50 text-emerald-ink/85 border-emerald-ink/10 hover:bg-emerald-ink/10 hover:text-emerald-ink'
               )}
               title={`${pill.label} (${count})`}
             >
               <span className="shrink-0">{pill.icon}</span>
               <span className="truncate">{pill.label}</span>
-              <span className="opacity-75 text-[11px] font-mono shrink-0 font-normal">
+              <span className="text-[11px] font-mono shrink-0 font-normal">
                 ({count})
               </span>
             </button>

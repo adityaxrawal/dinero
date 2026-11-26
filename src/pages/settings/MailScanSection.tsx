@@ -54,13 +54,13 @@ export default function MailScanSection() {
         <ScanRangePicker disabled={scanStatus === 'running' || !connectedAccount} />
 
         {connectedAccount && (
-          <p className="text-[12px] text-emerald-ink/60" role="status">
+          <p className="text-[12px] text-emerald-ink/85" role="status">
             {pollStatusText(pollStatus)}
           </p>
         )}
 
         {connectedAccount && (
-          <p className="text-[12px] text-emerald-ink/60">
+          <p className="text-[12px] text-emerald-ink/85">
             Scanning account:{' '}
             <strong className="font-semibold text-emerald-ink">{connectedAccount.email}</strong>
           </p>

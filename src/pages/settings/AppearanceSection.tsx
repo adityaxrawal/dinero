@@ -25,7 +25,7 @@ export default function AppearanceSection() {
           </Button>
           <Button
             variant="ghost"
-            className="flex-1 cursor-default h-9 font-semibold text-emerald-ink/60 hover:text-emerald-ink/60 hover:bg-transparent"
+            className="flex-1 cursor-default h-9 font-semibold text-emerald-ink/85 hover:text-emerald-ink/85 hover:bg-transparent"
             disabled
           >
             Light Mode

@@ -23,7 +23,7 @@ function SearchBar({
   return (
     <div className="flex flex-col md:flex-row md:items-center justify-between gap-2.5">
       <div className="relative flex-1">
-        <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-emerald-ink/50" />
+        <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-emerald-ink/80" />
         <input
           type="text"
           placeholder="Search transactions for this card..."
@@ -35,7 +35,7 @@ function SearchBar({
           <button
             type="button"
             onClick={() => onChange('')}
-            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-emerald-ink/50 hover:text-emerald-ink"
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-emerald-ink/80 hover:text-emerald-ink"
           >
             <X className="w-3 h-3" />
           </button>
@@ -92,7 +92,7 @@ export default function TransactionsTab({
 
       {filtered.length === 0 ? (
         <div className="text-center py-12 bg-champagne/40 rounded-2xl border border-emerald-ink/10">
-          <p className="text-xs text-emerald-ink/60 italic">
+          <p className="text-xs text-emerald-ink/85 italic">
             {searchQuery
               ? 'No matching transactions found.'
               : 'No transactions found for this account.'}
@@ -130,7 +130,7 @@ export default function TransactionsTab({
             </div>
           )}
 
-          <div className="text-center text-[11px] font-mono text-emerald-ink/60 pt-1">
+          <div className="text-center text-[11px] font-mono text-emerald-ink/85 pt-1">
             Showing {filtered.length} of {form.totalTxCount} transactions
           </div>
         </div>

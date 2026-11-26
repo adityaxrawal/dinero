@@ -20,7 +20,7 @@ export default function ConsentHistoryList({
   return (
     <div>
       <div className="flex items-center justify-between gap-4 mb-4">
-        <p className="text-[13px] font-medium text-emerald-ink/70">
+        <p className="text-[13px] font-medium text-emerald-ink/85">
           A log of all significant local data changes, API key operations, and account connections.
         </p>
         <button
@@ -38,9 +38,9 @@ export default function ConsentHistoryList({
       </div>
 
       {isLoading ? (
-        <p className="text-[13px] font-medium text-emerald-ink/70">Loading…</p>
+        <p className="text-[13px] font-medium text-emerald-ink/85">Loading…</p>
       ) : events.length === 0 ? (
-        <p className="text-[13px] font-medium text-emerald-ink/70">No consent events recorded yet.</p>
+        <p className="text-[13px] font-medium text-emerald-ink/85">No consent events recorded yet.</p>
       ) : (
         <div className="flex flex-col gap-3 max-h-[280px] overflow-y-auto pr-2">
           {events.map((event) => (
@@ -50,13 +50,13 @@ export default function ConsentHistoryList({
             >
               <div className="flex justify-between gap-4 mb-1">
                 <strong className="text-[14px] font-bold text-emerald-ink">{event.event_type}</strong>
-                <span className="text-[12px] font-semibold text-emerald-ink/60 whitespace-nowrap">
+                <span className="text-[12px] font-semibold text-emerald-ink/85 whitespace-nowrap">
                   {new Date(event.consented_at).toLocaleString()}
                 </span>
               </div>
               <p className="text-[13px] font-medium text-emerald-ink/80">{event.disclosure_text}</p>
               {event.withdrawn_at && (
-                <p className="text-[12px] font-medium text-emerald-ink/60 mt-1 italic">
+                <p className="text-[12px] font-medium text-emerald-ink/85 mt-1 italic">
                   Withdrawn {new Date(event.withdrawn_at).toLocaleString()}
                 </p>
               )}

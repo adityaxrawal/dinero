@@ -50,8 +50,8 @@ export default function InstrumentListItem({
           </span>
           <span
             className={cn(
-              'text-[11px] font-mono font-medium truncate opacity-70',
-              isSelected ? 'text-champagne' : 'text-emerald-ink/70'
+              'text-[11px] font-mono font-medium truncate',
+              isSelected ? 'text-champagne' : 'text-emerald-ink/85'
             )}
           >
             ••{inst.masked_identifier}

@@ -59,7 +59,7 @@ export function RulesStats({ rules }: { rules: Rules }) {
 export function RuleFilters({ rules }: { rules: Rules }) {
   return (
     <div className="mb-4 flex items-center gap-2 flex-wrap">
-      <span className="text-[11px] font-semibold uppercase tracking-wide text-emerald-ink/50">
+      <span className="text-[11px] font-semibold uppercase tracking-wide text-emerald-ink/80">
         Show
       </span>
       {FIELD_FILTERS.map((f) => (
@@ -71,7 +71,7 @@ export function RuleFilters({ rules }: { rules: Rules }) {
             'text-[12px] font-semibold px-2.5 py-1 rounded-full border transition-colors',
             rules.fieldFilter === f
               ? 'bg-emerald-ink text-champagne border-transparent'
-              : 'bg-white/60 text-emerald-ink/70 border-emerald-ink/15 hover:border-emerald-ink/30'
+              : 'bg-white/60 text-emerald-ink/85 border-emerald-ink/15 hover:border-emerald-ink/30'
           )}
         >
           {f === 'all' ? 'Everything' : (FIELD_CHIPS[f] ?? f)}
@@ -98,7 +98,7 @@ export function RulesList({
 }) {
   if (rules.rules === null) {
     return (
-      <div className={`${PANEL} flex items-center gap-2 text-sm text-emerald-ink/70`}>
+      <div className={`${PANEL} flex items-center gap-2 text-sm text-emerald-ink/85`}>
         <Loader2 className="w-4 h-4 animate-spin" /> Loading…
       </div>
     );
@@ -107,7 +107,7 @@ export function RulesList({
     return (
       <div className={PANEL}>
         <h3 className="font-bold text-[15px] text-emerald-ink">Nothing learned yet</h3>
-        <p className="text-[13px] mt-1 text-emerald-ink/65 leading-relaxed max-w-2xl">
+        <p className="text-[13px] mt-1 text-emerald-ink/85 leading-relaxed max-w-2xl">
           Rules appear here on their own. Correct a transaction&apos;s merchant, amount or date — or
           run a merchant cleanup above — and Dinero works out which part of that bank&apos;s email
           it read wrongly, then writes a rule so the next one comes through right. You are never
@@ -118,7 +118,7 @@ export function RulesList({
   }
   if (rules.banks.length === 0) {
     return (
-      <div className={`${PANEL} text-[13px] text-emerald-ink/65`}>No rules for that field yet.</div>
+      <div className={`${PANEL} text-[13px] text-emerald-ink/85`}>No rules for that field yet.</div>
     );
   }
 
@@ -159,7 +159,7 @@ export function RetiredRules({
       <button
         type="button"
         onClick={() => setShowRetired((v) => !v)}
-        className="text-xs font-semibold text-emerald-ink/60 hover:text-emerald-ink flex items-center gap-1"
+        className="text-xs font-semibold text-emerald-ink/85 hover:text-emerald-ink flex items-center gap-1"
       >
         <ChevronRight
           className={cn('w-3.5 h-3.5 transition-transform', showRetired && 'rotate-90')}
@@ -199,10 +199,10 @@ function OverrideRow({
       <div className="min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="font-mono text-[13px] text-emerald-ink">{override.domain}</span>
-          <span className="text-emerald-ink/40">→</span>
+          <span className="text-emerald-ink/80">→</span>
           <span className="font-semibold text-[13px] text-emerald-ink">{override.bank_name}</span>
         </div>
-        <p className="text-[11px] mt-1 text-emerald-ink/50">
+        <p className="text-[11px] mt-1 text-emerald-ink/80">
           corrected <RelativeDate iso={override.created_at} />
         </p>
       </div>
@@ -244,12 +244,12 @@ export function SenderOverrides({
       <h3 className="font-bold text-[15px] text-emerald-ink flex items-center gap-2">
         <AtSign className="w-4 h-4" /> Sender bank corrections
       </h3>
-      <p className="text-[13px] mt-1 mb-3 text-emerald-ink/65 leading-relaxed max-w-2xl">
+      <p className="text-[13px] mt-1 mb-3 text-emerald-ink/85 leading-relaxed max-w-2xl">
         Domains you have told Dinero belong to a different bank than it guessed. These only change
         which bank a message is filed under — they never let an unrecognised sender through.
       </p>
       {overrides.length === 0 ? (
-        <div className="p-4 rounded-xl border border-dashed border-emerald-ink/15 bg-champagne/40 text-[13px] text-emerald-ink/60 leading-relaxed">
+        <div className="p-4 rounded-xl border border-dashed border-emerald-ink/15 bg-champagne/40 text-[13px] text-emerald-ink/85 leading-relaxed">
           None yet. If Dinero ever files a transaction under the wrong bank, open it and report the
           wrong bank from the evidence panel — the domain will be corrected here.
         </div>

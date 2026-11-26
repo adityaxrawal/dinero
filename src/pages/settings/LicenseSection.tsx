@@ -27,7 +27,7 @@ export default function LicenseSection() {
 
       {license.isLoadingLicense ? (
         <div className="py-8 flex justify-center">
-          <Loader2 className="w-5 h-5 animate-spin text-emerald-ink/50" />
+          <Loader2 className="w-5 h-5 animate-spin text-emerald-ink/80" />
         </div>
       ) : licenseStatus ? (
         <div className="space-y-6">

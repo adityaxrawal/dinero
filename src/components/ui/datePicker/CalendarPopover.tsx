@@ -114,7 +114,7 @@ function DayGrid({
             onClick={() => onSelectDay(dayNum, -1)}
             className={cn(
               DAY_CLASS,
-              'text-emerald-ink/30 hover:bg-emerald-ink/5',
+              'text-emerald-ink/80 hover:bg-emerald-ink/5',
               disabled && 'opacity-20 cursor-not-allowed pointer-events-none'
             )}
           >
@@ -187,7 +187,7 @@ export default function CalendarPopover({
 
       <div className="grid grid-cols-7 gap-1 text-center mb-1">
         {SHORT_DAYS.map((d) => (
-          <span key={d} className="text-[11px] font-semibold text-emerald-ink/60 py-1">
+          <span key={d} className="text-[11px] font-semibold text-emerald-ink/85 py-1">
             {d}
           </span>
         ))}

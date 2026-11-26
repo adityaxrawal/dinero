@@ -78,7 +78,7 @@ export function QueueNav({
     'w-6 h-6 flex items-center justify-center rounded-md hover:bg-emerald-ink/10 disabled:opacity-30 disabled:hover:bg-transparent';
 
   return (
-    <div className="flex items-center gap-1 text-[11px] font-medium text-emerald-ink/60">
+    <div className="flex items-center gap-1 text-[11px] font-medium text-emerald-ink/85">
       <button
         type="button"
         className={arrow}
@@ -124,7 +124,7 @@ export function VerdictHeader({
             Ambiguous Match
           </span>
           {cluster.created_at && (
-            <span className="text-[11px] font-medium text-emerald-ink/50">
+            <span className="text-[11px] font-medium text-emerald-ink/80">
               Flagged {formatRelativeDate(cluster.created_at).toLowerCase()}
             </span>
           )}
@@ -134,15 +134,15 @@ export function VerdictHeader({
 
       <p className="text-[15px] font-semibold text-emerald-ink">{verdict}</p>
       {clusterReasonText(cluster.reason) && (
-        <p className="text-[12px] text-emerald-ink/70">{clusterReasonText(cluster.reason)}</p>
+        <p className="text-[12px] text-emerald-ink/85">{clusterReasonText(cluster.reason)}</p>
       )}
       {candidateCount > 1 && (
-        <p className="text-[12px] text-emerald-ink/60">
+        <p className="text-[12px] text-emerald-ink/85">
           {candidateCount} candidates found — pick the correct one below.
         </p>
       )}
       {candidateCount === 0 && (
-        <p className="text-[12px] text-emerald-ink/60">
+        <p className="text-[12px] text-emerald-ink/85">
           No existing transaction candidates were found for this evidence.
         </p>
       )}
@@ -167,17 +167,17 @@ export function ResolutionActions({
 
   return (
     <div className="p-4 rounded-xl border border-emerald-ink/10 flex flex-col gap-3 bg-champagne/50">
-      <p className="text-[11px] font-medium flex items-center gap-1.5 text-emerald-ink/60 uppercase tracking-wide">
+      <p className="text-[11px] font-medium flex items-center gap-1.5 text-emerald-ink/85 uppercase tracking-wide">
         <SplitSquareHorizontal className="w-3.5 h-3.5" /> Resolution Actions
       </p>
-      <p className="text-[11px] italic text-emerald-ink/60">
+      <p className="text-[11px] italic text-emerald-ink/85">
         Review carefully — these actions alter your financial records.
       </p>
 
       <ActionWithCaption caption="No changes made. Stays in your queue for another day.">
         <Button
           variant="ghost"
-          className="w-full text-xs h-8 text-emerald-ink/70 hover:bg-emerald-ink/5 hover:text-emerald-ink"
+          className="w-full text-xs h-8 text-emerald-ink/85 hover:bg-emerald-ink/5 hover:text-emerald-ink"
           onClick={actions.handleReviewLater}
           disabled={isPending}
         >

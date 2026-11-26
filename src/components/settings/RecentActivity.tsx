@@ -32,14 +32,14 @@ export default function RecentActivity() {
       {isError ? (
         <LoadError what="recent activity" onRetry={() => refetch()} />
       ) : entries.length === 0 ? (
-        <p className="text-[12px] text-emerald-ink/60">Nothing has happened yet.</p>
+        <p className="text-[12px] text-emerald-ink/85">Nothing has happened yet.</p>
       ) : (
         <ul className="divide-y divide-emerald-ink/10 rounded-xl border border-emerald-ink/10">
           {entries.map((e) => (
             <li key={e.id} className="p-3 text-[12px] text-emerald-ink">
               <p className={cn('font-medium', TONE[e.outcome])}>{e.summary}</p>
               {e.created_at && (
-                <p className="text-emerald-ink/50">
+                <p className="text-emerald-ink/80">
                   {new Date(`${e.created_at.replace(' ', 'T')}Z`).toLocaleString('en-IN')}
                 </p>
               )}

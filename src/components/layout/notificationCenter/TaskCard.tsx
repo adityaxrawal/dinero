@@ -7,7 +7,7 @@ import { formatDuration } from '@/lib/scanTiming';
 
 const STATUS_ICON: Record<string, React.ReactNode> = {
   completed: <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-[#10b981]" aria-hidden="true" />,
-  cancelled: <XCircle className="w-3.5 h-3.5 shrink-0 text-champagne/50" aria-hidden="true" />,
+  cancelled: <XCircle className="w-3.5 h-3.5 shrink-0 text-champagne/70" aria-hidden="true" />,
 };
 
 const RUNNING_ICON = (
@@ -32,7 +32,7 @@ function ProgressBar({ task }: { task: UnifiedTask }) {
           style={{ width: `${task.progressPct}%` }}
         />
       </div>
-      <div className="flex items-center justify-between text-[11px] text-champagne/60 font-medium">
+      <div className="flex items-center justify-between text-[11px] text-champagne/75 font-medium">
         <span>{counts}</span>
         {task.etaSeconds != null && task.etaSeconds > 0 && (
           <span>~{formatDuration(task.etaSeconds)} remaining</span>
@@ -88,7 +88,7 @@ export default function TaskCard({
             <button
               type="button"
               onClick={onDismiss}
-              className="p-1 text-champagne/40 hover:text-champagne rounded transition-colors"
+              className="p-1 text-champagne/70 hover:text-champagne rounded transition-colors"
               aria-label="Dismiss task notification"
             >
               <X className="w-3.5 h-3.5" />

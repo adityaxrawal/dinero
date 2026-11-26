@@ -22,7 +22,7 @@ export default function AuditCard({ tx }: { tx: Tx }) {
         <CardTitle className="text-[12px] font-bold uppercase tracking-wider text-emerald-ink">
           Audit &amp; Technical Specs
         </CardTitle>
-        <span className="text-emerald-ink/60">
+        <span className="text-emerald-ink/85">
           {isOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
         </span>
       </CardHeader>

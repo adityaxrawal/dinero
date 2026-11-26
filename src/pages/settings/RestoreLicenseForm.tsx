@@ -43,7 +43,7 @@ export default function RestoreLicenseForm({
     return (
       <Button
         variant="outline"
-        className="h-9 font-semibold border-emerald-ink/20 text-emerald-ink/70 hover:bg-emerald-ink/5"
+        className="h-9 font-semibold border-emerald-ink/20 text-emerald-ink/85 hover:bg-emerald-ink/5"
         onClick={() => setOpen(true)}
       >
         Already paid? Restore licence
@@ -53,7 +53,7 @@ export default function RestoreLicenseForm({
 
   return (
     <div className="mt-6 pt-6 border-t border-emerald-ink/10 space-y-4">
-      <p className="text-[13px] font-medium text-emerald-ink/70">
+      <p className="text-[13px] font-medium text-emerald-ink/85">
         Reinstalled Dinero or reset this Mac? Enter the email you bought with and the payment ID
         from your Razorpay receipt (it starts with <code>pay_</code>).
       </p>

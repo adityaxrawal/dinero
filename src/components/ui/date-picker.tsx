@@ -163,7 +163,7 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div className="space-y-1">
-          <label className="text-[11px] font-semibold uppercase tracking-wider text-emerald-ink/70">
+          <label className="text-[11px] font-semibold uppercase tracking-wider text-emerald-ink/85">
             Start Date
           </label>
           <DatePicker
@@ -177,7 +177,7 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
         </div>
 
         <div className="space-y-1">
-          <label className="text-[11px] font-semibold uppercase tracking-wider text-emerald-ink/70">
+          <label className="text-[11px] font-semibold uppercase tracking-wider text-emerald-ink/85">
             End Date
           </label>
           <DatePicker

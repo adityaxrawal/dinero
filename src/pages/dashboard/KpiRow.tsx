@@ -31,7 +31,7 @@ function KpiTile({
             {value}
           </p>
           {delta != null && (
-            <p className="kpi-delta" style={{ color: delta > 0 ? '#ef4444' : '#10b981' }}>
+            <p className="kpi-delta" style={{ color: delta > 0 ? RED : GREEN }}>
               {delta > 0 ? (
                 <TrendingUp className="w-3 h-3" aria-hidden="true" />
               ) : (
@@ -56,7 +56,7 @@ function KpiTile({
 /** Utilisation bar against the spending limit. */
 function LimitBar({ spent, limit }: { spent: number; limit: number }) {
   const pct = limit > 0 ? Math.min(100, (spent / limit) * 100) : 0;
-  const color = pct > 90 ? '#ef4444' : pct > 75 ? '#f59e0b' : '#064E3B';
+  const color = pct > 90 ? RED : pct > 75 ? '#b45309' : '#064E3B';
   return (
     <div className="kpi-tile flex-1 min-w-0">
       <div className="flex items-start justify-between gap-2">
@@ -90,8 +90,8 @@ function LimitBar({ spent, limit }: { spent: number; limit: number }) {
   );
 }
 
-const RED = '#ef4444';
-const GREEN = '#10b981';
+const RED = '#b91c1c'; // red-700: 4.5:1 on the KPI tile (a11y)
+const GREEN = '#047857'; // emerald-700
 
 /** Headline KPI tiles. */
 export default function KpiRow({

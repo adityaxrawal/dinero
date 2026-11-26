@@ -40,7 +40,7 @@ export default function InspectorTabs({
               'flex items-center gap-1.5 px-3.5 py-1.5 text-[12px] font-bold rounded-full transition-all whitespace-nowrap cursor-pointer',
               isActive
                 ? 'bg-emerald-ink text-champagne shadow-xs'
-                : 'text-emerald-ink/70 hover:bg-emerald-ink/10 hover:text-emerald-ink'
+                : 'text-emerald-ink/85 hover:bg-emerald-ink/10 hover:text-emerald-ink'
             )}
             onClick={() => onSelect(tab.id)}
           >

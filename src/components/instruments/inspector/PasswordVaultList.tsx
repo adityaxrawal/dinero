@@ -23,7 +23,7 @@ export default function PasswordVaultList({
 }) {
   return (
     <div className="bg-champagne/60 rounded-2xl p-4 border border-emerald-ink/10 space-y-2 shadow-xs">
-      <h4 className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/70 flex items-center gap-1.5">
+      <h4 className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/85 flex items-center gap-1.5">
         <ShieldCheck className="w-3.5 h-3.5 text-emerald-ink" /> Saved Statement Passwords
       </h4>
       {passwords.map((p) => (

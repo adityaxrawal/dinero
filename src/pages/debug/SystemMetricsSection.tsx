@@ -21,7 +21,7 @@ const PANEL =
 function MetricTile({
   label,
   icon,
-  iconClassName = 'bg-emerald-ink/5 text-emerald-ink/70',
+  iconClassName = 'bg-emerald-ink/5 text-emerald-ink/85',
   children,
 }: {
   label: string;
@@ -32,7 +32,7 @@ function MetricTile({
   return (
     <div className={TILE}>
       <div className="flex items-center justify-between gap-2">
-        <p className="text-[12px] font-bold uppercase tracking-wider text-emerald-ink/60 truncate">
+        <p className="text-[12px] font-bold uppercase tracking-wider text-emerald-ink/85 truncate">
           {label}
         </p>
         <div
@@ -90,7 +90,7 @@ function DistributionPanel({
           </div>
         ))}
         {rows.length === 0 && (
-          <div className="py-6 text-center text-[13px] text-emerald-ink/50 font-medium bg-emerald-ink/5 rounded-xl border border-dashed border-emerald-ink/10">
+          <div className="py-6 text-center text-[13px] text-emerald-ink/80 font-medium bg-emerald-ink/5 rounded-xl border border-dashed border-emerald-ink/10">
             No data available.
           </div>
         )}
@@ -127,7 +127,7 @@ function MetricsGrid({ metrics, ram }: { metrics: DebugMetrics; ram: number | nu
           <h3 className="text-3xl lg:text-4xl font-black text-emerald-ink tracking-tighter">
             {ram ? ram : '...'}
           </h3>
-          <span className="text-lg font-bold text-emerald-ink/50">GB</span>
+          <span className="text-lg font-bold text-emerald-ink/80">GB</span>
         </div>
       </MetricTile>
     </div>
@@ -149,7 +149,7 @@ export default function SystemMetricsSection({
       <div className="flex justify-between items-end mb-2">
         <div>
           <h2 className="text-2xl font-black tracking-tight text-emerald-ink">System Metrics</h2>
-          <p className="text-[13px] font-medium text-emerald-ink/60 mt-1">
+          <p className="text-[13px] font-medium text-emerald-ink/85 mt-1">
             Overview of the processing pipeline health and memory usage.
           </p>
         </div>
@@ -176,7 +176,7 @@ export default function SystemMetricsSection({
           </div>
         </>
       ) : (
-        <div className="flex items-center justify-center py-12 text-emerald-ink/60 text-[14px] font-medium animate-pulse">
+        <div className="flex items-center justify-center py-12 text-emerald-ink/85 text-[14px] font-medium animate-pulse">
           Loading metrics...
         </div>
       )}

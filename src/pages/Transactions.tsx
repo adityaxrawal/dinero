@@ -20,14 +20,14 @@ import CreateTransactionModal from './transactions/CreateTransactionModal';
 /** Prompt shown when no transaction is selected. */
 function EmptyInspector() {
   return (
-    <div className="flex-1 flex flex-col items-center justify-center h-full opacity-40 gap-3">
+    <div className="flex-1 flex flex-col items-center justify-center h-full [&_svg]:opacity-40 gap-3">
       <div className="w-14 h-14 border-2 border-emerald-ink rounded-2xl border-dashed flex items-center justify-center bg-emerald-ink/5">
         <span className="text-emerald-ink font-extrabold text-2xl">D</span>
       </div>
       <p className="text-emerald-ink font-semibold text-sm">
         Select a transaction to inspect details &amp; edit
       </p>
-      <p className="text-emerald-ink/60 text-xs font-mono">
+      <p className="text-emerald-ink/85 text-xs font-mono">
         Use ↑ / ↓ arrow keys to quickly navigate
       </p>
     </div>

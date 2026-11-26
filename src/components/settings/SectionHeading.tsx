@@ -21,7 +21,7 @@ export default function SectionHeading({
       <h2 className="text-xl font-bold flex items-center gap-2">
         <Icon className={cn('w-5 h-5', iconClassName)} /> {title}
       </h2>
-      {description && <p className="text-sm mt-1 text-emerald-ink/70">{description}</p>}
+      {description && <p className="text-sm mt-1 text-emerald-ink/85">{description}</p>}
     </div>
   );
 }

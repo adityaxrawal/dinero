@@ -63,7 +63,7 @@
     /* Text hierarchy */
     --text-primary: #0d2b22;
     --text-secondary: #3d5a50;
-    --text-muted: #6b8a7f;
+    --text-muted: #46675b; /* 4.5:1 on every surface it is used on (a11y) */
     --text-on-rail: #f8e7c9;
     --text-on-rail-muted: rgba(248, 231, 201, 0.6);
     --text-on-dark: #f8e7c9;

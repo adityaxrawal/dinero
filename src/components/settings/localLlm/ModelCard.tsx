@@ -48,7 +48,7 @@ function DownloadProgress({ progress }: { progress: LlmDownloadProgress }) {
   const pct = downloadPercent(progress);
   return (
     <div className="mt-3 w-full max-w-sm">
-      <div className="flex justify-between text-[11px] font-semibold text-emerald-ink/60 mb-1.5">
+      <div className="flex justify-between text-[11px] font-semibold text-emerald-ink/85 mb-1.5">
         <span>Downloading...</span>
         {pct !== null && <span>{Math.round(pct)}%</span>}
       </div>
@@ -58,7 +58,7 @@ function DownloadProgress({ progress }: { progress: LlmDownloadProgress }) {
           style={{ width: pct !== null ? `${pct}%` : '100%' }}
         />
       </div>
-      <div className="mt-1.5 text-[11px] text-emerald-ink/60">{downloadDetail(progress)}</div>
+      <div className="mt-1.5 text-[11px] text-emerald-ink/85">{downloadDetail(progress)}</div>
     </div>
   );
 }
@@ -94,7 +94,7 @@ function ModelActions({
           <Button
             variant="outline"
             disabled
-            className="flex-1 sm:flex-none h-9 font-semibold border-emerald-ink/20 text-emerald-ink/50"
+            className="flex-1 sm:flex-none h-9 font-semibold border-emerald-ink/20 text-emerald-ink/80"
           >
             <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Downloading
           </Button>
@@ -163,9 +163,9 @@ export default function ModelCard({ model, models }: { model: LlmModelInfo; mode
           />
         </div>
 
-        <p className="text-[13px] text-emerald-ink/70 leading-relaxed max-w-2xl">{model.rationale}</p>
+        <p className="text-[13px] text-emerald-ink/85 leading-relaxed max-w-2xl">{model.rationale}</p>
 
-        <div className="flex flex-wrap items-center gap-4 text-[12px] font-medium text-emerald-ink/60 pt-1">
+        <div className="flex flex-wrap items-center gap-4 text-[12px] font-medium text-emerald-ink/85 pt-1">
           <span className="flex items-center gap-1.5">
             <Server className="w-3.5 h-3.5" /> RAM: {model.min_ram_gb}GB+
           </span>

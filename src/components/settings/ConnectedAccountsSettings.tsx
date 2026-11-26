@@ -49,7 +49,7 @@ export default function ConnectedAccountsSettings() {
         <Mail className="w-5 h-5 text-emerald-ink" />
         <h3 className="text-xl font-bold text-emerald-ink">Connected Accounts</h3>
       </div>
-      <p className="text-sm text-emerald-ink/70 mb-5">
+      <p className="text-sm text-emerald-ink/85 mb-5">
         Connect Gmail securely via local OAuth to automate transaction syncing. We only request read
         access, and extraction happens locally. Up to 10 accounts can be connected; connecting a 2nd
         account or beyond requires an active subscription.
@@ -79,11 +79,11 @@ export default function ConnectedAccountsSettings() {
                   >
                     {isDegraded ? 'Needs Reconnection' : 'Gmail Connected'}
                   </p>
-                  <p className="text-[12px] font-medium text-emerald-ink/70 mt-0.5">
+                  <p className="text-[12px] font-medium text-emerald-ink/85 mt-0.5">
                     {account.email}
                   </p>
                   {isDegraded && (
-                    <p className="text-[12px] font-medium text-emerald-ink/70 mt-0.5">
+                    <p className="text-[12px] font-medium text-emerald-ink/85 mt-0.5">
                       Syncing has stopped — Gmail access expired or was revoked outside Dinero.
                     </p>
                   )}

@@ -172,7 +172,7 @@ export default function CardNumberInput({
         <button
           type="button"
           onClick={() => setIsMasked((prev) => !prev)}
-          className="p-1 rounded-md text-emerald-ink/60 hover:text-emerald-ink hover:bg-emerald-ink/10 transition-colors cursor-pointer"
+          className="p-1 rounded-md text-emerald-ink/85 hover:text-emerald-ink hover:bg-emerald-ink/10 transition-colors cursor-pointer"
           title={isMasked ? 'Show card number' : 'Mask card number'}
           aria-label={isMasked ? 'Show card number' : 'Mask card number'}
         >
@@ -182,7 +182,7 @@ export default function CardNumberInput({
         <button
           type="button"
           onClick={handleCopy}
-          className="p-1 rounded-md text-emerald-ink/60 hover:text-emerald-ink hover:bg-emerald-ink/10 transition-colors cursor-pointer"
+          className="p-1 rounded-md text-emerald-ink/85 hover:text-emerald-ink hover:bg-emerald-ink/10 transition-colors cursor-pointer"
           title="Copy card number"
           aria-label="Copy card number"
         >

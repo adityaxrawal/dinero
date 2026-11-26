@@ -33,7 +33,7 @@ function ChipSelect({
 }) {
   return (
     <Select value={value ?? ALL} onValueChange={(val) => onChange(val === ALL ? undefined : val)}>
-      <SelectTrigger className={cn(CHIP, value ? CHIP_ACTIVE : CHIP_IDLE)}>
+      <SelectTrigger aria-label={placeholder} className={cn(CHIP, value ? CHIP_ACTIVE : CHIP_IDLE)}>
         <SelectValue placeholder={placeholder} />
       </SelectTrigger>
       <SelectContent>

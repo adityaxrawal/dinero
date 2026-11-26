@@ -57,7 +57,7 @@ function EngineStatus({ healthy }: { healthy: boolean }) {
     <div className="px-6 mt-4 flex items-center justify-between">
       <div className="flex items-center gap-2">
         <div className={cn('w-2 h-2 rounded-full', healthy ? 'bg-[#10b981]' : 'bg-[#ef4444]')} />
-        <span className="text-[11px] font-medium text-champagne/60">
+        <span className="text-[11px] font-medium text-champagne/75">
           {healthy ? 'Engine Online' : 'Engine Offline'}
         </span>
       </div>
@@ -136,7 +136,7 @@ export default function AppLayout() {
             routed content, so a persistent warning never obscures the screen the
             user is trying to work on. Each banner decides for itself whether it
             has anything to show. */}
-        <div className="flex flex-col flex-shrink-0" aria-label="System messages">
+        <div role="region" className="flex flex-col flex-shrink-0" aria-label="System messages">
           <LicenseLockOverlay />
           <GracePeriodBanner />
           <StatementOnlyModeBanner />

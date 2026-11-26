@@ -35,7 +35,7 @@ export default function TransactionRow({
     ? 'bg-white/20 text-white border-white/30'
     : isDebit
       ? 'bg-red-500/10 text-red-700 border-red-500/20'
-      : 'bg-emerald-500/10 text-emerald-700 border-emerald-500/20';
+      : 'bg-emerald-500/10 text-emerald-800 border-emerald-500/20';
   const tone = isInternal && !isSelected ? 'bg-slate-500/10 text-slate-700 border-slate-500/20' : badgeTone;
 
   return (
@@ -74,7 +74,7 @@ export default function TransactionRow({
           </span>
         </div>
 
-        <div className="flex items-center justify-between text-[11px] font-medium opacity-80 gap-1 mt-0.5">
+        <div className="flex items-center justify-between text-[11px] font-medium gap-1 mt-0.5">
           <span className="truncate">
             {categoryName}
             {instrumentName ? ` • ${instrumentName}` : ''}

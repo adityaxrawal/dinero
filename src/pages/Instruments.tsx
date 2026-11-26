@@ -80,15 +80,15 @@ export default function Instruments() {
         <div className="flex-1 overflow-y-auto">
           {isLoading ? (
             <div className="flex flex-col items-center justify-center h-40 gap-2">
-              <Loader2 className="w-4 h-4 animate-spin text-emerald-ink/50" />
-              <span className="text-xs text-emerald-ink/50">Loading accounts...</span>
+              <Loader2 className="w-4 h-4 animate-spin text-emerald-ink/80" />
+              <span className="text-xs text-emerald-ink/80">Loading accounts...</span>
             </div>
           ) : isError && instruments.length === 0 ? (
             // A failed load used to read as "No instruments yet" (Phase 2 2.3).
             <LoadError what="your accounts" onRetry={() => refetch()} />
           ) : groups.length === 0 ? (
             <div className="text-center py-10 px-4 space-y-2">
-              <p className="text-xs text-emerald-ink/50">
+              <p className="text-xs text-emerald-ink/80">
                 No instruments yet or none match your criteria.
               </p>
               <Button
@@ -108,7 +108,7 @@ export default function Instruments() {
               {groups.map((group) => (
                 <div key={group.value} className="flex flex-col gap-1">
                   <div className="flex items-center justify-between px-4 mb-1">
-                    <h2 className="text-[11px] font-extrabold uppercase tracking-wider text-emerald-ink/60">
+                    <h2 className="text-[11px] font-extrabold uppercase tracking-wider text-emerald-ink/85">
                       {group.label}s
                     </h2>
                     <span className="text-[11px] font-bold px-1.5 py-0.2 rounded-full bg-emerald-ink/10 text-emerald-ink">
@@ -141,7 +141,7 @@ export default function Instruments() {
             />
           </div>
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center h-full opacity-40 space-y-3">
+          <div className="flex-1 flex flex-col items-center justify-center h-full [&_svg]:opacity-40 space-y-3">
             <div className="w-14 h-14 border-2 border-emerald-ink rounded-2xl border-dashed flex items-center justify-center bg-emerald-ink/5">
               <Landmark className="w-7 h-7 text-emerald-ink" />
             </div>

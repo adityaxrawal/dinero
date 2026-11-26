@@ -33,7 +33,7 @@ function HistoryList({
   const navigate = useNavigate();
 
   if (loading) {
-    return <div className="p-8 text-center text-[13px] text-emerald-ink/70">Loading history…</div>;
+    return <div className="p-8 text-center text-[13px] text-emerald-ink/85">Loading history…</div>;
   }
   // A failed load must not read as "No statements uploaded yet" (audit F8-8).
   if (onRetry) {
@@ -41,7 +41,7 @@ function HistoryList({
   }
   if (history.length === 0) {
     return (
-      <div className="p-8 text-center text-[13px] text-emerald-ink/70">
+      <div className="p-8 text-center text-[13px] text-emerald-ink/85">
         No statements uploaded yet.
       </div>
     );

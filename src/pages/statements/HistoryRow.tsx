@@ -58,13 +58,13 @@ export default function HistoryRow({
     <div className="p-4 flex items-center justify-between transition-colors hover:bg-emerald-ink/5">
       <div className="min-w-0 pr-4 flex-1">
         <div className="flex items-center gap-2 mb-1">
-          <FileText className="w-4 h-4 flex-shrink-0 text-emerald-ink/70" />
+          <FileText className="w-4 h-4 flex-shrink-0 text-emerald-ink/85" />
           <span className="text-[14px] font-semibold truncate text-emerald-ink" title={name}>
             {name}
           </span>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-[11px] font-medium text-emerald-ink/60">
+          <span className="text-[11px] font-medium text-emerald-ink/85">
             {formatCustomDate(stmt.date)}
           </span>
           <StatusPill status={stmt.status} />

@@ -63,7 +63,7 @@ export default function LicenseActions({
 
       <Button
         variant="outline"
-        className="h-9 font-semibold border-emerald-ink/20 text-emerald-ink/70 hover:bg-emerald-ink/5"
+        className="h-9 font-semibold border-emerald-ink/20 text-emerald-ink/85 hover:bg-emerald-ink/5"
         onClick={() => activation.setShowActivateForm((v) => !v)}
       >
         {activation.showActivateForm

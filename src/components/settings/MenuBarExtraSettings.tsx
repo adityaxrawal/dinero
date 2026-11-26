@@ -39,7 +39,7 @@ export default function MenuBarExtraSettings() {
         <AppWindow className="w-5 h-5 text-emerald-ink" />
         <h3 className="text-xl font-bold text-emerald-ink">Menu Bar Extra</h3>
       </div>
-      <p className="text-sm text-emerald-ink/70 mb-5">
+      <p className="text-sm text-emerald-ink/85 mb-5">
         Show a quick summary (month spend, pending review count, upcoming bills) in the macOS menu
         bar, with quick actions.
       </p>

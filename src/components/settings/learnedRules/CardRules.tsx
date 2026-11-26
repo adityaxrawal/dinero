@@ -28,7 +28,7 @@ export default function CardRules() {
 
   return (
     <div className="mt-8" aria-label="Card rules">
-      <p className="mb-2 flex items-center gap-1.5 text-[12px] font-medium text-emerald-ink/70">
+      <p className="mb-2 flex items-center gap-1.5 text-[12px] font-medium text-emerald-ink/85">
         <CreditCard className="h-3.5 w-3.5" aria-hidden="true" /> Card rules
       </p>
       <ul className="divide-y divide-emerald-ink/10 rounded-xl border border-emerald-ink/10">

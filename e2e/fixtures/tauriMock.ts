@@ -274,7 +274,7 @@ const tauriMockInitScript = `
     if (cmd === 'llm_get_available_models') {
       // Doc 16 §12.3's 5-tier catalog, mirrored for tests.
       return [
-        { id: 'gemma4_e4b', name: 'Gemma 4 E4B', tag: 'gemma4:e4b', tier: 1, min_ram_gb: 8.0, approx_size_gb: 5.0, rationale: 'The floor for customers who can't run anything bigger. Native structured JSON output and function calling.', gguf_url: '', expected_sha256: '' },
+        { id: 'gemma4_e4b', name: 'Gemma 4 E4B', tag: 'gemma4:e4b', tier: 1, min_ram_gb: 8.0, approx_size_gb: 5.0, rationale: "The floor for customers who can't run anything bigger. Native structured JSON output and function calling.", gguf_url: '', expected_sha256: '' },
         { id: 'gemma4_12b', name: 'Gemma 4 12B', tag: 'gemma4:12b', tier: 2, min_ram_gb: 16.0, approx_size_gb: 9.0, rationale: 'The default and sweet spot. Highly capable on 16GB, quality matching models twice its size.', gguf_url: '', expected_sha256: '' },
         { id: 'qwen3_6_27b', name: 'Qwen3.6-27B (Dense)', tag: 'qwen3.6:27b', tier: 3, min_ram_gb: 16.0, approx_size_gb: 15.0, rationale: 'Strong alternative/cross-check to Gemma 12B. Dense architecture means it is consistent and predictable.', gguf_url: '', expected_sha256: '' },
         { id: 'qwen3_6_35b_a3b', name: 'Qwen3.6-35B-A3B (MoE)', tag: 'qwen3.6:35b', tier: 4, min_ram_gb: 32.0, approx_size_gb: 21.0, rationale: 'Highest accuracy ceiling realistic for a consumer Mac. MoE makes it fast despite size.', gguf_url: '', expected_sha256: '' },
@@ -295,6 +295,11 @@ const tauriMockInitScript = `
       return null;
     }
     if (cmd === 'check_backend_status') return { status: 'healthy' };
+    // Not in recovery: an unhandled {} reads as truthy and shows the
+    // recovery screen on every page.
+    if (cmd === 'app_recovery_mode') return false;
+    // Onboarded with network consent, so pages render instead of onboarding.
+    if (cmd === 'onboarding_status') return { onboarded: true, network_consent: true };
     if (cmd === 'db_restore_backup') return 'ok';
     if (cmd === 'fetch_spending_limits') {
       return {

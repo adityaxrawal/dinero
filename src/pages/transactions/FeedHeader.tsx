@@ -35,7 +35,7 @@ export default function FeedHeader({
         <div className="flex items-center gap-1.5">
           <button
             type="button"
-            className="flex items-center justify-center w-7 h-7 rounded-lg transition-colors hover:bg-emerald-ink/10 text-emerald-ink/70 hover:text-emerald-ink cursor-pointer"
+            className="flex items-center justify-center w-7 h-7 rounded-lg transition-colors hover:bg-emerald-ink/10 text-emerald-ink/85 hover:text-emerald-ink cursor-pointer"
             onClick={onExport}
             aria-label="Export CSV"
             title="Export CSV"
@@ -56,7 +56,7 @@ export default function FeedHeader({
 
       <div className="relative w-full">
         <Search
-          className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 pointer-events-none text-emerald-ink/50"
+          className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 pointer-events-none text-emerald-ink/80"
           aria-hidden="true"
         />
         <input
@@ -72,14 +72,14 @@ export default function FeedHeader({
         {searchQuery ? (
           <button
             type="button"
-            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-emerald-ink/50 hover:text-emerald-ink"
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-emerald-ink/80 hover:text-emerald-ink"
             onClick={() => setSearchQuery('')}
             aria-label="Clear search"
           >
             <X className="w-3.5 h-3.5" />
           </button>
         ) : (
-          <kbd className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] font-mono font-medium text-emerald-ink/40 bg-emerald-ink/5 px-1.5 py-0.5 rounded border border-emerald-ink/10 pointer-events-none">
+          <kbd className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] font-mono font-medium text-emerald-ink/80 bg-emerald-ink/5 px-1.5 py-0.5 rounded border border-emerald-ink/10 pointer-events-none">
             ⌘K
           </kbd>
         )}

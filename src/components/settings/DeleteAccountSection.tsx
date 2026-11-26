@@ -41,7 +41,7 @@ function ResetWarningStep({
           This permanently deletes, on this device:
         </DialogDescription>
       </DialogHeader>
-      <ul className="list-disc pl-5 space-y-1 text-[13px] text-emerald-ink/70 font-medium">
+      <ul className="list-disc pl-5 space-y-1 text-[13px] text-emerald-ink/85 font-medium">
         <li>All transactions, statements, and instruments</li>
         <li>All local database backups (daily and pre-migration)</li>
         <li>Your connected Gmail account(s) and stored OAuth tokens</li>
@@ -109,7 +109,7 @@ function ResetConfirmStep({
           aria-describedby="reset-confirm-hint"
           className="bg-champagne/50 border-emerald-ink/20 focus-visible:ring-emerald-ink"
         />
-        <p id="reset-confirm-hint" className="text-xs text-emerald-ink/60">
+        <p id="reset-confirm-hint" className="text-xs text-emerald-ink/85">
           Must match exactly, including capitalization.
         </p>
       </div>
@@ -177,7 +177,7 @@ export default function DeleteAccountSection() {
 
   return (
     <div>
-      <p className="text-[13px] font-medium text-emerald-ink/70 mb-4">
+      <p className="text-[13px] font-medium text-emerald-ink/85 mb-4">
         Permanently delete all your data from this device: transactions, statements, instruments,
         connected Gmail accounts, and encryption keys. This action cannot be undone.
       </p>

@@ -44,7 +44,7 @@ function InstrumentOption({
             <span className="font-bold text-[13px] text-emerald-ink leading-tight truncate">
               {getInstrumentTitle(inst)}
             </span>
-            <span className="text-[11px] text-emerald-ink/65 font-medium truncate font-mono">
+            <span className="text-[11px] text-emerald-ink/85 font-medium truncate font-mono">
               {getInstrumentSubtitle(inst)}
             </span>
           </div>
@@ -79,7 +79,7 @@ export function InstrumentOptionGroup({
   return (
     <SelectGroup>
       {showDivider && <div className="border-t border-emerald-ink/10 my-1" />}
-      <SelectLabel className="flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-wider text-emerald-ink/70 px-2 py-1">
+      <SelectLabel className="flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-wider text-emerald-ink/85 px-2 py-1">
         {icon}
         <span>{label}</span>
         <span className="ml-auto text-[11px] px-1.5 py-0.2 rounded-full bg-emerald-ink/10">

@@ -89,7 +89,7 @@ export default function IdentityCard({
 
       <LabeledField label="Instrument Type">
         <Select value={fields.instrumentType} onValueChange={(v) => setField('instrumentType', v)}>
-          <SelectTrigger className={FIELD_SELECT}>
+          <SelectTrigger aria-label="Instrument Type" className={FIELD_SELECT}>
             <SelectValue placeholder="Select type" />
           </SelectTrigger>
           <SelectContent>
@@ -104,7 +104,7 @@ export default function IdentityCard({
 
       <LabeledField label="Status">
         <Select value={fields.status} onValueChange={(v) => setField('status', v)}>
-          <SelectTrigger className={FIELD_SELECT}>
+          <SelectTrigger aria-label="Status" className={FIELD_SELECT}>
             <SelectValue placeholder="Select status" />
           </SelectTrigger>
           <SelectContent>
@@ -118,7 +118,7 @@ export default function IdentityCard({
       </LabeledField>
 
       <div className="flex justify-between items-center pt-2 border-t border-emerald-ink/10">
-        <span className="text-emerald-ink/70 text-[12px] font-medium">Account ID</span>
+        <span className="text-emerald-ink/85 text-[12px] font-medium">Account ID</span>
         <div className="flex items-center gap-1">
           <span
             className="font-mono text-[11px] text-emerald-ink/80 truncate max-w-[130px]"
@@ -129,7 +129,7 @@ export default function IdentityCard({
           <button
             type="button"
             onClick={onCopyAccountId}
-            className="p-1 rounded text-emerald-ink/60 hover:text-emerald-ink hover:bg-emerald-ink/10 transition-colors"
+            className="p-1 rounded text-emerald-ink/85 hover:text-emerald-ink hover:bg-emerald-ink/10 transition-colors"
             title="Copy ID"
           >
             {copied ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}

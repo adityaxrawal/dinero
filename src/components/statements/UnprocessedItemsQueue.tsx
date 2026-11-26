@@ -16,9 +16,9 @@ const PANEL = 'rounded-xl border border-emerald-ink/10 bg-champagne/50 p-4';
 function EmptyQueue() {
   return (
     <div className="rounded-xl border border-emerald-ink/10 bg-champagne/50 p-10 text-center">
-      <CheckCircle2 className="mx-auto mb-3 h-8 w-8 text-emerald-ink/40" aria-hidden="true" />
+      <CheckCircle2 className="mx-auto mb-3 h-8 w-8 text-emerald-ink/80" aria-hidden="true" />
       <p className="text-sm font-medium text-emerald-ink">Nothing needs your attention</p>
-      <p className="mt-1 text-[13px] text-emerald-ink/60">
+      <p className="mt-1 text-[13px] text-emerald-ink/85">
         Statements that need a password or fail to parse will collect here.
       </p>
     </div>
@@ -43,7 +43,7 @@ function ReparseProgress({ processed, total }: { processed: number; total: numbe
           style={{ width: `${percent}%` }}
         />
       </div>
-      <p className="mt-2 text-[13px] text-emerald-ink/70">
+      <p className="mt-2 text-[13px] text-emerald-ink/85">
         {processed} of {total} checked
       </p>
     </div>
@@ -65,7 +65,7 @@ export default function UnprocessedItemsQueue({ onEnterPassword }: UnprocessedIt
             <AlertTriangle className="h-4 w-4 text-amber-600" aria-hidden="true" />
             {total} {total === 1 ? 'statement needs' : 'statements need'} attention
           </p>
-          <p className="mt-0.5 text-[13px] text-emerald-ink/60">
+          <p className="mt-0.5 text-[13px] text-emerald-ink/85">
             Re-parsing retries every one of them against your stored passwords.
           </p>
         </div>

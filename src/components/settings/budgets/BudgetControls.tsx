@@ -34,18 +34,18 @@ export function ThresholdToggle({
       <span
         className={cn(
           'text-2xl font-bold transition-colors',
-          isActive ? 'text-emerald-ink' : 'text-emerald-ink/70'
+          isActive ? 'text-emerald-ink' : 'text-emerald-ink/85'
         )}
       >
         {label}
       </span>
-      <span className="text-[12px] font-medium mt-1 text-emerald-ink/70">{description}</span>
+      <span className="text-[12px] font-medium mt-1 text-emerald-ink/85">{description}</span>
       <span
         className={cn(
           'mt-3 px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider',
           isActive
             ? 'bg-emerald-ink/10 text-emerald-ink'
-            : 'bg-emerald-ink/5 text-emerald-ink/60 border border-emerald-ink/10'
+            : 'bg-emerald-ink/5 text-emerald-ink/85 border border-emerald-ink/10'
         )}
       >
         {isActive ? 'ON' : 'OFF'}
@@ -68,7 +68,7 @@ export function CategoryBudgetCard({
         {cat.name}
       </Label>
       <div className="flex items-center gap-2">
-        <span className="text-[13px] font-medium text-emerald-ink/70 shrink-0">₹</span>
+        <span className="text-[13px] font-medium text-emerald-ink/85 shrink-0">₹</span>
         <Input
           id={`cat-${cat.name}`}
           type="number"
@@ -80,7 +80,7 @@ export function CategoryBudgetCard({
         />
       </div>
       {cat.budget > 0 && (
-        <p className="text-[12px] font-semibold text-emerald-ink/60">
+        <p className="text-[12px] font-semibold text-emerald-ink/85">
           {formatMoney(toMinor(cat.budget), null)} / month
         </p>
       )}

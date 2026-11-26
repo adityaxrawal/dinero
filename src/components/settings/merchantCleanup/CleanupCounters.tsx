@@ -23,7 +23,7 @@ function Counter({
   return (
     <span className="flex items-center gap-1.5">
       {icon}
-      <span className="text-emerald-ink/60">{label}</span>
+      <span className="text-emerald-ink/85">{label}</span>
       <strong className="font-bold text-emerald-ink tabular-nums">{value}</strong>
     </span>
   );
@@ -47,19 +47,19 @@ export default function CleanupCounters({
         value={progress.applied}
       />
       <Counter
-        icon={<MinusCircle className="w-3.5 h-3.5 text-emerald-ink/40" />}
+        icon={<MinusCircle className="w-3.5 h-3.5 text-emerald-ink/80" />}
         label="Skipped"
         value={progress.skipped}
       />
       {live && isRunning && (
         <>
           <Counter
-            icon={<Sparkles className="w-3.5 h-3.5 text-emerald-ink/40" />}
+            icon={<Sparkles className="w-3.5 h-3.5 text-emerald-ink/80" />}
             label="Rate"
             value={`${live.perMin}/min`}
           />
           <Counter
-            icon={<Timer className="w-3.5 h-3.5 text-emerald-ink/40" />}
+            icon={<Timer className="w-3.5 h-3.5 text-emerald-ink/80" />}
             label="Left"
             value={`~${live.eta}`}
           />

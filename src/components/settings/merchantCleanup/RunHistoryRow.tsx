@@ -34,14 +34,14 @@ export default function RunHistoryRow({
         >
           <ChevronRight
             className={cn(
-              'w-4 h-4 shrink-0 text-emerald-ink/50 transition-transform',
+              'w-4 h-4 shrink-0 text-emerald-ink/80 transition-transform',
               open && 'rotate-90'
             )}
           />
           <span className="font-semibold text-[13px] text-emerald-ink shrink-0">
             <RelativeDate iso={run.started_at} />
           </span>
-          <span className="text-[12px] text-emerald-ink/60 truncate">
+          <span className="text-[12px] text-emerald-ink/85 truncate">
             {run.applied} still applied
             {run.reverted > 0 && ` · ${run.reverted} undone`}
             {run.banks.length > 0 && ` · ${run.banks.join(', ')}`}
@@ -64,7 +64,7 @@ export default function RunHistoryRow({
             <span className="ml-1.5">Undo run</span>
           </Button>
         ) : (
-          <span className="text-[11px] font-semibold uppercase tracking-wide text-emerald-ink/40 shrink-0">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-emerald-ink/80 shrink-0">
             Already undone
           </span>
         )}

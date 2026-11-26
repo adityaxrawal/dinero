@@ -7,7 +7,7 @@ import type { ScanStatus } from '@/lib/GlobalStateContext';
 
 const STATUS_ICON: Partial<Record<ScanStatus, React.ReactNode>> = {
   running: <Loader2 className="w-4 h-4 animate-spin text-emerald-ink" />,
-  cancelled: <XCircle className="w-4 h-4 text-emerald-ink/60" />,
+  cancelled: <XCircle className="w-4 h-4 text-emerald-ink/85" />,
   error: <AlertCircle className="w-4 h-4 text-red-600" />,
 };
 

@@ -31,19 +31,19 @@ function PipelineControlCard({
         <span
           className={cn(
             'text-[11px] uppercase tracking-wider px-2 py-0.5 rounded-sm font-bold',
-            paused ? 'bg-amber-500/20 text-amber-700' : 'bg-emerald-ink/10 text-emerald-ink'
+            paused ? 'bg-amber-500/20 text-amber-800' : 'bg-emerald-ink/10 text-emerald-ink'
           )}
         >
           {paused ? 'PAUSED' : 'RUNNING'}
         </span>
       </div>
-      <p className="text-[12px] text-emerald-ink/70">{description}</p>
+      <p className="text-[12px] text-emerald-ink/85">{description}</p>
       <button
         className={cn(
           'h-8 rounded-lg text-[13px] font-semibold flex items-center justify-center gap-2 transition-colors mt-auto',
           paused
             ? 'bg-emerald-ink text-champagne hover:bg-emerald-ink/90'
-            : 'bg-amber-500/20 text-amber-700 hover:bg-amber-500/30'
+            : 'bg-amber-500/20 text-amber-800 hover:bg-amber-500/30'
         )}
         onClick={onToggle}
       >

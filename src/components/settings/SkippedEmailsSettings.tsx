@@ -73,7 +73,7 @@ export default function SkippedEmailsSettings() {
       {isError ? (
         <LoadError what="skipped emails" onRetry={() => refetch()} />
       ) : skipped.length === 0 ? (
-        <p className="text-[12px] text-emerald-ink/60">Nothing skipped in the last 30 days.</p>
+        <p className="text-[12px] text-emerald-ink/85">Nothing skipped in the last 30 days.</p>
       ) : (
         <ul className="max-h-[420px] overflow-y-auto divide-y divide-emerald-ink/10 rounded-xl border border-emerald-ink/10">
           {skipped.map((e) => {
@@ -84,7 +84,7 @@ export default function SkippedEmailsSettings() {
               <li key={e.message_id} className="flex items-start gap-3 p-3 text-[12px] text-emerald-ink">
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-medium">{e.subject || '(no subject)'}</p>
-                  <p className="truncate text-emerald-ink/60">
+                  <p className="truncate text-emerald-ink/85">
                     {domain || e.bank_name || 'Unknown sender'} · {reasonLabel(e.reason)}
                   </p>
                 </div>

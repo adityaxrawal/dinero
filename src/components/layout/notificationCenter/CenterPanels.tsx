@@ -32,7 +32,7 @@ export function CenterHeader({ center }: { center: Center }) {
       <button
         type="button"
         onClick={center.toggleExpanded}
-        className="p-1 rounded-md text-champagne/60 hover:text-champagne hover:bg-champagne/10 transition-colors"
+        className="p-1 rounded-md text-champagne/75 hover:text-champagne hover:bg-champagne/10 transition-colors"
         aria-expanded={center.isExpanded}
         aria-label={center.isExpanded ? 'Collapse notifications' : 'Expand notifications'}
       >
@@ -55,13 +55,13 @@ export function CollapsedSummary({ center }: { center: Center }) {
     <button
       type="button"
       onClick={center.toggleExpanded}
-      className="text-[11px] font-medium text-champagne/60 hover:text-champagne text-left transition-colors flex items-center justify-between pt-1"
+      className="text-[11px] font-medium text-champagne/75 hover:text-champagne text-left transition-colors flex items-center justify-between pt-1"
     >
       <span>
         +{extraTasks} task{center.activeTasks.length > 2 ? 's' : ''}
         {alerts > 0 ? ` · ${alerts} notification${alerts === 1 ? '' : 's'}` : ''}
       </span>
-      <ChevronUp className="w-3 h-3 text-champagne/40" />
+      <ChevronUp className="w-3 h-3 text-champagne/70" />
     </button>
   );
 }
@@ -81,7 +81,7 @@ export function ExpandedFeed({ center }: { center: Center }) {
 
       {center.visibleNotifications.length > 0 && (
         <div className="flex flex-col gap-2 pt-1">
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-champagne/40">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-champagne/70">
             Recent Alerts
           </div>
           {center.visibleNotifications.map((item) => (

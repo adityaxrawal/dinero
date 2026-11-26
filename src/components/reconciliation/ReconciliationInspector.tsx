@@ -60,7 +60,7 @@ export default function ReconciliationInspector({
       >
         <button
           type="button"
-          className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-emerald-ink/10 text-emerald-ink/60 hover:text-emerald-ink"
+          className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-emerald-ink/10 text-emerald-ink/85 hover:text-emerald-ink"
           onClick={onClose}
           aria-label="Close inspector"
         >

@@ -49,9 +49,9 @@ function FormatHeader({ group, isLive }: { group: FormatGroup; isLive: boolean }
   return (
     <div className="flex items-center gap-2 flex-wrap">
       {primary.source_type === 'email' ? (
-        <Mail className="w-3.5 h-3.5 shrink-0 text-emerald-ink/45" />
+        <Mail className="w-3.5 h-3.5 shrink-0 text-emerald-ink/80" />
       ) : (
-        <FileText className="w-3.5 h-3.5 shrink-0 text-emerald-ink/45" />
+        <FileText className="w-3.5 h-3.5 shrink-0 text-emerald-ink/80" />
       )}
       <span
         className="font-mono text-[12px] font-semibold text-emerald-ink px-1.5 py-0.5 rounded bg-emerald-ink/[0.07]"
@@ -89,13 +89,13 @@ function FormatRow({
         <div className="min-w-0 flex-1">
           <FormatHeader group={group} isLive={isLive} />
 
-          <p className="text-[12px] mt-1.5 text-emerald-ink/60">
+          <p className="text-[12px] mt-1.5 text-emerald-ink/85">
             learned <RelativeDate iso={group.learnedAt} /> · {describeReliability(primary)}
             {group.rules.length > 1 && ` · ${group.rules.length} rules`}
           </p>
 
           {pattern && (
-            <p className="mt-1 font-mono text-[11px] text-emerald-ink/45 truncate" title={pattern}>
+            <p className="mt-1 font-mono text-[11px] text-emerald-ink/80 truncate" title={pattern}>
               {pattern}
             </p>
           )}
@@ -122,7 +122,7 @@ function FormatRow({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="mt-2 text-[11px] text-emerald-ink/50 hover:text-emerald-ink/80 flex items-center gap-1"
+        className="mt-2 text-[11px] text-emerald-ink/80 hover:text-emerald-ink/80 flex items-center gap-1"
       >
         <ChevronRight className={cn('w-3 h-3 transition-transform', open && 'rotate-90')} />
         Technical detail
@@ -156,12 +156,12 @@ export default function BankCard({
       >
         <ChevronRight
           className={cn(
-            'w-4 h-4 shrink-0 text-emerald-ink/50 transition-transform',
+            'w-4 h-4 shrink-0 text-emerald-ink/80 transition-transform',
             open && 'rotate-90'
           )}
         />
         <span className="font-bold text-[15px] text-emerald-ink truncate">{group.bank}</span>
-        <span className="text-[12px] text-emerald-ink/55 shrink-0">
+        <span className="text-[12px] text-emerald-ink/80 shrink-0">
           {group.formats.length} format{group.formats.length === 1 ? '' : 's'} · {group.ruleCount}{' '}
           rule{group.ruleCount === 1 ? '' : 's'}
         </span>

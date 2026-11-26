@@ -66,7 +66,7 @@ export default function ParallelSlotsCard({
         )}
       </div>
 
-      <p className="text-[13px] mt-1 text-emerald-ink/70 leading-relaxed max-w-2xl">
+      <p className="text-[13px] mt-1 text-emerald-ink/85 leading-relaxed max-w-2xl">
         Run multiple statement extractions at once during a scan.
         {hwInfo && (
           <>
@@ -90,9 +90,9 @@ export default function ParallelSlotsCard({
           )}
           aria-label="Number of parallel LLM instances"
         />
-        <span className="text-[12px] text-emerald-ink/60">instances (1-10)</span>
+        <span className="text-[12px] text-emerald-ink/85">instances (1-10)</span>
         {isDirty && !slots.isSaving && (
-          <span className="text-[11px] font-semibold text-emerald-ink/60 flex items-center gap-1">
+          <span className="text-[11px] font-semibold text-emerald-ink/85 flex items-center gap-1">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-ink/60" /> Unsaved changes
           </span>
         )}

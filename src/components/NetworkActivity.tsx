@@ -63,7 +63,7 @@ export default function NetworkActivity() {
 
       <div className="p-4 rounded-xl border border-emerald-ink/10 bg-emerald-ink/5 mb-4">
         <p className="text-[13px] font-bold text-emerald-ink mb-2">Outbound Channels Disclosure:</p>
-        <ul className="text-[12px] font-medium text-emerald-ink/70 list-disc pl-5 space-y-1">
+        <ul className="text-[12px] font-medium text-emerald-ink/85 list-disc pl-5 space-y-1">
           {OUTBOUND_CHANNEL_DISCLOSURE.map((item, i) => (
             <li key={i}>{item}</li>
           ))}
@@ -73,19 +73,19 @@ export default function NetworkActivity() {
       {error ? (
         <div className="text-[13px] font-medium text-red-600 mb-4">{error}</div>
       ) : loading && logs.length === 0 ? (
-        <div className="flex items-center gap-2 text-[13px] font-medium text-emerald-ink/70">
+        <div className="flex items-center gap-2 text-[13px] font-medium text-emerald-ink/85">
           <div className="w-4 h-4 border-2 border-emerald-ink/20 border-t-emerald-ink rounded-full animate-spin" />
           Loading network activity...
         </div>
       ) : logs.length === 0 ? (
-        <div className="text-[13px] font-medium text-emerald-ink/70">
+        <div className="text-[13px] font-medium text-emerald-ink/85">
           No outbound requests recorded yet.
         </div>
       ) : (
         <div className="overflow-x-auto rounded-xl border border-emerald-ink/10 bg-champagne/50">
           <table className="w-full text-left border-collapse">
             <thead>
-              <tr className="border-b border-emerald-ink/10 text-[11px] font-bold uppercase tracking-wider text-emerald-ink/60">
+              <tr className="border-b border-emerald-ink/10 text-[11px] font-bold uppercase tracking-wider text-emerald-ink/85">
                 <th className="p-3">Timestamp</th>
                 <th className="p-3">Method</th>
                 <th className="p-3">Domain</th>
@@ -107,7 +107,7 @@ export default function NetworkActivity() {
                   <td className="p-3 text-[12px] font-bold text-emerald-ink">{log.method}</td>
                   <td className="p-3 text-[12px] font-medium text-emerald-ink/80">{log.domain}</td>
                   <td
-                    className="p-3 text-[12px] font-mono text-emerald-ink/70 truncate max-w-[200px]"
+                    className="p-3 text-[12px] font-mono text-emerald-ink/85 truncate max-w-[200px]"
                     title={log.url_redacted}
                   >
                     {log.url_redacted}
