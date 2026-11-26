@@ -1,6 +1,7 @@
 /**
- * What recent scans and statement imports did, kept by the backend so it
- * survives a restart (audit F5-4; the notification feed is in-memory only).
+ * What recent scans, statement imports, duplicate checks and local-AI reads
+ * did, kept by the backend so it survives a restart (audit F5-4, F19-3; the
+ * notification feed is in-memory only).
  */
 import { useQuery } from '@tanstack/react-query';
 import { History } from 'lucide-react';
@@ -25,7 +26,7 @@ export default function RecentActivity() {
       <SectionHeading
         icon={History}
         title="Recent activity"
-        description="What your last scans and statement imports did."
+        description="What your recent scans, statement imports, duplicate checks and AI reads did."
       />
       {isError ? (
         <p role="alert" className="text-[12px] text-emerald-ink/70">
@@ -35,7 +36,7 @@ export default function RecentActivity() {
           </button>
         </p>
       ) : entries.length === 0 ? (
-        <p className="text-[12px] text-emerald-ink/60">No scans or imports yet.</p>
+        <p className="text-[12px] text-emerald-ink/60">Nothing has happened yet.</p>
       ) : (
         <ul className="divide-y divide-emerald-ink/10 rounded-xl border border-emerald-ink/10">
           {entries.map((e) => (

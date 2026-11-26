@@ -898,6 +898,7 @@ async fn process_layer6_job(
 
     if completed {
         delete_persisted_layer6_job(pool, &job.unassigned_id).await;
+        record_ai_result(pool, &job, booked).await;
         return Layer6Done { completed: true, booked, retry_after: None };
     } else {
         // A timeout, a dead sidecar or a failed write says nothing about the
@@ -922,6 +923,45 @@ async fn process_layer6_job(
         );
         return Layer6Done { completed: false, booked: false, retry_after: Some(delay) };
     }
+}
+
+/// Records a final local-AI result in Settings > Recent activity (audit
+/// F19-3). Read from the entry's state after the job, so an entry the user
+/// had already handled (dropped result) is not logged. Retries never are.
+async fn record_ai_result(pool: &Pool, job: &Layer6Job, booked: bool) {
+    let (unassigned_id, observation_id, bank) =
+        (job.unassigned_id.clone(), job.observation_id.clone(), job.bank_name.clone());
+    let Ok(conn) = pool.get().await else { return };
+    let _ = conn
+        .interact(move |c| -> anyhow::Result<()> {
+            let state: Option<(String, String)> = c
+                .query_row(
+                    "SELECT status, reason FROM unassigned_transactions WHERE id = ?1",
+                    [&unassigned_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .ok();
+            let what = crate::db::activity_log::describe_observation(c, &observation_id);
+            let (outcome, summary) = match (booked, state) {
+                (true, _) => ("booked", format!("Local AI read a {bank} email: booked {what}")),
+                (false, Some((status, _))) if status == "open" => {
+                    ("needs_review", format!("Local AI read a {bank} email: needs review"))
+                }
+                (false, Some((_, reason))) if reason == "not_a_transaction" => (
+                    "skipped",
+                    format!("Local AI read a {bank} email: skipped, not a transaction"),
+                ),
+                _ => return Ok(()),
+            };
+            crate::db::activity_log::append(
+                c,
+                "ai",
+                outcome,
+                &summary,
+                Some(&serde_json::json!({ "observation_id": observation_id })),
+            )
+        })
+        .await;
 }
 
 /// Review reason for an LLM answer that named a value absent from the email.
@@ -2112,6 +2152,24 @@ mod layer6_tests {
         seed_pending_observation(&conn, "obs-rej", "u-rej", "msg-rej").await;
         assert!(mark_llm_rejected(&pool, "u-rej").await);
         assert_eq!(reason_of(&conn, "u-rej").await, LLM_VALUE_NOT_IN_EMAIL);
+        // The final result is recorded in the activity log (audit F19-3).
+        let job = Layer6Job {
+            observation_id: "obs-rej".to_string(),
+            unassigned_id: "u-rej".to_string(),
+            bank_name: "HDFC Bank".to_string(),
+            body_text: String::new(),
+            app_dir: dir.clone(),
+            internal_date_seconds: None,
+        };
+        record_ai_result(&pool, &job, false).await;
+        let entries = conn
+            .interact(|c| crate::db::activity_log::list(c, 10))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!((entries[0].kind.as_str(), entries[0].outcome.as_str()), ("ai", "needs_review"));
+        assert_eq!(entries[0].summary, "Local AI read a HDFC Bank email: needs review");
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -94,7 +94,9 @@ describe('EVENT_INVALIDATIONS (audit F14-1, F12-3, F8-4)', () => {
     const { EVENT_INVALIDATIONS } = await import('@/hooks/useIpcQueryInvalidation');
     const keysFor = (event: string) =>
       EVENT_INVALIDATIONS.find((e) => e.event === event)?.keys.map((k) => k[0]) ?? [];
-    expect(keysFor('unassigned_changed')).toEqual(['reconciliation', 'dashboard']);
+    // Local-AI results land in the activity log (audit F19-3).
+    expect(keysFor('unassigned_changed')).toEqual(['reconciliation', 'dashboard', 'activity']);
+    expect(keysFor('reconciliation_cluster')).toContain('activity');
     expect(keysFor('transaction_updated')).toContain('instruments');
     expect(keysFor('scan_completed')).toContain('reconciliation');
     expect(keysFor('statement_parsed')).toEqual(['statements', 'activity']);

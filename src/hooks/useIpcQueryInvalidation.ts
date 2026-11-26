@@ -58,15 +58,16 @@ export const EVENT_INVALIDATIONS: ReadonlyArray<{ event: string; keys: readonly 
   // A failed or cancelled scan is recorded in the activity log too.
   { event: 'scan_failed', keys: [queryKeys.activity.all()] },
   { event: 'scan_cancelled', keys: [queryKeys.activity.all()] },
+  // Duplicate-check decisions and local-AI results are logged too (F19-3).
   {
     event: 'reconciliation_cluster',
-    keys: [queryKeys.reconciliation.all(), queryKeys.dashboard.all()],
+    keys: [queryKeys.reconciliation.all(), queryKeys.dashboard.all(), queryKeys.activity.all()],
   },
   // A review entry was filed, relabelled or settled in the background (B-1).
   // Dashboard too: its "Pending Review" tile counts these entries (audit F14-1).
   {
     event: 'unassigned_changed',
-    keys: [queryKeys.reconciliation.all(), queryKeys.dashboard.all()],
+    keys: [queryKeys.reconciliation.all(), queryKeys.dashboard.all(), queryKeys.activity.all()],
   },
   // Statement pipeline events refresh the Statements screen's history and
   // queue, which otherwise only caught up after a scan finished (audit F8-4).

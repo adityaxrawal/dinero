@@ -35,6 +35,8 @@ export function useResolveCluster() {
       queryClient.invalidateQueries({ queryKey: queryKeys.reconciliation.all() });
       queryClient.invalidateQueries({ queryKey: queryKeys.dashboard.all() });
       queryClient.invalidateQueries({ queryKey: queryKeys.transactions.all() });
+      // The decision is recorded in Settings > Recent activity (audit F19-3).
+      queryClient.invalidateQueries({ queryKey: queryKeys.activity.all() });
     },
   });
 }

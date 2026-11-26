@@ -2535,7 +2535,20 @@ pub async fn reconciliation_clusters_unmerge(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     let id = cluster_id.clone();
     let outcome = conn
-        .interact(move |c| crate::reconciliation::cluster::unmerge_cluster(c, &id))
+        .interact(move |c| {
+            let outcome = crate::reconciliation::cluster::unmerge_cluster(c, &id)?;
+            if matches!(outcome, crate::reconciliation::cluster::UnmergeOutcome::Reopened { .. }) {
+                // Recorded in Settings > Recent activity (audit F19-3).
+                let _ = crate::db::activity_log::append(
+                    c,
+                    "cluster",
+                    "undone",
+                    "Duplicate check undone: the transaction is back for a decision",
+                    Some(&serde_json::json!({ "cluster_id": id })),
+                );
+            }
+            Ok::<_, anyhow::Error>(outcome)
+        })
         .await
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;

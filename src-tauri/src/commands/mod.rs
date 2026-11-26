@@ -2255,6 +2255,22 @@ pub async fn reconciliation_clusters_resolve(
         )
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
 
+        // Also in Settings > Recent activity, where it survives a restart
+        // (audit F19-3). Best effort: the decision itself is already saved.
+        let what = crate::db::activity_log::describe_observation(conn, &observation_id);
+        let (outcome, summary) = if action == "confirm_match" {
+            ("matched", format!("Duplicate check: {what} matched to an existing transaction"))
+        } else {
+            ("kept_separate", format!("Duplicate check: {what} kept as a separate transaction"))
+        };
+        let _ = crate::db::activity_log::append(
+            conn,
+            "cluster",
+            outcome,
+            &summary,
+            Some(&serde_json::json!({ "cluster_id": cluster_id, "observation_id": observation_id })),
+        );
+
         Ok::<(), crate::error::AppError>(())
     })
     .await
