@@ -733,6 +733,25 @@ pub(crate) fn apply_instrument_signals(obs: &mut ExtractionResult, bank_name: &s
 }
 
 static INTERNAL_TRANSFER_RE: OnceLock<Regex> = OnceLock::new();
+static POT_MOVE_RE: OnceLock<Regex> = OnceLock::new();
+static PAYEE_PAYER_VPA_RE: OnceLock<Regex> = OnceLock::new();
+
+/// Money moved between the user's own funds, which is not spending or income
+/// (audit P3-F, P3-G): a Jupiter Pot top-up or withdrawal, or a UPI payment
+/// whose payee VPA is exactly the payer's own VPA.
+fn moves_money_between_own_funds(body: &str) -> bool {
+    let pot = POT_MOVE_RE.get_or_init(|| {
+        Regex::new(r"(?i)(?:added\s+money\s+to|taken\s+money\s+out\s+of)\s+your\s+pot").unwrap()
+    });
+    if pot.is_match(body) {
+        return true;
+    }
+    let vpas = PAYEE_PAYER_VPA_RE.get_or_init(|| {
+        Regex::new(r"(?is)paid\s+to\s+.{0,60}?([\w.\-]+@[\w.\-]+).{0,120}?\bfrom\s+.{0,40}?([\w.\-]+@[\w.\-]+)")
+            .unwrap()
+    });
+    vpas.captures(body).is_some_and(|c| c[1].eq_ignore_ascii_case(&c[2]))
+}
 
 /// Infers the payment channel -- UPI, card, NEFT, ATM and so on.
 ///
@@ -745,7 +764,7 @@ pub(crate) fn detect_channel(obs: &ExtractionResult, body: &str) -> Option<Strin
         )
         .unwrap()
     });
-    if internal_transfer_re.is_match(body) {
+    if internal_transfer_re.is_match(body) || moves_money_between_own_funds(body) {
         return Some("internal_transfer".to_string());
     }
 
@@ -1275,6 +1294,18 @@ const NUMERIC_AMBIGUOUS_FORMATS: &[&str] =
 /// day-first and month-first formats are genuinely ambiguous below the
 /// thirteenth -- the caller needs that uncertainty rather than a confident guess.
 pub(crate) fn parse_date_generic(s: &str) -> Option<DateParseResult> {
+    // A bank-printed time of day is Indian local time; ExtractionResult holds
+    // UTC epochs and normalisation converts back to IST. Dropping the time
+    // left every such alert at the date-only placeholder (audit P3-I).
+    const DATETIME_FORMATS: &[&str] = &["%a, %b %d, %Y, %I:%M %p", "%b %d, %Y, %I:%M %p"];
+    for fmt in DATETIME_FORMATS {
+        if let Ok(local) = chrono::NaiveDateTime::parse_from_str(s.trim(), fmt) {
+            let ist = chrono::FixedOffset::east_opt(5 * 3600 + 30 * 60)?;
+            let dt = local.and_local_timezone(ist).single()?;
+            return Some(DateParseResult { timestamp: dt.timestamp(), ambiguous: false });
+        }
+    }
+
     let formats = [
         "%d-%b-%y",
         "%d-%b-%Y",
@@ -2053,7 +2084,10 @@ pub async fn run_extraction_ladder(
     trace.info("    ↳ ❌ Layer [layer5_statement_crossref] failed to extract.");
 
     if !llm_eligible {
-        trace.info("    ↳ ⏭️ Layer 6 (LLM) skipped — Device not eligible for local inference.");
+        // The scan never runs Layer 6 inline; incomplete emails go to the
+        // separate local-AI queue. The old "device not eligible" text was
+        // wrong for every scan (audit P3-N).
+        trace.info("    ↳ ⏭️ Layer 6 (LLM) not run inline; the caller decides whether the email goes to the local AI queue.");
         return Ok(None);
     }
 

@@ -127,10 +127,12 @@ pub(crate) fn get_sender_validator() -> &'static SenderValidator {
 const SCAN_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
 
 pub fn scan_log_path(app_dir: Option<&std::path::Path>, decision: &str) -> std::path::PathBuf {
-    let name = if decision == "SELECTED" {
-        "email_scan_selected.log"
-    } else {
-        "email_scan_rejected.log"
+    // Emails waiting for the local AI are neither selected nor rejected, so
+    // they get their own file (audit P3-N).
+    let name = match decision {
+        "SELECTED" => "email_scan_selected.log",
+        "PENDING" => "email_scan_pending.log",
+        _ => "email_scan_rejected.log",
     };
     match app_dir {
         Some(dir) => dir.join(name),
@@ -589,6 +591,12 @@ impl MessageProcessor {
                         "  ↳ ✅ Gate 2 Passed: Full body confirmed as {:?}. Running Extraction Ladder...",
                         content_class
                     ));
+                    // Logged for every laddered email, booked or not (debug
+                    // trace only, owner decision N-C1): without it a booked
+                    // transaction could not be checked against its email
+                    // (audit P3-N).
+                    trace.info(format!("       Subject: {}", subject));
+                    trace.info(format!("       Snippet: {}", email_meta.snippet));
                     let internal_date_seconds =
                         Self::internal_date_fallback(&full_msg.internal_date);
                     let mut _layer6_timed_out_unused = false;
@@ -632,6 +640,10 @@ impl MessageProcessor {
                         let confident = crate::extraction::ladder::meets_confidence_floor(obs.confidence_score);
                         if obs.passes_gate3() && confident && !review_only {
                             trace.info("  ↳ ✅ Gate 3 Passed: All mandatory fields present. Routing to Transaction Queue.");
+                            trace.info("       Booked Extraction Data:");
+                            for line in format!("{:#?}", obs).lines() {
+                                trace.info(format!("         {}", line));
+                            }
                             Self::append_to_scan_log(
                                 app_dir.as_deref(),
                                 message_id,
@@ -656,9 +668,16 @@ impl MessageProcessor {
                             } else {
                                 Self::gate3_failure_reason(&obs)
                             };
+                            // Where it really goes (audit P3-N): the local AI
+                            // queue, unless the sender is review-only.
+                            let destination = if !review_only && app_dir.is_some() && layer6_tx.is_some() {
+                                "the local AI queue"
+                            } else {
+                                "the Review Inbox"
+                            };
                             trace.info(format!(
-                                "  ↳ ❌ Gate 3 Failed: {}. Routing to Unassigned Queue.",
-                                reason
+                                "  ↳ ❌ Gate 3 Failed: {}. Routing to {}.",
+                                reason, destination
                             ));
                             trace.info("       Rejected Extraction Data:");
                             let debug_str = format!("{:#?}", obs);

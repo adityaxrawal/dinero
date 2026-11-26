@@ -287,3 +287,16 @@ fn test_other_classes() {
         ContentClass::Unknown
     );
 }
+
+/// IDFC FIRST's registration mail ("E-Mandate Set") was classified Unknown and
+/// dropped at Gate 2a (audit P3-P).
+#[test]
+fn test_idfc_e_mandate_set_is_a_registration() {
+    let class = ContentClassifier::classify(
+        "E-Mandate Set",
+        "Dear Customer, Greetings from IDFC FIRST Bank. This is to inform you that you have \
+         successfully set-up an e-mandate on your IDFC FIRST Bank Credit Card ending 3620 \
+         with following details: Merchant:",
+    );
+    assert_eq!(class, ContentClass::MandateRegistration);
+}

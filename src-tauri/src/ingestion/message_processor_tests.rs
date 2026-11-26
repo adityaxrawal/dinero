@@ -1205,3 +1205,13 @@ async fn transaction_alert_carries_the_rfc822_message_id() {
     }
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+/// Emails waiting for the local AI are neither selected nor rejected; they
+/// used to be written to the rejected log (audit P3-N).
+#[test]
+fn test_scan_log_path_separates_pending_from_rejected() {
+    let dir = std::path::Path::new("/tmp/app");
+    assert!(scan_log_path(Some(dir), "SELECTED").ends_with("email_scan_selected.log"));
+    assert!(scan_log_path(Some(dir), "PENDING").ends_with("email_scan_pending.log"));
+    assert!(scan_log_path(Some(dir), "REJECTED").ends_with("email_scan_rejected.log"));
+}

@@ -37,7 +37,7 @@
     },
     {
       "name": "pot_money_added",
-      "regex": "(?is)Pot\\s+Name\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s*Amount\\s+[Aa]dded\\s*(?:INR|Rs\\.?|₹)?\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s*Amount\\s+added\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "regex": "(?is)Pot\\s+Name\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s*Amount\\s+[Aa]dded\\s*(?:INR|Rs\\.?|₹)?\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s*Amount\\s+added\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4})(?:,\\s*\\d{1,2}:\\d{2}\\s*[AaPp][Mm])?)",
       "amount_group": 2,
       "direction": "debit",
       "currency": "INR",
@@ -47,7 +47,7 @@
     },
     {
       "name": "pot_money_withdrawn",
-      "regex": "(?is)Pot\\s+Name\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s*Amount\\s+withdrawn\\s*(?:INR|Rs\\.?|₹)?\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s*Amount\\s+withdrawn\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4}))",
+      "regex": "(?is)Pot\\s+Name\\s+([A-Za-z0-9][A-Za-z0-9 &._'\\-*/@]{1,48}?)\\s*Amount\\s+withdrawn\\s*(?:INR|Rs\\.?|₹)?\\s*([\\d,][\\d,​‌‍﻿]*(?:\\.\\d{1,2})?)\\s*Amount\\s+withdrawn\\s+on\\s+((?:\\d{1,2}[-/\\s][A-Za-z0-9]{2,9}[-/,\\s]\\s*\\d{2,4})|(?:(?:[A-Za-z]{3,9},\\s*)?[A-Za-z]{3,9}\\s+\\d{1,2},\\s*\\d{4})(?:,\\s*\\d{1,2}:\\d{2}\\s*[AaPp][Mm])?)",
       "amount_group": 2,
       "direction": "credit",
       "currency": "INR",

@@ -682,8 +682,8 @@
 
         let captured = logs.lock().unwrap();
         assert!(
-            captured.iter().any(|l| l.contains("Layer 6 (LLM) skipped")),
-            "expected the RAM-ineligibility skip log line, got: {:?}",
+            captured.iter().any(|l| l.contains("Layer 6 (LLM) not run inline")),
+            "expected the Layer 6 not-run-inline log line, got: {:?}",
             *captured
         );
         assert!(
@@ -1330,6 +1330,66 @@
                 "{input:?} parsed to the wrong day"
             );
         }
+    }
+
+    /// A printed time of day is IST: 02:08 PM on Nov 01 is 08:38 UTC (audit P3-I).
+    #[test]
+    fn test_bank_datetime_with_time_of_day_is_read_as_ist() {
+        let expected = chrono::NaiveDate::from_ymd_opt(2026, 11, 1)
+            .unwrap()
+            .and_hms_opt(8, 38, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp();
+        for input in ["Sun, Nov 01, 2026, 02:08 PM", "Nov 01, 2026, 02:08 PM"] {
+            let parsed = parse_date_generic(input).unwrap_or_else(|| panic!("{input:?} must parse"));
+            assert_eq!(parsed.timestamp, expected, "{input:?}");
+            assert!(!parsed.ambiguous);
+        }
+    }
+
+    /// Jupiter Pot mails print the time; the template used to stop at the
+    /// date, so the time was lost (2026-11-26 scan, audit P3-I).
+    #[tokio::test]
+    async fn jupiter_pot_template_keeps_the_time_of_day() {
+        let pool = dummy_pool();
+        let got = BankTemplateLayer
+            .extract(
+                &pool,
+                "Jupiter",
+                "Quick update Hey Aditya You've added money to your Pot. Here's a summary \
+                 Pot Name Home trip cost Amount Added 3000.0 Amount added on Sun, Nov 01, \
+                 2026, 02:08 PM Transaction ID 0001793522296505385",
+            )
+            .await
+            .expect("pot template must match");
+        let expected = chrono::NaiveDate::from_ymd_opt(2026, 11, 1)
+            .unwrap()
+            .and_hms_opt(8, 38, 0)
+            .unwrap()
+            .and_utc()
+            .timestamp();
+        assert_eq!(got.event_time, Some(expected));
+        assert_eq!(got.amount_minor, Some(300000));
+    }
+
+    /// Real 2026-11-26 Jupiter mails: Pot moves and a payment to the payer's
+    /// own VPA are internal transfers, not spending (audit P3-F, P3-G).
+    #[test]
+    fn own_funds_moves_are_internal_transfers() {
+        let obs = ExtractionResult::default();
+        for body in [
+            "Quick update Hey Aditya You've added money to your Pot. Pot Name Home trip cost Amount Added 3000.0",
+            "Quick update Hey Aditya You've taken money out of your Pot. Pot Name Donation Amount withdrawn 1403.0",
+            "Your UPI payment was successful You paid ₹12528 Paid to ADITYA RAWAL 8127696200@jupiteraxis \
+             Date Nov 21, 2026 From Aditya 8127696200@jupiteraxis Transaction ID 1341795273472652",
+        ] {
+            assert_eq!(detect_channel(&obs, body), Some("internal_transfer".to_string()), "{body}");
+        }
+        // A payment to someone else's VPA stays an ordinary UPI payment.
+        let p2p = "Your UPI payment was successful You paid ₹14000 Paid to T Jyoshna 7674036967@ybl \
+                   Date Nov 03, 2026 From Aditya 8127696200@jupiteraxis Transaction ID 1321793685015242084";
+        assert_eq!(detect_channel(&obs, p2p), Some("upi".to_string()));
     }
 
     fn ymd_ts(year: i32, month: u32, day: u32) -> i64 {

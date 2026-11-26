@@ -119,6 +119,13 @@ fn split_on_aggregator_star(upper: &str) -> &str {
     if PAYMENT_AGGREGATORS.contains(&head_last_token) && !tail_trimmed.is_empty() {
         return tail_trimmed.split('*').next().unwrap_or(tail_trimmed);
     }
+    // A one- or two-character prefix such as "W *XIAOMI MIMO" is a card
+    // network/processor tag, not the merchant; keeping it threw the real name
+    // away and failed the length check (audit P3-J).
+    let head_alnum = head_trimmed.chars().filter(|c| c.is_alphanumeric()).count();
+    if head_alnum < crate::extraction::lexicon::MIN_MERCHANT_NAME_LEN && !tail_trimmed.is_empty() {
+        return tail_trimmed.split('*').next().unwrap_or(tail_trimmed).trim();
+    }
     head_trimmed
 }
 
@@ -432,5 +439,23 @@ mod tests {
         let pool = dummy_pool();
         let result = normalize_merchant(&pool, "Some Merchant").await;
         assert!(result.is_err());
+    }
+}
+
+#[cfg(test)]
+mod star_prefix_tests {
+    use super::*;
+
+    #[test]
+    fn short_processor_prefix_keeps_the_merchant_after_the_star() {
+        let cleaned = strip_noise_tokens("W  *Xiaomi MiMo");
+        assert_eq!(cleaned, "XIAOMI MIMO");
+        assert!(is_plausible_merchant_name(&cleaned));
+    }
+
+    #[test]
+    fn aggregator_and_ordinary_star_descriptors_are_unchanged() {
+        assert_eq!(strip_noise_tokens("RAZORPAY*ACME STORE"), "ACME STORE");
+        assert_eq!(strip_noise_tokens("AMAZON*MARKETPLACE"), "AMAZON");
     }
 }

@@ -271,6 +271,9 @@ fn is_mandate_registration(content: &str) -> bool {
             "mandate registered",
             "mandate registration",
             "mandate set at merchant",
+            // IDFC FIRST: "you have successfully set-up an e-mandate" (audit P3-P).
+            "set-up an e-mandate",
+            "set up an e-mandate",
             "mandate created",
             "mandate has been created",
             "mandate approved",
