@@ -21,6 +21,7 @@ import SidebarNotificationCenter from '@/components/layout/SidebarNotificationCe
 import PermissionDeniedOverlay from '@/components/shell/PermissionDeniedOverlay';
 import ConnectionStatusBanner from '@/components/notifications/ConnectionStatusBanner';
 import AlertBanner from '@/components/notifications/AlertBanner';
+import AiModelBanner from '@/components/notifications/AiModelBanner';
 import { useReconciliationClusters } from '@/hooks/queries/useReconciliationClusters';
 import { useUnassignedTransactions } from '@/hooks/queries/useUnassignedTransactions';
 import { useReconciliationNudgeStore } from '@/stores/useReconciliationNudgeStore';
@@ -141,6 +142,7 @@ export default function AppLayout() {
           <StatementOnlyModeBanner />
           <ConnectionStatusBanner />
           <AlertBanner />
+          <AiModelBanner />
         </div>
 
         {/* Bottom area (System & Status). `mt-auto` pins this block to the

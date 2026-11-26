@@ -1,6 +1,7 @@
 /**
  * Step sequencing for onboarding, including which steps apply.
  */
+import { startModelDownload } from '@/hooks/useModelDownload';
 import { useState } from 'react';
 import { API } from '@/lib/ipc';
 import { errorMessage } from '@/lib/utils';
@@ -33,9 +34,12 @@ async function recordConsent(kind: string, text: string) {
 export function useOnboardingSteps({
   validateLimit,
   persist,
+  llmModelId,
 }: {
   validateLimit: () => boolean;
   persist: () => Promise<void>;
+  /** The AI model chosen in Preferences, downloaded once Gmail is connected. */
+  llmModelId?: string;
 }) {
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
@@ -80,7 +84,15 @@ export function useOnboardingSteps({
       return;
     }
     try {
-      if (await persistOrReport()) setStep(3);
+      if (await persistOrReport()) {
+        // Start the AI model download now, so it is ready for the first scan
+        // (owner decision Q-1). Not awaited; the sidebar banner offers it
+        // again if this fails.
+        startModelDownload(llmModelId).catch((e) =>
+          console.error('AI model download did not start:', e)
+        );
+        setStep(3);
+      }
     } finally {
       setLoading(false);
     }

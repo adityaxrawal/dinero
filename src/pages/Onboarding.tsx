@@ -15,7 +15,11 @@ import OnboardingFooter from './onboarding/OnboardingFooter';
 export default function Onboarding() {
   const navigate = useNavigate();
   const prefs = useOnboardingPreferences();
-  const flow = useOnboardingSteps({ validateLimit: prefs.validateLimit, persist: prefs.persist });
+  const flow = useOnboardingSteps({
+    validateLimit: prefs.validateLimit,
+    persist: prefs.persist,
+    llmModelId: prefs.llmConfig,
+  });
   const { step } = flow;
 
   const stepLabel = `Step ${step} of ${TOTAL_STEPS}`;

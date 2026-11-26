@@ -5,6 +5,12 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import HistoricalScanScreen from '@/routes/onboarding/HistoricalScanScreen';
 import { useGlobalState } from '@/lib/GlobalStateContext';
 
+let modelDownload: { model_id: string; bytes_downloaded: number; total_bytes: number | null; bytes_per_sec: number } | null = null;
+vi.mock('@/hooks/useModelDownload', () => ({
+  useModelDownload: () => ({ progress: modelDownload, start: vi.fn() }),
+  downloadPercent: (p: { bytes_downloaded: number; total_bytes: number | null }) =>
+    p.total_bytes ? Math.round((p.bytes_downloaded / p.total_bytes) * 100) : null,
+}));
 vi.mock('@/lib/GlobalStateContext', () => ({ useGlobalState: vi.fn() }));
 
 const asMock = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
@@ -102,5 +108,15 @@ describe('HistoricalScanScreen, finished', () => {
     mockState({ scanStatus: 'done', scanProgress: null });
     render(<HistoricalScanScreen onDone={onDone} />);
     expect(screen.getByText(/0 transactions and 0 statements/)).toBeInTheDocument();
+  });
+});
+
+// The AI model downloads alongside the first scan (owner decision Q-1).
+describe('HistoricalScanScreen, AI model download', () => {
+  it('shows download progress while the model downloads', () => {
+    modelDownload = { model_id: 'm', bytes_downloaded: 50, total_bytes: 200, bytes_per_sec: 1 };
+    render(<HistoricalScanScreen onDone={vi.fn()} />);
+    expect(screen.getByText(/Downloading the AI model… 25%/)).toBeInTheDocument();
+    modelDownload = null;
   });
 });

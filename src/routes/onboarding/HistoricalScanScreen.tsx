@@ -5,6 +5,7 @@ import { Loader2 } from 'lucide-react';
 import { useGlobalState } from '@/lib/GlobalStateContext';
 import type { ScanProgressPayload } from '@/lib/ipc';
 import { scanProgressPercent } from './scanProgressPercent';
+import { downloadPercent, useModelDownload } from '@/hooks/useModelDownload';
 
 /**
  * Final onboarding step: pick a date range and kick off the first Gmail scan.
@@ -104,6 +105,15 @@ export default function HistoricalScanScreen({ onDone }: HistoricalScanScreenPro
     handleStartScan,
     refreshConnectedAccounts,
   } = useGlobalState();
+  const { progress: modelDownload } = useModelDownload();
+  // The AI model downloads alongside the scan (owner decision Q-1).
+  const pct = modelDownload ? downloadPercent(modelDownload) : null;
+  const downloadLine = modelDownload ? (
+    <p role="status" className="text-xs text-center text-muted-foreground">
+      Downloading the AI model{pct !== null ? `… ${pct}%` : '…'} Emails that need it are read
+      once it finishes.
+    </p>
+  ) : null;
 
   // Default to the last three months -- long enough to be useful immediately,
   // short enough that the first scan finishes quickly. Also refreshes the
@@ -127,11 +137,21 @@ export default function HistoricalScanScreen({ onDone }: HistoricalScanScreenPro
   const maxDate = isoDate(new Date());
 
   if (scanStatus === 'running') {
-    return <ScanRunning progress={scanProgress} onDone={onDone} />;
+    return (
+      <>
+        <ScanRunning progress={scanProgress} onDone={onDone} />
+        {downloadLine}
+      </>
+    );
   }
 
   if (scanStatus === 'done') {
-    return <ScanComplete progress={scanProgress} onDone={onDone} />;
+    return (
+      <>
+        <ScanComplete progress={scanProgress} onDone={onDone} />
+        {downloadLine}
+      </>
+    );
   }
 
   return (
@@ -148,6 +168,8 @@ export default function HistoricalScanScreen({ onDone }: HistoricalScanScreenPro
           max={maxDate}
         />
       </div>
+
+      {downloadLine}
 
       {scanStatus === 'error' && scanError && (
         <p role="alert" className="text-xs text-red-700">
