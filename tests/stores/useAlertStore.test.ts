@@ -6,7 +6,18 @@ import {
   shouldSuppressToastDuringBulkScan,
   type AlertThresholdPayload,
 } from '@/stores/useAlertStore';
-import { useSyncStore } from '@/stores/useSyncStore';
+import { useNotificationStore } from '@/stores/useNotificationStore';
+
+/** Puts a scan task in the notification store (the scan-running source of truth). */
+const setScan = (status: 'idle' | 'running' | 'completed' | 'failed' | 'cancelled') =>
+  useNotificationStore.setState({
+    tasks:
+      status === 'idle'
+        ? {}
+        : ({
+            'scan:acc': { id: 'scan:acc', domainKey: 'scan:acc', status },
+          } as unknown as ReturnType<typeof useNotificationStore.getState>['tasks']),
+  });
 
 vi.mock('@/hooks/use-toast', () => ({ toast: vi.fn() }));
 
@@ -53,7 +64,7 @@ describe('highestPriorityAlert', () => {
 describe('useAlertStore', () => {
   beforeEach(() => {
     useAlertStore.setState({ alerts: [], dismissed: new Set() });
-    useSyncStore.setState({ scanStatus: 'idle' });
+    setScan('idle');
   });
 
   it('accumulates distinct alert types', () => {
@@ -98,17 +109,17 @@ describe('useAlertStore', () => {
 
 describe('shouldSuppressToastDuringBulkScan', () => {
   beforeEach(() => {
-    useSyncStore.setState({ scanStatus: 'idle' });
+    setScan('idle');
   });
 
   it('test_bulk_scan_suppresses_individual_transaction_toasts: suppresses while a scan is running', () => {
-    useSyncStore.setState({ scanStatus: 'running' });
+    setScan('running');
     expect(shouldSuppressToastDuringBulkScan()).toBe(true);
   });
 
   it('does not suppress when idle/done/error', () => {
-    for (const status of ['idle', 'done', 'error'] as const) {
-      useSyncStore.setState({ scanStatus: status });
+    for (const status of ['idle', 'completed', 'failed', 'cancelled'] as const) {
+      setScan(status);
       expect(shouldSuppressToastDuringBulkScan()).toBe(false);
     }
   });

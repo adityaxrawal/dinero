@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { listen, type EventCallback, type UnlistenFn } from '@tauri-apps/api/event';
-import { API, type ProcessingProgressPayload, type StatementRecord } from '@/lib/ipc';
+import type { ProcessingProgressPayload } from '@/lib/ipc';
 import { useToast } from '@/hooks/use-toast';
 import type { useStatementModals } from './useStatementModals';
 import { batchSummaryToast, emptyBatchOutcome, type BatchOutcome } from './batchSummary';
@@ -32,8 +32,6 @@ export function useStatementEvents(modals: Modals) {
   const { toast } = useToast();
 
   const { openInstrumentModal, setProcessingProgress, openReviewModal, watchedOriginIds } = modals;
-  const [statementHistory, setStatementHistory] = useState<StatementRecord[]>([]);
-  const [statementLoading, setStatementLoading] = useState(true);
   const [batchProgress, setBatchProgress] = useState<{
     parsed: number;
     total: number;
@@ -48,27 +46,10 @@ export function useStatementEvents(modals: Modals) {
   const pendingPasswordCountRef = useRef(0);
   const passwordToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  /**
-   * Reload statement history from the backend.
-   *
-   * Called after any event that could have changed a statement's state, so the
-   * list stays authoritative rather than being patched incrementally from event
-   * payloads.
-   */
-  const loadStatementHistory = useCallback(async () => {
-    setStatementLoading(true);
-    try {
-      const data = await API.statements.listHistory();
-      setStatementHistory(data);
-    } catch (e) {
-      console.error('Failed to load statements', e);
-    } finally {
-      setStatementLoading(false);
-    }
-  }, []);
-
+  // Statement history is React Query's (`statements.*`), refreshed by the
+  // event registry in useIpcQueryInvalidation; this hook no longer keeps its
+  // own unused copy (Phase 2 state consolidation).
   useEffect(() => {
-    loadStatementHistory();
 
     const unlisteners: UnlistenFn[] = [];
     let cancelled = false;
@@ -95,7 +76,6 @@ export function useStatementEvents(modals: Modals) {
         issuer_name?: string | null;
         rows_extracted?: number;
       }>('statement_parsed', (event) => {
-        loadStatementHistory();
         // In batch mode, tally silently -- the summary toast reports the total.
         if (batchOutcomesRef.current) {
           batchOutcomesRef.current.succeeded += 1;
@@ -113,7 +93,6 @@ export function useStatementEvents(modals: Modals) {
       await register<{ statementId: string; instrumentId?: string }>(
         'statement_password_required',
         () => {
-          loadStatementHistory();
           pendingPasswordCountRef.current += 1;
           // Restarting the timer on each event is what coalesces a burst: the
           // toast only fires once two quiet seconds have passed, by which point
@@ -133,7 +112,6 @@ export function useStatementEvents(modals: Modals) {
       );
 
       await register<{ reason?: string; filename?: string }>('statement_parse_failed', (event) => {
-        loadStatementHistory();
         const { reason, filename } = event.payload;
         // Batch mode again: record the failure and its reason for the summary
         // rather than interrupting with a toast per failed file.
@@ -154,7 +132,6 @@ export function useStatementEvents(modals: Modals) {
       });
 
       await register('statement_duplicate_rejected', () => {
-        loadStatementHistory();
         toast({
           title: 'Duplicate Statement',
           description: 'This statement has already been processed.',
@@ -239,7 +216,6 @@ export function useStatementEvents(modals: Modals) {
       for (const unlisten of unlisteners) unlisten();
     };
   }, [
-    loadStatementHistory,
     toast,
     openInstrumentModal,
     setProcessingProgress,
@@ -248,9 +224,6 @@ export function useStatementEvents(modals: Modals) {
   ]);
 
   return {
-    statementHistory,
-    statementLoading,
-    loadStatementHistory,
     batchProgress,
     setBatchProgress,
   };

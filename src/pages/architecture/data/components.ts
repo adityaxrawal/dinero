@@ -19,11 +19,11 @@ const CORE: ComponentDef[] = [
     kind: 'ui',
     purpose: 'Local-first UI shell rendering the ledger, dashboards and review queues.',
     description:
-      'React 19 + TypeScript single-page app served inside the Tauri WebView. Hash router (filesystem serving, no server rewrites), TanStack Query for server state over IPC, Zustand for UI state. 12 top-level pages, 6 stores, 21 query hooks and 14 mutation hooks.',
+      'React 19 + TypeScript single-page app served inside the Tauri WebView. Hash router (filesystem serving, no server rewrites), TanStack Query for server state over IPC, Zustand for UI state. 12 top-level pages, 5 stores, 23 query hooks and 14 mutation hooks.',
     responsibilities: [
       'Render dashboard, transactions, instruments, statements, reconciliation and settings',
       'Route via createHashRouter under AppLayout (onboarding sits outside the shell)',
-      'Mirror backend scan/warning state through useSyncStore',
+      'Track live scans and background tasks in useNotificationStore; server data in React Query, refreshed by the event registry',
       'Drive the onboarding gate (onboarding_status: local_profile.onboarded_at + network consent)',
     ],
     technologies: [

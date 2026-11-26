@@ -3,7 +3,6 @@ import type {
   ConnectedAccountInfo,
   ProcessingProgressPayload,
   ScanProgressPayload,
-  StatementRecord,
 } from './ipc';
 import { useScanState, type ScanStatus } from './globalState/useScanState';
 import { useStatementState } from './globalState/useStatementState';
@@ -52,9 +51,6 @@ interface GlobalStateContextType {
   recheckRejected: boolean;
   setRecheckRejected: React.Dispatch<React.SetStateAction<boolean>>;
 
-  statementHistory: StatementRecord[];
-  statementLoading: boolean;
-  loadStatementHistory: () => Promise<void>;
 
   batchProgress: { parsed: number; total: number; etaSeconds: number } | null;
   setBatchProgress: React.Dispatch<

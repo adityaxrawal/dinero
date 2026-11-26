@@ -93,7 +93,7 @@ describe('test_events_update_correct_ui_regions', () => {
   it('each of the 5 documented key events has at least one real subscriber in the frontend source', () => {
     const keyEvents = [
       { event: 'transaction_created', file: 'hooks/useIpcQueryInvalidation.ts' },
-      { event: 'scan_progress', file: 'stores/useSyncStore.ts' },
+      { event: 'scan_progress', file: 'stores/useNotificationStore.ts' },
       { event: 'background_task_progress', file: 'stores/useNotificationStore.ts' },
       { event: 'alert_threshold_crossed', file: 'stores/useAlertStore.ts' },
       { event: 'system_warning', file: 'components/notifications/ConnectionStatusBanner.tsx' },

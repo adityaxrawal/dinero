@@ -12,7 +12,7 @@
  * Outside a scan, clusters arrive individually and are pulsed immediately.
  */
 import { create } from 'zustand';
-import { useSyncStore } from '@/stores/useSyncStore';
+import { isScanRunning } from '@/stores/useNotificationStore';
 import { isTauriRuntime } from '@/lib/tauriRuntime';
 
 interface ReconciliationNudgeState {
@@ -27,9 +27,9 @@ export const useReconciliationNudgeStore = create<ReconciliationNudgeState>((set
   justPulsed: false,
   pendingSinceLastPulse: 0,
   onClusterCreated: () => {
-    // Read the scan store imperatively rather than subscribing -- this runs
-    // outside React, and only the value at this instant matters.
-    if (useSyncStore.getState().scanStatus === 'running') {
+    // Read imperatively rather than subscribing -- this runs outside React,
+    // and only the value at this instant matters.
+    if (isScanRunning()) {
       // Defer: bank the cluster and stay quiet until the scan ends.
       set((s) => ({ pendingSinceLastPulse: s.pendingSinceLastPulse + 1 }));
       return;

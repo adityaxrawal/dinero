@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { toast } from '@/hooks/use-toast';
-import { useSyncStore } from '@/stores/useSyncStore';
+import { isScanRunning } from '@/stores/useNotificationStore';
 import { isTauriRuntime } from '@/lib/tauriRuntime';
 
 /**
@@ -71,7 +71,7 @@ export function highestPriorityAlert(
  * them once the scan ends.
  */
 export function shouldSuppressToastDuringBulkScan(): boolean {
-  return useSyncStore.getState().scanStatus === 'running';
+  return isScanRunning();
 }
 
 interface AlertStoreState {

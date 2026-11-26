@@ -308,6 +308,17 @@ const notifications = () => useNotificationStore.getState();
 
 // One constant so every scan event renders under an identical heading, which is
 // what lets progress, completion and failure collapse into a single row.
+/**
+ * Whether a Gmail scan is running, from the scan task this store already
+ * tracks (it handles cancellation; the removed useSyncStore did not, so a
+ * cancelled scan stayed "running" and held back alerts until restart).
+ */
+export function isScanRunning(): boolean {
+  return Object.values(useNotificationStore.getState().tasks).some(
+    (t) => t.domainKey.startsWith('scan:') && t.status === 'running'
+  );
+}
+
 const SCAN_TASK_TITLE = 'Gmail Scan Pipeline';
 
 // Both message fields are optional and either may carry the text, so the
