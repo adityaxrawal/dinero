@@ -332,7 +332,7 @@ impl LlmEngine {
                 &self.model_id,
                 prompt,
                 Some(crate::llama_sidecar::layer6_json_schema_pub()),
-                ctx.clone(),
+                ctx,
             )
             .await;
 
@@ -608,7 +608,7 @@ impl LlmEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    
 
     #[test]
     fn test_llm_output_parses_self_reported_confidence() {

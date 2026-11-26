@@ -722,6 +722,7 @@ async fn record_scan_activity(pool: &Pool, outcome: &str, p: &ScanProgressPayloa
 }
 
 /// Runs the scan, checkpointing as it progresses.
+#[allow(clippy::too_many_arguments)]
 async fn run_scan<R: tauri::Runtime>(
     app: AppHandle<R>,
     pool: Pool,

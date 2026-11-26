@@ -899,7 +899,7 @@ async fn process_layer6_job(
     if completed {
         delete_persisted_layer6_job(pool, &job.unassigned_id).await;
         record_ai_result(pool, &job, booked).await;
-        return Layer6Done { completed: true, booked, retry_after: None };
+        Layer6Done { completed: true, booked, retry_after: None }
     } else {
         // A timeout, a dead sidecar or a failed write says nothing about the
         // message: keep the row and retry it this session after a growing
@@ -921,7 +921,7 @@ async fn process_layer6_job(
             job.unassigned_id,
             delay
         );
-        return Layer6Done { completed: false, booked: false, retry_after: Some(delay) };
+        Layer6Done { completed: false, booked: false, retry_after: Some(delay) }
     }
 }
 
@@ -1539,8 +1539,7 @@ async fn process_mandate_job(
                                     extraction.cadence.as_deref(),
                                     extraction.external_mandate_id.as_deref(),
                                 )
-                                .map(|_| ())
-                                .map_err(anyhow::Error::from),
+                                .map(|_| ()),
                             );
                         }
                     }
@@ -1558,8 +1557,7 @@ async fn process_mandate_job(
                                 check(
                                     "cancelling the mandate",
                                     crate::db::recurring_payments::mark_cancelled(c, &candidates[0].id)
-                                        .map(|_| ())
-                                        .map_err(anyhow::Error::from),
+                                        .map(|_| ()),
                                 );
                             }
                             _ => {
@@ -1578,8 +1576,7 @@ async fn process_mandate_job(
                                         &raw_signal,
                                         &candidate_ids,
                                     )
-                                    .map(|_| ())
-                                    .map_err(anyhow::Error::from),
+                                    .map(|_| ()),
                                 );
                             }
                         }

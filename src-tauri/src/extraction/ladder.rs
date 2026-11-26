@@ -493,11 +493,7 @@ fn is_invalid_merchant(candidate: &str, bank_name: &str) -> bool {
         }
     }
 
-    if candidate_lower == "bank" || candidate_lower == "alerts" {
-        return true;
-    }
-
-    false
+    candidate_lower == "bank" || candidate_lower == "alerts"
 }
 
 static VPA_MERCHANT_FALLBACK_RE: OnceLock<Regex> = OnceLock::new();

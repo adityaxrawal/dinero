@@ -137,10 +137,10 @@ pub fn claim_for_commit(conn: &Connection, id: &str) -> Result<bool> {
 
 /// Returns drafts left mid-commit by a crash to review; run at startup.
 pub fn reset_stuck_committing(conn: &Connection) -> Result<usize> {
-    Ok(conn.execute(
+    conn.execute(
         "UPDATE statement_drafts SET status = 'pending_review' WHERE status = 'committing'",
         [],
-    )?)
+    )
 }
 
 /// Remove a draft once it has been settled.

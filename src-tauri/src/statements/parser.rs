@@ -353,15 +353,12 @@ mod tests {
     async fn test_parse_in_memory_garbage_bytes_returns_empty() {
         let garbage: &[u8] = b"not a real pdf at all";
         let result = parse_in_memory(garbage).await;
-        match result {
-            Ok(pr) => {
-                assert!(
-                    pr.total_pages == 0 || pr.pages.iter().all(|p| p.text.is_empty()),
-                    "Garbage input must yield empty pages, got {} pages",
-                    pr.total_pages
-                );
-            }
-            Err(_) => {}
+        if let Ok(pr) = result {
+            assert!(
+                pr.total_pages == 0 || pr.pages.iter().all(|p| p.text.is_empty()),
+                "Garbage input must yield empty pages, got {} pages",
+                pr.total_pages
+            );
         }
     }
 

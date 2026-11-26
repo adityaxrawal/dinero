@@ -146,7 +146,7 @@ impl SenderValidator {
             .registry
             .senders
             .iter()
-            .find(|s| s.subdomains.iter().any(|sub| *sub == domain))
+            .find(|s| s.subdomains.contains(&domain))
         {
             return match config.classification.as_str() {
                 "transaction_candidate" => {

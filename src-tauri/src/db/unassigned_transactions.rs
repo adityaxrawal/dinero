@@ -219,8 +219,7 @@ pub struct UnassignedTransactionDetail {
 /// Fetching the context alongside lets the resolver show the original email
 /// beside the form, so the user can answer from the source rather than memory.
 pub fn select_open_with_context(conn: &Connection) -> Result<Vec<UnassignedTransactionDetail>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT u.id, u.observation_id, u.reason, u.status, u.created_at, \
+    let mut stmt = conn.prepare("SELECT u.id, u.observation_id, u.reason, u.status, u.created_at, \
                 o.merchant_raw, o.amount_minor, o.currency, o.direction, o.event_time, \
                 o.source_message_id, o.raw_payload_json, \
                 o.extraction_method, o.confidence_score, \
@@ -232,8 +231,7 @@ pub fn select_open_with_context(conn: &Connection) -> Result<Vec<UnassignedTrans
          FROM unassigned_transactions u \
          JOIN transaction_observations o ON o.id = u.observation_id \
          WHERE u.status = 'open' \
-         ORDER BY u.created_at DESC, u.id DESC"
-    ))?;
+         ORDER BY u.created_at DESC, u.id DESC")?;
     let rows = stmt.query_map([], |row| {
         let raw_payload_json: Option<String> = row.get(11)?;
         let body_snippet = raw_payload_json.as_deref().and_then(extract_body_snippet);

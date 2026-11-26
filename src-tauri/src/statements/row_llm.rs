@@ -187,7 +187,7 @@ pub async fn extract_unparsed_pages(
                 model_id,
                 &prompt,
                 Some(rows_schema()),
-                ctx.clone(),
+                ctx,
             )
             .await;
 

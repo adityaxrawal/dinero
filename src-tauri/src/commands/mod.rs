@@ -466,7 +466,7 @@ async fn llm_rows_for_unparsed_pages<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     start_index: usize,
 ) -> Vec<crate::statements::row_extractor::StatementRow> {
-    let eligible = crate::startup::llm_ready(&app);
+    let eligible = crate::startup::llm_ready(app);
     if !eligible {
         return Vec::new();
     }

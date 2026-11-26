@@ -421,10 +421,13 @@ const INSTRUMENT_REFERENCES: &[&str] = &[
     "recurring_payments",
 ];
 
+/// (id, type, issuer_name, masked_identifier, is_deleted, created_at).
+type InstrumentKeyRow = (String, String, String, String, bool, String);
+/// (id, is_deleted, created_at, already canonical) for one instrument key.
+type KeyMember = (String, bool, String, bool);
+
 /// Rows whose stored key differs from the canonical one, with that key.
-fn non_canonical_instruments(
-    conn: &Connection,
-) -> Result<Vec<(String, String, String, String, bool, String)>> {
+fn non_canonical_instruments(conn: &Connection) -> Result<Vec<InstrumentKeyRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, type, issuer_name, masked_identifier, is_deleted, IFNULL(created_at, '')
          FROM instruments",
@@ -461,7 +464,7 @@ pub fn needs_key_canonicalization(conn: &Connection) -> Result<bool> {
 pub fn canonicalize_instrument_keys(conn: &Connection) -> Result<usize> {
     let tx = conn.unchecked_transaction()?;
     let rows = non_canonical_instruments(&tx)?;
-    let mut groups: std::collections::BTreeMap<(String, String, String), Vec<(String, bool, String, bool)>> =
+    let mut groups: std::collections::BTreeMap<(String, String, String), Vec<KeyMember>> =
         Default::default();
     for (id, itype, issuer, masked, deleted, created) in rows {
         let key = (itype, canonical_issuer(&issuer), clean_masked_identifier(&masked));
