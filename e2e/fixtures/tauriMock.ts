@@ -3,6 +3,12 @@ import { test as base } from '@playwright/test';
 // Define the mock handlers inside a string to be evaluated in the browser context
 const tauriMockInitScript = `
   window.__TAURI_INTERNALS__ = window.__TAURI_INTERNALS__ || {};
+  // getCurrentWebview() (the statement dropzone's native drag-drop listener)
+  // reads the window and webview labels from here.
+  window.__TAURI_INTERNALS__.metadata = {
+    currentWindow: { label: 'main' },
+    currentWebview: { windowLabel: 'main', label: 'main' },
+  };
   
   // Provide dummy transformCallback to prevent TypeError from @tauri-apps/api/event
   window.__TAURI_INTERNALS__.transformCallback = function(callback, once) {
@@ -358,7 +364,7 @@ const tauriMockInitScript = `
       // end-to-end (it always fell through to the {} unhandled-command
       // fallback, whose .results is undefined, silently skipping the
       // for-of loop over results with zero iterations).
-      const files = args?.files || [];
+      const files = (args?.paths || []).map((p) => ({ filename: p.split('/').pop() }));
       // TASK-DESK-004: lets a test simulate a macOS TCC file-access denial
       // for a specific upload attempt (Doc 30's soft-fail, dismissable-toast
       // case), distinct from any other per-file failure.

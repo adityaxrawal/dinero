@@ -24,7 +24,7 @@ export function UnprocessedStatementViewer() {
   const fetchStatements = async () => {
     setLoading(true);
     try {
-      const data = await API.debug.fetchUnprocessedStatements();
+      const data = await API.debug.fetchUnprocessedStatements<UnprocessedStatement>();
       setStatements(data);
     } catch (e) {
       console.error(e);

@@ -22,7 +22,7 @@ export function ParseErrorViewer() {
   const fetchErrors = async () => {
     setLoading(true);
     try {
-      const data = await API.debug.fetchParseErrors();
+      const data = await API.debug.fetchParseErrors<ParseError>();
       setErrors(data);
     } catch (e) {
       console.error(e);

@@ -8,7 +8,7 @@ import { useToast } from '@/hooks/use-toast';
 import { getErrorMessage, getErrorToast } from '@/lib/errorMapping';
 import { useGlobalState } from '@/lib/GlobalStateContext';
 import { classifyUploadResults, emptyOutcome, uploadToasts } from './uploadOutcome';
-import { NON_PDF_ERROR, isPdf, validateDroppedFiles, type ValidationError } from './validation';
+import { NON_PDF_ERROR, isPdf, type ValidationError } from './validation';
 
 /** Handles selecting and uploading statement files, including batches. */
 export function useStatementUpload(onUploaded: () => void) {
@@ -42,6 +42,18 @@ export function useStatementUpload(onUploaded: () => void) {
     [onUploaded, toast, setBatchProgress, watchDraftOrigin]
   );
 
+  // Picked and dropped files take the same path. The size limit is enforced
+  // by Rust before it reads a file (audit N-D1); an oversize file comes back
+  // as a per-file error.
+  const uploadChecked = useCallback(
+    async (paths: string[]) => {
+      if (paths.length === 0) return;
+      if (paths.some((path) => !isPdf(path))) return reject(NON_PDF_ERROR);
+      await uploadPaths(paths);
+    },
+    [uploadPaths, reject]
+  );
+
   const pickAndUpload = useCallback(async () => {
     try {
       const selected = await open({
@@ -49,26 +61,14 @@ export function useStatementUpload(onUploaded: () => void) {
         filters: [{ name: 'PDF', extensions: ['pdf'] }],
       });
       if (!selected) return;
-      const paths = Array.isArray(selected) ? selected : [selected];
-      if (paths.length === 0) return;
-
-      if (paths.some((path) => !isPdf(path))) return reject(NON_PDF_ERROR);
-      // The size limit is enforced by Rust before it reads a file (audit
-      // N-D1); an oversize file comes back as a per-file error.
-      await uploadPaths(paths);
+      await uploadChecked(Array.isArray(selected) ? selected : [selected]);
     } catch (err) {
       toast({ variant: 'destructive', ...getErrorToast(err) });
     }
-  }, [uploadPaths, toast, reject]);
+  }, [uploadChecked, toast]);
 
-  const dropFiles = useCallback(
-    (files: File[]) => {
-      const error = files.length > 0 ? validateDroppedFiles(files) : null;
-      if (error) return reject(error);
-      pickAndUpload();
-    },
-    [pickAndUpload, reject]
-  );
+  /** Uploads paths from the native drag-drop event (audit F8-3). */
+  const dropFiles = uploadChecked;
 
   return { isUploading, batchProgress, pickAndUpload, dropFiles };
 }

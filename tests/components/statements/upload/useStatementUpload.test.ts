@@ -1,6 +1,6 @@
-// The picker path checks the type client-side and sends paths; Rust reads the
-// files and enforces the size limit (audit N-D1). The drop path can't read
-// absolute paths, so it hands back to the picker.
+// The picker and drop paths both check the type client-side and send paths;
+// Rust reads the files and enforces the size limit (audit N-D1). Drops carry
+// real paths from the native drag-drop event (audit F8-3).
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { useStatementUpload } from '@/components/statements/upload/useStatementUpload';
@@ -110,23 +110,24 @@ describe('useStatementUpload picker path', () => {
 });
 
 describe('useStatementUpload drop path', () => {
-  it('rejects a dropped non-PDF without opening the picker', async () => {
+  it('rejects a dropped non-PDF without uploading', async () => {
     const { result } = setup();
     await act(async () => {
-      result.current.dropFiles([{ name: 'a.txt', size: 10, type: 'text/plain' } as File]);
+      await result.current.dropFiles(['/tmp/a.txt']);
     });
-    expect(open).not.toHaveBeenCalled();
+    expect(API.statements.upload).not.toHaveBeenCalled();
     expect(toast).toHaveBeenCalledWith(
       expect.objectContaining({ description: 'Only PDF files are allowed.' })
     );
   });
 
-  it('hands a valid drop back to the picker, which does carry real paths', async () => {
-    open.mockResolvedValue(['/tmp/a.pdf']);
+  it('uploads the dropped paths directly, without opening the picker', async () => {
     const { result } = setup();
     await act(async () => {
-      result.current.dropFiles([{ name: 'a.pdf', size: 10, type: 'application/pdf' } as File]);
+      await result.current.dropFiles(['/tmp/a.pdf', '/tmp/b.PDF']);
     });
-    expect(open).toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
+    expect(API.statements.upload).toHaveBeenCalledWith(['/tmp/a.pdf', '/tmp/b.PDF']);
+    expect(watchDraftOrigin).toHaveBeenCalledWith('s1');
   });
 });

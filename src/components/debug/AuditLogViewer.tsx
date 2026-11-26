@@ -26,7 +26,7 @@ export function AuditLogViewer() {
   const fetchLogs = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await API.debug.fetchAuditLog(resourceFilter || undefined, 100, 0);
+      const data = await API.debug.fetchAuditLog<AuditLog>(resourceFilter || undefined, 100, 0);
       setLogs(data);
     } catch (e) {
       console.error(e);

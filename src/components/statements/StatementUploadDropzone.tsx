@@ -1,7 +1,8 @@
 /**
  * Drag-and-drop upload target for statement PDFs.
  */
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { UploadCloud } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -16,6 +17,38 @@ interface StatementUploadDropzoneProps {
 export default function StatementUploadDropzone({ onUploaded }: StatementUploadDropzoneProps) {
   const { isUploading, batchProgress, pickAndUpload, dropFiles } = useStatementUpload(onUploaded);
   const [isDragging, setIsDragging] = useState(false);
+  const zoneRef = useRef<HTMLDivElement>(null);
+
+  // WebView drop events carry no file paths, so the native drag-drop event is
+  // used instead; it fires window-wide, hence the hit test (audit F8-3).
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    const isOverZone = (x: number, y: number) => {
+      const rect = zoneRef.current?.getBoundingClientRect();
+      const scale = window.devicePixelRatio || 1;
+      if (!rect) return false;
+      const [cx, cy] = [x / scale, y / scale];
+      return cx >= rect.left && cx <= rect.right && cy >= rect.top && cy <= rect.bottom;
+    };
+    getCurrentWebview()
+      .onDragDropEvent(({ payload }) => {
+        if (payload.type === 'leave') return setIsDragging(false);
+        const over = isOverZone(payload.position.x, payload.position.y);
+        if (payload.type === 'drop') {
+          setIsDragging(false);
+          if (over) dropFiles(payload.paths);
+        } else {
+          setIsDragging(over);
+        }
+      })
+      .then((fn) => (disposed ? fn() : (unlisten = fn)))
+      .catch((err) => console.error('Could not listen for dropped files', err));
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [dropFiles]);
 
   const status = isUploading
     ? 'Uploading…'
@@ -31,16 +64,7 @@ export default function StatementUploadDropzone({ onUploaded }: StatementUploadD
           ? 'border-primary bg-primary/10'
           : 'border-border hover:border-primary/50 hover:bg-secondary/50'
       )}
-      onDragOver={(e) => {
-        e.preventDefault();
-        setIsDragging(true);
-      }}
-      onDragLeave={() => setIsDragging(false)}
-      onDrop={(e) => {
-        e.preventDefault();
-        setIsDragging(false);
-        dropFiles(Array.from(e.dataTransfer.files));
-      }}
+      ref={zoneRef}
       onClick={pickAndUpload}
       role="button"
       data-testid="dropzone"

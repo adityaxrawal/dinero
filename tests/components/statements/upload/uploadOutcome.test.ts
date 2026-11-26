@@ -6,14 +6,7 @@ import {
   uploadToasts,
   emptyOutcome,
 } from '@/components/statements/upload/uploadOutcome';
-import {
-  validateDroppedFiles,
-  isPdf,
-  MAX_FILE_SIZE_BYTES,
-} from '@/components/statements/upload/validation';
-
-const file = (name: string, size: number, type = 'application/pdf') =>
-  ({ name, size, type }) as File;
+import { isPdf } from '@/components/statements/upload/validation';
 
 describe('classifyUploadResults', () => {
   it('counts a clean batch as all-succeeded', () => {
@@ -28,9 +21,9 @@ describe('classifyUploadResults', () => {
 
   it('separates a TCC block from a duplicate from an unknown failure', () => {
     const outcome = classifyUploadResults([
-      { status: 'error: File access denied', filename: 'a.pdf' },
-      { status: 'error: duplicate statement', filename: 'b.pdf' },
-      { status: 'error: parser exploded', filename: 'c.pdf' },
+      { status: 'error: File access denied', filename: 'a.pdf', error_code: 'access_denied' },
+      { status: 'error: duplicate statement', filename: 'b.pdf', error_code: 'duplicate' },
+      { status: 'error: parser exploded', filename: 'c.pdf', error_code: 'failed' },
     ] as never);
     expect(outcome.accessDenied).toBe(true);
     expect(outcome.duplicates).toEqual(['b.pdf']);
@@ -38,21 +31,22 @@ describe('classifyUploadResults', () => {
     expect(outcome.succeeded).toBe(0);
   });
 
-  it('also treats "Permission denied" as the same macOS block', () => {
-    expect(
-      classifyUploadResults([{ status: 'error: Permission denied', filename: 'a.pdf' }] as never)
-        .accessDenied
-    ).toBe(true);
+  it('classifies on the error code, never the English text (audit F8-7)', () => {
+    const outcome = classifyUploadResults([
+      { status: 'error: duplicate in the text only', filename: 'a.pdf', error_code: 'failed' },
+    ] as never);
+    expect(outcome.duplicates).toEqual([]);
+    expect(outcome.otherFailures).toEqual(['duplicate in the text only']);
   });
 
   it('names an unnamed duplicate rather than showing "undefined"', () => {
-    const outcome = classifyUploadResults([{ status: 'error: duplicate' }] as never);
+    const outcome = classifyUploadResults([{ status: 'error: duplicate', error_code: 'duplicate' }] as never);
     expect(outcome.duplicates).toEqual(['A file']);
   });
 
   it('only watches drafts for uploads that actually queued', () => {
     const outcome = classifyUploadResults([
-      { status: 'error: duplicate', statement_id: 's1' },
+      { status: 'error: duplicate', statement_id: 's1', error_code: 'duplicate' },
       { status: 'queued' },
     ] as never);
     expect(outcome.queuedIds).toEqual([]);
@@ -95,24 +89,8 @@ describe('uploadToasts', () => {
 });
 
 describe('validation', () => {
-  it('accepts a PDF by extension or by MIME type', () => {
-    expect(isPdf('statement.PDF')).toBe(true);
-    expect(isPdf('statement', 'application/pdf')).toBe(true);
-    expect(isPdf('statement.txt', 'text/plain')).toBe(false);
-  });
-
-  it('rejects a dropped non-PDF before anything is uploaded', () => {
-    const error = validateDroppedFiles([file('a.pdf', 10), file('notes.txt', 10, 'text/plain')]);
-    expect(error?.description).toMatch(/Only PDF files/);
-  });
-
-  it('rejects a file past the 25MB client-side guard, naming it', () => {
-    const error = validateDroppedFiles([file('huge.pdf', MAX_FILE_SIZE_BYTES + 1)]);
-    expect(error?.title).toBe('File Too Large');
-    expect(error?.description).toContain('huge.pdf');
-  });
-
-  it('passes a valid batch through', () => {
-    expect(validateDroppedFiles([file('a.pdf', 100), file('b.pdf', 200)])).toBeNull();
+  it('accepts a PDF by extension, case-insensitively', () => {
+    expect(isPdf('/tmp/statement.PDF')).toBe(true);
+    expect(isPdf('/tmp/statement.txt')).toBe(false);
   });
 });

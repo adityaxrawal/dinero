@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { Toaster } from '@/components/ui/toaster';
 
 let toasts: Array<Record<string, unknown>> = [];
@@ -63,6 +63,14 @@ describe('Toaster', () => {
     render(<Toaster />);
     expect(screen.getByText('Open Settings')).toBeInTheDocument();
     expect(screen.queryByText('Custom')).toBeNull();
+  });
+
+  it('renders a callback action as a button that runs it', () => {
+    const onAction = vi.fn();
+    toasts = [{ id: '1', title: 'Discarded', actionLabel: 'Undo', onAction, open: true }];
+    render(<Toaster />);
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(onAction).toHaveBeenCalled();
   });
 
   it('needs both actionTo and actionLabel to render a link', () => {

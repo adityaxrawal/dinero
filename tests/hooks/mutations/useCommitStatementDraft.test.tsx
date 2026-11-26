@@ -13,6 +13,7 @@ describe('useCommitStatementDraft', () => {
     vi.mocked(API.statements.commitDraft).mockResolvedValue({
       status: 'committed',
       statement_id: 'stmt_1',
+      summary: { new: 0, matched: 0, needs_review: 0, skipped: 0 },
     });
     const queryClient = new QueryClient();
     const wrapper = ({ children }: { children: React.ReactNode }) => (

@@ -30,10 +30,12 @@ export function classifyUploadResults(results: UploadResult[]): UploadOutcome {
       outcome.succeeded += 1;
       continue;
     }
+    // Classified on the backend's stable code, never on its English text
+    // (audit F8-7).
     const message = result.status.replace(/^error:\s*/, '');
-    if (message.includes('File access denied') || message.includes('Permission denied')) {
+    if (result.error_code === 'access_denied') {
       outcome.accessDenied = true;
-    } else if (message.includes('duplicate')) {
+    } else if (result.error_code === 'duplicate') {
       outcome.duplicates.push(result.filename || 'A file');
     } else {
       outcome.otherFailures.push(message);

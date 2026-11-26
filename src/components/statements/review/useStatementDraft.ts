@@ -5,7 +5,7 @@ import { statementCommitToast } from '@/lib/engineOutcome';
 import { getErrorToast } from '@/lib/errorMapping';
 import { useCallback, useEffect, useState } from 'react';
 import { API, type DraftMetadataInput, type DraftRow, type StatementDraft } from '@/lib/ipc';
-import { useToast } from '@/hooks/use-toast';
+import { TOAST_AUTO_DISMISS_DELAY, useToast } from '@/hooks/use-toast';
 import { useGlobalState } from '@/lib/GlobalStateContext';
 import { useCommitStatementDraft } from '@/hooks/mutations/useCommitStatementDraft';
 import { useDiscardStatementDraft } from '@/hooks/mutations/useDiscardStatementDraft';
@@ -47,7 +47,8 @@ const EMPTY_ROW: DraftRow = {
 /** Draft state: loading, editing, committing, discarding. */
 export function useStatementDraft() {
   const { toast } = useToast();
-  const { reviewModalOpen, activeDraftId, processingProgress, closeReviewModal } = useGlobalState();
+  const { reviewModalOpen, activeDraftId, processingProgress, openReviewModal, closeReviewModal } =
+    useGlobalState();
   const commitDraft = useCommitStatementDraft();
   const discardDraft = useDiscardStatementDraft();
 
@@ -134,15 +135,32 @@ export function useStatementDraft() {
     setRows((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
-  /** Discards the draft without committing. */
+  /**
+   * Discards the draft without committing. The delete (draft row and stored
+   * PDF) waits until the Undo toast has gone, so Undo just cancels it and
+   * reopens the draft (audit F8-6).
+   */
   const handleCancel = () => {
-    if (activeDraftId) {
-      discardDraft.mutate(activeDraftId, {
-        onSuccess: () =>
-          toast({ title: 'Discarded', description: 'Statement removed from review.' }),
-      });
-    }
+    const draftId = activeDraftId;
     closeReviewModal();
+    if (!draftId) return;
+    const timer = setTimeout(
+      () =>
+        discardDraft.mutate(draftId, {
+          onError: (err) =>
+            toast({ variant: 'destructive', ...getErrorToast(err, 'Could not discard') }),
+        }),
+      TOAST_AUTO_DISMISS_DELAY
+    );
+    toast({
+      title: 'Discarded',
+      description: 'Statement removed from review.',
+      actionLabel: 'Undo',
+      onAction: () => {
+        clearTimeout(timer);
+        openReviewModal(draftId);
+      },
+    });
   };
 
   /** Commits the reviewed rows into the ledger. */

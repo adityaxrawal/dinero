@@ -1,4 +1,20 @@
+import type { Page } from '@playwright/test';
 import { test, expect } from './fixtures/tauriMock';
+
+// Drops arrive through Tauri's native drag-drop event, which carries real
+// paths and a physical-pixel position (audit F8-3); aim it at the dropzone.
+async function dropOnZone(page: Page, paths: string[]) {
+  const box = (await page.locator('[data-testid="dropzone"]').boundingBox())!;
+  await page.evaluate(
+    ({ paths, x, y }) => {
+      const dpr = window.devicePixelRatio || 1;
+      window.dispatchEvent(new CustomEvent('test-tauri-event', {
+        detail: { event: 'tauri://drag-drop', payload: { paths, position: { x: x * dpr, y: y * dpr } } },
+      }));
+    },
+    { paths, x: box.x + box.width / 2, y: box.y + box.height / 2 }
+  );
+}
 
 test.describe('Statement Management - Rigorous Verification', () => {
   test.beforeEach(async ({ page }) => {
@@ -11,15 +27,7 @@ test.describe('Statement Management - Rigorous Verification', () => {
     await expect(page.locator('text="Upload a new statement"').or(page.locator('text="Upload Statement"'))).toBeVisible();
     
     // Simulate invalid file upload (drag & drop non-PDF)
-    // Note: since we can't easily mock actual native file drag without a file, we simulate the drop event
-    const dataTransfer = await page.evaluateHandle(() => {
-      const dt = new DataTransfer();
-      const file = new File(['hello'], 'invalid.txt', { type: 'text/plain' });
-      dt.items.add(file);
-      return dt;
-    });
-
-    await page.dispatchEvent('[data-testid="dropzone"]', 'drop', { dataTransfer });
+    await dropOnZone(page, ['/fake/invalid.txt']);
 
     // UI should show an error, not process it. TASK-FE-012 fix: was an
     // exact-match `text="Only PDF files are allowed"` locator, but the real
@@ -143,13 +151,7 @@ test.describe('Statement Management - Rigorous Verification', () => {
       window.__MOCK_STATE__.file_access_denied = true;
     });
 
-    const dataTransfer = await page.evaluateHandle(() => {
-      const dt = new DataTransfer();
-      const file = new File(['%PDF-1.5'], 'statement.pdf', { type: 'application/pdf' });
-      dt.items.add(file);
-      return dt;
-    });
-    await page.dispatchEvent('[data-testid="dropzone"]', 'drop', { dataTransfer });
+    await dropOnZone(page, ['/fake/statement.pdf']);
 
     const toast = page.getByText(/File Access Denied/i).first();
     await expect(toast).toBeVisible();

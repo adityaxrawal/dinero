@@ -15,8 +15,6 @@ pub const INSTRUMENT_CONFIRMATION_REQUIRED: &str = "statement_instrument_confirm
 
 pub const UPCOMING_BILL_SET: &str = "statement_upcoming_bill_set";
 
-pub const PARTIAL_ROWS: &str = "statement_partial_rows";
-
 pub const TRANSACTION_CREATED: &str = "transaction_created";
 
 pub const BATCH_PROGRESS: &str = "statement_batch_progress";

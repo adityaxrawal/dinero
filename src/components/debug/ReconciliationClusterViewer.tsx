@@ -25,7 +25,7 @@ export function ReconciliationClusterViewer() {
   const fetchClusters = async () => {
     setLoading(true);
     try {
-      const data = await API.debug.fetchReconciliationClusters();
+      const data = await API.debug.fetchReconciliationClusters<ReconciliationCluster>();
       setClusters(data);
     } catch (e) {
       console.error(e);

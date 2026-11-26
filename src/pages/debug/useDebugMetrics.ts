@@ -21,7 +21,7 @@ export function useDebugMetrics() {
   const refresh = () => {
     API.dev.getMetrics().then(setMetrics).catch(console.error);
     API.dev.checkSystemRam().then(setRam).catch(console.error);
-    API.debug.getPipelineState().then(setPipelineState).catch(console.error);
+    API.debug.getPipelineState<PipelineState>().then(setPipelineState).catch(console.error);
   };
 
   useEffect(() => {

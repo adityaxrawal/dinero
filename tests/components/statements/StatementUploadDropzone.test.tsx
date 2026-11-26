@@ -1,11 +1,27 @@
 // TASK-FE-012 / TASK-STMT-009: the dropzone's own responsibilities are the
 // drag state, the three-way status line, and routing click/keyboard/drop to
-// the upload hook. Validation and the upload round trip live in
+// the upload hook. Drops arrive through Tauri's native drag-drop event, which
+// carries real paths (audit F8-3). Validation and the upload round trip live in
 // `useStatementUpload` and are mocked out here.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act, waitFor } from '@testing-library/react';
 import StatementUploadDropzone from '@/components/statements/StatementUploadDropzone';
 import { useStatementUpload } from '@/components/statements/upload/useStatementUpload';
+
+type DragPayload =
+  | { type: 'enter' | 'drop'; paths: string[]; position: { x: number; y: number } }
+  | { type: 'over'; position: { x: number; y: number } }
+  | { type: 'leave' };
+let dragHandler: ((e: { payload: DragPayload }) => void) | null = null;
+const unlisten = vi.fn();
+vi.mock('@tauri-apps/api/webview', () => ({
+  getCurrentWebview: () => ({
+    onDragDropEvent: async (h: typeof dragHandler) => {
+      dragHandler = h;
+      return unlisten;
+    },
+  }),
+}));
 
 vi.mock('@/components/statements/upload/useStatementUpload', () => ({
   useStatementUpload: vi.fn(),
@@ -30,6 +46,7 @@ const status = () => screen.getByRole('status');
 
 beforeEach(() => {
   vi.clearAllMocks();
+  dragHandler = null;
   setUpload();
 });
 
@@ -55,26 +72,46 @@ describe('StatementUploadDropzone', () => {
     );
   });
 
-  it('highlights on drag over and clears on drag leave', () => {
-    render(<StatementUploadDropzone onUploaded={vi.fn()} />);
-    expect(dropzone().className).not.toContain('border-primary bg-primary/10');
+  // The zone occupies (0,0)-(100,100) in CSS pixels; the event is physical.
+  async function renderWithZone() {
+    const view = render(<StatementUploadDropzone onUploaded={vi.fn()} />);
+    dropzone().getBoundingClientRect = () =>
+      ({ left: 0, top: 0, right: 100, bottom: 100 }) as DOMRect;
+    await waitFor(() => expect(dragHandler).not.toBeNull());
+    return view;
+  }
+  const fire = (payload: DragPayload) => act(() => dragHandler!({ payload }));
 
-    fireEvent.dragOver(dropzone());
-    expect(dropzone().className).toContain('border-primary');
-
-    fireEvent.dragLeave(dropzone());
+  it('highlights while a drag is over the zone and clears on leave', async () => {
+    await renderWithZone();
+    fire({ type: 'over', position: { x: 50, y: 50 } });
+    expect(dropzone().className).toContain('bg-primary/10');
+    fire({ type: 'over', position: { x: 500, y: 500 } });
+    expect(dropzone().className).not.toContain('bg-primary/10');
+    fire({ type: 'over', position: { x: 50, y: 50 } });
+    fire({ type: 'leave' });
     expect(dropzone().className).not.toContain('bg-primary/10');
   });
 
-  it('passes dropped files through and clears the drag highlight', () => {
-    render(<StatementUploadDropzone onUploaded={vi.fn()} />);
-    fireEvent.dragOver(dropzone());
-
-    const file = new File(['%PDF-'], 'statement.pdf', { type: 'application/pdf' });
-    fireEvent.drop(dropzone(), { dataTransfer: { files: [file] } });
-
-    expect(dropFiles).toHaveBeenCalledWith([file]);
+  it('uploads the dropped paths when dropped on the zone', async () => {
+    await renderWithZone();
+    fire({ type: 'over', position: { x: 50, y: 50 } });
+    fire({ type: 'drop', paths: ['/tmp/a.pdf'], position: { x: 50, y: 50 } });
+    expect(dropFiles).toHaveBeenCalledWith(['/tmp/a.pdf']);
+    expect(pickAndUpload).not.toHaveBeenCalled();
     expect(dropzone().className).not.toContain('bg-primary/10');
+  });
+
+  it('ignores a drop elsewhere in the window', async () => {
+    await renderWithZone();
+    fire({ type: 'drop', paths: ['/tmp/a.pdf'], position: { x: 500, y: 500 } });
+    expect(dropFiles).not.toHaveBeenCalled();
+  });
+
+  it('stops listening on unmount', async () => {
+    const { unmount } = await renderWithZone();
+    unmount();
+    expect(unlisten).toHaveBeenCalled();
   });
 
   it('opens the picker on click and on both activation keys', () => {

@@ -212,6 +212,19 @@ pub struct UploadResult {
     pub statement_id: String,
     pub filename: String,
     pub status: String,
+    /// Stable code for a failed file, so the frontend never matches English
+    /// error text (audit F8-7): `duplicate`, `access_denied` or `failed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<&'static str>,
+}
+
+/// The upload error code for a failed file (audit F8-7).
+fn upload_error_code(e: &crate::error::AppError) -> &'static str {
+    match e {
+        crate::error::AppError::Conflict(_) => "duplicate",
+        crate::error::AppError::FileAccessDenied(_) => "access_denied",
+        _ => "failed",
+    }
 }
 
 fn validate_upload_files_non_empty(paths: &[String]) -> Result<(), crate::error::AppError> {
@@ -229,7 +242,7 @@ fn validate_upload_files_non_empty(paths: &[String]) -> Result<(), crate::error:
 /// `validate_and_hash`, as before.
 fn read_upload(path: &str) -> Result<Vec<u8>, crate::error::AppError> {
     let meta = std::fs::metadata(path)
-        .map_err(|e| crate::error::AppError::Io(format!("File access denied: {e}")))?;
+        .map_err(|e| crate::error::AppError::FileAccessDenied(e.to_string()))?;
     if !meta.is_file() {
         return Err(crate::error::AppError::Validation("not a file".to_string()));
     }
@@ -238,7 +251,7 @@ fn read_upload(path: &str) -> Result<Vec<u8>, crate::error::AppError> {
             crate::statements::validator::ValidationError::FileTooLarge.to_string(),
         ));
     }
-    std::fs::read(path).map_err(|e| crate::error::AppError::Io(format!("File access denied: {e}")))
+    std::fs::read(path).map_err(|e| crate::error::AppError::FileAccessDenied(e.to_string()))
 }
 
 #[tauri::command]
@@ -300,6 +313,7 @@ pub async fn statements_upload(
             Err(e) => UploadResult {
                 statement_id: String::new(),
                 filename,
+                error_code: Some(upload_error_code(&e)),
                 status: format!("error: {}", e),
             },
         });
@@ -382,6 +396,7 @@ async fn upload_one_statement(
         crate::statements::password::StatementPasswordResolution::Proceed(password) => password,
         crate::statements::password::StatementPasswordResolution::PromptCreated => {
             return Ok(UploadResult {
+                error_code: None,
                 statement_id: stmt_id,
                 filename,
                 status: "awaiting_password".to_string(),
@@ -437,6 +452,7 @@ async fn upload_one_statement(
     );
 
     Ok(UploadResult {
+        error_code: None,
         statement_id: stmt_id,
         filename,
         status: "queued".to_string(),
@@ -1836,7 +1852,7 @@ pub async fn statements_reparse_all(
 #[tauri::command]
 pub async fn statements_list_unprocessed(
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
-) -> Result<serde_json::Value, crate::error::AppError> {
+) -> Result<UnprocessedGroups, crate::error::AppError> {
     let conn = pool
         .get()
         .await
@@ -1853,31 +1869,64 @@ pub async fn statements_list_unprocessed(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
 
     let mut grouped = group_unprocessed_by_status(rows);
-    grouped["awaiting_review"] = group_drafts_for_review(draft_rows);
+    grouped.awaiting_review = group_drafts_for_review(draft_rows);
     Ok(grouped)
+}
+
+/// Typed response of `statements_list_unprocessed` (Phase 2 2.3: it was
+/// untyped JSON). Same shape as before, mirrored by `UnprocessedStatementGroups`
+/// in ipc.ts.
+#[derive(serde::Serialize, Debug, Default)]
+pub struct UnprocessedGroups {
+    pub awaiting_password: Vec<UnprocessedEntry>,
+    pub awaiting_instrument: Vec<UnprocessedEntry>,
+    pub pending_retry: Vec<UnprocessedEntry>,
+    pub failed: Vec<UnprocessedEntry>,
+    pub awaiting_review: Vec<DraftReviewEntry>,
+}
+
+#[derive(serde::Serialize, Debug)]
+pub struct UnprocessedEntry {
+    pub statement_id: String,
+    pub filename: String,
+    pub display_name: Option<String>,
+    pub failure_type: String,
+    pub failure_reason: String,
+    pub sender: Option<String>,
+    pub to: Option<String>,
+    pub subject: Option<String>,
+    pub date: Option<String>,
+    pub snippet: Option<String>,
+    pub html: Option<String>,
+    pub issuer_hint: Option<String>,
+}
+
+#[derive(serde::Serialize, Debug)]
+pub struct DraftReviewEntry {
+    pub draft_id: String,
+    pub issuer_name: Option<String>,
+    pub masked_identifier: Option<String>,
+    pub origin: String,
+    pub created_at: Option<String>,
 }
 
 fn group_drafts_for_review(
     rows: Vec<crate::db::statement_drafts::StatementDraftRow>,
-) -> serde_json::Value {
-    let entries: Vec<serde_json::Value> = rows
-        .into_iter()
-        .map(|row| {
-            serde_json::json!({
-                "draft_id": row.id,
-                "issuer_name": row.issuer_name,
-                "masked_identifier": row.masked_identifier,
-                "origin": row.origin,
-                "created_at": row.created_at.map(|dt| dt.to_string()),
-            })
+) -> Vec<DraftReviewEntry> {
+    rows.into_iter()
+        .map(|row| DraftReviewEntry {
+            draft_id: row.id,
+            issuer_name: row.issuer_name,
+            masked_identifier: row.masked_identifier,
+            origin: row.origin,
+            created_at: row.created_at.map(|dt| dt.to_string()),
         })
-        .collect();
-    serde_json::Value::Array(entries)
+        .collect()
 }
 
 fn group_unprocessed_by_status(
     rows: Vec<crate::db::unprocessed_statements::UnprocessedStatementRow>,
-) -> serde_json::Value {
+) -> UnprocessedGroups {
     let mut awaiting_password = Vec::new();
     let mut awaiting_instrument = Vec::new();
     let mut pending_retry = Vec::new();
@@ -1923,20 +1972,20 @@ fn group_unprocessed_by_status(
             },
         );
 
-        let entry = serde_json::json!({
-            "statement_id": row.id,
-            "filename": filename,
-            "display_name": display_name,
-            "failure_type": row.failure_type,
-            "failure_reason": row.failure_reason,
-            "sender": sender,
-            "to": to,
-            "subject": subject,
-            "date": date,
-            "snippet": snippet,
-            "html": html,
-            "issuer_hint": issuer_hint,
-        });
+        let entry = UnprocessedEntry {
+            statement_id: row.id,
+            filename,
+            display_name,
+            failure_type: row.failure_type,
+            failure_reason: row.failure_reason,
+            sender,
+            to,
+            subject,
+            date,
+            snippet,
+            html,
+            issuer_hint,
+        };
         match row.status.as_str() {
             "awaiting_password" => awaiting_password.push(entry),
             // Was dropped by the `_` arm, so these statements could not be
@@ -1948,12 +1997,13 @@ fn group_unprocessed_by_status(
         }
     }
 
-    serde_json::json!({
-        "awaiting_password": awaiting_password,
-        "awaiting_instrument": awaiting_instrument,
-        "pending_retry": pending_retry,
-        "failed": failed,
-    })
+    UnprocessedGroups {
+        awaiting_password,
+        awaiting_instrument,
+        pending_retry,
+        failed,
+        awaiting_review: Vec::new(),
+    }
 }
 
 #[tauri::command]
@@ -2012,7 +2062,7 @@ pub async fn statements_commit_draft(
     acknowledge_partial: Option<bool>,
     app: tauri::AppHandle,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
-) -> Result<serde_json::Value, crate::error::AppError> {
+) -> Result<StatementCommitResult, crate::error::AppError> {
     crate::ipc::validation::validate_uuid("draft_id", &draft_id)?;
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
     // Statement imports pause with the rest of ingestion (review P5).
@@ -2036,26 +2086,44 @@ pub async fn statements_commit_draft(
         .get()
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?
-        .interact(move |c| -> rusqlite::Result<serde_json::Value> {
+        .interact(move |c| -> rusqlite::Result<StatementCommitSummary> {
             let summary = statement_commit_summary(c, &id)?;
             // Persistent record of the import (audit F5-4); best effort.
-            let clusters = summary["needs_review"].as_i64().unwrap_or(0);
             let text = format!(
                 "Statement imported: {} booked, {} matched to existing, {} {} duplicate check, {} already imported",
-                summary["new"],
-                summary["matched"],
-                clusters,
-                if clusters == 1 { "needs" } else { "need" },
-                summary["skipped"]
+                summary.new,
+                summary.matched,
+                summary.needs_review,
+                if summary.needs_review == 1 { "needs" } else { "need" },
+                summary.skipped
             );
-            let _ = crate::db::activity_log::append(c, "statement", "committed", &text, Some(&summary));
+            let details = serde_json::to_value(&summary).ok();
+            let _ = crate::db::activity_log::append(c, "statement", "committed", &text, details.as_ref());
             Ok(summary)
         })
         .await
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
 
-    Ok(serde_json::json!({ "status": "committed", "statement_id": stmt_id, "summary": summary }))
+    Ok(StatementCommitResult { status: "committed", statement_id: stmt_id, summary })
+}
+
+/// Typed response of `statements_commit_draft` (Phase 2 2.3), mirrored by
+/// `StatementCommitSummary` in ipc.ts.
+#[derive(serde::Serialize, Debug)]
+pub struct StatementCommitResult {
+    pub status: &'static str,
+    pub statement_id: String,
+    pub summary: StatementCommitSummary,
+}
+
+/// What the engine did with a committed statement's rows (audit F8-5).
+#[derive(serde::Serialize, Debug, PartialEq)]
+pub struct StatementCommitSummary {
+    pub new: i64,
+    pub matched: i64,
+    pub needs_review: i64,
+    pub skipped: i64,
 }
 
 /// Per-row outcome of a committed statement: new transactions, rows matched
@@ -2066,7 +2134,7 @@ pub async fn statements_commit_draft(
 fn statement_commit_summary(
     c: &rusqlite::Connection,
     statement_id: &str,
-) -> rusqlite::Result<serde_json::Value> {
+) -> rusqlite::Result<StatementCommitSummary> {
     let entries: i64 = c.query_row(
         "SELECT COUNT(*) FROM statement_entries WHERE statement_id = ?1",
         [statement_id],
@@ -2087,12 +2155,12 @@ fn statement_commit_summary(
             _ => {}
         }
     }
-    Ok(serde_json::json!({
-        "new": new,
-        "matched": matched,
-        "needs_review": needs_review,
-        "skipped": (entries - new - matched - needs_review).max(0),
-    }))
+    Ok(StatementCommitSummary {
+        new,
+        matched,
+        needs_review,
+        skipped: (entries - new - matched - needs_review).max(0),
+    })
 }
 
 #[tauri::command]
@@ -3390,6 +3458,15 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// Upload failures carry a stable code instead of English text (F8-7).
+    #[test]
+    fn upload_errors_map_to_stable_codes() {
+        use crate::error::AppError;
+        assert_eq!(super::upload_error_code(&AppError::Conflict("x".into())), "duplicate");
+        assert_eq!(super::upload_error_code(&AppError::FileAccessDenied("x".into())), "access_denied");
+        assert_eq!(super::upload_error_code(&AppError::Parse("duplicate".into())), "failed");
+    }
+
     use super::*;
 
     fn collect_rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -4114,10 +4191,10 @@ mod tests {
             .unwrap();
         }
         let summary = super::statement_commit_summary(&c, "st1").unwrap();
-        assert_eq!(summary["new"], 2);
-        assert_eq!(summary["matched"], 1);
-        assert_eq!(summary["needs_review"], 1);
-        assert_eq!(summary["skipped"], 1);
+        assert_eq!(
+            summary,
+            super::StatementCommitSummary { new: 2, matched: 1, needs_review: 1, skipped: 1 }
+        );
     }
 
     #[test]
@@ -4145,7 +4222,7 @@ mod tests {
             make_row("s4", "awaiting_password"),
         ];
 
-        let grouped = super::group_unprocessed_by_status(rows);
+        let grouped = serde_json::to_value(super::group_unprocessed_by_status(rows)).unwrap();
         assert_eq!(grouped["awaiting_password"].as_array().unwrap().len(), 2);
         assert_eq!(grouped["pending_retry"].as_array().unwrap().len(), 1);
         assert_eq!(grouped["failed"].as_array().unwrap().len(), 1);
@@ -4174,7 +4251,7 @@ mod tests {
             created_at: None,
             updated_at: None,
         };
-        let grouped = super::group_unprocessed_by_status(vec![row]);
+        let grouped = serde_json::to_value(super::group_unprocessed_by_status(vec![row])).unwrap();
         let entries = grouped["awaiting_instrument"].as_array().unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["statement_id"], "s9");
@@ -4756,7 +4833,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let grouped = group_drafts_for_review(rows);
+        let grouped = serde_json::to_value(group_drafts_for_review(rows)).unwrap();
         assert_eq!(grouped.as_array().unwrap().len(), 1);
         assert_eq!(grouped[0]["issuer_name"], "HDFC");
         assert_eq!(grouped[0]["masked_identifier"], "6666");

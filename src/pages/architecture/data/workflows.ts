@@ -419,7 +419,7 @@ const AUTHORED: WorkflowDef[] = [
             label: 'commit',
             detail: 'Committed statement id returned; entries reconcile into the ledger',
           },
-          { label: 'discard', detail: 'Draft and stored encrypted PDF removed' },
+          { label: 'discard', detail: 'Draft and stored encrypted PDF removed once the 6 s Undo toast has passed' },
         ],
       },
     ],

@@ -18,7 +18,6 @@
  * Keeping these interfaces in step with the Rust structs is manual. A field
  * renamed in Rust will compile fine here and arrive as undefined at runtime.
  */
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { invoke } from '@tauri-apps/api/core';
 import type { AppError } from '@/types/ipc';
 import { logger } from './logger';
@@ -90,6 +89,9 @@ interface UpcomingBill {
   currency: string;
   due_date: string;
 }
+
+/** A JSON object whose shape the caller inspects itself (raw debug views). */
+export type JsonRow = Record<string, unknown>;
 
 export interface CategorySpend {
   category_id: string;
@@ -713,6 +715,9 @@ export const API = {
       }),
     delete: (transactionId: string) =>
       invokeCommand<string>('transactions_delete', { transactionId }),
+    /** Undoes a soft delete (audit F12-1). */
+    restore: (transactionId: string) =>
+      invokeCommand<string>('transactions_restore', { transactionId }),
     update: (
       transactionId: string,
       updates: {
@@ -789,6 +794,8 @@ export const API = {
           statement_id?: string;
           filename?: string;
           error?: string;
+          /** Stable code for a failed file (audit F8-7). */
+          error_code?: 'duplicate' | 'access_denied' | 'failed';
         }>;
       }>('statements_upload', { paths });
       return response.results;
@@ -828,7 +835,7 @@ export const API = {
         page,
       }).then((res) => res.records),
     getEntries: (statementId: string) =>
-      invokeCommand<any[]>('statements_get_entries', { statementId }),
+      invokeCommand<JsonRow[]>('statements_get_entries', { statementId }),
     getPdf: (statementId: string) => invokeCommand<string>('statements_get_pdf', { statementId }),
     deletePdf: (statementId: string) =>
       invokeCommand<void>('statements_delete_pdf', { statementId }),
@@ -842,7 +849,7 @@ export const API = {
       rows: DraftRow[],
       acknowledgePartial = false
     ) =>
-      invokeCommand<{ status: string; statement_id: string; summary?: StatementCommitSummary }>(
+      invokeCommand<{ status: string; statement_id: string; summary: StatementCommitSummary }>(
         'statements_commit_draft',
         {
         draftId,
@@ -1012,8 +1019,12 @@ export const API = {
     check: () => invokeCommand<BackendStatus>('check_backend_status'),
     getHealthReport: () => invokeCommand<HealthReport>('get_health_report'),
   },
-  // Whole-database operations: local backup restore and portable backup export/restore.
+  // Whole-database operations: local backup restore, portable backup
+  // export/restore, and deleting the account's data.
   db: {
+    /** Deletes all account data (Settings > Delete account). Was misnamed
+     * `dev.resetDatabase` (audit F18-1). */
+    deleteAccount: () => invokeCommand<string>('settings_delete_account'),
     restoreBackup: () => invokeCommand<string>('db_restore_backup'),
     /** Writes the database re-keyed to `password`, restorable on any Mac. */
     exportBackup: (exportPath: string, password: string) =>
@@ -1022,9 +1033,8 @@ export const API = {
     restorePortableBackup: (importPath: string, password: string) =>
       invokeCommand<string>('settings_restore_backup', { importPath, password }),
   },
-  // Development-only helpers. Destructive; not reachable in normal use.
+  // Development-only helpers.
   dev: {
-    resetDatabase: () => invokeCommand<string>('settings_delete_account'),
     getMetrics: () => invokeCommand<DebugMetrics>('get_debug_metrics'),
     checkSystemRam: () => invokeCommand<number>('check_system_ram'),
   },
@@ -1097,15 +1107,17 @@ export const API = {
     revertCorrection: (correctionId: string) =>
       invokeCommand<void>('merchant_cleanup_revert_correction', { correctionId }),
   },
-  // Debug inspection surfaces. Return `any` deliberately -- these feed a raw
-  // JSON viewer, so imposing a type would add no safety and constant churn.
+  // Debug inspection surfaces: untyped JSON rows by default; each viewer
+  // names the row shape it reads.
   debug: {
-    fetchParseErrors: () => invokeCommand<any[]>('debug_fetch_parse_errors'),
-    fetchUnprocessedStatements: () => invokeCommand<any[]>('debug_fetch_unprocessed_statements'),
-    fetchAuditLog: (resourceTypeFilter?: string, limit: number = 50, offset: number = 0) =>
-      invokeCommand<any[]>('debug_fetch_audit_log', { resourceTypeFilter, limit, offset }),
-    fetchReconciliationClusters: () => invokeCommand<any[]>('debug_fetch_reconciliation_clusters'),
-    getPipelineState: () => invokeCommand<any>('debug_get_pipeline_state'),
+    fetchParseErrors: <T = JsonRow>() => invokeCommand<T[]>('debug_fetch_parse_errors'),
+    fetchUnprocessedStatements: <T = JsonRow>() =>
+      invokeCommand<T[]>('debug_fetch_unprocessed_statements'),
+    fetchAuditLog: <T = JsonRow>(resourceTypeFilter?: string, limit: number = 50, offset: number = 0) =>
+      invokeCommand<T[]>('debug_fetch_audit_log', { resourceTypeFilter, limit, offset }),
+    fetchReconciliationClusters: <T = JsonRow>() =>
+      invokeCommand<T[]>('debug_fetch_reconciliation_clusters'),
+    getPipelineState: <T = JsonRow>() => invokeCommand<T>('debug_get_pipeline_state'),
     setGmailPollPaused: (paused: boolean) =>
       invokeCommand<void>('debug_set_gmail_poll_paused', { paused }),
     setScanQueuePaused: (paused: boolean) =>
@@ -1117,8 +1129,8 @@ export const API = {
   },
   // The outbound-request audit log backing the privacy disclosure screen.
   network: {
-    getActivityList: () =>
-      invokeCommand<{ entries: any[] }>('settings_get_network_activity').then((r) => r.entries),
+    getActivityList: <T = JsonRow>() =>
+      invokeCommand<{ entries: T[] }>('settings_get_network_activity').then((r) => r.entries),
   },
   // Rules the app inferred from user corrections, listable and revertible.
   learnedRules: {

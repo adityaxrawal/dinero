@@ -31,7 +31,7 @@ export default function NetworkActivity() {
     setLoading(true);
     setError(null);
     try {
-      const data = await API.network.getActivityList();
+      const data = await API.network.getActivityList<NetworkLogEntry>();
       setLogs(data);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to fetch network activity.');

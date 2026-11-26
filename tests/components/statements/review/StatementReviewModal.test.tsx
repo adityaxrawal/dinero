@@ -7,7 +7,9 @@ import { API } from '@/lib/ipc';
 import { useGlobalState } from '@/lib/GlobalStateContext';
 
 vi.mock('@/lib/GlobalStateContext', () => ({ useGlobalState: vi.fn() }));
-vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: vi.fn() }) }));
+const toast = vi.fn();
+// No undo window in tests: the deferred discard runs on the next tick.
+vi.mock('@/hooks/use-toast', () => ({ TOAST_AUTO_DISMISS_DELAY: 0, useToast: () => ({ toast }) }));
 vi.mock('@/lib/ipc', () => ({
   API: { statements: { getDraftPdf: vi.fn(), getDraft: vi.fn() } },
 }));
@@ -24,6 +26,7 @@ vi.mock('@/hooks/mutations/useDiscardStatementDraft', () => ({
 
 const asMock = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
 const closeReviewModal = vi.fn();
+const openReviewModal = vi.fn();
 
 const DRAFT = {
   issuer_name: 'HDFC',
@@ -55,6 +58,7 @@ function mockState(over: Record<string, unknown> = {}) {
     activeDraftId: 'd1',
     processingProgress: null,
     closeReviewModal,
+    openReviewModal,
     ...over,
   }));
 }
@@ -135,8 +139,22 @@ describe('StatementReviewModal once staged', () => {
   it('discards the draft when cancelled rather than leaving it staged', async () => {
     render(<StatementReviewModal />);
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
-    expect(discard).toHaveBeenCalledWith('d1', expect.anything());
     expect(closeReviewModal).toHaveBeenCalled();
+    // The delete waits for the Undo window to pass (audit F8-6).
+    expect(discard).not.toHaveBeenCalled();
+    expect(toast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Discarded', actionLabel: 'Undo' })
+    );
+    await waitFor(() => expect(discard).toHaveBeenCalledWith('d1', expect.anything()));
+  });
+
+  it('Undo cancels the pending discard and reopens the draft', async () => {
+    render(<StatementReviewModal />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
+    toast.mock.calls[0][0].onAction();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(discard).not.toHaveBeenCalled();
+    expect(openReviewModal).toHaveBeenCalledWith('d1');
   });
 
   it('says the PDF is loading until the bytes arrive', async () => {

@@ -22,7 +22,7 @@ import type { ToastActionElement, ToastProps } from '@/components/ui/toast';
 // stacking indefinitely.
 const TOAST_LIMIT = 3;
 // How long a toast remains before dismissing itself.
-const TOAST_AUTO_DISMISS_DELAY = 6000;
+export const TOAST_AUTO_DISMISS_DELAY = 6000;
 // Grace period between dismissal and removal, matching the exit animation.
 const TOAST_REMOVE_DELAY = 300;
 
@@ -33,6 +33,8 @@ type ToasterToast = ToastProps & {
   action?: ToastActionElement;
   actionTo?: string;
   actionLabel?: string;
+  /** Button action, rendered with actionLabel when there is no actionTo link. */
+  onAction?: () => void;
 };
 
 let count = 0;
