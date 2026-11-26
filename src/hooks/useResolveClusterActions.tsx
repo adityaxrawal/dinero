@@ -6,6 +6,7 @@ import { ToastAction } from '@/components/ui/toast';
 import { API } from '@/lib/ipc';
 import { confirmAction } from '@/lib/confirmDialog';
 import type { ClusterRecord } from '@/lib/ipc';
+import { formatMoney } from '@/lib/formatMoney';
 
 /**
  * The interaction layer around resolving a reconciliation cluster.
@@ -148,7 +149,7 @@ export function useResolveClusterActions({ cluster, onSuccess }: UseResolveClust
     }
     confirmAndResolve(
       'Confirm Match',
-      `Link this transaction to "${candidate.merchant}" (₹${Math.abs(candidate.amount).toFixed(2)})? The two records will be merged as the same transaction.`,
+      `Link this transaction to "${candidate.merchant}" (${formatMoney(Math.abs(candidate.amount_minor), candidate.currency)})? The two records will be merged as the same transaction.`,
       'confirm_match',
       selectedCandidateId ?? undefined
     );

@@ -48,7 +48,7 @@ describe('reasonGuidance', () => {
   it('explains the failure and says what to do about it', () => {
     const { description, tip } = reasonGuidance('issuer_name_not_found');
     expect(description).toMatch(/could not match the bank or card/);
-    expect(tip).toMatch(/Select an existing instrument/);
+    expect(tip).toMatch(/Add card or account/);
   });
 
   it('falls back to generic guidance for an unrecognised reason', () => {
@@ -108,7 +108,7 @@ describe('buildChecks', () => {
   it('passes the two gates that always ran, and formats a present amount', () => {
     const checks = buildChecks(record());
     expect(checks.filter((c) => c.passed).map((c) => c.id)).toContain('gate1');
-    expect(checkFor(record(), 'amount').value).toBe('INR 31.52');
+    expect(checkFor(record(), 'amount').value).toBe('₹31.52');
   });
 
   it('fails the fields that are actually missing', () => {

@@ -2,6 +2,7 @@
  * Derives the failure diagnosis from which extraction signals are absent.
  */
 import type { UnassignedTransactionRecord } from '@/lib/ipc';
+import { formatMoney } from '@/lib/formatMoney';
 
 // Backend failure reasons mapped to human titles. Keyed by the reason codes the
 // reconciliation pipeline emits.
@@ -49,7 +50,7 @@ const REASON_GUIDANCE: Record<string, ReasonGuidance> = {
   issuer_name_not_found: {
     description:
       'Transaction details were parsed successfully, but Dinero could not match the bank or card mentioned in the email to any configured payment instrument in your settings.',
-    tip: 'Select an existing instrument from the dropdown below, or go to Settings → Payment Instruments to add this new card/account.',
+    tip: 'Pick the card or account in the Instrument list below. If it is new, choose "Add card or account" at the bottom of that list; it is selected for you once added.',
   },
   pending_llm_enrichment: {
     description:
@@ -99,7 +100,7 @@ const REASON_GUIDANCE: Record<string, ReasonGuidance> = {
   instrument_archived: {
     description:
       'This message is for a card or account you archived, so it was not booked automatically.',
-    tip: 'Assign it to an instrument below, or unarchive the card in Settings → Payment Instruments if it is still in use.',
+    tip: 'Assign it to a card or account below, or unarchive the card on the Accounts page if it is still in use.',
   },
 };
 
@@ -231,7 +232,7 @@ export function buildChecks(record: UnassignedTransactionRecord): DiagnosticChec
       label: 'Transaction Amount',
       passed: hasAmount,
       value: hasAmount
-        ? `${record.currency ?? 'INR'} ${(record.amount_minor! / 100).toFixed(2)}`
+        ? formatMoney(record.amount_minor, record.currency)
         : 'Missing / Unparsed',
     },
     {

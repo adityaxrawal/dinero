@@ -6,6 +6,7 @@ import { useNavigate } from 'react-router-dom';
 import { AlertCircle, AlertTriangle, Calendar, ChevronRight, GitMerge } from 'lucide-react';
 import { classifyBillUrgency } from '@/components/dashboard/classifyBillUrgency';
 import type { useDashboardData } from './useDashboardData';
+import { formatMoney, toMinor } from '@/lib/formatMoney';
 
 type Data = ReturnType<typeof useDashboardData>;
 
@@ -79,7 +80,7 @@ function BillCard({ bill, onClick }: { bill: Data['urgentBills'][number]; onClic
       }
       iconBg={overdue ? 'rgba(239,68,68,0.12)' : 'rgba(245,158,11,0.12)'}
       title={bill.description}
-      subtitle={`₹${bill.amount.toLocaleString()} · Due ${due}`}
+      subtitle={`${formatMoney(toMinor(bill.amount), 'INR')} · Due ${due}`}
       ctaLabel={overdue ? 'Overdue' : 'Due soon'}
       onClick={onClick}
       urgent={overdue}
@@ -90,8 +91,7 @@ function BillCard({ bill, onClick }: { bill: Data['urgentBills'][number]; onClic
 /** Rail of items needing attention: stale clusters, failures, bills. */
 /** Money out and in awaiting review, never added together (audit F9-14). */
 function pendingSubtitle(debitMinor: number, creditMinor: number): string {
-  const rupees = (minor: number) =>
-    `₹${(minor / 100).toLocaleString('en-IN', { minimumFractionDigits: 0 })}`;
+  const rupees = (minor: number) => formatMoney(minor, 'INR');
   const parts = [
     debitMinor > 0 && `${rupees(debitMinor)} out`,
     creditMinor > 0 && `${rupees(creditMinor)} in`,

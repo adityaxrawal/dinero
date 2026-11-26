@@ -29,20 +29,6 @@ export function formatDuration(seconds: number): string {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
-/** Formats a monetary amount for the cleanup views. */
-export function formatAmount(amount: number | null, currency: string | null): string | null {
-  if (amount === null) return null;
-  try {
-    return new Intl.NumberFormat(undefined, {
-      style: 'currency',
-      currency: currency ?? 'INR',
-      maximumFractionDigits: 2,
-    }).format(amount);
-  } catch {
-    return `${currency ?? ''} ${amount.toFixed(2)}`.trim();
-  }
-}
-
 export type FeedEntry = {
   key: number;
   before: string;

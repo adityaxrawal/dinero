@@ -4,6 +4,7 @@
 import { AlertCircle, Check, Copy, Wifi } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { InstrumentRecord } from '@/lib/ipc';
+import { formatMoney, toMinor } from '@/lib/formatMoney';
 
 /** Issuer and nickname across the top of the card. */
 export function CardHeader({
@@ -90,8 +91,8 @@ export function BalanceRow({
         </span>
         <div className="flex items-baseline gap-1.5">
           <span className="text-3xl md:text-4xl font-black font-mono tracking-tight text-white">
-            {isNegative ? '−' : ''}₹
-            {absBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+            {isNegative ? '−' : ''}
+            {formatMoney(toMinor(absBalance), 'INR')}
           </span>
         </div>
       </div>
@@ -133,9 +134,9 @@ export function UtilizationGauge({
   return (
     <div className="space-y-1.5 pt-3 border-t border-white/15 relative z-10">
       <div className="flex items-center justify-between text-[11px] font-bold font-mono text-white/80">
-        <span>Spent: ₹{spent.toLocaleString()}</span>
+        <span>Spent: {formatMoney(toMinor(spent), 'INR')}</span>
         <span className="text-white/60">
-          Limit: ₹{limit.toLocaleString()} ({ratio.toFixed(1)}% used)
+          Limit: {formatMoney(toMinor(limit), 'INR')} ({ratio.toFixed(1)}% used)
         </span>
       </div>
       <div className="w-full h-2 rounded-full bg-black/30 overflow-hidden p-0.5 border border-white/10">

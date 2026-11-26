@@ -41,42 +41,45 @@ pub struct PendingReviewMetric {
     pub credit_minor: i64,
 }
 
-/// Count and value of transactions awaiting review (clusters plus review
-/// entries waiting for the user).
+/// Count and value of Review Inbox entries waiting for the user.
 ///
-/// Drives the review badge and the dock badge. A query failure is an error,
-/// not a silent zero (audit F9-14).
+/// Clusters are not included: they have their own "needs duplicate check"
+/// count, and adding them here counted them twice on the dashboard (audit
+/// F14-2). Drives the dashboard's "needs review" card. A query failure is an
+/// error, not a silent zero (audit F9-14).
 pub fn compute_unassigned_amount_pending_review(
     conn: &Connection,
 ) -> Result<PendingReviewMetric, String> {
-    let sums = |sql: &str| -> Result<(i64, i64, i64), String> {
-        conn.query_row(sql, [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-            .map_err(|e| e.to_string())
-    };
-    let (cluster_count, cluster_debit, cluster_credit) = sums(
-        "SELECT COUNT(DISTINCT t.id),
-                COALESCE(SUM(CASE WHEN t.direction = 'credit' THEN 0 ELSE t.amount_minor END), 0),
-                COALESCE(SUM(CASE WHEN t.direction = 'credit' THEN t.amount_minor ELSE 0 END), 0)
-         FROM transactions t
-         JOIN reconciliation_cluster_members m ON m.canonical_transaction_id = t.id
-         JOIN reconciliation_clusters c ON c.id = m.cluster_id
-         WHERE c.cluster_status IN ('open', 'deferred')",
-    )?;
-    let (unassigned_count, unassigned_debit, unassigned_credit) = sums(&format!(
-        "SELECT COUNT(*),
-                COALESCE(SUM(CASE WHEN o.direction = 'credit' THEN 0 ELSE o.amount_minor END), 0),
-                COALESCE(SUM(CASE WHEN o.direction = 'credit' THEN o.amount_minor ELSE 0 END), 0)
-         FROM unassigned_transactions u
-         JOIN transaction_observations o ON o.id = u.observation_id
-         WHERE {}",
-        crate::db::unassigned_transactions::VISIBLE_OPEN
-    ))?;
+    let (count, debit_minor, credit_minor) = conn
+        .query_row(
+            &format!(
+                "SELECT COUNT(*),
+                        COALESCE(SUM(CASE WHEN o.direction = 'credit' THEN 0 ELSE o.amount_minor END), 0),
+                        COALESCE(SUM(CASE WHEN o.direction = 'credit' THEN o.amount_minor ELSE 0 END), 0)
+                 FROM unassigned_transactions u
+                 JOIN transaction_observations o ON o.id = u.observation_id
+                 WHERE {}",
+                crate::db::unassigned_transactions::VISIBLE_OPEN
+            ),
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(PendingReviewMetric { count, debit_minor, credit_minor })
+}
 
-    Ok(PendingReviewMetric {
-        count: cluster_count + unassigned_count,
-        debit_minor: cluster_debit + unassigned_debit,
-        credit_minor: cluster_credit + unassigned_credit,
-    })
+/// Everything waiting for the user: unresolved clusters plus Review Inbox
+/// entries. Drives the dock badge and the tray's "pending" figure, which stand
+/// for the whole Review Inbox (both tabs), like the sidebar badge (F14-2).
+pub fn count_needs_attention(conn: &Connection) -> Result<i64, String> {
+    let clusters: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM reconciliation_clusters WHERE cluster_status IN ('open', 'deferred')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(clusters + compute_unassigned_amount_pending_review(conn)?.count)
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -92,6 +95,8 @@ pub struct TransactionRecord {
     pub instrument_id: Option<String>,
     /// e.g. `internal_transfer`, so the list can mark own-funds moves.
     pub channel: Option<String>,
+    /// ISO code, so amounts show in the row's own currency (owner decision).
+    pub currency: Option<String>,
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -133,7 +138,10 @@ pub struct ClusterMember {
     pub canonical_transaction_id: Option<String>,
     pub source_pipeline: Option<String>,
     pub merchant: String,
-    pub amount: f64,
+    /// Integer minor units plus the ISO currency, like the rest of the IPC
+    /// surface (audit F10-6).
+    pub amount_minor: i64,
+    pub currency: Option<String>,
     pub direction: Option<String>,
     pub date: String,
     pub instrument_issuer_name: Option<String>,
@@ -318,7 +326,7 @@ pub fn do_fetch_transactions(
 ) -> Result<Vec<TransactionRecord>, String> {
     let (filter_clause, filter_args) = build_filter_clause(filters);
     let sql = format!(
-        "SELECT id, authorization_time, merchant_display_name, amount, category_id, status, source_mix, instrument_id, direction, channel
+        "SELECT id, authorization_time, merchant_display_name, amount, category_id, status, source_mix, instrument_id, direction, channel, currency
          FROM transactions
          WHERE is_deleted = 0{filter_clause}
          ORDER BY authorization_time DESC LIMIT ? OFFSET ?"
@@ -346,6 +354,7 @@ pub fn do_fetch_transactions(
             let instrument_id: Option<String> = row.get(7)?;
             let direction: Option<String> = row.get(8)?;
             let channel: Option<String> = row.get(9)?;
+            let currency: Option<String> = row.get(10)?;
 
             Ok(TransactionRecord {
                 id: row.get(0)?,
@@ -358,6 +367,7 @@ pub fn do_fetch_transactions(
                 source_mix,
                 instrument_id,
                 channel,
+                currency,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -423,6 +433,7 @@ pub fn do_transactions_search(
             source_mix: tx.source_mix,
             instrument_id: tx.instrument_id,
             channel: tx.channel,
+            currency: tx.currency,
         })
         .collect())
 }
@@ -501,7 +512,8 @@ fn fetch_cluster_members(
                 m.canonical_transaction_id,
                 COALESCE(o.source_pipeline, CASE WHEN m.canonical_transaction_id IS NOT NULL THEN 'statement_pdf' ELSE NULL END),
                 COALESCE(t.merchant_display_name, o.merchant_raw, 'Unknown'),
-                COALESCE(t.amount, o.amount, 0),
+                COALESCE(t.amount_minor, o.amount_minor, CAST(ROUND(COALESCE(t.amount, o.amount, 0) * 100) AS INTEGER)),
+                COALESCE(t.currency, o.currency),
                 COALESCE(t.direction, o.direction),
                 COALESCE(t.authorization_time, o.event_time, 'Unknown'),
                 i.issuer_name,
@@ -525,14 +537,15 @@ fn fetch_cluster_members(
                 canonical_transaction_id: row.get(3)?,
                 source_pipeline: row.get(4)?,
                 merchant: row.get(5)?,
-                amount: row.get(6)?,
-                direction: row.get(7)?,
-                date: row.get(8)?,
-                instrument_issuer_name: row.get(9)?,
-                instrument_masked_identifier: row.get(10)?,
-                reference_id: row.get(11)?,
-                match_score: row.get(12)?,
-                source_raw_payload_json: row.get(13)?,
+                amount_minor: row.get(6)?,
+                currency: row.get(7)?,
+                direction: row.get(8)?,
+                date: row.get(9)?,
+                instrument_issuer_name: row.get(10)?,
+                instrument_masked_identifier: row.get(11)?,
+                reference_id: row.get(12)?,
+                match_score: row.get(13)?,
+                source_raw_payload_json: row.get(14)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -3573,6 +3586,7 @@ mod tests {
             source_mix: Some("email_only".to_string()),
             instrument_id: None,
             channel: None,
+            currency: None,
         };
         let csv = transactions_to_csv(&[rec("Flipkart, Bangalore", "debit"), rec("=HYPERLINK(\"x\")", "credit")]);
         let lines: Vec<&str> = csv.lines().collect();
@@ -3784,6 +3798,7 @@ mod tests {
                 merchant_display_name TEXT,
                 amount REAL,
                 amount_minor INTEGER,
+                currency TEXT,
                 reference_id TEXT,
                 category_id TEXT,
                 status TEXT,
@@ -3811,7 +3826,7 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "CREATE TABLE transaction_observations (id TEXT PRIMARY KEY, amount_minor INTEGER, source_pipeline TEXT, merchant_raw TEXT, amount REAL, direction TEXT, event_time TEXT, instrument_id TEXT, reference_id TEXT, raw_payload_json TEXT)",
+            "CREATE TABLE transaction_observations (id TEXT PRIMARY KEY, amount_minor INTEGER, currency TEXT, source_pipeline TEXT, merchant_raw TEXT, amount REAL, direction TEXT, event_time TEXT, instrument_id TEXT, reference_id TEXT, raw_payload_json TEXT)",
             [],
         )
         .unwrap();
@@ -3980,6 +3995,44 @@ mod tests {
     }
 
     #[test]
+    fn test_cluster_members_carry_minor_units_and_currency() {
+        // Audit F10-6: amounts cross IPC as integer minor units plus currency.
+        let conn = setup_db();
+        conn.execute(
+            "INSERT INTO transactions (id, amount, amount_minor, currency, direction) \
+             VALUES ('txn_usd', 12.34, 1234, 'USD', 'debit')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transactions (id, amount, direction) VALUES ('txn_legacy', 99.5, 'debit')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO reconciliation_clusters (id, cluster_status, reason) VALUES ('c1', 'open', 'mid_range_score')",
+            [],
+        )
+        .unwrap();
+        for (id, tx) in [("m1", "txn_usd"), ("m2", "txn_legacy")] {
+            conn.execute(
+                "INSERT INTO reconciliation_cluster_members (id, cluster_id, canonical_transaction_id, member_role) \
+                 VALUES (?1, 'c1', ?2, 'candidate_a')",
+                params![id, tx],
+            )
+            .unwrap();
+        }
+
+        let detail = do_fetch_cluster_detail(&conn, "c1").unwrap().unwrap();
+        let usd = detail.members.iter().find(|m| m.id == "m1").unwrap();
+        assert_eq!(usd.amount_minor, 1234);
+        assert_eq!(usd.currency.as_deref(), Some("USD"));
+        // A row with only the old float amount is still converted exactly.
+        let legacy = detail.members.iter().find(|m| m.id == "m2").unwrap();
+        assert_eq!(legacy.amount_minor, 9950);
+    }
+
+    #[test]
     fn test_list_excludes_soft_deleted() {
         let conn = setup_db();
         conn.execute(
@@ -4104,9 +4157,12 @@ mod tests {
         let summary = do_fetch_dashboard_summary(&conn).unwrap();
         let pending = compute_unassigned_amount_pending_review(&conn).unwrap();
 
-        assert_eq!(pending.count, 2);
-        assert_eq!(pending.debit_minor + pending.credit_minor, 7500);
+        // Only the Review Inbox entry: the cluster has its own count (F14-2).
+        assert_eq!(pending.count, 1);
+        assert_eq!(pending.debit_minor + pending.credit_minor, 2500);
         assert_eq!(summary.month_to_date_spend, 10.0);
+        // The dock badge stands for both: one cluster plus one entry.
+        assert_eq!(count_needs_attention(&conn).unwrap(), 2);
     }
 
     #[test]

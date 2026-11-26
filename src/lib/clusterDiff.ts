@@ -13,6 +13,7 @@
  */
 import type { ClusterMember } from '@/lib/ipc';
 import { formatCustomDate } from '@/lib/formatCustomDate';
+import { formatMoney } from '@/lib/formatMoney';
 
 /** Which fields differ; one boolean per comparable field. */
 export interface ClusterMemberDiff {
@@ -51,7 +52,9 @@ export function diffClusterMember(
       !!reference &&
       (candidate.instrument_issuer_name !== reference.instrument_issuer_name ||
         candidate.instrument_masked_identifier !== reference.instrument_masked_identifier),
-    amount: !!reference && candidate.amount !== reference.amount,
+    amount:
+      !!reference &&
+      (candidate.amount_minor !== reference.amount_minor || candidate.currency !== reference.currency),
     date: !!reference && candidate.date !== reference.date,
   };
 }
@@ -72,7 +75,7 @@ function formatFieldValue(field: (typeof DIFF_FIELDS)[number], member: ClusterMe
     case 'amount':
       // Absolute value: direction is conveyed elsewhere in the row, and a sign
       // here would read as part of the number being compared.
-      return `₹${Math.abs(member.amount).toFixed(2)}`;
+      return formatMoney(Math.abs(member.amount_minor), member.currency);
     case 'date':
       // 'Unknown' is a real sentinel from extraction, not a parseable date, so
       // it is passed through rather than fed to the formatter.
@@ -119,4 +122,15 @@ export function summarizeClusterDiff(
   // Several differing fields: naming them is enough, since inlining every value
   // would produce a line too dense to scan.
   return `${label}: ${names}`;
+}
+
+/** Why the engine formed a cluster, in plain words (audit F10-7). */
+const CLUSTER_REASON: Record<string, string> = {
+  multiple_high_score_candidates:
+    'Flagged because more than one existing transaction is a close match.',
+  mid_range_score: 'Flagged because the closest existing transaction is only a partial match.',
+};
+
+export function clusterReasonText(reason: string | null | undefined): string | null {
+  return reason ? (CLUSTER_REASON[reason] ?? null) : null;
 }

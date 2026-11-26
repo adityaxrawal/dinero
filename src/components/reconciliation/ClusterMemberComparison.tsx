@@ -5,6 +5,7 @@
  * the user can judge whether these are one payment or two.
  */
 import type { ReactNode } from 'react';
+import { formatMoney, moneyTone } from '@/lib/formatMoney';
 import { Check } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -126,11 +127,8 @@ function MemberFields({
       <DiffField
         label="Amount"
         diff={diff.amount}
-        className={cn(
-          'font-medium',
-          member.direction === 'debit' ? 'text-red-700' : 'text-emerald-700'
-        )}
-        value={`${member.direction === 'debit' ? '-' : '+'} ₹${Math.abs(member.amount).toFixed(2)}`}
+        className={cn('font-medium', moneyTone(member.direction))}
+        value={formatMoney(member.amount_minor, member.currency, member.direction)}
       />
       <DiffField
         label="Date"

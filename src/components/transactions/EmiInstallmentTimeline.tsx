@@ -5,6 +5,7 @@
  * single purchase with a visible schedule.
  */
 import { CheckCircle2, Circle, Loader2 } from 'lucide-react';
+import { formatMoney } from '@/lib/formatMoney';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { useEmiGroup } from '@/hooks/queries/useEmiGroup';
 
@@ -64,7 +65,7 @@ export default function EmiInstallmentTimeline({ emiGroupId }: EmiInstallmentTim
               <span className="text-xs text-muted-foreground">
                 {inst.event_time ? new Date(inst.event_time).toLocaleDateString() : '—'}
               </span>
-              <span className="font-medium">₹ {(inst.amount_minor / 100).toLocaleString()}</span>
+              <span className="font-medium">{formatMoney(inst.amount_minor, null)}</span>
             </li>
           ))}
           {Array.from({ length: remaining }).map((_, i) => (

@@ -23,6 +23,9 @@ import { recheckMessage, useRecheckUnassigned } from '@/hooks/mutations/useReche
 interface UnassignedInspectorProps {
   record: UnassignedTransactionRecord | undefined;
   onClose: () => void;
+  /** The entry left the queue in the background (e.g. the AI booked it) while
+   * open: the last copy stays on screen with the user's edits (audit F9-10). */
+  resolvedElsewhere?: boolean;
   inline?: boolean;
 }
 
@@ -70,6 +73,7 @@ export default function UnassignedInspector({
   record,
   onClose,
   inline = false,
+  resolvedElsewhere = false,
 }: UnassignedInspectorProps) {
   const isOpen = !!record;
   const { data: instruments = [] } = useInstrumentsList();
@@ -118,7 +122,28 @@ export default function UnassignedInspector({
         )}
       >
         <div className="flex-1 space-y-6">
-          {record.waiting_for_ai && (
+          {resolvedElsewhere && (
+            <p
+              className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-[12px] text-amber-900"
+              role="alert"
+            >
+              This entry was already handled in the background (the local AI booked it) while you
+              were editing. Your edits are still shown below but can't be saved here; check the
+              ledger and edit the transaction there if needed.
+            </p>
+          )}
+          {!resolvedElsewhere && form.updatedInBackground && (
+            <p
+              className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-[12px] text-amber-900"
+              role="status"
+            >
+              This entry was updated in the background. Your edits are kept.{' '}
+              <button type="button" className="underline font-medium" onClick={form.loadLatest}>
+                Load the new values
+              </button>
+            </p>
+          )}
+          {!resolvedElsewhere && record.waiting_for_ai && (
             <p
               className="rounded-lg border border-emerald-ink/15 bg-emerald-ink/5 p-3 text-[12px] text-emerald-ink"
               role="status"
@@ -149,9 +174,9 @@ export default function UnassignedInspector({
         </div>
 
         <UnassignedActions
-          canSubmit={form.canSubmit}
+          canSubmit={form.canSubmit && !resolvedElsewhere}
           isPending={busy}
-          canRecheck={record.can_recheck === true}
+          canRecheck={record.can_recheck === true && !resolvedElsewhere}
           onRecheck={handleRecheck}
           onDismiss={form.handleDismiss}
           onSave={form.handleSave}

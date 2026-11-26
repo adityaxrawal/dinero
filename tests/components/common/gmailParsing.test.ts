@@ -18,9 +18,9 @@ describe('extractQuickCandidates', () => {
   it('pulls amounts written as INR, Rs. and ₹', () => {
     const got = extractQuickCandidates('INR 450.00 and Rs. 1,200 and ₹500.00');
     expect(got.filter((c) => c.type === 'amount')).toEqual([
-      { type: 'amount', label: 'Amount: ₹450', value: '450.00' },
-      { type: 'amount', label: 'Amount: ₹1,200', value: '1200.00' },
-      { type: 'amount', label: 'Amount: ₹500', value: '500.00' },
+      { type: 'amount', label: 'Amount: ₹450.00', value: '450.00' },
+      { type: 'amount', label: 'Amount: ₹1,200.00', value: '1200.00' },
+      { type: 'amount', label: 'Amount: ₹500.00', value: '500.00' },
     ]);
   });
 

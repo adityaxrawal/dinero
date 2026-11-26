@@ -2,6 +2,7 @@
  * One row of the recent-ledger widget, briefly highlighted when newly arrived.
  */
 import { cn, formatRelativeDate } from '@/lib/utils';
+import { formatMoney, toMinor } from '@/lib/formatMoney';
 import type { TransactionRecord } from '@/lib/ipc';
 
 /** One row of the recent-ledger widget, highlighted when newly arrived. */
@@ -22,7 +23,7 @@ export default function RecentTransactionRow({
       role="button"
       data-testid={`recent-tx-row-${tx.id}`}
       data-highlighted={isNew}
-      aria-label={`${tx.merchant}, ₹${Math.abs(tx.amount).toLocaleString()}`}
+      aria-label={`${tx.merchant}, ${isDebit ? "debit" : "credit"} ${formatMoney(toMinor(Math.abs(tx.amount)), null)}`}
       className="transition-colors duration-700"
       style={isNew ? { backgroundColor: 'rgba(16,185,129,0.14)' } : undefined}
       onClick={onOpen}
@@ -59,8 +60,7 @@ export default function RecentTransactionRow({
         <span
           className={cn('text-sm font-semibold amount', isDebit ? 'amount-debit' : 'amount-credit')}
         >
-          {isDebit ? '−' : '+'}₹
-          {Math.abs(tx.amount).toLocaleString(undefined, { minimumFractionDigits: 0 })}
+          {formatMoney(toMinor(Math.abs(tx.amount)), null, isDebit ? "debit" : "credit")}
         </span>
       </td>
       <td>

@@ -4,6 +4,7 @@
  * Kept out of the component file so the module exports components alone (which
  * Fast Refresh requires) and so this logic stays directly testable.
  */
+import { formatMoney, toMinor } from '@/lib/formatMoney';
 /** One value spotted in an email body that the user can push into a form field. */
 export type QuickCandidate = {
   type: 'amount' | 'merchant' | 'date' | 'ref';
@@ -208,7 +209,7 @@ export function extractQuickCandidates(text: string): QuickCandidate[] {
       if (isNaN(num) || num <= 0) return null;
       return {
         type: 'amount',
-        label: `Amount: ₹${num.toLocaleString('en-IN')}`,
+        label: `Amount: ${formatMoney(toMinor(num), 'INR')}`,
         value: num.toFixed(2),
       };
     },

@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import type { useInstrumentForm } from '@/components/instruments/useInstrumentForm';
+import { formatMoney, toMinor } from '@/lib/formatMoney';
 
 type Form = ReturnType<typeof useInstrumentForm>;
 type Transaction = Form['recentTransactions'][number];
@@ -13,7 +14,7 @@ type Transaction = Form['recentTransactions'][number];
 /** One transaction row within the card. */
 function TransactionRow({ tx }: { tx: Transaction }) {
   const isDebit = tx.direction === 'debit';
-  const amount = Math.abs(tx.amount).toLocaleString(undefined, { minimumFractionDigits: 2 });
+  const amount = formatMoney(toMinor(Math.abs(tx.amount)), 'INR', isDebit ? 'debit' : 'credit');
 
   return (
     <li className="flex items-center justify-between text-sm py-1 border-b border-border/20 last:border-0">
@@ -33,7 +34,7 @@ function TransactionRow({ tx }: { tx: Transaction }) {
       <span
         className={cn('font-bold font-mono text-xs', isDebit ? 'text-red-700' : 'text-emerald-700')}
       >
-        {isDebit ? '−' : '+'}₹{amount}
+        {amount}
       </span>
     </li>
   );

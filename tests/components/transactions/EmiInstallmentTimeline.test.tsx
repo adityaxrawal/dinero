@@ -68,7 +68,7 @@ describe('EmiInstallmentTimeline', () => {
 
   it('converts installment amounts out of minor units', () => {
     renderTimeline();
-    expect(screen.getAllByText(/₹ 2,500/)[0]).toBeTruthy();
+    expect(screen.getAllByText(/₹2,500\.00/)[0]).toBeTruthy();
   });
 
   it('falls back to a dash when an installment has no date', () => {

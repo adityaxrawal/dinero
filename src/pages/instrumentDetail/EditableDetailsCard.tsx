@@ -8,12 +8,13 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import type { InstrumentRecord } from '@/lib/ipc';
 import type { useInstrumentForm } from '@/components/instruments/useInstrumentForm';
+import { formatMoney, toMinor } from '@/lib/formatMoney';
 
 type Form = ReturnType<typeof useInstrumentForm>;
 
 /** Formats a monetary field, or a dash when absent. */
 function money(value: number | null | undefined): string {
-  return value != null ? `₹${value.toFixed(2)}` : '—';
+  return value != null ? formatMoney(toMinor(value), 'INR') : '—';
 }
 
 /** Editable instrument fields. */

@@ -2,6 +2,7 @@
  * One transaction row in the feed.
  */
 import { cn } from '@/lib/utils';
+import { formatMoney, toMinor } from '@/lib/formatMoney';
 
 interface RowTransaction {
   id: string;
@@ -9,6 +10,7 @@ interface RowTransaction {
   amount: number;
   direction: string | null;
   channel?: string | null;
+  currency?: string | null;
 }
 
 /** One transaction row in the feed. */
@@ -68,8 +70,7 @@ export default function TransactionRow({
           <span
             className={cn('text-[13px] font-bold font-mono whitespace-nowrap shrink-0', amountTone)}
           >
-            {isDebit ? '−' : '+'}₹
-            {Math.abs(tx.amount).toLocaleString(undefined, { minimumFractionDigits: 0 })}
+            {formatMoney(toMinor(Math.abs(tx.amount)), tx.currency ?? null, isDebit ? 'debit' : 'credit')}
           </span>
         </div>
 

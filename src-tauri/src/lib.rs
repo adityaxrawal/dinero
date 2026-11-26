@@ -1007,13 +1007,10 @@ pub fn run() {
                             let _ = conn
                                 .interact(move |c| {
                                     let today = chrono::Utc::now().naive_utc().date();
-                                    let pending =
-                                        crate::commands::data::compute_unassigned_amount_pending_review(c)
-                                            .unwrap_or(crate::commands::data::PendingReviewMetric {
-                                                count: 0,
-                                                debit_minor: 0,
-                                                credit_minor: 0,
-                                            });
+                                    // Clusters plus Review Inbox entries, like
+                                    // the sidebar badge (audit F14-2).
+                                    let needs_attention =
+                                        crate::commands::data::count_needs_attention(c).unwrap_or(0);
                                     let month_spend = crate::commands::data::do_fetch_dashboard_summary(c)
                                         .map(|s| s.month_to_date_spend)
                                         .unwrap_or(0.0);
@@ -1022,11 +1019,11 @@ pub fn run() {
                                             .map(|bills| bills.len() as i64)
                                             .unwrap_or(0);
 
-                                    crate::menu::status_item::update_dock_badge(&app_handle, pending.count);
+                                    crate::menu::status_item::update_dock_badge(&app_handle, needs_attention);
                                     crate::menu::status_item::update_tray_summary_if_present(
                                         &app_handle,
                                         month_spend,
-                                        pending.count,
+                                        needs_attention,
                                         upcoming_count,
                                     );
                                 })

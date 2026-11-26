@@ -49,6 +49,6 @@ describe('InstrumentAnalyticsTab', () => {
     expect(screen.getByText(/902\.77/)).toBeInTheDocument();
 
     expect(screen.getByText('Total Inflow')).toBeInTheDocument();
-    expect(screen.getByText(/1,000\.00/)).toBeInTheDocument();
+    expect(screen.getAllByText('₹1,000.00').length).toBeGreaterThan(0);
   });
 });

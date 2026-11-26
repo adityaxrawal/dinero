@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button';
 import { formatRelativeDate } from '@/lib/utils';
 import type { ClusterRecord } from '@/lib/ipc';
 import type { useResolveClusterActions } from '@/hooks/useResolveClusterActions';
+import { clusterReasonText } from '@/lib/clusterDiff';
 
 type Actions = ReturnType<typeof useResolveClusterActions>;
 
@@ -132,6 +133,9 @@ export function VerdictHeader({
       </div>
 
       <p className="text-[15px] font-semibold text-emerald-ink">{verdict}</p>
+      {clusterReasonText(cluster.reason) && (
+        <p className="text-[12px] text-emerald-ink/70">{clusterReasonText(cluster.reason)}</p>
+      )}
       {candidateCount > 1 && (
         <p className="text-[12px] text-emerald-ink/60">
           {candidateCount} candidates found — pick the correct one below.

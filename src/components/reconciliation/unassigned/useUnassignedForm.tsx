@@ -1,7 +1,7 @@
 /**
  * Form state for manually resolving an unassigned transaction.
  */
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { API, type UnassignedTransactionRecord } from '@/lib/ipc';
 import { queryKeys } from '@/lib/queryKeys';
@@ -32,17 +32,47 @@ export function useUnassignedForm(
   const [instrumentId, setInstrumentId] = useState('');
   const [referenceId, setReferenceId] = useState('');
 
-  useEffect(() => {
-    setMerchant(record?.merchant_raw ?? '');
-    setAmount(record?.amount_minor != null ? (record.amount_minor / 100).toString() : '');
-    setDirection(
-      record?.direction === 'credit' || record?.direction === 'debit' ? record.direction : ''
-    );
-    setDate(record?.event_time ? record.event_time.slice(0, 10) : '');
+  // What was last loaded from the record, to tell the user's edits apart from
+  // a background update (audit F9-10: the local AI finishing an entry used to
+  // overwrite whatever the user had typed).
+  const loaded = useRef<{ id: string | undefined; values: string[] } | null>(null);
+  const typed = [merchant, amount, direction, date, time, instrumentId, referenceId];
+  const [updatedInBackground, setUpdatedInBackground] = useState(false);
+
+  const loadFromRecord = () => {
     const printed = record?.event_time?.slice(11, 16) ?? '';
-    setTime(printed && printed !== '00:00' ? printed : '');
+    const values = [
+      record?.merchant_raw ?? '',
+      record?.amount_minor != null ? (record.amount_minor / 100).toString() : '',
+      record?.direction === 'credit' || record?.direction === 'debit' ? record.direction : '',
+      record?.event_time ? record.event_time.slice(0, 10) : '',
+      printed && printed !== '00:00' ? printed : '',
+      '',
+      '',
+    ];
+    setMerchant(values[0]);
+    setAmount(values[1]);
+    setDirection(values[2] as 'debit' | 'credit' | '');
+    setDate(values[3]);
+    setTime(values[4]);
     setInstrumentId('');
     setReferenceId('');
+    loaded.current = { id: record?.id, values };
+    setUpdatedInBackground(false);
+  };
+
+  useEffect(() => {
+    const prev = loaded.current;
+    const edited =
+      !!prev && prev.id === record?.id && typed.some((v, i) => v !== prev.values[i]);
+    if (edited) {
+      // Same entry, new values, and the user has typed: keep their edits and
+      // offer the new values instead of replacing them.
+      setUpdatedInBackground(true);
+      return;
+    }
+    loadFromRecord();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     record?.id,
     record?.merchant_raw,
@@ -159,6 +189,8 @@ export function useUnassignedForm(
 
   return {
     fields: { merchant, amount, direction, date, time, instrumentId, referenceId },
+    updatedInBackground,
+    loadLatest: loadFromRecord,
     setters: {
       setMerchant,
       setAmount,

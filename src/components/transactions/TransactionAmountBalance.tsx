@@ -4,7 +4,7 @@
 import React from 'react';
 import { Landmark } from 'lucide-react';
 import { InfoRow } from '@/components/ui/InfoRow';
-import { formatMoney } from '@/lib/formatMoney';
+import { formatMoney, toMinor } from '@/lib/formatMoney';
 
 export interface TransactionAmountBalanceFields {
   balance_after_transaction: number | null;
@@ -39,10 +39,7 @@ export function TransactionAmountBalance({
       )}
       {tx.balance_after_transaction !== null && (
         <InfoRow icon={<Landmark className="w-3.5 h-3.5" />} label="Balance After">
-          ₹
-          {tx.balance_after_transaction?.toLocaleString(undefined, {
-            minimumFractionDigits: 2,
-          })}
+          {formatMoney(toMinor(tx.balance_after_transaction), tx.currency)}
         </InfoRow>
       )}
     </>

@@ -2,6 +2,7 @@
  * Threshold toggles and per-category budget cards for the budgets screen.
  */
 import { Input } from '@/components/ui/input';
+import { formatMoney, toMinor } from '@/lib/formatMoney';
 import { Label } from '@/components/ui/label';
 import { cn } from '@/lib/utils';
 import type { CategoryBudget } from '@/lib/ipc';
@@ -80,7 +81,7 @@ export function CategoryBudgetCard({
       </div>
       {cat.budget > 0 && (
         <p className="text-[12px] font-semibold text-emerald-ink/60">
-          ₹ {cat.budget.toLocaleString()} / month
+          {formatMoney(toMinor(cat.budget), null)} / month
         </p>
       )}
     </div>

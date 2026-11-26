@@ -2,6 +2,7 @@
  * Headline KPI tiles at the top of the dashboard.
  */
 import { TrendingUp, TrendingDown, ArrowUpRight, ArrowDownRight } from 'lucide-react';
+import { formatMoney, toMinor } from '@/lib/formatMoney';
 
 /** One headline figure. */
 function KpiTile({
@@ -65,7 +66,7 @@ function LimitBar({ spent, limit }: { spent: number; limit: number }) {
             {pct.toFixed(0)}%
           </p>
           <p className="kpi-delta" style={{ color: 'var(--text-muted)' }}>
-            ₹{spent.toLocaleString()} of ₹{limit.toLocaleString()}
+            {formatMoney(toMinor(spent), 'INR')} of {formatMoney(toMinor(limit), 'INR')}
           </p>
         </div>
       </div>
@@ -111,7 +112,7 @@ export default function KpiRow({
     <section aria-label="Key metrics" className="flex gap-3 mb-5">
       <KpiTile
         label="Total Spend"
-        value={`₹${spend.toLocaleString()}`}
+        value={formatMoney(toMinor(spend), 'INR')}
         valueColor={RED}
         delta={delta}
         icon={<ArrowUpRight className="w-4 h-4" style={{ color: RED }} />}
@@ -119,14 +120,14 @@ export default function KpiRow({
       />
       <KpiTile
         label="Income"
-        value={`₹${income.toLocaleString()}`}
+        value={formatMoney(toMinor(income), 'INR')}
         valueColor={GREEN}
         icon={<ArrowDownRight className="w-4 h-4" style={{ color: GREEN }} />}
         iconBg="rgba(16, 185, 129, 0.10)"
       />
       <KpiTile
         label="Net"
-        value={`${netPositive ? '+' : ''}₹${Math.abs(net).toLocaleString()}`}
+        value={formatMoney(toMinor(Math.abs(net)), 'INR', netPositive ? 'credit' : 'debit')}
         valueColor={netPositive ? GREEN : RED}
         icon={
           netPositive ? (

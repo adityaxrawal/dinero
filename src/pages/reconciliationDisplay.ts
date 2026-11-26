@@ -4,16 +4,7 @@
 import { reviewReasonLabel } from '@/lib/outcomeVocabulary';
 import { cleanTextForReader } from '@/components/common/gmailParsing';
 import type { UnassignedTransactionRecord } from '@/lib/ipc';
-
-const BANK_FINGERPRINTS: [pattern: RegExp, name: string][] = [
-  [/HDFC/i, 'HDFC Bank'],
-  [/IndusInd/i, 'IndusInd Bank'],
-  [/ICICI/i, 'ICICI Bank'],
-  [/Axis/i, 'Axis Bank'],
-  [/SBI/i, 'SBI Bank'],
-  [/Kotak/i, 'Kotak Bank'],
-];
-
+import { formatMoney } from '@/lib/formatMoney';
 
 /** Parses an alert payload, tolerating malformed JSON. */
 export function readAlertPayload(rawJson: unknown, fallbackText: string) {
@@ -46,39 +37,25 @@ export function stripAddressFromName(name: string): string {
     .replace(/^["']|["']$/g, '');
 }
 
-/**
- * Resolves a usable bank name, falling back to body fingerprints.
- *
- * Forwarded and relayed alerts frequently lose their original sender name, so a
- * generic placeholder is replaced by matching the body against known bank
- * fingerprints.
- */
-export function resolveBankName(name: string, body: string): string {
-  const isGeneric = !name || name === 'Bank Alert' || name === 'Bank / Service Alert';
-  if (!isGeneric) return name;
-  return BANK_FINGERPRINTS.find(([pattern]) => pattern.test(body))?.[1] || 'Bank Alert';
-}
-
-/** Formats minor units as rupees, or null when absent. */
-export const formatRupees = (amountMinor: number | null | undefined): string | null =>
-  amountMinor == null
-    ? null
-    : `₹${(amountMinor / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-
 /** Assembles the display fields for an unassigned transaction. */
 export function getUnassignedDisplayInfo(item: UnassignedTransactionRecord) {
   const payload = readAlertPayload(item.raw_payload_json, item.body_snippet || '');
   const senderName = stripAddressFromName(payload.name || item.merchant_raw || '');
 
   const bodyText = cleanTextForReader(payload.html, payload.text);
-  const name = resolveBankName(senderName, bodyText);
+  // Only what the email itself says: its sender name, or the issuer it named.
+  // The title used to be guessed from bank names found in the body (F9-11).
+  const generic = !senderName || senderName === 'Bank Alert' || senderName === 'Bank / Service Alert';
+  const name = generic ? item.rule_issuer || 'Bank alert' : senderName;
 
   const trimmedBody = bodyText.startsWith(name) ? bodyText.slice(name.length).trim() : bodyText;
 
   return {
     name,
     snippet: payload.subject || trimmedBody || 'Transaction alert details missing',
-    amountStr: formatRupees(item.amount_minor),
+    // Signed, in the row's own currency (audit F9-8).
+    amountStr:
+      item.amount_minor == null ? null : formatMoney(item.amount_minor, item.currency, item.direction),
     dateStr: item.event_time
       ? new Date(item.event_time).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
       : '',

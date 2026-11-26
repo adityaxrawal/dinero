@@ -398,6 +398,8 @@ export interface TransactionRecord {
   instrument_id: string | null;
   /** e.g. 'internal_transfer': listed, but excluded from totals. */
   channel?: string | null;
+  /** ISO code; amounts display in the row's own currency. */
+  currency?: string | null;
 }
 
 export interface TransactionsPage {
@@ -435,7 +437,9 @@ export interface ClusterMember {
   canonical_transaction_id: string | null;
   source_pipeline: string | null;
   merchant: string;
-  amount: number;
+  /** Integer minor units plus ISO currency (audit F10-6). */
+  amount_minor: number;
+  currency: string | null;
   direction: string | null;
   date: string;
   instrument_issuer_name: string | null;

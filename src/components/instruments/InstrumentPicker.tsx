@@ -54,7 +54,7 @@ export function InstrumentPicker({
           >
             <div className="flex items-center text-emerald-ink font-bold text-[13px]">
               <Plus className="w-4 h-4 mr-2" strokeWidth={3} />
-              Create Instrument
+              Add card or account
             </div>
           </SelectItem>
         </SelectContent>

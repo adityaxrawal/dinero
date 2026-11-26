@@ -4,6 +4,7 @@
 import { instrumentIcon } from '@/components/instruments/instrumentTypes';
 import { cn } from '@/lib/utils';
 import type { InstrumentRecord } from '@/lib/ipc';
+import { formatMoney, toMinor } from '@/lib/formatMoney';
 
 /** One instrument in the list, with balance and cycle summary. */
 export default function InstrumentListItem({
@@ -65,11 +66,7 @@ export default function InstrumentListItem({
             isSelected ? 'text-white' : isNeg ? 'text-red-700' : 'text-emerald-ink'
           )}
         >
-          ₹
-          {Math.abs(bal).toLocaleString(undefined, {
-            minimumFractionDigits: 2,
-            maximumFractionDigits: 2,
-          })}
+          {formatMoney(toMinor(Math.abs(bal)), 'INR')}
         </span>
       </div>
     </button>

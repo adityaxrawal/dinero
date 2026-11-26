@@ -161,7 +161,7 @@ describe('GmailEmailViewer quick-fill', () => {
     const onQuickFill = vi.fn();
     render(<GmailEmailViewer html={HTML} text={TEXT} onQuickFill={onQuickFill} />);
 
-    const chip = screen.getByText('Amount: ₹450');
+    const chip = screen.getByText('Amount: ₹450.00');
     fireEvent.click(chip);
     expect(onQuickFill).toHaveBeenCalledWith({ field: 'amount', value: '450.00' });
   });

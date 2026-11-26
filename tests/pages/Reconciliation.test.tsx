@@ -56,7 +56,8 @@ const member = (over: Partial<ClusterMember> = {}): ClusterMember =>
     observation_id: 'obs1',
     canonical_transaction_id: null,
     merchant: 'Swiggy',
-    amount: 450.5,
+    amount_minor: 45050,
+    currency: 'INR',
     direction: 'debit',
     date: '2026-01-01',
     match_score: null,
@@ -146,13 +147,13 @@ describe('cluster list item', () => {
 
   it('renders a debit amount as negative', () => {
     render(<Reconciliation />);
-    expect(screen.getByText('- ₹450.50')).toBeInTheDocument();
+    expect(screen.getByText('−₹450.50')).toBeInTheDocument();
   });
 
   it('renders a credit amount as positive', () => {
     clusters = [cluster({ members: [member({ direction: 'credit' })] })];
     render(<Reconciliation />);
-    expect(screen.getByText('+ ₹450.50')).toBeInTheDocument();
+    expect(screen.getByText('+₹450.50')).toBeInTheDocument();
   });
 
   it('falls back when the cluster has no incoming member', () => {
@@ -191,9 +192,17 @@ describe('unassigned list item', () => {
     expect(screen.getByText('H')).toBeInTheDocument();
   });
 
+  it('marks the selected row with aria-current (a11y)', () => {
+    render(<Reconciliation />);
+    const row = screen.getByText('HDFC Bank').closest('button')!;
+    expect(row).not.toHaveAttribute('aria-current');
+    fireEvent.click(row);
+    expect(screen.getByText('HDFC Bank').closest('button')).toHaveAttribute('aria-current', 'true');
+  });
+
   it('shows the formatted amount', () => {
     render(<Reconciliation />);
-    expect(screen.getByText('₹450.50')).toBeInTheDocument();
+    expect(screen.getByText('−₹450.50')).toBeInTheDocument();
   });
 
   it.each([

@@ -5,11 +5,11 @@ import { FileWarning } from 'lucide-react';
 import type { MerchantCleanupSample } from '@/lib/ipc';
 import { RelativeDate } from '../SettingsPrimitives';
 import GuessQuality from './GuessQuality';
-import { formatAmount } from './format';
+import { formatMoney, toMinor } from '@/lib/formatMoney';
 
 /** One queued merchant, showing before and after. */
 export default function QueueRow({ sample }: { sample: MerchantCleanupSample }) {
-  const amount = formatAmount(sample.amount, sample.currency);
+  const amount = sample.amount === null ? null : formatMoney(toMinor(sample.amount), sample.currency);
   const isCredit = sample.direction === 'credit';
 
   return (

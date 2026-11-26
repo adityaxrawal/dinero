@@ -19,6 +19,7 @@ import {
 import type { SpendTrendPoint } from '@/lib/ipc';
 import type { CategoryChartSlice } from '@/components/dashboard/groupCategoriesForChart';
 import { SEQUENTIAL_LINE_COLOR } from '@/components/dashboard/chartPalette';
+import { formatMoney, toMinor } from '@/lib/formatMoney';
 
 type RechartsValue = string | number | readonly (string | number)[] | undefined;
 
@@ -31,7 +32,7 @@ const TOOLTIP_STYLE = {
 };
 
 /** Formats an amount as rupees for chart axes and tooltips. */
-const rupees = (value: RechartsValue) => `₹ ${Number(value).toLocaleString()}`;
+const rupees = (value: RechartsValue) => formatMoney(toMinor(Number(value)), 'INR');
 
 /** Spend-over-time line chart. */
 export function TrendChart({ data }: { data: SpendTrendPoint[] }) {

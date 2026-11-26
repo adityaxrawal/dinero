@@ -4,6 +4,7 @@
 import { useMemo } from 'react';
 import { PieChart, ShoppingBag, ArrowUpRight, ArrowDownRight } from 'lucide-react';
 import type { TransactionRecord } from '@/lib/ipc';
+import { formatMoney, toMinor } from '@/lib/formatMoney';
 
 interface InstrumentAnalyticsTabProps {
   transactions: TransactionRecord[];
@@ -69,7 +70,7 @@ export default function InstrumentAnalyticsTab({ transactions }: InstrumentAnaly
             </div>
           </div>
           <p className="text-xl font-extrabold font-mono text-red-700">
-            ₹{stats.outflow.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+            {formatMoney(toMinor(stats.outflow), 'INR')}
           </p>
         </div>
 
@@ -83,7 +84,7 @@ export default function InstrumentAnalyticsTab({ transactions }: InstrumentAnaly
             </div>
           </div>
           <p className="text-xl font-extrabold font-mono text-emerald-700">
-            ₹{stats.inflow.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+            {formatMoney(toMinor(stats.inflow), 'INR')}
           </p>
         </div>
       </div>
@@ -102,7 +103,7 @@ export default function InstrumentAnalyticsTab({ transactions }: InstrumentAnaly
             Avg Transaction
           </span>
           <span className="text-sm font-extrabold font-mono text-emerald-ink">
-            ₹{stats.avgTx.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+            {formatMoney(toMinor(stats.avgTx), 'INR')}
           </span>
         </div>
       </div>
@@ -123,7 +124,7 @@ export default function InstrumentAnalyticsTab({ transactions }: InstrumentAnaly
               <div key={idx} className="space-y-1">
                 <div className="flex justify-between items-center text-xs font-semibold text-emerald-ink">
                   <span className="truncate max-w-[180px]">{item.name}</span>
-                  <span className="font-mono font-bold">₹{item.amount.toLocaleString()}</span>
+                  <span className="font-mono font-bold">{formatMoney(toMinor(item.amount), 'INR')}</span>
                 </div>
                 <div className="w-full h-1.5 rounded-full bg-emerald-ink/10 overflow-hidden">
                   <div

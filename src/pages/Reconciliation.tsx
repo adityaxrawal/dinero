@@ -20,6 +20,7 @@ import UnassignedInspector from '@/components/reconciliation/UnassignedInspector
 import { cn, formatRelativeDate, isOlderThanDays } from '@/lib/utils';
 import { getUnassignedDisplayInfo } from './reconciliationDisplay';
 import type { ClusterRecord, LlmState, UnassignedTransactionRecord } from '@/lib/ipc';
+import { formatMoney, moneyTone } from '@/lib/formatMoney';
 
 const ROW_CLASS =
   'flex flex-col w-full text-left px-3.5 py-3 mx-2 rounded-xl transition-all max-w-[calc(100%-16px)] cursor-pointer select-none border';
@@ -58,14 +59,19 @@ function ClusterListItem({
   const incoming = cluster.members.find((m) => m.member_role === 'incoming');
   const isDebit = incoming?.direction === 'debit';
   const amountStr = incoming
-    ? `${isDebit ? '-' : '+'} ₹${Math.abs(incoming.amount).toFixed(2)}`
+    ? formatMoney(Math.abs(incoming.amount_minor), incoming.currency, incoming.direction)
     : null;
   const ageStr = cluster.created_at ? formatRelativeDate(cluster.created_at) : null;
   const isStale = cluster.created_at ? isOlderThanDays(cluster.created_at, 3) : false;
   const amountTone = isSelected ? 'text-champagne' : isDebit ? 'text-red-700' : 'text-emerald-700';
 
   return (
-    <button onClick={onSelect} className={cn(ROW_CLASS, tone.row)}>
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-current={isSelected ? 'true' : undefined}
+      className={cn(ROW_CLASS, tone.row)}
+    >
       <div className="flex items-center justify-between gap-2 mb-1.5 w-full">
         <span
           className={cn(
@@ -84,6 +90,8 @@ function ClusterListItem({
               title={isStale ? 'Pending more than 3 days' : undefined}
             >
               {ageStr}
+              {/* Said in words too, not only by colour (WCAG 1.4.1). */}
+              {isStale && ' · overdue'}
             </span>
           )}
           <span>{cluster.members_count} entries</span>
@@ -112,7 +120,12 @@ function UnassignedListItem({
   const info = getUnassignedDisplayInfo(item);
 
   return (
-    <button onClick={onSelect} className={cn(ROW_CLASS, isSelected ? ROW_SELECTED : ROW_IDLE)}>
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-current={isSelected ? 'true' : undefined}
+      className={cn(ROW_CLASS, isSelected ? ROW_SELECTED : ROW_IDLE)}
+    >
       <div className="flex items-center justify-between gap-2 mb-1.5 w-full">
         <div className="flex items-center gap-2 min-w-0">
           <div
@@ -161,7 +174,8 @@ function UnassignedListItem({
           <span
             className={cn(
               'font-semibold font-mono text-[12px]',
-              isSelected ? 'text-champagne' : 'text-emerald-700'
+              // Coloured by direction, not always green (audit F9-8).
+              isSelected ? 'text-champagne' : moneyTone(item.direction)
             )}
           >
             {info.amountStr}
@@ -374,6 +388,12 @@ function InspectorPane({
   onSelectCluster: (id: string | null) => void;
   onSelectUnassigned: (id: string | null) => void;
 }) {
+  // The last copy of the open entry, kept if it leaves the queue in the
+  // background so the user's edits aren't lost (audit F9-10).
+  const [lastSeen, setLastSeen] = useState<UnassignedTransactionRecord | undefined>(undefined);
+  if (selectedUnassigned && selectedUnassigned !== lastSeen) setLastSeen(selectedUnassigned);
+  const lastSelectedUnassigned = lastSeen?.id === selectedUnassignedId ? lastSeen : undefined;
+
   if (selectedClusterId && currentSection === 'clusters') {
     return (
       <div className="w-full h-full flex flex-col">
@@ -392,7 +412,8 @@ function InspectorPane({
     return (
       <div className="w-full h-full flex flex-col">
         <UnassignedInspector
-          record={selectedUnassigned}
+          record={selectedUnassigned ?? lastSelectedUnassigned}
+          resolvedElsewhere={!selectedUnassigned && !!lastSelectedUnassigned}
           onClose={() => onSelectUnassigned(null)}
           inline={true}
         />

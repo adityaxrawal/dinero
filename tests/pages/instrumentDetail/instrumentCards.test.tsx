@@ -39,8 +39,8 @@ const inst = (over = {}) =>
 describe('EditableDetailsCard', () => {
   it('formats balance and limit, and shows an em dash for an unknown balance', () => {
     const { unmount } = render(<EditableDetailsCard form={form()} inst={inst()} />);
-    expect(screen.getByText('₹-2500.50')).toBeInTheDocument();
-    expect(screen.getByText('₹150000.00')).toBeInTheDocument();
+    expect(screen.getByText('−₹2,500.50')).toBeInTheDocument();
+    expect(screen.getByText('₹1,50,000.00')).toBeInTheDocument();
     unmount();
 
     render(

@@ -199,4 +199,27 @@ describe('useUnassignedForm', () => {
     act(() => result.current.applyQuickFill({ field: 'unknown', value: 'x' }));
     expect(result.current.fields.merchant).toBe('Google Cloud');
   });
+
+  // Audit F9-10: a background update must not wipe what the user typed.
+  it('keeps typed edits when the entry is updated in the background, and can load the new values', () => {
+    const { result, rerender } = renderHook(({ r }) => useUnassignedForm(r, onClose), {
+      initialProps: { r: record({ merchant_raw: 'Old' }) },
+    });
+    act(() => result.current.setters.setMerchant('Typed by me'));
+    rerender({ r: record({ merchant_raw: 'From AI' }) });
+    expect(result.current.fields.merchant).toBe('Typed by me');
+    expect(result.current.updatedInBackground).toBe(true);
+    act(() => result.current.loadLatest());
+    expect(result.current.fields.merchant).toBe('From AI');
+    expect(result.current.updatedInBackground).toBe(false);
+  });
+
+  it('loads background values straight away when nothing was typed', () => {
+    const { result, rerender } = renderHook(({ r }) => useUnassignedForm(r, onClose), {
+      initialProps: { r: record({ merchant_raw: 'Old' }) },
+    });
+    rerender({ r: record({ merchant_raw: 'From AI' }) });
+    expect(result.current.fields.merchant).toBe('From AI');
+    expect(result.current.updatedInBackground).toBe(false);
+  });
 });

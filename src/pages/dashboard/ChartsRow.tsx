@@ -6,6 +6,7 @@ import type { SpendTrendGranularity } from '@/lib/ipc';
 import type { CategoryChartSlice } from '@/components/dashboard/groupCategoriesForChart';
 import { TrendChart, CategoryDonut } from './charts';
 import type { useDashboardData } from './useDashboardData';
+import { formatMoney, toMinor } from '@/lib/formatMoney';
 
 type Data = ReturnType<typeof useDashboardData>;
 
@@ -89,7 +90,7 @@ function CategoryLegend({
             className="ml-auto text-xs font-medium amount"
             style={{ color: 'var(--text-primary)' }}
           >
-            ₹{s.total_spend.toLocaleString()}
+            {formatMoney(toMinor(s.total_spend), 'INR')}
           </span>
         </li>
       ))}

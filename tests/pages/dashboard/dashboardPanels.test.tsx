@@ -44,15 +44,15 @@ const data = (over: Partial<Data> = {}): Data =>
 describe('KpiRow', () => {
   it('reports spend, income and a positive net', () => {
     render(<KpiRow spend={1200} income={5000} limit={0} delta={null} />);
-    expect(screen.getByText('₹1,200')).toBeInTheDocument();
-    expect(screen.getByText('₹5,000')).toBeInTheDocument();
-    expect(screen.getByText('+₹3,800')).toBeInTheDocument();
+    expect(screen.getByText('₹1,200.00')).toBeInTheDocument();
+    expect(screen.getByText('₹5,000.00')).toBeInTheDocument();
+    expect(screen.getByText('+₹3,800.00')).toBeInTheDocument();
   });
 
   it('shows an overspent net without a plus sign', () => {
     render(<KpiRow spend={5000} income={1200} limit={0} delta={null} />);
-    expect(screen.getByText('₹3,800')).toBeInTheDocument();
-    expect(screen.queryByText('+₹3,800')).not.toBeInTheDocument();
+    expect(screen.getByText('−₹3,800.00')).toBeInTheDocument();
+    expect(screen.queryByText('+₹3,800.00')).not.toBeInTheDocument();
   });
 
   it('shows the month-over-month delta when one is known', () => {
@@ -75,7 +75,7 @@ describe('AttentionRail', () => {
   it('links pending reviews to the reconciliation queue', () => {
     render(<AttentionRail data={data({ pending: { count: 3, debit_minor: 45000, credit_minor: 1000 } as never })} />);
     expect(screen.getByText('3 need review')).toBeInTheDocument();
-    expect(screen.getByText('₹450 out · ₹10 in not yet confirmed')).toBeInTheDocument();
+    expect(screen.getByText('₹450.00 out · ₹10.00 in not yet confirmed')).toBeInTheDocument();
 
     fireEvent.click(screen.getByText('3 need review'));
     expect(navigate).toHaveBeenCalledWith('/reconciliation');

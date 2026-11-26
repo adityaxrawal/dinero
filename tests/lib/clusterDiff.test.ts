@@ -10,7 +10,8 @@ function makeMember(overrides: Partial<ClusterMember> = {}): ClusterMember {
     canonical_transaction_id: 'txn_1',
     source_pipeline: 'statement_pdf',
     merchant: 'UPI_IKAS CORPORATE SOL',
-    amount: 45,
+    amount_minor: 4500,
+    currency: 'INR',
     direction: 'debit',
     date: '2026-05-25',
     instrument_issuer_name: 'Yes Bank',
@@ -78,9 +79,9 @@ describe('summarizeClusterDiff', () => {
   });
 
   it('lists multiple field names without a parenthetical when several fields differ', () => {
-    const reference = makeMember({ member_role: 'incoming', date: '2026-05-26', amount: 45 });
-    const candidateA = makeMember({ date: '2026-05-25', amount: 45 });
-    const candidateB = makeMember({ date: '2026-05-27', amount: 99 });
+    const reference = makeMember({ member_role: 'incoming', date: '2026-05-26', amount_minor: 4500 });
+    const candidateA = makeMember({ date: '2026-05-25', amount_minor: 4500 });
+    const candidateB = makeMember({ date: '2026-05-27', amount_minor: 9900 });
     expect(summarizeClusterDiff(reference, [candidateA, candidateB])).toBe(
       'Differs on: Amount, Date'
     );

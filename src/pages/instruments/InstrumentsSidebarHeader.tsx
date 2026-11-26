@@ -5,6 +5,7 @@ import { Plus, Landmark, Search, X, CreditCard, Wallet, Smartphone } from 'lucid
 import { cn } from '@/lib/utils';
 import type { InstrumentRecord } from '@/lib/ipc';
 import type { PortfolioMetrics } from './portfolioMetrics';
+import { formatMoney, toMinor } from '@/lib/formatMoney';
 
 export type CategoryFilter = 'all' | 'credit_card' | 'bank_account' | 'upi_vpa';
 
@@ -64,7 +65,7 @@ export default function InstrumentsSidebarHeader({
             Bank Balance
           </span>
           <span className="font-bold text-emerald-ink text-xs">
-            ₹{metrics.totalBankBalance.toLocaleString()}
+            {formatMoney(toMinor(metrics.totalBankBalance), 'INR')}
           </span>
         </div>
         <div className="h-6 w-[1px] bg-emerald-ink/15" />
@@ -73,7 +74,7 @@ export default function InstrumentsSidebarHeader({
             Credit Spent
           </span>
           <span className="font-bold text-red-700 text-xs">
-            ₹{metrics.totalCreditSpent.toLocaleString()}
+            {formatMoney(toMinor(metrics.totalCreditSpent), 'INR')}
           </span>
         </div>
       </div>

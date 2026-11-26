@@ -2,6 +2,7 @@
  * One transaction row in the ledger list.
  */
 import React from 'react';
+import { formatMoney, toMinor } from '@/lib/formatMoney';
 import { ArrowUpRight, ArrowDownRight, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { formatCustomDate } from '@/lib/formatCustomDate';
@@ -98,8 +99,7 @@ export default function TransactionItemCard({
                 compact && 'text-[13px]'
               )}
             >
-              {isExpense ? '−' : '+'}₹
-              {absAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+              {formatMoney(toMinor(absAmount), transaction.currency, isExpense ? "debit" : "credit")}
             </span>
           </div>
 

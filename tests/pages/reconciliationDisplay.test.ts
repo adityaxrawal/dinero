@@ -2,8 +2,6 @@ import { describe, it, expect } from 'vitest';
 import {
   readAlertPayload,
   stripAddressFromName,
-  resolveBankName,
-  formatRupees,
   getUnassignedDisplayInfo,
 } from '@/pages/reconciliationDisplay';
 import type { UnassignedTransactionRecord } from '@/lib/ipc';
@@ -90,62 +88,17 @@ describe('stripAddressFromName', () => {
   });
 });
 
-describe('resolveBankName', () => {
-  it('keeps a real sender name', () => {
-    expect(resolveBankName('Kotak Bank', 'body mentioning HDFC')).toBe('Kotak Bank');
-  });
 
-  it.each(['', 'Bank Alert', 'Bank / Service Alert'])(
-    'fingerprints the body when the name is %p',
-    (name) => {
-      expect(resolveBankName(name, 'Dear customer, your IndusInd card…')).toBe('IndusInd Bank');
-    }
-  );
-
-  it.each([
-    ['HDFC', 'HDFC Bank'],
-    ['IndusInd', 'IndusInd Bank'],
-    ['ICICI', 'ICICI Bank'],
-    ['Axis', 'Axis Bank'],
-    ['SBI', 'SBI Bank'],
-    ['Kotak', 'Kotak Bank'],
-  ])('recognises %s in the body', (needle, expected) => {
-    expect(resolveBankName('', `alert from ${needle} today`)).toBe(expected);
-  });
-
-  it('matches the fingerprint case-insensitively', () => {
-    expect(resolveBankName('', 'your hdfc card')).toBe('HDFC Bank');
-  });
-
-  it('returns the first matching fingerprint in declared order', () => {
-    expect(resolveBankName('', 'HDFC and Axis both appear')).toBe('HDFC Bank');
-  });
-
-  it('falls back to a generic label when nothing matches', () => {
-    expect(resolveBankName('', 'no recognisable bank here')).toBe('Bank Alert');
-  });
-});
-
-describe('formatRupees', () => {
-  it.each([null, undefined])('returns null for %p', (v) => {
-    expect(formatRupees(v)).toBeNull();
-  });
-
-  it('uses en-IN lakh grouping', () => {
-    expect(formatRupees(10000000)).toBe('₹1,00,000.00');
-  });
-
-  it('always shows two decimals', () => {
-    expect(formatRupees(45050)).toBe('₹450.50');
-    expect(formatRupees(100)).toBe('₹1.00');
-  });
-
-  it('formats zero rather than treating it as absent', () => {
-    expect(formatRupees(0)).toBe('₹0.00');
-  });
-});
 
 describe('getUnassignedDisplayInfo', () => {
+  it('never guesses a bank from the body (audit F9-11)', () => {
+    const info = getUnassignedDisplayInfo(
+      item({ raw_payload_json: JSON.stringify({ sender: '', body: 'your HDFC card was used' }), merchant_raw: null })
+    );
+    expect(info.name).toBe('Bank alert');
+    expect(getUnassignedDisplayInfo(item({ raw_payload_json: null, merchant_raw: null, rule_issuer: 'Jupiter' })).name).toBe('Jupiter');
+  });
+
   it('uses the payload sender as the display name', () => {
     const info = getUnassignedDisplayInfo(
       item({ raw_payload_json: JSON.stringify({ sender: 'Axis Bank <a@axis.com>' }) })
@@ -156,11 +109,6 @@ describe('getUnassignedDisplayInfo', () => {
 
   it('falls back to merchant_raw when the payload has no sender', () => {
     expect(getUnassignedDisplayInfo(item({ merchant_raw: 'Kotak Bank' })).name).toBe('Kotak Bank');
-  });
-
-  it('fingerprints the body when neither names the bank', () => {
-    const info = getUnassignedDisplayInfo(item({ body_snippet: 'Your ICICI card was used' }));
-    expect(info.name).toBe('ICICI Bank');
   });
 
   it('prefers the subject as the snippet', () => {
@@ -192,7 +140,7 @@ describe('getUnassignedDisplayInfo', () => {
   });
 
   it('formats the amount in rupees', () => {
-    expect(getUnassignedDisplayInfo(item({ amount_minor: 45050 })).amountStr).toBe('₹450.50');
+    expect(getUnassignedDisplayInfo(item({ amount_minor: 45050 })).amountStr).toBe('−₹450.50');
   });
 
   it('leaves the amount null when the extraction found none', () => {
