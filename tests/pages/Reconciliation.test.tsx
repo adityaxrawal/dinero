@@ -272,6 +272,14 @@ describe('inspector pane', () => {
     expect(screen.getByRole('alert').textContent).toContain("Couldn't load the review queue");
   });
 
+  // Held emails are listed and editable while the AI works (owner decision Q-2).
+  it('labels an entry the AI has not read yet', () => {
+    section = 'unassigned';
+    unassigned = [item({ waiting_for_ai: true })];
+    render(<Reconciliation />);
+    expect(screen.getByText('Waiting for AI')).toBeTruthy();
+  });
+
   it('shows no AI line when nothing is pending', () => {
     render(<Reconciliation />);
     expect(screen.queryByRole('status')).toBeNull();

@@ -117,6 +117,15 @@ export default function UnassignedInspector({
         )}
       >
         <div className="flex-1 space-y-6">
+          {record.waiting_for_ai && (
+            <p
+              className="rounded-lg border border-[#064E3B]/15 bg-[#064E3B]/5 p-3 text-[12px] text-[#064E3B]"
+              role="status"
+            >
+              The local AI hasn't read this email yet. You can fill it in now; if you save it, the
+              AI's later answer is ignored.
+            </p>
+          )}
           <FailureDiagnosis
             record={record}
             onRecheck={handleRecheck}

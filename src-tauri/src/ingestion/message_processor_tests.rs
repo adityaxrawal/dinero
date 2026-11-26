@@ -726,21 +726,23 @@ async fn transaction_needing_layer6_enqueues_job_instead_of_blocking() {
     assert!(!job.observation_id.is_empty());
     assert!(!job.unassigned_id.is_empty());
 
-    // Owner decision 2026-11-25: the job is durable with the entry, and the
-    // entry stays out of the review queue until the LLM's verdict.
+    // The job is durable with the entry (owner decision 2026-11-25). The
+    // entry is listed, marked waiting for the AI, and stays editable (owner
+    // decision Q-2, 2026-11-26; it used to be hidden until the verdict).
     let conn = pool.get().await.unwrap();
-    let (jobs, visible) = conn
+    let (jobs, listed) = conn
         .interact(|c| {
             Ok::<_, anyhow::Error>((
                 crate::db::layer6_jobs::select_all(c)?.len(),
-                crate::db::unassigned_transactions::select_open_with_context(c)?.len(),
+                crate::db::unassigned_transactions::select_open_with_context(c)?,
             ))
         })
         .await
         .unwrap()
         .unwrap();
     assert_eq!(jobs, 1, "the job row is written with the review row");
-    assert_eq!(visible, 0, "hidden from Reconciliation while the LLM works");
+    assert_eq!(listed.len(), 1, "listed in the Review Inbox while the AI works");
+    assert!(listed[0].waiting_for_ai, "marked as waiting for the AI");
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }

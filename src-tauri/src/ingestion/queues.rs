@@ -646,6 +646,12 @@ fn spawn_layer6_workers<R: tauri::Runtime>(
                 // incomplete mail always waits for the LLM).
                 let done = if crate::startup::llm_ready(&app) {
                     process_layer6_job(job, &pool, &learning).await
+                } else if !review_entry_open(&pool, &id).await {
+                    // The user finished or dismissed the entry while it was
+                    // held (owner decision Q-2 lets them): drop the job
+                    // instead of re-offering it forever.
+                    delete_persisted_layer6_job(&pool, &id).await;
+                    Layer6Done { completed: true, booked: false, retry_after: None }
                 } else {
                     Layer6Done { completed: false, booked: false, retry_after: Some(LAYER6_NO_MODEL_RECHECK) }
                 };
@@ -673,11 +679,16 @@ fn spawn_layer6_workers<R: tauri::Runtime>(
                         payload.clone(),
                     );
                 }
-                let _ = crate::ipc::events::emit_event(
-                    &app,
-                    crate::ipc::events::AppEvent::UnassignedChanged,
-                    payload,
-                );
+                // Only when something changed: a held job re-offered every
+                // five minutes used to refetch the review queue each time
+                // (audit F7-3).
+                if done.completed || done.booked {
+                    let _ = crate::ipc::events::emit_event(
+                        &app,
+                        crate::ipc::events::AppEvent::UnassignedChanged,
+                        payload,
+                    );
+                }
                 ACTIVE_LAYER6_JOBS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
                 refill_layer6_queue(&pool, &tx, &app_dir).await;
             }
@@ -689,6 +700,18 @@ fn spawn_layer6_workers<R: tauri::Runtime>(
 const LAYER6_WORKERS: usize = 6;
 
 const LAYER6_AUTO_RESOLVE_CONFIDENCE_THRESHOLD: f64 = crate::extraction::ladder::MIN_LEDGER_CONFIDENCE;
+
+/// Whether a review entry is still open. A read failure counts as open, so
+/// a job is never dropped on a transient error.
+async fn review_entry_open(pool: &Pool, unassigned_id: &str) -> bool {
+    let id = unassigned_id.to_string();
+    let Ok(conn) = pool.get().await else { return true };
+    conn.interact(move |c| crate::db::unassigned_transactions::is_open(c, &id))
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or(true)
+}
 
 /// Clears the durable row for a job that has genuinely finished.
 ///

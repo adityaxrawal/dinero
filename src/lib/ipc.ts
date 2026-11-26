@@ -434,6 +434,8 @@ export interface UnassignedTransactionRecord {
   confidence_score?: number | null;
   /** False for entries with no stored email (statements, reconciliation engine). */
   can_recheck?: boolean;
+  /** The local AI hasn't answered yet; listed and editable anyway (owner decision Q-2). */
+  waiting_for_ai?: boolean;
 }
 
 /** What a re-check did with one review entry. */

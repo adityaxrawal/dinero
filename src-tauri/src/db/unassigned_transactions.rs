@@ -205,6 +205,9 @@ pub struct UnassignedTransactionDetail {
     /// Whether the entry keeps the email and bank a re-check needs (entries
     /// from statements or the reconciliation engine do not).
     pub can_recheck: bool,
+    /// The local AI has not answered yet. Shown and editable anyway (owner
+    /// decision Q-2); a save first makes the AI's later answer a no-op.
+    pub waiting_for_ai: bool,
 }
 
 /// Unresolved entries together with their source evidence.
@@ -218,10 +221,11 @@ pub fn select_open_with_context(conn: &Connection) -> Result<Vec<UnassignedTrans
                 o.source_message_id, o.raw_payload_json, \
                 o.extraction_method, o.confidence_score, \
                 (json_extract(o.raw_payload_json, '$.body') IS NOT NULL \
-                 AND json_extract(o.raw_payload_json, '$.bank') IS NOT NULL) \
+                 AND json_extract(o.raw_payload_json, '$.bank') IS NOT NULL), \
+                EXISTS (SELECT 1 FROM layer6_pending_jobs j WHERE j.id = u.id AND j.dead_at IS NULL) \
          FROM unassigned_transactions u \
          JOIN transaction_observations o ON o.id = u.observation_id \
-         WHERE {VISIBLE_OPEN} \
+         WHERE u.status = 'open' \
          ORDER BY u.created_at DESC, u.id DESC"
     ))?;
     let rows = stmt.query_map([], |row| {
@@ -244,6 +248,7 @@ pub fn select_open_with_context(conn: &Connection) -> Result<Vec<UnassignedTrans
             extraction_method: row.get(12)?,
             confidence_score: row.get(13)?,
             can_recheck: row.get(14)?,
+            waiting_for_ai: row.get(15)?,
         })
     })?;
     let mut results = Vec::new();

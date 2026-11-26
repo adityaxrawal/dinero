@@ -2159,8 +2159,7 @@ pub(crate) async fn resolve_unassigned_transaction_manually<R: tauri::Runtime>(
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))??;
     let (decision, observation_id) = outcome.ok_or_else(|| {
         crate::error::AppError::Validation(
-            "This entry was already resolved, or the AI is re-checking it. Refresh and try again."
-                .to_string(),
+            "This entry was already resolved. Refresh and try again.".to_string(),
         )
     })?;
 
@@ -2197,7 +2196,7 @@ pub(crate) async fn resolve_unassigned_transaction_manually<R: tauri::Runtime>(
 }
 
 /// Writes the user's values onto the review entry's observation and completes
-/// it. None when the entry is no longer open or the AI still holds it.
+/// it. None when the entry is no longer open.
 ///
 /// `merchant_raw` stays an exact span of the email (FRS 413): the typed name
 /// replaces it only when the email contains it verbatim; otherwise it becomes
@@ -2216,10 +2215,10 @@ fn complete_review_entry(
     let db = |e: rusqlite::Error| crate::error::AppError::Db(e.to_string());
     let observation_id: Option<String> = c
         .query_row(
-            &format!(
-                "SELECT u.observation_id FROM unassigned_transactions u WHERE u.id = ?1 AND {}",
-                crate::db::unassigned_transactions::VISIBLE_OPEN
-            ),
+            // Any open entry, including one still held for the AI (owner
+            // decision Q-2): completing it settles the entry in the same
+            // transaction, so the AI's later answer finds it closed.
+            "SELECT u.observation_id FROM unassigned_transactions u WHERE u.id = ?1 AND u.status = 'open'",
             [unassigned_id],
             |r| r.get(0),
         )
@@ -3314,6 +3313,55 @@ mod tests {
 
         // Settled: a second save finds nothing open.
         assert!(complete_review_entry(&conn, "ua_r", &payload).unwrap().is_none());
+    }
+
+    /// An entry still held for the local AI can be finished by hand (owner
+    /// decision Q-2); it is settled in the same transaction.
+    #[test]
+    fn test_complete_review_entry_allows_an_entry_held_for_the_ai() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        let instrument_id = uuid::Uuid::new_v4();
+        conn.execute(
+            "INSERT INTO instruments (id, type, issuer_name, masked_identifier) \
+             VALUES (?1, 'bank_account', 'HDFC', '4691')",
+            params![instrument_id.to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transaction_observations (id, source_pipeline, source_record_id) \
+             VALUES ('obs_h', 'gmail_transaction', 'msg_h')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO unassigned_transactions (id, observation_id, reason, status) \
+             VALUES ('ua_h', 'obs_h', 'pending_llm_enrichment', 'open')",
+            [],
+        )
+        .unwrap();
+        crate::db::layer6_jobs::insert(
+            &conn,
+            &crate::db::layer6_jobs::PendingLayer6Job {
+                id: "ua_h".to_string(),
+                observation_id: "obs_h".to_string(),
+                bank_name: "HDFC Bank".to_string(),
+                body_text: "Rs.135.00 debited".to_string(),
+                internal_date_seconds: None,
+            },
+        )
+        .unwrap();
+
+        let payload = crate::commands::ManualTransactionPayload {
+            amount_minor: 13500,
+            currency: "INR".to_string(),
+            direction: "debit".to_string(),
+            event_time: "2026-11-05 00:00:00".to_string(),
+            merchant_name: "Chai Point".to_string(),
+            instrument_id,
+            reference_id: None,
+        };
+        assert!(complete_review_entry(&conn, "ua_h", &payload).unwrap().is_some());
+        assert!(!crate::db::unassigned_transactions::is_open(&conn, "ua_h").unwrap());
     }
 
     /// The export carries the direction and neutralises formula-like text.

@@ -124,7 +124,9 @@ export default function AppLayout() {
         </div>
 
         <SidebarNav
-          reviewCount={reconciliationClusters.length + unassigned.length}
+          reviewCount={
+            reconciliationClusters.length + unassigned.filter((u) => !u.waiting_for_ai).length
+          }
           badgePulse={badgePulse}
         />
 

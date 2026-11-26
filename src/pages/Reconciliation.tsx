@@ -142,7 +142,7 @@ function UnassignedListItem({
                 : 'bg-amber-100 text-amber-800 border border-amber-200'
           )}
         >
-          {info.issueLabel}
+          {item.waiting_for_ai ? 'Waiting for AI' : info.issueLabel}
         </span>
       </div>
 
@@ -197,7 +197,7 @@ function LlmQueueLine({ pending, state }: { pending: number; state: LlmState }) 
       {state === 'ready' ? (
         <>
           <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />
-          AI is reading {emails}. They appear here only if it can't find the details.
+          AI is reading {emails}. You can fill them in now, or wait for it.
         </>
       ) : state === 'no_model' ? (
         <span>
