@@ -90,7 +90,20 @@ describe('useUnassignedForm', () => {
     expect(mutate).not.toHaveBeenCalled();
   });
 
-  it('saves in minor units with a day-start time and a trimmed merchant', () => {
+  it('sends midnight when the time is cleared (date only)', () => {
+    const { result } = renderHook(() => useUnassignedForm(record({ direction: 'debit' }), onClose));
+    act(() => {
+      result.current.setters.setInstrumentId('inst-1');
+      result.current.setters.setTime('');
+    });
+    act(() => result.current.handleSave());
+    expect(mutate).toHaveBeenCalledWith(
+      expect.objectContaining({ eventTime: '2026-07-29 00:00:00' }),
+      expect.anything()
+    );
+  });
+
+  it('saves in minor units with the printed time and a trimmed merchant', () => {
     const { result } = renderHook(() => useUnassignedForm(record({ direction: 'debit' }), onClose));
     act(() => {
       result.current.setters.setInstrumentId('inst-1');
@@ -104,7 +117,8 @@ describe('useUnassignedForm', () => {
         amountMinor: 3152,
         currency: 'INR',
         direction: 'debit',
-        eventTime: '2026-07-29 00:00:00',
+        // The email's printed time is pre-filled and kept (audit F9-6).
+        eventTime: '2026-07-29 10:00:00',
         merchantName: 'Google Cloud',
         instrumentId: 'inst-1',
         referenceId: undefined,

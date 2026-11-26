@@ -699,10 +699,11 @@ async fn record_scan_activity(pool: &Pool, outcome: &str, p: &ScanProgressPayloa
         ),
         _ => format!(
             // Same words as the UI (src/lib/outcomeVocabulary.ts).
-            "Scan {outcome}: {} emails checked, {} booked, {} needs review, {} waiting for AI, {} statements, {} skipped, {} failed",
+            "Scan {outcome}: {} emails checked, {} booked, {} {} review, {} waiting for AI, {} statements, {} skipped, {} failed",
             p.processed,
             p.transactions_found,
             p.sent_to_review,
+            if p.sent_to_review == 1 { "needs" } else { "need" },
             p.pending_enrichment,
             p.statements_found,
             p.non_financial,

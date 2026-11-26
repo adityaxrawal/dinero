@@ -26,6 +26,9 @@ export function useUnassignedForm(
   // instead of a silent 'debit' (owner decision Q-9).
   const [direction, setDirection] = useState<'debit' | 'credit' | ''>('');
   const [date, setDate] = useState('');
+  // Optional HH:MM. Blank means "date only" (audit F9-6: changing the date
+  // used to force midnight, with no way to enter the real time).
+  const [time, setTime] = useState('');
   const [instrumentId, setInstrumentId] = useState('');
   const [referenceId, setReferenceId] = useState('');
 
@@ -36,6 +39,8 @@ export function useUnassignedForm(
       record?.direction === 'credit' || record?.direction === 'debit' ? record.direction : ''
     );
     setDate(record?.event_time ? record.event_time.slice(0, 10) : '');
+    const printed = record?.event_time?.slice(11, 16) ?? '';
+    setTime(printed && printed !== '00:00' ? printed : '');
     setInstrumentId('');
     setReferenceId('');
   }, [
@@ -95,7 +100,7 @@ export function useUnassignedForm(
         amountMinor: Math.round(parseFloat(amount) * 100),
         currency: record.currency ?? 'INR',
         direction,
-        eventTime: `${date} 00:00:00`,
+        eventTime: `${date} ${time || '00:00'}:00`,
         merchantName: merchant.trim(),
         instrumentId,
         referenceId: referenceId.trim() || undefined,
@@ -153,8 +158,16 @@ export function useUnassignedForm(
   };
 
   return {
-    fields: { merchant, amount, direction, date, instrumentId, referenceId },
-    setters: { setMerchant, setAmount, setDirection, setDate, setInstrumentId, setReferenceId },
+    fields: { merchant, amount, direction, date, time, instrumentId, referenceId },
+    setters: {
+      setMerchant,
+      setAmount,
+      setDirection,
+      setDate,
+      setTime,
+      setInstrumentId,
+      setReferenceId,
+    },
     canSubmit,
     isPending: resolveManually.isPending,
     handleDismiss,

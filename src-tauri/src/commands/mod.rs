@@ -2037,9 +2037,14 @@ pub async fn statements_commit_draft(
         .interact(move |c| -> rusqlite::Result<serde_json::Value> {
             let summary = statement_commit_summary(c, &id)?;
             // Persistent record of the import (audit F5-4); best effort.
+            let clusters = summary["needs_review"].as_i64().unwrap_or(0);
             let text = format!(
-                "Statement imported: {} booked, {} matched to existing, {} needs duplicate check, {} already imported",
-                summary["new"], summary["matched"], summary["needs_review"], summary["skipped"]
+                "Statement imported: {} booked, {} matched to existing, {} {} duplicate check, {} already imported",
+                summary["new"],
+                summary["matched"],
+                clusters,
+                if clusters == 1 { "needs" } else { "need" },
+                summary["skipped"]
             );
             let _ = crate::db::activity_log::append(c, "statement", "committed", &text, Some(&summary));
             Ok(summary)

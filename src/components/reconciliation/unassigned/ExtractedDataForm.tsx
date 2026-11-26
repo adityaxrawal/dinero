@@ -62,8 +62,8 @@ export default function ExtractedDataForm({
   instruments: Instruments;
   sourceMessageId: string | null;
 }) {
-  const { merchant, amount, direction, date, instrumentId, referenceId } = form.fields;
-  const { setMerchant, setAmount, setDirection, setDate, setInstrumentId, setReferenceId } =
+  const { merchant, amount, direction, date, time, instrumentId, referenceId } = form.fields;
+  const { setMerchant, setAmount, setDirection, setDate, setTime, setInstrumentId, setReferenceId } =
     form.setters;
 
   return (
@@ -123,8 +123,19 @@ export default function ExtractedDataForm({
 
         <TwoColRow
           left={
-            <Field label="Date">
-              <DatePicker id="save-txn-date" size="sm" value={date} onChange={setDate} />
+            <Field label="Date & time">
+              <div className="flex gap-2">
+                <DatePicker id="save-txn-date" size="sm" value={date} onChange={setDate} />
+                <Input
+                  id="save-txn-time"
+                  type="time"
+                  value={time}
+                  onChange={(e) => setTime(e.target.value)}
+                  className={`${INPUT_CLASS} w-28`}
+                  aria-label="Time (optional)"
+                  title="Optional. Leave blank if the email gives no time."
+                />
+              </div>
             </Field>
           }
           right={

@@ -32,6 +32,15 @@ export function inSentence(term: string): string {
   return term.charAt(0).toLowerCase() + term.slice(1);
 }
 
+/**
+ * A count followed by a term, agreeing in number: "1 needs review",
+ * "8 need review". Only the "Needs ..." terms change; the rest read the same.
+ */
+export function withCount(count: number, term: string): string {
+  const phrase = inSentence(term);
+  return `${count} ${count === 1 ? phrase : phrase.replace(/^needs /, 'need ')}`;
+}
+
 /** Counters a scan reports, as sent in the scan events. */
 export interface ScanOutcomeCounts {
   processed: number;
@@ -51,7 +60,7 @@ export function scanSummary(p: ScanOutcomeCounts): string {
   const n = (v: number | undefined) => v ?? 0;
   const parts = [
     `${n(p.transactions_found)} ${inSentence(OUTCOME.booked)}`,
-    n(p.sent_to_review) > 0 && `${n(p.sent_to_review)} ${inSentence(OUTCOME.needsReview)}`,
+    n(p.sent_to_review) > 0 && withCount(n(p.sent_to_review), OUTCOME.needsReview),
     n(p.pending_enrichment) > 0 &&
       `${n(p.pending_enrichment)} ${inSentence(OUTCOME.waitingForAi)}`,
     n(p.statements_found) > 0 &&

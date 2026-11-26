@@ -1011,7 +1011,8 @@ pub fn run() {
                                         crate::commands::data::compute_unassigned_amount_pending_review(c)
                                             .unwrap_or(crate::commands::data::PendingReviewMetric {
                                                 count: 0,
-                                                amount_minor: 0,
+                                                debit_minor: 0,
+                                                credit_minor: 0,
                                             });
                                     let month_spend = crate::commands::data::do_fetch_dashboard_summary(c)
                                         .map(|s| s.month_to_date_spend)

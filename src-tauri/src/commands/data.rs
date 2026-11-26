@@ -35,45 +35,47 @@ pub struct DashboardSummary {
 #[derive(Serialize, Debug, PartialEq)]
 pub struct PendingReviewMetric {
     pub count: i64,
-    pub amount_minor: i64,
+    /// Money going out and coming in, kept apart: adding them into one figure
+    /// (the old `amount_minor`) described neither (audit F9-14).
+    pub debit_minor: i64,
+    pub credit_minor: i64,
 }
 
-/// Count and total value of transactions awaiting review.
+/// Count and value of transactions awaiting review (clusters plus review
+/// entries waiting for the user).
 ///
-/// Drives the review badge and the dock badge, so it must reflect reconciliation
-/// activity promptly.
+/// Drives the review badge and the dock badge. A query failure is an error,
+/// not a silent zero (audit F9-14).
 pub fn compute_unassigned_amount_pending_review(
     conn: &Connection,
 ) -> Result<PendingReviewMetric, String> {
-    let (cluster_count, cluster_amount_minor): (i64, i64) = conn
-        .query_row(
-            "SELECT COUNT(DISTINCT t.id), COALESCE(SUM(t.amount_minor), 0)
-             FROM transactions t
-             JOIN reconciliation_cluster_members m ON m.canonical_transaction_id = t.id
-             JOIN reconciliation_clusters c ON c.id = m.cluster_id
-             WHERE c.cluster_status IN ('open', 'deferred')",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap_or((0, 0));
-
-    let (unassigned_count, unassigned_amount_minor): (i64, i64) = conn
-        .query_row(
-            &format!(
-                "SELECT COUNT(*), COALESCE(SUM(o.amount_minor), 0)
-                 FROM unassigned_transactions u
-                 JOIN transaction_observations o ON o.id = u.observation_id
-                 WHERE {}",
-                crate::db::unassigned_transactions::VISIBLE_OPEN
-            ),
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap_or((0, 0));
+    let sums = |sql: &str| -> Result<(i64, i64, i64), String> {
+        conn.query_row(sql, [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .map_err(|e| e.to_string())
+    };
+    let (cluster_count, cluster_debit, cluster_credit) = sums(
+        "SELECT COUNT(DISTINCT t.id),
+                COALESCE(SUM(CASE WHEN t.direction = 'credit' THEN 0 ELSE t.amount_minor END), 0),
+                COALESCE(SUM(CASE WHEN t.direction = 'credit' THEN t.amount_minor ELSE 0 END), 0)
+         FROM transactions t
+         JOIN reconciliation_cluster_members m ON m.canonical_transaction_id = t.id
+         JOIN reconciliation_clusters c ON c.id = m.cluster_id
+         WHERE c.cluster_status IN ('open', 'deferred')",
+    )?;
+    let (unassigned_count, unassigned_debit, unassigned_credit) = sums(&format!(
+        "SELECT COUNT(*),
+                COALESCE(SUM(CASE WHEN o.direction = 'credit' THEN 0 ELSE o.amount_minor END), 0),
+                COALESCE(SUM(CASE WHEN o.direction = 'credit' THEN o.amount_minor ELSE 0 END), 0)
+         FROM unassigned_transactions u
+         JOIN transaction_observations o ON o.id = u.observation_id
+         WHERE {}",
+        crate::db::unassigned_transactions::VISIBLE_OPEN
+    ))?;
 
     Ok(PendingReviewMetric {
         count: cluster_count + unassigned_count,
-        amount_minor: cluster_amount_minor + unassigned_amount_minor,
+        debit_minor: cluster_debit + unassigned_debit,
+        credit_minor: cluster_credit + unassigned_credit,
     })
 }
 
@@ -2328,9 +2330,9 @@ pub(crate) async fn resolve_unassigned_transaction_manually<R: tauri::Runtime>(
 ///
 /// `merchant_raw` stays an exact span of the email (FRS 413): the typed name
 /// replaces it only when the email contains it verbatim; otherwise it becomes
-/// the display label (`merchant_normalized`). A date equal to the extracted
-/// one keeps the extracted time; a different date is stored with `low`
-/// confidence, since the form carries no time (audit F9-6).
+/// the display label (`merchant_normalized`). A kept date with a blank time
+/// keeps the email's time; an entered time is stored as `high` confidence, a
+/// bare date as `low` (audit F9-6).
 fn complete_review_entry(
     c: &rusqlite::Connection,
     unassigned_id: &str,
@@ -2378,10 +2380,17 @@ fn complete_review_entry(
                 payload.event_time
             ))
         })?;
-    if row.event_time.map(|t| t.date()) != Some(entered.date()) {
+    // Midnight means the user gave a date only (the time field was blank).
+    let date_only = entered.time() == chrono::NaiveTime::MIN;
+    let same_day = row.event_time.map(|t| t.date()) == Some(entered.date());
+    let unchanged = row.event_time == Some(entered);
+    // Keep the email's own time when the user kept its date and left the time
+    // blank; otherwise store what they entered. A time they typed is their
+    // confirmation (high); a bare date is low (audit F9-6).
+    if !unchanged && !(same_day && date_only) {
         row.event_time = Some(entered);
         row.posting_date = Some(entered.date());
-        row.event_time_confidence = Some("low".to_string());
+        row.event_time_confidence = Some(if date_only { "low" } else { "high" }.to_string());
     }
 
     let typed = payload.merchant_name.trim().to_string();
@@ -3443,6 +3452,51 @@ mod tests {
         assert!(complete_review_entry(&conn, "ua_r", &payload).unwrap().is_none());
     }
 
+    /// A changed date with a typed time is stored as entered, high confidence
+    /// (audit F9-6: the form used to force midnight).
+    #[test]
+    fn test_complete_review_entry_stores_an_entered_time() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        let instrument_id = uuid::Uuid::new_v4();
+        conn.execute(
+            "INSERT INTO instruments (id, type, issuer_name, masked_identifier) \
+             VALUES (?1, 'credit_card', 'HDFC', '4021')",
+            params![instrument_id.to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transaction_observations (id, source_pipeline, source_record_id, event_time, event_time_confidence) \
+             VALUES ('obs_t', 'gmail_transaction', 'msg_t', '2026-11-03 00:00:00', 'low')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO unassigned_transactions (id, observation_id, reason, status) \
+             VALUES ('ua_t', 'obs_t', 'extraction_failed', 'open')",
+            [],
+        )
+        .unwrap();
+        let payload = crate::commands::ManualTransactionPayload {
+            amount_minor: 1000,
+            currency: "INR".to_string(),
+            direction: "debit".to_string(),
+            event_time: "2026-11-04 18:45:00".to_string(),
+            merchant_name: "Cafe".to_string(),
+            instrument_id,
+            reference_id: None,
+        };
+        complete_review_entry(&conn, "ua_t", &payload).unwrap().unwrap();
+        let (time, conf): (String, Option<String>) = conn
+            .query_row(
+                "SELECT event_time, event_time_confidence FROM transaction_observations WHERE id = 'obs_t'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(time.starts_with("2026-11-04") && time.contains("18:45"), "{time}");
+        assert_eq!(conf.as_deref(), Some("high"));
+    }
+
     /// An entry still held for the local AI can be finished by hand (owner
     /// decision Q-2); it is settled in the same transaction.
     #[test]
@@ -4038,7 +4092,7 @@ mod tests {
         let pending = compute_unassigned_amount_pending_review(&conn).unwrap();
 
         assert_eq!(pending.count, 2);
-        assert_eq!(pending.amount_minor, 7500);
+        assert_eq!(pending.debit_minor + pending.credit_minor, 7500);
         assert_eq!(summary.month_to_date_spend, 10.0);
     }
 

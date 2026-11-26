@@ -5,7 +5,7 @@
  * duplicate check (audit F9-5, F8-5, F12-4).
  */
 import type { StatementCommitSummary } from '@/lib/ipc';
-import { OUTCOME, inSentence } from '@/lib/outcomeVocabulary';
+import { OUTCOME, inSentence, withCount } from '@/lib/outcomeVocabulary';
 
 interface OutcomeToast {
   title: string;
@@ -41,7 +41,7 @@ export function statementCommitToast(summary: StatementCommitSummary | undefined
   const parts = [
     summary.new > 0 && `${summary.new} ${inSentence(OUTCOME.booked)}`,
     summary.matched > 0 && `${summary.matched} ${inSentence(OUTCOME.matched)}`,
-    summary.needs_review > 0 && `${summary.needs_review} ${inSentence(OUTCOME.duplicateCheck)}`,
+    summary.needs_review > 0 && withCount(summary.needs_review, OUTCOME.duplicateCheck),
     summary.skipped > 0 && `${summary.skipped} already imported`,
   ].filter(Boolean);
   return {

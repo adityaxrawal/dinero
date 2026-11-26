@@ -73,10 +73,11 @@ describe('KpiRow', () => {
 
 describe('AttentionRail', () => {
   it('links pending reviews to the reconciliation queue', () => {
-    render(<AttentionRail data={data({ pending: { count: 3, amount_minor: 45000 } as never })} />);
-    expect(screen.getByText('3 needs review')).toBeInTheDocument();
+    render(<AttentionRail data={data({ pending: { count: 3, debit_minor: 45000, credit_minor: 1000 } as never })} />);
+    expect(screen.getByText('3 need review')).toBeInTheDocument();
+    expect(screen.getByText('₹450 out · ₹10 in not yet confirmed')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByText('3 needs review'));
+    fireEvent.click(screen.getByText('3 need review'));
     expect(navigate).toHaveBeenCalledWith('/reconciliation');
   });
 
@@ -97,7 +98,7 @@ describe('AttentionRail', () => {
 
   it('pluralises the unresolved cluster count', () => {
     render(<AttentionRail data={data({ clusters: [{ id: 'c1' }, { id: 'c2' }] as never })} />);
-    expect(screen.getByText('2 needs duplicate check')).toBeInTheDocument();
+    expect(screen.getByText('2 need duplicate check')).toBeInTheDocument();
   });
 
   it('falls back to upcoming bills only when nothing is urgent', () => {

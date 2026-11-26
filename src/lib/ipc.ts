@@ -109,7 +109,9 @@ export type SpendTrendGranularity = 'daily' | 'weekly' | 'monthly';
 
 interface PendingReviewMetric {
   count: number;
-  amount_minor: number;
+  /** Money out and money in awaiting review, kept apart (audit F9-14). */
+  debit_minor: number;
+  credit_minor: number;
 }
 
 export interface CanonicalTransaction {

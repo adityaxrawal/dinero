@@ -1,7 +1,7 @@
 /**
  * Rail of items needing attention: stale clusters, failed statements, alerts.
  */
-import { OUTCOME, inSentence } from '@/lib/outcomeVocabulary';
+import { OUTCOME, withCount } from '@/lib/outcomeVocabulary';
 import { useNavigate } from 'react-router-dom';
 import { AlertCircle, AlertTriangle, Calendar, ChevronRight, GitMerge } from 'lucide-react';
 import { classifyBillUrgency } from '@/components/dashboard/classifyBillUrgency';
@@ -88,6 +88,17 @@ function BillCard({ bill, onClick }: { bill: Data['urgentBills'][number]; onClic
 }
 
 /** Rail of items needing attention: stale clusters, failures, bills. */
+/** Money out and in awaiting review, never added together (audit F9-14). */
+function pendingSubtitle(debitMinor: number, creditMinor: number): string {
+  const rupees = (minor: number) =>
+    `₹${(minor / 100).toLocaleString('en-IN', { minimumFractionDigits: 0 })}`;
+  const parts = [
+    debitMinor > 0 && `${rupees(debitMinor)} out`,
+    creditMinor > 0 && `${rupees(creditMinor)} in`,
+  ].filter(Boolean);
+  return parts.length > 0 ? `${parts.join(' · ')} not yet confirmed` : 'Not yet confirmed';
+}
+
 export default function AttentionRail({ data }: { data: Data }) {
   const navigate = useNavigate();
   const { pending, urgentBills, clusters, summary } = data;
@@ -104,8 +115,8 @@ export default function AttentionRail({ data }: { data: Data }) {
           <AttentionCard
             icon={<AlertCircle className="w-4 h-4" style={{ color: '#f59e0b' }} />}
             iconBg="rgba(245, 158, 11, 0.12)"
-            title={`${pending.count} ${inSentence(OUTCOME.needsReview)}`}
-            subtitle={`₹${(pending.amount_minor / 100).toLocaleString(undefined, { minimumFractionDigits: 0 })} not yet confirmed`}
+            title={withCount(pending.count, OUTCOME.needsReview)}
+            subtitle={pendingSubtitle(pending.debit_minor, pending.credit_minor)}
             ctaLabel="Review"
             onClick={() => navigate('/reconciliation')}
             urgent
@@ -120,7 +131,7 @@ export default function AttentionRail({ data }: { data: Data }) {
           <AttentionCard
             icon={<GitMerge className="w-4 h-4" style={{ color: '#064E3B' }} />}
             iconBg="rgba(6,78,59,0.10)"
-            title={`${clusters.length} ${inSentence(OUTCOME.duplicateCheck)}`}
+            title={withCount(clusters.length, OUTCOME.duplicateCheck)}
             subtitle="May already be in your ledger"
             ctaLabel="Resolve"
             onClick={() => navigate('/reconciliation')}

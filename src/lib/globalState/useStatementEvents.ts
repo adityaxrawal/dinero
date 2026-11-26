@@ -201,7 +201,10 @@ export function useStatementEvents(modals: Modals) {
         } else {
           toast({
             title: 'Statement ready for review',
-            description: 'Check the Awaiting Review queue on the Statements page.',
+            description: 'Confirm its details to import it.',
+            // A direct link, not directions to find it (audit F8-9).
+            actionTo: '/statements?section=queue',
+            actionLabel: 'Review',
           });
         }
       });
