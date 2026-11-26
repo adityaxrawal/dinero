@@ -293,6 +293,18 @@ impl MessageProcessor {
                 .await;
                 let metadata_subject = Self::header_value(&metadata_msg, "subject");
                 let metadata_snippet = metadata_msg.snippet.clone().unwrap_or_default();
+                Self::record_skipped(
+                    pool,
+                    scan_batcher,
+                    message_id,
+                    None,
+                    &metadata_subject,
+                    &metadata_snippet,
+                    "gate1_verified_noise",
+                    sender_domain.as_deref(),
+                    "sender",
+                )
+                .await;
                 trace.info(format!(
                     "  ↳ ❌ Gate 1 Rejected (Verified Noise): Sender {:?} does not send actionable emails.",
                     sender_domain
@@ -316,6 +328,18 @@ impl MessageProcessor {
                 .await;
                 let metadata_subject = Self::header_value(&metadata_msg, "subject");
                 let metadata_snippet = metadata_msg.snippet.clone().unwrap_or_default();
+                Self::record_skipped(
+                    pool,
+                    scan_batcher,
+                    message_id,
+                    None,
+                    &metadata_subject,
+                    &metadata_snippet,
+                    &reason,
+                    sender_domain.as_deref(),
+                    "sender",
+                )
+                .await;
                 trace.info(format!(
                     "  ↳ ❌ Gate 1 Rejected: {}",
                     reason
@@ -337,20 +361,21 @@ impl MessageProcessor {
         if !Self::content_class_may_be_transactional(&fast_class) {
             crate::ingestion::gmail_telemetry::gmail_telemetry().record_gate_rejection("gate2a");
             let reason = format!("gate2a_reject_{:?}", fast_class);
-            if matches!(fast_class, ContentClass::Noise | ContentClass::Unknown) {
-                Self::record_ignored_noise(
-                    pool,
-                    scan_batcher,
-                    message_id,
-                    Some(&current_bank_name),
-                    &metadata_subject,
-                    &metadata_snippet,
-                    &reason,
-                )
-                .await;
-            } else {
+            if !matches!(fast_class, ContentClass::Noise | ContentClass::Unknown) {
                 Self::log_rejection(pool, scan_batcher, message_id, &reason).await?;
             }
+            Self::record_skipped(
+                pool,
+                scan_batcher,
+                message_id,
+                Some(&current_bank_name),
+                &metadata_subject,
+                &metadata_snippet,
+                &reason,
+                sender_domain.as_deref(),
+                "content",
+            )
+            .await;
             Self::append_to_scan_log(
                 app_dir.as_deref(),
                 message_id,
@@ -453,6 +478,18 @@ impl MessageProcessor {
                         .record_gate_rejection("gate2");
                     let reason = format!("gate2_reject_{:?}", content_class);
                     Self::log_rejection(pool, scan_batcher, message_id, &reason).await?;
+                    Self::record_skipped(
+                        pool,
+                        scan_batcher,
+                        message_id,
+                        Some(&current_bank_name),
+                        &subject,
+                        &email_meta.snippet,
+                        &reason,
+                        email_meta.sender_domain.as_deref(),
+                        "content",
+                    )
+                    .await;
                     Self::append_to_scan_log(
                         app_dir.as_deref(),
                         message_id,
@@ -474,7 +511,7 @@ impl MessageProcessor {
                     crate::ingestion::gmail_telemetry::gmail_telemetry()
                         .record_gate_rejection("gate2");
                     let reason = format!("gate2_reject_{:?}", content_class);
-                    Self::record_ignored_noise(
+                    Self::record_skipped(
                         pool,
                         scan_batcher,
                         message_id,
@@ -482,6 +519,8 @@ impl MessageProcessor {
                         &subject,
                         &email_meta.snippet,
                         &reason,
+                        email_meta.sender_domain.as_deref(),
+                        "content",
                     )
                     .await;
                     Self::append_to_scan_log(
@@ -1205,8 +1244,11 @@ impl MessageProcessor {
         )
     }
 
-    /// Records a message dismissed as noise, so a rescan skips it cheaply.
-    async fn record_ignored_noise(
+    /// Records a skipped email: a rescan skips it cheaply, and it is listed
+    /// under Settings > Skipped emails for its 30-day window (owner decision
+    /// Q-8), with the sender domain so a wrongly rejected sender can be trusted.
+    #[allow(clippy::too_many_arguments)]
+    async fn record_skipped(
         pool: &Pool,
         scan_batcher: Option<&ScanBatcherHandle>,
         message_id: &str,
@@ -1214,6 +1256,8 @@ impl MessageProcessor {
         subject: &str,
         snippet: &str,
         reason: &str,
+        sender_domain: Option<&str>,
+        gate: &str,
     ) {
         // Truncated here rather than at each call site: the gate-2 path passes
         // the message body, which is the whole email once a body has been
@@ -1224,12 +1268,13 @@ impl MessageProcessor {
             batcher
                 .lock()
                 .await
-                .record_ignored(message_id, bank_name, reason, subject, snippet);
+                .record_ignored(message_id, bank_name, reason, subject, snippet, sender_domain, gate);
             return;
         }
         let row = crate::db::ignored_messages::IgnoredMessageRow::new(
             message_id, bank_name, reason, subject, snippet,
-        );
+        )
+        .with_source(sender_domain, gate);
         if let Ok(conn) = pool.get().await {
             let _ = conn
                 .interact(move |c| crate::db::ignored_messages::insert(c, &row))

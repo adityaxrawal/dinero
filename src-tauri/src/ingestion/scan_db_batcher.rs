@@ -27,6 +27,8 @@ pub struct PendingIgnored {
     pub reason: String,
     pub subject: String,
     pub snippet: String,
+    pub sender_domain: Option<String>,
+    pub gate: String,
 }
 
 #[derive(Default)]
@@ -60,6 +62,7 @@ impl ScanDbBatcher {
     }
 
     /// Queues an ignored-message record.
+    #[allow(clippy::too_many_arguments)]
     pub fn record_ignored(
         &mut self,
         message_id: &str,
@@ -67,6 +70,8 @@ impl ScanDbBatcher {
         reason: &str,
         subject: &str,
         snippet: &str,
+        sender_domain: Option<&str>,
+        gate: &str,
     ) {
         self.ignored.push(PendingIgnored {
             message_id: message_id.to_string(),
@@ -74,6 +79,8 @@ impl ScanDbBatcher {
             reason: reason.to_string(),
             subject: subject.to_string(),
             snippet: snippet.to_string(),
+            sender_domain: sender_domain.map(str::to_string),
+            gate: gate.to_string(),
         });
     }
 
@@ -144,7 +151,8 @@ impl ScanDbBatcher {
                     &ig.reason,
                     &ig.subject,
                     &ig.snippet,
-                );
+                )
+                .with_source(ig.sender_domain.as_deref(), &ig.gate);
                 if let Err(e) = crate::db::ignored_messages::insert(&tx, &row) {
                     // Not fatal (the message is just re-evaluated on a later
                     // scan), but it must not vanish silently.

@@ -19,6 +19,10 @@ pub struct IgnoredMessageRow {
     pub snippet: Option<String>,
     pub created_at: Option<NaiveDateTime>,
     pub expires_at: NaiveDateTime,
+    /// The From: domain, so a wrongly rejected sender can be trusted (Q-8).
+    pub sender_domain: Option<String>,
+    /// Which gate skipped it: `sender` (Gate 1) or `content` (Gate 2).
+    pub gate: Option<String>,
 }
 
 impl IgnoredMessageRow {
@@ -44,7 +48,16 @@ impl IgnoredMessageRow {
             snippet: Some(snippet.to_string()),
             created_at: Some(now),
             expires_at: now + Duration::days(IGNORED_MESSAGE_TTL_DAYS),
+            sender_domain: None,
+            gate: None,
         }
+    }
+
+    /// Adds the sender domain and gate shown in the Skipped emails list.
+    pub fn with_source(mut self, sender_domain: Option<&str>, gate: &str) -> Self {
+        self.sender_domain = sender_domain.map(str::to_string);
+        self.gate = Some(gate.to_string());
+        self
     }
 }
 
@@ -52,8 +65,8 @@ impl IgnoredMessageRow {
 pub fn insert(conn: &Connection, row: &IgnoredMessageRow) -> Result<()> {
     conn.execute(
         "INSERT INTO ignored_messages (
-            id, message_id, bank_name, reason, subject, snippet, expires_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            id, message_id, bank_name, reason, subject, snippet, expires_at, sender_domain, gate
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             row.id,
             row.message_id,
@@ -62,6 +75,8 @@ pub fn insert(conn: &Connection, row: &IgnoredMessageRow) -> Result<()> {
             row.subject,
             row.snippet,
             row.expires_at,
+            row.sender_domain,
+            row.gate,
         ],
     )?;
     Ok(())
@@ -70,7 +85,8 @@ pub fn insert(conn: &Connection, row: &IgnoredMessageRow) -> Result<()> {
 /// Recently ignored messages, so a rescan can skip them cheaply.
 pub fn select_recent(conn: &Connection, limit: i64) -> Result<Vec<IgnoredMessageRow>> {
     let mut stmt = conn.prepare(
-        "SELECT id, message_id, bank_name, reason, subject, snippet, created_at, expires_at \
+        "SELECT id, message_id, bank_name, reason, subject, snippet, created_at, expires_at, \
+                sender_domain, gate \
          FROM ignored_messages ORDER BY created_at DESC LIMIT ?1",
     )?;
     let rows = stmt
@@ -84,10 +100,27 @@ pub fn select_recent(conn: &Connection, limit: i64) -> Result<Vec<IgnoredMessage
                 snippet: r.get(5)?,
                 created_at: r.get(6)?,
                 expires_at: r.get(7)?,
+                sender_domain: r.get(8)?,
+                gate: r.get(9)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
+}
+
+/// Re-admits a sender's skipped emails: removes their ignore records and the
+/// rejection marks that made rescans skip them, so the next scan reads them
+/// again. Returns how many emails were re-admitted.
+pub fn readmit_sender(conn: &Connection, sender_domain: &str) -> Result<usize> {
+    conn.execute(
+        "DELETE FROM processed_messages WHERE decision LIKE 'rejected:%' AND message_id IN \
+         (SELECT message_id FROM ignored_messages WHERE sender_domain = ?1)",
+        params![sender_domain],
+    )?;
+    Ok(conn.execute(
+        "DELETE FROM ignored_messages WHERE sender_domain = ?1",
+        params![sender_domain],
+    )?)
 }
 
 /// Drops expired ignore records.
@@ -104,6 +137,27 @@ pub fn purge_expired(conn: &Connection) -> Result<usize> {
 
 #[cfg(test)]
 mod tests {
+    /// Trusting a sender from Skipped emails clears its ignore records and
+    /// rejection marks so the next scan reads those emails again (Q-8); other
+    /// senders' records stay.
+    #[test]
+    fn readmit_sender_clears_only_that_senders_skips() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        for (id, domain) in [("m1", "mail.hsbc.bank.in"), ("m2", "promo.example.com")] {
+            let row = IgnoredMessageRow::new(id, None, "Suspicious domain", "Subject", "snippet")
+                .with_source(Some(domain), "sender");
+            insert(&conn, &row).unwrap();
+            crate::db::processed_messages::record(&conn, id, "rejected:Suspicious domain").unwrap();
+        }
+        assert_eq!(readmit_sender(&conn, "mail.hsbc.bank.in").unwrap(), 1);
+        let left: Vec<String> = select_recent(&conn, 10).unwrap().into_iter().map(|r| r.message_id).collect();
+        assert_eq!(left, vec!["m2".to_string()]);
+        let processed: i64 = conn
+            .query_row("SELECT COUNT(*) FROM processed_messages", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(processed, 1, "only the trusted sender's rejection mark is cleared");
+    }
+
     use super::*;
 
     #[test]

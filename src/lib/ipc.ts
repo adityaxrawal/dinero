@@ -272,6 +272,17 @@ export interface StatementCommitSummary {
   skipped: number;
 }
 
+export interface SkippedEmail {
+  message_id: string;
+  sender_domain: string | null;
+  bank_name: string | null;
+  subject: string | null;
+  reason: string;
+  /** 'sender' (Gate 1) or 'content' (Gate 2). */
+  gate: string | null;
+  skipped_at: string | null;
+}
+
 export interface InstrumentRule {
   id: string;
   issuer_name: string;
@@ -1089,6 +1100,12 @@ export const API = {
   learnedRules: {
     list: () => invokeCommand<LearnedRule[]>('settings_learned_rules_list'),
     revert: (ruleId: string) => invokeCommand<void>('settings_learned_rules_revert', { ruleId }),
+  },
+  /** Emails skipped in the last 30 days, and trusting a rejected sender (owner decision Q-8). */
+  skippedEmails: {
+    list: () => invokeCommand<SkippedEmail[]>('skipped_emails_list'),
+    trustSender: (senderDomain: string) =>
+      invokeCommand<number>('skipped_emails_trust_sender', { senderDomain }),
   },
   /** "Always use this card" rules for alerts with no card number (owner decision Q-6). */
   instrumentRules: {

@@ -1741,6 +1741,66 @@ pub async fn instrument_rules_revert(
     Ok("reverted".to_string())
 }
 
+#[derive(Serialize)]
+pub struct SkippedEmail {
+    pub message_id: String,
+    pub sender_domain: Option<String>,
+    pub bank_name: Option<String>,
+    pub subject: Option<String>,
+    pub reason: String,
+    pub gate: Option<String>,
+    pub skipped_at: Option<String>,
+}
+
+/// Emails the pipeline skipped in the last 30 days (owner decision Q-8).
+#[tauri::command]
+pub async fn skipped_emails_list(
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<Vec<SkippedEmail>, crate::error::AppError> {
+    let conn = pool.get().await.map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let rows = conn
+        .interact(|c| crate::db::ignored_messages::select_recent(c, 1000))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    Ok(rows
+        .into_iter()
+        .map(|r| SkippedEmail {
+            message_id: r.message_id,
+            sender_domain: r.sender_domain,
+            bank_name: r.bank_name,
+            subject: r.subject,
+            reason: r.reason,
+            gate: r.gate,
+            skipped_at: r.created_at.map(|t| t.to_string()),
+        })
+        .collect())
+}
+
+/// Trusts a sender the sender check rejected and re-admits its skipped emails
+/// for the next scan. Trusted senders are review-only (audit E-3): their mail
+/// is pre-filled for review, never booked automatically. Returns the count.
+#[tauri::command]
+pub async fn skipped_emails_trust_sender(
+    sender_domain: String,
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<usize, crate::error::AppError> {
+    crate::ipc::validation::validate_non_empty("sender_domain", &sender_domain)?;
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    let domain = sender_domain.trim().to_lowercase();
+    let conn = pool.get().await.map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(move |c| -> anyhow::Result<usize> {
+        let tx = c.unchecked_transaction()?;
+        crate::db::sender_reputation::approve_domain(&tx, &domain)?;
+        let n = crate::db::ignored_messages::readmit_sender(&tx, &domain)?;
+        tx.commit()?;
+        Ok(n)
+    })
+    .await
+    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+    .map_err(|e| crate::error::AppError::Db(e.to_string()))
+}
+
 #[tauri::command]
 pub async fn fetch_transaction_observations(
     transaction_id: String,

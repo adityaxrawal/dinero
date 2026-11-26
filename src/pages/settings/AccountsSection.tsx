@@ -3,6 +3,7 @@
  */
 import ConnectedAccountsSettings from '@/components/settings/ConnectedAccountsSettings';
 import MailScanSection from './MailScanSection';
+import SkippedEmailsSettings from '@/components/settings/SkippedEmailsSettings';
 
 /** Connected-accounts section. */
 export default function AccountsSection() {
@@ -15,6 +16,7 @@ export default function AccountsSection() {
       <div className="h-px w-full bg-[#064E3B]/10" />
 
       <MailScanSection />
+      <SkippedEmailsSettings />
     </div>
   );
 }

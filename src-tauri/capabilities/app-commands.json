@@ -116,6 +116,8 @@
     "allow-settings-set-launch-at-login",
     "allow-settings-set-low-battery-poll-threshold-percent",
     "allow-settings-set-menu-bar-extra-enabled",
+    "allow-skipped-emails-list",
+    "allow-skipped-emails-trust-sender",
     "allow-statements-commit-draft",
     "allow-statements-confirm-instrument",
     "allow-statements-delete-pdf",

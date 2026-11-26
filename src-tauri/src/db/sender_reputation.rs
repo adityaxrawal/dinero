@@ -108,6 +108,19 @@ pub fn record_rejection_candidate(
     Ok(())
 }
 
+/// Trusts a domain the user vouched for from Skipped emails (owner decision
+/// Q-8). Approved senders pass Gate 1 as review-only (audit E-3), so their
+/// mail is pre-filled in the Review Inbox and never booked automatically.
+pub fn approve_domain(conn: &Connection, domain: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO pending_senders (id, domain, bank_name, classification, status, reject_count, created_at, updated_at)
+         VALUES (?1, ?2, ?2, 'transaction_candidate', 'approved', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+         ON CONFLICT(domain) DO UPDATE SET status = 'approved', updated_at = CURRENT_TIMESTAMP",
+        params![uuid::Uuid::new_v4().to_string(), domain],
+    )?;
+    Ok(())
+}
+
 /// Sets a domain's approval status.
 pub fn update_status(conn: &Connection, id: &str, new_status: &str) -> Result<()> {
     if !["approved", "denied"].contains(&new_status) {
