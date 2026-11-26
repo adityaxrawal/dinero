@@ -575,6 +575,20 @@ export const ENTITIES: EntityDef[] = [
     ],
   },
   {
+    id: 'activity_log',
+    name: 'activity_log',
+    group: 'ops',
+    description:
+      'Persistent record of scan runs and statement imports (newest 200), shown under Settings > Accounts > Recent activity.',
+    columns: [
+      { name: 'id', type: 'TEXT', key: 'PK' },
+      { name: 'kind', type: 'TEXT' },
+      { name: 'outcome', type: 'TEXT' },
+      { name: 'summary', type: 'TEXT' },
+      { name: 'details_json', type: 'TEXT' },
+    ],
+  },
+  {
     id: 'instrument_rules',
     name: 'instrument_rules',
     group: 'ops',

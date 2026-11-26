@@ -52,8 +52,12 @@ export const EVENT_INVALIDATIONS: ReadonlyArray<{ event: string; keys: readonly 
       queryKeys.instruments.all(),
       // A scan files review entries; the queue and its badge must catch up.
       queryKeys.reconciliation.all(),
+      queryKeys.activity.all(),
     ],
   },
+  // A failed or cancelled scan is recorded in the activity log too.
+  { event: 'scan_failed', keys: [queryKeys.activity.all()] },
+  { event: 'scan_cancelled', keys: [queryKeys.activity.all()] },
   {
     event: 'reconciliation_cluster',
     keys: [queryKeys.reconciliation.all(), queryKeys.dashboard.all()],
@@ -73,7 +77,11 @@ export const EVENT_INVALIDATIONS: ReadonlyArray<{ event: string; keys: readonly 
     'statement_password_required',
     'statement_staged',
     'statement_instrument_confirmation_required',
-  ].map((event) => ({ event, keys: [queryKeys.statements.all()] })),
+  ].map((event) => ({
+    event,
+    // A committed statement also adds an activity entry.
+    keys: event === 'statement_parsed' ? [queryKeys.statements.all(), queryKeys.activity.all()] : [queryKeys.statements.all()],
+  })),
   {
     event: 'statement_upcoming_bill_set',
     keys: [queryKeys.dashboard.all(), queryKeys.instruments.all()],

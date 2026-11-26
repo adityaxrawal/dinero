@@ -66,6 +66,9 @@ export const queryKeys = {
     unassigned: () => ['reconciliation', 'unassigned'] as const,
     llmPending: () => ['reconciliation', 'llmPending'] as const,
   },
+  activity: {
+    all: () => ['activity'] as const,
+  },
   tags: {
     all: () => ['tags'] as const,
     list: () => ['tags', 'list'] as const,

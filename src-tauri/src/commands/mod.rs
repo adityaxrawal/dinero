@@ -2034,7 +2034,16 @@ pub async fn statements_commit_draft(
         .get()
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?
-        .interact(move |c| statement_commit_summary(c, &id))
+        .interact(move |c| -> rusqlite::Result<serde_json::Value> {
+            let summary = statement_commit_summary(c, &id)?;
+            // Persistent record of the import (audit F5-4); best effort.
+            let text = format!(
+                "Statement imported: {} new, {} matched to existing, {} need a duplicate check, {} already imported",
+                summary["new"], summary["matched"], summary["needs_review"], summary["skipped"]
+            );
+            let _ = crate::db::activity_log::append(c, "statement", "committed", &text, Some(&summary));
+            Ok(summary)
+        })
         .await
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
@@ -3258,6 +3267,7 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         data::instrument_rules_revert,
         data::skipped_emails_list,
         data::skipped_emails_trust_sender,
+        data::activity_list,
         data::fetch_spending_limits,
         data::update_spending_limits,
         data::onboarding_save_preferences,
@@ -3510,6 +3520,7 @@ mod tests {
             ("transactions_export_csv", "read-only export of the user's own data: never held hostage"),
             ("instrument_rules_list", "read-only query"),
             ("skipped_emails_list", "read-only query"),
+            ("activity_list", "read-only query"),
             ("check_backend_status", "read-only query"),
             ("check_system_ram", "read-only query"),
             ("auth_get_recovery_phrase", "read-only query"),

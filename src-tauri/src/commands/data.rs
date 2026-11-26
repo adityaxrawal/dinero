@@ -1801,6 +1801,19 @@ pub async fn skipped_emails_trust_sender(
     .map_err(|e| crate::error::AppError::Db(e.to_string()))
 }
 
+/// Recent background-work outcomes (scan runs, statement imports), newest
+/// first; persists across restarts (audit F5-4).
+#[tauri::command]
+pub async fn activity_list(
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<Vec<crate::db::activity_log::ActivityEntry>, crate::error::AppError> {
+    let conn = pool.get().await.map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(|c| crate::db::activity_log::list(c, 50))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))
+}
+
 #[tauri::command]
 pub async fn fetch_transaction_observations(
     transaction_id: String,

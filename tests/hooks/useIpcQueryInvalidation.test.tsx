@@ -97,7 +97,8 @@ describe('EVENT_INVALIDATIONS (audit F14-1, F12-3, F8-4)', () => {
     expect(keysFor('unassigned_changed')).toEqual(['reconciliation', 'dashboard']);
     expect(keysFor('transaction_updated')).toContain('instruments');
     expect(keysFor('scan_completed')).toContain('reconciliation');
-    expect(keysFor('statement_parsed')).toEqual(['statements']);
+    expect(keysFor('statement_parsed')).toEqual(['statements', 'activity']);
+    expect(keysFor('scan_failed')).toEqual(['activity']);
     expect(keysFor('statement_instrument_confirmation_required')).toEqual(['statements']);
   });
 });

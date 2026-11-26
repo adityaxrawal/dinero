@@ -668,27 +668,55 @@ pub(crate) async fn start_historical_scan<R: tauri::Runtime>(
                 }
             }
 
-            let _ = crate::ipc::events::emit_event(
-                &app,
-                crate::ipc::events::AppEvent::ScanFailed,
-                ScanProgressPayload {
-                    account_id,
-                    processed: 0,
-                    total: 0,
-                    transactions_found: 0,
-                    statements_found: 0,
-                    mandate_events_found: 0,
-                    non_financial: 0,
-                    errors: 1,
-                    pending_enrichment: 0,
-                    sent_to_review: 0,
-                    error_message: Some(e.to_string()),
-                },
-            );
+            let failed = ScanProgressPayload {
+                account_id,
+                processed: 0,
+                total: 0,
+                transactions_found: 0,
+                statements_found: 0,
+                mandate_events_found: 0,
+                non_financial: 0,
+                errors: 1,
+                pending_enrichment: 0,
+                sent_to_review: 0,
+                error_message: Some(e.to_string()),
+            };
+            record_scan_activity(&pool, crate::db::activity_log::SCAN_FAILED, &failed).await;
+            let _ = crate::ipc::events::emit_event(&app, crate::ipc::events::AppEvent::ScanFailed, failed);
         }
     });
 
     Ok("Scan started".to_string())
+}
+
+/// Writes a scan run's outcome to the persistent activity log (audit F5-4).
+/// Best effort: a failed write never fails the scan.
+async fn record_scan_activity(pool: &Pool, outcome: &str, p: &ScanProgressPayload) {
+    let summary = match outcome {
+        crate::db::activity_log::SCAN_FAILED => format!(
+            "Scan failed: {}",
+            p.error_message.as_deref().unwrap_or("unknown error")
+        ),
+        _ => format!(
+            "Scan {outcome}: {} emails checked, {} booked, {} need review, {} waiting for the AI, {} statements, {} not financial, {} errors",
+            p.processed,
+            p.transactions_found,
+            p.sent_to_review,
+            p.pending_enrichment,
+            p.statements_found,
+            p.non_financial,
+            p.errors
+        ),
+    };
+    let details = serde_json::to_value(p).ok();
+    let outcome = outcome.to_string();
+    if let Ok(conn) = pool.get().await {
+        let _ = conn
+            .interact(move |c| {
+                crate::db::activity_log::append(c, "scan", &outcome, &summary, details.as_ref())
+            })
+            .await;
+    }
 }
 
 /// Runs the scan, checkpointing as it progresses.
@@ -1414,6 +1442,12 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
         sent_to_review: state.sent_to_review,
         error_message: None,
     };
+    let outcome = if was_cancelled {
+        crate::db::activity_log::SCAN_CANCELLED
+    } else {
+        crate::db::activity_log::SCAN_COMPLETED
+    };
+    record_scan_activity(&pool, outcome, &final_payload).await;
     let _ = crate::ipc::events::emit_event(
         &app,
         if was_cancelled {

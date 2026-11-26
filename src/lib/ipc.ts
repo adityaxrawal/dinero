@@ -272,6 +272,15 @@ export interface StatementCommitSummary {
   skipped: number;
 }
 
+export interface ActivityEntry {
+  id: string;
+  kind: 'scan' | 'statement';
+  outcome: string;
+  summary: string;
+  details_json: string | null;
+  created_at: string | null;
+}
+
 export interface SkippedEmail {
   message_id: string;
   sender_domain: string | null;
@@ -1100,6 +1109,10 @@ export const API = {
   learnedRules: {
     list: () => invokeCommand<LearnedRule[]>('settings_learned_rules_list'),
     revert: (ruleId: string) => invokeCommand<void>('settings_learned_rules_revert', { ruleId }),
+  },
+  /** Persistent record of scan runs and statement imports (audit F5-4). */
+  activity: {
+    list: () => invokeCommand<ActivityEntry[]>('activity_list'),
   },
   /** Emails skipped in the last 30 days, and trusting a rejected sender (owner decision Q-8). */
   skippedEmails: {
