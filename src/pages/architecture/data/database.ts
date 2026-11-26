@@ -531,6 +531,8 @@ export const ENTITIES: EntityDef[] = [
       { name: 'bank_name', type: 'TEXT' },
       { name: 'reason', type: 'TEXT' },
       { name: 'subject', type: 'TEXT' },
+      { name: 'sender_domain', type: 'TEXT', note: 'shown in Settings > Skipped emails' },
+      { name: 'gate', type: 'TEXT', note: 'sender (Gate 1) | content (Gate 2)' },
       { name: 'expires_at', type: 'DATETIME', note: '30 days' },
     ],
   },

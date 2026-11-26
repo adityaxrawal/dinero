@@ -37,7 +37,7 @@ const CORE: ComponentDef[] = [
       'Recharts',
       'Lucide',
     ],
-    inputs: ['IPC query results', 'Tauri events', 'localStorage LLM preferences'],
+    inputs: ['IPC query results', 'Tauri events', 'localStorage LLM slot count'],
     outputs: ['IPC invocations', 'Rendered ledger + review UI'],
     sources: ['src/routes/index.tsx', 'src/pages/', 'src/components/', 'src/stores/', 'src/hooks/'],
     apiSurface: [
@@ -345,6 +345,7 @@ const CORE: ComponentDef[] = [
       'poll_all_accounts sequentially with per-account error isolation',
       'history.list pagination; save cursor only when a page returned a historyId',
       'sync_force_poll_now (manual Sync Now, 10s debounce)',
+      'sync_poll_status: last successful check and next due time, shown in Mail Scan settings and on the dashboard',
     ],
     technologies: [
       'Gmail history.list API',
@@ -358,7 +359,7 @@ const CORE: ComponentDef[] = [
       'gmail_quota_exhausted / gmail_token_degraded warnings',
     ],
     sources: ['src-tauri/src/ingestion/polling.rs', 'src-tauri/src/ingestion/gmail_telemetry.rs'],
-    apiSurface: ['sync_force_poll_now', 'start_polling_loop'],
+    apiSurface: ['sync_force_poll_now', 'sync_poll_status', 'start_polling_loop'],
     facts: [
       'NORMAL_POLL_INTERVAL_SECS = 60; LOW_BATTERY_POLL_INTERVAL_SECS = 300',
       'Per-cycle retry budget 8 (1,2,4,8,16,32,60,60 + ±15% jitter) for rate limits (429 and 403 rateLimitExceeded) and 5xx',
@@ -381,9 +382,9 @@ const CORE: ComponentDef[] = [
     description:
       'Identical for every entry point (historical scan, live polling). Gate 1 verifies sender authenticity; Gate 2 classifies the message; Gate 3 runs the extraction ladder with a mandatory-field gate. One processing path per job type regardless of entry point.',
     responsibilities: [
-      'Gate 1: sender registry match + homoglyph/punycode/typo-squat detection + SPF/DKIM/DMARC cross-check (a failed or misaligned verdict downgrades to SpoofReject)',
+      'Gate 1: sender registry match + homoglyph/punycode/typo-squat detection + SPF/DKIM/DMARC cross-check (a failed or misaligned verdict downgrades to SpoofReject); registry noise entries (marketing subdomains such as offers.sbicard.com) are skipped as VerifiedNoise; an unlisted subdomain of a listed bank is rejected as "Unlisted subdomain of X" and can be trusted from Settings > Skipped emails',
       'Gate 2a: subject + snippet classify before the full body is fetched; Gate 2b: full-body classify as TransactionAlert / StatementEmail / MandateEvent / noise / otp / kyc / marketing',
-      'Gate 3: extraction ladder + mandatory-field check; defer to Layer 6 on ladder exhaustion',
+      'Gate 3: extraction ladder + mandatory-field check; defer to Layer 6 on ladder exhaustion; a balance-only alert updates the named account\'s balance and never enters the ledger',
     ],
     technologies: [
       'unicode-security (UTS #39)',
@@ -457,7 +458,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
       'Layers 1–5 are cheap and deterministic. Whatever they cannot complete (any Gate 3 failure or low confidence) goes to Layer 6 (LLM), except mail from a review-only sender; where it returns a field, its value is used, and a null is its verdict that the email lacks the field. Each rung fills amount, merchant, date, instrument and other fields; a mandatory-field gate rejects partial extractions.',
     responsibilities: [
       'Layer 1 LearnedFieldLayer — user-corrected field rules',
-      'Layer 2 BankTemplateLayer — per-bank message templates',
+      'Layer 2 BankTemplateLayer — per-bank message templates; a time printed right after a captured date is kept; a date alone is stored as midnight IST with low time confidence',
       'Layer 3 GenericRegexLayer — currency/amount/date patterns',
       'Layer 4 NlpLayer — token heuristics',
       'Layer 5 Layer5CrossrefLayer — statement cross-reference',
@@ -664,6 +665,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
       'Require issuer_name + masked_identifier',
       'One shared resolver (db::instruments::get_or_create_instrument) for statements and email: canonical issuer ("HDFC Bank" → "HDFC") + cleaned masked id, atomic INSERT OR IGNORE',
       'Save working password only after the gate passes',
+      'Gmail statements: the issuer is pre-filled from the bank Gate 1 verified the sender as, for the user to confirm; the masked id is never filled in',
     ],
     technologies: ['instruments table UNIQUE(type, issuer_name, masked_identifier)'],
     inputs: ['Extracted statement metadata'],
