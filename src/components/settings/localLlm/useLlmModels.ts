@@ -4,7 +4,9 @@
 import { useState, useEffect } from 'react';
 import { API, type LlmModelInfo, type LlmHardwareInfo } from '@/lib/ipc';
 import { useIpcListen } from '@/hooks/useIpcListen';
-import { RAM_OVERRIDE_STORAGE_KEY, type LlmDownloadProgress } from './format';
+import { toast } from '@/hooks/use-toast';
+import { confirmAction } from '@/lib/confirmDialog';
+import type { LlmDownloadProgress } from './format';
 
 /**
  * Whether this machine has enough RAM for a model, honouring a prior override.
@@ -14,14 +16,14 @@ import { RAM_OVERRIDE_STORAGE_KEY, type LlmDownloadProgress } from './format';
  */
 async function ramAllows(model: LlmModelInfo): Promise<boolean> {
   try {
-    const ramGb = await API.dev.checkSystemRam();
-    if (localStorage.getItem(RAM_OVERRIDE_STORAGE_KEY) === 'true') return true;
-    if (ramGb >= model.min_ram_gb) return true;
+    const hw = await API.llm.getHardwareInfo();
+    if (hw.ram_override || hw.ram_gb >= model.min_ram_gb) return true;
 
-    const allow = confirm(
-      `Warning: Your system has ${ramGb.toFixed(1)}GB of RAM. ${model.name} requires at least ${model.min_ram_gb}GB. Allow override?`
+    const allow = await confirmAction(
+      `This Mac has ${hw.ram_gb.toFixed(1)} GB of RAM. ${model.name} needs at least ${model.min_ram_gb} GB, so it may run slowly or crash. Use it anyway?`,
+      'Not enough memory'
     );
-    if (allow) localStorage.setItem(RAM_OVERRIDE_STORAGE_KEY, 'true');
+    if (allow) await API.llm.setRamOverride(true);
     return allow;
   } catch (err) {
     console.error(err);
@@ -100,7 +102,7 @@ export function useLlmModels(onHardware: (hw: LlmHardwareInfo) => number) {
       await API.llm.downloadModel(modelId);
       await refreshDownloaded();
     } catch (err) {
-      alert(`Failed to download model: ${err}`);
+      toast({ title: 'Download failed', description: String(err), variant: 'destructive' });
     } finally {
       clearDownload(modelId);
     }
@@ -120,14 +122,15 @@ export function useLlmModels(onHardware: (hw: LlmHardwareInfo) => number) {
 
   /** Deletes a downloaded model. */
   const remove = async (modelId: string) => {
-    if (!confirm('Are you sure you want to delete this model?')) return;
+    if (!(await confirmAction('Delete this model? You can download it again later.', 'Delete Model')))
+      return;
     try {
       setIsDeleting(modelId);
       const newActiveModel = await API.llm.deleteModel(modelId);
       await refreshDownloaded();
       setActiveModel(newActiveModel);
     } catch (err) {
-      alert(`Failed to delete model: ${err}`);
+      toast({ title: 'Failed to delete model', description: String(err), variant: 'destructive' });
     } finally {
       setIsDeleting(null);
     }
@@ -136,7 +139,7 @@ export function useLlmModels(onHardware: (hw: LlmHardwareInfo) => number) {
   /** Activates a model for inference. */
   const setActive = async (model: LlmModelInfo) => {
     if (!downloadedModels.has(model.id)) {
-      alert('You need to download this model first.');
+      toast({ title: 'You need to download this model first.' });
       return;
     }
     if (!(await ramAllows(model))) return;
@@ -144,7 +147,11 @@ export function useLlmModels(onHardware: (hw: LlmHardwareInfo) => number) {
       await API.llm.setActiveModel(model.id);
       setActiveModel(model.id);
     } catch (err) {
-      alert(`Failed to set active model: ${err}`);
+      toast({
+        title: 'Failed to set active model',
+        description: String(err),
+        variant: 'destructive',
+      });
     }
   };
 

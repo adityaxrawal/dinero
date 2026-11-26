@@ -124,3 +124,26 @@ pub fn clear_llm_model(conn: &Connection) -> Result<()> {
     conn.execute("UPDATE local_profile SET llm_model = NULL WHERE id = 1", [])?;
     Ok(())
 }
+
+/// Whether the user chose to run local AI despite this Mac's RAM (audit F7-5).
+pub fn get_llm_ram_override(conn: &Connection) -> Result<bool> {
+    let result = conn.query_row(
+        "SELECT llm_ram_override FROM local_profile WHERE id = 1",
+        [],
+        |row| row.get(0),
+    );
+    match result {
+        Ok(v) => Ok(v),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Persists the RAM override.
+pub fn set_llm_ram_override(conn: &Connection, allow: bool) -> Result<()> {
+    conn.execute(
+        "UPDATE local_profile SET llm_ram_override = ?1 WHERE id = 1",
+        params![allow],
+    )?;
+    Ok(())
+}

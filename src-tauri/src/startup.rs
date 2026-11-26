@@ -9,6 +9,7 @@
 //! memory before CPU -- overcommitting there does not merely run slowly, it
 //! pushes the machine into swap and can take the whole app down with it.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Manager};
 
 const LOW_RAM_WARNING_THRESHOLD_GB: f64 = 8.0;
@@ -29,27 +30,38 @@ pub fn compute_llm_eligibility(total_ram_gb: f64) -> LlmEligibility {
     }
 }
 
-/// Whether Layer 6 can actually run now: enough RAM and a downloaded model.
-///
-/// RAM alone was used before, so machines without a model parked every ladder
-/// miss as an LLM job that could never succeed.
-pub fn llm_ready<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
+/// The user's "run local AI despite low RAM" choice, mirrored from
+/// `local_profile.llm_ram_override` so the sync readiness checks can read it
+/// (audit F7-5). Loaded at startup, updated by `llm_set_ram_override`.
+#[derive(Default)]
+pub struct LlmRamOverride(pub AtomicBool);
+
+/// Enough RAM for local inference, or the user overrode the RAM floor.
+pub fn llm_ram_eligible<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
     let eligible = app
         .try_state::<LlmEligibility>()
         .map(|s| s.eligible)
         .unwrap_or(false);
-    eligible && app.path().app_data_dir().is_ok_and(|dir| any_model_downloaded(&dir))
+    eligible
+        || app
+            .try_state::<LlmRamOverride>()
+            .is_some_and(|o| o.0.load(Ordering::Relaxed))
+}
+
+/// Whether Layer 6 can actually run now: enough RAM (or the user's override)
+/// and a downloaded model.
+///
+/// RAM alone was used before, so machines without a model parked every ladder
+/// miss as an LLM job that could never succeed.
+pub fn llm_ready<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
+    llm_ram_eligible(app) && app.path().app_data_dir().is_ok_and(|dir| any_model_downloaded(&dir))
 }
 
 /// Why Layer 6 can or cannot run, for the UI: `ready`, `no_model` (eligible
 /// device, nothing downloaded) or `ineligible` (below the RAM floor). Lets the
 /// review screen say what held emails are actually waiting for (audit F7-1).
 pub fn llm_state<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> &'static str {
-    let eligible = app
-        .try_state::<LlmEligibility>()
-        .map(|s| s.eligible)
-        .unwrap_or(false);
-    if !eligible {
+    if !llm_ram_eligible(app) {
         "ineligible"
     } else if app.path().app_data_dir().is_ok_and(|dir| any_model_downloaded(&dir)) {
         "ready"
@@ -73,6 +85,7 @@ pub fn check_ram_and_set_llm_eligibility(app: &AppHandle) {
 
     let eligibility = compute_llm_eligibility(total_ram_gb);
     app.manage(eligibility);
+    app.manage(LlmRamOverride::default());
 
     if total_ram_gb < LOW_RAM_WARNING_THRESHOLD_GB {
         tracing::warn!(
@@ -150,6 +163,18 @@ pub fn recommend_model_id(ram_gb: f64) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ram_override_makes_a_low_ram_mac_eligible() {
+        use tauri::test::{mock_builder, mock_context, noop_assets};
+        let app = mock_builder().build(mock_context(noop_assets())).unwrap();
+        let handle = app.handle();
+        handle.manage(compute_llm_eligibility(4.0));
+        handle.manage(LlmRamOverride::default());
+        assert!(!llm_ram_eligible(handle));
+        handle.state::<LlmRamOverride>().0.store(true, Ordering::Relaxed);
+        assert!(llm_ram_eligible(handle));
+    }
 
     #[test]
     fn low_ram_is_not_llm_eligible() {

@@ -14,6 +14,7 @@ import {
   Settings,
   Activity,
   Network,
+  Gauge,
 } from 'lucide-react';
 import type { NavItem } from './SidebarItem';
 
@@ -44,6 +45,8 @@ export function buildNavGroups(reviewCount: number, badgePulse: boolean) {
           badge: 0,
         },
         { path: '/instruments', label: 'Accounts', icon: <CreditCard size={15} />, badge: 0 },
+        // Was reachable only by URL (audit F15-1).
+        { path: '/spending-limits', label: 'Spending limits', icon: <Gauge size={15} />, badge: 0 },
       ],
     },
   ];

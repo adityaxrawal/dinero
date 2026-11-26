@@ -7,7 +7,7 @@ import { useUpdateTransactionFields } from '@/hooks/mutations/useUpdateTransacti
 import { useAddTransactionTag } from '@/hooks/mutations/useAddTransactionTag';
 import { useRemoveTransactionTag } from '@/hooks/mutations/useRemoveTransactionTag';
 import { useSoftDeleteTransaction } from '@/hooks/mutations/useSoftDeleteTransaction';
-import { confirmDeleteTransaction } from '@/lib/confirmDialog';
+import { API } from '@/lib/ipc';
 import type { TransactionFields } from './transactionFormFields';
 
 interface UseTransactionMutationsArgs {
@@ -81,13 +81,23 @@ export function useTransactionMutations({
     removeTag.mutate({ transactionId, tagName: tag }, { onError: (err) => reportError(err) });
   };
 
-  /** Soft-deletes the transaction after confirmation. */
+  /**
+   * Soft-deletes the transaction, with Undo in the toast. It used to ask for
+   * confirmation and say "This cannot be undone", which was untrue (F12-1).
+   */
   const handleDelete = async () => {
     if (!transactionId) return;
-    if (!(await confirmDeleteTransaction())) return;
-    softDelete.mutate(transactionId, {
+    const id = transactionId;
+    softDelete.mutate(id, {
       onSuccess: () => {
-        toast({ title: 'Transaction deleted' });
+        toast({
+          title: 'Transaction deleted',
+          actionLabel: 'Undo',
+          // The restore emits transaction_created, which refreshes the views.
+          onAction: () => {
+            API.transactions.restore(id).catch((err) => reportError(err));
+          },
+        });
         if (onClose) onClose();
       },
       onError: (err) => reportError(err, 'Only manually-entered transactions can be deleted.'),

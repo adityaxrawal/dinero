@@ -3,7 +3,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { syncLlmState } from '@/lib/syncLlmState';
 import { API } from '@/lib/ipc';
+import { toast } from '@/hooks/use-toast';
 
+vi.mock('@/hooks/use-toast', () => ({ toast: vi.fn() }));
 vi.mock('@/lib/ipc', () => ({
   API: {
     llm: {
@@ -12,6 +14,7 @@ vi.mock('@/lib/ipc', () => ({
       getActiveModel: vi.fn(),
       setActiveModel: vi.fn(),
       setParallelSlots: vi.fn(),
+      setRamOverride: vi.fn(),
     },
   },
 }));
@@ -29,6 +32,7 @@ const hw = (over = {}) =>
     cpu_cores: 8,
     recommended_slots: 4,
     recommended_model_id: 'small',
+    ram_override: false,
     ...over,
   }) as never;
 
@@ -39,12 +43,13 @@ beforeEach(() => {
   asMock(API.llm.getActiveModel).mockResolvedValue('');
   asMock(API.llm.setActiveModel).mockResolvedValue(undefined);
   asMock(API.llm.setParallelSlots).mockResolvedValue(undefined);
-  vi.stubGlobal(
-    'confirm',
-    vi.fn(() => false)
-  );
-  vi.stubGlobal('alert', vi.fn());
+  asMock(API.llm.setRamOverride).mockResolvedValue(undefined);
 });
+
+/** The action button of the last toast, as rendered props. */
+const toastAction = () =>
+  (asMock(toast).mock.calls.at(-1)![0] as { action: { props: { onClick: () => void } } }).action
+    .props;
 
 describe('syncLlmState', () => {
   it('activates the hardware recommendation on a first run', async () => {
@@ -60,33 +65,44 @@ describe('syncLlmState', () => {
     expect(API.llm.setActiveModel).toHaveBeenCalledWith('large');
   });
 
-  it('falls back to the lightest model when the user declines the RAM warning', async () => {
+  it('falls back to the lightest model on a Mac too small for the choice, without blocking (F7-5)', async () => {
     asMock(API.llm.getActiveModel).mockResolvedValue('large');
     asMock(API.llm.getHardwareInfo).mockResolvedValue(hw({ ram_gb: 16 }));
     await syncLlmState();
     expect(API.llm.setActiveModel).toHaveBeenCalledWith('small');
-    expect(alert).toHaveBeenCalled();
-  });
-
-  it('records a persistent override when the user accepts the risk', async () => {
-    asMock(API.llm.getActiveModel).mockResolvedValue('large');
-    vi.stubGlobal(
-      'confirm',
-      vi.fn(() => true)
+    expect(toast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Not enough memory for this AI model' })
     );
-    asMock(API.llm.getHardwareInfo).mockResolvedValue(hw({ ram_gb: 16 }));
-    await syncLlmState();
-    expect(API.llm.setActiveModel).toHaveBeenCalledWith('large');
-    expect(localStorage.getItem('llm_ram_override')).toBe('true');
+    expect(API.llm.setRamOverride).not.toHaveBeenCalled();
   });
 
-  it('does not warn again once the override is stored', async () => {
+  it('"Use anyway" records the override in the backend and restores the choice', async () => {
     asMock(API.llm.getActiveModel).mockResolvedValue('large');
-    localStorage.setItem('llm_ram_override', 'true');
     asMock(API.llm.getHardwareInfo).mockResolvedValue(hw({ ram_gb: 16 }));
     await syncLlmState();
-    expect(confirm).not.toHaveBeenCalled();
+    toastAction().onClick();
+    await vi.waitFor(() => expect(API.llm.setActiveModel).toHaveBeenLastCalledWith('large'));
+    expect(API.llm.setRamOverride).toHaveBeenCalledWith(true);
+    expect(localStorage.getItem('llm_ram_override')).toBeNull();
+  });
+
+  it('does not warn when the backend override is set', async () => {
+    asMock(API.llm.getActiveModel).mockResolvedValue('large');
+    asMock(API.llm.getHardwareInfo).mockResolvedValue(hw({ ram_gb: 16, ram_override: true }));
+    await syncLlmState();
+    expect(toast).not.toHaveBeenCalled();
     expect(API.llm.setActiveModel).toHaveBeenCalledWith('large');
+  });
+
+  it('migrates a localStorage override to the backend once, then forgets it', async () => {
+    localStorage.setItem('llm_ram_override', 'true');
+    asMock(API.llm.getHardwareInfo).mockResolvedValue(hw());
+    await syncLlmState();
+    expect(API.llm.setRamOverride).toHaveBeenCalledWith(true);
+    expect(localStorage.getItem('llm_ram_override')).toBeNull();
+    vi.clearAllMocks();
+    await syncLlmState();
+    expect(API.llm.setRamOverride).not.toHaveBeenCalled();
   });
 
   it('the database preference wins over the hardware recommendation (audit B-3)', async () => {

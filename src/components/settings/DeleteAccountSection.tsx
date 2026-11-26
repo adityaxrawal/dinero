@@ -160,7 +160,7 @@ export default function DeleteAccountSection() {
     if (resetConfirmText !== RESET_CONFIRM_PHRASE) return;
     setIsResetting(true);
     try {
-      await API.dev.resetDatabase();
+      await API.db.deleteAccount();
       window.location.reload();
     } catch (e) {
       if (e === 'DEV_RESTART_REQUIRED') {

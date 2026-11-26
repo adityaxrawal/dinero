@@ -3,7 +3,7 @@
 // their own specs; none of them render this container.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import Onboarding from '@/pages/Onboarding';
+import Onboarding from '@/routes/onboarding/SetupSteps';
 
 const navigate = vi.fn();
 const setStep = vi.fn();

@@ -143,6 +143,18 @@ pub fn delete_transaction(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Undoes a soft delete of a manually entered transaction (audit F12-1).
+/// Returns whether a row was restored; only manual rows can be deleted, so
+/// only those are restored.
+pub fn restore_transaction(conn: &Connection, id: &str) -> Result<bool> {
+    let count = conn.execute(
+        "UPDATE transactions SET is_deleted = 0, updated_at = CURRENT_TIMESTAMP \
+         WHERE id = ?1 AND is_deleted = 1 AND source_mix = 'manual'",
+        params![id],
+    )?;
+    Ok(count == 1)
+}
+
 /// One page of the ledger, newest first, excluding deleted rows.
 pub fn get_paginated_transactions(
     conn: &Connection,

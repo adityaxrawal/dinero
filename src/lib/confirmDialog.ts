@@ -25,12 +25,3 @@ export async function confirmAction(message: string, title: string): Promise<boo
   }
 }
 
-/**
- * Standard confirmation for deleting a transaction.
- *
- * Wrapped as its own function so the wording stays identical everywhere the
- * deletion can be triggered from.
- */
-export async function confirmDeleteTransaction(): Promise<boolean> {
-  return confirmAction('Delete this transaction? This cannot be undone.', 'Delete Transaction');
-}

@@ -580,7 +580,7 @@ const AUTHORED: WorkflowDef[] = [
           { label: 'grace exhausted', detail: 'Grace → Locked' },
           {
             label: 'clock rollback > 1h',
-            detail: '→ Locked with ClockSkewDetected + license_clock_skew event',
+            detail: '→ Locked with ClockSkewDetected; system_warning banner + license_state_changed',
           },
         ],
       },

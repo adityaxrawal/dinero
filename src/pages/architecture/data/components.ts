@@ -77,7 +77,7 @@ const CORE: ComponentDef[] = [
     sources: [
       'src/routes/onboarding/OnboardingFlow.tsx',
       'src/routes/onboarding/NetworkDisclosureScreen.tsx',
-      'src/pages/Onboarding.tsx',
+      'src/routes/onboarding/SetupSteps.tsx',
     ],
     apiSurface: [
       'recordConsentEvent',
@@ -964,7 +964,7 @@ const INFRA: ComponentDef[] = [
     responsibilities: [
       '6h validation tick',
       'Offline grace handling',
-      'Clock-skew detection + license_clock_skew event',
+      'Clock-skew detection (system_warning banner + license_state_changed)',
     ],
     technologies: ['reqwest', 'license_state'],
     inputs: ['license_state', 'Backend /license/validate'],

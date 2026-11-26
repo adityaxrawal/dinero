@@ -68,6 +68,7 @@ describe('LocalLlmSettings', () => {
       cpu_cores: 8,
       recommended_slots: 4,
       recommended_model_id: null,
+      ram_override: false,
     });
     vi.mocked(API.llm.setParallelSlots).mockResolvedValue(4);
   });
@@ -214,6 +215,7 @@ describe('LocalLlmSettings', () => {
       cpu_cores: 10,
       recommended_slots: 5,
       recommended_model_id: 'gemma4_12b',
+      ram_override: false,
     });
     vi.mocked(API.llm.setParallelSlots).mockResolvedValue(5);
 
@@ -254,6 +256,7 @@ describe('LocalLlmSettings', () => {
       cpu_cores: 4,
       recommended_slots: 1,
       recommended_model_id: 'gemma4_e4b',
+      ram_override: false,
     });
     vi.mocked(API.llm.setParallelSlots).mockResolvedValue(1);
 
@@ -290,6 +293,7 @@ describe('LocalLlmSettings', () => {
       cpu_cores: 4,
       recommended_slots: 1,
       recommended_model_id: 'gemma4_e4b',
+      ram_override: false,
     });
     vi.mocked(API.llm.setParallelSlots).mockResolvedValue(1);
 
@@ -310,6 +314,7 @@ describe('LocalLlmSettings', () => {
       cpu_cores: 4,
       recommended_slots: 1,
       recommended_model_id: 'gemma4_e4b',
+      ram_override: false,
     });
     vi.mocked(API.llm.setParallelSlots).mockResolvedValue(1);
 
@@ -328,6 +333,7 @@ describe('LocalLlmSettings', () => {
       cpu_cores: 4,
       recommended_slots: 1,
       recommended_model_id: 'gemma4_e4b',
+      ram_override: false,
     });
     vi.mocked(API.llm.setParallelSlots).mockResolvedValue(1);
 

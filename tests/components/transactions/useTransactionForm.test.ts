@@ -7,7 +7,7 @@ const updateMutate = vi.fn();
 const addTagMutate = vi.fn();
 const removeTagMutate = vi.fn();
 const softDeleteMutate = vi.fn();
-const confirmDeleteTransaction = vi.fn();
+const restore = vi.fn<(id: string) => Promise<string>>(() => Promise.resolve('restored'));
 
 let detail: unknown;
 let tags: string[] = [];
@@ -40,9 +40,7 @@ vi.mock('@/hooks/mutations/useRemoveTransactionTag', () => ({
 vi.mock('@/hooks/mutations/useSoftDeleteTransaction', () => ({
   useSoftDeleteTransaction: () => ({ mutate: softDeleteMutate, isPending: false }),
 }));
-vi.mock('@/lib/confirmDialog', () => ({
-  confirmDeleteTransaction: () => confirmDeleteTransaction(),
-}));
+vi.mock('@/lib/ipc', () => ({ API: { transactions: { restore: (id: string) => restore(id) } } }));
 
 const transaction = (over = {}) => ({
   id: 'tx1',
@@ -344,27 +342,28 @@ describe('tags', () => {
 });
 
 describe('handleDelete', () => {
-  it('asks for confirmation before deleting', async () => {
-    confirmDeleteTransaction.mockResolvedValue(false);
-    const { result } = setup();
-    await act(async () => result.current.handleDelete());
-    expect(confirmDeleteTransaction).toHaveBeenCalled();
-    expect(softDeleteMutate).not.toHaveBeenCalled();
-  });
-
   it('deletes and closes the panel on success', async () => {
-    confirmDeleteTransaction.mockResolvedValue(true);
     const onClose = vi.fn();
     const { result } = setup('tx1', onClose);
     await act(async () => result.current.handleDelete());
     await waitFor(() => expect(softDeleteMutate).toHaveBeenCalledWith('tx1', expect.anything()));
     act(() => softDeleteMutate.mock.calls[0][1].onSuccess());
-    expect(toast).toHaveBeenCalledWith({ title: 'Transaction deleted' });
+    expect(toast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Transaction deleted', actionLabel: 'Undo' })
+    );
     expect(onClose).toHaveBeenCalled();
   });
 
+  it('offers Undo, which restores the soft-deleted row (audit F12-1)', async () => {
+    const { result } = setup('tx1');
+    await act(async () => result.current.handleDelete());
+    act(() => softDeleteMutate.mock.calls[0][1].onSuccess());
+    const { onAction } = toast.mock.calls.at(-1)![0] as { onAction: () => void };
+    act(() => onAction());
+    expect(restore).toHaveBeenCalledWith('tx1');
+  });
+
   it('survives having no onClose callback', async () => {
-    confirmDeleteTransaction.mockResolvedValue(true);
     const { result } = setup();
     await act(async () => result.current.handleDelete());
     await waitFor(() => expect(softDeleteMutate).toHaveBeenCalled());
@@ -372,7 +371,6 @@ describe('handleDelete', () => {
   });
 
   it('explains that only manual transactions are deletable', async () => {
-    confirmDeleteTransaction.mockResolvedValue(true);
     const { result } = setup();
     await act(async () => result.current.handleDelete());
     await waitFor(() => expect(softDeleteMutate).toHaveBeenCalled());
@@ -388,6 +386,6 @@ describe('handleDelete', () => {
   it('does nothing without a transaction id', async () => {
     const { result } = setupWithoutId();
     await act(async () => result.current.handleDelete());
-    expect(confirmDeleteTransaction).not.toHaveBeenCalled();
+    expect(softDeleteMutate).not.toHaveBeenCalled();
   });
 });

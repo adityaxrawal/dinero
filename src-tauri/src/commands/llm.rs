@@ -198,6 +198,8 @@ pub struct HardwareRecommendation {
     pub cpu_cores: usize,
     pub recommended_slots: usize,
     pub recommended_model_id: Option<String>,
+    /// The user's "run despite low RAM" choice (audit F7-5).
+    pub ram_override: bool,
 }
 
 #[tauri::command]
@@ -243,7 +245,34 @@ pub async fn llm_get_hardware_info(
             model_size_gb,
         ),
         recommended_model_id: crate::startup::recommend_model_id(hw.total_ram_gb),
+        ram_override: app
+            .state::<crate::startup::LlmRamOverride>()
+            .0
+            .load(std::sync::atomic::Ordering::Relaxed),
     })
+}
+
+#[tauri::command]
+/// Records whether to run local AI despite this Mac's RAM (audit F7-5). The
+/// readiness checks (`startup::llm_ready`) read it, so it lives here rather
+/// than in frontend storage.
+pub async fn llm_set_ram_override(
+    app: tauri::AppHandle,
+    pool: State<'_, deadpool_sqlite::Pool>,
+    allow: bool,
+) -> Result<(), crate::error::AppError> {
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(move |c| crate::db::local_profile::set_llm_ram_override(c, allow))
+        .await
+        .map_err(|e| crate::error::AppError::Internal(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    app.state::<crate::startup::LlmRamOverride>()
+        .0
+        .store(allow, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
 }
 
 #[tauri::command]

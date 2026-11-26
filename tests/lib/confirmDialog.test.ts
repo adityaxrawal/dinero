@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { confirmAction, confirmDeleteTransaction } from '@/lib/confirmDialog';
+import { confirmAction } from '@/lib/confirmDialog';
 
 const ask = vi.fn();
 vi.mock('@tauri-apps/plugin-dialog', () => ({ ask: (...a: unknown[]) => ask(...a) }));
@@ -33,15 +33,5 @@ describe('confirmAction', () => {
     const spy = vi.spyOn(window, 'confirm').mockReturnValue(false);
     expect(await confirmAction('Really?', 'Confirm')).toBe(false);
     spy.mockRestore();
-  });
-});
-
-describe('confirmDeleteTransaction', () => {
-  it('warns that the delete cannot be undone', async () => {
-    await confirmDeleteTransaction();
-    expect(ask).toHaveBeenCalledWith(
-      expect.stringContaining('cannot be undone'),
-      expect.objectContaining({ title: 'Delete Transaction' })
-    );
   });
 });

@@ -3238,6 +3238,39 @@ pub async fn transactions_delete(
     Ok("deleted".to_string())
 }
 
+/// Undoes a transaction delete from the "Transaction deleted" toast (audit
+/// F12-1: the delete is soft, but the copy used to say it could not be undone).
+#[tauri::command]
+pub async fn transactions_restore(
+    transaction_id: String,
+    pool: tauri::State<'_, deadpool_sqlite::Pool>,
+    app_handle: tauri::AppHandle,
+) -> Result<String, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("transaction_id", &transaction_id)?;
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    let id = transaction_id.clone();
+    let restored = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+        .interact(move |c| crate::db::transactions::restore_transaction(c, &id))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    if !restored {
+        return Err(crate::error::AppError::NotFound(
+            "That transaction can no longer be restored.".to_string(),
+        ));
+    }
+    // Ledger, dashboard and instrument totals refresh on this event.
+    let _ = crate::ipc::events::emit_event(
+        &app_handle,
+        crate::ipc::events::AppEvent::TransactionCreated,
+        serde_json::json!({ "transaction_id": transaction_id }),
+    );
+    Ok("restored".to_string())
+}
+
 #[tauri::command]
 pub fn check_system_ram() -> Result<f64, crate::error::AppError> {
     use sysinfo::System;
@@ -3310,6 +3343,7 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         transactions_create,
         transactions_update,
         transactions_delete,
+        transactions_restore,
         transactions_get,
         transactions_add_tag,
         transactions_remove_tag,
@@ -3387,6 +3421,7 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         llm::llm_set_active_model,
         llm::llm_get_hardware_info,
         llm::llm_set_parallel_slots,
+        llm::llm_set_ram_override,
         merchant_cleanup::merchant_cleanup_preview,
         merchant_cleanup::merchant_cleanup_start,
         merchant_cleanup::merchant_cleanup_cancel,
@@ -3644,6 +3679,7 @@ mod tests {
             ("release_readiness_capture_snapshot", "consent and diagnostics records, not financial data"),
             ("settings_dismiss_system_warning", "consent and diagnostics records, not financial data"),
             ("llm_set_active_model", "app/machine preference, not ledger data"),
+            ("llm_set_ram_override", "app/machine preference, not ledger data"),
             ("llm_set_parallel_slots", "app/machine preference, not ledger data"),
             ("llm_download_model", "app/machine preference, not ledger data"),
             ("llm_delete_model", "app/machine preference, not ledger data"),

@@ -1,11 +1,16 @@
 // Activating a model heavier than this Mac can host is the one action here
 // that can make the app unusable, so the RAM guard is pinned in all branches.
+// The override is a backend setting and prompts are in-app (audit F7-5).
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import { useLlmModels } from '@/components/settings/localLlm/useLlmModels';
 import type { LlmModelInfo } from '@/lib/ipc';
 import { API } from '@/lib/ipc';
 
+const confirmAction = vi.fn();
+const toast = vi.fn();
+vi.mock('@/lib/confirmDialog', () => ({ confirmAction: (...a: unknown[]) => confirmAction(...a) }));
+vi.mock('@/hooks/use-toast', () => ({ toast: (...a: unknown[]) => toast(...a) }));
 vi.mock('@/hooks/useIpcListen', () => ({ useIpcListen: vi.fn() }));
 vi.mock('@/lib/ipc', () => ({
   API: {
@@ -16,11 +21,11 @@ vi.mock('@/lib/ipc', () => ({
       getHardwareInfo: vi.fn(),
       setParallelSlots: vi.fn(),
       setActiveModel: vi.fn(),
+      setRamOverride: vi.fn(),
       downloadModel: vi.fn(),
       cancelDownload: vi.fn(),
       deleteModel: vi.fn(),
     },
-    dev: { checkSystemRam: vi.fn() },
   },
 }));
 
@@ -46,21 +51,23 @@ beforeEach(() => {
   asMock(API.llm.getAvailableModels).mockResolvedValue([HEAVY]);
   asMock(API.llm.getDownloadedModels).mockResolvedValue(['large']);
   asMock(API.llm.getActiveModel).mockResolvedValue('');
+  hardware({});
+  asMock(API.llm.setParallelSlots).mockResolvedValue(undefined);
+  asMock(API.llm.setActiveModel).mockResolvedValue(undefined);
+  asMock(API.llm.setRamOverride).mockResolvedValue(undefined);
+  confirmAction.mockResolvedValue(false);
+});
+
+function hardware(over: { ram_gb?: number; ram_override?: boolean }) {
   asMock(API.llm.getHardwareInfo).mockResolvedValue({
     ram_gb: 16,
     cpu_cores: 8,
     recommended_slots: 4,
     recommended_model_id: 'large',
+    ram_override: false,
+    ...over,
   });
-  asMock(API.llm.setParallelSlots).mockResolvedValue(undefined);
-  asMock(API.llm.setActiveModel).mockResolvedValue(undefined);
-  asMock(API.dev.checkSystemRam).mockResolvedValue(16);
-  vi.stubGlobal('alert', vi.fn());
-  vi.stubGlobal(
-    'confirm',
-    vi.fn(() => false)
-  );
-});
+}
 
 async function setup() {
   const hook = renderHook(() => useLlmModels(onHardware));
@@ -75,17 +82,17 @@ describe('useLlmModels.setActive', () => {
     await act(async () => {
       await result.current.setActive(HEAVY);
     });
-    expect(alert).toHaveBeenCalledWith('You need to download this model first.');
+    expect(toast).toHaveBeenCalledWith({ title: 'You need to download this model first.' });
     expect(API.llm.setActiveModel).not.toHaveBeenCalled();
   });
 
   it('activates without warning when there is enough RAM', async () => {
-    asMock(API.dev.checkSystemRam).mockResolvedValue(64);
+    hardware({ ram_gb: 64 });
     const { result } = await setup();
     await act(async () => {
       await result.current.setActive(HEAVY);
     });
-    expect(confirm).not.toHaveBeenCalled();
+    expect(confirmAction).not.toHaveBeenCalled();
     expect(API.llm.setActiveModel).toHaveBeenCalledWith('large');
   });
 
@@ -94,37 +101,36 @@ describe('useLlmModels.setActive', () => {
     await act(async () => {
       await result.current.setActive(HEAVY);
     });
-    expect(confirm).toHaveBeenCalled();
+    expect(confirmAction).toHaveBeenCalled();
     expect(API.llm.setActiveModel).not.toHaveBeenCalled();
+    expect(API.llm.setRamOverride).not.toHaveBeenCalled();
   });
 
-  it('activates and records an override when the user accepts', async () => {
-    vi.stubGlobal(
-      'confirm',
-      vi.fn(() => true)
-    );
+  it('activates and records the override in the backend when the user accepts', async () => {
+    confirmAction.mockResolvedValue(true);
     const { result } = await setup();
     await act(async () => {
       await result.current.setActive(HEAVY);
     });
     expect(API.llm.setActiveModel).toHaveBeenCalledWith('large');
-    expect(localStorage.getItem('llm_ram_override')).toBe('true');
+    expect(API.llm.setRamOverride).toHaveBeenCalledWith(true);
+    expect(localStorage.getItem('llm_ram_override')).toBeNull();
   });
 
   it('skips the warning entirely once an override is stored', async () => {
-    localStorage.setItem('llm_ram_override', 'true');
+    hardware({ ram_override: true });
     const { result } = await setup();
     await act(async () => {
       await result.current.setActive(HEAVY);
     });
-    expect(confirm).not.toHaveBeenCalled();
+    expect(confirmAction).not.toHaveBeenCalled();
     expect(API.llm.setActiveModel).toHaveBeenCalledWith('large');
   });
 
-  it('does not block the user when the RAM probe itself fails', async () => {
-    asMock(API.dev.checkSystemRam).mockRejectedValue(new Error('no sysinfo'));
-    vi.spyOn(console, 'error').mockImplementation(() => {});
+  it('does not block the user when the hardware probe itself fails', async () => {
     const { result } = await setup();
+    asMock(API.llm.getHardwareInfo).mockRejectedValue(new Error('no sysinfo'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
     await act(async () => {
       await result.current.setActive(HEAVY);
     });
@@ -132,12 +138,14 @@ describe('useLlmModels.setActive', () => {
   });
 
   it('reports a failed activation instead of silently doing nothing', async () => {
-    asMock(API.dev.checkSystemRam).mockResolvedValue(64);
+    hardware({ ram_gb: 64 });
     asMock(API.llm.setActiveModel).mockRejectedValue(new Error('sidecar down'));
     const { result } = await setup();
     await act(async () => {
       await result.current.setActive(HEAVY);
     });
-    expect(alert).toHaveBeenCalledWith(expect.stringContaining('Failed to set active model'));
+    expect(toast).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Failed to set active model', variant: 'destructive' })
+    );
   });
 });

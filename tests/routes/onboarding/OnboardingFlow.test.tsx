@@ -20,7 +20,7 @@ vi.mock('@/routes/onboarding/WelcomeScreen', () => ({
     <button onClick={onContinue}>welcome</button>
   ),
 }));
-vi.mock('@/pages/Onboarding', () => ({ default: () => <div data-testid="setup" /> }));
+vi.mock('@/routes/onboarding/SetupSteps', () => ({ default: () => <div data-testid="setup" /> }));
 
 const continueDisclosure = () =>
   fireEvent.click(screen.getByRole('button', { name: /continue past the network disclosure/i }));

@@ -463,6 +463,16 @@ pub fn run() {
             // from any Tauri command handler through the app handle.
             let pool_clone = pool.clone();
             crate::network_client::set_audit_pool(pool.clone());
+            let ram_override = tauri::async_runtime::block_on(async {
+                let conn = pool.get().await.ok()?;
+                conn.interact(|c| crate::db::local_profile::get_llm_ram_override(c))
+                    .await
+                    .ok()?
+                    .ok()
+            });
+            app.state::<crate::startup::LlmRamOverride>()
+                .0
+                .store(ram_override.unwrap_or(false), std::sync::atomic::Ordering::Relaxed);
             app.manage(pool);
 
             app.manage(crate::security::incident_response::IncidentMonitor::default());

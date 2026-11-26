@@ -44,6 +44,16 @@ mod tests {
     }
 
     #[test]
+    fn llm_ram_override_defaults_off_and_persists() {
+        let conn = setup_db();
+        conn.execute("INSERT OR IGNORE INTO local_profile (id) VALUES (1)", [])
+            .unwrap();
+        assert!(!local_profile::get_llm_ram_override(&conn).unwrap());
+        local_profile::set_llm_ram_override(&conn, true).unwrap();
+        assert!(local_profile::get_llm_ram_override(&conn).unwrap());
+    }
+
+    #[test]
     fn test_local_profile_update_success() {
         let conn = setup_db();
         let profile = LocalProfileRow {
@@ -789,6 +799,14 @@ mod tests {
         assert!(transactions::get_transaction(&conn, "tx_1")
             .unwrap()
             .is_none());
+
+        // Undo (audit F12-1): only a manual row comes back, and only once.
+        conn.execute("UPDATE transactions SET source_mix = 'email_only' WHERE id = 'tx_1'", []).unwrap();
+        assert!(!transactions::restore_transaction(&conn, "tx_1").unwrap());
+        conn.execute("UPDATE transactions SET source_mix = 'manual' WHERE id = 'tx_1'", []).unwrap();
+        assert!(transactions::restore_transaction(&conn, "tx_1").unwrap());
+        assert!(transactions::get_transaction(&conn, "tx_1").unwrap().is_some());
+        assert!(!transactions::restore_transaction(&conn, "tx_1").unwrap());
     }
 
     #[test]

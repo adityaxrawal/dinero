@@ -6,15 +6,15 @@
 export const COUNTS = {
   /** Base tables after all migrations (excluding the FTS5 index and its shadow tables). */
   tables: 46,
-  migrations: 80,
+  migrations: 81,
   triggers: 17,
   /** Entries in capabilities/app-commands.json (generated from generate_handler!). */
-  commands: 148,
+  commands: 150,
   debugCommands: 8,
   /** Commands that call assert_write_allowed (every other one is on UNGATED with a reason). */
-  gatedCommands: 49,
+  gatedCommands: 50,
   dbSourceFiles: 63,
-  appEvents: 29,
+  appEvents: 26,
   /** TanStack query and mutation hook call sites in src/ (excluding tests). */
   queryHooks: 25,
   mutationHooks: 14,

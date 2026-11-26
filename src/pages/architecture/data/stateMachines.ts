@@ -207,7 +207,7 @@ export const STATE_MACHINES: StateMachineDef[] = [
     name: 'Onboarding Phases',
     summary:
       'Un-skippable where required; consent is recorded before any network feature is reachable.',
-    source: 'src/routes/onboarding/OnboardingFlow.tsx + pages/Onboarding.tsx',
+    source: 'src/routes/onboarding/OnboardingFlow.tsx + SetupSteps.tsx',
     notes: [
       'Onboarding completion is local_profile.onboarded_at, written by the preferences save (before Gmail) — a user who quits after preferences lands on Dashboard next launch. Consent is awaited before advancing past disclosure.',
       'Phase state is purely client-side useState; a refresh restarts at welcome.',

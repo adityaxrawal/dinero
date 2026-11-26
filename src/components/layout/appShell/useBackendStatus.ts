@@ -49,7 +49,7 @@ export function useBackendStatus() {
 
     setIsStartingFresh(true);
     try {
-      await API.dev.resetDatabase();
+      await API.db.deleteAccount();
       window.location.reload();
     } catch (err) {
       console.error('Start fresh failed:', err);

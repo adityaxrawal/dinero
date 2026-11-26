@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import WelcomeScreen from './WelcomeScreen';
 import NetworkDisclosureScreen from './NetworkDisclosureScreen';
-import LegacyOnboardingSteps from '@/pages/Onboarding';
+import SetupSteps from './SetupSteps';
 import { API } from '@/lib/ipc';
 import { errorMessage } from '@/lib/utils';
 
@@ -50,5 +50,5 @@ export default function OnboardingFlow() {
       />
     );
   }
-  return <LegacyOnboardingSteps />;
+  return <SetupSteps />;
 }

@@ -583,6 +583,8 @@ export interface LlmHardwareInfo {
   cpu_cores: number;
   recommended_slots: number;
   recommended_model_id: string | null;
+  /** The user chose to run local AI despite this Mac's RAM (audit F7-5). */
+  ram_override: boolean;
 }
 
 export interface MerchantCleanupSample {
@@ -1096,6 +1098,7 @@ export const API = {
     setActiveModel: (modelId: string) => invokeCommand<void>('llm_set_active_model', { modelId }),
     getHardwareInfo: () => invokeCommand<LlmHardwareInfo>('llm_get_hardware_info'),
     setParallelSlots: (slots: number) => invokeCommand<number>('llm_set_parallel_slots', { slots }),
+    setRamOverride: (allow: boolean) => invokeCommand<void>('llm_set_ram_override', { allow }),
   },
   // AI merchant-name normalisation: preview, run, and review its changes.
   merchantCleanup: {

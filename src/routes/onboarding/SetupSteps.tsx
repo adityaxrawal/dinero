@@ -1,18 +1,20 @@
 /**
- * The account-setup phase of onboarding, after welcome and disclosure.
+ * The account-setup phase of onboarding, after welcome and disclosure. It
+ * lives beside the other onboarding screens as the flow's third phase; it
+ * used to be embedded from pages/ as "LegacyOnboardingSteps" (audit F2-2).
  */
 import { useNavigate } from 'react-router-dom';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import GmailConsentScreen from '@/routes/onboarding/GmailConsentScreen';
 import HistoricalScanScreen from '@/routes/onboarding/HistoricalScanScreen';
 import LicenseActivationScreen from '@/routes/onboarding/LicenseActivationScreen';
-import { useOnboardingPreferences } from './onboarding/useOnboardingPreferences';
-import { useOnboardingSteps, TOTAL_STEPS } from './onboarding/useOnboardingSteps';
-import PreferencesStep from './onboarding/PreferencesStep';
-import OnboardingFooter from './onboarding/OnboardingFooter';
+import { useOnboardingPreferences } from '@/pages/onboarding/useOnboardingPreferences';
+import { useOnboardingSteps, TOTAL_STEPS } from '@/pages/onboarding/useOnboardingSteps';
+import PreferencesStep from '@/pages/onboarding/PreferencesStep';
+import OnboardingFooter from '@/pages/onboarding/OnboardingFooter';
 
 /** The account-setup phase of onboarding. */
-export default function Onboarding() {
+export default function SetupSteps() {
   const navigate = useNavigate();
   const prefs = useOnboardingPreferences();
   const flow = useOnboardingSteps({

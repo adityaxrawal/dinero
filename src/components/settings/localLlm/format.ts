@@ -5,7 +5,8 @@
  * where preferences live; a mismatch would silently split them in two.
  */
 export const PARALLEL_SLOTS_STORAGE_KEY = 'llm_parallel_slots';
-export const RAM_OVERRIDE_STORAGE_KEY = 'llm_ram_override';
+/** Where older builds kept the RAM override; now a backend setting (audit F7-5), migrated once at startup. */
+export const LEGACY_RAM_OVERRIDE_STORAGE_KEY = 'llm_ram_override';
 
 /**
  * Bounds a slot count to the range the UI can represent.

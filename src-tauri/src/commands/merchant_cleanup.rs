@@ -191,11 +191,7 @@ pub async fn merchant_cleanup_start(
 ) -> Result<String, AppError> {
     // Rewrites ledger merchant names: an edit (audit E-4).
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
-    let eligible = app
-        .try_state::<crate::startup::LlmEligibility>()
-        .map(|e| e.eligible)
-        .unwrap_or(false);
-    if !eligible {
+    if !crate::startup::llm_ram_eligible(&app) {
         return Err(AppError::Validation(
             "This Mac does not meet the memory requirement for on-device AI, so merchant \
              cleanup cannot run here."

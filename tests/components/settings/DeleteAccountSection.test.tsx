@@ -9,7 +9,7 @@ import DeleteAccountSection from '@/components/settings/DeleteAccountSection';
 import { API } from '@/lib/ipc';
 
 vi.mock('@/lib/ipc', () => ({
-  API: { dev: { resetDatabase: vi.fn() } },
+  API: { db: { deleteAccount: vi.fn() } },
 }));
 
 const asMock = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
@@ -29,7 +29,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.stubGlobal('location', { ...window.location, reload });
   vi.spyOn(window, 'alert').mockImplementation(() => {});
-  asMock(API.dev.resetDatabase).mockResolvedValue('ok');
+  asMock(API.db.deleteAccount).mockResolvedValue('ok');
 });
 
 afterEach(() => {
@@ -76,7 +76,7 @@ describe('DeleteAccountSection', () => {
     fireEvent.change(confirmInput(), { target: { value: 'Delete My Data' } });
     fireEvent.click(deleteButton());
 
-    expect(API.dev.resetDatabase).not.toHaveBeenCalled();
+    expect(API.db.deleteAccount).not.toHaveBeenCalled();
   });
 
   it('wipes and reloads once the exact phrase is confirmed', async () => {
@@ -84,7 +84,7 @@ describe('DeleteAccountSection', () => {
     fireEvent.change(confirmInput(), { target: { value: 'DELETE MY DATA' } });
     fireEvent.click(deleteButton());
 
-    await waitFor(() => expect(API.dev.resetDatabase).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(API.db.deleteAccount).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(reload).toHaveBeenCalledTimes(1));
   });
 
@@ -100,7 +100,7 @@ describe('DeleteAccountSection', () => {
   });
 
   it('explains the manual restart instead of reloading in Tauri dev mode', async () => {
-    asMock(API.dev.resetDatabase).mockRejectedValue('DEV_RESTART_REQUIRED');
+    asMock(API.db.deleteAccount).mockRejectedValue('DEV_RESTART_REQUIRED');
     openToConfirmStep();
     fireEvent.change(confirmInput(), { target: { value: 'DELETE MY DATA' } });
     fireEvent.click(deleteButton());
@@ -117,7 +117,7 @@ describe('DeleteAccountSection', () => {
   });
 
   it('re-arms the delete button after a genuine failure', async () => {
-    asMock(API.dev.resetDatabase).mockRejectedValue(new Error('disk busy'));
+    asMock(API.db.deleteAccount).mockRejectedValue(new Error('disk busy'));
     vi.spyOn(console, 'error').mockImplementation(() => {});
     openToConfirmStep();
     fireEvent.change(confirmInput(), { target: { value: 'DELETE MY DATA' } });
