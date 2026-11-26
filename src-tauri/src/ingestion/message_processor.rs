@@ -615,6 +615,25 @@ impl MessageProcessor {
                     // caller), not "nothing extracted" (audit A-11).
                     .await?;
 
+                    // Balance-only mail is not a transaction: it updates the
+                    // account's balance and stops here (owner decision Q-3; it
+                    // used to be booked as a zero-amount ledger row).
+                    if content_class == ContentClass::BalanceUpdate {
+                        Self::record_balance_update(pool, extracted_data.as_ref()).await;
+                        Self::log_rejection(pool, scan_batcher, message_id, "balance_update").await?;
+                        Self::append_to_scan_log(
+                            app_dir.as_deref(),
+                            message_id,
+                            "REJECTED",
+                            "balance_update",
+                            Some(&full_msg),
+                            Some(body_text),
+                        )
+                        .await;
+                        trace.info("  ↳ ℹ️ Balance update: recorded on the account (if identified), not booked.");
+                        return Ok(None);
+                    }
+
                     if let Some(mut obs) = extracted_data {
                         if obs.event_time.is_none() {
                             obs.event_time = Self::internal_date_fallback(&full_msg.internal_date);
@@ -628,14 +647,6 @@ impl MessageProcessor {
                         }
 
                         Self::clean_merchant(&mut obs, body_text);
-
-                        // After the plausibility filter, not before it. The
-                        // placeholder exists to stand in for a merchant that is
-                        // missing, and a merchant the filter is about to discard
-                        // is missing -- running first meant a garbage merchant
-                        // suppressed the placeholder and then got nulled anyway,
-                        // leaving the observation with no counterparty at all.
-                        Self::apply_balance_update_placeholder(&content_class, &mut obs);
 
                         let confident = crate::extraction::ladder::meets_confidence_floor(obs.confidence_score);
                         if obs.passes_gate3() && confident && !review_only {
@@ -881,31 +892,37 @@ impl MessageProcessor {
         }
     }
 
-    pub(crate) fn apply_balance_update_placeholder(
-        content_class: &ContentClass,
-        obs: &mut crate::extraction::ladder::ExtractionResult,
+    /// Writes a balance-only alert's balance onto the account it names.
+    /// Only an existing account matched on type, issuer and masked number is
+    /// updated; nothing is created or guessed. Best effort: a failure only
+    /// costs the balance, never the scan.
+    pub(crate) async fn record_balance_update(
+        pool: &Pool,
+        extracted: Option<&crate::extraction::ladder::ExtractionResult>,
     ) {
-        if obs.balance_after.is_none() {
+        let Some(obs) = extracted else { return };
+        let (Some(balance), Some(kind), Some(issuer), Some(masked)) = (
+            obs.balance_after,
+            obs.instrument_type.clone(),
+            obs.issuer_name.clone(),
+            obs.masked_identifier.clone(),
+        ) else {
             return;
-        }
-        if *content_class == ContentClass::BalanceUpdate {
-            obs.merchant_raw = None;
-            obs.merchant_label = Some("Balance Update".to_string());
-            obs.amount_minor = Some(0);
-            obs.direction = Some("unknown".to_string());
-            obs.currency = Some("INR".to_string());
-        } else if obs.merchant_raw.is_none() {
-            obs.merchant_label = Some("Balance Update".to_string());
-            if obs.amount_minor.is_none() {
-                obs.amount_minor = Some(0);
-            }
-            if obs.direction.is_none() {
-                obs.direction = Some("unknown".to_string());
-            }
-            if obs.currency.is_none() {
-                obs.currency = Some("INR".to_string());
-            }
-        }
+        };
+        let Ok(conn) = pool.get().await else { return };
+        let _ = conn
+            .interact(move |c| -> anyhow::Result<()> {
+                if let Some(id) =
+                    crate::db::instruments::find_instrument_by_key(c, &kind, &issuer, &masked)?
+                {
+                    c.execute(
+                        "UPDATE instruments SET current_balance = ?2, updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
+                        rusqlite::params![id, balance],
+                    )?;
+                }
+                Ok(())
+            })
+            .await;
     }
 
     // evaluate_mandatory_field_gate has been moved to ExtractionResult::passes_gate3

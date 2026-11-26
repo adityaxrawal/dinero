@@ -510,11 +510,19 @@ pub fn get_trailing_30_day_merchant_average(
     }
 }
 
-const EXCLUDE_OPEN_CLUSTER_MEMBERS: &str = "AND id NOT IN (
+/// Transactions in an unresolved cluster stay out of totals until the user
+/// decides (Doc 12 §8.3). "Review Later" (`deferred`) is still unresolved;
+/// it used to fall back into the totals (audit F10-4).
+pub(crate) const EXCLUDE_OPEN_CLUSTER_MEMBERS: &str = "AND id NOT IN (
                SELECT m.canonical_transaction_id FROM reconciliation_cluster_members m
                JOIN reconciliation_clusters c ON c.id = m.cluster_id
-               WHERE c.cluster_status = 'open' AND m.canonical_transaction_id IS NOT NULL
+               WHERE c.cluster_status IN ('open', 'deferred') AND m.canonical_transaction_id IS NOT NULL
            )";
+
+/// Money moved between the user's own funds (Pot moves, payments to their own
+/// VPA) is neither spending nor income (owner decision 2026-11-26).
+pub(crate) const EXCLUDE_INTERNAL_TRANSFERS: &str =
+    "AND COALESCE(channel, '') != 'internal_transfer'";
 
 /// Total debits so far this calendar month, for budget utilisation.
 pub fn get_global_spend_current_month(
@@ -533,7 +541,8 @@ pub fn get_global_spend_current_month(
          WHERE direction = 'debit' AND is_deleted = 0
            AND best_event_time >= ?1
            AND best_event_time <= ?2
-           {EXCLUDE_OPEN_CLUSTER_MEMBERS}"
+           {EXCLUDE_OPEN_CLUSTER_MEMBERS}
+           {EXCLUDE_INTERNAL_TRANSFERS}"
     ))?;
 
     let sum: rusqlite::Result<i64> =
@@ -562,7 +571,8 @@ pub fn get_global_income_current_month(
          WHERE direction = 'credit' AND is_deleted = 0
            AND best_event_time >= ?1
            AND best_event_time <= ?2
-           {EXCLUDE_OPEN_CLUSTER_MEMBERS}"
+           {EXCLUDE_OPEN_CLUSTER_MEMBERS}
+           {EXCLUDE_INTERNAL_TRANSFERS}"
     ))?;
 
     let sum: rusqlite::Result<i64> =
@@ -618,7 +628,8 @@ pub fn get_category_spend_current_month(
          WHERE category_id = ?1 AND direction = 'debit' AND is_deleted = 0
            AND best_event_time >= ?2
            AND best_event_time <= ?3
-           {EXCLUDE_OPEN_CLUSTER_MEMBERS}"
+           {EXCLUDE_OPEN_CLUSTER_MEMBERS}
+           {EXCLUDE_INTERNAL_TRANSFERS}"
     ))?;
 
     let sum: rusqlite::Result<i64> = stmt.query_row(

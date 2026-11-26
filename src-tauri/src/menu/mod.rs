@@ -15,7 +15,6 @@ pub const MENU_ID_PREFERENCES: &str = "preferences";
 pub const MENU_ID_UPLOAD_STATEMENT: &str = "upload_statement";
 pub const MENU_ID_EXPORT_DATA: &str = "export_data";
 pub const MENU_ID_REFRESH: &str = "refresh";
-pub const MENU_ID_TOGGLE_SIDEBAR: &str = "toggle_sidebar";
 pub const MENU_ID_DOCUMENTATION: &str = "documentation";
 pub const MENU_ID_REPORT_ISSUE: &str = "report_issue";
 pub const MENU_ID_PRIVACY_POLICY: &str = "privacy_policy";
@@ -119,11 +118,6 @@ pub const MENU_SPEC: &[SubmenuSpec] = &[
                 label: "Refresh",
                 accelerator: Some("CmdOrCtrl+R"),
             }),
-            EntrySpec::Custom(ItemSpec {
-                id: MENU_ID_TOGGLE_SIDEBAR,
-                label: "Toggle Sidebar",
-                accelerator: Some("CmdOrCtrl+Alt+S"),
-            }),
         ],
     },
     SubmenuSpec {
@@ -161,7 +155,6 @@ pub const MENU_SPEC: &[SubmenuSpec] = &[
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuAction {
     Navigate(&'static str),
-    ToggleSidebar,
     UploadStatement,
     CheckForUpdates,
     RefreshNow,
@@ -177,7 +170,6 @@ pub fn resolve_menu_action(id: &str) -> Option<MenuAction> {
         MENU_ID_UPLOAD_STATEMENT => Some(MenuAction::UploadStatement),
         MENU_ID_EXPORT_DATA => Some(MenuAction::Navigate("/settings")),
         MENU_ID_REFRESH => Some(MenuAction::RefreshNow),
-        MENU_ID_TOGGLE_SIDEBAR => Some(MenuAction::ToggleSidebar),
         MENU_ID_DOCUMENTATION => Some(MenuAction::OpenUrl(DOCS_URL)),
         MENU_ID_REPORT_ISSUE => Some(MenuAction::ReportIssue),
         MENU_ID_PRIVACY_POLICY => Some(MenuAction::OpenUrl(PRIVACY_POLICY_URL)),
@@ -243,9 +235,6 @@ pub fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
                 AppEvent::MenuNavigate,
                 serde_json::json!({ "route": route }),
             );
-        }
-        MenuAction::ToggleSidebar => {
-            let _ = emit_event(app, AppEvent::MenuToggleSidebar, serde_json::json!({}));
         }
         MenuAction::UploadStatement => {
             let _ = emit_event(
@@ -338,7 +327,9 @@ mod tests {
 
         let view_menu = &MENU_SPEC[3];
         assert!(find_custom(view_menu, MENU_ID_REFRESH).is_some());
-        assert!(find_custom(view_menu, MENU_ID_TOGGLE_SIDEBAR).is_some());
+        // Removed (owner decision): the sidebar hosts the licence lock and
+        // system banners and has no collapsed mode.
+        assert!(find_custom(view_menu, "toggle_sidebar").is_none());
 
         let help_menu = &MENU_SPEC[5];
         assert!(find_custom(help_menu, MENU_ID_DOCUMENTATION).is_some());
@@ -375,15 +366,12 @@ mod tests {
     }
 
     #[test]
-    fn test_refresh_and_toggle_sidebar_resolve_correctly() {
+    fn test_refresh_resolves_correctly() {
         assert_eq!(
             resolve_menu_action(MENU_ID_REFRESH),
             Some(MenuAction::RefreshNow)
         );
-        assert_eq!(
-            resolve_menu_action(MENU_ID_TOGGLE_SIDEBAR),
-            Some(MenuAction::ToggleSidebar)
-        );
+        assert_eq!(resolve_menu_action("toggle_sidebar"), None);
     }
 
     #[test]

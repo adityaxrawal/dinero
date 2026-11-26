@@ -52,6 +52,10 @@ pub struct ExtractionResult {
     pub exchange_rate: Option<f64>,
 
     pub event_time_ambiguous: bool,
+    /// The email gave a date but no time of day; event_time is that date at
+    /// midnight IST, stored with `low` confidence (owner decision 2026-11-26).
+    #[serde(default)]
+    pub event_time_date_only: bool,
     pub date_cross_check_flag: Option<String>,
     pub channel: Option<String>,
     /// Display label for a counterparty the message has no span for
@@ -74,21 +78,18 @@ pub fn meets_confidence_floor(confidence: Option<f64>) -> bool {
     confidence.is_some_and(|c| c >= MIN_LEDGER_CONFIDENCE)
 }
 
-pub fn evaluate_gate3(
-    has_amount: bool,
-    has_entity: bool,
-    has_balance: bool,
-    has_instrument: bool,
-) -> bool {
-    (has_amount && has_entity && has_instrument) || has_balance
+/// FRS 6.2 Gate 3: amount, counterparty and instrument are all required. A
+/// balance no longer bypasses it: balance-only mail updates the account
+/// balance instead of entering the ledger (owner decision Q-3).
+pub fn evaluate_gate3(has_amount: bool, has_entity: bool, has_instrument: bool) -> bool {
+    has_amount && has_entity && has_instrument
 }
 
 impl ExtractionResult {
     /// Gate 3: whether extraction recovered enough to record a transaction.
     ///
-    /// Two ways to pass. Either the full trio of amount, counterparty and instrument
-    /// is present, or the message carries a balance -- a balance-only alert is
-    /// legitimate data even though it describes no transaction.
+    /// Amount, counterparty and instrument must all be present. Balance-only
+    /// alerts never reach this gate: they update the account balance.
     ///
     /// Failing this gate is what routes an observation to the unassigned queue rather
     /// than into the ledger.
@@ -97,12 +98,7 @@ impl ExtractionResult {
             && self.issuer_name.is_some()
             && self.masked_identifier.is_some();
             
-        evaluate_gate3(
-            self.amount_minor.is_some(),
-            self.merchant_raw.is_some(),
-            self.balance_after.is_some(),
-            has_instrument,
-        )
+        evaluate_gate3(self.amount_minor.is_some(), self.merchant_raw.is_some(), has_instrument)
     }
 
     /// Whether this result carries the mandatory fields a transaction needs.
@@ -1040,6 +1036,7 @@ impl ExtractionLayer for BankTemplateLayer {
                     .and_then(|g| caps.get(g))
                     .and_then(|m| parse_date_generic(m.as_str()));
                 result.event_time_ambiguous = parsed_date.as_ref().is_some_and(|d| d.ambiguous);
+                result.event_time_date_only = parsed_date.as_ref().is_some_and(|d| d.date_only);
                 result.event_time = parsed_date.map(|d| d.timestamp).or(p.date_fallback_epoch);
                 result.balance_after = p
                     .balance_group
@@ -1223,6 +1220,7 @@ impl ExtractionLayer for GenericRegexLayer {
             {
                 result.event_time = Some(parsed.timestamp);
                 result.event_time_ambiguous = parsed.ambiguous;
+                result.event_time_date_only = parsed.date_only;
             }
 
             let ref_re = GENERIC_REF_RE.get_or_init(|| Regex::new(r"\b(\d{12})\b").unwrap());
@@ -1283,6 +1281,8 @@ fn normalize_currency(c: &str) -> String {
 pub(crate) struct DateParseResult {
     pub(crate) timestamp: i64,
     pub(crate) ambiguous: bool,
+    /// No time of day in the text; `timestamp` is midnight IST of that date.
+    pub(crate) date_only: bool,
 }
 
 const NUMERIC_AMBIGUOUS_FORMATS: &[&str] =
@@ -1297,12 +1297,15 @@ pub(crate) fn parse_date_generic(s: &str) -> Option<DateParseResult> {
     // A bank-printed time of day is Indian local time; ExtractionResult holds
     // UTC epochs and normalisation converts back to IST. Dropping the time
     // left every such alert at the date-only placeholder (audit P3-I).
-    const DATETIME_FORMATS: &[&str] = &["%a, %b %d, %Y, %I:%M %p", "%b %d, %Y, %I:%M %p"];
+    // "%Y-%m-%d %H:%M:%S" is the shape learning writes back (in IST, see
+    // enqueue_drift_candidates), so it round-trips exactly.
+    const DATETIME_FORMATS: &[&str] =
+        &["%a, %b %d, %Y, %I:%M %p", "%b %d, %Y, %I:%M %p", "%Y-%m-%d %H:%M:%S"];
     for fmt in DATETIME_FORMATS {
         if let Ok(local) = chrono::NaiveDateTime::parse_from_str(s.trim(), fmt) {
             let ist = chrono::FixedOffset::east_opt(5 * 3600 + 30 * 60)?;
             let dt = local.and_local_timezone(ist).single()?;
-            return Some(DateParseResult { timestamp: dt.timestamp(), ambiguous: false });
+            return Some(DateParseResult { timestamp: dt.timestamp(), ambiguous: false, date_only: false });
         }
     }
 
@@ -1329,7 +1332,6 @@ pub(crate) fn parse_date_generic(s: &str) -> Option<DateParseResult> {
         // corrected event_time, so without them a learned date rule can never
         // re-apply.
         "%Y-%m-%d",
-        "%Y-%m-%d %H:%M:%S",
     ];
 
     for fmt in formats {
@@ -1339,9 +1341,14 @@ pub(crate) fn parse_date_generic(s: &str) -> Option<DateParseResult> {
                 let ambiguous = NUMERIC_AMBIGUOUS_FORMATS.contains(&fmt)
                     && naive_date.day() <= 12
                     && naive_date.day() != naive_date.month();
+                // Midnight IST, not UTC: UTC midnight showed as a fake 05:30
+                // (owner decision 2026-11-26). The date is unchanged.
+                let ist = chrono::FixedOffset::east_opt(5 * 3600 + 30 * 60)?;
+                let local = naive_datetime.and_local_timezone(ist).single()?;
                 return Some(DateParseResult {
-                    timestamp: naive_datetime.and_utc().timestamp(),
+                    timestamp: local.timestamp(),
                     ambiguous,
+                    date_only: true,
                 });
             }
         }
@@ -1564,6 +1571,7 @@ impl ExtractionLayer for NlpLayer {
                     if let Some(parsed) = parse_date_generic(dt_str) {
                         result.event_time = Some(parsed.timestamp);
                         result.event_time_ambiguous = parsed.ambiguous;
+                        result.event_time_date_only = parsed.date_only;
                     }
                 }
 
@@ -1576,6 +1584,7 @@ impl ExtractionLayer for NlpLayer {
                     if let Some(parsed) = parse_date_generic(cleaned) {
                         result.event_time = Some(parsed.timestamp);
                         result.event_time_ambiguous = parsed.ambiguous;
+                        result.event_time_date_only = parsed.date_only;
                         break;
                     }
                 }
@@ -1720,10 +1729,16 @@ impl Layer5CrossrefLayer {
             amount_minor: entry.amount_minor,
             currency: entry.currency.clone(),
             direction: entry.direction.clone(),
+            // Midnight IST and date-only, like every other date-only source.
             event_time: entry
                 .transaction_date
                 .and_then(|d| d.and_hms_opt(0, 0, 0))
-                .map(|dt| dt.and_utc().timestamp()),
+                .and_then(|dt| {
+                    dt.and_local_timezone(chrono::FixedOffset::east_opt(5 * 3600 + 30 * 60)?)
+                        .single()
+                })
+                .map(|dt| dt.timestamp()),
+            event_time_date_only: entry.transaction_date.is_some(),
             merchant_raw: entry.merchant_raw.clone(),
             reference_id: entry.reference_id.clone(),
             instrument_type: signals.instrument_type.clone(),
@@ -1910,13 +1925,18 @@ fn apply_date_cross_check(obs: &mut ExtractionResult, internal_date: Option<i64>
         return;
     };
     use chrono::Datelike;
-    let Some(original) = chrono::DateTime::from_timestamp(ts, 0).map(|dt| dt.naive_utc().date())
-    else {
+    // Calendar dates in IST: date-only times are stored as midnight IST, so a
+    // UTC reading would see the previous day.
+    let Some(ist) = chrono::FixedOffset::east_opt(5 * 3600 + 30 * 60) else {
         return;
     };
-    let Some(anchor) =
-        chrono::DateTime::from_timestamp(anchor_ts, 0).map(|dt| dt.naive_utc().date())
-    else {
+    let ist_date = |t: i64| {
+        chrono::DateTime::from_timestamp(t, 0).map(|dt| dt.with_timezone(&ist).date_naive())
+    };
+    let Some(original) = ist_date(ts) else {
+        return;
+    };
+    let Some(anchor) = ist_date(anchor_ts) else {
         return;
     };
     let (day, month, year) = (original.day(), original.month(), original.year());
@@ -1935,7 +1955,8 @@ fn apply_date_cross_check(obs: &mut ExtractionResult, internal_date: Option<i64>
     {
         let Some(swapped_ts) = swapped
             .and_hms_opt(0, 0, 0)
-            .map(|dt| dt.and_utc().timestamp())
+            .and_then(|dt| dt.and_local_timezone(ist).single())
+            .map(|dt| dt.timestamp())
         else {
             return;
         };
@@ -2063,8 +2084,11 @@ pub async fn run_extraction_ladder(
         }
     }
 
-    let anchor_date = internal_date
-        .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0).map(|dt| dt.naive_utc().date()));
+    // The email's calendar date in IST, the timezone bank dates are printed in.
+    let anchor_date = internal_date.and_then(|ts| {
+        let ist = chrono::FixedOffset::east_opt(5 * 3600 + 30 * 60)?;
+        chrono::DateTime::from_timestamp(ts, 0).map(|dt| dt.with_timezone(&ist).date_naive())
+    });
     trace.info("    ↳ 🪜 Executing Extraction Layer: [layer5_statement_crossref]");
     if let Some(mut crossref_result) = Layer5CrossrefLayer
         .extract(pool, bank_name, body, anchor_date)
@@ -2180,10 +2204,13 @@ async fn enqueue_drift_candidates(
         result.reference_id.clone().map(|v| ("reference_id", v)),
         result.balance_after.map(|v| ("balance", v.to_string())),
         result.event_time.and_then(|ts| {
+            // IST wall time, the convention parse_date_generic reads back;
+            // UTC text would move a midnight-IST date to the previous day.
+            let ist = chrono::FixedOffset::east_opt(5 * 3600 + 30 * 60)?;
             chrono::DateTime::from_timestamp(ts, 0).map(|dt| {
                 (
                     "event_time",
-                    dt.naive_utc().format("%Y-%m-%d %H:%M:%S").to_string(),
+                    dt.with_timezone(&ist).naive_local().format("%Y-%m-%d %H:%M:%S").to_string(),
                 )
             })
         }),

@@ -522,6 +522,7 @@ impl LlmEngine {
             if let Some(parsed_dt) = crate::extraction::ladder::parse_date_generic(&dt_str) {
                 result.event_time = Some(parsed_dt.timestamp);
                 result.event_time_ambiguous = parsed_dt.ambiguous;
+                result.event_time_date_only = parsed_dt.date_only;
             }
         }
 

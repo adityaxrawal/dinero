@@ -51,9 +51,19 @@ describe('useUnassignedForm', () => {
     expect(result.current.fields).toMatchObject({
       merchant: 'Google Cloud',
       amount: '31.52',
-      direction: 'debit',
+      direction: '',
       date: '2026-07-29',
     });
+  });
+
+  // The record has no direction: the user must choose rather than get a
+  // silent 'debit' (owner decision Q-9).
+  it('requires a direction choice when the email gave none', () => {
+    const { result } = renderHook(() => useUnassignedForm(record(), onClose));
+    act(() => result.current.setters.setInstrumentId('inst-1'));
+    expect(result.current.canSubmit).toBe(false);
+    act(() => result.current.setters.setDirection('debit'));
+    expect(result.current.canSubmit).toBe(true);
   });
 
   it('reads a credit direction off the record', () => {
@@ -64,7 +74,7 @@ describe('useUnassignedForm', () => {
   });
 
   it('is not submittable until an instrument is chosen', () => {
-    const { result } = renderHook(() => useUnassignedForm(record(), onClose));
+    const { result } = renderHook(() => useUnassignedForm(record({ direction: 'debit' }), onClose));
     expect(result.current.canSubmit).toBe(false);
 
     act(() => result.current.setters.setInstrumentId('inst-1'));
@@ -78,7 +88,7 @@ describe('useUnassignedForm', () => {
   });
 
   it('saves in minor units with a day-start time and a trimmed merchant', () => {
-    const { result } = renderHook(() => useUnassignedForm(record(), onClose));
+    const { result } = renderHook(() => useUnassignedForm(record({ direction: 'debit' }), onClose));
     act(() => {
       result.current.setters.setInstrumentId('inst-1');
       result.current.setters.setMerchant('  Google Cloud  ');
@@ -101,7 +111,7 @@ describe('useUnassignedForm', () => {
   });
 
   it('defaults the currency when the record carries none', () => {
-    const { result } = renderHook(() => useUnassignedForm(record({ currency: null }), onClose));
+    const { result } = renderHook(() => useUnassignedForm(record({ currency: null, direction: 'debit' }), onClose));
     act(() => result.current.setters.setInstrumentId('inst-1'));
     act(() => result.current.handleSave());
     expect(mutate).toHaveBeenCalledWith(

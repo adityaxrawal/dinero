@@ -14,7 +14,7 @@ export const COUNTS = {
   /** Commands that call assert_write_allowed (every other one is on UNGATED with a reason). */
   gatedCommands: 51,
   dbSourceFiles: 61,
-  appEvents: 30,
+  appEvents: 29,
   /** TanStack query and mutation hook call sites in src/ (excluding tests). */
   queryHooks: 21,
   mutationHooks: 14,

@@ -358,6 +358,8 @@ export interface TransactionRecord {
   tags?: string[];
   source_mix: string | null;
   instrument_id: string | null;
+  /** e.g. 'internal_transfer': listed, but excluded from totals. */
+  channel?: string | null;
 }
 
 export interface TransactionsPage {

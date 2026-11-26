@@ -8,6 +8,7 @@ interface RowTransaction {
   merchant: string;
   amount: number;
   direction: string | null;
+  channel?: string | null;
 }
 
 /** One transaction row in the feed. */
@@ -25,12 +26,15 @@ export default function TransactionRow({
   onSelect: () => void;
 }) {
   const isDebit = tx.direction === 'debit';
+  // Own-funds moves are listed but kept out of totals (owner decision).
+  const isInternal = tx.channel === 'internal_transfer';
   const amountTone = isSelected ? 'text-white' : isDebit ? 'text-red-700' : 'text-emerald-700';
   const badgeTone = isSelected
     ? 'bg-white/20 text-white border-white/30'
     : isDebit
       ? 'bg-red-500/10 text-red-700 border-red-500/20'
       : 'bg-emerald-500/10 text-emerald-700 border-emerald-500/20';
+  const tone = isInternal && !isSelected ? 'bg-slate-500/10 text-slate-700 border-slate-500/20' : badgeTone;
 
   return (
     <button
@@ -77,10 +81,10 @@ export default function TransactionRow({
           <span
             className={cn(
               'text-[9px] font-extrabold px-1.5 py-0.2 rounded uppercase tracking-wider border shrink-0',
-              badgeTone
+              tone
             )}
           >
-            {isDebit ? 'DEBIT' : 'CREDIT'}
+            {isInternal ? 'INTERNAL TRANSFER' : isDebit ? 'DEBIT' : 'CREDIT'}
           </span>
         </div>
       </div>

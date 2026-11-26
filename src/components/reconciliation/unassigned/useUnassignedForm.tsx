@@ -22,7 +22,9 @@ export function useUnassignedForm(
 
   const [merchant, setMerchant] = useState('');
   const [amount, setAmount] = useState('');
-  const [direction, setDirection] = useState<'debit' | 'credit'>('debit');
+  // '' until chosen: when the email gave no direction the user must pick one,
+  // instead of a silent 'debit' (owner decision Q-9).
+  const [direction, setDirection] = useState<'debit' | 'credit' | ''>('');
   const [date, setDate] = useState('');
   const [instrumentId, setInstrumentId] = useState('');
   const [referenceId, setReferenceId] = useState('');
@@ -30,7 +32,9 @@ export function useUnassignedForm(
   useEffect(() => {
     setMerchant(record?.merchant_raw ?? '');
     setAmount(record?.amount_minor != null ? (record.amount_minor / 100).toString() : '');
-    setDirection(record?.direction === 'credit' ? 'credit' : 'debit');
+    setDirection(
+      record?.direction === 'credit' || record?.direction === 'debit' ? record.direction : ''
+    );
     setDate(record?.event_time ? record.event_time.slice(0, 10) : '');
     setInstrumentId('');
     setReferenceId('');
@@ -42,7 +46,7 @@ export function useUnassignedForm(
     record?.event_time,
   ]);
 
-  const canSubmit = Boolean(merchant.trim() && amount && date && instrumentId);
+  const canSubmit = Boolean(merchant.trim() && amount && date && instrumentId && direction);
 
   /** Dismisses the entry without resolving it. */
   /** Refreshes everything a review entry's status can change. */
@@ -84,7 +88,7 @@ export function useUnassignedForm(
   };
 
   const handleSave = () => {
-    if (!record || !canSubmit) return;
+    if (!record || !canSubmit || !direction) return;
     resolveManually.mutate(
       {
         id: record.id,

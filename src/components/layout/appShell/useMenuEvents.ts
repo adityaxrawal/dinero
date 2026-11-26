@@ -1,8 +1,8 @@
 /**
  * Acts on the native macOS menu and menu-bar extra (tray). The Rust side only
  * emits `menu_*` events; nothing listened, so these menu items did nothing
- * (audit F20-1). `menu_toggle_sidebar` is deliberately not handled: the sidebar
- * also hosts the licence-lock and system banners, so it has no collapsed mode.
+ * (audit F20-1). There is no Toggle Sidebar item: the sidebar hosts the
+ * licence-lock and system banners, so it has no collapsed mode.
  */
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';

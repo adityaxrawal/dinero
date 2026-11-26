@@ -145,7 +145,6 @@ describe('useResolveClusterActions', () => {
   });
 
   it.each([
-    ['handleRejectCandidates', 'reject_candidate'],
     ['handleKeepSeparate', 'keep_separate'],
     ['handleReviewLater', 'mark_unresolved'],
   ] as const)('%s sends the %s action', async (method, action) => {

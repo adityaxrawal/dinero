@@ -107,9 +107,10 @@ export default function ExtractedDataForm({
               >
                 <SelectTrigger
                   aria-label="Direction"
+                  aria-required="true"
                   className="h-8 bg-white/50 focus:bg-white text-[13px]"
                 >
-                  <SelectValue />
+                  <SelectValue placeholder="Choose debit or credit" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="debit">Debit (spend)</SelectItem>

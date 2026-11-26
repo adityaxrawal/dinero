@@ -55,8 +55,9 @@ export function useResolveClusterActions({ cluster, onSuccess }: UseResolveClust
   const confirmAndResolve = async (
     title: string,
     plainLanguageExplanation: string,
-    action: 'confirm_match' | 'reject_candidate' | 'keep_separate' | 'mark_unresolved',
-    chosenCanonicalId?: string
+    action: 'confirm_match' | 'keep_separate' | 'mark_unresolved',
+    chosenCanonicalId?: string,
+    needsConfirm = true
   ) => {
     // Without an incoming observation there is nothing to resolve. Reported as
     // a toast rather than silently ignored, so a malformed cluster is visible
@@ -70,7 +71,7 @@ export function useResolveClusterActions({ cluster, onSuccess }: UseResolveClust
       return;
     }
 
-    if (!(await confirmAction(plainLanguageExplanation, title))) return;
+    if (needsConfirm && !(await confirmAction(plainLanguageExplanation, title))) return;
 
     // Captured before the mutation runs. The undo handler below closes over
     // this, and by the time undo is clicked the cluster prop may have changed
@@ -154,34 +155,25 @@ export function useResolveClusterActions({ cluster, onSuccess }: UseResolveClust
   };
 
   /** None of the candidates match; record the evidence as its own transaction. */
-  const handleRejectCandidates = () => {
-    confirmAndResolve(
-      'Reject Matches',
-      'None of the existing transactions shown are a match. The new evidence will be recorded as a separate, unmatched transaction.',
-      'reject_candidate'
-    );
-  };
-
-  /**
-   * These are genuinely distinct despite looking alike.
-   *
-   * Differs from rejecting candidates in intent: this asserts the similarity was
-   * coincidental, which is a signal the matcher can learn from.
-   */
+  // "Reject" and "Keep Separate" did the same thing, so they are one action
+  // now (owner decision Q-10).
   const handleKeepSeparate = () => {
     confirmAndResolve(
-      'Keep Separate',
-      'This transaction is genuinely distinct from the ones shown, even though they look similar. It will be kept as its own separate transaction.',
+      'Not the same payment',
+      "These aren't the same payment, even though they look similar. The new one will be kept as its own transaction.",
       'keep_separate'
     );
   };
 
   /** Defer the decision, leaving the cluster in the queue untouched. */
+  // Nothing changes, so no confirmation (owner decision Q-10).
   const handleReviewLater = () => {
     confirmAndResolve(
       'Review Later',
       "This cluster will stay in your queue and won't be resolved yet.",
-      'mark_unresolved'
+      'mark_unresolved',
+      undefined,
+      false
     );
   };
 
@@ -190,7 +182,6 @@ export function useResolveClusterActions({ cluster, onSuccess }: UseResolveClust
     selectedCandidateId,
     setSelectedCandidateId,
     handleConfirmMatch,
-    handleRejectCandidates,
     handleKeepSeparate,
     handleReviewLater,
     isPending: resolveCluster.isPending,

@@ -296,16 +296,16 @@ fn test_gate3_fails_without_instrument_signals() {
 }
 
 #[test]
-fn test_gate3_balance_only_still_bypasses_instrument_requirement() {
-    // Matches existing has_balance-bypass behavior: a balance-only email is
-    // exempt from every other mandatory field, instrument included.
+fn test_gate3_balance_alone_no_longer_passes() {
+    // A balance is not a transaction: balance-only mail updates the account
+    // balance and never reaches the ledger (owner decision Q-3, FRS 6.2).
     let obs = ExtractionResult {
         balance_after: Some(677300),
         event_time: Some(1710000000),
         extraction_method: "test".to_string(),
         ..Default::default()
     };
-    assert!(obs.passes_gate3());
+    assert!(!obs.passes_gate3());
 }
 
 #[test]
@@ -340,29 +340,6 @@ fn test_gate3_fails_merchant_only() {
     );
 }
 
-use crate::ingestion::content_classifier::ContentClass;
-
-/// Regression test for the HDFC "available balance" bug: a `BalanceUpdate`
-/// email where extraction mis-fired a garbage merchant ("real", lifted from
-/// "real-time balance updates") and treated the balance figure as a
-/// transaction amount must have both discarded in favor of the safe
-/// "Balance Update" / 0 placeholder, even though `merchant_raw` was `Some`.
-#[test]
-fn test_balance_update_placeholder_discards_misfired_merchant_and_amount() {
-    let mut obs = ExtractionResult {
-        merchant_raw: Some("real".to_string()),
-        amount_minor: Some(677300),
-        balance_after: Some(677300),
-        extraction_method: "test".to_string(),
-        ..Default::default()
-    };
-    MessageProcessor::apply_balance_update_placeholder(&ContentClass::BalanceUpdate, &mut obs);
-    // The misfired merchant is discarded and the placeholder is a display
-    // label, never an invented merchant_raw (audit A-6).
-    assert_eq!(obs.merchant_raw, None);
-    assert_eq!(obs.merchant_label, Some("Balance Update".to_string()));
-    assert_eq!(obs.amount_minor, Some(0));
-}
 
 /// Audit A-6: a merchant that is not an exact span of the message is dropped;
 /// a real span is kept; Layer 5 (merchant from the statement) is exempt.
@@ -386,27 +363,6 @@ fn merchant_raw_must_be_a_span_of_the_message() {
     assert!(crossref.merchant_raw.is_some());
 }
 
-/// A `TransactionAlert` email that genuinely extracted no merchant but did
-/// resolve a balance keeps the narrower, additive fallback: it must not
-/// clobber a real extracted amount just because a balance was also present.
-#[test]
-fn test_transaction_alert_balance_fallback_only_fills_missing_fields() {
-    let mut obs = ExtractionResult {
-        merchant_raw: None,
-        amount_minor: Some(24543),
-        balance_after: Some(677300),
-        extraction_method: "test".to_string(),
-        ..Default::default()
-    };
-    MessageProcessor::apply_balance_update_placeholder(&ContentClass::TransactionAlert, &mut obs);
-    assert_eq!(obs.merchant_raw, None, "no merchant is invented (audit A-6)");
-    assert_eq!(obs.merchant_label, Some("Balance Update".to_string()));
-    assert_eq!(
-        obs.amount_minor,
-        Some(24543),
-        "a real extracted amount must not be overwritten"
-    );
-}
 
 /// Doc 30 TASK-GMAIL-002: proves the metadata-first cost saving directly —
 /// when Gate 1 rejects based on the metadata-only fetch, no full-body
@@ -1214,4 +1170,55 @@ fn test_scan_log_path_separates_pending_from_rejected() {
     assert!(scan_log_path(Some(dir), "SELECTED").ends_with("email_scan_selected.log"));
     assert!(scan_log_path(Some(dir), "PENDING").ends_with("email_scan_pending.log"));
     assert!(scan_log_path(Some(dir), "REJECTED").ends_with("email_scan_rejected.log"));
+}
+
+/// Balance-only mail updates the matching account's balance and nothing else;
+/// an unidentified account is left alone (owner decision Q-3: never booked,
+/// never guessed).
+#[tokio::test]
+async fn test_balance_update_records_balance_on_the_matching_account_only() {
+    let dir = std::env::temp_dir().join(format!("dinero_test_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let pool = crate::db::init_db(dir.join("t.db")).await.unwrap();
+    pool.get()
+        .await
+        .unwrap()
+        .interact(|c| {
+            c.execute(
+                "INSERT INTO instruments (id, type, issuer_name, masked_identifier) \
+                 VALUES ('acct', 'bank_account', 'HDFC', '4691')",
+                [],
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+    let obs = ExtractionResult {
+        balance_after: Some(1_234_500),
+        instrument_type: Some("bank_account".to_string()),
+        issuer_name: Some("HDFC Bank".to_string()),
+        masked_identifier: Some("4691".to_string()),
+        ..Default::default()
+    };
+    MessageProcessor::record_balance_update(&pool, Some(&obs)).await;
+
+    let (balance, txns): (i64, i64) = pool
+        .get()
+        .await
+        .unwrap()
+        .interact(|c| {
+            c.query_row(
+                "SELECT (SELECT current_balance FROM instruments WHERE id = 'acct'), \
+                        (SELECT COUNT(*) FROM transactions)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+        })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(balance, 1_234_500);
+    assert_eq!(txns, 0, "a balance update must never create a transaction");
+    let _ = std::fs::remove_dir_all(&dir);
 }

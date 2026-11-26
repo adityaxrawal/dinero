@@ -1125,7 +1125,6 @@ pub(crate) async fn apply_layer6_success(
             && crate::extraction::ladder::evaluate_gate3(
                 row.amount_minor.is_some(),
                 row.merchant_raw.is_some(),
-                false, // LLM does not extract balance_after
                 true,
             );
         // Same order of blame as `gate3_failure_reason`, which is what wrote

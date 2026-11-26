@@ -1213,7 +1213,7 @@ const INFRA: ComponentDef[] = [
     outputs: ['Native menu/tray state'],
     sources: ['src-tauri/src/menu/status_item.rs'],
     apiSurface: [
-      'MenuNavigate / MenuToggleSidebar / MenuUploadStatementRequested / MenuCheckForUpdates',
+      'MenuNavigate / MenuUploadStatementRequested / MenuCheckForUpdates',
     ],
     facts: ['30s cadence'],
     confidence: 'verified',

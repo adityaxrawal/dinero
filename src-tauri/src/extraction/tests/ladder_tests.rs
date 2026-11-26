@@ -1392,13 +1392,24 @@
         assert_eq!(detect_channel(&obs, p2p), Some("upi".to_string()));
     }
 
+    /// Midnight IST of a date: how a date-only bank date is stored (owner
+    /// decision 2026-11-26; it used to be UTC midnight, shown as 05:30).
     fn ymd_ts(year: i32, month: u32, day: u32) -> i64 {
         chrono::NaiveDate::from_ymd_opt(year, month, day)
             .unwrap()
             .and_hms_opt(0, 0, 0)
             .unwrap()
-            .and_utc()
+            .and_local_timezone(chrono::FixedOffset::east_opt(5 * 3600 + 30 * 60).unwrap())
+            .unwrap()
             .timestamp()
+    }
+
+    #[test]
+    fn date_only_is_midnight_ist_and_flagged() {
+        let parsed = parse_date_generic("29 Nov 2025").unwrap();
+        assert!(parsed.date_only);
+        assert_eq!(parsed.timestamp, ymd_ts(2025, 11, 29));
+        assert!(!parse_date_generic("Sun, Nov 01, 2026, 02:08 PM").unwrap().date_only);
     }
 
     #[test]

@@ -39,7 +39,6 @@ pub enum AppEvent {
     MerchantCleanupProgress,
     StatementReparseProgress,
     MenuNavigate,
-    MenuToggleSidebar,
     MenuUploadStatementRequested,
     MenuCheckForUpdates,
 }
@@ -78,7 +77,6 @@ impl AppEvent {
             Self::MerchantCleanupProgress => "merchant_cleanup_progress",
             Self::StatementReparseProgress => "statement_reparse_progress",
             Self::MenuNavigate => "menu_navigate",
-            Self::MenuToggleSidebar => "menu_toggle_sidebar",
             Self::MenuUploadStatementRequested => "menu_upload_statement_requested",
             Self::MenuCheckForUpdates => "menu_check_for_updates",
         }

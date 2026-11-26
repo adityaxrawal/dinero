@@ -5,7 +5,6 @@ import type { ReactNode } from 'react';
 import {
   Loader2,
   GitMerge,
-  Ban,
   Clock,
   SplitSquareHorizontal,
   ChevronLeft,
@@ -171,38 +170,26 @@ export function ResolutionActions({
         Review carefully — these actions alter your financial records.
       </p>
 
-      <div className="grid grid-cols-2 gap-3">
-        <ActionWithCaption caption="No changes made. Stays in your queue for another day.">
-          <Button
-            variant="ghost"
-            className="w-full text-xs h-8 text-[#064E3B]/70 hover:bg-[#064E3B]/5 hover:text-[#064E3B]"
-            onClick={actions.handleReviewLater}
-            disabled={isPending}
-          >
-            <Clock className="w-3.5 h-3.5 mr-1.5" /> Later
-          </Button>
-        </ActionWithCaption>
-        <ActionWithCaption caption="Marks this as not a duplicate — stays unmatched.">
-          <Button
-            variant="ghost"
-            className="w-full text-xs h-8 text-red-600/80 hover:bg-red-50 hover:text-red-700"
-            onClick={actions.handleRejectCandidates}
-            disabled={isPending}
-          >
-            <Ban className="w-3.5 h-3.5 mr-1.5" /> Reject
-          </Button>
-        </ActionWithCaption>
-      </div>
+      <ActionWithCaption caption="No changes made. Stays in your queue for another day.">
+        <Button
+          variant="ghost"
+          className="w-full text-xs h-8 text-[#064E3B]/70 hover:bg-[#064E3B]/5 hover:text-[#064E3B]"
+          onClick={actions.handleReviewLater}
+          disabled={isPending}
+        >
+          <Clock className="w-3.5 h-3.5 mr-1.5" /> Later
+        </Button>
+      </ActionWithCaption>
 
       <div className="flex flex-col gap-2">
-        <ActionWithCaption caption="Creates a new transaction — both records stay independent.">
+        <ActionWithCaption caption="Not the same payment — the new one is kept as its own transaction.">
           <Button
             variant="outline"
             className="w-full text-[13px] h-9 border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5 hover:text-[#064E3B] font-semibold"
             onClick={actions.handleKeepSeparate}
             disabled={isPending}
           >
-            Keep Separate
+            Not the same — keep as new
           </Button>
         </ActionWithCaption>
         <ActionWithCaption

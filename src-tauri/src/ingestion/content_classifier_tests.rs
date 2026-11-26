@@ -168,9 +168,9 @@ fn test_bare_paid_without_you_paid_not_treated_as_transaction_verb() {
 
 #[test]
 fn test_balance_subject_does_not_swallow_a_real_debit() {
-    // BalanceUpdate overwrites amount_minor with 0 downstream
-    // (message_processor::apply_balance_update_placeholder), so a debit whose
-    // subject only mentions the balance must still reach TransactionAlert.
+    // BalanceUpdate mail is never booked (it only updates the account
+    // balance), so a debit whose subject only mentions the balance must still
+    // reach TransactionAlert.
     assert_eq!(
         ContentClassifier::classify(
             "Available balance update on your A/c XX7603",

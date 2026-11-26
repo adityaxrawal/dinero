@@ -1853,6 +1853,15 @@ mod tests {
             "an open-cluster member must not be counted"
         );
 
+        // "Review Later" is still unresolved, so it stays out too (audit F10-4).
+        crate::db::reconciliation_clusters::update_status(&conn, "cluster_test_5", "deferred")
+            .unwrap();
+        assert_eq!(
+            crate::db::transactions::get_global_spend_current_month(&conn, &event_time).unwrap(),
+            10.0,
+            "a deferred cluster is still unresolved"
+        );
+
         // Once the cluster is resolved, its member transaction re-joins totals.
         crate::db::reconciliation_clusters::update_status(&conn, "cluster_test_5", "resolved")
             .unwrap();
@@ -1863,6 +1872,23 @@ mod tests {
             crate::db::transactions::count_transactions_current_month(&conn, &event_time).unwrap(),
             2,
             "and must rejoin once the cluster is resolved"
+        );
+
+        // An internal transfer (Pot move, payment to own VPA) is not spending
+        // (owner decision 2026-11-26) but is still listed and counted.
+        conn.execute(
+            "UPDATE transactions SET channel = 'internal_transfer' WHERE id = 'tx_ambiguous_5'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            crate::db::transactions::get_global_spend_current_month(&conn, &event_time).unwrap(),
+            10.0,
+            "internal transfers stay out of spending"
+        );
+        assert_eq!(
+            crate::db::transactions::count_transactions_current_month(&conn, &event_time).unwrap(),
+            2
         );
     }
 

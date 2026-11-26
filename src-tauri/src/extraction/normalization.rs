@@ -90,7 +90,11 @@ pub fn normalize_observation(
         amount_minor,
         currency: Some(currency),
         event_time,
-        event_time_confidence: raw.date_cross_check_flag.clone(),
+        // A cross-check flag wins; otherwise a date with no time is `low`.
+        event_time_confidence: raw
+            .date_cross_check_flag
+            .clone()
+            .or_else(|| raw.event_time_date_only.then(|| "low".to_string())),
         posting_date: None,
         merchant_raw,
         merchant_normalized: raw.merchant_label.clone(),

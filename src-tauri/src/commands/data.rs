@@ -51,7 +51,7 @@ pub fn compute_unassigned_amount_pending_review(
              FROM transactions t
              JOIN reconciliation_cluster_members m ON m.canonical_transaction_id = t.id
              JOIN reconciliation_clusters c ON c.id = m.cluster_id
-             WHERE c.cluster_status = 'open'",
+             WHERE c.cluster_status IN ('open', 'deferred')",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
@@ -88,6 +88,8 @@ pub struct TransactionRecord {
     pub status: String,
     pub source_mix: Option<String>,
     pub instrument_id: Option<String>,
+    /// e.g. `internal_transfer`, so the list can mark own-funds moves.
+    pub channel: Option<String>,
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -314,7 +316,7 @@ pub fn do_fetch_transactions(
 ) -> Result<Vec<TransactionRecord>, String> {
     let (filter_clause, filter_args) = build_filter_clause(filters);
     let sql = format!(
-        "SELECT id, authorization_time, merchant_display_name, amount, category_id, status, source_mix, instrument_id, direction
+        "SELECT id, authorization_time, merchant_display_name, amount, category_id, status, source_mix, instrument_id, direction, channel
          FROM transactions
          WHERE is_deleted = 0{filter_clause}
          ORDER BY authorization_time DESC LIMIT ? OFFSET ?"
@@ -341,6 +343,7 @@ pub fn do_fetch_transactions(
             let source_mix: Option<String> = row.get(6)?;
             let instrument_id: Option<String> = row.get(7)?;
             let direction: Option<String> = row.get(8)?;
+            let channel: Option<String> = row.get(9)?;
 
             Ok(TransactionRecord {
                 id: row.get(0)?,
@@ -352,6 +355,7 @@ pub fn do_fetch_transactions(
                 status: stat.unwrap_or_else(|| "PENDING".to_string()),
                 source_mix,
                 instrument_id,
+                channel,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -391,9 +395,10 @@ pub fn do_transactions_search(
     conn: &Connection,
     query: &str,
     filters: Option<&TransactionListFilters>,
+    limit: i64,
 ) -> Result<Vec<TransactionRecord>, String> {
     let rows =
-        crate::db::transactions::search_transactions_with_filters(conn, query, filters, 50, 0)
+        crate::db::transactions::search_transactions_with_filters(conn, query, filters, limit, 0)
             .map_err(|e| e.to_string())?;
 
     Ok(rows
@@ -415,6 +420,7 @@ pub fn do_transactions_search(
             status: tx.status.unwrap_or_else(|| "PENDING".to_string()),
             source_mix: tx.source_mix,
             instrument_id: tx.instrument_id,
+            channel: tx.channel,
         })
         .collect())
 }
@@ -430,7 +436,7 @@ pub async fn transactions_search(
         .get()
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-    conn.interact(move |c| do_transactions_search(c, &query, filters.as_ref()))
+    conn.interact(move |c| do_transactions_search(c, &query, filters.as_ref(), 50))
         .await
         .map_err(|e| crate::error::AppError::Internal(e.to_string()))?
         .map_err(crate::error::AppError::Db)
@@ -1214,8 +1220,9 @@ pub fn do_fetch_category_spend(
                  AND t.id NOT IN (
                      SELECT m.canonical_transaction_id FROM reconciliation_cluster_members m
                      JOIN reconciliation_clusters cl ON cl.id = m.cluster_id
-                     WHERE cl.cluster_status = 'open' AND m.canonical_transaction_id IS NOT NULL
+                     WHERE cl.cluster_status IN ('open', 'deferred') AND m.canonical_transaction_id IS NOT NULL
                  )
+                 AND COALESCE(t.channel, '') != 'internal_transfer'
              WHERE c.is_deleted = 0
              GROUP BY c.id
              ORDER BY c.name ASC",
@@ -1288,6 +1295,8 @@ pub fn do_fetch_spend_trend(
         }
     };
     let since_str = since.format("%Y-%m-%d %H:%M:%S").to_string();
+    let exclude_clusters = crate::db::transactions::EXCLUDE_OPEN_CLUSTER_MEMBERS;
+    let exclude_transfers = crate::db::transactions::EXCLUDE_INTERNAL_TRANSFERS;
 
     let mut stmt = conn
         .prepare(&format!(
@@ -1295,11 +1304,8 @@ pub fn do_fetch_spend_trend(
              FROM transactions
              WHERE direction = 'debit' AND is_deleted = 0
                AND best_event_time >= ?1
-               AND id NOT IN (
-                   SELECT m.canonical_transaction_id FROM reconciliation_cluster_members m
-                   JOIN reconciliation_clusters c ON c.id = m.cluster_id
-                   WHERE c.cluster_status = 'open' AND m.canonical_transaction_id IS NOT NULL
-               )
+               {exclude_clusters}
+               {exclude_transfers}
              GROUP BY period
              ORDER BY period ASC",
             strftime_fmt
@@ -1353,22 +1359,21 @@ pub fn do_fetch_top_merchants(
         now.date().year(),
         now.date().month()
     );
+    let exclude_clusters = crate::db::transactions::EXCLUDE_OPEN_CLUSTER_MEMBERS;
+    let exclude_transfers = crate::db::transactions::EXCLUDE_INTERNAL_TRANSFERS;
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT merchant_display_name, SUM(amount_minor), COUNT(*)
              FROM transactions
              WHERE direction = 'debit' AND is_deleted = 0
                AND best_event_time >= ?1
                AND merchant_display_name IS NOT NULL
-               AND id NOT IN (
-                   SELECT m.canonical_transaction_id FROM reconciliation_cluster_members m
-                   JOIN reconciliation_clusters c ON c.id = m.cluster_id
-                   WHERE c.cluster_status = 'open' AND m.canonical_transaction_id IS NOT NULL
-               )
+               {exclude_clusters}
+               {exclude_transfers}
              GROUP BY merchant_display_name
              ORDER BY SUM(amount_minor) DESC
-             LIMIT 10",
-        )
+             LIMIT 10"
+        ))
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(params![start_of_month], |row| {
@@ -1665,7 +1670,8 @@ pub async fn transactions_export_csv(
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
     let records = conn
         .interact(move |c| match query.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
-            Some(q) => do_transactions_search(c, q, Some(&filters)),
+            // No cap: the export must include every match, not the first 50.
+            Some(q) => do_transactions_search(c, q, Some(&filters), -1),
             // SQLite: LIMIT -1 means no limit.
             None => do_fetch_transactions(c, &filters, -1, 0),
         })
@@ -3470,6 +3476,7 @@ mod tests {
             status: "CLEARED".to_string(),
             source_mix: Some("email_only".to_string()),
             instrument_id: None,
+            channel: None,
         };
         let csv = transactions_to_csv(&[rec("Flipkart, Bangalore", "debit"), rec("=HYPERLINK(\"x\")", "credit")]);
         let lines: Vec<&str> = csv.lines().collect();
@@ -3674,6 +3681,7 @@ mod tests {
             "CREATE TABLE transactions (
                 id TEXT PRIMARY KEY,
                 instrument_id TEXT,
+                channel TEXT,
                 direction TEXT,
                 authorization_time TEXT,
                 best_event_time TEXT,
@@ -4145,7 +4153,7 @@ mod tests {
         )
         .unwrap();
 
-        let results = do_transactions_search(&conn, "amazon", None).unwrap();
+        let results = do_transactions_search(&conn, "amazon", None, 50).unwrap();
         let ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
 
         assert!(ids.contains(&"tx_amazon"));
