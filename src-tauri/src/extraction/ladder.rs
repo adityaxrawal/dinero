@@ -1031,10 +1031,20 @@ impl ExtractionLayer for BankTemplateLayer {
                     .and_then(|g| caps.get(g))
                     .map(|m| m.as_str().trim().to_string())
                     .filter(|m| !m.is_empty());
-                let parsed_date = p
-                    .date_group
-                    .and_then(|g| caps.get(g))
-                    .and_then(|m| parse_date_generic(m.as_str()));
+                let parsed_date = p.date_group.and_then(|g| caps.get(g)).and_then(|m| {
+                    let date = parse_date_generic(m.as_str())?;
+                    // A template that captures only the date still keeps a
+                    // time printed right after it (audit P3-I), read from
+                    // the email text rather than guessed.
+                    Some(match (date.date_only, time_after(&body[m.end()..])) {
+                        (true, Some(secs)) => DateParseResult {
+                            timestamp: date.timestamp + secs,
+                            ambiguous: date.ambiguous,
+                            date_only: false,
+                        },
+                        _ => date,
+                    })
+                });
                 result.event_time_ambiguous = parsed_date.as_ref().is_some_and(|d| d.ambiguous);
                 result.event_time_date_only = parsed_date.as_ref().is_some_and(|d| d.date_only);
                 result.event_time = parsed_date.map(|d| d.timestamp).or(p.date_fallback_epoch);
@@ -1287,6 +1297,30 @@ pub(crate) struct DateParseResult {
 
 const NUMERIC_AMBIGUOUS_FORMATS: &[&str] =
     &["%d/%m/%Y", "%d-%m-%Y", "%m-%d-%Y", "%d/%m/%y", "%d-%m-%y"];
+
+static TIME_AFTER_DATE_RE: OnceLock<Regex> = OnceLock::new();
+
+/// Seconds after midnight for a time of day printed immediately after a date
+/// ("on 05-11-26 at 14:05", "Nov 01, 2026, 02:08 PM", "05/11/26 18:45:10").
+/// Only the first few characters are considered, so a time elsewhere in the
+/// email is never borrowed.
+fn time_after(rest: &str) -> Option<i64> {
+    let re = TIME_AFTER_DATE_RE.get_or_init(|| {
+        Regex::new(r"(?i)^[\s,]{0,3}(?:at\s+)?(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)?\b").unwrap()
+    });
+    let c = re.captures(rest)?;
+    let mut hour: i64 = c[1].parse().ok()?;
+    let minute: i64 = c[2].parse().ok()?;
+    let second: i64 = c.get(3).map_or(Some(0), |s| s.as_str().parse().ok())?;
+    match c.get(4).map(|m| m.as_str().to_ascii_lowercase()).as_deref() {
+        // An AM/PM time must be 1-12; "13:00 PM" contradicts itself.
+        Some(_) if hour == 0 || hour > 12 => return None,
+        Some("pm") if hour != 12 => hour += 12,
+        Some("am") if hour == 12 => hour = 0,
+        _ => {}
+    }
+    (hour < 24 && minute < 60 && second < 60).then_some(hour * 3600 + minute * 60 + second)
+}
 
 /// Parses a date in whichever format the bank used.
 ///

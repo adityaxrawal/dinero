@@ -274,6 +274,13 @@ export interface StatementCommitSummary {
   skipped: number;
 }
 
+export interface PollStatus {
+  last_checked_at: string | null;
+  next_check_at: string | null;
+  last_check_failed: boolean;
+  paused: boolean;
+}
+
 export interface ActivityEntry {
   id: string;
   kind: 'scan' | 'statement';
@@ -1045,6 +1052,8 @@ export const API = {
   },
   // Historical Gmail scans: start, cancel, and status.
   ingestion: {
+    /** Real last/next Gmail check times (audit F5-6). */
+    pollStatus: () => invokeCommand<PollStatus>('sync_poll_status'),
     /** Polls Gmail for new mail now instead of waiting for the next cycle. */
     checkNow: () => invokeCommand<string>('sync_force_poll_now'),
     startHistoricalScan: (

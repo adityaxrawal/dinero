@@ -4,6 +4,11 @@ import { MemoryRouter } from 'react-router-dom';
 import RecentTransactions from '@/components/dashboard/RecentTransactions';
 import { formatLastSynced } from '@/components/dashboard/formatLastSynced';
 import type { TransactionRecord } from '@/lib/ipc';
+vi.mock('@/hooks/queries/usePollStatus', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/hooks/queries/usePollStatus')>()),
+  usePollStatus: () => ({ data: undefined, refetch: vi.fn() }),
+}));
+
 
 function tx(overrides: Partial<TransactionRecord> = {}): TransactionRecord {
   return {

@@ -256,9 +256,19 @@
                 c.bank
             );
             if let Some((y, m, d)) = c.date {
+                // A time printed right after the date is kept (audit P3-I).
+                const PRINTED: [(&str, i64); 3] = [
+                    ("07-08-2025 19:25:29", 19 * 3600 + 25 * 60 + 29),
+                    ("17-08-2025 00:41:37", 41 * 60 + 37),
+                    ("26-10-2025 at 01:47:41 pm", 13 * 3600 + 47 * 60 + 41),
+                ];
+                let printed_time = PRINTED
+                    .iter()
+                    .find(|(text, _)| c.body.contains(text))
+                    .map_or(0, |(_, secs)| *secs);
                 assert_eq!(
                     got.event_time,
-                    Some(ymd_ts(y, m, d)),
+                    Some(ymd_ts(y, m, d) + printed_time),
                     "{} event_time",
                     c.bank
                 );
@@ -1394,6 +1404,19 @@
 
     /// Midnight IST of a date: how a date-only bank date is stored (owner
     /// decision 2026-11-26; it used to be UTC midnight, shown as 05:30).
+    /// A time printed right after a template's date is kept (audit P3-I);
+    /// a time further away, or an invalid one, is not borrowed.
+    #[test]
+    fn time_printed_after_a_date_is_read_exactly() {
+        assert_eq!(time_after(" at 14:05 via UPI"), Some(14 * 3600 + 5 * 60));
+        assert_eq!(time_after(", 02:08 PM Transaction"), Some(14 * 3600 + 8 * 60));
+        assert_eq!(time_after(" 12:30 am"), Some(30 * 60));
+        assert_eq!(time_after(" 18:45:10"), Some(18 * 3600 + 45 * 60 + 10));
+        assert_eq!(time_after(". Your balance is 12:34"), None, "not right after the date");
+        assert_eq!(time_after(" 25:61"), None);
+        assert_eq!(time_after(" 13:00 PM"), None, "a 24-hour time with PM is contradictory");
+    }
+
     fn ymd_ts(year: i32, month: u32, day: u32) -> i64 {
         chrono::NaiveDate::from_ymd_opt(year, month, day)
             .unwrap()

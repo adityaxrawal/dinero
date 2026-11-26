@@ -58,6 +58,7 @@ async fn intake_attachment<R: Runtime>(
     };
 
     let stmt_id = uuid::Uuid::new_v4().to_string();
+    let issuer_hint = email_meta.as_ref().and_then(|m| m.bank_name.clone());
     let password = match crate::statements::password::resolve_statement_password(
         &stmt_id, &pdf_bytes, filename, msg_id, pool, app, email_meta,
     )
@@ -98,6 +99,7 @@ async fn intake_attachment<R: Runtime>(
         batch_progress: None,
         password,
         origin: "email_scan".to_string(),
+        issuer_hint,
     };
     let st_tx = app.state::<crate::ingestion::queues::QueueHandles>().statement_tx.clone();
     if st_tx.send(job).await.is_err() {

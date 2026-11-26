@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Activity, Plus } from 'lucide-react';
 import type { TransactionRecord } from '@/lib/ipc';
-import { formatLastSynced } from './formatLastSynced';
+import { pollStatusText, usePollStatus } from '@/hooks/queries/usePollStatus';
 import RecentTransactionRow from './RecentTransactionRow';
 
 const HIGHLIGHT_DURATION_MS = 2500;
@@ -20,9 +20,10 @@ interface RecentTransactionsProps {
 /** The dashboard's recent-ledger widget. */
 export default function RecentTransactions({ transactions }: RecentTransactionsProps) {
   const navigate = useNavigate();
+  // Real poll times (audit F5-6); this used to show when the widget mounted.
+  const { data: pollStatus } = usePollStatus();
   const seenIdsRef = useRef<Set<string> | null>(null);
   const [highlightedIds, setHighlightedIds] = useState<Set<string>>(new Set());
-  const [lastSyncedAt, setLastSyncedAt] = useState<Date>(() => new Date());
   const [, forceTick] = useState(0);
 
   useEffect(() => {
@@ -38,7 +39,6 @@ export default function RecentTransactions({ transactions }: RecentTransactionsP
       return;
     }
     setHighlightedIds(new Set(newIds));
-    setLastSyncedAt(new Date());
     const timer = setTimeout(() => setHighlightedIds(new Set()), HIGHLIGHT_DURATION_MS);
     return () => clearTimeout(timer);
   }, [transactions]);
@@ -66,7 +66,7 @@ export default function RecentTransactions({ transactions }: RecentTransactionsP
         style={{ color: 'var(--text-muted)' }}
         data-testid="last-synced-label"
       >
-        Near-real-time · Last synced {formatLastSynced(lastSyncedAt)}
+        Near-real-time · {pollStatusText(pollStatus)}
       </p>
 
       <div className="card-champagne overflow-hidden">

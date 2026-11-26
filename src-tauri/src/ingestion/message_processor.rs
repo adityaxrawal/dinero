@@ -47,6 +47,11 @@ pub struct EmailMetadata {
     /// before it existed still load.
     #[serde(default)]
     pub rfc822_message_id: Option<String>,
+    /// The bank Gate 1 verified this sender as. Used only as a pre-filled hint
+    /// when a statement from this email shows no issuer (audit F8-1/P3-K);
+    /// the user still confirms it.
+    #[serde(default)]
+    pub bank_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -462,6 +467,7 @@ impl MessageProcessor {
             recipient_email,
             recipient_domain,
             rfc822_message_id,
+            bank_name: Some(current_bank_name.clone()),
         };
 
         if let Some(extracted) = extracted_opt {

@@ -9,14 +9,14 @@ export const COUNTS = {
   migrations: 79,
   triggers: 17,
   /** Entries in capabilities/app-commands.json (generated from generate_handler!). */
-  commands: 147,
+  commands: 148,
   debugCommands: 8,
   /** Commands that call assert_write_allowed (every other one is on UNGATED with a reason). */
   gatedCommands: 49,
   dbSourceFiles: 63,
   appEvents: 29,
   /** TanStack query and mutation hook call sites in src/ (excluding tests). */
-  queryHooks: 24,
+  queryHooks: 25,
   mutationHooks: 14,
 } as const;
 

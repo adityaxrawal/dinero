@@ -422,6 +422,7 @@ async fn upload_one_statement(
         batch_progress,
         password: resolved_password,
         origin: "manual_upload".to_string(),
+        issuer_hint: None,
     };
     if queues.statement_tx.send(job).await.is_err() {
         return Err(crate::error::AppError::Unknown(
@@ -503,6 +504,7 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
     password: Option<&str>,
     origin: &str,
     stmt_id: Option<String>,
+    issuer_hint: Option<&str>,
 ) -> anyhow::Result<PipelineOutcome> {
     use crate::statements::{
         duplicate_check::{check_billing_cycle_duplicate, DuplicateCheckResult},
@@ -557,12 +559,14 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
                 delete_orphaned_queued_row(stmt_id.as_deref(), pool).await;
                 let unprocessed_id = uuid::Uuid::new_v4().to_string();
                 let reason = "The bank (issuer) could not be read from this statement.";
+                // The verified Gmail sender's bank is offered as a pre-filled
+                // hint; the card number still comes from the PDF or the user.
                 create_awaiting_instrument_row(
                     &unprocessed_id,
                     file_hash,
                     _filename,
                     password,
-                    None,
+                    issuer_hint,
                     reason,
                     pool,
                 )
@@ -578,6 +582,7 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
                 let payload = serde_json::json!({
                     "statement_id": unprocessed_id,
                     "filename": _filename,
+                    "issuer": issuer_hint,
                     "reason": reason,
                 });
                 events::emit(events::INSTRUMENT_CONFIRMATION_REQUIRED, payload.clone());
@@ -1312,8 +1317,7 @@ pub async fn statements_confirm_instrument(
         Some(confirmed),
         decrypted_password.as_deref(),
         "password_unlock",
-        Some(statement_id.clone()),
-    )
+        Some(statement_id.clone()), None,)
     .await;
 
     match result {
@@ -1467,8 +1471,7 @@ pub async fn statements_submit_password(
                 None,
                 Some(&password),
                 "password_unlock",
-                Some(statement_id.clone()),
-            )
+                Some(statement_id.clone()), None,)
             .await;
 
             match pipeline_result {
@@ -1704,8 +1707,7 @@ async fn retry_one_unprocessed(
         None,
         Some(&password),
         "password_unlock",
-        Some(statement_id.to_string()),
-    )
+        Some(statement_id.to_string()), None,)
     .await;
 
     match pipeline_result {
@@ -3335,6 +3337,7 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         crate::ingestion::historical_scan::scans_failed_count,
         crate::ingestion::historical_scan::scans_retry_failed,
         crate::ingestion::polling::sync_force_poll_now,
+        crate::ingestion::polling::sync_poll_status,
         crate::ingestion::queues::pipeline_status,
         // Debug tooling only exists in debug builds (review M11).
         #[cfg(debug_assertions)]
@@ -3526,6 +3529,7 @@ mod tests {
             ("instrument_rules_list", "read-only query"),
             ("skipped_emails_list", "read-only query"),
             ("activity_list", "read-only query"),
+            ("sync_poll_status", "read-only query"),
             ("check_backend_status", "read-only query"),
             ("check_system_ram", "read-only query"),
             ("auth_get_recovery_phrase", "read-only query"),

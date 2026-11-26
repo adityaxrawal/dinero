@@ -68,6 +68,44 @@ pub(crate) fn jittered(d: Duration) -> Duration {
     Duration::from_secs_f64((d.as_secs_f64() * factor).max(0.0)).min(Duration::from_secs(60))
 }
 
+/// When Gmail was last checked successfully and when the next background
+/// check is due, for the "last checked / next check" line (audit F5-6). The
+/// dashboard used to show the time its own component mounted instead.
+#[derive(Clone, Default, serde::Serialize)]
+pub struct PollStatus {
+    pub last_checked_at: Option<String>,
+    pub next_check_at: Option<String>,
+    pub last_check_failed: bool,
+    pub paused: bool,
+}
+
+fn poll_status() -> &'static std::sync::Mutex<PollStatus> {
+    static CELL: std::sync::OnceLock<std::sync::Mutex<PollStatus>> = std::sync::OnceLock::new();
+    CELL.get_or_init(|| std::sync::Mutex::new(PollStatus::default()))
+}
+
+fn update_poll_status(f: impl FnOnce(&mut PollStatus)) {
+    f(&mut poll_status().lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+}
+
+/// Records the outcome of a finished check.
+pub(crate) fn record_poll_result(ok: bool) {
+    update_poll_status(|s| {
+        if ok {
+            s.last_checked_at = Some(chrono::Utc::now().to_rfc3339());
+        }
+        s.last_check_failed = !ok;
+    });
+}
+
+/// Reports when Gmail was last checked and when the next check is due.
+#[tauri::command]
+pub async fn sync_poll_status() -> Result<PollStatus, crate::error::AppError> {
+    let mut status = poll_status().lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    status.paused = crate::commands::debug::GMAIL_POLL_PAUSED.load(std::sync::atomic::Ordering::Relaxed);
+    Ok(status)
+}
+
 /// The long-running loop that discovers new mail.
 ///
 /// Runs until cancelled at shutdown. Failures back off exponentially with jitter
@@ -84,6 +122,8 @@ pub async fn start_polling_loop<R: tauri::Runtime>(
             .try_state::<crate::lifecycle::launch_agent::PollingIntervalState>()
             .map(|s| s.load_secs())
             .unwrap_or(60);
+        let due = chrono::Utc::now() + chrono::Duration::seconds(interval_secs as i64);
+        update_poll_status(|s| s.next_check_at = Some(due.to_rfc3339()));
         tokio::select! {
             _ = cancel_token.cancelled() => {
                 tracing::info!("Polling loop cancelled.");
@@ -107,6 +147,7 @@ pub async fn start_polling_loop<R: tauri::Runtime>(
                 .await;
                 crate::ingestion::gmail_telemetry::gmail_telemetry()
                     .record_poll_cycle_duration(cycle_start.elapsed());
+                record_poll_result(result.is_ok());
                 if let Err(e) = result {
                     tracing::error!("Error during polling cycle: {}", e);
                 }
@@ -160,13 +201,14 @@ pub async fn sync_force_poll_now<R: tauri::Runtime>(
     }
 
     let pool = pool.inner().clone();
-    poll_all_accounts(
+    let result = poll_all_accounts(
         &app,
         &pool,
         crate::ingestion::gmail_client::GMAIL_API_BASE_URL,
     )
-    .await
-    .map_err(|e| crate::error::AppError::Network(e.to_string()))?;
+    .await;
+    record_poll_result(result.is_ok());
+    result.map_err(|e| crate::error::AppError::Network(e.to_string()))?;
 
     Ok("synced".to_string())
 }

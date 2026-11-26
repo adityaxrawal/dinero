@@ -136,6 +136,7 @@
     "allow-statements-upload",
     "allow-submit-user-feedback",
     "allow-sync-force-poll-now",
+    "allow-sync-poll-status",
     "allow-tags-create",
     "allow-tags-delete",
     "allow-tags-list",

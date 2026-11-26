@@ -32,6 +32,8 @@ pub struct StatementJob {
     pub batch_progress: Option<Arc<BatchProgressTracker>>,
     pub password: Option<String>,
     pub origin: String,
+    /// Verified sender bank, pre-filled if the statement shows no issuer.
+    pub issuer_hint: Option<String>,
 }
 
 pub struct BatchProgressTracker {
@@ -310,6 +312,7 @@ pub async fn recover_queued_statements<R: tauri::Runtime>(
             batch_progress: None,
             password,
             origin: origin.to_string(),
+            issuer_hint: None,
         };
         if tx.send(job).await.is_err() {
             tracing::error!("Statement Queue closed during queued-statement recovery");
@@ -1664,6 +1667,7 @@ fn spawn_statement_dispatcher<R: tauri::Runtime>(
                         job.password.as_deref(),
                         &job.origin,
                         Some(job.stmt_id.clone()),
+                        job.issuer_hint.as_deref(),
                     )
                     .await;
                     drop(bytes);
@@ -3183,6 +3187,7 @@ mod dispatch_tests {
                 recipient_email: None,
                 recipient_domain: None,
                 rfc822_message_id: None,
+                bank_name: None,
             },
         )
         .await

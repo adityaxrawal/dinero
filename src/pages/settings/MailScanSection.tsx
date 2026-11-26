@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
 import { API } from '@/lib/ipc';
 import { getErrorToast } from '@/lib/errorMapping';
+import { pollStatusText, usePollStatus } from '@/hooks/queries/usePollStatus';
 import SectionHeading from '@/components/settings/SectionHeading';
 import { useGlobalState } from '@/lib/GlobalStateContext';
 import ScanRangePicker from './ScanRangePicker';
@@ -19,6 +20,7 @@ export default function MailScanSection() {
     useGlobalState();
   const connectedAccount = connectedAccounts[0] ?? null;
   const { toast } = useToast();
+  const { data: pollStatus, refetch: refetchPollStatus } = usePollStatus();
   const [checking, setChecking] = useState(false);
   // Fetches new mail now rather than at the next background cycle (owner
   // decision Q-11: the command existed with no button).
@@ -28,7 +30,10 @@ export default function MailScanSection() {
       .checkNow()
       .then(() => toast({ title: 'Checked for new emails', description: 'Anything new is being processed.' }))
       .catch((err) => toast({ variant: 'destructive', ...getErrorToast(err) }))
-      .finally(() => setChecking(false));
+      .finally(() => {
+        setChecking(false);
+        refetchPollStatus();
+      });
   };
 
   return (
@@ -47,6 +52,12 @@ export default function MailScanSection() {
         )}
 
         <ScanRangePicker disabled={scanStatus === 'running' || !connectedAccount} />
+
+        {connectedAccount && (
+          <p className="text-[12px] text-emerald-ink/60" role="status">
+            {pollStatusText(pollStatus)}
+          </p>
+        )}
 
         {connectedAccount && (
           <p className="text-[12px] text-emerald-ink/60">

@@ -281,6 +281,7 @@ mod tests {
             recipient_email: Some("aditya@example.com".to_string()),
             recipient_domain: Some("example.com".to_string()),
             rfc822_message_id: None,
+            bank_name: None,
         };
 
         let obs = normalize_observation(

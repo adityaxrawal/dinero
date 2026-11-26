@@ -6,6 +6,11 @@ import MailScanSection from '@/pages/settings/MailScanSection';
 import { useGlobalState } from '@/lib/GlobalStateContext';
 import type { ScanProgressPayload } from '@/lib/ipc';
 import type { ScanStatus } from '@/lib/GlobalStateContext';
+vi.mock('@/hooks/queries/usePollStatus', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/hooks/queries/usePollStatus')>()),
+  usePollStatus: () => ({ data: undefined, refetch: vi.fn() }),
+}));
+
 
 vi.mock('@/lib/GlobalStateContext', () => ({ useGlobalState: vi.fn() }));
 

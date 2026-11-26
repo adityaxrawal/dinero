@@ -133,8 +133,7 @@ async fn test_statement_row_level_exact_match_accuracy_target() {
         None,
         None,
         "manual_upload",
-        None,
-    )
+        None, None,)
     .await
     .expect("stage_parse_pipeline failed on a well-formed statement");
 
@@ -171,8 +170,7 @@ async fn test_statement_row_level_exact_match_accuracy_target() {
             None,
             None,
             "manual_upload",
-            None,
-        )
+            None, None,)
         .await;
         assert!(
             result.is_err(),
@@ -199,8 +197,7 @@ async fn test_password_protected_statement_flow() {
         None,
         None,
         "manual_upload",
-        None,
-    )
+        None, None,)
     .await;
     assert!(
         without_password.is_err(),
@@ -219,8 +216,7 @@ async fn test_password_protected_statement_flow() {
         None,
         Some("TEST1234"),
         "manual_upload",
-        None,
-    )
+        None, None,)
     .await
     .expect("stage_parse_pipeline with the correct password must succeed");
 
@@ -334,8 +330,7 @@ async fn test_statement_overrides_email_where_both_exist() {
         Some(confirmed),
         None,
         "manual_upload",
-        None,
-    )
+        None, None,)
     .await
     .expect("stage_parse_pipeline failed");
     let draft_id = match outcome {
@@ -414,8 +409,7 @@ async fn test_raw_pdf_not_persisted_after_parse() {
         None,
         None,
         "manual_upload",
-        None,
-    )
+        None, None,)
     .await
     .expect("stage_parse_pipeline failed");
     let draft_id = match outcome {
