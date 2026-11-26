@@ -4,6 +4,7 @@
  * Pairs a diagnosis of why attribution failed with the form to resolve it, so the
  * user understands the cause rather than only being asked to fix the symptom.
  */
+import { OUTCOME } from '@/lib/outcomeVocabulary';
 import { X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { UnassignedTransactionRecord } from '@/lib/ipc';
@@ -42,7 +43,7 @@ function InspectorHeader({
     >
       <div className="min-w-0 flex-1 pr-3">
         <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-sm mb-2 inline-block uppercase tracking-wider bg-red-500/10 text-red-700">
-          Action Required
+          {OUTCOME.needsReview}
         </span>
         <p className="text-[15px] font-semibold text-emerald-ink">{title}</p>
       </div>

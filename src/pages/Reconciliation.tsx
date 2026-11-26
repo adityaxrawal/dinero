@@ -4,6 +4,7 @@
  * Two distinct problems share this screen because both are the same kind of task
  * -- something the pipeline could not decide alone and needs a person for.
  */
+import { OUTCOME } from '@/lib/outcomeVocabulary';
 import { useState, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ShieldAlert, HelpCircle, Loader2, CheckCircle2, Layers, RefreshCw } from 'lucide-react';
@@ -142,7 +143,7 @@ function UnassignedListItem({
                 : 'bg-amber-100 text-amber-800 border border-amber-200'
           )}
         >
-          {item.waiting_for_ai ? 'Waiting for AI' : info.issueLabel}
+          {item.waiting_for_ai ? OUTCOME.waitingForAi : info.issueLabel}
         </span>
       </div>
 

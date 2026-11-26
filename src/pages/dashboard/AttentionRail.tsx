@@ -1,6 +1,7 @@
 /**
  * Rail of items needing attention: stale clusters, failed statements, alerts.
  */
+import { OUTCOME, inSentence } from '@/lib/outcomeVocabulary';
 import { useNavigate } from 'react-router-dom';
 import { AlertCircle, AlertTriangle, Calendar, ChevronRight, GitMerge } from 'lucide-react';
 import { classifyBillUrgency } from '@/components/dashboard/classifyBillUrgency';
@@ -103,7 +104,7 @@ export default function AttentionRail({ data }: { data: Data }) {
           <AttentionCard
             icon={<AlertCircle className="w-4 h-4" style={{ color: '#f59e0b' }} />}
             iconBg="rgba(245, 158, 11, 0.12)"
-            title={`${pending.count} Pending Review`}
+            title={`${pending.count} ${inSentence(OUTCOME.needsReview)}`}
             subtitle={`₹${(pending.amount_minor / 100).toLocaleString(undefined, { minimumFractionDigits: 0 })} not yet confirmed`}
             ctaLabel="Review"
             onClick={() => navigate('/reconciliation')}
@@ -119,8 +120,8 @@ export default function AttentionRail({ data }: { data: Data }) {
           <AttentionCard
             icon={<GitMerge className="w-4 h-4" style={{ color: '#064E3B' }} />}
             iconBg="rgba(6,78,59,0.10)"
-            title={`${clusters.length} Unresolved Cluster${clusters.length > 1 ? 's' : ''}`}
-            subtitle="Ambiguous transaction matches"
+            title={`${clusters.length} ${inSentence(OUTCOME.duplicateCheck)}`}
+            subtitle="May already be in your ledger"
             ctaLabel="Resolve"
             onClick={() => navigate('/reconciliation')}
           />

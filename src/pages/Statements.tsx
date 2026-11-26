@@ -1,6 +1,7 @@
 /**
  * Statement management: upload, processing history, and the retry queue.
  */
+import { OUTCOME } from '@/lib/outcomeVocabulary';
 import { useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
@@ -21,7 +22,7 @@ type StatementsSection = 'upload' | 'queue' | 'history';
 
 const SECTIONS = [
   { id: 'upload', label: 'Upload Statements', icon: Upload },
-  { id: 'queue', label: 'Action Needed', icon: AlertTriangle },
+  { id: 'queue', label: OUTCOME.waitingForYou, icon: AlertTriangle },
   { id: 'history', label: 'Processing History', icon: FileSearch },
 ] as const;
 
@@ -65,11 +66,11 @@ export default function Statements() {
           )}
 
           {currentSection === 'queue' && (
-            <section aria-label="Action Needed" className="animate-in fade-in duration-300">
+            <section aria-label={OUTCOME.waitingForYou} className="animate-in fade-in duration-300">
               <SectionHeading
                 icon={AlertTriangle}
                 iconClassName="text-amber-600"
-                title="Action Needed"
+                title={OUTCOME.waitingForYou}
                 description="Statements requiring a password or further attention."
               />
               <UnprocessedItemsQueue

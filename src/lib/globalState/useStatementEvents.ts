@@ -105,7 +105,7 @@ export function useStatementEvents(modals: Modals) {
             pendingPasswordCountRef.current = 0;
             toast({
               title: 'Password Required',
-              description: `${count} statement${count === 1 ? '' : 's'} need${count === 1 ? 's' : ''} a password — check Action Needed.`,
+              description: `${count} statement${count === 1 ? '' : 's'} need${count === 1 ? 's' : ''} a password — see Statements → Waiting for you.`,
             });
           }, 2000);
         }

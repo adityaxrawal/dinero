@@ -101,13 +101,13 @@ describe('HistoricalScanScreen, finished', () => {
     });
     render(<HistoricalScanScreen onDone={onDone} />);
     expect(screen.getByText('Historical scan complete.')).toBeInTheDocument();
-    expect(screen.getByText(/42 transactions and 3 statements/)).toBeInTheDocument();
+    expect(screen.getByText(/42 booked, 3 statements/)).toBeInTheDocument();
   });
 
   it('counts zero rather than blank when a scan found nothing', () => {
     mockState({ scanStatus: 'done', scanProgress: null });
     render(<HistoricalScanScreen onDone={onDone} />);
-    expect(screen.getByText(/0 transactions and 0 statements/)).toBeInTheDocument();
+    expect(screen.getByText(/Checked 0 emails: 0 booked\./)).toBeInTheDocument();
   });
 });
 

@@ -1,6 +1,7 @@
 /**
  * Display helpers shared by the reconciliation screens.
  */
+import { reviewReasonLabel } from '@/lib/outcomeVocabulary';
 import { cleanTextForReader } from '@/components/common/gmailParsing';
 import type { UnassignedTransactionRecord } from '@/lib/ipc';
 
@@ -13,10 +14,6 @@ const BANK_FINGERPRINTS: [pattern: RegExp, name: string][] = [
   [/Kotak/i, 'Kotak Bank'],
 ];
 
-const ISSUE_LABELS: Record<string, string> = {
-  extraction_failed: 'Missing Fields',
-  issuer_name_not_found: 'Unknown Card/Bank',
-};
 
 /** Parses an alert payload, tolerating malformed JSON. */
 export function readAlertPayload(rawJson: unknown, fallbackText: string) {
@@ -85,7 +82,7 @@ export function getUnassignedDisplayInfo(item: UnassignedTransactionRecord) {
     dateStr: item.event_time
       ? new Date(item.event_time).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
       : '',
-    issueLabel: ISSUE_LABELS[item.reason] || 'Action Needed',
+    issueLabel: reviewReasonLabel(item.reason),
     avatarLetter: name.charAt(0).toUpperCase(),
   };
 }

@@ -10,12 +10,12 @@ describe('engineDecisionToast', () => {
   });
 
   it('says when the entry matched an existing transaction', () => {
-    expect(engineDecisionToast('auto_matched_scored').title).toBe('Matched to an existing transaction');
-    expect(engineDecisionToast('auto_matched_exact').title).toBe('Matched to an existing transaction');
+    expect(engineDecisionToast('auto_matched_scored').title).toBe('Matched to existing');
+    expect(engineDecisionToast('auto_matched_exact').title).toBe('Matched to existing');
   });
 
   it('falls back to a plain saved message', () => {
-    expect(engineDecisionToast('new_canonical').title).toBe('Transaction saved');
+    expect(engineDecisionToast('new_canonical').title).toBe('Booked');
   });
 });
 
@@ -23,7 +23,7 @@ describe('statementCommitToast', () => {
   it('lists each outcome and links to the duplicate check', () => {
     const t = statementCommitToast({ new: 12, matched: 3, needs_review: 1, skipped: 2 });
     expect(t.description).toBe(
-      '12 new transactions, 3 matched to existing, 1 needs a duplicate check, 2 already imported.'
+      '12 booked, 3 matched to existing, 1 needs duplicate check, 2 already imported.'
     );
     expect(t.actionTo).toBe('/reconciliation?section=clusters');
   });

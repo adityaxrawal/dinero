@@ -98,7 +98,7 @@ describe('useCreateTransaction', () => {
     expect(result.current.amount).toBe('');
     expect(result.current.direction).toBe('debit');
     expect(invalidateQueries).toHaveBeenCalledTimes(2);
-    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Transaction saved' }));
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Booked' }));
   });
 
   it('keeps the draft open and reports the failure when the create fails', async () => {

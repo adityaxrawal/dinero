@@ -31,6 +31,7 @@ function reasonLabel(reason: string): string {
     Kyc: 'KYC / account notice',
     Noise: 'Not a transaction',
     Unknown: 'Not a transaction',
+    BalanceUpdate: 'Balance update',
   };
   return (kind && KINDS[kind]) || reason;
 }

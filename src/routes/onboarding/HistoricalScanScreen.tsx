@@ -5,6 +5,7 @@ import { Loader2 } from 'lucide-react';
 import { useGlobalState } from '@/lib/GlobalStateContext';
 import type { ScanProgressPayload } from '@/lib/ipc';
 import { scanProgressPercent } from './scanProgressPercent';
+import { scanSummary } from '@/lib/outcomeVocabulary';
 import { downloadPercent, useModelDownload } from '@/hooks/useModelDownload';
 
 /**
@@ -82,8 +83,9 @@ function ScanComplete({
     <div className="space-y-4 text-center animate-in fade-in slide-in-from-bottom-4">
       <p className="text-sm font-medium">Historical scan complete.</p>
       <p className="text-xs text-muted-foreground">
-        Found {progress?.transactions_found ?? 0} transactions and {progress?.statements_found ?? 0}{' '}
-        statements.
+        {scanSummary(
+          progress ?? { processed: 0, transactions_found: 0, statements_found: 0, errors: 0 }
+        )}
       </p>
       <Button onClick={onDone} variant="accent" aria-label="Continue to the dashboard">
         Continue

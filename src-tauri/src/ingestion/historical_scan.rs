@@ -698,7 +698,8 @@ async fn record_scan_activity(pool: &Pool, outcome: &str, p: &ScanProgressPayloa
             p.error_message.as_deref().unwrap_or("unknown error")
         ),
         _ => format!(
-            "Scan {outcome}: {} emails checked, {} booked, {} need review, {} waiting for the AI, {} statements, {} not financial, {} errors",
+            // Same words as the UI (src/lib/outcomeVocabulary.ts).
+            "Scan {outcome}: {} emails checked, {} booked, {} needs review, {} waiting for AI, {} statements, {} skipped, {} failed",
             p.processed,
             p.transactions_found,
             p.sent_to_review,

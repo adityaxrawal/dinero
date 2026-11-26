@@ -69,7 +69,7 @@ describe('scan events', () => {
     });
     expect(store.getState().notifications[0]).toMatchObject({
       severity: 'success',
-      title: 'Gmail Scan Completed',
+      title: 'Gmail scan finished',
       actionUrl: '/transactions',
     });
   });
@@ -116,14 +116,14 @@ describe('statement_batch_progress', () => {
     emit('statement_batch_progress', { parsed: 5, total: 5, eta_seconds: 0 });
     expect(store.getState().tasks.statement_batch_pipeline.status).toBe('completed');
     expect(store.getState().notifications[0]).toMatchObject({
-      title: 'Statement Batch Complete',
+      title: 'Statements processed',
       actionUrl: '/statements',
     });
   });
 
   it('uses the singular noun for a one-file batch', () => {
     emit('statement_batch_progress', { parsed: 1, total: 1, eta_seconds: 0 });
-    expect(store.getState().notifications[0].message).toContain('1 PDF statement file.');
+    expect(store.getState().notifications[0].message).toContain('1 PDF statement processed.');
   });
 });
 

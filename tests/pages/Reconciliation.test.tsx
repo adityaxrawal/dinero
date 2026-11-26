@@ -197,9 +197,9 @@ describe('unassigned list item', () => {
   });
 
   it.each([
-    ['extraction_failed', 'Missing Fields'],
-    ['issuer_name_not_found', 'Unknown Card/Bank'],
-    ['something_else', 'Action Needed'],
+    ['extraction_failed', 'Missing details'],
+    ['issuer_name_not_found', 'Unknown card or bank'],
+    ['something_else', 'Needs review'],
   ])('labels reason %s as %s', (reason, label) => {
     unassigned = [item({ reason })];
     render(<Reconciliation />);

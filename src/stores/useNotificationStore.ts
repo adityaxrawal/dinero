@@ -1,3 +1,4 @@
+import { scanSummary } from '@/lib/outcomeVocabulary';
 import { create } from 'zustand';
 import { isTauriRuntime } from '@/lib/tauriRuntime';
 import { mergeTask, type TaskUpdate } from './mergeTask';
@@ -391,10 +392,10 @@ function onScanCompleted(p: ScanProgressPayload) {
   notifications().addNotification({
     category: 'ingestion',
     severity: failed ? 'warning' : 'success',
-    title: failed ? 'Gmail Scan Completed with Errors' : 'Gmail Scan Completed',
+    title: failed ? 'Gmail scan finished with failures' : 'Gmail scan finished',
     message: failed
-      ? `Processed ${p.total} emails, but ${p.errors} could not be read. Retry them from Settings → Mail Scan.`
-      : `Processed ${p.total} emails. Found ${p.transactions_found} transactions and ${p.statements_found} statements.`,
+      ? `${scanSummary(p)} Retry the failed ones from Settings → Mail Scan.`
+      : scanSummary(p),
     actionUrl: '/transactions',
     actionLabel: 'View Transactions',
     taskId,
@@ -426,7 +427,7 @@ function onScanFailed(p: ScanFailedPayload) {
   notifications().addNotification({
     category: 'ingestion',
     severity: 'error',
-    title: 'Gmail Scan Failed',
+    title: 'Gmail scan failed',
     message: errStr,
     taskId,
   });
@@ -451,7 +452,7 @@ function onScanCancelled(p: ScanProgressPayload) {
   notifications().addNotification({
     category: 'ingestion',
     severity: 'info',
-    title: 'Gmail Scan Cancelled',
+    title: 'Gmail scan cancelled',
     message: `Scan stopped at ${p.processed}/${p.total} emails.`,
     taskId,
   });
@@ -487,8 +488,8 @@ function onStatementBatchProgress(p: StatementBatchPayload) {
     notifications().addNotification({
       category: 'statements',
       severity: 'success',
-      title: 'Statement Batch Complete',
-      message: `Successfully processed ${p.total} PDF statement file${p.total === 1 ? '' : 's'}.`,
+      title: 'Statements processed',
+      message: `${p.total} PDF statement${p.total === 1 ? '' : 's'} processed. Any waiting for you are under Statements.`,
       actionUrl: '/statements',
       actionLabel: 'View Statements',
       taskId,

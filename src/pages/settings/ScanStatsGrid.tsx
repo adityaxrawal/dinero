@@ -2,7 +2,8 @@
  * Counters for what a scan has found so far.
  */
 import { Link } from 'react-router-dom';
-import { Mail, ScanLine, CheckCircle, FileText, Ban, AlertTriangle, Inbox } from 'lucide-react';
+import { Mail, ScanLine, CheckCircle, FileText, Ban, AlertTriangle, Inbox, Cpu } from 'lucide-react';
+import { OUTCOME } from '@/lib/outcomeVocabulary';
 import { cn } from '@/lib/utils';
 import type { ScanProgressPayload } from '@/lib/ipc';
 
@@ -13,25 +14,33 @@ const count = (value?: number | null) => value ?? 0;
 export default function ScanStatsGrid({ progress }: { progress: ScanProgressPayload }) {
   const errors = count(progress.errors);
   const tiles = [
-    { icon: Mail, label: 'Fetched:', value: count(progress.total) },
-    { icon: ScanLine, label: 'Processed:', value: count(progress.processed) },
+    // Shared outcome words (lib/outcomeVocabulary). "Waiting for AI" was
+    // missing, so the tiles did not add up to "Checked" (audit F5-2).
+    { icon: Mail, label: 'Found:', value: count(progress.total) },
+    { icon: ScanLine, label: 'Checked:', value: count(progress.processed) },
     {
       icon: CheckCircle,
-      label: 'Txns:',
+      label: `${OUTCOME.booked}:`,
       value: count(progress.transactions_found),
       iconClass: 'text-emerald-600',
     },
     { icon: FileText, label: 'Statements:', value: count(progress.statements_found) },
     {
       icon: Inbox,
-      label: 'Needs review:',
+      label: `${OUTCOME.needsReview}:`,
       value: count(progress.sent_to_review),
       to: '/reconciliation?section=unassigned',
     },
-    { icon: Ban, label: 'Ignored:', value: count(progress.non_financial) },
+    {
+      icon: Cpu,
+      label: `${OUTCOME.waitingForAi}:`,
+      value: count(progress.pending_enrichment),
+      to: '/reconciliation?section=unassigned',
+    },
+    { icon: Ban, label: `${OUTCOME.skipped}:`, value: count(progress.non_financial) },
     {
       icon: AlertTriangle,
-      label: 'Errors:',
+      label: `${OUTCOME.failed}:`,
       value: errors,
       iconClass: errors > 0 ? 'text-red-600' : '',
       valueClass: errors > 0 ? 'text-red-600 font-bold' : '',

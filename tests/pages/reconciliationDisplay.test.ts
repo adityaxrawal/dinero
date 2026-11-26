@@ -184,9 +184,9 @@ describe('getUnassignedDisplayInfo', () => {
   });
 
   it.each([
-    ['extraction_failed', 'Missing Fields'],
-    ['issuer_name_not_found', 'Unknown Card/Bank'],
-    ['something_else', 'Action Needed'],
+    ['extraction_failed', 'Missing details'],
+    ['issuer_name_not_found', 'Unknown card or bank'],
+    ['something_else', 'Needs review'],
   ])('labels reason %s as %s', (reason, issueLabel) => {
     expect(getUnassignedDisplayInfo(item({ reason })).issueLabel).toBe(issueLabel);
   });

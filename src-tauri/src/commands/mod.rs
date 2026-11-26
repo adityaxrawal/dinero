@@ -2038,7 +2038,7 @@ pub async fn statements_commit_draft(
             let summary = statement_commit_summary(c, &id)?;
             // Persistent record of the import (audit F5-4); best effort.
             let text = format!(
-                "Statement imported: {} new, {} matched to existing, {} need a duplicate check, {} already imported",
+                "Statement imported: {} booked, {} matched to existing, {} needs duplicate check, {} already imported",
                 summary["new"], summary["matched"], summary["needs_review"], summary["skipped"]
             );
             let _ = crate::db::activity_log::append(c, "statement", "committed", &text, Some(&summary));
