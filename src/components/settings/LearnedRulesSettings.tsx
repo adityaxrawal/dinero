@@ -5,6 +5,7 @@
  * producing wrong values can be found and removed instead of silently degrading
  * every future extraction from that bank.
  */
+import CardRules from './learnedRules/CardRules';
 import { useState } from 'react';
 import { AlertTriangle, GraduationCap, Undo2 } from 'lucide-react';
 import type { LearnedRule, SenderBankOverride } from '@/lib/ipc';
@@ -53,6 +54,8 @@ export default function LearnedRulesSettings() {
           onRetire={setPendingRule}
         />
       )}
+
+      <CardRules />
 
       <SenderOverrides
         overrides={rules.activeOverrides}

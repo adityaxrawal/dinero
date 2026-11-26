@@ -33,6 +33,7 @@ pub mod field_rules;
 #[cfg(test)]
 mod field_rules_tests;
 pub mod ignored_messages;
+pub mod instrument_rules;
 pub mod instruments;
 pub mod layer6_jobs;
 pub mod local_profile;

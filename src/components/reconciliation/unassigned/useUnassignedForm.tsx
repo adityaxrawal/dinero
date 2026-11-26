@@ -102,7 +102,37 @@ export function useUnassignedForm(
       },
       {
         onSuccess: (decision) => {
-          toast(engineDecisionToast(decision));
+          // The email named the bank and card type but no number: offer to
+          // remember this pick (owner decision Q-6). Nothing is assumed
+          // unless the user confirms.
+          const issuer = record.rule_issuer;
+          const kind = record.rule_instrument_type;
+          const chosen = instrumentId;
+          toast({
+            ...engineDecisionToast(decision),
+            ...(issuer && kind
+              ? {
+                  action: (
+                    <ToastAction
+                      altText="Always use this card"
+                      onClick={() => {
+                        API.instrumentRules
+                          .create(issuer, kind, chosen)
+                          .then(() =>
+                            toast({
+                              title: 'Rule saved',
+                              description: `Future ${issuer} ${kind.replace('_', ' ')} alerts without a card number will use this card. Change it under Learned Rules.`,
+                            })
+                          )
+                          .catch((e) => toast({ variant: 'destructive', ...getErrorToast(e) }));
+                      }}
+                    >
+                      Always use this card
+                    </ToastAction>
+                  ),
+                }
+              : {}),
+          });
           onClose();
         },
         onError: (err) => toast({ variant: 'destructive', ...getErrorToast(err) }),

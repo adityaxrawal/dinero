@@ -272,6 +272,15 @@ export interface StatementCommitSummary {
   skipped: number;
 }
 
+export interface InstrumentRule {
+  id: string;
+  issuer_name: string;
+  instrument_type: string;
+  instrument_id: string;
+  instrument_label: string;
+  created_at: string | null;
+}
+
 export interface DraftRow {
   transaction_date: string;
   merchant_raw: string;
@@ -436,6 +445,9 @@ export interface UnassignedTransactionRecord {
   can_recheck?: boolean;
   /** The local AI hasn't answered yet; listed and editable anyway (owner decision Q-2). */
   waiting_for_ai?: boolean;
+  /** Issuer and card type the email named when it gave no card number (Q-6). */
+  rule_issuer?: string | null;
+  rule_instrument_type?: string | null;
 }
 
 /** What a re-check did with one review entry. */
@@ -1077,6 +1089,13 @@ export const API = {
   learnedRules: {
     list: () => invokeCommand<LearnedRule[]>('settings_learned_rules_list'),
     revert: (ruleId: string) => invokeCommand<void>('settings_learned_rules_revert', { ruleId }),
+  },
+  /** "Always use this card" rules for alerts with no card number (owner decision Q-6). */
+  instrumentRules: {
+    create: (issuerName: string, instrumentType: string, instrumentId: string) =>
+      invokeCommand<string>('instrument_rules_create', { issuerName, instrumentType, instrumentId }),
+    list: () => invokeCommand<InstrumentRule[]>('instrument_rules_list'),
+    revert: (id: string) => invokeCommand<string>('instrument_rules_revert', { id }),
   },
   senderOverrides: {
     list: () => invokeCommand<SenderBankOverride[]>('settings_sender_overrides_list'),

@@ -404,6 +404,9 @@ pub fn resolve_instrument(
         (Some(itype), Some(iname), Some(masked)) => {
             get_or_create_instrument(conn, itype, iname, masked, network).map(Some)
         }
+        // No card number: only a rule the user confirmed may name the card
+        // (owner decision Q-6). Never a guess.
+        (Some(itype), Some(iname), None) => crate::db::instrument_rules::lookup(conn, iname, itype),
         _ => Ok(None),
     }
 }

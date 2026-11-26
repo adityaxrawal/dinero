@@ -10,6 +10,7 @@ const toast = vi.fn();
 const invalidateQueries = vi.fn();
 const dismissUnassigned = vi.fn();
 const restoreUnassigned = vi.fn();
+const createRule = vi.fn();
 const onClose = vi.fn();
 
 vi.mock('@tanstack/react-query', () => ({ useQueryClient: () => ({ invalidateQueries }) }));
@@ -24,6 +25,7 @@ vi.mock('@/lib/ipc', () => ({
       dismissUnassigned: (...a: unknown[]) => dismissUnassigned(...a),
       restoreUnassigned: (...a: unknown[]) => restoreUnassigned(...a),
     },
+    instrumentRules: { create: (...a: unknown[]) => createRule(...a) },
   },
 }));
 
@@ -43,6 +45,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   dismissUnassigned.mockResolvedValue(undefined);
   restoreUnassigned.mockResolvedValue(undefined);
+  createRule.mockResolvedValue('created');
 });
 
 describe('useUnassignedForm', () => {
@@ -150,6 +153,23 @@ describe('useUnassignedForm', () => {
       spec.action.props.onClick();
     });
     expect(restoreUnassigned).toHaveBeenCalledWith('u1');
+  });
+
+  // Owner decision Q-6: after picking a card for an alert with no card number,
+  // the user may confirm a rule for that issuer and card type.
+  it('offers "Always use this card" after saving an alert with no card number', async () => {
+    const { result } = renderHook(() =>
+      useUnassignedForm(
+        record({ direction: 'debit', rule_issuer: 'Jupiter', rule_instrument_type: 'credit_card' }),
+        onClose
+      )
+    );
+    act(() => result.current.setters.setInstrumentId('inst-1'));
+    act(() => result.current.handleSave());
+    act(() => mutate.mock.calls[0][1].onSuccess('new_canonical'));
+    const spec = toast.mock.calls.at(-1)?.[0] as { action: { props: { onClick: () => void } } };
+    await act(async () => spec.action.props.onClick());
+    expect(createRule).toHaveBeenCalledWith('Jupiter', 'credit_card', 'inst-1');
   });
 
   it('applies a quick-fill to the named field only', () => {

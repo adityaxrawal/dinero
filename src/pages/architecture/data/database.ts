@@ -575,6 +575,20 @@ export const ENTITIES: EntityDef[] = [
     ],
   },
   {
+    id: 'instrument_rules',
+    name: 'instrument_rules',
+    group: 'ops',
+    description:
+      'User-confirmed "always use this card" rules for alerts that name the bank and card type but no card number.',
+    columns: [
+      { name: 'id', type: 'TEXT', key: 'PK' },
+      { name: 'issuer_name', type: 'TEXT' },
+      { name: 'instrument_type', type: 'TEXT' },
+      { name: 'instrument_id', type: 'TEXT', key: 'FK' },
+      { name: 'status', type: 'TEXT' },
+    ],
+  },
+  {
     id: 'alerts',
     name: 'alerts',
     group: 'ops',

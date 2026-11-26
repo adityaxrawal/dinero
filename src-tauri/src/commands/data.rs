@@ -1686,6 +1686,61 @@ fn transactions_to_csv(records: &[TransactionRecord]) -> String {
     out
 }
 
+/// Confirms "always use this card for <issuer> <type> alerts" (owner
+/// decision Q-6). Used only when an alert gives no card number.
+#[tauri::command]
+pub async fn instrument_rules_create(
+    issuer_name: String,
+    instrument_type: String,
+    instrument_id: String,
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<String, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("instrument_id", &instrument_id)?;
+    crate::ipc::validation::validate_non_empty("issuer_name", &issuer_name)?;
+    crate::ipc::validation::validate_non_empty("instrument_type", &instrument_type)?;
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    let conn = pool.get().await.map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(move |c| {
+        crate::db::instrument_rules::upsert(c, &issuer_name, &instrument_type, &instrument_id)
+    })
+    .await
+    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+    .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    Ok("created".to_string())
+}
+
+/// Active instrument rules, for Settings > Learned Rules.
+#[tauri::command]
+pub async fn instrument_rules_list(
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<Vec<crate::db::instrument_rules::InstrumentRule>, crate::error::AppError> {
+    let conn = pool.get().await.map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    conn.interact(|c| crate::db::instrument_rules::list_active(c))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))
+}
+
+/// Turns an instrument rule off; booked transactions are unchanged.
+#[tauri::command]
+pub async fn instrument_rules_revert(
+    id: String,
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<String, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("id", &id)?;
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    let conn = pool.get().await.map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let reverted = conn
+        .interact(move |c| crate::db::instrument_rules::revert(c, &id))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    if !reverted {
+        return Err(crate::error::AppError::NotFound("That rule is no longer active.".to_string()));
+    }
+    Ok("reverted".to_string())
+}
+
 #[tauri::command]
 pub async fn fetch_transaction_observations(
     transaction_id: String,

@@ -4,6 +4,8 @@ import LearnedRulesSettings from '@/components/settings/LearnedRulesSettings';
 import { API, type LearnedRule } from '@/lib/ipc';
 
 vi.mock('@/hooks/use-toast', () => ({ toast: vi.fn() }));
+// Card rules have their own query; covered separately.
+vi.mock('@/components/settings/learnedRules/CardRules', () => ({ default: () => null }));
 vi.mock('@/lib/ipc', () => ({
   API: {
     learnedRules: { list: vi.fn(), revert: vi.fn() },

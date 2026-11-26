@@ -1362,6 +1362,9 @@ impl MessageProcessor {
     ) -> Result<Option<(String, String)>> {
         let body_owned = body_text.to_string();
         let bank_owned = bank_name.unwrap_or_default().to_string();
+        // Kept so a manual pick can offer an "always use this card" rule for
+        // exactly this issuer and card type (owner decision Q-6).
+        let (rule_issuer, rule_type) = (obs.issuer_name.clone(), obs.instrument_type.clone());
         let mut obs_row = crate::extraction::normalization::normalize_observation(
             obs,
             "gmail_transaction",
@@ -1380,6 +1383,10 @@ impl MessageProcessor {
                 }
                 if matches!(route, ReviewRoute::ReviewOnlySender) {
                     v["review_only"] = serde_json::json!(true);
+                }
+                if let (Some(issuer), Some(kind)) = (&rule_issuer, &rule_type) {
+                    v["issuer_name"] = serde_json::json!(issuer);
+                    v["instrument_type"] = serde_json::json!(kind);
                 }
                 obs_row.raw_payload_json = Some(v.to_string());
             }

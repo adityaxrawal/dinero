@@ -208,6 +208,10 @@ pub struct UnassignedTransactionDetail {
     /// The local AI has not answered yet. Shown and editable anyway (owner
     /// decision Q-2); a save first makes the AI's later answer a no-op.
     pub waiting_for_ai: bool,
+    /// Issuer and card type the email named, when it gave no card number, so
+    /// the UI can offer a user-confirmed rule (owner decision Q-6).
+    pub rule_issuer: Option<String>,
+    pub rule_instrument_type: Option<String>,
 }
 
 /// Unresolved entries together with their source evidence.
@@ -222,7 +226,9 @@ pub fn select_open_with_context(conn: &Connection) -> Result<Vec<UnassignedTrans
                 o.extraction_method, o.confidence_score, \
                 (json_extract(o.raw_payload_json, '$.body') IS NOT NULL \
                  AND json_extract(o.raw_payload_json, '$.bank') IS NOT NULL), \
-                EXISTS (SELECT 1 FROM layer6_pending_jobs j WHERE j.id = u.id AND j.dead_at IS NULL) \
+                EXISTS (SELECT 1 FROM layer6_pending_jobs j WHERE j.id = u.id AND j.dead_at IS NULL), \
+                json_extract(o.raw_payload_json, '$.issuer_name'), \
+                json_extract(o.raw_payload_json, '$.instrument_type') \
          FROM unassigned_transactions u \
          JOIN transaction_observations o ON o.id = u.observation_id \
          WHERE u.status = 'open' \
@@ -249,6 +255,8 @@ pub fn select_open_with_context(conn: &Connection) -> Result<Vec<UnassignedTrans
             confidence_score: row.get(13)?,
             can_recheck: row.get(14)?,
             waiting_for_ai: row.get(15)?,
+            rule_issuer: row.get(16)?,
+            rule_instrument_type: row.get(17)?,
         })
     })?;
     let mut results = Vec::new();
