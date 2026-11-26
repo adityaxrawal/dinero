@@ -106,20 +106,20 @@ describe('Reconciliation queue', () => {
   it('shows a loading state', () => {
     clustersLoading = true;
     render(<Reconciliation />);
-    expect(screen.getByText('Reconciliation')).toBeInTheDocument();
+    expect(screen.getByText('Review Inbox')).toBeInTheDocument();
     expect(screen.queryByText('Swiggy')).toBeNull();
   });
 
   it('counts each section in its tab', () => {
     clusters = [cluster(), cluster({ id: 'c2' })];
     render(<Reconciliation />);
-    expect(screen.getByRole('tab', { name: /Pending Clusters/ }).textContent).toContain('2');
-    expect(screen.getByRole('tab', { name: /Unassigned/ }).textContent).toContain('1');
+    expect(screen.getByRole('tab', { name: /Possible duplicates/ }).textContent).toContain('2');
+    expect(screen.getByRole('tab', { name: /Needs details/ }).textContent).toContain('1');
   });
 
   it('switches section through the URL', () => {
     render(<Reconciliation />);
-    fireEvent.click(screen.getByRole('tab', { name: /Unassigned/ }));
+    fireEvent.click(screen.getByRole('tab', { name: /Needs details/ }));
     expect(setSearchParams).toHaveBeenCalledWith({ section: 'unassigned' });
   });
 
@@ -278,6 +278,14 @@ describe('inspector pane', () => {
     unassigned = [item({ waiting_for_ai: true })];
     render(<Reconciliation />);
     expect(screen.getByText('Waiting for AI')).toBeTruthy();
+  });
+
+  // With no tab in the URL, open the tab that has work (audit F9-13).
+  it('opens the Needs details tab when only review entries exist', () => {
+    section = '';
+    clusters = [];
+    render(<Reconciliation />);
+    expect(screen.getByRole('tab', { name: /Needs details/ }).getAttribute('aria-selected')).toBe('true');
   });
 
   it('shows no AI line when nothing is pending', () => {

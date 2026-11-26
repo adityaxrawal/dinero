@@ -431,7 +431,6 @@ function InspectorPlaceholder({ currentSection }: { currentSection: string }) {
  */
 export default function Reconciliation() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const currentSection = searchParams.get('section') || 'clusters';
   /** Switches between the clusters and unassigned queues. */
   const setSection = (section: string) => setSearchParams({ section });
 
@@ -439,6 +438,10 @@ export default function Reconciliation() {
   const unassignedQuery = useUnassignedTransactions();
   const { data: clusters = [], isLoading: clustersLoading } = clustersQuery;
   const { data: unassigned = [], isLoading: unassignedLoading } = unassignedQuery;
+  // Without an explicit tab, open the one that has work (audit F9-13).
+  const currentSection =
+    searchParams.get('section') ||
+    (clusters.length === 0 && unassigned.length > 0 ? 'unassigned' : 'clusters');
   const { data: llmQueue } = useLlmQueueStatus();
   const recheckAll = useRecheckAllUnassigned();
   const { toast } = useToast();
@@ -473,8 +476,9 @@ export default function Reconciliation() {
   );
 
   const SECTIONS = [
-    { id: 'clusters', label: 'Pending Clusters', icon: ShieldAlert, badge: clusters.length },
-    { id: 'unassigned', label: 'Unassigned', icon: HelpCircle, badge: unassigned.length },
+    // One vocabulary with the sidebar's "Review Inbox" (audit F9-12).
+    { id: 'clusters', label: 'Possible duplicates', icon: ShieldAlert, badge: clusters.length },
+    { id: 'unassigned', label: 'Needs details', icon: HelpCircle, badge: unassigned.length },
   ] as const;
 
   return (
@@ -486,7 +490,7 @@ export default function Reconciliation() {
         <div className="flex flex-col gap-3 px-4 py-3 flex-shrink-0 border-b border-[#064E3B]/10">
           <div className="flex items-center justify-between">
             <h1 className="text-[14px] font-semibold text-[#064E3B] tracking-tight">
-              Reconciliation
+              Review Inbox
             </h1>
             {currentSection === 'unassigned' && canRecheckAll && (
               <button

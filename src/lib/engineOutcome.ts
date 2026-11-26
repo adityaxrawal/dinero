@@ -20,7 +20,7 @@ export function engineDecisionToast(decision: string): OutcomeToast {
   if (decision === 'ambiguous_pending') {
     return {
       title: 'Saved — needs a duplicate check',
-      description: 'It looks like a transaction already in your ledger. Confirm it in Pending Clusters.',
+      description: 'It looks like a transaction already in your ledger. Confirm it under Possible duplicates.',
       actionTo: CLUSTERS_ROUTE,
       actionLabel: 'Review',
     };

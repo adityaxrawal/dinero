@@ -331,3 +331,17 @@ fn override_matching_is_case_insensitive() {
         SenderVerificationResult::VerifiedTransactionCandidate("Kotak Bank".to_string())
     );
 }
+
+/// An unlisted subdomain of a listed bank is still rejected, but labelled as
+/// such rather than as a lookalike (audit P3-M): the 2026-11-26 scan rejected
+/// mail.hsbc.bank.in and emailers.idfcfirst.bank.in as "Suspicious domain".
+#[test]
+fn test_unlisted_bank_subdomain_is_rejected_with_its_own_reason() {
+    let validator = SenderValidator::new();
+    match validator.verify_sender("alerts@mail.hsbc.bank.in", None) {
+        SenderVerificationResult::SpoofReject(reason) => {
+            assert_eq!(reason, "Unlisted subdomain of hsbc.bank.in");
+        }
+        other => panic!("Expected SpoofReject, got {:?}", other),
+    }
+}

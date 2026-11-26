@@ -17,7 +17,8 @@ const SKIPPED_KEY = ['skippedEmails'] as const;
 
 /** Plain-language reason for a skip code. */
 function reasonLabel(reason: string): string {
-  if (reason.startsWith('Suspicious domain')) return 'Unlisted address for a known bank';
+  if (reason.startsWith('Unlisted subdomain')) return 'Unlisted address for a known bank';
+  if (reason.startsWith('Suspicious domain')) return 'Look-alike of a bank address';
   if (reason.startsWith('Mismatched display name')) return "Name doesn't match the sender address";
   if (reason.startsWith('Typo-squatted')) return 'Look-alike of a bank address';
   if (reason === 'Unknown sender domain') return 'Sender not on the bank list';

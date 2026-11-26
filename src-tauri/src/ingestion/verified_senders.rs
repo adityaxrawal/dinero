@@ -159,6 +159,18 @@ impl SenderValidator {
             };
         }
 
+        // A real subdomain of a listed bank (e.g. mail.hsbc.bank.in) is still
+        // rejected -- the bank may hand it to a third-party mailer (audit E-3)
+        // -- but named for what it is, so the user can trust it from Skipped
+        // emails instead of reading it as an attack (audit P3-M).
+        for config in &self.registry.senders {
+            if domain.ends_with(&format!(".{}", config.domain)) {
+                return SenderVerificationResult::SpoofReject(format!(
+                    "Unlisted subdomain of {}",
+                    config.domain
+                ));
+            }
+        }
         for config in &self.registry.senders {
             if domain.contains(&config.domain) {
                 return SenderVerificationResult::SpoofReject(format!(

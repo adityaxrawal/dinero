@@ -11,8 +11,8 @@ vi.mock('@/lib/ipc', () => ({
     skippedEmails: {
       list: () =>
         Promise.resolve([
-          { message_id: 'a', sender_domain: 'mail.hsbc.bank.in', bank_name: null, subject: 'Transaction Limits', reason: 'Suspicious domain containing hsbc.bank.in', gate: 'sender', skipped_at: null },
-          { message_id: 'b', sender_domain: 'mail.hsbc.bank.in', bank_name: null, subject: 'Log on', reason: 'Suspicious domain containing hsbc.bank.in', gate: 'sender', skipped_at: null },
+          { message_id: 'a', sender_domain: 'mail.hsbc.bank.in', bank_name: null, subject: 'Transaction Limits', reason: 'Unlisted subdomain of hsbc.bank.in', gate: 'sender', skipped_at: null },
+          { message_id: 'b', sender_domain: 'mail.hsbc.bank.in', bank_name: null, subject: 'Log on', reason: 'Unlisted subdomain of hsbc.bank.in', gate: 'sender', skipped_at: null },
           { message_id: 'c', sender_domain: 'sbicard.com', bank_name: 'SBI Card', subject: 'OTP for Zomato', reason: 'gate2a_reject_Otp', gate: 'content', skipped_at: null },
         ]),
       trustSender: (...a: unknown[]) => trustSender(...a),
