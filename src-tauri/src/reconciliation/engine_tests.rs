@@ -1327,8 +1327,8 @@ fn test_resolve_treat_as_separate_creates_multiple_canonicals() {
     let new_id = ids.iter().find(|id| *id != "cand_1").unwrap();
     assert_ne!(new_id, "cand_1");
 
-    let decision: String = conn.query_row("SELECT decision FROM match_decisions WHERE observation_id = 'obs_1' AND decision = 'manually_confirmed'", [], |r| r.get(0)).unwrap();
-    assert_eq!(decision, "manually_confirmed");
+    let decision: String = conn.query_row("SELECT decision FROM match_decisions WHERE observation_id = 'obs_1'", [], |r| r.get(0)).unwrap();
+    assert_eq!(decision, "rejected_match");
 }
 
 #[test]
@@ -1354,6 +1354,8 @@ fn test_cluster_resolution_reject() {
         })
         .unwrap();
 
+    conn.execute("UPDATE transaction_observations SET amount_minor = 1000, currency = 'INR', direction = 'debit', event_time = '2026-06-10 12:00:00' WHERE id = 'obs_1'", []).unwrap();
+
     crate::reconciliation::cluster::resolve_cluster(
         &conn,
         &cluster_id,
@@ -1373,8 +1375,20 @@ fn test_cluster_resolution_reject() {
         .unwrap();
     assert_eq!(status, "rejected");
 
-    let decision: String = conn.query_row("SELECT decision FROM match_decisions WHERE observation_id = 'obs_1' AND decision = 'manually_confirmed'", [], |r| r.get(0)).unwrap();
-    assert_eq!(decision, "manually_confirmed");
+    // Rejecting the suggested match must still record the incoming payment as
+    // its own transaction (audit F10-1).
+    let linked: Option<String> = conn
+        .query_row("SELECT canonical_transaction_id FROM transaction_observations WHERE id = 'obs_1'", [], |r| r.get(0))
+        .unwrap();
+    let canonical = linked.expect("reject_candidate must create a canonical for the incoming observation");
+    assert_ne!(canonical, "cand_1");
+    let exists: i64 = conn
+        .query_row("SELECT COUNT(*) FROM transactions WHERE id = ?1", [&canonical], |r| r.get(0))
+        .unwrap();
+    assert_eq!(exists, 1);
+
+    let decision: String = conn.query_row("SELECT decision FROM match_decisions WHERE observation_id = 'obs_1'", [], |r| r.get(0)).unwrap();
+    assert_eq!(decision, "rejected_match");
 }
 
 #[test]
@@ -3228,4 +3242,100 @@ fn different_emails_with_identical_fields_stay_separate() {
     crate::reconciliation::engine::ingest_observation(&conn, &inbox_copy("obs_b", "gmail_b", "<alert-2@hdfcbank.net>"), missing)
         .unwrap();
     assert_eq!(txn_count(&conn), 2);
+}
+
+/// Builds a cluster around obs_1 with the existing transaction cand_1.
+fn cluster_with_candidate(conn: &rusqlite::Connection) -> String {
+    conn.execute(
+        "INSERT INTO transactions (id, instrument_id, amount_minor, currency, direction, best_event_time, reference_id, merchant_normalized_name, source_mix, is_deleted) \
+         VALUES ('cand_1', 'inst_1', 1000, 'INR', 'debit', '2026-06-10 11:00:00', 'REF123', 'Test Merchant', 'email_only', 0)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE transaction_observations SET amount_minor = 1000, currency = 'INR', direction = 'debit', event_time = '2026-06-10 12:00:00', instrument_id = 'inst_1' WHERE id = 'obs_1'",
+        [],
+    )
+    .unwrap();
+    crate::reconciliation::cluster::create_ambiguity_cluster(
+        conn,
+        "obs_1",
+        "inst_1",
+        1000,
+        "debit",
+        "2026-06-10 12:00:00",
+        0.6,
+        &[crate::reconciliation::scorer::ScoredCandidate {
+            candidate_id: "cand_1".to_string(),
+            score: 0.6,
+        }],
+    )
+    .unwrap();
+    conn.query_row("SELECT id FROM reconciliation_clusters LIMIT 1", [], |r| r.get(0))
+        .unwrap()
+}
+
+fn obs_1_link(conn: &rusqlite::Connection) -> Option<String> {
+    conn.query_row(
+        "SELECT canonical_transaction_id FROM transaction_observations WHERE id = 'obs_1'",
+        [],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+/// Undo after Confirm Match must unlink the observation, not just reopen the
+/// cluster, and must leave the matched transaction alone (audit F10-2).
+#[test]
+fn test_unmerge_after_confirm_match_unlinks_and_keeps_candidate() {
+    let conn = setup_test_db();
+    let cluster_id = cluster_with_candidate(&conn);
+    crate::reconciliation::cluster::resolve_cluster(&conn, &cluster_id, "obs_1", "confirm_match", Some("cand_1")).unwrap();
+    assert_eq!(obs_1_link(&conn).as_deref(), Some("cand_1"));
+
+    let outcome = crate::reconciliation::cluster::unmerge_cluster(&conn, &cluster_id).unwrap();
+    assert_eq!(
+        outcome,
+        crate::reconciliation::cluster::UnmergeOutcome::Reopened { deleted_transaction: None }
+    );
+    assert_eq!(obs_1_link(&conn), None);
+    let (status, cand_deleted): (String, bool) = conn
+        .query_row(
+            "SELECT (SELECT cluster_status FROM reconciliation_clusters WHERE id = ?1), \
+                    (SELECT is_deleted FROM transactions WHERE id = 'cand_1')",
+            rusqlite::params![cluster_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(status, "open");
+    assert!(!cand_deleted, "the confirmed candidate is a real transaction and must survive");
+
+    // Nothing left to undo.
+    assert_eq!(
+        crate::reconciliation::cluster::unmerge_cluster(&conn, &cluster_id).unwrap(),
+        crate::reconciliation::cluster::UnmergeOutcome::NotUndoable
+    );
+}
+
+/// Undo after Keep Separate removes the transaction that resolution created,
+/// so resolving again cannot leave a duplicate (audit F10-2).
+#[test]
+fn test_unmerge_after_keep_separate_removes_the_created_transaction() {
+    let conn = setup_test_db();
+    let cluster_id = cluster_with_candidate(&conn);
+    crate::reconciliation::cluster::resolve_cluster(&conn, &cluster_id, "obs_1", "keep_separate", None).unwrap();
+    let created = obs_1_link(&conn).expect("keep_separate creates a canonical");
+
+    let outcome = crate::reconciliation::cluster::unmerge_cluster(&conn, &cluster_id).unwrap();
+    assert_eq!(
+        outcome,
+        crate::reconciliation::cluster::UnmergeOutcome::Reopened {
+            deleted_transaction: Some(created.clone())
+        }
+    );
+    assert_eq!(obs_1_link(&conn), None);
+    let deleted: bool = conn
+        .query_row("SELECT is_deleted FROM transactions WHERE id = ?1", [&created], |r| r.get(0))
+        .unwrap();
+    assert!(deleted);
 }

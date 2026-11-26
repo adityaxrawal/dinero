@@ -139,7 +139,7 @@ export function ActionableGroups({ queue }: { queue: Queue }) {
   return (
     <>
       {GROUPS.map((group) => {
-        const items = groups[group.key];
+        const items = groups[group.key] ?? [];
         if (items.length === 0) return null;
         return (
           <section key={group.key} aria-label={group.label} className={SECTION}>

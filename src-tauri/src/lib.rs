@@ -200,12 +200,19 @@ pub fn run() {
                 db::init_db(db_path.clone()).await
             }) {
                 Ok(p) => {
+                    // Emitted before the window listens, so it must be a
+                    // system warning the UI fetches on load; the old bare
+                    // event was lost (audit F19-1).
                     if looks_like_hardware_migration {
-                        let _ = app.handle().emit(
-                            crate::ipc::events::AppEvent::DbHardwareMigrated.as_str(),
-                            serde_json::json!({
-                                "message": "Database migrated to new Mac.",
-                            }),
+                        crate::ipc::system_warnings::emit_system_warning(
+                            app.handle(),
+                            crate::ipc::system_warnings::SystemWarningPayload {
+                                warning_type: "db_hardware_migrated".to_string(),
+                                message: "Your data was moved to this Mac and unlocked successfully."
+                                    .to_string(),
+                                severity: crate::ipc::system_warnings::WarningSeverity::Info,
+                                action_hint: None,
+                            },
                         );
                     }
 

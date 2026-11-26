@@ -18,7 +18,7 @@ import {
 import type { NavItem } from './SidebarItem';
 
 /** Builds the navigation groups, including counts and dev-only entries. */
-export function buildNavGroups(unresolvedClusters: number, badgePulse: boolean) {
+export function buildNavGroups(reviewCount: number, badgePulse: boolean) {
   return [
     {
       title: 'Workspace',
@@ -28,7 +28,7 @@ export function buildNavGroups(unresolvedClusters: number, badgePulse: boolean) 
           path: '/reconciliation',
           label: 'Review Inbox',
           icon: <GitMerge size={15} />,
-          badge: unresolvedClusters,
+          badge: reviewCount,
           pulse: badgePulse,
         },
         { path: '/statements', label: 'Statements', icon: <FileText size={15} />, badge: 0 },

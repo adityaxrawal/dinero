@@ -9,7 +9,9 @@ import { useTransactionFilters } from './transactions/useTransactionFilters';
 import { useTransactionsFeed } from './transactions/useTransactionsFeed';
 import { useListKeyboardNav } from './transactions/useListKeyboardNav';
 import { useCreateTransaction } from './transactions/useCreateTransaction';
-import { downloadTransactionsCsv } from './transactions/exportCsv';
+import { exportTransactionsCsv } from './transactions/exportCsv';
+import { useToast } from '@/hooks/use-toast';
+import { getErrorToast } from '@/lib/errorMapping';
 import FeedHeader from './transactions/FeedHeader';
 import FilterChips from './transactions/FilterChips';
 import TransactionFeedList from './transactions/TransactionFeedList';
@@ -40,6 +42,13 @@ export default function Transactions() {
   const filterState = useTransactionFilters();
   const { filters, searchQuery, isSearching } = filterState;
   const feed = useTransactionsFeed(filters, searchQuery, isSearching);
+  const { toast } = useToast();
+  const handleExport = () =>
+    exportTransactionsCsv(filters, isSearching ? searchQuery : '')
+      .then((count) => {
+        if (count !== null) toast({ title: 'Export complete', description: `${count} transactions saved to CSV.` });
+      })
+      .catch((err) => toast({ variant: 'destructive', ...getErrorToast(err) }));
   const [selectedTxId, setSelectedTxId] = useListKeyboardNav(feed.transactions);
   const draft = useCreateTransaction();
 
@@ -60,7 +69,7 @@ export default function Transactions() {
           searchQuery={searchQuery}
           setSearchQuery={filterState.setSearchQuery}
           searchInputRef={filterState.searchInputRef}
-          onExport={() => downloadTransactionsCsv(feed.transactions)}
+          onExport={handleExport}
           onNew={() => draft.setIsOpen(true)}
         />
 

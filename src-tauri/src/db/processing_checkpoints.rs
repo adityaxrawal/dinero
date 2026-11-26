@@ -62,6 +62,7 @@ pub fn patch_scan_progress(
     non_financial: usize,
     errors: usize,
     pending_enrichment: usize,
+    sent_to_review: usize,
 ) -> Result<()> {
     conn.execute(
         "UPDATE processing_checkpoints
@@ -74,7 +75,8 @@ pub fn patch_scan_progress(
                  '$.non_financial', ?6,
                  '$.errors', ?7,
                  '$.pending_enrichment', ?8,
-                 '$.resume_from', ?9
+                 '$.resume_from', ?9,
+                 '$.sent_to_review', ?10
              ),
              status = 'in_progress'
          WHERE job_type = 'historical_scan' AND job_key = ?1",
@@ -88,6 +90,7 @@ pub fn patch_scan_progress(
             errors as i64,
             pending_enrichment as i64,
             resume_from as i64,
+            sent_to_review as i64,
         ],
     )?;
     Ok(())

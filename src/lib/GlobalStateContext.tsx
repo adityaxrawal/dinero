@@ -80,6 +80,12 @@ interface GlobalStateContextType {
   pendingInstrumentFilename: string;
   pendingInstrumentIssuerHint: string;
   pendingInstrumentReason: string;
+  openInstrumentModal: (
+    statementId: string,
+    filename: string,
+    issuerHint: string,
+    reason: string
+  ) => void;
   closeInstrumentModal: () => void;
 
   // Draft review flow, where extracted transactions are confirmed before being

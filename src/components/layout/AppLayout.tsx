@@ -22,6 +22,7 @@ import PermissionDeniedOverlay from '@/components/shell/PermissionDeniedOverlay'
 import ConnectionStatusBanner from '@/components/notifications/ConnectionStatusBanner';
 import AlertBanner from '@/components/notifications/AlertBanner';
 import { useReconciliationClusters } from '@/hooks/queries/useReconciliationClusters';
+import { useUnassignedTransactions } from '@/hooks/queries/useUnassignedTransactions';
 import { useReconciliationNudgeStore } from '@/stores/useReconciliationNudgeStore';
 import SidebarNav from './appShell/SidebarNav';
 import LogoMark from './appShell/LogoMark';
@@ -29,6 +30,7 @@ import SidebarItem from './appShell/SidebarItem';
 import { SYSTEM_ITEMS, useIsActive } from './appShell/navItems';
 import CorruptedDbScreen from './appShell/CorruptedDbScreen';
 import { useBackendStatus } from './appShell/useBackendStatus';
+import { useMenuEvents } from './appShell/useMenuEvents';
 
 /**
  * Drives the one-shot pulse on the reconciliation badge.
@@ -67,8 +69,12 @@ export default function AppLayout() {
   const status = useBackendStatus();
   const badgePulse = useBadgePulse();
   const isActive = useIsActive();
+  useMenuEvents();
 
   const { data: reconciliationClusters = [] } = useReconciliationClusters();
+  // Review entries need the user as much as clusters do; counting clusters
+  // alone hid them from the badge (audit F9-2).
+  const { data: unassigned = [] } = useUnassignedTransactions();
 
   // Recovery takes over the whole window. Rendering the normal shell over a
   // corrupted database would offer navigation to screens that cannot load.
@@ -117,7 +123,10 @@ export default function AppLayout() {
           </span>
         </div>
 
-        <SidebarNav unresolvedClusters={reconciliationClusters.length} badgePulse={badgePulse} />
+        <SidebarNav
+          reviewCount={reconciliationClusters.length + unassigned.length}
+          badgePulse={badgePulse}
+        />
 
         {/* System messages (Gmail disconnected, license grace/locked, and
             similar). These sit in the normal flow rather than floating over the

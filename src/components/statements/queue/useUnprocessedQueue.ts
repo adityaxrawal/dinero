@@ -10,11 +10,13 @@ import { useRetryUnprocessedStatement } from '@/hooks/mutations/useRetryUnproces
 import { useDiscardUnprocessedStatement } from '@/hooks/mutations/useDiscardUnprocessedStatement';
 import { useReparseAllStatements } from '@/hooks/mutations/useReparseAllStatements';
 import { useIpcListen } from '@/hooks/useIpcListen';
+import { useGlobalState } from '@/lib/GlobalStateContext';
 import { entryLabel, type GroupKey } from './queueGroups';
 
 /** Loads the unprocessed queue with retry and discard actions. */
 export function useUnprocessedQueue(onEnterPassword: (statementId: string) => void) {
   const { toast } = useToast();
+  const { openInstrumentModal } = useGlobalState();
   const { data: groups } = useUnprocessedStatements();
   const retry = useRetryUnprocessedStatement();
   const discard = useDiscardUnprocessedStatement();
@@ -25,7 +27,10 @@ export function useUnprocessedQueue(onEnterPassword: (statementId: string) => vo
 
   const reviewable = groups?.awaiting_review ?? [];
   const actionable = groups
-    ? groups.awaiting_password.length + groups.pending_retry.length + groups.failed.length
+    ? (groups.awaiting_instrument?.length ?? 0) +
+      groups.awaiting_password.length +
+      groups.pending_retry.length +
+      groups.failed.length
     : 0;
 
   /** Re-runs extraction across every stored statement. */
@@ -49,6 +54,17 @@ export function useUnprocessedQueue(onEnterPassword: (statementId: string) => vo
   const handleRetry = (item: UnprocessedStatementEntry, groupKey: GroupKey) => {
     if (groupKey === 'awaiting_password') {
       onEnterPassword(item.statement_id);
+      return;
+    }
+    // Opened from the queue, one statement at a time, so a second parked
+    // statement can no longer overwrite the first (audit F8-1, F8-2).
+    if (groupKey === 'awaiting_instrument') {
+      openInstrumentModal(
+        item.statement_id,
+        item.filename,
+        item.issuer_hint ?? '',
+        item.failure_reason ?? ''
+      );
       return;
     }
     retry.mutate(item.statement_id, {

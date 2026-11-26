@@ -41,6 +41,23 @@ pub fn llm_ready<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
     eligible && app.path().app_data_dir().is_ok_and(|dir| any_model_downloaded(&dir))
 }
 
+/// Why Layer 6 can or cannot run, for the UI: `ready`, `no_model` (eligible
+/// device, nothing downloaded) or `ineligible` (below the RAM floor). Lets the
+/// review screen say what held emails are actually waiting for (audit F7-1).
+pub fn llm_state<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> &'static str {
+    let eligible = app
+        .try_state::<LlmEligibility>()
+        .map(|s| s.eligible)
+        .unwrap_or(false);
+    if !eligible {
+        "ineligible"
+    } else if app.path().app_data_dir().is_ok_and(|dir| any_model_downloaded(&dir)) {
+        "ready"
+    } else {
+        "no_model"
+    }
+}
+
 /// Whether any catalogue model is present on disk.
 pub fn any_model_downloaded(app_dir: &std::path::Path) -> bool {
     crate::llm_manager::get_available_models()

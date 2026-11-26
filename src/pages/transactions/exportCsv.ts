@@ -1,51 +1,22 @@
 /**
- * Exports the current transaction view to CSV.
+ * Exports the ledger to a CSV file the user picks.
  *
- * Fields are quoted and escaped, since merchant names routinely contain commas
- * and quotes that would otherwise corrupt the file.
+ * The backend writes every row matching the current filters (or search), with
+ * a direction column and formula-safe text. The old export ran here over only
+ * the pages already loaded and had no direction (audit F11-1, F11-2, F11-3).
  */
-interface ExportRow {
-  date: string;
-  merchant: string;
-  category: string;
-  amount: number;
-  status: string;
-}
+import { API, type TransactionListFilters } from '@/lib/ipc';
 
-const HEADER = ['Date', 'Merchant', 'Category', 'Amount', 'Status'];
-
-/**
- * Quotes a CSV cell, doubling any embedded quotes.
- *
- * Required because merchant names routinely contain commas and quotes, which
- * would otherwise split a row into the wrong number of columns.
- */
-const quote = (cell: unknown) => `"${String(cell).replace(/"/g, '""')}"`;
-
-/** Builds the CSV text, header first. */
-function toCsv(transactions: ExportRow[]): string {
-  const rows = transactions.map((t) => [
-    t.date,
-    t.merchant,
-    t.category,
-    t.amount.toFixed(2),
-    t.status,
-  ]);
-  return [HEADER, ...rows].map((row) => row.map(quote).join(',')).join('\n');
-}
-
-/**
- * Triggers a CSV download in the browser.
- *
- * The object URL is revoked immediately after the click, since it would
- * otherwise pin the blob in memory for the page's lifetime.
- */
-export function downloadTransactionsCsv(transactions: ExportRow[]): void {
-  const blob = new Blob([toCsv(transactions)], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = 'transactions-export.csv';
-  link.click();
-  URL.revokeObjectURL(url);
+/** Asks where to save, then exports. Resolves to the row count, or null if cancelled. */
+export async function exportTransactionsCsv(
+  filters: TransactionListFilters,
+  searchQuery: string
+): Promise<number | null> {
+  const { save } = await import('@tauri-apps/plugin-dialog');
+  const path = await save({
+    defaultPath: `dinero-transactions-${new Date().toISOString().slice(0, 10)}.csv`,
+    filters: [{ name: 'CSV', extensions: ['csv'] }],
+  });
+  if (!path) return null;
+  return API.transactions.exportCsv(path, filters, searchQuery);
 }

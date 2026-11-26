@@ -33,8 +33,16 @@ export const EVENT_INVALIDATIONS: ReadonlyArray<{ event: string; keys: readonly 
     event: 'transaction_created',
     keys: [queryKeys.transactions.all(), queryKeys.dashboard.all(), queryKeys.instruments.all()],
   },
-  { event: 'transaction_updated', keys: [queryKeys.transactions.all(), queryKeys.dashboard.all()] },
-  { event: 'transaction_deleted', keys: [queryKeys.transactions.all(), queryKeys.dashboard.all()] },
+  // Instruments too: an edit can move a transaction to another instrument, and
+  // per-instrument totals would stay stale (audit F12-3).
+  {
+    event: 'transaction_updated',
+    keys: [queryKeys.transactions.all(), queryKeys.dashboard.all(), queryKeys.instruments.all()],
+  },
+  {
+    event: 'transaction_deleted',
+    keys: [queryKeys.transactions.all(), queryKeys.dashboard.all(), queryKeys.instruments.all()],
+  },
   {
     event: 'scan_completed',
     keys: [
@@ -42,6 +50,8 @@ export const EVENT_INVALIDATIONS: ReadonlyArray<{ event: string; keys: readonly 
       queryKeys.dashboard.all(),
       queryKeys.statements.all(),
       queryKeys.instruments.all(),
+      // A scan files review entries; the queue and its badge must catch up.
+      queryKeys.reconciliation.all(),
     ],
   },
   {
@@ -49,7 +59,21 @@ export const EVENT_INVALIDATIONS: ReadonlyArray<{ event: string; keys: readonly 
     keys: [queryKeys.reconciliation.all(), queryKeys.dashboard.all()],
   },
   // A review entry was filed, relabelled or settled in the background (B-1).
-  { event: 'unassigned_changed', keys: [queryKeys.reconciliation.all()] },
+  // Dashboard too: its "Pending Review" tile counts these entries (audit F14-1).
+  {
+    event: 'unassigned_changed',
+    keys: [queryKeys.reconciliation.all(), queryKeys.dashboard.all()],
+  },
+  // Statement pipeline events refresh the Statements screen's history and
+  // queue, which otherwise only caught up after a scan finished (audit F8-4).
+  ...[
+    'statement_parsed',
+    'statement_parse_failed',
+    'statement_duplicate_rejected',
+    'statement_password_required',
+    'statement_staged',
+    'statement_instrument_confirmation_required',
+  ].map((event) => ({ event, keys: [queryKeys.statements.all()] })),
   {
     event: 'statement_upcoming_bill_set',
     keys: [queryKeys.dashboard.all(), queryKeys.instruments.all()],

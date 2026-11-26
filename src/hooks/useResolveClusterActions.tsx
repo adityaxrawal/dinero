@@ -103,9 +103,14 @@ export function useResolveClusterActions({ cluster, onSuccess }: UseResolveClust
                 <ToastAction
                   altText="Undo"
                   onClick={() => {
-                    API.reconciliation.unmergeCluster(clusterIdSnapshot).catch((err) => {
-                      toast({ variant: 'destructive', ...getErrorToast(err) });
-                    });
+                    API.reconciliation
+                      .unmergeCluster(clusterIdSnapshot)
+                      .then(() =>
+                        toast({ title: 'Undone', description: 'The cluster is back in your queue.' })
+                      )
+                      .catch((err) => {
+                        toast({ variant: 'destructive', ...getErrorToast(err) });
+                      });
                   }}
                 >
                   Undo

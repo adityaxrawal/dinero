@@ -17,11 +17,14 @@ type Statement = NonNullable<ReturnType<typeof useStatementsList>['data']>[numbe
 /** The list of processed statements. */
 function HistoryList({
   loading,
+  onRetry,
   history,
   onViewPdf,
   onDeletePdf,
 }: {
   loading: boolean;
+  /** Set when the history failed to load; shown instead of an empty list. */
+  onRetry?: (() => void) | undefined;
   history: Statement[];
   onViewPdf: (id: string) => void;
   onDeletePdf: (stmt: Statement) => void;
@@ -30,6 +33,17 @@ function HistoryList({
 
   if (loading) {
     return <div className="p-8 text-center text-[13px] text-[#064E3B]/70">Loading history…</div>;
+  }
+  // A failed load must not read as "No statements uploaded yet" (audit F8-8).
+  if (onRetry) {
+    return (
+      <div className="p-8 text-center text-[13px] text-[#064E3B]/70" role="alert">
+        Couldn't load your statement history.{' '}
+        <button type="button" onClick={onRetry} className="underline font-medium text-[#064E3B]">
+          Try again
+        </button>
+      </div>
+    );
   }
   if (history.length === 0) {
     return (
@@ -63,7 +77,7 @@ function HistoryList({
 /** Processing history section of the statements screen. */
 export default function ProcessingHistorySection({ refresh }: { refresh: () => void }) {
   const { toast } = useToast();
-  const { data: history = [], isLoading } = useStatementsList();
+  const { data: history = [], isLoading, isError, refetch } = useStatementsList();
   const [viewingPdfStatementId, setViewingPdfStatementId] = useState<string | null>(null);
 
   /** Deletes a stored statement PDF after confirmation. */
@@ -92,6 +106,7 @@ export default function ProcessingHistorySection({ refresh }: { refresh: () => v
       <div className="bg-[#F8E7C9]/50 rounded-xl overflow-hidden border border-[#064E3B]/10 flex flex-col">
         <HistoryList
           loading={isLoading}
+          onRetry={isError ? () => refetch() : undefined}
           history={history}
           onViewPdf={setViewingPdfStatementId}
           onDeletePdf={handleDeletePdf}

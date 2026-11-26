@@ -91,6 +91,7 @@ export const useSyncStore = create<SyncStoreState>((set) => ({
           non_financial: 0,
           errors: status.errors,
           pending_enrichment: status.pending_enrichment,
+          sent_to_review: status.sent_to_review,
           error_message: null,
         },
         scanError: null,

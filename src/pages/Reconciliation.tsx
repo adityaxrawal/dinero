@@ -9,7 +9,7 @@ import { useSearchParams } from 'react-router-dom';
 import { ShieldAlert, HelpCircle, Loader2, CheckCircle2, Layers, RefreshCw } from 'lucide-react';
 
 import { useReconciliationClusters } from '@/hooks/queries/useReconciliationClusters';
-import { useLlmPendingCount } from '@/hooks/queries/useLlmPendingCount';
+import { useLlmQueueStatus } from '@/hooks/queries/useLlmQueueStatus';
 import { useUnassignedTransactions } from '@/hooks/queries/useUnassignedTransactions';
 import { recheckAllMessage, useRecheckAllUnassigned } from '@/hooks/mutations/useRecheckUnassigned';
 import { useToast } from '@/hooks/use-toast';
@@ -18,7 +18,7 @@ import ReconciliationInspector from '@/components/reconciliation/ReconciliationI
 import UnassignedInspector from '@/components/reconciliation/UnassignedInspector';
 import { cn, formatRelativeDate, isOlderThanDays } from '@/lib/utils';
 import { getUnassignedDisplayInfo } from './reconciliationDisplay';
-import type { ClusterRecord, UnassignedTransactionRecord } from '@/lib/ipc';
+import type { ClusterRecord, LlmState, UnassignedTransactionRecord } from '@/lib/ipc';
 
 const ROW_CLASS =
   'flex flex-col w-full text-left px-3.5 py-3 mx-2 rounded-xl transition-all max-w-[calc(100%-16px)] cursor-pointer select-none border';
@@ -186,6 +186,37 @@ function UnassignedListItem({
   );
 }
 
+/**
+ * What the emails held for the local AI are waiting on. Only says "reading"
+ * when a model can actually run; otherwise says why not (audit F7-1).
+ */
+function LlmQueueLine({ pending, state }: { pending: number; state: LlmState }) {
+  const emails = `${pending} ${pending === 1 ? 'email' : 'emails'}`;
+  return (
+    <p className="flex items-center gap-1.5 text-[11px] text-[#064E3B]/70" role="status">
+      {state === 'ready' ? (
+        <>
+          <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />
+          AI is reading {emails}. They appear here only if it can't find the details.
+        </>
+      ) : state === 'no_model' ? (
+        <span>
+          {emails} {pending === 1 ? 'is' : 'are'} waiting for the local AI.{' '}
+          <a href="#/settings?section=advanced" className="underline font-medium">
+            Download a model
+          </a>{' '}
+          to read {pending === 1 ? 'it' : 'them'}.
+        </span>
+      ) : (
+        <span>
+          {emails} {pending === 1 ? 'is' : 'are'} waiting for the local AI, but this Mac
+          doesn't have enough memory to run it.
+        </span>
+      )}
+    </p>
+  );
+}
+
 /** Shown when a queue section has nothing left to resolve. */
 function EmptyQueueNotice({ message }: { message: string }) {
   return <p className="text-[12px] text-center p-4 text-[#064E3B]/60">{message}</p>;
@@ -235,8 +266,24 @@ function SectionTabs({
   );
 }
 
-/** Loading indicator for the queue list. */
-function QueueStatus({ isLoading }: { isLoading: boolean }) {
+/** Loading, error and all-caught-up states for the queue list. */
+function QueueStatus({ isLoading, onRetry }: { isLoading: boolean; onRetry?: () => void }) {
+  // A failed load must never read as "All Caught Up" (audit F9-3).
+  if (onRetry) {
+    return (
+      <div className="flex flex-col items-center justify-center text-center p-8 h-full gap-3" role="alert">
+        <h3 className="text-sm font-semibold text-[#064E3B]">Couldn't load the review queue</h3>
+        <p className="text-[11px] text-[#064E3B]/70">Your items are safe; the list just didn't load.</p>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="text-[12px] font-medium text-[#064E3B] px-3 py-1 rounded-full border border-[#064E3B]/20 hover:bg-[#064E3B]/10"
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
   if (isLoading) {
     return (
       <div className="flex flex-col items-center justify-center h-40 gap-2">
@@ -251,7 +298,7 @@ function QueueStatus({ isLoading }: { isLoading: boolean }) {
         <CheckCircle2 className="w-6 h-6" />
       </div>
       <h3 className="text-sm font-semibold mb-1 text-[#064E3B]">All Caught Up!</h3>
-      <p className="text-[11px] text-[#064E3B]">No pending clusters requiring review.</p>
+      <p className="text-[11px] text-[#064E3B]">Nothing is waiting for your review.</p>
     </div>
   );
 }
@@ -388,9 +435,11 @@ export default function Reconciliation() {
   /** Switches between the clusters and unassigned queues. */
   const setSection = (section: string) => setSearchParams({ section });
 
-  const { data: clusters = [], isLoading: clustersLoading } = useReconciliationClusters();
-  const { data: unassigned = [], isLoading: unassignedLoading } = useUnassignedTransactions();
-  const { data: llmPending = 0 } = useLlmPendingCount();
+  const clustersQuery = useReconciliationClusters();
+  const unassignedQuery = useUnassignedTransactions();
+  const { data: clusters = [], isLoading: clustersLoading } = clustersQuery;
+  const { data: unassigned = [], isLoading: unassignedLoading } = unassignedQuery;
+  const { data: llmQueue } = useLlmQueueStatus();
   const recheckAll = useRecheckAllUnassigned();
   const { toast } = useToast();
   const canRecheckAll = unassigned.some((u) => u.can_recheck === true);
@@ -405,7 +454,13 @@ export default function Reconciliation() {
   const [selectedUnassignedId, setSelectedUnassignedId] = useState<string | null>(null);
 
   const isLoading = clustersLoading || unassignedLoading;
-  const allCaughtUp = !isLoading && clusters.length === 0 && unassigned.length === 0;
+  const loadFailed = clustersQuery.isError || unassignedQuery.isError;
+  const retryLoad = () => {
+    if (clustersQuery.isError) clustersQuery.refetch();
+    if (unassignedQuery.isError) unassignedQuery.refetch();
+  };
+  const allCaughtUp =
+    !isLoading && !loadFailed && clusters.length === 0 && unassigned.length === 0;
 
   const selectedCluster = useMemo(
     () => clusters.find((c) => c.id === selectedClusterId),
@@ -449,20 +504,14 @@ export default function Reconciliation() {
               </button>
             )}
           </div>
-          {llmPending > 0 && (
-            <p className="flex items-center gap-1.5 text-[11px] text-[#064E3B]/70" role="status">
-              <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />
-              AI is reading {llmPending} {llmPending === 1 ? 'email' : 'emails'}. They appear here
-              only if it can't find the details.
-            </p>
-          )}
+          {llmQueue && llmQueue.pending > 0 && <LlmQueueLine {...llmQueue} />}
 
           <SectionTabs sections={SECTIONS} currentSection={currentSection} onSelect={setSection} />
         </div>
 
         <div className="flex-1 overflow-y-auto px-1 py-2">
-          {isLoading || allCaughtUp ? (
-            <QueueStatus isLoading={isLoading} />
+          {loadFailed || isLoading || allCaughtUp ? (
+            <QueueStatus isLoading={isLoading} {...(loadFailed ? { onRetry: retryLoad } : {})} />
           ) : (
             <div>
               <QueueList

@@ -153,7 +153,10 @@ pub fn resolve_cluster(
                 )?;
             }
         }
-        "keep_separate" => {
+        // Both mean "not the same payment": the incoming evidence becomes its
+        // own transaction. Reject used to fall through and create nothing, so
+        // the payment vanished from the ledger (audit F10-1).
+        "keep_separate" | "reject_candidate" => {
             if let Some(obs_row) =
                 crate::db::transaction_observations::get_observation(conn, observation_id)?
             {
@@ -192,7 +195,13 @@ pub fn resolve_cluster(
         observation_id,
         chosen_canonical_id,
         1.0,
-        crate::reconciliation::audit::DecisionType::ManuallyConfirmed,
+        // Only a confirmed match is a confirmation; the other actions reject
+        // the suggested match (audit F10-3).
+        if action == "confirm_match" {
+            crate::reconciliation::audit::DecisionType::ManuallyConfirmed
+        } else {
+            crate::reconciliation::audit::DecisionType::RejectedMatch
+        },
         Some("user_id"),
     )?;
 
@@ -204,6 +213,109 @@ pub fn resolve_cluster(
     )?;
 
     Ok(())
+}
+
+/// What an unmerge undid, so the caller can tell the UI.
+#[derive(Debug, PartialEq)]
+pub enum UnmergeOutcome {
+    /// Nothing to undo: unknown cluster, or it is already open.
+    NotUndoable,
+    /// Reopened; `deleted_transaction` is the canonical the resolution had
+    /// created for the incoming payment (Keep Separate / Reject), if any.
+    Reopened { deleted_transaction: Option<String> },
+}
+
+/// Undoes a cluster resolution (audit F10-2). Reopening the cluster alone left
+/// a confirmed match linked, so resolving it again could book a duplicate.
+///
+/// In one savepoint: unlink the incoming observation; soft-delete the canonical
+/// the resolution created for it, unless it is one of the cluster's own
+/// candidates (a confirmed match) or something else now links to it; reopen
+/// the cluster; record it in the audit log.
+pub fn unmerge_cluster(conn: &Connection, cluster_id: &str) -> Result<UnmergeOutcome> {
+    conn.execute_batch("SAVEPOINT unmerge_cluster")?;
+    let result = (|| -> Result<UnmergeOutcome> {
+        let status: Option<String> = conn
+            .query_row(
+                "SELECT cluster_status FROM reconciliation_clusters WHERE id = ?1",
+                params![cluster_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(status) = status.filter(|s| s != "open") else {
+            return Ok(UnmergeOutcome::NotUndoable);
+        };
+
+        let mut deleted_transaction = None;
+        let incoming: Option<(String, Option<String>)> = conn
+            .query_row(
+                "SELECT o.id, o.canonical_transaction_id \
+                 FROM reconciliation_cluster_members m \
+                 JOIN transaction_observations o ON o.id = m.observation_id \
+                 WHERE m.cluster_id = ?1 AND m.member_role = 'incoming'",
+                params![cluster_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        if let (Some((obs_id, Some(linked))), true) =
+            (incoming, status == "resolved" || status == "rejected")
+        {
+            let is_candidate: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM reconciliation_cluster_members \
+                 WHERE cluster_id = ?1 AND member_role != 'incoming' AND canonical_transaction_id = ?2)",
+                params![cluster_id, linked],
+                |r| r.get(0),
+            )?;
+            crate::db::transaction_observations::update_canonical_transaction_id(
+                conn, &obs_id, None,
+            )?;
+            if !is_candidate {
+                let still_linked: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM transaction_observations \
+                     WHERE canonical_transaction_id = ?1 AND is_deleted = 0)",
+                    params![linked],
+                    |r| r.get(0),
+                )?;
+                if !still_linked {
+                    crate::db::transactions::delete_transaction(conn, &linked)?;
+                    deleted_transaction = Some(linked);
+                }
+            }
+        }
+
+        conn.execute(
+            "UPDATE reconciliation_clusters SET cluster_status = 'open', resolved_at = NULL WHERE id = ?1",
+            params![cluster_id],
+        )?;
+        crate::db::audit_log::insert(
+            conn,
+            &crate::db::audit_log::AuditLogRow {
+                id: Uuid::new_v4().to_string(),
+                actor_type: Some("user".to_string()),
+                actor_id: None,
+                action: Some("cluster_unmerged".to_string()),
+                resource_type: Some("reconciliation_cluster".to_string()),
+                resource_id: Some(cluster_id.to_string()),
+                before_json: Some(serde_json::json!({ "cluster_status": status })),
+                after_json: Some(serde_json::json!({
+                    "cluster_status": "open",
+                    "deleted_transaction": deleted_transaction,
+                })),
+                created_at: chrono::Utc::now(),
+            },
+        )?;
+        Ok(UnmergeOutcome::Reopened { deleted_transaction })
+    })();
+    match result {
+        Ok(outcome) => {
+            conn.execute_batch("RELEASE unmerge_cluster")?;
+            Ok(outcome)
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK TO unmerge_cluster; RELEASE unmerge_cluster");
+            Err(e)
+        }
+    }
 }
 
 #[cfg(test)]

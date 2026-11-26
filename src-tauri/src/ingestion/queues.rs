@@ -484,6 +484,8 @@ pub struct PipelineStatusResponse {
     /// Emails waiting on the LLM. Their review entries are hidden until the
     /// verdict, so the UI shows this count instead.
     pub llm_pending_jobs: i64,
+    /// `ready`, `no_model` or `ineligible` (see `startup::llm_state`).
+    pub llm_state: &'static str,
 }
 
 #[tauri::command]
@@ -491,6 +493,7 @@ pub struct PipelineStatusResponse {
 pub async fn pipeline_status(
     handles: tauri::State<'_, QueueHandles>,
     pool: tauri::State<'_, Pool>,
+    app: tauri::AppHandle,
 ) -> Result<PipelineStatusResponse, crate::error::AppError> {
     let llm_pending_jobs = pool
         .get()
@@ -530,6 +533,7 @@ pub async fn pipeline_status(
                 .saturating_sub(handles.statement_tx.capacity()),
         },
         llm_pending_jobs,
+        llm_state: crate::startup::llm_state(&app),
     })
 }
 

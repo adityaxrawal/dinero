@@ -8,6 +8,8 @@ import { queryKeys } from '@/lib/queryKeys';
 import { useToast } from '@/hooks/use-toast';
 import { getErrorToast } from '@/lib/errorMapping';
 import { useResolveUnassignedTransaction } from '@/hooks/mutations/useResolveUnassignedTransaction';
+import { ToastAction } from '@/components/ui/toast';
+import { engineDecisionToast } from '@/lib/engineOutcome';
 
 /** Form state for manually resolving an unassigned transaction. */
 export function useUnassignedForm(
@@ -43,18 +45,44 @@ export function useUnassignedForm(
   const canSubmit = Boolean(merchant.trim() && amount && date && instrumentId);
 
   /** Dismisses the entry without resolving it. */
-  const handleDismiss = async () => {
-    if (!record) return;
-    try {
-      await API.reconciliation.dismissUnassigned(record.id);
-      queryClient.invalidateQueries({ queryKey: queryKeys.reconciliation.unassigned() });
-      onClose();
-    } catch (err) {
-      console.error('Failed to dismiss', err);
-    }
+  /** Refreshes everything a review entry's status can change. */
+  const invalidateReview = () => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.reconciliation.all() });
+    queryClient.invalidateQueries({ queryKey: queryKeys.dashboard.all() });
   };
 
-  /** Resolves the transaction with the supplied fields. */
+  // Dismiss is one click, so it must be undoable and must never fail silently
+  // (audit F9-4).
+  const handleDismiss = async () => {
+    if (!record) return;
+    const id = record.id;
+    try {
+      await API.reconciliation.dismissUnassigned(id);
+    } catch (err) {
+      toast({ variant: 'destructive', ...getErrorToast(err) });
+      return;
+    }
+    invalidateReview();
+    onClose();
+    toast({
+      title: 'Marked as not a transaction',
+      description: 'Removed from the review queue.',
+      action: (
+        <ToastAction
+          altText="Undo"
+          onClick={() => {
+            API.reconciliation
+              .restoreUnassigned(id)
+              .then(invalidateReview)
+              .catch((e) => toast({ variant: 'destructive', ...getErrorToast(e) }));
+          }}
+        >
+          Undo
+        </ToastAction>
+      ),
+    });
+  };
+
   const handleSave = () => {
     if (!record || !canSubmit) return;
     resolveManually.mutate(
@@ -69,8 +97,8 @@ export function useUnassignedForm(
         referenceId: referenceId.trim() || undefined,
       },
       {
-        onSuccess: () => {
-          toast({ title: 'Transaction saved' });
+        onSuccess: (decision) => {
+          toast(engineDecisionToast(decision));
           onClose();
         },
         onError: (err) => toast({ variant: 'destructive', ...getErrorToast(err) }),

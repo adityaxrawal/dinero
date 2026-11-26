@@ -1,7 +1,8 @@
 /**
  * Counters for what a scan has found so far.
  */
-import { Mail, ScanLine, CheckCircle, FileText, Ban, AlertTriangle } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Mail, ScanLine, CheckCircle, FileText, Ban, AlertTriangle, Inbox } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { ScanProgressPayload } from '@/lib/ipc';
 
@@ -21,6 +22,12 @@ export default function ScanStatsGrid({ progress }: { progress: ScanProgressPayl
       iconClass: 'text-emerald-600',
     },
     { icon: FileText, label: 'Statements:', value: count(progress.statements_found) },
+    {
+      icon: Inbox,
+      label: 'Needs review:',
+      value: count(progress.sent_to_review),
+      to: '/reconciliation?section=unassigned',
+    },
     { icon: Ban, label: 'Ignored:', value: count(progress.non_financial) },
     {
       icon: AlertTriangle,
@@ -33,13 +40,25 @@ export default function ScanStatsGrid({ progress }: { progress: ScanProgressPayl
 
   return (
     <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-      {tiles.map(({ icon: Icon, label, value, iconClass, valueClass }) => (
-        <div key={label} className="flex items-center gap-2 text-[13px]">
-          <Icon className={cn('w-4 h-4 text-[#064E3B]/50', iconClass)} />
-          <span className="text-[#064E3B]/60 font-medium">{label}</span>
-          <strong className={cn('font-bold', valueClass)}>{value}</strong>
-        </div>
-      ))}
+      {tiles.map(({ icon: Icon, label, value, iconClass, valueClass, to }) => {
+        const body = (
+          <>
+            <Icon className={cn('w-4 h-4 text-[#064E3B]/50', iconClass)} />
+            <span className="text-[#064E3B]/60 font-medium">{label}</span>
+            <strong className={cn('font-bold', valueClass)}>{value}</strong>
+          </>
+        );
+        // A non-zero review count links to the queue, so the user can act on it.
+        return to && value > 0 ? (
+          <Link key={label} to={to} className="flex items-center gap-2 text-[13px] underline">
+            {body}
+          </Link>
+        ) : (
+          <div key={label} className="flex items-center gap-2 text-[13px]">
+            {body}
+          </div>
+        );
+      })}
     </div>
   );
 }

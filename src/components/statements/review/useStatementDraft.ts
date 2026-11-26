@@ -1,6 +1,8 @@
 /**
  * Draft state for the review dialog: loading, editing, committing, discarding.
  */
+import { statementCommitToast } from '@/lib/engineOutcome';
+import { getErrorToast } from '@/lib/errorMapping';
 import { useCallback, useEffect, useState } from 'react';
 import { API, type DraftMetadataInput, type DraftRow, type StatementDraft } from '@/lib/ipc';
 import { useToast } from '@/hooks/use-toast';
@@ -149,14 +151,11 @@ export function useStatementDraft() {
     commitDraft.mutate(
       { draftId: activeDraftId, metadata, rows, acknowledgePartial: partialAcknowledged },
       {
-        onSuccess: () => {
-          toast({
-            title: 'Statement saved',
-            description: 'Extracted transactions have been added.',
-          });
+        onSuccess: (result) => {
+          toast(statementCommitToast(result?.summary));
           closeReviewModal();
         },
-        onError: () => toast({ title: 'Failed to save', variant: 'destructive' }),
+        onError: (err) => toast({ variant: 'destructive', ...getErrorToast(err, 'Failed to save') }),
       }
     );
   };

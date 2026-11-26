@@ -7,10 +7,13 @@ const reparseMutate = vi.fn();
 const retryMutate = vi.fn();
 const discardMutate = vi.fn();
 const openReviewModal = vi.fn();
+const openInstrumentModal = vi.fn();
 let groups: Record<string, unknown[]> | undefined;
 
 vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast }) }));
-vi.mock('@/lib/GlobalStateContext', () => ({ useGlobalState: () => ({ openReviewModal }) }));
+vi.mock('@/lib/GlobalStateContext', () => ({
+  useGlobalState: () => ({ openReviewModal, openInstrumentModal }),
+}));
 vi.mock('@/hooks/useIpcListen', () => ({ useIpcListen: () => {} }));
 vi.mock('@/hooks/queries/useUnprocessedStatements', () => ({
   useUnprocessedStatements: () => ({ data: groups }),
@@ -41,6 +44,34 @@ beforeEach(() => {
 });
 
 describe('UnprocessedItemsQueue', () => {
+  // Statements parked at the Instrument Gate were unreachable once their
+  // one-off dialog was gone (audit F8-1); the queue now lists them.
+  it('lists statements needing account details and opens the gate from the row', () => {
+    groups = {
+      awaiting_instrument: [
+        entry({
+          statement_id: 's9',
+          display_name: null,
+          filename: 'slice Credit Card Statement - November 2026.pdf',
+          failure_reason: 'The bank (issuer) could not be read from this statement.',
+          issuer_hint: null,
+        }),
+      ],
+      awaiting_password: [],
+      pending_retry: [],
+      failed: [],
+    };
+    renderQueue();
+    expect(screen.getByLabelText('Needs account details')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Confirm account/ }));
+    expect(openInstrumentModal).toHaveBeenCalledWith(
+      's9',
+      'slice Credit Card Statement - November 2026.pdf',
+      '',
+      'The bank (issuer) could not be read from this statement.'
+    );
+  });
+
   // Each group is a labelled section, so the aria-label is the stable handle.
   it('groups an item under its status section', () => {
     renderQueue();

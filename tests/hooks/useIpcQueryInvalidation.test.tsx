@@ -88,3 +88,16 @@ describe('createInvalidationBatcher (audit B-2)', () => {
     expect(invalidate).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('EVENT_INVALIDATIONS (audit F14-1, F12-3, F8-4)', () => {
+  it('maps review, edit and statement events to every screen they change', async () => {
+    const { EVENT_INVALIDATIONS } = await import('@/hooks/useIpcQueryInvalidation');
+    const keysFor = (event: string) =>
+      EVENT_INVALIDATIONS.find((e) => e.event === event)?.keys.map((k) => k[0]) ?? [];
+    expect(keysFor('unassigned_changed')).toEqual(['reconciliation', 'dashboard']);
+    expect(keysFor('transaction_updated')).toContain('instruments');
+    expect(keysFor('scan_completed')).toContain('reconciliation');
+    expect(keysFor('statement_parsed')).toEqual(['statements']);
+    expect(keysFor('statement_instrument_confirmation_required')).toEqual(['statements']);
+  });
+});

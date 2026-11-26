@@ -16,7 +16,7 @@ const asMock = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  asMock(API.transactions.create).mockResolvedValue(undefined);
+  asMock(API.transactions.create).mockResolvedValue('new_canonical');
 });
 
 function fill(result: { current: ReturnType<typeof useCreateTransaction> }) {
@@ -98,7 +98,7 @@ describe('useCreateTransaction', () => {
     expect(result.current.amount).toBe('');
     expect(result.current.direction).toBe('debit');
     expect(invalidateQueries).toHaveBeenCalledTimes(2);
-    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Transaction Created' }));
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Transaction saved' }));
   });
 
   it('keeps the draft open and reports the failure when the create fails', async () => {

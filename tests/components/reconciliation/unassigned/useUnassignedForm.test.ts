@@ -9,6 +9,7 @@ const mutate = vi.fn();
 const toast = vi.fn();
 const invalidateQueries = vi.fn();
 const dismissUnassigned = vi.fn();
+const restoreUnassigned = vi.fn();
 const onClose = vi.fn();
 
 vi.mock('@tanstack/react-query', () => ({ useQueryClient: () => ({ invalidateQueries }) }));
@@ -18,7 +19,12 @@ vi.mock('@/hooks/mutations/useResolveUnassignedTransaction', () => ({
   useResolveUnassignedTransaction: () => ({ mutate, isPending: false }),
 }));
 vi.mock('@/lib/ipc', () => ({
-  API: { reconciliation: { dismissUnassigned: (...a: unknown[]) => dismissUnassigned(...a) } },
+  API: {
+    reconciliation: {
+      dismissUnassigned: (...a: unknown[]) => dismissUnassigned(...a),
+      restoreUnassigned: (...a: unknown[]) => restoreUnassigned(...a),
+    },
+  },
 }));
 
 const record = (over: Partial<UnassignedTransactionRecord> = {}) =>
@@ -36,6 +42,7 @@ const record = (over: Partial<UnassignedTransactionRecord> = {}) =>
 beforeEach(() => {
   vi.clearAllMocks();
   dismissUnassigned.mockResolvedValue(undefined);
+  restoreUnassigned.mockResolvedValue(undefined);
 });
 
 describe('useUnassignedForm', () => {
@@ -113,14 +120,26 @@ describe('useUnassignedForm', () => {
     expect(onClose).toHaveBeenCalled();
   });
 
-  it('does not close when the dismiss fails', async () => {
+  it('does not close and shows an error toast when the dismiss fails', async () => {
     dismissUnassigned.mockRejectedValue(new Error('offline'));
-    vi.spyOn(console, 'error').mockImplementation(() => {});
     const { result } = renderHook(() => useUnassignedForm(record(), onClose));
     await act(async () => {
       await result.current.handleDismiss();
     });
     expect(onClose).not.toHaveBeenCalled();
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ variant: 'destructive' }));
+  });
+
+  it('offers an Undo that restores the dismissed entry', async () => {
+    const { result } = renderHook(() => useUnassignedForm(record(), onClose));
+    await act(async () => {
+      await result.current.handleDismiss();
+    });
+    const spec = toast.mock.calls.at(-1)?.[0] as { action: { props: { onClick: () => void } } };
+    await act(async () => {
+      spec.action.props.onClick();
+    });
+    expect(restoreUnassigned).toHaveBeenCalledWith('u1');
   });
 
   it('applies a quick-fill to the named field only', () => {

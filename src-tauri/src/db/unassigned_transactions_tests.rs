@@ -1,7 +1,8 @@
 use crate::db::transaction_observations::{insert_observation, TransactionObservationsRow};
 use crate::db::unassigned_transactions::{
-    insert as insert_unassigned, is_open, select_open, select_open_with_context, settle_if_open,
-    update_reason, update_status, UnassignedTransactionRow,
+    insert as insert_unassigned, is_open, restore_dismissed, select_open,
+    select_open_with_context, settle_if_open, update_reason, update_status,
+    UnassignedTransactionRow,
 };
 use chrono::Utc;
 use rusqlite::Connection;
@@ -440,4 +441,23 @@ fn test_body_snippet_is_bounded_for_pathological_bodies() {
         );
         assert!(snippet.ends_with('…'));
     }
+}
+
+/// Undo after "Not a Transaction" reopens only a dismissed entry; it must
+/// never reopen one that was resolved (booked) in the meantime.
+#[test]
+fn test_restore_dismissed_reopens_only_dismissed_entries() {
+    let conn = setup_db();
+    open_entry(&conn, "ua_undo", "obs_undo");
+
+    update_status(&conn, "ua_undo", "ignored").unwrap();
+    assert!(restore_dismissed(&conn, "ua_undo").unwrap());
+    assert_eq!(status_of(&conn, "ua_undo"), "open");
+
+    // Already open: nothing to restore.
+    assert!(!restore_dismissed(&conn, "ua_undo").unwrap());
+
+    update_status(&conn, "ua_undo", "resolved").unwrap();
+    assert!(!restore_dismissed(&conn, "ua_undo").unwrap());
+    assert_eq!(status_of(&conn, "ua_undo"), "resolved");
 }

@@ -1,6 +1,7 @@
 /**
  * Form state and submission for manual transaction creation.
  */
+import { engineDecisionToast } from '@/lib/engineOutcome';
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { API } from '@/lib/ipc';
@@ -27,7 +28,7 @@ export function useCreateTransaction() {
     if (isNaN(amountValue) || amountValue <= 0 || !merchant.trim() || !instrumentId) return;
     setIsCreating(true);
     try {
-      await API.transactions.create({
+      const decision = await API.transactions.create({
         amountMinor: Math.round(amountValue * 100),
         currency: 'INR',
         direction,
@@ -35,7 +36,7 @@ export function useCreateTransaction() {
         merchantName: merchant.trim(),
         instrumentId,
       });
-      toast({ title: 'Transaction Created', description: 'Your manual entry has been added.' });
+      toast(engineDecisionToast(decision));
       setIsOpen(false);
       setAmount('');
       setMerchant('');

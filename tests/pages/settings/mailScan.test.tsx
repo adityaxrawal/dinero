@@ -26,6 +26,7 @@ const progress = (over: Partial<ScanProgressPayload> = {}): ScanProgressPayload 
   non_financial: 30,
   errors: 0,
   pending_enrichment: 0,
+  sent_to_review: 0,
   ...over,
 });
 

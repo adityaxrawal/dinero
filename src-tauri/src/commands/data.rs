@@ -1642,6 +1642,71 @@ pub async fn transactions_list(
     .map_err(crate::error::AppError::Db)
 }
 
+/// Writes every transaction matching the feed's filters (and search text,
+/// when set) to a CSV file the user picked. The old export ran in the webview
+/// over whatever pages were loaded, with no direction column (audit F11-1,
+/// F11-2). Returns the number of rows written.
+#[tauri::command]
+pub async fn transactions_export_csv(
+    path: String,
+    filters: Option<TransactionListFilters>,
+    query: Option<String>,
+    pool: State<'_, deadpool_sqlite::Pool>,
+) -> Result<usize, crate::error::AppError> {
+    if !path.to_lowercase().ends_with(".csv") {
+        return Err(crate::error::AppError::Validation(
+            "Choose a file name ending in .csv.".to_string(),
+        ));
+    }
+    let filters = filters.unwrap_or_default();
+    let conn = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    let records = conn
+        .interact(move |c| match query.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+            Some(q) => do_transactions_search(c, q, Some(&filters)),
+            // SQLite: LIMIT -1 means no limit.
+            None => do_fetch_transactions(c, &filters, -1, 0),
+        })
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(crate::error::AppError::Db)?;
+    let count = records.len();
+    std::fs::write(&path, transactions_to_csv(&records))
+        .map_err(|e| crate::error::AppError::Io(e.to_string()))?;
+    Ok(count)
+}
+
+/// CSV text for an export. Text cells that a spreadsheet would run as a
+/// formula (leading `= + - @`, tab or CR) get a `'` prefix; merchant text
+/// comes from emails, so a sender controls it (audit F11-3).
+fn transactions_to_csv(records: &[TransactionRecord]) -> String {
+    fn cell(value: &str, text: bool) -> String {
+        let guarded = if text && value.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+            format!("'{value}")
+        } else {
+            value.to_string()
+        };
+        format!("\"{}\"", guarded.replace('"', "\"\""))
+    }
+    let mut out = String::from("\"Date\",\"Merchant\",\"Direction\",\"Amount\",\"Category\",\"Status\",\"Source\"\n");
+    for r in records {
+        let row = [
+            cell(&r.date, true),
+            cell(&r.merchant, true),
+            cell(r.direction.as_deref().unwrap_or(""), true),
+            cell(&format!("{:.2}", r.amount), false),
+            cell(&r.category, true),
+            cell(&r.status, true),
+            cell(r.source_mix.as_deref().unwrap_or(""), true),
+        ];
+        out.push_str(&row.join(","));
+        out.push('\n');
+    }
+    out
+}
+
 #[tauri::command]
 pub async fn fetch_transaction_observations(
     transaction_id: String,
@@ -1969,21 +2034,105 @@ pub async fn reconciliation_get_unassigned_transactions(
 pub async fn reconciliation_dismiss_unassigned_transaction(
     id: String,
     pool: State<'_, deadpool_sqlite::Pool>,
+    app_handle: tauri::AppHandle,
 ) -> Result<String, crate::error::AppError> {
     crate::ipc::validation::validate_uuid("id", &id)?;
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    set_review_entry_status(pool.inner(), &app_handle, id, ReviewStatusChange::Dismiss).await?;
+    Ok("dismissed".to_string())
+}
+
+/// Undoes "Not a Transaction": puts a dismissed review entry back in the queue.
+#[tauri::command]
+pub async fn reconciliation_restore_unassigned_transaction(
+    id: String,
+    pool: State<'_, deadpool_sqlite::Pool>,
+    app_handle: tauri::AppHandle,
+) -> Result<String, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("id", &id)?;
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    set_review_entry_status(pool.inner(), &app_handle, id, ReviewStatusChange::Restore).await?;
+    Ok("restored".to_string())
+}
+
+#[derive(Clone, Copy)]
+enum ReviewStatusChange {
+    Dismiss,
+    Restore,
+}
+
+/// Dismisses or restores a review entry, records it in the audit log and tells
+/// the UI the queue changed (audit F9-4: dismiss used to leave no trace and no
+/// way back).
+async fn set_review_entry_status(
+    pool: &deadpool_sqlite::Pool,
+    app_handle: &tauri::AppHandle,
+    id: String,
+    change: ReviewStatusChange,
+) -> Result<(), crate::error::AppError> {
     let conn = pool
         .get()
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-    let id_clone = id.clone();
-    conn.interact(move |c| {
-        crate::db::unassigned_transactions::update_status(c, &id_clone, "ignored")
+    let entry_id = id.clone();
+    conn.interact(move |c| -> Result<(), crate::error::AppError> {
+        let tx = c
+            .transaction()
+            .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+        let action = match change {
+            ReviewStatusChange::Dismiss => {
+                crate::db::unassigned_transactions::update_status(&tx, &entry_id, "ignored")
+                    .map_err(|e| {
+                        // Booked or re-checked by someone else first: tell the
+                        // user plainly instead of a generic internal error.
+                        if e.to_string().contains("already") {
+                            crate::error::AppError::Validation(
+                                "This entry was already resolved. Refresh to see the latest queue."
+                                    .to_string(),
+                            )
+                        } else {
+                            crate::error::AppError::Db(e.to_string())
+                        }
+                    })?;
+                "review_entry_dismissed"
+            }
+            ReviewStatusChange::Restore => {
+                let restored =
+                    crate::db::unassigned_transactions::restore_dismissed(&tx, &entry_id)
+                        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+                if !restored {
+                    return Err(crate::error::AppError::Validation(
+                        "This entry can no longer be restored.".to_string(),
+                    ));
+                }
+                "review_entry_restored"
+            }
+        };
+        crate::db::audit_log::insert(
+            &tx,
+            &crate::db::audit_log::AuditLogRow {
+                id: uuid::Uuid::new_v4().to_string(),
+                actor_type: Some("user".to_string()),
+                actor_id: None,
+                action: Some(action.to_string()),
+                resource_type: Some("unassigned_transaction".to_string()),
+                resource_id: Some(entry_id),
+                before_json: None,
+                after_json: None,
+                created_at: chrono::Utc::now(),
+            },
+        )
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+        tx.commit().map_err(|e| crate::error::AppError::Db(e.to_string()))
     })
     .await
-    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
-    .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-    Ok("dismissed".to_string())
+    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))??;
+    let _ = crate::ipc::events::emit_event(
+        app_handle,
+        crate::ipc::events::AppEvent::UnassignedChanged,
+        serde_json::json!({ "unassigned_id": id }),
+    );
+    Ok(())
 }
 
 #[tauri::command]
@@ -2020,32 +2169,43 @@ pub(crate) async fn resolve_unassigned_transaction_manually<R: tauri::Runtime>(
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
 
-    // Claim the entry before booking (re-check race, current-issues #3): it
-    // used to book first and then mark the entry resolved, which silently did
-    // nothing if the AI had booked it meanwhile -- a duplicate transaction.
-    // Claimed only while open with no live AI job; released if booking fails.
-    let id_clone = id.clone();
-    let claimed = conn
-        .interact(move |c| crate::db::unassigned_transactions::claim_for_manual_resolve(c, &id_clone))
+    // The user's values complete the email's own held observation, through the
+    // engine's review entry point, in one transaction (audit F9-1, FRS 8.2).
+    // It used to book a separate "manual" observation, orphaning the email:
+    // no provenance, no raw source, and weaker duplicate matching.
+    let entry_id = id.clone();
+    let outcome = conn
+        .interact(move |c| complete_review_entry(c, &entry_id, &payload))
         .await
-        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
-        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-    if !claimed {
-        return Err(crate::error::AppError::Validation(
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))??;
+    let (decision, observation_id) = outcome.ok_or_else(|| {
+        crate::error::AppError::Validation(
             "This entry was already resolved, or the AI is re-checking it. Refresh and try again."
                 .to_string(),
-        ));
-    }
-    let decision = match crate::commands::create_manual_transaction(payload, pool, app_handle).await {
-        Ok(decision) => decision,
-        Err(e) => {
-            let id_clone = id.clone();
-            let _ = conn
-                .interact(move |c| crate::db::unassigned_transactions::release_manual_claim(c, &id_clone))
-                .await;
-            return Err(e);
+        )
+    })?;
+
+    match &decision {
+        crate::reconciliation::audit::DecisionType::AmbiguousPending(cluster_id) => {
+            let _ = crate::ipc::events::emit_event(
+                app_handle,
+                crate::ipc::events::AppEvent::ReconciliationCluster,
+                serde_json::json!({ "cluster_id": cluster_id, "observation_id": observation_id }),
+            );
         }
-    };
+        _ => {
+            let _ = crate::ipc::events::emit_event(
+                app_handle,
+                crate::ipc::events::AppEvent::TransactionCreated,
+                serde_json::json!({ "observation_id": observation_id }),
+            );
+        }
+    }
+    let _ = crate::ipc::events::emit_event(
+        app_handle,
+        crate::ipc::events::AppEvent::UnassignedChanged,
+        serde_json::json!({ "unassigned_id": id }),
+    );
 
     // What the user entered is confirmed truth for this email: score pending
     // learned rules against it (M10 follow-up). Best effort -- entries
@@ -2054,7 +2214,89 @@ pub(crate) async fn resolve_unassigned_transaction_manually<R: tauri::Runtime>(
         .interact(move |c| score_rules_from_resolution(c, &id, &instrument_id, confirmed))
         .await;
 
-    Ok(decision)
+    Ok(decision.as_str().to_string())
+}
+
+/// Writes the user's values onto the review entry's observation and completes
+/// it. None when the entry is no longer open or the AI still holds it.
+///
+/// `merchant_raw` stays an exact span of the email (FRS 413): the typed name
+/// replaces it only when the email contains it verbatim; otherwise it becomes
+/// the display label (`merchant_normalized`). A date equal to the extracted
+/// one keeps the extracted time; a different date is stored with `low`
+/// confidence, since the form carries no time (audit F9-6).
+fn complete_review_entry(
+    c: &rusqlite::Connection,
+    unassigned_id: &str,
+    payload: &crate::commands::ManualTransactionPayload,
+) -> Result<
+    Option<(crate::reconciliation::audit::DecisionType, String)>,
+    crate::error::AppError,
+> {
+    use rusqlite::OptionalExtension;
+    let db = |e: rusqlite::Error| crate::error::AppError::Db(e.to_string());
+    let observation_id: Option<String> = c
+        .query_row(
+            &format!(
+                "SELECT u.observation_id FROM unassigned_transactions u WHERE u.id = ?1 AND {}",
+                crate::db::unassigned_transactions::VISIBLE_OPEN
+            ),
+            [unassigned_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(db)?;
+    let Some(observation_id) = observation_id else {
+        return Ok(None);
+    };
+    let mut row = crate::db::transaction_observations::get_observation(c, &observation_id)
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+        .ok_or_else(|| {
+            crate::error::AppError::NotFound("This entry's email record is missing.".to_string())
+        })?;
+
+    row.instrument_id = Some(payload.instrument_id.to_string());
+    row.amount_minor = Some(payload.amount_minor);
+    row.amount = Some(payload.amount_minor as f64 / 100.0);
+    row.currency = Some(payload.currency.clone());
+    row.direction = Some(payload.direction.clone());
+    if payload.reference_id.is_some() {
+        row.reference_id = payload.reference_id.clone();
+    }
+    row.confidence_score = Some(1.0);
+
+    let entered = chrono::NaiveDateTime::parse_from_str(&payload.event_time, "%Y-%m-%d %H:%M:%S")
+        .map_err(|_| {
+            crate::error::AppError::Validation(format!(
+                "Invalid date '{}'.",
+                payload.event_time
+            ))
+        })?;
+    if row.event_time.map(|t| t.date()) != Some(entered.date()) {
+        row.event_time = Some(entered);
+        row.posting_date = Some(entered.date());
+        row.event_time_confidence = Some("low".to_string());
+    }
+
+    let typed = payload.merchant_name.trim().to_string();
+    if row.merchant_raw.as_deref() != Some(typed.as_str()) {
+        let body = row
+            .raw_payload_json
+            .as_deref()
+            .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
+            .and_then(|v| v["body"].as_str().map(str::to_string))
+            .unwrap_or_default();
+        if !typed.is_empty() && body.contains(&typed) {
+            row.merchant_raw = Some(typed);
+        } else {
+            row.merchant_normalized = Some(typed);
+        }
+    }
+
+    let decision =
+        crate::reconciliation::engine::complete_observation(c, &row, unassigned_id, None)
+            .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    Ok(decision.map(|d| (d, observation_id)))
 }
 
 /// Reruns learned patterns and the rule layers on a review entry, booking it
@@ -2168,6 +2410,7 @@ fn score_rules_from_resolution(
 pub async fn reconciliation_clusters_unmerge(
     cluster_id: String,
     pool: State<'_, deadpool_sqlite::Pool>,
+    app_handle: tauri::AppHandle,
 ) -> Result<String, crate::error::AppError> {
     crate::ipc::validation::validate_uuid("cluster_id", &cluster_id)?;
     crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
@@ -2175,22 +2418,30 @@ pub async fn reconciliation_clusters_unmerge(
         .get()
         .await
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-    let cluster_id_clone = cluster_id.clone();
-    let count = conn
-        .interact(move |c| {
-            c.execute(
-                "UPDATE reconciliation_clusters SET cluster_status = 'open', resolved_at = NULL WHERE id = ?1",
-                params![cluster_id_clone],
-            )
-        })
+    let id = cluster_id.clone();
+    let outcome = conn
+        .interact(move |c| crate::reconciliation::cluster::unmerge_cluster(c, &id))
         .await
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
         .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-    if count == 0 {
+    let crate::reconciliation::cluster::UnmergeOutcome::Reopened { deleted_transaction } = outcome
+    else {
         return Err(crate::error::AppError::Validation(
-            "cluster not found".to_string(),
+            "This cluster has nothing to undo.".to_string(),
         ));
-    }
+    };
+    // The queue, ledger and dashboard all change (audit F10-2: no event used
+    // to fire, so the UI stayed stale after an Undo).
+    let _ = crate::ipc::events::emit_event(
+        &app_handle,
+        crate::ipc::events::AppEvent::ReconciliationCluster,
+        serde_json::json!({ "cluster_id": cluster_id }),
+    );
+    let _ = crate::ipc::events::emit_event(
+        &app_handle,
+        crate::ipc::events::AppEvent::TransactionDeleted,
+        serde_json::json!({ "transaction_id": deleted_transaction }),
+    );
     Ok("unmerged".to_string())
 }
 
@@ -3126,7 +3377,106 @@ mod tests {
             .unwrap();
         assert_eq!(txn_count, 1);
 
+        // Booked from the email's own observation, not a separate "manual"
+        // one (audit F9-1): obs_1 is linked and no other observation exists.
+        let (linked, obs_count, method): (Option<String>, i64, Option<String>) = conn
+            .interact(|c| {
+                c.query_row(
+                    "SELECT o.canonical_transaction_id, \
+                            (SELECT COUNT(*) FROM transaction_observations), o.source_pipeline \
+                     FROM transaction_observations o WHERE o.id = 'obs_1'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(linked.is_some(), "the email observation must be linked to the booked transaction");
+        assert_eq!(obs_count, 1, "no separate manual observation may be created");
+        assert_eq!(method.as_deref(), Some("gmail_transaction"));
+
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    /// The typed merchant never overwrites the email's text unless the email
+    /// contains it verbatim (FRS 413), and a same-day date keeps the email's
+    /// own time instead of midnight (audit F9-1, F9-6).
+    #[test]
+    fn test_complete_review_entry_keeps_source_span_and_time() {
+        let conn = crate::db::test_helpers::setup_test_db();
+        let instrument_id = uuid::Uuid::new_v4();
+        conn.execute(
+            "INSERT INTO instruments (id, type, issuer_name, masked_identifier) \
+             VALUES (?1, 'credit_card', 'HDFC', '4021')",
+            params![instrument_id.to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transaction_observations \
+             (id, source_pipeline, source_record_id, merchant_raw, event_time, event_time_confidence, raw_payload_json) \
+             VALUES ('obs_r', 'gmail_transaction', 'msg_r', 'SWIGGY BANGALORE', '2026-11-03 14:05:00', 'high', ?1)",
+            params![serde_json::json!({ "body": "Rs.420 spent at SWIGGY BANGALORE on 03-11-26" }).to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO unassigned_transactions (id, observation_id, reason, status) \
+             VALUES ('ua_r', 'obs_r', 'gate3_failed:missing_instrument', 'open')",
+            [],
+        )
+        .unwrap();
+
+        let payload = crate::commands::ManualTransactionPayload {
+            amount_minor: 42000,
+            currency: "INR".to_string(),
+            direction: "debit".to_string(),
+            event_time: "2026-11-03 00:00:00".to_string(),
+            merchant_name: "Swiggy".to_string(),
+            instrument_id,
+            reference_id: None,
+        };
+        let (_, obs_id) = complete_review_entry(&conn, "ua_r", &payload)
+            .unwrap()
+            .expect("an open entry must complete");
+        assert_eq!(obs_id, "obs_r");
+
+        let (raw, label, time, conf): (Option<String>, Option<String>, String, Option<String>) = conn
+            .query_row(
+                "SELECT merchant_raw, merchant_normalized, event_time, event_time_confidence \
+                 FROM transaction_observations WHERE id = 'obs_r'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(raw.as_deref(), Some("SWIGGY BANGALORE"), "the email span must survive");
+        assert_eq!(label.as_deref(), Some("Swiggy"), "the typed name becomes the display label");
+        assert!(time.contains("14:05"), "same-day date keeps the email's time, got {time}");
+        assert_eq!(conf.as_deref(), Some("high"));
+
+        // Settled: a second save finds nothing open.
+        assert!(complete_review_entry(&conn, "ua_r", &payload).unwrap().is_none());
+    }
+
+    /// The export carries the direction and neutralises formula-like text.
+    #[test]
+    fn test_transactions_to_csv_has_direction_and_guards_formulas() {
+        let rec = |merchant: &str, direction: &str| TransactionRecord {
+            id: "t".to_string(),
+            date: "2026-11-01".to_string(),
+            merchant: merchant.to_string(),
+            amount: 620.0,
+            direction: Some(direction.to_string()),
+            category: "Shopping".to_string(),
+            status: "CLEARED".to_string(),
+            source_mix: Some("email_only".to_string()),
+            instrument_id: None,
+        };
+        let csv = transactions_to_csv(&[rec("Flipkart, Bangalore", "debit"), rec("=HYPERLINK(\"x\")", "credit")]);
+        let lines: Vec<&str> = csv.lines().collect();
+        assert_eq!(lines[0], "\"Date\",\"Merchant\",\"Direction\",\"Amount\",\"Category\",\"Status\",\"Source\"");
+        assert_eq!(lines[1], "\"2026-11-01\",\"Flipkart, Bangalore\",\"debit\",\"620.00\",\"Shopping\",\"CLEARED\",\"email_only\"");
+        assert!(lines[2].contains("\"'=HYPERLINK(\"\"x\"\")\""), "{}", lines[2]);
+        assert!(lines[2].contains("\"credit\""));
     }
 
     #[tokio::test]

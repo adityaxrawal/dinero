@@ -19,17 +19,24 @@ vi.mock('@/hooks/queries/useReconciliationClusters', () => ({
   useReconciliationClusters: () => ({ data: clusters, isLoading: clustersLoading }),
 }));
 let llmPending = 0;
+let unassignedError = false;
 const recheckAllMutate = vi.fn();
 vi.mock('@/hooks/mutations/useRecheckUnassigned', () => ({
   useRecheckAllUnassigned: () => ({ mutate: recheckAllMutate, isPending: false }),
   recheckAllMessage: () => ({ title: 'Re-check finished', description: '' }),
 }));
 vi.mock('@/hooks/use-toast', () => ({ useToast: () => ({ toast: vi.fn() }) }));
-vi.mock('@/hooks/queries/useLlmPendingCount', () => ({
-  useLlmPendingCount: () => ({ data: llmPending }),
+let llmState: 'ready' | 'no_model' | 'ineligible' = 'ready';
+vi.mock('@/hooks/queries/useLlmQueueStatus', () => ({
+  useLlmQueueStatus: () => ({ data: { pending: llmPending, state: llmState } }),
 }));
 vi.mock('@/hooks/queries/useUnassignedTransactions', () => ({
-  useUnassignedTransactions: () => ({ data: unassigned, isLoading: unassignedLoading }),
+  useUnassignedTransactions: () => ({
+    data: unassigned,
+    isLoading: unassignedLoading,
+    isError: unassignedError,
+    refetch: vi.fn(),
+  }),
 }));
 vi.mock('@/components/reconciliation/ReconciliationInspector', () => ({
   default: ({ cluster }: { cluster?: ClusterRecord }) => (
@@ -89,8 +96,10 @@ beforeEach(() => {
   unassigned = [item()];
   clustersLoading = false;
   unassignedLoading = false;
+  unassignedError = false;
   section = 'clusters';
   llmPending = 0;
+  llmState = 'ready';
 });
 
 describe('Reconciliation queue', () => {
@@ -237,6 +246,30 @@ describe('inspector pane', () => {
     render(<Reconciliation />);
     expect(screen.getByRole('status').textContent).toContain('AI is reading 3 emails');
     expect(screen.getByText('All Caught Up!')).toBeTruthy();
+  });
+
+  it('tells the user to download a model instead of claiming the AI is reading', () => {
+    llmPending = 50;
+    llmState = 'no_model';
+    render(<Reconciliation />);
+    const line = screen.getByRole('status').textContent ?? '';
+    expect(line).toContain('50 emails are waiting for the local AI');
+    expect(line).toContain('Download a model');
+    expect(line).not.toContain('AI is reading');
+  });
+
+  it('says when this Mac cannot run the AI', () => {
+    llmPending = 1;
+    llmState = 'ineligible';
+    render(<Reconciliation />);
+    expect(screen.getByRole('status').textContent).toContain("doesn't have enough memory");
+  });
+
+  it('shows an error with retry instead of "All Caught Up" when the queue fails to load', () => {
+    unassignedError = true;
+    render(<Reconciliation />);
+    expect(screen.queryByText('All Caught Up!')).toBeNull();
+    expect(screen.getByRole('alert').textContent).toContain("Couldn't load the review queue");
   });
 
   it('shows no AI line when nothing is pending', () => {

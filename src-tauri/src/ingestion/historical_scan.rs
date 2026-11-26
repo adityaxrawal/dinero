@@ -98,6 +98,7 @@ pub struct ScanStatusResponse {
     pub mandate_events_found: usize,
     pub errors: usize,
     pub pending_enrichment: usize,
+    pub sent_to_review: usize,
 }
 
 /// Projects a checkpoint into the status the frontend displays.
@@ -112,6 +113,7 @@ fn checkpoint_to_status(checkpoint: Option<ProcessingCheckpointRow>) -> ScanStat
             mandate_events_found: 0,
             errors: 0,
             pending_enrichment: 0,
+            sent_to_review: 0,
         },
         Some(cp) => {
             let state: ScanCheckpointState =
@@ -125,6 +127,7 @@ fn checkpoint_to_status(checkpoint: Option<ProcessingCheckpointRow>) -> ScanStat
                 mandate_events_found: state.mandate_events_found,
                 errors: state.errors,
                 pending_enrichment: state.pending_enrichment,
+                sent_to_review: state.sent_to_review,
             }
         }
     }
@@ -397,6 +400,9 @@ struct ScanProgressPayload {
     non_financial: usize,
     errors: usize,
     pending_enrichment: usize,
+    /// Emails filed straight to the Review Inbox (audit F5-1); they used to be
+    /// counted as non_financial and shown as "Ignored".
+    sent_to_review: usize,
     error_message: Option<String>,
 }
 
@@ -418,6 +424,8 @@ pub struct ScanCheckpointState {
     pub errors: usize,
     #[serde(default)]
     pub pending_enrichment: usize,
+    #[serde(default)]
+    pub sent_to_review: usize,
     /// Set for a manual "Retry failed" run: every id is a previously failed
     /// message whose `scan_failed_messages` row already exists.
     #[serde(default)]
@@ -703,6 +711,7 @@ pub(crate) async fn start_historical_scan<R: tauri::Runtime>(
                     non_financial: 0,
                     errors: 1,
                     pending_enrichment: 0,
+                    sent_to_review: 0,
                     error_message: Some(e.to_string()),
                 },
             );
@@ -823,6 +832,7 @@ async fn run_scan<R: tauri::Runtime>(
                             non_financial: 0,
                             errors: 0,
                             pending_enrichment: 0,
+                            sent_to_review: 0,
                             error_message: None,
                         },
                     );
@@ -939,6 +949,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
             non_financial: state.non_financial,
             errors: state.errors,
             pending_enrichment: state.pending_enrichment,
+            sent_to_review: state.sent_to_review,
             error_message: None,
         },
     );
@@ -1159,10 +1170,10 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                         state.pending_enrichment += 1;
                         crate::ingestion::polling::notify_unassigned_changed(&app, &msg_id);
                     }
-                    // Counted as before (non_financial): the scan summary has
-                    // no review counter; the UI is told (audit B-1).
+                    // Its own counter, so the summary shows "Needs review"
+                    // instead of folding it into "Ignored" (audit F5-1).
                     Ok(Some(ProcessResult::SentToReview)) => {
-                        state.non_financial += 1;
+                        state.sent_to_review += 1;
                         crate::ingestion::polling::notify_unassigned_changed(&app, &msg_id);
                     }
                     Err(e) => failure = Some(e.to_string()),
@@ -1229,7 +1240,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
             }
 
             let key = account_id.clone();
-            let (p, r, t, s, m, n, e, pe) = (
+            let (p, r, t, s, m, n, e, pe, sr) = (
                 processed_count,
                 low_water,
                 state.transactions_found,
@@ -1238,12 +1249,13 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                 state.non_financial,
                 state.errors,
                 state.pending_enrichment,
+                state.sent_to_review,
             );
             if let Ok(conn) = pool.get().await {
                 let _ = conn
                     .interact(move |c| {
                         crate::db::processing_checkpoints::patch_scan_progress(
-                            c, &key, p, r, t, s, m, n, e, pe,
+                            c, &key, p, r, t, s, m, n, e, pe, sr,
                         )
                     })
                     .await;
@@ -1273,6 +1285,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
                     non_financial: state.non_financial,
                     errors: state.errors,
                     pending_enrichment: state.pending_enrichment,
+                    sent_to_review: state.sent_to_review,
                     error_message: None,
                 },
             );
@@ -1428,6 +1441,7 @@ pub async fn run_scan_batches<R: tauri::Runtime>(
         non_financial: state.non_financial,
         errors: state.errors,
         pending_enrichment: state.pending_enrichment,
+        sent_to_review: state.sent_to_review,
         error_message: None,
     };
     let _ = crate::ipc::events::emit_event(
@@ -1728,6 +1742,7 @@ mod tests {
             non_financial: 1,
             errors: 0,
             pending_enrichment: 0,
+            sent_to_review: 0,
             retry_of_failed: false,
             resume_from: None,
             started_at: None,
@@ -1849,7 +1864,7 @@ mod tests {
         .unwrap();
 
         crate::db::processing_checkpoints::patch_scan_progress(
-            &conn, "acct_1", 42, 40, 7, 3, 2, 11, 1, 5,
+            &conn, "acct_1", 42, 40, 7, 3, 2, 11, 1, 5, 4,
         )
         .unwrap();
 
@@ -1870,11 +1885,13 @@ mod tests {
         assert_eq!(patched.non_financial, 11);
         assert_eq!(patched.errors, 1);
         assert_eq!(patched.pending_enrichment, 5);
+        assert_eq!(patched.sent_to_review, 4);
 
         crate::db::processing_checkpoints::patch_scan_progress(
             &conn,
             "acct_missing",
             1,
+            0,
             0,
             0,
             0,
@@ -1918,6 +1935,7 @@ mod tests {
             non_financial: 0,
             errors: 0,
             pending_enrichment: 0,
+            sent_to_review: 0,
             retry_of_failed: false,
             resume_from: None,
             started_at: None,
@@ -2402,6 +2420,7 @@ mod tests {
             non_financial: 0,
             errors: 0,
             pending_enrichment: 0,
+            sent_to_review: 0,
             retry_of_failed: false,
             resume_from: None,
             started_at: None,
@@ -2485,6 +2504,7 @@ mod tests {
             non_financial: 0,
             errors: 0,
             pending_enrichment: 0,
+            sent_to_review: 0,
             retry_of_failed: false,
             resume_from: None,
             started_at: None,

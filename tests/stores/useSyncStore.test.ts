@@ -12,6 +12,7 @@ const progress: ScanProgressPayload = {
   non_financial: 6,
   errors: 0,
   pending_enrichment: 0,
+  sent_to_review: 0,
 };
 
 describe('useSyncStore', () => {
@@ -81,6 +82,7 @@ describe('useSyncStore scan re-hydration', () => {
     mandate_events_found: 1,
     errors: 0,
     pending_enrichment: 3,
+    sent_to_review: 0,
   };
 
   beforeEach(() => {

@@ -40,6 +40,7 @@ export function useStatementState() {
     pendingInstrumentFilename: modals.pendingInstrumentFilename,
     pendingInstrumentIssuerHint: modals.pendingInstrumentIssuerHint,
     pendingInstrumentReason: modals.pendingInstrumentReason,
+    openInstrumentModal: modals.openInstrumentModal,
     closeInstrumentModal: modals.closeInstrumentModal,
     reviewModalOpen: modals.reviewModalOpen,
     activeDraftId: modals.activeDraftId,

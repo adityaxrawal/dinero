@@ -556,11 +556,14 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
             _ => {
                 delete_orphaned_queued_row(stmt_id.as_deref(), pool).await;
                 let unprocessed_id = uuid::Uuid::new_v4().to_string();
+                let reason = "The bank (issuer) could not be read from this statement.";
                 create_awaiting_instrument_row(
                     &unprocessed_id,
                     file_hash,
                     _filename,
                     password,
+                    None,
+                    reason,
                     pool,
                 )
                 .await
@@ -575,7 +578,7 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
                 let payload = serde_json::json!({
                     "statement_id": unprocessed_id,
                     "filename": _filename,
-                    "reason": "issuer_name could not be extracted from statement header",
+                    "reason": reason,
                 });
                 events::emit(events::INSTRUMENT_CONFIRMATION_REQUIRED, payload.clone());
                 app.emit(events::INSTRUMENT_CONFIRMATION_REQUIRED, payload)
@@ -594,11 +597,14 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
             _ => {
                 delete_orphaned_queued_row(stmt_id.as_deref(), pool).await;
                 let unprocessed_id = uuid::Uuid::new_v4().to_string();
+                let reason = "The card or account number could not be read from this statement.";
                 create_awaiting_instrument_row(
                     &unprocessed_id,
                     file_hash,
                     _filename,
                     password,
+                    Some(&issuer),
+                    reason,
                     pool,
                 )
                 .await
@@ -614,7 +620,7 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
                     "statement_id": unprocessed_id,
                     "filename": _filename,
                     "issuer": issuer,
-                    "reason": "masked account/card number could not be extracted from statement header",
+                    "reason": reason,
                 });
                 events::emit(events::INSTRUMENT_CONFIRMATION_REQUIRED, payload.clone());
                 app.emit(events::INSTRUMENT_CONFIRMATION_REQUIRED, payload)
@@ -649,9 +655,18 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
         Err(e) if e.downcast_ref::<crate::db::instruments::InstrumentArchived>().is_some() => {
             delete_orphaned_queued_row(stmt_id.as_deref(), pool).await;
             let unprocessed_id = uuid::Uuid::new_v4().to_string();
-            create_awaiting_instrument_row(&unprocessed_id, file_hash, _filename, password, pool)
-                .await
-                .map_err(|e| anyhow::anyhow!("DB error creating awaiting_instrument row: {}", e))?;
+            let reason = "This statement belongs to an archived card or account. Unarchive it, or confirm a different instrument.";
+            create_awaiting_instrument_row(
+                &unprocessed_id,
+                file_hash,
+                _filename,
+                password,
+                Some(&issuer),
+                reason,
+                pool,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("DB error creating awaiting_instrument row: {}", e))?;
             if let Ok(app_data_dir) = app.path().app_data_dir() {
                 let _ = crate::statements::pdf_storage::store_pdf(&app_data_dir, &unprocessed_id, bytes);
             }
@@ -659,7 +674,7 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
                 "statement_id": unprocessed_id,
                 "filename": _filename,
                 "issuer": issuer,
-                "reason": "This statement belongs to an archived card or account. Unarchive it in Settings, or confirm a different instrument.",
+                "reason": reason,
             });
             events::emit(events::INSTRUMENT_CONFIRMATION_REQUIRED, payload.clone());
             app.emit(events::INSTRUMENT_CONFIRMATION_REQUIRED, payload).ok();
@@ -1117,17 +1132,25 @@ async fn delete_orphaned_queued_row(stmt_id: Option<&str>, pool: &deadpool_sqlit
     }
 }
 
+/// Parks a statement for the user to confirm its instrument. The issuer hint
+/// and the reason are stored on the row so the Statements queue can show and
+/// act on it after a restart (audit F8-1: it used to live only in a one-off
+/// event and an in-memory dialog).
 async fn create_awaiting_instrument_row(
     statement_id: &str,
     file_hash: &str,
     filename: &str,
     password: Option<&str>,
+    issuer_hint: Option<&str>,
+    reason: &str,
     pool: &deadpool_sqlite::Pool,
 ) -> anyhow::Result<()> {
     let stmt_id = statement_id.to_string();
+    let reason = reason.to_string();
     let mut json_obj = serde_json::json!({
         "file_hash": file_hash,
         "filename": filename,
+        "issuer_hint": issuer_hint,
     });
 
     if let Some(pwd) = password {
@@ -1148,10 +1171,9 @@ async fn create_awaiting_instrument_row(
         c.execute(
             "INSERT INTO unprocessed_statements \
              (id, statement_source_json, failure_type, failure_reason, status) \
-             VALUES (?, ?, 'instrument_unresolved', \
-             'Statement Instrument Gate: issuer or masked account/card number missing', \
+             VALUES (?, ?, 'instrument_unresolved', ?, \
              'awaiting_instrument_confirmation')",
-            rusqlite::params![stmt_id, source_json],
+            rusqlite::params![stmt_id, source_json, reason],
         )?;
         if let Err(e) = crate::db::audit_log::insert(
             c,
@@ -1855,6 +1877,7 @@ fn group_unprocessed_by_status(
     rows: Vec<crate::db::unprocessed_statements::UnprocessedStatementRow>,
 ) -> serde_json::Value {
     let mut awaiting_password = Vec::new();
+    let mut awaiting_instrument = Vec::new();
     let mut pending_retry = Vec::new();
     let mut failed = Vec::new();
 
@@ -1884,6 +1907,9 @@ fn group_unprocessed_by_status(
         let html = source_json
             .as_ref()
             .and_then(|v| v["html"].as_str().map(|s| s.to_string()));
+        let issuer_hint = source_json
+            .as_ref()
+            .and_then(|v| v["issuer_hint"].as_str().map(|s| s.to_string()));
 
         let display_name = crate::statements::display_name::derive_display_name(
             &crate::statements::display_name::StatementNameSource {
@@ -1907,9 +1933,13 @@ fn group_unprocessed_by_status(
             "date": date,
             "snippet": snippet,
             "html": html,
+            "issuer_hint": issuer_hint,
         });
         match row.status.as_str() {
             "awaiting_password" => awaiting_password.push(entry),
+            // Was dropped by the `_` arm, so these statements could not be
+            // reached from the UI at all (audit F8-1).
+            "awaiting_instrument_confirmation" => awaiting_instrument.push(entry),
             "pending_retry" => pending_retry.push(entry),
             "failed" => failed.push(entry),
             _ => {}
@@ -1918,6 +1948,7 @@ fn group_unprocessed_by_status(
 
     serde_json::json!({
         "awaiting_password": awaiting_password,
+        "awaiting_instrument": awaiting_instrument,
         "pending_retry": pending_retry,
         "failed": failed,
     })
@@ -1996,7 +2027,56 @@ pub async fn statements_commit_draft(
         .await
         .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
 
-    Ok(serde_json::json!({ "status": "committed", "statement_id": stmt_id }))
+    // What the engine did with each row, so the user can see matches and
+    // duplicate checks instead of a bare "saved" (audit F8-5).
+    let id = stmt_id.clone();
+    let summary = pool
+        .get()
+        .await
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?
+        .interact(move |c| statement_commit_summary(c, &id))
+        .await
+        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
+        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+
+    Ok(serde_json::json!({ "status": "committed", "statement_id": stmt_id, "summary": summary }))
+}
+
+/// Per-row outcome of a committed statement: new transactions, rows matched
+/// to an existing transaction (e.g. the email alert for the same payment),
+/// rows waiting in a duplicate-check cluster, and rows skipped as already
+/// imported. Read back from `match_decisions`, which the engine writes for
+/// every decision.
+fn statement_commit_summary(
+    c: &rusqlite::Connection,
+    statement_id: &str,
+) -> rusqlite::Result<serde_json::Value> {
+    let entries: i64 = c.query_row(
+        "SELECT COUNT(*) FROM statement_entries WHERE statement_id = ?1",
+        [statement_id],
+        |r| r.get(0),
+    )?;
+    let mut stmt = c.prepare(
+        "SELECT md.decision, COUNT(*) FROM transaction_observations o \
+         JOIN match_decisions md ON md.observation_id = o.id \
+         WHERE o.statement_id = ?1 GROUP BY md.decision",
+    )?;
+    let (mut new, mut matched, mut needs_review) = (0i64, 0i64, 0i64);
+    for row in stmt.query_map([statement_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+        let (decision, n) = row?;
+        match decision.as_str() {
+            "new_canonical" => new += n,
+            "auto_matched_exact" | "auto_matched_scored" => matched += n,
+            "ambiguous_pending" => needs_review += n,
+            _ => {}
+        }
+    }
+    Ok(serde_json::json!({
+        "new": new,
+        "matched": matched,
+        "needs_review": needs_review,
+        "skipped": (entries - new - matched - needs_review).max(0),
+    }))
 }
 
 #[tauri::command]
@@ -3259,6 +3339,7 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         data::categories_delete,
         data::transactions_list,
         data::transactions_search,
+        data::transactions_export_csv,
         data::fetch_spending_limits,
         data::update_spending_limits,
         data::onboarding_save_preferences,
@@ -3273,6 +3354,7 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         data::reconciliation_clusters_get,
         data::reconciliation_get_unassigned_transactions,
         data::reconciliation_dismiss_unassigned_transaction,
+        data::reconciliation_restore_unassigned_transaction,
         data::reconciliation_recheck_unassigned_transaction,
         data::reconciliation_recheck_all_unassigned_transactions,
         data::reconciliation_resolve_unassigned_transaction_manually,
@@ -3514,6 +3596,7 @@ mod tests {
             ("transactions_get_emi_group", "read-only query"),
             ("transactions_list", "read-only query"),
             ("transactions_search", "read-only query"),
+            ("transactions_export_csv", "read-only export of the user's own data: never held hostage"),
             ("check_backend_status", "read-only query"),
             ("check_system_ram", "read-only query"),
             ("auth_get_recovery_phrase", "read-only query"),
@@ -3607,6 +3690,7 @@ mod tests {
             "transactions_list",
             "transactions_get",
             "transactions_search",
+            "transactions_export_csv",
             "instruments_list",
             "instruments_get",
             "categories_list",
@@ -4053,6 +4137,42 @@ mod tests {
         assert_eq!(parsed["filename"], "HDFC_Jan_2026.pdf");
     }
 
+    /// The commit summary counts what the engine decided per row (audit F8-5).
+    #[test]
+    fn test_statement_commit_summary_counts_engine_decisions() {
+        let c = crate::db::test_helpers::setup_test_db();
+        c.execute_batch("PRAGMA foreign_keys = OFF;").unwrap();
+        for (i, decision) in ["new_canonical", "new_canonical", "auto_matched_scored", "ambiguous_pending"]
+            .iter()
+            .enumerate()
+        {
+            c.execute(
+                "INSERT INTO transaction_observations (id, source_pipeline, source_record_id, statement_id) \
+                 VALUES (?1, 'statement_pdf', ?1, 'st1')",
+                [format!("o{i}")],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO match_decisions (id, observation_id, score, decision, review_status, created_at) \
+                 VALUES (?1, ?2, 0, ?3, 'not_required', CURRENT_TIMESTAMP)",
+                rusqlite::params![format!("md{i}"), format!("o{i}"), decision],
+            )
+            .unwrap();
+        }
+        for i in 0..5 {
+            c.execute(
+                "INSERT INTO statement_entries (id, statement_id) VALUES (?1, 'st1')",
+                [format!("e{i}")],
+            )
+            .unwrap();
+        }
+        let summary = super::statement_commit_summary(&c, "st1").unwrap();
+        assert_eq!(summary["new"], 2);
+        assert_eq!(summary["matched"], 1);
+        assert_eq!(summary["needs_review"], 1);
+        assert_eq!(summary["skipped"], 1);
+    }
+
     #[test]
     fn test_list_unprocessed_grouped_by_status() {
         use crate::db::unprocessed_statements::UnprocessedStatementRow;
@@ -4084,6 +4204,38 @@ mod tests {
         assert_eq!(grouped["failed"].as_array().unwrap().len(), 1);
         assert_eq!(grouped["awaiting_password"][0]["statement_id"], "s1");
         assert_eq!(grouped["awaiting_password"][0]["filename"], "s1.pdf");
+    }
+
+    /// A statement parked at the Instrument Gate must be listed, with its
+    /// issuer hint and reason, so it can be confirmed after a restart. It used
+    /// to fall into the `_` arm and vanish from the UI (audit F8-1).
+    #[test]
+    fn test_awaiting_instrument_statements_are_listed_with_hint() {
+        use crate::db::unprocessed_statements::UnprocessedStatementRow;
+        let row = UnprocessedStatementRow {
+            id: "s9".to_string(),
+            statement_source_json: serde_json::json!({
+                "filename": "slice Credit Card Statement - November 2026.pdf",
+                "issuer_hint": "Slice",
+            })
+            .to_string(),
+            failure_type: "instrument_unresolved".to_string(),
+            failure_reason: "The card or account number could not be read from this statement."
+                .to_string(),
+            status: "awaiting_instrument_confirmation".to_string(),
+            resolved_statement_id: None,
+            created_at: None,
+            updated_at: None,
+        };
+        let grouped = super::group_unprocessed_by_status(vec![row]);
+        let entries = grouped["awaiting_instrument"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["statement_id"], "s9");
+        assert_eq!(entries[0]["issuer_hint"], "Slice");
+        assert_eq!(
+            entries[0]["failure_reason"],
+            "The card or account number could not be read from this statement."
+        );
     }
 
     #[tokio::test]

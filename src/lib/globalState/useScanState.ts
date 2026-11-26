@@ -37,6 +37,7 @@ const EMPTY_PROGRESS = (accountId: string): ScanProgressPayload => ({
   non_financial: 0,
   errors: 0,
   pending_enrichment: 0,
+  sent_to_review: 0,
 });
 
 /**
@@ -199,6 +200,7 @@ export function useScanState() {
           non_financial: 0,
           errors: status.errors,
           pending_enrichment: status.pending_enrichment,
+          sent_to_review: status.sent_to_review,
           error_message: null,
         });
       } catch (err) {

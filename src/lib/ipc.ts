@@ -232,6 +232,8 @@ export interface UnprocessedStatementEntry {
   date?: string;
   snippet?: string;
   html?: string;
+  /** Issuer read from the statement, when only the card/account number was missing. */
+  issuer_hint?: string | null;
 }
 
 interface AwaitingReviewEntry {
@@ -255,9 +257,19 @@ export interface StatementReparseProgress {
 
 interface UnprocessedStatementGroups {
   awaiting_password: UnprocessedStatementEntry[];
+  /** Parked at the Instrument Gate until the user confirms the account. */
+  awaiting_instrument: UnprocessedStatementEntry[];
   pending_retry: UnprocessedStatementEntry[];
   failed: UnprocessedStatementEntry[];
   awaiting_review: AwaitingReviewEntry[];
+}
+
+/** What the engine did with each row of a committed statement. */
+export interface StatementCommitSummary {
+  new: number;
+  matched: number;
+  needs_review: number;
+  skipped: number;
 }
 
 export interface DraftRow {
@@ -627,6 +639,9 @@ export const API = {
       invokeCommand<TransactionsPage>('transactions_list', { page, filters }),
     search: (query: string, filters?: TransactionListFilters) =>
       invokeCommand<TransactionRecord[]>('transactions_search', { query, filters }),
+    /** Writes every matching transaction to `path` as CSV; returns the row count. */
+    exportCsv: (path: string, filters: TransactionListFilters, query: string) =>
+      invokeCommand<number>('transactions_export_csv', { path, filters, query }),
     create: (input: {
       amountMinor: number;
       currency: string;
@@ -770,7 +785,9 @@ export const API = {
       rows: DraftRow[],
       acknowledgePartial = false
     ) =>
-      invokeCommand<{ status: string; statement_id: string }>('statements_commit_draft', {
+      invokeCommand<{ status: string; statement_id: string; summary?: StatementCommitSummary }>(
+        'statements_commit_draft',
+        {
         draftId,
         editedMetadata: {
           issuer_name: metadata.issuerName,
@@ -785,7 +802,8 @@ export const API = {
         },
         editedRows: rows,
         acknowledgePartial,
-      }),
+        }
+      ),
     discardDraft: (draftId: string) =>
       invokeCommand<{ status: string }>('statements_discard_draft', { draftId }),
   },
@@ -797,10 +815,13 @@ export const API = {
       invokeCommand<ClusterRecord>('reconciliation_clusters_get', { clusterId }),
     listUnassigned: () =>
       invokeCommand<UnassignedTransactionRecord[]>('reconciliation_get_unassigned_transactions'),
-    /** Emails the local AI is still reading; their review entries stay hidden until it answers. */
-    llmPendingCount: () =>
-      invokeCommand<{ llm_pending_jobs: number }>('pipeline_status').then(
-        (s) => s.llm_pending_jobs
+    /**
+     * Emails waiting for the local AI (their review entries stay hidden until it
+     * answers) and whether it can run at all.
+     */
+    llmQueueStatus: () =>
+      invokeCommand<{ llm_pending_jobs: number; llm_state: LlmState }>('pipeline_status').then(
+        (s) => ({ pending: s.llm_pending_jobs, state: s.llm_state })
       ),
     recheckUnassigned: (id: string) =>
       invokeCommand<RecheckOutcome>('reconciliation_recheck_unassigned_transaction', { id }),
@@ -808,6 +829,9 @@ export const API = {
       invokeCommand<RecheckSummary>('reconciliation_recheck_all_unassigned_transactions'),
     dismissUnassigned: (id: string) =>
       invokeCommand<void>('reconciliation_dismiss_unassigned_transaction', { id }),
+    /** Undo for dismiss: puts a dismissed review entry back in the queue. */
+    restoreUnassigned: (id: string) =>
+      invokeCommand<void>('reconciliation_restore_unassigned_transaction', { id }),
     resolveUnassignedManually: (
       id: string,
       payload: {
@@ -1210,6 +1234,9 @@ export interface OnboardingStatus {
   network_consent: boolean;
 }
 
+/** Whether the local AI can run: ready, no model downloaded, or not enough RAM. */
+export type LlmState = 'ready' | 'no_model' | 'ineligible';
+
 export interface ScanStatusResponse {
   status: string;
   processed: number;
@@ -1219,6 +1246,7 @@ export interface ScanStatusResponse {
   mandate_events_found: number;
   errors: number;
   pending_enrichment: number;
+  sent_to_review: number;
 }
 
 export interface ScanProgressPayload {
@@ -1231,5 +1259,7 @@ export interface ScanProgressPayload {
   non_financial: number;
   errors: number;
   pending_enrichment: number;
+  /** Emails filed to the Review Inbox for the user to finish. */
+  sent_to_review: number;
   error_message?: string | null;
 }

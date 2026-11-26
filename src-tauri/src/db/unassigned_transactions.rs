@@ -151,6 +151,17 @@ pub fn release_manual_claim(conn: &Connection, id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Puts a dismissed entry back in the queue (the Undo after "Not a
+/// Transaction", audit F9-4). False if the entry is not currently dismissed,
+/// so an Undo can never reopen an entry that was booked meanwhile.
+pub fn restore_dismissed(conn: &Connection, id: &str) -> Result<bool> {
+    let restored = conn.execute(
+        "UPDATE unassigned_transactions SET status = 'open' WHERE id = ?1 AND status = 'ignored'",
+        params![id],
+    )?;
+    Ok(restored == 1)
+}
+
 /// Unresolved entries awaiting the user, for the reconciliation queue.
 pub fn select_open(conn: &Connection) -> Result<Vec<UnassignedTransactionRow>> {
     let mut stmt = conn.prepare(&format!(

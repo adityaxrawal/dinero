@@ -4,10 +4,10 @@
  * Separating "needs a password" from "failed to parse" matters because they call
  * for entirely different user actions.
  */
-import { FileWarning, Lock, RotateCw } from 'lucide-react';
+import { CreditCard, FileWarning, Lock, RotateCw } from 'lucide-react';
 import type { UnprocessedStatementEntry } from '@/lib/ipc';
 
-export type GroupKey = 'awaiting_password' | 'pending_retry' | 'failed';
+export type GroupKey = 'awaiting_instrument' | 'awaiting_password' | 'pending_retry' | 'failed';
 
 export const GROUPS: {
   key: GroupKey;
@@ -16,6 +16,13 @@ export const GROUPS: {
   icon: typeof Lock;
   action: string;
 }[] = [
+  {
+    key: 'awaiting_instrument',
+    label: 'Needs account details',
+    hint: "The bank or card/account number couldn't be read. Confirm them and the statement imports.",
+    icon: CreditCard,
+    action: 'Confirm account',
+  },
   {
     key: 'awaiting_password',
     label: 'Needs a password',

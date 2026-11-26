@@ -101,14 +101,21 @@ pub fn exceeds_size_warning_threshold(size_bytes: u64) -> bool {
 /// Warns the user if the database has grown unusually large.
 pub fn check_db_size_warning(app_handle: &AppHandle, db_path: &Path) -> Result<()> {
     let size_bytes = std::fs::metadata(db_path)?.len();
+    // A system warning, not a bare event: nothing listened to the old
+    // `db_size_warning` event, so the user was never told (audit F19-1).
     if exceeds_size_warning_threshold(size_bytes) {
-        let _ = app_handle.emit(
-            crate::ipc::events::AppEvent::DbSizeWarning.as_str(),
-            serde_json::json!({
-                "size_bytes": size_bytes,
-                "message": "Your database has grown past 2 GB. Consider cleaning up old data.",
-            }),
+        crate::ipc::system_warnings::emit_system_warning(
+            app_handle,
+            crate::ipc::system_warnings::SystemWarningPayload {
+                warning_type: "db_size".to_string(),
+                message: "Your database has grown past 2 GB. Consider cleaning up old data."
+                    .to_string(),
+                severity: crate::ipc::system_warnings::WarningSeverity::Degraded,
+                action_hint: None,
+            },
         );
+    } else {
+        crate::ipc::system_warnings::clear_system_warning(app_handle, "db_size");
     }
     Ok(())
 }
