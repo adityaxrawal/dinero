@@ -182,30 +182,31 @@ pub fn update_canonical_with_statement(
         ],
     )?;
 
-    let audit_id = Uuid::new_v4().to_string();
     let (before_ref, before_posting, before_merchant, before_amount) =
         before.unwrap_or((None, None, None, None));
-    conn.execute(
-        "INSERT INTO audit_log (id, actor_type, actor_id, action, resource_type, resource_id, before_json, after_json, created_at)
-         VALUES (?1, 'system', 'reconciliation_engine', 'canonical_field_overwritten_by_statement', 'transaction', ?2, ?3, ?4, CURRENT_TIMESTAMP)",
-        params![
-            audit_id,
-            canonical_id,
-            serde_json::json!({
+    crate::db::audit_log::insert(
+        conn,
+        &crate::db::audit_log::AuditLogRow {
+            id: Uuid::new_v4().to_string(),
+            actor_type: Some("system".to_string()),
+            actor_id: Some("reconciliation_engine".to_string()),
+            action: Some("canonical_field_overwritten_by_statement".to_string()),
+            resource_type: Some("transaction".to_string()),
+            resource_id: Some(canonical_id.to_string()),
+            before_json: Some(serde_json::json!({
                 "reference_id": before_ref,
                 "best_posting_date": before_posting,
                 "merchant_display_name": before_merchant,
                 "amount_minor": before_amount,
-            })
-            .to_string(),
-            serde_json::json!({
+            })),
+            after_json: Some(serde_json::json!({
                 "reference_id": reference_id,
                 "best_posting_date": posting_date_parsed,
                 "merchant_display_name": merchant_display,
                 "amount_minor": settled_amount_minor,
-            })
-            .to_string(),
-        ],
+            })),
+            created_at: chrono::Utc::now(),
+        },
     )?;
 
     Ok(())
@@ -231,11 +232,19 @@ pub fn fill_null_fields_from_email(
         params![canonical_id, reference_id, merchant_display],
     )?;
 
-    let audit_id = Uuid::new_v4().to_string();
-    conn.execute(
-        "INSERT INTO audit_log (id, actor_type, actor_id, action, resource_type, resource_id, created_at)
-         VALUES (?1, 'system', 'reconciliation_engine', 'canonical_null_fields_filled_from_email', 'transaction', ?2, CURRENT_TIMESTAMP)",
-        params![audit_id, canonical_id],
+    crate::db::audit_log::insert(
+        conn,
+        &crate::db::audit_log::AuditLogRow {
+            id: Uuid::new_v4().to_string(),
+            actor_type: Some("system".to_string()),
+            actor_id: Some("reconciliation_engine".to_string()),
+            action: Some("canonical_null_fields_filled_from_email".to_string()),
+            resource_type: Some("transaction".to_string()),
+            resource_id: Some(canonical_id.to_string()),
+            before_json: None,
+            after_json: None,
+            created_at: chrono::Utc::now(),
+        },
     )?;
 
     Ok(())
@@ -308,16 +317,19 @@ fn maybe_overwrite_from_higher_confidence_email(
         params![canonical_id, obs.reference_id, obs.merchant_raw],
     )?;
 
-    let audit_id = Uuid::new_v4().to_string();
-    conn.execute(
-        "INSERT INTO audit_log (id, actor_type, actor_id, action, resource_type, resource_id, before_json, after_json, created_at)
-         VALUES (?1, 'system', 'reconciliation_engine', 'canonical_field_overwritten_by_higher_confidence_email', 'transaction', ?2, ?3, ?4, CURRENT_TIMESTAMP)",
-        params![
-            audit_id,
-            canonical_id,
-            serde_json::json!({ "reference_id": before_ref, "merchant_display_name": before_merchant }).to_string(),
-            serde_json::json!({ "reference_id": obs.reference_id, "merchant_display_name": obs.merchant_raw }).to_string(),
-        ],
+    crate::db::audit_log::insert(
+        conn,
+        &crate::db::audit_log::AuditLogRow {
+            id: Uuid::new_v4().to_string(),
+            actor_type: Some("system".to_string()),
+            actor_id: Some("reconciliation_engine".to_string()),
+            action: Some("canonical_field_overwritten_by_higher_confidence_email".to_string()),
+            resource_type: Some("transaction".to_string()),
+            resource_id: Some(canonical_id.to_string()),
+            before_json: Some(serde_json::json!({ "reference_id": before_ref, "merchant_display_name": before_merchant })),
+            after_json: Some(serde_json::json!({ "reference_id": obs.reference_id, "merchant_display_name": obs.merchant_raw })),
+            created_at: chrono::Utc::now(),
+        },
     )?;
 
     Ok(())

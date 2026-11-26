@@ -345,3 +345,22 @@ fn test_unlisted_bank_subdomain_is_rejected_with_its_own_reason() {
         other => panic!("Expected SpoofReject, got {:?}", other),
     }
 }
+
+/// Marketing subdomains seen reaching extraction in the 2026-11-26 scan are
+/// skipped at Gate 1 as noise (audit P3-E); the same banks' alert senders
+/// are still accepted.
+#[test]
+fn marketing_subdomains_are_noise_and_alert_senders_still_pass() {
+    let v = SenderValidator::new();
+    for marketing in ["offers@offers.sbicard.com", "news@updates.indmoney.com"] {
+        assert_eq!(v.verify_sender(marketing, None), SenderVerificationResult::VerifiedNoise, "{marketing}");
+    }
+    assert!(matches!(
+        v.verify_sender("alerts@emailer.sbicard.com", None),
+        SenderVerificationResult::VerifiedTransactionCandidate(_)
+    ));
+    assert!(matches!(
+        v.verify_sender("x@transactions.indmoney.com", None),
+        SenderVerificationResult::VerifiedTransactionCandidate(_)
+    ));
+}

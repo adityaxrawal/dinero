@@ -3339,3 +3339,50 @@ fn test_unmerge_after_keep_separate_removes_the_created_transaction() {
         .unwrap();
     assert!(deleted);
 }
+
+/// Cluster resolutions write through the chained audit insert, so the
+/// tamper-evident hash chain stays intact (previously a raw INSERT left
+/// prev_hash/row_hash empty).
+#[test]
+fn cluster_resolution_keeps_the_audit_hash_chain_intact() {
+    let conn = setup_test_db();
+    let new_cluster = || {
+        crate::reconciliation::cluster::create_ambiguity_cluster(
+            &conn,
+            "obs_1",
+            "inst_1",
+            1000,
+            "debit",
+            "2026-06-10 12:00:00",
+            0.6,
+            &[crate::reconciliation::scorer::ScoredCandidate {
+                candidate_id: "cand_1".to_string(),
+                score: 0.6,
+            }],
+        )
+        .unwrap();
+        conn.query_row(
+            "SELECT id FROM reconciliation_clusters ORDER BY rowid DESC LIMIT 1",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap()
+    };
+    conn.execute("UPDATE transaction_observations SET amount_minor = 1000, currency = 'INR', direction = 'debit', event_time = '2026-06-10 12:00:00' WHERE id = 'obs_1'", []).unwrap();
+
+    let deferred = new_cluster();
+    crate::reconciliation::cluster::resolve_cluster(&conn, &deferred, "obs_1", "mark_unresolved", None)
+        .unwrap();
+    let rejected = new_cluster();
+    crate::reconciliation::cluster::resolve_cluster(&conn, &rejected, "obs_1", "reject_candidate", None)
+        .unwrap();
+
+    let actions: Vec<String> = {
+        let mut stmt = conn
+            .prepare("SELECT action FROM audit_log WHERE resource_type = 'reconciliation_cluster' ORDER BY rowid")
+            .unwrap();
+        stmt.query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect()
+    };
+    assert_eq!(actions, vec!["cluster_deferred", "cluster_resolved"]);
+    assert!(crate::db::audit_log::verify_chain(&conn).unwrap());
+}

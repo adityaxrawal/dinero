@@ -75,11 +75,19 @@ pub fn append_correction_decision(
         params![id, observation_id, new_canonical_id],
     )?;
 
-    let audit_id = Uuid::new_v4().to_string();
-    conn.execute(
-        "INSERT INTO audit_log (id, actor_type, actor_id, action, resource_type, resource_id, created_at)
-         VALUES (?1, 'user', 'user_id', 'manual_correction', 'match_decision', ?2, CURRENT_TIMESTAMP)",
-        params![audit_id, original_decision_id],
+    crate::db::audit_log::insert(
+        conn,
+        &crate::db::audit_log::AuditLogRow {
+            id: Uuid::new_v4().to_string(),
+            actor_type: Some("user".to_string()),
+            actor_id: Some("user_id".to_string()),
+            action: Some("manual_correction".to_string()),
+            resource_type: Some("match_decision".to_string()),
+            resource_id: Some(original_decision_id.to_string()),
+            before_json: None,
+            after_json: None,
+            created_at: chrono::Utc::now(),
+        },
     )?;
 
     Ok(())

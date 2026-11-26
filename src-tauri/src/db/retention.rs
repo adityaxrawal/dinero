@@ -338,10 +338,19 @@ mod tests {
             None,
             "-400 days",
         );
-        conn.execute(
-            "INSERT INTO audit_log (id, actor_type, action, resource_type, resource_id) \
-             VALUES ('al_1', 'user', 'manual_correction', 'match_decision', 'd_old_corrected')",
-            [],
+        crate::db::audit_log::insert(
+            &conn,
+            &crate::db::audit_log::AuditLogRow {
+                id: "al_1".to_string(),
+                actor_type: Some("user".to_string()),
+                actor_id: None,
+                action: Some("manual_correction".to_string()),
+                resource_type: Some("match_decision".to_string()),
+                resource_id: Some("d_old_corrected".to_string()),
+                before_json: None,
+                after_json: None,
+                created_at: chrono::Utc::now(),
+            },
         )
         .unwrap();
 

@@ -34,8 +34,7 @@
       ],
       "classification": "transaction_candidate",
       "subdomains": [
-        "emailer.sbicard.com",
-        "offers.sbicard.com"
+        "emailer.sbicard.com"
       ]
     },
     {
@@ -1668,6 +1667,18 @@
       "classification": "transaction_candidate"
     },
     {
+      "domain": "offers.sbicard.com",
+      "bank_name": "SBI Card (marketing, noise)",
+      "display_names": [],
+      "classification": "noise"
+    },
+    {
+      "domain": "updates.indmoney.com",
+      "bank_name": "IndMoney (marketing, noise)",
+      "display_names": [],
+      "classification": "noise"
+    },
+    {
       "domain": "hkma.gov.hk",
       "bank_name": "Hong Kong Monetary Authority (regulator, noise)",
       "display_names": [
@@ -1854,8 +1865,7 @@
       ],
       "classification": "transaction_candidate",
       "subdomains": [
-        "transactions.indmoney.com",
-        "updates.indmoney.com"
+        "transactions.indmoney.com"
       ]
     },
     {

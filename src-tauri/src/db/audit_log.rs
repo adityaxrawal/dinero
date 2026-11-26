@@ -124,8 +124,8 @@ pub fn insert(conn: &Connection, row: &AuditLogRow) -> Result<()> {
 
     conn.execute(
         "INSERT INTO audit_log (
-            id, actor_type, actor_id, action, resource_type, resource_id, before_json, after_json, prev_hash, row_hash
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            id, actor_type, actor_id, action, resource_type, resource_id, before_json, after_json, prev_hash, row_hash, created_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             row.id,
             row.actor_type,
@@ -137,6 +137,10 @@ pub fn insert(conn: &Connection, row: &AuditLogRow) -> Result<()> {
             row.after_json,
             prev_hash,
             row_hash,
+            // Stored at the same second precision the hash covers; the
+            // column default (CURRENT_TIMESTAMP) could tick past
+            // `row.created_at` and break the chain.
+            row.created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
         ],
     )?;
     Ok(())

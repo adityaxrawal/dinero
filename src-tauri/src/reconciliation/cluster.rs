@@ -123,11 +123,19 @@ pub fn resolve_cluster(
             params![cluster_id],
         )?;
 
-        let audit_id = Uuid::new_v4().to_string();
-        conn.execute(
-            "INSERT INTO audit_log (id, actor_type, actor_id, action, resource_type, resource_id, created_at)
-             VALUES (?1, 'user', 'user_id', 'cluster_deferred', 'reconciliation_cluster', ?2, CURRENT_TIMESTAMP)",
-            params![audit_id, cluster_id],
+        crate::db::audit_log::insert(
+            conn,
+            &crate::db::audit_log::AuditLogRow {
+                id: Uuid::new_v4().to_string(),
+                actor_type: Some("user".to_string()),
+                actor_id: Some("user_id".to_string()),
+                action: Some("cluster_deferred".to_string()),
+                resource_type: Some("reconciliation_cluster".to_string()),
+                resource_id: Some(cluster_id.to_string()),
+                before_json: None,
+                after_json: None,
+                created_at: chrono::Utc::now(),
+            },
         )?;
 
         return Ok(());
@@ -205,11 +213,19 @@ pub fn resolve_cluster(
         Some("user_id"),
     )?;
 
-    let audit_id = Uuid::new_v4().to_string();
-    conn.execute(
-        "INSERT INTO audit_log (id, actor_type, actor_id, action, resource_type, resource_id, created_at)
-         VALUES (?1, 'user', 'user_id', 'cluster_resolved', 'reconciliation_cluster', ?2, CURRENT_TIMESTAMP)",
-        params![audit_id, cluster_id],
+    crate::db::audit_log::insert(
+        conn,
+        &crate::db::audit_log::AuditLogRow {
+            id: Uuid::new_v4().to_string(),
+            actor_type: Some("user".to_string()),
+            actor_id: Some("user_id".to_string()),
+            action: Some("cluster_resolved".to_string()),
+            resource_type: Some("reconciliation_cluster".to_string()),
+            resource_id: Some(cluster_id.to_string()),
+            before_json: None,
+            after_json: None,
+            created_at: chrono::Utc::now(),
+        },
     )?;
 
     Ok(())
