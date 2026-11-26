@@ -1392,20 +1392,6 @@ pub fn do_fetch_top_merchants(
     Ok(results)
 }
 
-#[tauri::command]
-pub async fn analytics_top_merchants(
-    pool: State<'_, deadpool_sqlite::Pool>,
-) -> Result<Vec<TopMerchant>, crate::error::AppError> {
-    let conn = pool
-        .get()
-        .await
-        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-    let now = chrono::Utc::now().naive_utc();
-    conn.interact(move |c| do_fetch_top_merchants(c, &now))
-        .await
-        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
-        .map_err(crate::error::AppError::Db)
-}
 
 #[derive(Serialize, Debug, PartialEq)]
 pub struct RecurringPaymentSummary {
@@ -1451,19 +1437,6 @@ pub fn do_fetch_recurring_payments_summary(
     Ok(results)
 }
 
-#[tauri::command]
-pub async fn analytics_recurring_payments_summary(
-    pool: State<'_, deadpool_sqlite::Pool>,
-) -> Result<Vec<RecurringPaymentSummary>, crate::error::AppError> {
-    let conn = pool
-        .get()
-        .await
-        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-    conn.interact(|c| do_fetch_recurring_payments_summary(c))
-        .await
-        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
-        .map_err(crate::error::AppError::Db)
-}
 
 #[tauri::command]
 pub async fn analytics_pending_review_count(
@@ -2459,46 +2432,6 @@ pub struct BulkResolution {
     pub chosen_canonical_id: Option<String>,
 }
 
-#[tauri::command]
-pub async fn reconciliation_clusters_bulk_resolve(
-    resolutions: Vec<BulkResolution>,
-    pool: State<'_, deadpool_sqlite::Pool>,
-) -> Result<serde_json::Value, crate::error::AppError> {
-    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
-    for r in &resolutions {
-        crate::ipc::validation::validate_uuid("cluster_id", &r.cluster_id)?;
-        crate::ipc::validation::validate_uuid("observation_id", &r.observation_id)?;
-        if let Some(ref chosen_canonical_id) = r.chosen_canonical_id {
-            crate::ipc::validation::validate_uuid("chosen_canonical_id", chosen_canonical_id)?;
-        }
-    }
-    let conn = pool
-        .get()
-        .await
-        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-    let resolved_count = conn
-        .interact(move |c| -> Result<usize, crate::error::AppError> {
-            let tx = c
-                .unchecked_transaction()
-                .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-            for r in &resolutions {
-                crate::reconciliation::cluster::resolve_cluster(
-                    &tx,
-                    &r.cluster_id,
-                    &r.observation_id,
-                    &r.action,
-                    r.chosen_canonical_id.as_deref(),
-                )
-                .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-            }
-            tx.commit()
-                .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-            Ok(resolutions.len())
-        })
-        .await
-        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))??;
-    Ok(serde_json::json!({ "status": "resolved", "resolved_count": resolved_count }))
-}
 
 #[tauri::command]
 pub async fn auth_get_consent_history(
@@ -2673,51 +2606,7 @@ pub struct ProfileResponse {
     pub recovery_phrase_enabled: bool,
 }
 
-#[tauri::command]
-pub async fn settings_profile_get(
-    pool: State<'_, deadpool_sqlite::Pool>,
-) -> Result<ProfileResponse, crate::error::AppError> {
-    let conn = pool
-        .get()
-        .await
-        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-    conn.interact(|c| -> Result<ProfileResponse, crate::error::AppError> {
-        let row = crate::db::local_profile::select_by_id(c, 1)
-            .map_err(|e| crate::error::AppError::Db(e.to_string()))?
-            .ok_or_else(|| crate::error::AppError::Db("profile not found".to_string()))?;
-        let limit_thresholds = row
-            .limit_thresholds
-            .and_then(|v| serde_json::from_value::<Vec<f64>>(v).ok())
-            .unwrap_or_default();
-        Ok(ProfileResponse {
-            primary_email: row.primary_email,
-            display_name: row.display_name,
-            timezone: row.timezone,
-            spending_limit_monthly: row.spending_limit_monthly,
-            limit_thresholds,
-            recovery_phrase_enabled: row.recovery_phrase_enabled,
-        })
-    })
-    .await
-    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
-}
 
-fn validate_limit_thresholds(thresholds: &[f64]) -> Result<(), String> {
-    for pair in thresholds.windows(2) {
-        if pair[0] >= pair[1] {
-            return Err("limit_thresholds must be a strictly ascending sorted array".to_string());
-        }
-    }
-    for &t in thresholds {
-        if !(0.0..=100.0).contains(&t) {
-            return Err(format!(
-                "limit_thresholds value {} must be between 0 and 100",
-                t
-            ));
-        }
-    }
-    Ok(())
-}
 
 #[derive(Deserialize)]
 pub struct ProfileUpdatePayload {
@@ -2726,42 +2615,6 @@ pub struct ProfileUpdatePayload {
     pub limit_thresholds: Option<Vec<f64>>,
 }
 
-#[tauri::command]
-pub async fn settings_profile_update(
-    payload: ProfileUpdatePayload,
-    pool: State<'_, deadpool_sqlite::Pool>,
-) -> Result<serde_json::Value, crate::error::AppError> {
-    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
-    if let Some(ref thresholds) = payload.limit_thresholds {
-        validate_limit_thresholds(thresholds).map_err(crate::error::AppError::Validation)?;
-    }
-    let conn = pool
-        .get()
-        .await
-        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-    conn.interact(move |c| -> Result<(), crate::error::AppError> {
-        let mut row = crate::db::local_profile::select_by_id(c, 1)
-            .map_err(|e| crate::error::AppError::Db(e.to_string()))?
-            .ok_or_else(|| crate::error::AppError::Db("profile not found".to_string()))?;
-        if let Some(name) = payload.display_name {
-            row.display_name = Some(name);
-        }
-        if let Some(tz) = payload.timezone {
-            row.timezone = Some(tz);
-        }
-        if let Some(thresholds) = payload.limit_thresholds {
-            row.limit_thresholds = Some(
-                serde_json::to_value(thresholds)
-                    .map_err(|e| crate::error::AppError::Validation(e.to_string()))?,
-            );
-        }
-        crate::db::local_profile::update(c, &row)
-            .map_err(|e| crate::error::AppError::Db(e.to_string()))
-    })
-    .await
-    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))??;
-    Ok(serde_json::json!({ "status": "updated" }))
-}
 
 #[tauri::command]
 pub async fn settings_get_menu_bar_extra_enabled(
@@ -4576,26 +4429,6 @@ mod tests {
         assert_eq!(summary[0].cadence, "monthly");
     }
 
-    #[test]
-    fn test_limit_thresholds_validated_sorted() {
-        assert!(validate_limit_thresholds(&[80.0, 90.0, 100.0]).is_ok());
-        assert!(
-            validate_limit_thresholds(&[]).is_ok(),
-            "an empty array (all warnings disabled) is valid"
-        );
-        assert!(
-            validate_limit_thresholds(&[90.0, 80.0]).is_err(),
-            "out-of-order values must be rejected"
-        );
-        assert!(
-            validate_limit_thresholds(&[80.0, 80.0]).is_err(),
-            "duplicate values are not strictly ascending"
-        );
-        assert!(
-            validate_limit_thresholds(&[80.0, 150.0]).is_err(),
-            "a value outside 0-100 must be rejected"
-        );
-    }
 }
 
 #[cfg(test)]

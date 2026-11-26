@@ -152,36 +152,6 @@ pub async fn scans_status(
     Ok(checkpoint_to_status(checkpoint))
 }
 
-#[tauri::command]
-/// Resumes a scan from its last checkpoint.
-pub async fn scans_resume<R: tauri::Runtime>(
-    app: AppHandle<R>,
-    pool: State<'_, Pool>,
-    account_id: String,
-) -> Result<String, crate::error::AppError> {
-    crate::ipc::validation::validate_account_id("account_id", &account_id)?;
-    // Resuming is ingestion, which a lapsed licence stops (audit E-4).
-    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
-    let account_id_clone = account_id.clone();
-    let checkpoint = pool
-        .get()
-        .await
-        .map_err(|e| crate::error::AppError::Db(e.to_string()))?
-        .interact(move |c| get_checkpoint(c, "historical_scan", &account_id_clone))
-        .await
-        .map_err(|e| crate::error::AppError::Internal(e.to_string()))?
-        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-
-    let cp = checkpoint.ok_or_else(|| {
-        crate::error::AppError::Validation(
-            "no prior scan found for this account to resume".to_string(),
-        )
-    })?;
-    let state: ScanCheckpointState = serde_json::from_str(&cp.checkpoint_state_json)
-        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-
-    scans_historical(app, pool, account_id, state.start_date, state.end_date, None).await
-}
 
 /// Whether enough messages have been processed to warrant a checkpoint.
 ///

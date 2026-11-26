@@ -717,10 +717,18 @@ export const API = {
     list: () => invokeCommand<TagRecord[]>('tags_list'),
     create: (name: string) =>
       invokeCommand<{ id: string; status: string }>('tags_create', { payload: { name } }),
+    delete: (id: string) => invokeCommand<string>('tags_delete', { id }),
   },
   // The fixed spending taxonomy transactions are classified into.
   categories: {
     list: () => invokeCommand<CategoryRecord[]>('categories_list'),
+    create: (name: string) =>
+      invokeCommand<unknown>('categories_create', { payload: { name } }),
+    rename: (id: string, name: string) =>
+      invokeCommand<unknown>('categories_update', { payload: { id, name } }),
+    /** Transactions in the category move to 'Others' (confirmed by the caller). */
+    delete: (id: string) =>
+      invokeCommand<unknown>('categories_delete', { payload: { id, confirm_reassign: true } }),
   },
   // PDF statement ingestion, from upload through password unlock, parsing and
   // draft review, to the retry paths for statements that failed.
@@ -1001,6 +1009,8 @@ export const API = {
   },
   // Historical Gmail scans: start, cancel, and status.
   ingestion: {
+    /** Polls Gmail for new mail now instead of waiting for the next cycle. */
+    checkNow: () => invokeCommand<string>('sync_force_poll_now'),
     startHistoricalScan: (
       accountId: string,
       startDate: string,

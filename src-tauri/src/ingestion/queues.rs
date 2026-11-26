@@ -431,37 +431,8 @@ async fn wait_while_statement_queue_paused() {
     }
 }
 
-/// Resolves a queue name from an IPC caller to the flag that pauses it.
-///
-/// The name arrives from the frontend, so it is matched against the known queues
-/// rather than used directly. Validation and dispatch are the same lookup so the
-/// two cannot drift apart into an unreachable arm that is suddenly reachable.
-fn queue_pause_flag(
-    queue: &str,
-) -> Result<&'static std::sync::atomic::AtomicBool, crate::error::AppError> {
-    match queue {
-        "transaction_queue" => Ok(&TRANSACTION_QUEUE_PAUSED),
-        "statement_queue" => Ok(&STATEMENT_QUEUE_PAUSED),
-        _ => Err(crate::error::AppError::Validation(format!(
-            "invalid queue '{}': must be 'transaction_queue' or 'statement_queue'",
-            queue
-        ))),
-    }
-}
 
-#[tauri::command]
-/// Pauses a queue, used for debugging and controlled shutdown.
-pub async fn pipeline_pause(queue: String) -> Result<serde_json::Value, crate::error::AppError> {
-    queue_pause_flag(&queue)?.store(true, std::sync::atomic::Ordering::Relaxed);
-    Ok(serde_json::json!({ "status": "paused", "queue": queue }))
-}
 
-#[tauri::command]
-/// Resumes a paused queue.
-pub async fn pipeline_resume(queue: String) -> Result<serde_json::Value, crate::error::AppError> {
-    queue_pause_flag(&queue)?.store(false, std::sync::atomic::Ordering::Relaxed);
-    Ok(serde_json::json!({ "status": "running", "queue": queue }))
-}
 
 #[derive(serde::Serialize)]
 pub struct TransactionQueueStatus {
@@ -1897,19 +1868,6 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    #[test]
-    fn test_queue_pause_flag_rejects_unknown_queue() {
-        assert!(std::ptr::eq(
-            queue_pause_flag("transaction_queue").unwrap(),
-            &TRANSACTION_QUEUE_PAUSED
-        ));
-        assert!(std::ptr::eq(
-            queue_pause_flag("statement_queue").unwrap(),
-            &STATEMENT_QUEUE_PAUSED
-        ));
-        assert!(queue_pause_flag("not_a_real_queue").is_err());
-        assert!(queue_pause_flag("").is_err());
-    }
 
     #[tokio::test]
     async fn test_concurrency_cap_enforced_at_5() {

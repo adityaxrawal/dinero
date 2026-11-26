@@ -294,7 +294,7 @@ const CORE: ComponentDef[] = [
     description:
       'Searches every message in range, fetches and classifies each, routes transaction alerts / statements / mandate events into shared queues. Returns immediately ("Scan started") and reports via events. Checkpointed every 5 messages for crash-resumable progress.',
     responsibilities: [
-      'scans_historical / scans_status / scans_resume / scans_cancel / scans_retry_failed / scans_failed_count',
+      'scans_historical (same range resumes a failed run) / scans_status / scans_cancel / scans_retry_failed / scans_failed_count',
       'run_scan_batches: 8-concurrent fetch/process/checkpoint loop, then one retry pass for failures (concurrency 2)',
       'Atomic checkpoint claim (one in_progress scan per account)',
       'Durable per-message failures in scan_failed_messages',
@@ -318,7 +318,6 @@ const CORE: ComponentDef[] = [
     apiSurface: [
       'scans_historical',
       'scans_status',
-      'scans_resume',
       'scans_cancel',
       'scans_retry_failed',
       'scans_failed_count',
@@ -765,7 +764,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     inputs: ['TransactionJob'],
     outputs: ['transaction_observations', 'canonical transactions'],
     sources: ['src-tauri/src/ingestion/queues.rs', 'src-tauri/src/db/pending_ingest_jobs.rs'],
-    apiSurface: ['pipeline_pause / pipeline_resume / pipeline_status (covers this queue)'],
+    apiSurface: ['pipeline_status (covers this queue); pause via debug_set_scan_queue_paused (dev builds)'],
     facts: [
       '4 workers, capacity 256',
       'A failed job is kept: retried in-session after 30 s and replayed at launch; after 3 failed attempts it is marked dead and listed under Retry failed',
@@ -790,7 +789,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     inputs: ['StatementJob { bytes, filename, file_hash, password, origin }'],
     outputs: ['statement_drafts / unprocessed_statements'],
     sources: ['src-tauri/src/ingestion/queues.rs'],
-    apiSurface: ['pipeline_pause / pipeline_resume (covers this queue)'],
+    apiSurface: ['pipeline_status (covers this queue)'],
     facts: [
       '5-permit semaphore shared by manual upload and email attachment paths',
       'Durable through the statements table: rows left queued are re-dispatched at launch',
@@ -816,7 +815,7 @@ const EXTRACTION_AND_STATEMENTS: ComponentDef[] = [
     apiSurface: [],
     facts: [
       '1 worker, capacity 64',
-      'Not covered by pipeline_pause/resume (deliberate)',
+      'Not covered by the queue pause toggles (deliberate)',
       'No ₹0 transactions: migration 064 soft-deleted the ones older builds booked',
       'A failed mandate write is logged and the job kept for replay',
     ],

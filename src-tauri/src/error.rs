@@ -207,6 +207,26 @@ pub fn map_insert_conflict(e: anyhow::Error, conflict_message: &str) -> AppError
 
 #[cfg(test)]
 mod tests {
+    /// The frontend's AppErrorCode union must list every code the backend can
+    /// send, so no failure arrives as an untyped string (owner decision Q-7).
+    #[test]
+    fn every_rust_error_code_is_typed_in_typescript() {
+        let rust = include_str!("error.rs");
+        let start = rust.find("pub fn code(&self)").expect("code() exists");
+        let body = &rust[start..rust[start..].find("\n    }\n").map(|e| start + e).unwrap()];
+        let ts = include_str!("../../src/types/ipc.ts");
+        let union_start = ts.find("export type AppErrorCode").expect("TS union exists");
+        let union = &ts[union_start..union_start + ts[union_start..].find(';').unwrap()];
+        let mut checked = 0;
+        for part in body.split('"').skip(1).step_by(2) {
+            if part.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
+                assert!(union.contains(&format!("'{part}'")), "{part} is missing from AppErrorCode in src/types/ipc.ts");
+                checked += 1;
+            }
+        }
+        assert!(checked > 20, "expected to find the error codes in code(), found {checked}");
+    }
+
     use super::*;
     use serde_json::json;
 

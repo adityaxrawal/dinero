@@ -1,7 +1,12 @@
 /**
  * Mail scanning controls and progress.
  */
+import { useState } from 'react';
 import { ScanLine } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { useToast } from '@/hooks/use-toast';
+import { API } from '@/lib/ipc';
+import { getErrorToast } from '@/lib/errorMapping';
 import SectionHeading from '@/components/settings/SectionHeading';
 import { useGlobalState } from '@/lib/GlobalStateContext';
 import ScanRangePicker from './ScanRangePicker';
@@ -13,6 +18,18 @@ export default function MailScanSection() {
   const { scanStatus, scanProgress, scanStartedAt, scanFinishedAt, scanError, connectedAccounts } =
     useGlobalState();
   const connectedAccount = connectedAccounts[0] ?? null;
+  const { toast } = useToast();
+  const [checking, setChecking] = useState(false);
+  // Fetches new mail now rather than at the next background cycle (owner
+  // decision Q-11: the command existed with no button).
+  const checkNow = () => {
+    setChecking(true);
+    API.ingestion
+      .checkNow()
+      .then(() => toast({ title: 'Checked for new emails', description: 'Anything new is being processed.' }))
+      .catch((err) => toast({ variant: 'destructive', ...getErrorToast(err) }))
+      .finally(() => setChecking(false));
+  };
 
   return (
     <section>
@@ -49,6 +66,17 @@ export default function MailScanSection() {
         )}
 
         <ScanControls hasAccount={connectedAccount != null} />
+
+        {connectedAccount && (
+          <Button
+            variant="outline"
+            className="h-9 text-[13px] border-[#064E3B]/20 text-[#064E3B]"
+            onClick={checkNow}
+            disabled={checking || scanStatus === 'running'}
+          >
+            {checking ? 'Checking…' : 'Check for new emails now'}
+          </Button>
+        )}
       </div>
     </section>
   );

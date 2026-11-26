@@ -104,7 +104,7 @@ const AUTHORED: WorkflowDef[] = [
             label: 'cancelled',
             detail: 'Rows created by this scan rolled back; checkpoint deleted (not_started)',
           },
-          { label: 'failed', detail: 'Checkpoint marked failed; scans_resume continues it' },
+          { label: 'failed', detail: 'Checkpoint marked failed; a new scan over the same range continues it' },
         ],
       },
       {
@@ -190,7 +190,7 @@ const AUTHORED: WorkflowDef[] = [
             detail:
               'scan_cancelled; rows this scan created rolled back in one transaction, checkpoint deleted (not_started). If the rollback fails, nothing is undone and the checkpoint is marked failed',
           },
-          { label: 'failed', detail: 'scan_failed; scans_resume continues from resume_from' },
+          { label: 'failed', detail: 'scan_failed; a new scan over the same range continues from resume_from' },
         ],
       },
       {

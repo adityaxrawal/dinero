@@ -156,7 +156,7 @@ export const STATE_MACHINES: StateMachineDef[] = [
       },
       { from: 'in_progress', to: 'not_started', label: 'cancel (checkpoint deleted)' },
       { from: 'in_progress', to: 'failed', label: 'scan error / app restart' },
-      { from: 'failed', to: 'in_progress', label: 'scans_resume' },
+      { from: 'failed', to: 'in_progress', label: 'scans_historical (same range)' },
       { from: 'completed', to: 'in_progress', label: 'new scan' },
       { from: 'completed_with_errors', to: 'paused', label: 'Retry failed' },
       { from: 'completed_with_errors', to: 'in_progress', label: 'new scan' },

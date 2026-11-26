@@ -2248,40 +2248,6 @@ pub async fn reconciliation_clusters_resolve(
     Ok("Cluster resolved".to_string())
 }
 
-#[tauri::command]
-pub async fn correct_match(
-    observation_id: String,
-    original_decision_id: String,
-    new_canonical_id: Option<String>,
-    pool: tauri::State<'_, deadpool_sqlite::Pool>,
-) -> Result<String, crate::error::AppError> {
-    crate::ipc::validation::validate_uuid("observation_id", &observation_id)?;
-    crate::ipc::validation::validate_uuid("original_decision_id", &original_decision_id)?;
-    if let Some(ref new_canonical_id) = new_canonical_id {
-        crate::ipc::validation::validate_uuid("new_canonical_id", new_canonical_id)?;
-    }
-
-    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
-
-    let conn = pool
-        .get()
-        .await
-        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-
-    conn.interact(move |conn| {
-        crate::reconciliation::audit::append_correction_decision(
-            conn,
-            &observation_id,
-            new_canonical_id.as_deref(),
-            &original_decision_id,
-        )
-    })
-    .await
-    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
-    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
-
-    Ok("Correction recorded".to_string())
-}
 
 #[derive(serde::Deserialize)]
 pub struct ManualTransactionPayload {
@@ -3181,53 +3147,6 @@ pub fn check_system_ram() -> Result<f64, crate::error::AppError> {
     Ok(total_ram_gb)
 }
 
-#[tauri::command]
-pub async fn ipc_trigger_patch_sync(
-    alert_id: String,
-    pool: tauri::State<'_, deadpool_sqlite::Pool>,
-) -> Result<String, crate::error::AppError> {
-    crate::ipc::validation::validate_uuid("alert_id", &alert_id)?;
-
-    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
-
-    let conn = pool
-        .get()
-        .await
-        .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
-
-    let alert_id_clone = alert_id.clone();
-    let alert = conn
-        .interact(move |conn| crate::db::alerts::get_alert(conn, &alert_id_clone))
-        .await
-        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
-        .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
-
-    if let Some(alert) = alert {
-        if alert.alert_type == "SMS Offline" {
-            return Err(crate::error::AppError::Forbidden(
-                "No automated retry is available for this alert — please check the bank connection manually.".to_string(),
-            ));
-        } else if alert.alert_type == "Email Offline" {
-        }
-
-        let alert_id_clone = alert.alert_id.clone();
-        pool.get()
-            .await
-            .map_err(|e| crate::error::AppError::Db(e.to_string()))?
-            .interact(move |conn| {
-                crate::db::alerts::update_alert_status(conn, &alert_id_clone, "resolved")
-            })
-            .await
-            .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
-            .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
-
-        Ok("Sync triggered".to_string())
-    } else {
-        Err(crate::error::AppError::NotFound(
-            "Alert not found".to_string(),
-        ))
-    }
-}
 
 #[tauri::command]
 pub fn log_frontend_event(
@@ -3307,7 +3226,6 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         settings_sender_overrides_revert,
         settings_pdf_passwords_list,
         settings_pdf_passwords_delete,
-        correct_match,
         statements_upload,
         statements_submit_password,
         statements_retry_unprocessed,
@@ -3319,19 +3237,14 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         statements_get_draft_pdf,
         statements_get_draft,
         statements_confirm_instrument,
-        ipc_trigger_patch_sync,
         log_frontend_event,
         data::settings_delete_account,
         data::settings_export_backup,
         data::settings_restore_backup,
-        data::settings_profile_get,
-        data::settings_profile_update,
         data::dashboard_summary,
         data::dashboard_upcoming_bills,
         data::dashboard_categories,
         data::analytics_spend_trend,
-        data::analytics_top_merchants,
-        data::analytics_recurring_payments_summary,
         data::analytics_pending_review_count,
         data::categories_list,
         data::categories_create,
@@ -3359,7 +3272,6 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         data::reconciliation_recheck_all_unassigned_transactions,
         data::reconciliation_resolve_unassigned_transaction_manually,
         data::reconciliation_clusters_unmerge,
-        data::reconciliation_clusters_bulk_resolve,
         llm::llm_get_available_models,
         llm::llm_download_model,
         llm::llm_delete_model,
@@ -3400,12 +3312,9 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         crate::ingestion::historical_scan::scans_historical,
         crate::ingestion::historical_scan::scans_status,
         crate::ingestion::historical_scan::scans_cancel,
-        crate::ingestion::historical_scan::scans_resume,
         crate::ingestion::historical_scan::scans_failed_count,
         crate::ingestion::historical_scan::scans_retry_failed,
         crate::ingestion::polling::sync_force_poll_now,
-        crate::ingestion::queues::pipeline_pause,
-        crate::ingestion::queues::pipeline_resume,
         crate::ingestion::queues::pipeline_status,
         // Debug tooling only exists in debug builds (review M11).
         #[cfg(debug_assertions)]
@@ -3540,9 +3449,7 @@ mod tests {
     /// it, so a new write command cannot slip through by being left off a list.
     const UNGATED: &[(&str, &str)] = &[
             ("analytics_pending_review_count", "read-only query"),
-            ("analytics_recurring_payments_summary", "read-only query"),
             ("analytics_spend_trend", "read-only query"),
-            ("analytics_top_merchants", "read-only query"),
             ("auth_get_consent_history", "read-only query"),
             ("categories_list", "read-only query"),
             ("dashboard_categories", "read-only query"),
@@ -3583,7 +3490,6 @@ mod tests {
             ("settings_known_bank_names", "read-only query"),
             ("settings_learned_rules_list", "read-only query"),
             ("settings_pdf_passwords_list", "read-only query"),
-            ("settings_profile_get", "read-only query"),
             ("settings_sender_overrides_list", "read-only query"),
             ("statements_get_draft", "read-only query"),
             ("statements_get_draft_pdf", "read-only query"),
@@ -3629,8 +3535,6 @@ mod tests {
             ("updater_confirm_install", "app/machine preference, not ledger data"),
             ("scans_cancel", "stops or pauses work rather than starting it"),
             ("merchant_cleanup_cancel", "stops or pauses work rather than starting it"),
-            ("pipeline_pause", "stops or pauses work rather than starting it"),
-            ("pipeline_resume", "stops or pauses work rather than starting it"),
             ("debug_audit_scan_coverage", "debug-build diagnostics"),
             ("debug_fetch_audit_log", "debug-build diagnostics"),
             ("debug_fetch_parse_errors", "debug-build diagnostics"),

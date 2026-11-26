@@ -13,7 +13,7 @@
  * cannot. Where a failure has an obvious remedy, the entry also carries a route
  * and label so the toast can offer a direct way to fix it.
  */
-import type { AppError } from '@/types/ipc';
+import type { AppError, AppErrorCode } from '@/types/ipc';
 
 /** Toast copy, plus an optional in-app action linking to the fix. */
 export interface ErrorToastContent {
@@ -25,7 +25,7 @@ export interface ErrorToastContent {
 
 // Keyed by AppError.code. Entries are functions rather than plain objects so
 // they can incorporate the backend's message where that detail matters.
-const CODE_MAP: Record<string, (error: AppError) => ErrorToastContent> = {
+const CODE_MAP: Partial<Record<AppErrorCode, (error: AppError) => ErrorToastContent>> = {
   LICENSE_LOCKED: () => ({
     title: 'Your subscription needs attention',
     description: 'Reactivate your license to restore full access.',
@@ -53,10 +53,6 @@ const CODE_MAP: Record<string, (error: AppError) => ErrorToastContent> = {
   NOT_FOUND: (error: AppError) => ({
     title: 'Not found',
     description: error.message || 'The item you were looking for no longer exists.',
-  }),
-  DATABASE_BACKUP_FAILED: (error: AppError) => ({
-    title: 'Backup Failed',
-    description: error.message,
   }),
   RATE_LIMITED: () => ({
     title: 'Too many requests',
@@ -91,6 +87,48 @@ const CODE_MAP: Record<string, (error: AppError) => ErrorToastContent> = {
   INVALID_FILE_TYPE: (error: AppError) => ({
     title: 'Unsupported file type',
     description: error.message || 'Only PDF files are supported.',
+  }),
+  SCAN_ALREADY_RUNNING: () => ({
+    title: 'A scan is already running',
+    description: 'Wait for it to finish, or cancel it first.',
+  }),
+  SCAN_NOT_FOUND: () => ({
+    title: 'No scan to resume',
+    description: 'Start a new scan from Settings.',
+    actionTo: '/settings?section=accounts',
+    actionLabel: 'Open Settings',
+  }),
+  PDF_PAGE_LIMIT_EXCEEDED: (error: AppError) => ({
+    title: 'Statement too long',
+    description: error.message || 'This PDF has more pages than Dinero can read.',
+  }),
+  STATEMENT_NOT_AWAITING_PASSWORD: () => ({
+    title: 'Already unlocked',
+    description: 'This statement no longer needs a password. Refresh the queue.',
+  }),
+  STATEMENT_NOT_AWAITING_INSTRUMENT_CONFIRMATION: () => ({
+    title: 'Already confirmed',
+    description: 'This statement no longer needs account details. Refresh the queue.',
+  }),
+  CLUSTER_NOT_FOUND: () => ({
+    title: 'Already resolved',
+    description: 'This duplicate check was resolved or removed. Refresh the queue.',
+  }),
+  INVALID_RESOLUTION_ACTION: (error: AppError) => ({
+    title: 'Action not allowed',
+    description: error.message || 'That action is not valid for this item.',
+  }),
+  LICENSE_INVALID: (error: AppError) => ({
+    title: 'Licence not valid',
+    description: error.message || 'Check the licence key and try again.',
+  }),
+  DEVICE_ALREADY_BOUND: (error: AppError) => ({
+    title: 'Licence in use on another Mac',
+    description: error.message || 'Deactivate it on the other Mac, then try again.',
+  }),
+  PAYMENT_VERIFICATION_FAILED: (error: AppError) => ({
+    title: 'Payment not verified',
+    description: error.message || 'We could not confirm the payment. Try again shortly.',
   }),
 };
 
