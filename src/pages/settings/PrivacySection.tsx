@@ -14,17 +14,17 @@ export default function PrivacySection() {
       <section>
         <PrivacySettings />
       </section>
-      <div className="h-px w-full bg-[#064E3B]/10" />
+      <div className="h-px w-full bg-emerald-ink/10" />
       <section>
         <StatementPasswordSettings />
       </section>
-      <div className="h-px w-full bg-[#064E3B]/10" />
+      <div className="h-px w-full bg-emerald-ink/10" />
       <RecoveryPhraseSection />
-      <div className="h-px w-full bg-[#064E3B]/10" />
+      <div className="h-px w-full bg-emerald-ink/10" />
       <section>
         <PortableBackupSettings />
       </section>
-      <div className="h-px w-full bg-[#064E3B]/10" />
+      <div className="h-px w-full bg-emerald-ink/10" />
       <section>
         <LifecycleSettings />
       </section>

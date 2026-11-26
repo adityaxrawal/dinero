@@ -26,7 +26,7 @@ function Badges({
 }) {
   return (
     <>
-      {isActive && <span className={cn(BADGE, 'bg-[#064E3B] text-[#F8E7C9]')}>Active</span>}
+      {isActive && <span className={cn(BADGE, 'bg-emerald-ink text-champagne')}>Active</span>}
       {isDownloaded && !isActive && (
         <span
           className={cn(BADGE, 'bg-emerald-500/10 text-emerald-700 border border-emerald-500/20')}
@@ -48,17 +48,17 @@ function DownloadProgress({ progress }: { progress: LlmDownloadProgress }) {
   const pct = downloadPercent(progress);
   return (
     <div className="mt-3 w-full max-w-sm">
-      <div className="flex justify-between text-[11px] font-semibold text-[#064E3B]/60 mb-1.5">
+      <div className="flex justify-between text-[11px] font-semibold text-emerald-ink/60 mb-1.5">
         <span>Downloading...</span>
         {pct !== null && <span>{Math.round(pct)}%</span>}
       </div>
-      <div className="w-full h-1.5 rounded-full overflow-hidden bg-[#064E3B]/10">
+      <div className="w-full h-1.5 rounded-full overflow-hidden bg-emerald-ink/10">
         <div
-          className="h-full bg-[#064E3B] transition-all duration-300"
+          className="h-full bg-emerald-ink transition-all duration-300"
           style={{ width: pct !== null ? `${pct}%` : '100%' }}
         />
       </div>
-      <div className="mt-1.5 text-[11px] text-[#064E3B]/60">{downloadDetail(progress)}</div>
+      <div className="mt-1.5 text-[11px] text-emerald-ink/60">{downloadDetail(progress)}</div>
     </div>
   );
 }
@@ -82,7 +82,7 @@ function ModelActions({
       {!isDownloaded && !isDownloading && (
         <Button
           variant="outline"
-          className="flex-1 sm:flex-none h-9 font-semibold border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5"
+          className="flex-1 sm:flex-none h-9 font-semibold border-emerald-ink/20 text-emerald-ink hover:bg-emerald-ink/5"
           onClick={() => models.download(model.id)}
         >
           <Download className="w-4 h-4 mr-2" /> Download
@@ -94,7 +94,7 @@ function ModelActions({
           <Button
             variant="outline"
             disabled
-            className="flex-1 sm:flex-none h-9 font-semibold border-[#064E3B]/20 text-[#064E3B]/50"
+            className="flex-1 sm:flex-none h-9 font-semibold border-emerald-ink/20 text-emerald-ink/50"
           >
             <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Downloading
           </Button>
@@ -112,7 +112,7 @@ function ModelActions({
 
       {isDownloaded && !isActive && (
         <Button
-          className="flex-1 sm:flex-none h-9 font-semibold bg-[#064E3B] text-[#F8E7C9] hover:bg-[#064E3B]/90 shadow-sm"
+          className="flex-1 sm:flex-none h-9 font-semibold bg-emerald-ink text-champagne hover:bg-emerald-ink/90 shadow-sm"
           onClick={() => models.setActive(model)}
         >
           <CheckCircle className="w-4 h-4 mr-2" /> Set Active
@@ -149,13 +149,13 @@ export default function ModelCard({ model, models }: { model: LlmModelInfo; mode
       className={cn(
         'p-5 rounded-xl border flex flex-col sm:flex-row gap-5 items-start sm:items-center justify-between transition-colors',
         isActive
-          ? 'bg-[#064E3B]/5 border-[#064E3B]/30 shadow-sm'
-          : 'bg-[#F8E7C9]/50 border-[#064E3B]/10 hover:border-[#064E3B]/20'
+          ? 'bg-emerald-ink/5 border-emerald-ink/30 shadow-sm'
+          : 'bg-champagne/50 border-emerald-ink/10 hover:border-emerald-ink/20'
       )}
     >
       <div className="flex-1 space-y-2">
         <div className="flex flex-wrap items-center gap-3">
-          <h3 className="font-bold text-[15px] text-[#064E3B]">{model.name}</h3>
+          <h3 className="font-bold text-[15px] text-emerald-ink">{model.name}</h3>
           <Badges
             isActive={isActive}
             isDownloaded={isDownloaded}
@@ -163,9 +163,9 @@ export default function ModelCard({ model, models }: { model: LlmModelInfo; mode
           />
         </div>
 
-        <p className="text-[13px] text-[#064E3B]/70 leading-relaxed max-w-2xl">{model.rationale}</p>
+        <p className="text-[13px] text-emerald-ink/70 leading-relaxed max-w-2xl">{model.rationale}</p>
 
-        <div className="flex flex-wrap items-center gap-4 text-[12px] font-medium text-[#064E3B]/60 pt-1">
+        <div className="flex flex-wrap items-center gap-4 text-[12px] font-medium text-emerald-ink/60 pt-1">
           <span className="flex items-center gap-1.5">
             <Server className="w-3.5 h-3.5" /> RAM: {model.min_ram_gb}GB+
           </span>

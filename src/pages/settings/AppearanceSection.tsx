@@ -16,16 +16,16 @@ export default function AppearanceSection() {
           title="Appearance"
           description="Dinero currently ships dark-mode only. Light mode is planned for a future release."
         />
-        <div className="flex gap-4 max-w-sm p-1 rounded-xl bg-[#064E3B]/5 border border-[#064E3B]/10">
+        <div className="flex gap-4 max-w-sm p-1 rounded-xl bg-emerald-ink/5 border border-emerald-ink/10">
           <Button
-            className="flex-1 cursor-default h-9 font-semibold bg-[#064E3B] text-[#F8E7C9] shadow-sm rounded-lg"
+            className="flex-1 cursor-default h-9 font-semibold bg-emerald-ink text-champagne shadow-sm rounded-lg"
             disabled
           >
             Dark Mode (Active)
           </Button>
           <Button
             variant="ghost"
-            className="flex-1 cursor-default h-9 font-semibold text-[#064E3B]/60 hover:text-[#064E3B]/60 hover:bg-transparent"
+            className="flex-1 cursor-default h-9 font-semibold text-emerald-ink/60 hover:text-emerald-ink/60 hover:bg-transparent"
             disabled
           >
             Light Mode
@@ -33,7 +33,7 @@ export default function AppearanceSection() {
         </div>
       </section>
 
-      <div className="h-px w-full bg-[#064E3B]/10" />
+      <div className="h-px w-full bg-emerald-ink/10" />
 
       <section>
         <MenuBarExtraSettings />

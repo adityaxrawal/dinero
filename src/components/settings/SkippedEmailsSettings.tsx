@@ -69,25 +69,25 @@ export default function SkippedEmailsSettings() {
         description="Emails from the last 30 days that weren't treated as transactions, and why. If a real bank email was rejected by the sender check, trust the sender."
       />
       {isError ? (
-        <p role="alert" className="text-[12px] text-[#064E3B]/70">
+        <p role="alert" className="text-[12px] text-emerald-ink/70">
           Couldn't load skipped emails.{' '}
           <button type="button" className="underline" onClick={() => refetch()}>
             Try again
           </button>
         </p>
       ) : skipped.length === 0 ? (
-        <p className="text-[12px] text-[#064E3B]/60">Nothing skipped in the last 30 days.</p>
+        <p className="text-[12px] text-emerald-ink/60">Nothing skipped in the last 30 days.</p>
       ) : (
-        <ul className="max-h-[420px] overflow-y-auto divide-y divide-[#064E3B]/10 rounded-xl border border-[#064E3B]/10">
+        <ul className="max-h-[420px] overflow-y-auto divide-y divide-emerald-ink/10 rounded-xl border border-emerald-ink/10">
           {skipped.map((e) => {
             const domain = e.sender_domain ?? '';
             const offerTrust = e.gate === 'sender' && domain && !trustedOffered.has(domain);
             if (offerTrust) trustedOffered.add(domain);
             return (
-              <li key={e.message_id} className="flex items-start gap-3 p-3 text-[12px] text-[#064E3B]">
+              <li key={e.message_id} className="flex items-start gap-3 p-3 text-[12px] text-emerald-ink">
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-medium">{e.subject || '(no subject)'}</p>
-                  <p className="truncate text-[#064E3B]/60">
+                  <p className="truncate text-emerald-ink/60">
                     {domain || e.bank_name || 'Unknown sender'} · {reasonLabel(e.reason)}
                   </p>
                 </div>

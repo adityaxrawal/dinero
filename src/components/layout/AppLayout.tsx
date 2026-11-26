@@ -57,7 +57,7 @@ function EngineStatus({ healthy }: { healthy: boolean }) {
     <div className="px-6 mt-4 flex items-center justify-between">
       <div className="flex items-center gap-2">
         <div className={cn('w-2 h-2 rounded-full', healthy ? 'bg-[#10b981]' : 'bg-[#ef4444]')} />
-        <span className="text-[11px] font-medium text-[#F8E7C9]/60">
+        <span className="text-[11px] font-medium text-champagne/60">
           {healthy ? 'Engine Online' : 'Engine Offline'}
         </span>
       </div>
@@ -105,7 +105,7 @@ export default function AppLayout() {
       {/* Sidebar: fixed-width navigation column, laid out top to bottom as
           brand, primary nav, system messages, then the status footer. */}
       <aside
-        className="flex-shrink-0 z-40 flex flex-col border-r border-[#064E3B]/20"
+        className="flex-shrink-0 z-40 flex flex-col border-r border-emerald-ink/20"
         style={{ width: '256px', backgroundColor: '#064E3B' }}
         aria-label="Main navigation"
       >
@@ -152,7 +152,7 @@ export default function AppLayout() {
         <div className="mt-auto flex flex-col">
           <SidebarNotificationCenter />
 
-          <div className="pb-4 pt-4 flex flex-col gap-1 border-t border-[#F8E7C9]/10">
+          <div className="pb-4 pt-4 flex flex-col gap-1 border-t border-champagne/10">
             {SYSTEM_ITEMS.map((item) => (
               <SidebarItem key={item.path} item={item} isActive={isActive(item.path)} />
             ))}

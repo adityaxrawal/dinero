@@ -44,12 +44,12 @@ function InspectorHeader({
         <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-sm mb-2 inline-block uppercase tracking-wider bg-red-500/10 text-red-700">
           Action Required
         </span>
-        <p className="text-[15px] font-semibold text-[#064E3B]">{title}</p>
+        <p className="text-[15px] font-semibold text-emerald-ink">{title}</p>
       </div>
 
       <button
         type="button"
-        className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-[#064E3B]/10 text-[#064E3B]/60 hover:text-[#064E3B] flex-shrink-0"
+        className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-emerald-ink/10 text-emerald-ink/60 hover:text-emerald-ink flex-shrink-0"
         onClick={onClose}
         aria-label="Close inspector"
       >
@@ -119,7 +119,7 @@ export default function UnassignedInspector({
         <div className="flex-1 space-y-6">
           {record.waiting_for_ai && (
             <p
-              className="rounded-lg border border-[#064E3B]/15 bg-[#064E3B]/5 p-3 text-[12px] text-[#064E3B]"
+              className="rounded-lg border border-emerald-ink/15 bg-emerald-ink/5 p-3 text-[12px] text-emerald-ink"
               role="status"
             >
               The local AI hasn't read this email yet. You can fill it in now; if you save it, the

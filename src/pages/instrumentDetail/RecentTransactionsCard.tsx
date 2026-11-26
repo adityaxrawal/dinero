@@ -18,7 +18,7 @@ function TransactionRow({ tx }: { tx: Transaction }) {
   return (
     <li className="flex items-center justify-between text-sm py-1 border-b border-border/20 last:border-0">
       <div className="flex items-center gap-2">
-        <span className="font-semibold text-[#064E3B]">{tx.merchant}</span>
+        <span className="font-semibold text-emerald-ink">{tx.merchant}</span>
         <span
           className={cn(
             'text-[9px] font-extrabold px-1.5 py-0.2 rounded uppercase tracking-wider border',

@@ -5,7 +5,7 @@ import { X, ExternalLink } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const ICON_BUTTON =
-  'w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-[#064E3B]/10 text-[#064E3B]/70 hover:text-[#064E3B] cursor-pointer';
+  'w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-emerald-ink/10 text-emerald-ink/70 hover:text-emerald-ink cursor-pointer';
 
 /** Header showing the instrument and close control. */
 export default function InspectorHeader({
@@ -27,12 +27,12 @@ export default function InspectorHeader({
       style={{ borderBottom: '1px solid rgba(6,78,59,0.1)' }}
     >
       <div className="flex items-center gap-3 min-w-0">
-        <div className="w-9 h-9 rounded-xl bg-[#064E3B] text-[#F8E7C9] flex items-center justify-center text-sm font-bold shrink-0">
+        <div className="w-9 h-9 rounded-xl bg-emerald-ink text-champagne flex items-center justify-center text-sm font-bold shrink-0">
           {issuerName.charAt(0).toUpperCase()}
         </div>
         <div className="min-w-0">
-          <h2 className="text-[15px] font-bold text-[#064E3B] truncate">{issuerName}</h2>
-          <p className="text-[11px] font-mono text-[#064E3B]/60 truncate">••{maskedIdentifier}</p>
+          <h2 className="text-[15px] font-bold text-emerald-ink truncate">{issuerName}</h2>
+          <p className="text-[11px] font-mono text-emerald-ink/60 truncate">••{maskedIdentifier}</p>
         </div>
       </div>
 

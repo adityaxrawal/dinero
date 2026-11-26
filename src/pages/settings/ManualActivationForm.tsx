@@ -5,8 +5,8 @@ import { Button } from '@/components/ui/button';
 import type { useLicenseActivation } from './useLicenseActivation';
 
 const FIELD_CLASS =
-  'w-full px-3 py-2 rounded-lg border text-[13px] font-medium bg-[#F8E7C9]/50 border-[#064E3B]/20 text-[#064E3B] focus:border-[#064E3B] focus:ring-1 focus:ring-[#064E3B]';
-const INPUT_CLASS = `${FIELD_CLASS} placeholder:text-[#064E3B]/40`;
+  'w-full px-3 py-2 rounded-lg border text-[13px] font-medium bg-champagne/50 border-emerald-ink/20 text-emerald-ink focus:border-emerald-ink focus:ring-1 focus:ring-emerald-ink';
+const INPUT_CLASS = `${FIELD_CLASS} placeholder:text-emerald-ink/40`;
 
 /** Manual licence activation, for when the automatic flow cannot complete. */
 export default function ManualActivationForm({
@@ -31,8 +31,8 @@ export default function ManualActivationForm({
     !activateEmail.trim() || !activatePaymentId.trim() || !activateSignature.trim();
 
   return (
-    <div className="mt-8 pt-6 border-t border-[#064E3B]/10 space-y-4">
-      <p className="text-[13px] font-medium text-[#064E3B]/70">
+    <div className="mt-8 pt-6 border-t border-emerald-ink/10 space-y-4">
+      <p className="text-[13px] font-medium text-emerald-ink/70">
         Enter the payment confirmation details from your Razorpay checkout.
       </p>
       <div className="grid gap-4 max-w-sm">
@@ -63,7 +63,7 @@ export default function ManualActivationForm({
           <option value="yearly">Yearly</option>
         </select>
         <Button
-          className="h-9 font-semibold bg-[#064E3B] text-[#F8E7C9] hover:bg-[#064E3B]/90"
+          className="h-9 font-semibold bg-emerald-ink text-champagne hover:bg-emerald-ink/90"
           onClick={handleActivateLicense}
           disabled={isActivating || incomplete}
         >

@@ -47,7 +47,7 @@ export default function ScanProgressPanel({
     <div
       className={cn(
         'p-5 rounded-xl border',
-        PANEL_TONE[scanStatus] ?? 'bg-[#064E3B]/5 border-[#064E3B]/10'
+        PANEL_TONE[scanStatus] ?? 'bg-emerald-ink/5 border-emerald-ink/10'
       )}
     >
       <ScanStatusLine scanStatus={scanStatus} scanProgress={scanProgress} />
@@ -61,9 +61,9 @@ export default function ScanProgressPanel({
       )}
 
       {scanProgress && scanStatus === 'running' && (
-        <div className="w-full h-1.5 rounded-full overflow-hidden bg-[#064E3B]/10 mb-5">
+        <div className="w-full h-1.5 rounded-full overflow-hidden bg-emerald-ink/10 mb-5">
           <div
-            className="h-full bg-[#064E3B] transition-all duration-300"
+            className="h-full bg-emerald-ink transition-all duration-300"
             style={{ width: `${percent}%` }}
           />
         </div>

@@ -291,7 +291,7 @@ function EmailBody({
     return (
       <div className="p-4 sm:p-5 text-[13px] text-slate-800 leading-relaxed font-sans">
         {cleanText ? (
-          <div className="space-y-3 whitespace-pre-wrap leading-relaxed text-[#064E3B]">
+          <div className="space-y-3 whitespace-pre-wrap leading-relaxed text-emerald-ink">
             {cleanText}
           </div>
         ) : (
@@ -402,7 +402,7 @@ export function GmailEmailViewer({
   return (
     <div
       className={cn(
-        'bg-white border border-[#064E3B]/15 rounded-xl shadow-xs overflow-hidden flex flex-col',
+        'bg-white border border-emerald-ink/15 rounded-xl shadow-xs overflow-hidden flex flex-col',
         className
       )}
     >

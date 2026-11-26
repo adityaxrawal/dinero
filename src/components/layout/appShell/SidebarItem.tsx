@@ -18,7 +18,7 @@ function NavBadge({ item, isActive }: { item: NavItem; isActive: boolean }) {
     <span
       className={cn(
         'flex items-center justify-center text-[10px] font-bold rounded-full ml-auto px-2 min-w-[20px] h-5 transition-transform duration-300',
-        isActive ? 'bg-[#064E3B]/10 text-[#064E3B]' : 'bg-[#f59e0b] text-white',
+        isActive ? 'bg-emerald-ink/10 text-emerald-ink' : 'bg-[#f59e0b] text-white',
         item.pulse && 'scale-125'
       )}
       data-testid={item.pulse !== undefined ? 'reconciliation-badge' : undefined}
@@ -45,8 +45,8 @@ export default function SidebarItem({ item, isActive }: { item: NavItem; isActiv
         className={cn(
           'relative flex items-center rounded-lg transition-all px-3 py-1.5 w-full',
           isActive
-            ? 'bg-[#F8E7C9] text-[#064E3B] font-semibold shadow-sm'
-            : 'text-[#F8E7C9]/70 hover:text-[#F8E7C9] hover:bg-[#F8E7C9]/10 font-medium'
+            ? 'bg-champagne text-emerald-ink font-semibold shadow-sm'
+            : 'text-champagne/70 hover:text-champagne hover:bg-champagne/10 font-medium'
         )}
         aria-current={isActive ? 'page' : undefined}
       >

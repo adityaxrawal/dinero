@@ -25,10 +25,10 @@ export default function UnassignedActions({
   onSave: () => void;
 }) {
   return (
-    <div className="mt-8 pt-4 border-t border-[#064E3B]/10 flex justify-end gap-3">
+    <div className="mt-8 pt-4 border-t border-emerald-ink/10 flex justify-end gap-3">
       <Button
         variant="outline"
-        className="text-[13px] h-9 border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5 font-medium mr-auto"
+        className="text-[13px] h-9 border-emerald-ink/20 text-emerald-ink hover:bg-emerald-ink/5 font-medium mr-auto"
         onClick={onRecheck}
         disabled={!canRecheck || isPending}
         title={
@@ -39,14 +39,14 @@ export default function UnassignedActions({
       </Button>
       <Button
         variant="outline"
-        className="text-[13px] h-9 border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5 font-medium"
+        className="text-[13px] h-9 border-emerald-ink/20 text-emerald-ink hover:bg-emerald-ink/5 font-medium"
         onClick={onDismiss}
         disabled={isPending}
       >
         <Ban className="w-3.5 h-3.5 mr-2" /> Not a Transaction
       </Button>
       <Button
-        className="text-[13px] h-9 font-medium bg-[#064E3B] text-[#F8E7C9] hover:bg-[#064E3B]/90"
+        className="text-[13px] h-9 font-medium bg-emerald-ink text-champagne hover:bg-emerald-ink/90"
         onClick={onSave}
         disabled={!canSubmit || isPending}
       >

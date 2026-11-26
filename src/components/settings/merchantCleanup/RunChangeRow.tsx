@@ -27,25 +27,25 @@ export default function RunChangeRow({
       )}
     >
       <div className="min-w-0 flex items-center gap-2 flex-wrap text-[12px]">
-        <span className="font-mono text-[#064E3B]/60 line-through decoration-[#064E3B]/30">
+        <span className="font-mono text-emerald-ink/60 line-through decoration-emerald-ink/30">
           {change.previous_merchant ?? '—'}
         </span>
-        <ArrowRight className="w-3 h-3 shrink-0 text-[#064E3B]/35" />
-        <span className="font-semibold text-[#064E3B]">{change.new_merchant ?? '—'}</span>
+        <ArrowRight className="w-3 h-3 shrink-0 text-emerald-ink/35" />
+        <span className="font-semibold text-emerald-ink">{change.new_merchant ?? '—'}</span>
         {change.category && (
-          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-[#064E3B]/[0.07] text-[#064E3B]/70">
+          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-ink/[0.07] text-emerald-ink/70">
             {change.category}
           </span>
         )}
       </div>
       {change.reverted ? (
-        <span className="text-[11px] text-[#064E3B]/45 shrink-0">undone</span>
+        <span className="text-[11px] text-emerald-ink/45 shrink-0">undone</span>
       ) : (
         <button
           type="button"
           onClick={() => onUndoChange(change.correction_id)}
           disabled={isBusy}
-          className="shrink-0 text-[11px] font-semibold text-[#064E3B]/60 hover:text-[#064E3B] underline underline-offset-2"
+          className="shrink-0 text-[11px] font-semibold text-emerald-ink/60 hover:text-emerald-ink underline underline-offset-2"
         >
           {isBusy ? 'undoing…' : 'undo'}
         </button>

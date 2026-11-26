@@ -36,10 +36,10 @@ function GlobalLimitSection({
     <>
       <div className="flex items-start justify-between">
         <div>
-          <h2 className="text-xl font-bold flex items-center gap-2 text-[#064E3B]">
+          <h2 className="text-xl font-bold flex items-center gap-2 text-emerald-ink">
             Global Monthly Limit
           </h2>
-          <p className="text-sm mt-1 text-[#064E3B]/70">
+          <p className="text-sm mt-1 text-emerald-ink/70">
             Set the total amount you want to spend across all categories per month.
           </p>
         </div>
@@ -61,7 +61,7 @@ function GlobalLimitSection({
       <div className="flex items-center gap-4 max-w-xs">
         <Label
           htmlFor="global-limit"
-          className="shrink-0 text-[13px] font-bold uppercase tracking-wider text-[#064E3B]/60"
+          className="shrink-0 text-[13px] font-bold uppercase tracking-wider text-emerald-ink/60"
         >
           ₹ Limit
         </Label>
@@ -72,7 +72,7 @@ function GlobalLimitSection({
           value={globalLimit}
           onChange={(e) => onGlobalLimitChange(e.target.value)}
           placeholder="e.g. 60000"
-          className="bg-[#F8E7C9]/50 border-[#064E3B]/20 text-[#064E3B] focus-visible:ring-[#064E3B]"
+          className="bg-champagne/50 border-emerald-ink/20 text-emerald-ink focus-visible:ring-emerald-ink"
         />
       </div>
     </>
@@ -89,10 +89,10 @@ function AlertThresholdsSection({
 }) {
   return (
     <div>
-      <h2 className="text-xl font-bold flex items-center gap-2 mb-1 text-[#064E3B]">
+      <h2 className="text-xl font-bold flex items-center gap-2 mb-1 text-emerald-ink">
         <Bell className="w-5 h-5" /> Alert Thresholds
       </h2>
-      <p className="text-sm mb-6 text-[#064E3B]/70">
+      <p className="text-sm mb-6 text-emerald-ink/70">
         Receive notifications when you cross these percentages of your spending limit.
       </p>
 
@@ -121,13 +121,13 @@ function CategoryBudgetsSection({
 }) {
   return (
     <div>
-      <h2 className="text-xl font-bold mb-1 text-[#064E3B]">Per-Category Budgets</h2>
-      <p className="text-sm mb-6 text-[#064E3B]/70">
+      <h2 className="text-xl font-bold mb-1 text-emerald-ink">Per-Category Budgets</h2>
+      <p className="text-sm mb-6 text-emerald-ink/70">
         Set monthly spending budgets for individual categories. Leave at 0 for no limit.
       </p>
 
       {categories.length === 0 ? (
-        <p className="text-[13px] font-medium text-[#064E3B]/70">No categories configured.</p>
+        <p className="text-[13px] font-medium text-emerald-ink/70">No categories configured.</p>
       ) : (
         <div
           className="grid gap-4"
@@ -173,11 +173,11 @@ export default function BudgetsSettings() {
         onSave={handleSave}
       />
 
-      <div className="h-px w-full bg-[#064E3B]/10" />
+      <div className="h-px w-full bg-emerald-ink/10" />
 
       <AlertThresholdsSection thresholds={thresholds} onToggle={toggleThreshold} />
 
-      <div className="h-px w-full bg-[#064E3B]/10" />
+      <div className="h-px w-full bg-emerald-ink/10" />
 
       <CategoryBudgetsSection categories={categories} onChange={handleCategoryBudgetChange} />
     </div>

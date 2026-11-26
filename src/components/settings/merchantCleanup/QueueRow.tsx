@@ -15,10 +15,10 @@ export default function QueueRow({ sample }: { sample: MerchantCleanupSample }) 
   return (
     <li className="px-4 py-2.5 flex items-center justify-between gap-3">
       <div className="min-w-0">
-        <div className="font-mono text-[13px] font-medium text-[#064E3B] truncate">
+        <div className="font-mono text-[13px] font-medium text-emerald-ink truncate">
           {sample.merchant}
         </div>
-        <div className="text-[11px] text-[#064E3B]/55 flex items-center gap-1.5 flex-wrap mt-0.5">
+        <div className="text-[11px] text-emerald-ink/55 flex items-center gap-1.5 flex-wrap mt-0.5">
           {amount && (
             <span className={isCredit ? 'text-emerald-700' : undefined}>
               {isCredit ? '+' : ''}
@@ -27,7 +27,7 @@ export default function QueueRow({ sample }: { sample: MerchantCleanupSample }) 
           )}
           {sample.event_time && (
             <>
-              <span className="text-[#064E3B]/25">·</span>
+              <span className="text-emerald-ink/25">·</span>
               <RelativeDate iso={sample.event_time} />
             </>
           )}

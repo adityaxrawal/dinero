@@ -29,29 +29,29 @@ function InstrumentOption({
       hideCheckmark
       className={cn(
         'py-2 px-2.5 my-0.5 rounded-xl transition-all cursor-pointer select-none outline-none pr-3',
-        'focus:bg-[#064E3B]/10 focus:text-[#064E3B]',
+        'focus:bg-emerald-ink/10 focus:text-emerald-ink',
         isSelected
-          ? 'bg-[#064E3B]/[0.10] border border-[#064E3B]/25 font-medium'
-          : 'hover:bg-[#064E3B]/[0.05]'
+          ? 'bg-emerald-ink/[0.10] border border-emerald-ink/25 font-medium'
+          : 'hover:bg-emerald-ink/[0.05]'
       )}
     >
       <div className="flex items-center justify-between w-full gap-3">
         <div className="flex items-center gap-3 min-w-0">
-          <div className="w-8 h-8 rounded-lg bg-[#064E3B]/10 flex items-center justify-center text-[#064E3B] shrink-0 shadow-2xs group-hover:scale-105 transition-transform">
+          <div className="w-8 h-8 rounded-lg bg-emerald-ink/10 flex items-center justify-center text-emerald-ink shrink-0 shadow-2xs group-hover:scale-105 transition-transform">
             {instrumentIcon(inst.instrument_type, 16)}
           </div>
           <div className="flex flex-col text-left min-w-0">
-            <span className="font-bold text-[13px] text-[#064E3B] leading-tight truncate">
+            <span className="font-bold text-[13px] text-emerald-ink leading-tight truncate">
               {getInstrumentTitle(inst)}
             </span>
-            <span className="text-[11px] text-[#064E3B]/65 font-medium truncate font-mono">
+            <span className="text-[11px] text-emerald-ink/65 font-medium truncate font-mono">
               {getInstrumentSubtitle(inst)}
             </span>
           </div>
         </div>
 
         {isSelected && (
-          <div className="w-5 h-5 rounded-full bg-[#064E3B] text-white flex items-center justify-center shrink-0 shadow-2xs">
+          <div className="w-5 h-5 rounded-full bg-emerald-ink text-white flex items-center justify-center shrink-0 shadow-2xs">
             <Check className="w-3 h-3" strokeWidth={3} />
           </div>
         )}
@@ -78,11 +78,11 @@ export function InstrumentOptionGroup({
 
   return (
     <SelectGroup>
-      {showDivider && <div className="border-t border-[#064E3B]/10 my-1" />}
-      <SelectLabel className="flex items-center gap-1.5 text-[10px] font-extrabold uppercase tracking-wider text-[#064E3B]/70 px-2 py-1">
+      {showDivider && <div className="border-t border-emerald-ink/10 my-1" />}
+      <SelectLabel className="flex items-center gap-1.5 text-[10px] font-extrabold uppercase tracking-wider text-emerald-ink/70 px-2 py-1">
         {icon}
         <span>{label}</span>
-        <span className="ml-auto text-[9px] px-1.5 py-0.2 rounded-full bg-[#064E3B]/10">
+        <span className="ml-auto text-[9px] px-1.5 py-0.2 rounded-full bg-emerald-ink/10">
           {items.length}
         </span>
       </SelectLabel>

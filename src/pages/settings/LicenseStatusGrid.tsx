@@ -8,7 +8,7 @@ import type { LicenseStatusResponse } from '@/lib/ipc';
 function Cell({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <p className="text-[11px] font-bold uppercase tracking-wider mb-1 text-[#064E3B]/60">
+      <p className="text-[11px] font-bold uppercase tracking-wider mb-1 text-emerald-ink/60">
         {label}
       </p>
       <p className="text-[15px] font-bold">{children}</p>
@@ -19,7 +19,7 @@ function Cell({ label, children }: { label: string; children: React.ReactNode })
 /** Colour tone for a licence state. */
 function stateTone(status: LicenseStatusResponse): string {
   if (status.state === 'LOCKED') return 'text-red-600';
-  return status.is_active ? 'text-emerald-600' : 'text-[#064E3B]';
+  return status.is_active ? 'text-emerald-600' : 'text-emerald-ink';
 }
 
 /** Grid of licence details: plan, interval, expiry. */
@@ -28,9 +28,9 @@ export default function LicenseStatusGrid({ status }: { status: LicenseStatusRes
   const showRemaining = status.days_remaining != null && status.state !== 'GRACE';
 
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-4 gap-6 p-6 rounded-xl border border-[#064E3B]/10 bg-[#F8E7C9]/50">
+    <div className="grid grid-cols-2 sm:grid-cols-4 gap-6 p-6 rounded-xl border border-emerald-ink/10 bg-champagne/50">
       <div>
-        <p className="text-[11px] font-bold uppercase tracking-wider mb-1 text-[#064E3B]/60">
+        <p className="text-[11px] font-bold uppercase tracking-wider mb-1 text-emerald-ink/60">
           Status
         </p>
         <p className={cn('text-[15px] font-bold', stateTone(status))}>

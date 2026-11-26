@@ -34,7 +34,7 @@ export default function FailureDiagnosis({
         </h3>
 
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-[#064E3B]/10 text-[#064E3B]">
+          <span className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-emerald-ink/10 text-emerald-ink">
             {engineLabel}
           </span>
           <span
@@ -48,7 +48,7 @@ export default function FailureDiagnosis({
         </div>
       </div>
 
-      <p className="text-[13px] text-[#064E3B]/90 leading-relaxed font-medium">{description}</p>
+      <p className="text-[13px] text-emerald-ink/90 leading-relaxed font-medium">{description}</p>
 
       <DiagnosticChecklist checks={buildChecks(record)} />
 
@@ -57,14 +57,14 @@ export default function FailureDiagnosis({
       </div>
 
       {offerRecheck && (
-        <div className="flex items-center justify-between gap-3 rounded-lg p-3 bg-[#064E3B]/5 border border-[#064E3B]/15">
-          <p className="text-xs text-[#064E3B]">
+        <div className="flex items-center justify-between gap-3 rounded-lg p-3 bg-emerald-ink/5 border border-emerald-ink/15">
+          <p className="text-xs text-emerald-ink">
             Learned a pattern for this bank since? Re-check runs your learned patterns again, then
             the local AI.
           </p>
           <Button
             size="sm"
-            className="h-8 text-[12px] bg-[#064E3B] text-[#F8E7C9] hover:bg-[#064E3B]/90 shrink-0"
+            className="h-8 text-[12px] bg-emerald-ink text-champagne hover:bg-emerald-ink/90 shrink-0"
             onClick={onRecheck}
             disabled={isRechecking}
           >

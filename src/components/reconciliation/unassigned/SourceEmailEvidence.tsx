@@ -18,7 +18,7 @@ export default function SourceEmailEvidence({
 }) {
   return (
     <div>
-      <h3 className="text-sm font-semibold mb-3 text-[#064E3B] flex items-center gap-2">
+      <h3 className="text-sm font-semibold mb-3 text-emerald-ink flex items-center gap-2">
         <FileText className="w-4 h-4" /> Source Email Evidence
       </h3>
       <GmailEmailViewer

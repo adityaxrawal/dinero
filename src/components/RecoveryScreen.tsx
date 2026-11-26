@@ -43,10 +43,10 @@ export default function RecoveryScreen() {
   };
 
   return (
-    <main className="min-h-screen flex items-center justify-center bg-[#F8E7C9]/30 p-8">
+    <main className="min-h-screen flex items-center justify-center bg-champagne/30 p-8">
       <div className="max-w-lg w-full space-y-5">
-        <h1 className="text-xl font-semibold text-[#064E3B]">Dinero can't open your data</h1>
-        <p className="text-[13px] text-[#064E3B]/80">
+        <h1 className="text-xl font-semibold text-emerald-ink">Dinero can't open your data</h1>
+        <p className="text-[13px] text-emerald-ink/80">
           The encryption key on this Mac no longer matches your database. This can happen after a
           Keychain reset, moving to a new Mac, or reinstalling macOS. Enter your recovery phrase to
           unlock it.
@@ -72,7 +72,7 @@ export default function RecoveryScreen() {
             Reset app data
           </Button>
         </div>
-        <p className="text-[12px] text-[#064E3B]/60">
+        <p className="text-[12px] text-emerald-ink/60">
           Without a recovery phrase your data can't be decrypted. Resetting deletes it and starts
           fresh.
         </p>

@@ -136,8 +136,8 @@ function StateMachineInner({ machineId, onSelectMachine }: Props) {
 
   return (
     <div className="flex h-full">
-      <aside className="w-[220px] flex-shrink-0 overflow-y-auto border-r border-[#064E3B]/15 bg-[#FBF3E4] px-3 py-3">
-        <h2 className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#064E3B]/80">
+      <aside className="w-[220px] flex-shrink-0 overflow-y-auto border-r border-emerald-ink/15 bg-[#FBF3E4] px-3 py-3">
+        <h2 className="text-[10px] font-semibold uppercase tracking-[0.08em] text-emerald-ink/80">
           State machines
         </h2>
         <ul className="mt-2 space-y-1">
@@ -148,15 +148,15 @@ function StateMachineInner({ machineId, onSelectMachine }: Props) {
                 className={
                   'w-full rounded-md px-2.5 py-2 text-left transition-colors ' +
                   (m.id === sm.id
-                    ? 'bg-[#064E3B] text-white shadow-sm'
-                    : 'text-[#064E3B] hover:bg-[#064E3B]/8')
+                    ? 'bg-emerald-ink text-white shadow-sm'
+                    : 'text-emerald-ink hover:bg-emerald-ink/8')
                 }
               >
                 <div className="text-[11px] font-semibold leading-tight">{m.name}</div>
                 <div
                   className={
                     'mt-0.5 text-[9px] leading-snug ' +
-                    (m.id === sm.id ? 'text-white/75' : 'text-[#064E3B]/80')
+                    (m.id === sm.id ? 'text-white/75' : 'text-emerald-ink/80')
                   }
                 >
                   {m.states.length} states · {m.transitions.length} transitions
@@ -165,7 +165,7 @@ function StateMachineInner({ machineId, onSelectMachine }: Props) {
             </li>
           ))}
         </ul>
-        <div className="mt-4 border-t border-[#064E3B]/12 pt-3 text-[9px] leading-relaxed text-[#064E3B]/80">
+        <div className="mt-4 border-t border-emerald-ink/12 pt-3 text-[9px] leading-relaxed text-emerald-ink/80">
           <div className="flex items-center gap-1.5">
             <svg width="12" height="12" aria-hidden>
               <circle cx="6" cy="6" r="5" fill={START_COLOR} />
@@ -216,12 +216,12 @@ function StateMachineInner({ machineId, onSelectMachine }: Props) {
         >
           <Background color="rgba(11,74,58,0.09)" gap={22} size={1} />
           <Panel position="top-left">
-            <div className="w-[290px] rounded-lg border border-[#064E3B]/15 bg-white/92 px-3 py-2.5 shadow-sm backdrop-blur">
-              <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#064E3B]/80">
+            <div className="w-[290px] rounded-lg border border-emerald-ink/15 bg-white/92 px-3 py-2.5 shadow-sm backdrop-blur">
+              <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-emerald-ink/80">
                 {sm.name}
               </div>
-              <p className="mt-1 text-[10px] leading-snug text-[#064E3B]/80">{sm.summary}</p>
-              <p className="mt-1.5 font-mono text-[8.5px] text-[#064E3B]/80">{sm.source}</p>
+              <p className="mt-1 text-[10px] leading-snug text-emerald-ink/80">{sm.summary}</p>
+              <p className="mt-1.5 font-mono text-[8.5px] text-emerald-ink/80">{sm.source}</p>
             </div>
           </Panel>
         </ReactFlow>
@@ -239,7 +239,7 @@ export function StateMachineDetail({ machineId }: { machineId: string }) {
   const sm = MODEL.stateMachines.find((m) => m.id === machineId) ?? MODEL.stateMachines[0];
   return (
     <div className="px-4 py-3">
-      <h2 className="text-[12.5px] font-semibold text-[#064E3B]">Verification notes</h2>
+      <h2 className="text-[12.5px] font-semibold text-emerald-ink">Verification notes</h2>
       <ul className="mt-2 space-y-2">
         {sm.notes.map((n) => (
           <li
@@ -250,7 +250,7 @@ export function StateMachineDetail({ machineId }: { machineId: string }) {
           </li>
         ))}
       </ul>
-      <h3 className="mt-4 text-[10px] font-semibold uppercase tracking-[0.08em] text-[#064E3B]/80">
+      <h3 className="mt-4 text-[10px] font-semibold uppercase tracking-[0.08em] text-emerald-ink/80">
         States
       </h3>
       <ul className="mt-1 space-y-1">
@@ -262,13 +262,13 @@ export function StateMachineDetail({ machineId }: { machineId: string }) {
               (s.terminal
                 ? 'bg-rose-50 text-rose-900'
                 : s.start
-                  ? 'bg-[#064E3B]/8 text-[#064E3B]'
-                  : 'bg-white/60 text-[#064E3B]/85')
+                  ? 'bg-emerald-ink/8 text-emerald-ink'
+                  : 'bg-white/60 text-emerald-ink/85')
             }
           >
             <span className="font-medium">{s.label}</span>
             {s.terminal && <span className="ml-1 text-[8.5px] uppercase">terminal</span>}
-            {s.note && <div className="text-[9px] text-[#064E3B]/80">{s.note}</div>}
+            {s.note && <div className="text-[9px] text-emerald-ink/80">{s.note}</div>}
           </li>
         ))}
       </ul>

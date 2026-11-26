@@ -12,15 +12,15 @@ export default function AdvancedSection() {
     <div className="animate-in fade-in duration-300 space-y-12">
       <LocalLlmSettings />
 
-      <div className="h-px w-full bg-[#064E3B]/10" />
+      <div className="h-px w-full bg-emerald-ink/10" />
 
       <MerchantCleanupSettings />
 
-      <div className="h-px w-full bg-[#064E3B]/10" />
+      <div className="h-px w-full bg-emerald-ink/10" />
 
       <LearnedRulesSettings />
 
-      <div className="h-px w-full bg-[#064E3B]/10" />
+      <div className="h-px w-full bg-emerald-ink/10" />
 
       <section>
         <NetworkActivity />

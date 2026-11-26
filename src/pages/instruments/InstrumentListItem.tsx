@@ -25,15 +25,15 @@ export default function InstrumentListItem({
       className={cn(
         'flex items-center justify-between w-full text-left px-3 py-2.5 mx-2 rounded-xl transition-all max-w-[calc(100%-16px)] cursor-pointer select-none border',
         isSelected
-          ? 'bg-[#064E3B] text-[#F8E7C9] border-[#064E3B] shadow-md ring-1 ring-[#064E3B]/20'
-          : 'hover:bg-[#064E3B]/[0.06] text-[#064E3B] border-transparent'
+          ? 'bg-emerald-ink text-champagne border-emerald-ink shadow-md ring-1 ring-emerald-ink/20'
+          : 'hover:bg-emerald-ink/[0.06] text-emerald-ink border-transparent'
       )}
     >
       <div className="flex items-center gap-2.5 min-w-0 pr-1">
         <div
           className={cn(
             'w-8 h-8 rounded-lg flex items-center justify-center shrink-0 text-xs font-bold transition-colors',
-            isSelected ? 'bg-[#F8E7C9]/20 text-[#F8E7C9]' : 'bg-[#064E3B]/10 text-[#064E3B]'
+            isSelected ? 'bg-champagne/20 text-champagne' : 'bg-emerald-ink/10 text-emerald-ink'
           )}
         >
           {instrumentIcon(inst.instrument_type, 14)}
@@ -42,7 +42,7 @@ export default function InstrumentListItem({
           <span
             className={cn(
               'text-[13px] font-bold tracking-tight truncate',
-              isSelected ? 'text-white' : 'text-[#064E3B]'
+              isSelected ? 'text-white' : 'text-emerald-ink'
             )}
           >
             {inst.issuer_name || 'Account'}
@@ -50,7 +50,7 @@ export default function InstrumentListItem({
           <span
             className={cn(
               'text-[11px] font-mono font-medium truncate opacity-70',
-              isSelected ? 'text-[#F8E7C9]' : 'text-[#064E3B]/70'
+              isSelected ? 'text-champagne' : 'text-emerald-ink/70'
             )}
           >
             ••{inst.masked_identifier}
@@ -62,7 +62,7 @@ export default function InstrumentListItem({
         <span
           className={cn(
             'text-[12px] font-extrabold font-mono tracking-tight block',
-            isSelected ? 'text-white' : isNeg ? 'text-red-700' : 'text-[#064E3B]'
+            isSelected ? 'text-white' : isNeg ? 'text-red-700' : 'text-emerald-ink'
           )}
         >
           ₹

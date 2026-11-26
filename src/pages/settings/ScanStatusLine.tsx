@@ -6,8 +6,8 @@ import type { ScanProgressPayload } from '@/lib/ipc';
 import type { ScanStatus } from '@/lib/GlobalStateContext';
 
 const STATUS_ICON: Partial<Record<ScanStatus, React.ReactNode>> = {
-  running: <Loader2 className="w-4 h-4 animate-spin text-[#064E3B]" />,
-  cancelled: <XCircle className="w-4 h-4 text-[#064E3B]/60" />,
+  running: <Loader2 className="w-4 h-4 animate-spin text-emerald-ink" />,
+  cancelled: <XCircle className="w-4 h-4 text-emerald-ink/60" />,
   error: <AlertCircle className="w-4 h-4 text-red-600" />,
 };
 
@@ -28,7 +28,7 @@ export default function ScanStatusLine({
   return (
     <div className="flex items-center gap-2 mb-1 font-semibold text-[14px]">
       {STATUS_ICON[scanStatus]}
-      <span className={scanStatus === 'error' ? 'text-red-600' : 'text-[#064E3B]'}>
+      <span className={scanStatus === 'error' ? 'text-red-600' : 'text-emerald-ink'}>
         {STATUS_MESSAGE[scanStatus] ?? 'Scan failed.'}
         {scanProgress && ` (${scanProgress.processed} / ${scanProgress.total})`}
       </span>

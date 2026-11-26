@@ -51,7 +51,7 @@ export default function Statements() {
         onSelectSection={setSection}
       />
 
-      <div className="flex-1 h-full bg-[#F8E7C9] relative overflow-y-auto p-8 lg:p-12 text-[#064E3B]">
+      <div className="flex-1 h-full bg-champagne relative overflow-y-auto p-8 lg:p-12 text-emerald-ink">
         <div className="max-w-3xl mx-auto space-y-8">
           {currentSection === 'upload' && (
             <section aria-label="Upload Statements" className="animate-in fade-in duration-300">

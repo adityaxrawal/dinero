@@ -153,7 +153,7 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
               type="button"
               disabled={disabled}
               onClick={preset.action}
-              className="px-2.5 py-1 rounded-md text-[12px] font-medium bg-[#064E3B]/5 hover:bg-[#064E3B]/15 text-[#064E3B] border border-[#064E3B]/10 transition-colors disabled:opacity-50 cursor-pointer"
+              className="px-2.5 py-1 rounded-md text-[12px] font-medium bg-emerald-ink/5 hover:bg-emerald-ink/15 text-emerald-ink border border-emerald-ink/10 transition-colors disabled:opacity-50 cursor-pointer"
             >
               {preset.label}
             </button>
@@ -163,7 +163,7 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div className="space-y-1">
-          <label className="text-[11px] font-semibold uppercase tracking-wider text-[#064E3B]/70">
+          <label className="text-[11px] font-semibold uppercase tracking-wider text-emerald-ink/70">
             Start Date
           </label>
           <DatePicker
@@ -177,7 +177,7 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
         </div>
 
         <div className="space-y-1">
-          <label className="text-[11px] font-semibold uppercase tracking-wider text-[#064E3B]/70">
+          <label className="text-[11px] font-semibold uppercase tracking-wider text-emerald-ink/70">
             End Date
           </label>
           <DatePicker

@@ -24,7 +24,7 @@ export default function InspectorTabs({
 }) {
   return (
     <div
-      className="flex flex-shrink-0 px-5 pt-3 pb-2 gap-1.5 border-b border-[#064E3B]/10 overflow-x-auto bg-[#F8E7C9]/40"
+      className="flex flex-shrink-0 px-5 pt-3 pb-2 gap-1.5 border-b border-emerald-ink/10 overflow-x-auto bg-champagne/40"
       role="tablist"
     >
       {TABS.map((tab) => {
@@ -39,8 +39,8 @@ export default function InspectorTabs({
             className={cn(
               'flex items-center gap-1.5 px-3.5 py-1.5 text-[12px] font-bold rounded-full transition-all whitespace-nowrap cursor-pointer',
               isActive
-                ? 'bg-[#064E3B] text-[#F8E7C9] shadow-xs'
-                : 'text-[#064E3B]/70 hover:bg-[#064E3B]/10 hover:text-[#064E3B]'
+                ? 'bg-emerald-ink text-champagne shadow-xs'
+                : 'text-emerald-ink/70 hover:bg-emerald-ink/10 hover:text-emerald-ink'
             )}
             onClick={() => onSelect(tab.id)}
           >
@@ -49,7 +49,7 @@ export default function InspectorTabs({
               <span
                 className={cn(
                   'px-1.5 py-0.2 text-[10px] rounded-full font-mono font-bold',
-                  isActive ? 'bg-[#F8E7C9]/20 text-[#F8E7C9]' : 'bg-[#064E3B]/10 text-[#064E3B]'
+                  isActive ? 'bg-champagne/20 text-champagne' : 'bg-emerald-ink/10 text-emerald-ink'
                 )}
               >
                 {count}

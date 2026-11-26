@@ -42,7 +42,7 @@ describe('InstrumentCardHero bank theming', () => {
   });
 
   it('falls back to the Dinero emerald theme for an unknown issuer', () => {
-    expect(gradientOf('Some Credit Union')).toContain('#064E3B');
+    expect(gradientOf('Some Credit Union')).toContain('from-emerald-ink');
   });
 });
 

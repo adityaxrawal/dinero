@@ -199,8 +199,8 @@ export function getMerchantCategoryVisuals(
   if (!rule) {
     return {
       icon: React.createElement(HelpCircle, { className: 'w-4 h-4' }),
-      bgClass: 'bg-[#064E3B]/10 border-[#064E3B]/15',
-      textClass: 'text-[#064E3B]',
+      bgClass: 'bg-emerald-ink/10 border-emerald-ink/15',
+      textClass: 'text-emerald-ink',
     };
   }
 

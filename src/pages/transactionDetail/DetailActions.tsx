@@ -31,8 +31,8 @@ export default function DetailActions({
         className={cn(
           'w-full h-9 font-bold rounded-xl transition-all',
           isDirty
-            ? 'bg-[#064E3B] hover:bg-[#064E3B]/90 text-[#F8E7C9] shadow-md ring-2 ring-[#064E3B]/30'
-            : 'bg-[#064E3B]/40 text-[#F8E7C9]/70 cursor-not-allowed'
+            ? 'bg-emerald-ink hover:bg-emerald-ink/90 text-champagne shadow-md ring-2 ring-emerald-ink/30'
+            : 'bg-emerald-ink/40 text-champagne/70 cursor-not-allowed'
         )}
         onClick={onSave}
         disabled={isSaving || (!isDirty && !showSavedConfirmation)}
@@ -56,7 +56,7 @@ export default function DetailActions({
         </Button>
         <Button
           variant="outline"
-          className="flex-1 h-9 border-[#064E3B]/20 hover:bg-[#064E3B]/10 text-[#064E3B] font-semibold rounded-xl"
+          className="flex-1 h-9 border-emerald-ink/20 hover:bg-emerald-ink/10 text-emerald-ink font-semibold rounded-xl"
           onClick={onViewSource}
         >
           View Raw Source

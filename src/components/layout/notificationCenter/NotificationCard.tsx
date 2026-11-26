@@ -20,7 +20,7 @@ const SEVERITY_STYLES: Record<string, string> = {
   success: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200',
 };
 
-const DEFAULT_SEVERITY = 'border-[#F8E7C9]/10 bg-[#064E3B]/30 text-[#F8E7C9]';
+const DEFAULT_SEVERITY = 'border-champagne/10 bg-emerald-ink/30 text-champagne';
 
 /** Relative time for a feed entry. */
 function formatTimeAgo(timestamp: number): string {

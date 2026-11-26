@@ -32,14 +32,14 @@ function HistoryList({
   const navigate = useNavigate();
 
   if (loading) {
-    return <div className="p-8 text-center text-[13px] text-[#064E3B]/70">Loading history…</div>;
+    return <div className="p-8 text-center text-[13px] text-emerald-ink/70">Loading history…</div>;
   }
   // A failed load must not read as "No statements uploaded yet" (audit F8-8).
   if (onRetry) {
     return (
-      <div className="p-8 text-center text-[13px] text-[#064E3B]/70" role="alert">
+      <div className="p-8 text-center text-[13px] text-emerald-ink/70" role="alert">
         Couldn't load your statement history.{' '}
-        <button type="button" onClick={onRetry} className="underline font-medium text-[#064E3B]">
+        <button type="button" onClick={onRetry} className="underline font-medium text-emerald-ink">
           Try again
         </button>
       </div>
@@ -47,14 +47,14 @@ function HistoryList({
   }
   if (history.length === 0) {
     return (
-      <div className="p-8 text-center text-[13px] text-[#064E3B]/70">
+      <div className="p-8 text-center text-[13px] text-emerald-ink/70">
         No statements uploaded yet.
       </div>
     );
   }
 
   return (
-    <div className="divide-y divide-[#064E3B]/5">
+    <div className="divide-y divide-emerald-ink/5">
       {history.map((stmt) => (
         <HistoryRow
           key={stmt.id}
@@ -103,7 +103,7 @@ export default function ProcessingHistorySection({ refresh }: { refresh: () => v
         description="Previously parsed and extracted statements."
       />
 
-      <div className="bg-[#F8E7C9]/50 rounded-xl overflow-hidden border border-[#064E3B]/10 flex flex-col">
+      <div className="bg-champagne/50 rounded-xl overflow-hidden border border-emerald-ink/10 flex flex-col">
         <HistoryList
           loading={isLoading}
           onRetry={isError ? () => refetch() : undefined}

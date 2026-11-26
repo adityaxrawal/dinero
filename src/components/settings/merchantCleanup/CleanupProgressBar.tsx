@@ -19,16 +19,16 @@ export default function CleanupProgressBar({
 }) {
   return (
     <>
-      <div className="h-1.5 rounded-full bg-[#064E3B]/10 overflow-hidden">
+      <div className="h-1.5 rounded-full bg-emerald-ink/10 overflow-hidden">
         <div
           className={cn(
             'h-full rounded-full transition-all duration-300',
-            BAR_TONE[progress.status] ?? 'bg-[#064E3B]'
+            BAR_TONE[progress.status] ?? 'bg-emerald-ink'
           )}
           style={{ width: `${pct}%` }}
         />
       </div>
-      <div className="flex items-center justify-between mt-1.5 text-[11px] font-semibold text-[#064E3B]/60 tabular-nums">
+      <div className="flex items-center justify-between mt-1.5 text-[11px] font-semibold text-emerald-ink/60 tabular-nums">
         <span>
           {progress.processed} / {progress.total}
         </span>

@@ -8,19 +8,19 @@ import type { StatementPref } from './useOnboardingPreferences';
 
 const BASE = [
   'relative flex flex-col items-center p-5 rounded-xl border-[1.5px] text-sm transition-all duration-200 ease-out outline-none',
-  'focus-visible:ring-2 focus-visible:ring-[#064E3B]/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+  'focus-visible:ring-2 focus-visible:ring-emerald-ink/60 focus-visible:ring-offset-2 focus-visible:ring-offset-background',
   'hover:-translate-y-0.5',
 ].join(' ');
 
 const SELECTED = [
-  'border-[#064E3B]/70 font-semibold',
-  'bg-[#064E3B]/8',
+  'border-emerald-ink/70 font-semibold',
+  'bg-emerald-ink/8',
   'shadow-[0_0_0_1px_rgba(37,99,235,0.2)]',
-  'text-[#053d2f]',
+  'text-emerald-ink-hover',
 ].join(' ');
 
 const UNSELECTED =
-  'border-border bg-background text-foreground hover:border-[#064E3B]/35 hover:bg-[#064E3B]/[0.04]';
+  'border-border bg-background text-foreground hover:border-emerald-ink/35 hover:bg-emerald-ink/[0.04]';
 
 /** One selectable statement-handling preference. */
 function PrefOption({
@@ -48,7 +48,7 @@ function PrefOption({
         aria-hidden="true"
         className={[
           'absolute top-2 right-2 w-5 h-5 rounded-full flex items-center justify-center',
-          'bg-[#064E3B]',
+          'bg-emerald-ink',
           'transition-all duration-200 ease-out',
           selected ? 'opacity-100 scale-100' : 'opacity-0 scale-0',
         ].join(' ')}
@@ -58,7 +58,7 @@ function PrefOption({
       <Icon
         className={[
           'w-6 h-6 mb-2 transition-colors duration-200',
-          selected ? 'text-[#064E3B]' : 'text-muted-foreground',
+          selected ? 'text-emerald-ink' : 'text-muted-foreground',
         ].join(' ')}
         aria-hidden="true"
       />
@@ -66,7 +66,7 @@ function PrefOption({
       <span
         className={[
           'text-xs mt-0.5 transition-colors',
-          selected ? 'text-[#053d2f]' : 'text-muted-foreground',
+          selected ? 'text-emerald-ink-hover' : 'text-muted-foreground',
         ].join(' ')}
       >
         {caption}

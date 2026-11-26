@@ -117,11 +117,11 @@ export default function IdentityCard({
         </Select>
       </LabeledField>
 
-      <div className="flex justify-between items-center pt-2 border-t border-[#064E3B]/10">
-        <span className="text-[#064E3B]/70 text-[12px] font-medium">Account ID</span>
+      <div className="flex justify-between items-center pt-2 border-t border-emerald-ink/10">
+        <span className="text-emerald-ink/70 text-[12px] font-medium">Account ID</span>
         <div className="flex items-center gap-1">
           <span
-            className="font-mono text-[11px] text-[#064E3B]/80 truncate max-w-[130px]"
+            className="font-mono text-[11px] text-emerald-ink/80 truncate max-w-[130px]"
             title={accountId}
           >
             {accountId}
@@ -129,7 +129,7 @@ export default function IdentityCard({
           <button
             type="button"
             onClick={onCopyAccountId}
-            className="p-1 rounded text-[#064E3B]/60 hover:text-[#064E3B] hover:bg-[#064E3B]/10 transition-colors"
+            className="p-1 rounded text-emerald-ink/60 hover:text-emerald-ink hover:bg-emerald-ink/10 transition-colors"
             title="Copy ID"
           >
             {copied ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}

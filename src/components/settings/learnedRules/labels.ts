@@ -30,7 +30,7 @@ export const FIELD_CHIPS: Record<string, string> = {
 
 export const STATUS_STYLES: Record<string, string> = {
   trusted: 'bg-emerald-100 text-emerald-900 border-emerald-300',
-  active: 'bg-[#F8E7C9] text-[#064E3B] border-[#064E3B]/20',
+  active: 'bg-champagne text-emerald-ink border-emerald-ink/20',
   pending: 'bg-amber-50 text-amber-900 border-amber-300',
   inactive: 'bg-neutral-100 text-neutral-600 border-neutral-300',
   flagged: 'bg-red-50 text-red-900 border-red-300',

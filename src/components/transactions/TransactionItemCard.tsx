@@ -31,7 +31,7 @@ export default function TransactionItemCard({
       onClick={onClick}
       className={cn(
         'group flex items-center justify-between p-3.5 rounded-2xl border transition-all cursor-pointer select-none',
-        'bg-[#F8E7C9]/70 border-[#064E3B]/10 hover:bg-[#064E3B]/[0.05] hover:border-[#064E3B]/25 hover:shadow-xs',
+        'bg-champagne/70 border-emerald-ink/10 hover:bg-emerald-ink/[0.05] hover:border-emerald-ink/25 hover:shadow-xs',
         compact && 'p-2.5 rounded-xl'
       )}
     >
@@ -51,7 +51,7 @@ export default function TransactionItemCard({
           <div className="flex items-center gap-2">
             <h4
               className={cn(
-                'text-[14px] font-bold text-[#064E3B] truncate tracking-tight',
+                'text-[14px] font-bold text-emerald-ink truncate tracking-tight',
                 compact && 'text-[13px]'
               )}
             >
@@ -60,7 +60,7 @@ export default function TransactionItemCard({
           </div>
 
           <div className="flex items-center gap-2 mt-0.5">
-            <span className="text-[11px] font-medium text-[#064E3B]/65">
+            <span className="text-[11px] font-medium text-emerald-ink/65">
               {formatCustomDate(transaction.date)}
             </span>
 
@@ -103,12 +103,12 @@ export default function TransactionItemCard({
             </span>
           </div>
 
-          <span className="text-[9px] font-bold uppercase tracking-wider text-[#064E3B]/50 block mt-0.5">
+          <span className="text-[9px] font-bold uppercase tracking-wider text-emerald-ink/50 block mt-0.5">
             {isExpense ? 'Expense' : 'Credit / Refund'}
           </span>
         </div>
 
-        <ChevronRight className="w-4 h-4 text-[#064E3B]/40 group-hover:text-[#064E3B] group-hover:translate-x-0.5 transition-all" />
+        <ChevronRight className="w-4 h-4 text-emerald-ink/40 group-hover:text-emerald-ink group-hover:translate-x-0.5 transition-all" />
       </div>
     </div>
   );

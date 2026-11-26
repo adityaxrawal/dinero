@@ -43,8 +43,8 @@ export default function ScanStatsGrid({ progress }: { progress: ScanProgressPayl
       {tiles.map(({ icon: Icon, label, value, iconClass, valueClass, to }) => {
         const body = (
           <>
-            <Icon className={cn('w-4 h-4 text-[#064E3B]/50', iconClass)} />
-            <span className="text-[#064E3B]/60 font-medium">{label}</span>
+            <Icon className={cn('w-4 h-4 text-emerald-ink/50', iconClass)} />
+            <span className="text-emerald-ink/60 font-medium">{label}</span>
             <strong className={cn('font-bold', valueClass)}>{value}</strong>
           </>
         );

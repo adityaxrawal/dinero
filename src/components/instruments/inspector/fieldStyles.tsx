@@ -6,10 +6,10 @@ import { cn } from '@/lib/utils';
 import { Label } from '@/components/ui/label';
 
 export const FIELD_INPUT =
-  'h-9 text-[13px] font-semibold bg-[#F3EBDD]/80 border-[#064E3B]/15 text-[#064E3B] focus-visible:ring-1 focus-visible:ring-[#064E3B]/30 rounded-xl';
+  'h-9 text-[13px] font-semibold bg-[#F3EBDD]/80 border-emerald-ink/15 text-emerald-ink focus-visible:ring-1 focus-visible:ring-emerald-ink/30 rounded-xl';
 export const FIELD_SELECT =
-  'h-9 text-[13px] font-bold bg-[#F3EBDD]/80 border-[#064E3B]/15 text-[#064E3B] focus:ring-1 focus:ring-[#064E3B]/30 rounded-xl';
-const FIELD_LABEL = 'text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70';
+  'h-9 text-[13px] font-bold bg-[#F3EBDD]/80 border-emerald-ink/15 text-emerald-ink focus:ring-1 focus:ring-emerald-ink/30 rounded-xl';
+const FIELD_LABEL = 'text-[11px] font-bold uppercase tracking-wider text-emerald-ink/70';
 
 /** Card wrapper for a group of instrument fields. */
 export function SpecCard({
@@ -26,12 +26,12 @@ export function SpecCard({
   bodyClassName?: string;
 }) {
   return (
-    <div className="bg-[#F8E7C9]/60 rounded-2xl p-4 border border-[#064E3B]/10 space-y-3.5 shadow-xs">
-      <h4 className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70 border-b border-[#064E3B]/10 pb-2 flex items-center justify-between">
+    <div className="bg-champagne/60 rounded-2xl p-4 border border-emerald-ink/10 space-y-3.5 shadow-xs">
+      <h4 className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/70 border-b border-emerald-ink/10 pb-2 flex items-center justify-between">
         <span className="flex items-center gap-1.5">
-          <Icon className="w-3.5 h-3.5 text-[#064E3B]" /> {title}
+          <Icon className="w-3.5 h-3.5 text-emerald-ink" /> {title}
         </span>
-        <span className="text-[10px] font-mono text-[#064E3B]/50">{hint}</span>
+        <span className="text-[10px] font-mono text-emerald-ink/50">{hint}</span>
       </h4>
       <div className={bodyClassName}>{children}</div>
     </div>

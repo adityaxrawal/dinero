@@ -82,12 +82,12 @@ describe('getMerchantCategoryVisuals', () => {
 
   it('falls back to the neutral style for an unknown category', () => {
     expect(styleOf('quantum widgets', 'nobody')).toBe(
-      'bg-[#064E3B]/10 border-[#064E3B]/15|text-[#064E3B]'
+      'bg-emerald-ink/10 border-emerald-ink/15|text-emerald-ink'
     );
   });
 
   it('falls back when nothing is supplied', () => {
-    expect(styleOf()).toBe('bg-[#064E3B]/10 border-[#064E3B]/15|text-[#064E3B]');
+    expect(styleOf()).toBe('bg-emerald-ink/10 border-emerald-ink/15|text-emerald-ink');
   });
 
   it('prefers the earlier rule when a merchant matches two categories', () => {

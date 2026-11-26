@@ -58,32 +58,32 @@ export default function StatementPasswordSettings() {
   return (
     <div className="space-y-5">
       <div className="flex items-center gap-2 mb-4">
-        <Lock className="w-5 h-5 text-[#064E3B]" />
-        <h3 className="text-xl font-bold text-[#064E3B]">Stored Statement Passwords</h3>
+        <Lock className="w-5 h-5 text-emerald-ink" />
+        <h3 className="text-xl font-bold text-emerald-ink">Stored Statement Passwords</h3>
       </div>
-      <p className="text-sm text-[#064E3B]/70 mb-4">
+      <p className="text-sm text-emerald-ink/70 mb-4">
         Passwords Dinero has learned for encrypted statements, encrypted at rest and never shown
         here. Forgetting one just means you'll be re-prompted next time.
       </p>
 
       {isLoadingPasswords ? (
-        <p className="text-[13px] font-medium text-[#064E3B]/70">Loading…</p>
+        <p className="text-[13px] font-medium text-emerald-ink/70">Loading…</p>
       ) : pdfPasswords.length === 0 ? (
-        <p className="text-[13px] font-medium text-[#064E3B]/70">No stored passwords yet.</p>
+        <p className="text-[13px] font-medium text-emerald-ink/70">No stored passwords yet.</p>
       ) : (
         <div className="flex flex-col gap-3">
           {pdfPasswords.map((pw) => (
             <div
               key={pw.id}
-              className="flex items-center justify-between gap-4 p-4 rounded-xl border border-[#064E3B]/10 bg-[#064E3B]/5"
+              className="flex items-center justify-between gap-4 p-4 rounded-xl border border-emerald-ink/10 bg-emerald-ink/5"
             >
               <div>
-                <strong className="text-[14px] font-bold text-[#064E3B]">{pw.issuer_name}</strong>
-                <span className="text-[13px] font-medium text-[#064E3B]/70">
+                <strong className="text-[14px] font-bold text-emerald-ink">{pw.issuer_name}</strong>
+                <span className="text-[13px] font-medium text-emerald-ink/70">
                   {' '}
                   •••• {pw.masked_identifier}
                 </span>
-                <div className="text-[12px] font-medium text-[#064E3B]/60 mt-1">
+                <div className="text-[12px] font-medium text-emerald-ink/60 mt-1">
                   Used successfully {pw.success_count} time{pw.success_count === 1 ? '' : 's'}
                   {pw.last_used_at
                     ? ` — last on ${new Date(pw.last_used_at).toLocaleDateString()}`

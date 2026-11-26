@@ -63,7 +63,7 @@ export default function Instruments() {
   return (
     <div className="flex h-full w-full overflow-hidden">
       <div
-        className="flex-shrink-0 flex flex-col h-full border-r border-[#064E3B]/20 shadow-xs"
+        className="flex-shrink-0 flex flex-col h-full border-r border-emerald-ink/20 shadow-xs"
         style={{ width: '340px', backgroundColor: 'var(--bg-canvas)' }}
       >
         <InstrumentsSidebarHeader
@@ -79,17 +79,17 @@ export default function Instruments() {
         <div className="flex-1 overflow-y-auto">
           {isLoading ? (
             <div className="flex flex-col items-center justify-center h-40 gap-2">
-              <Loader2 className="w-4 h-4 animate-spin text-[#064E3B]/50" />
-              <span className="text-xs text-[#064E3B]/50">Loading accounts...</span>
+              <Loader2 className="w-4 h-4 animate-spin text-emerald-ink/50" />
+              <span className="text-xs text-emerald-ink/50">Loading accounts...</span>
             </div>
           ) : groups.length === 0 ? (
             <div className="text-center py-10 px-4 space-y-2">
-              <p className="text-xs text-[#064E3B]/50">
+              <p className="text-xs text-emerald-ink/50">
                 No instruments yet or none match your criteria.
               </p>
               <Button
                 variant="link"
-                className="text-xs h-auto p-0 text-[#064E3B] font-bold"
+                className="text-xs h-auto p-0 text-emerald-ink font-bold"
                 onClick={() => {
                   setSearchQuery('');
                   setSelectedFilter('all');
@@ -104,10 +104,10 @@ export default function Instruments() {
               {groups.map((group) => (
                 <div key={group.value} className="flex flex-col gap-1">
                   <div className="flex items-center justify-between px-4 mb-1">
-                    <h2 className="text-[10px] font-extrabold uppercase tracking-wider text-[#064E3B]/60">
+                    <h2 className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-ink/60">
                       {group.label}s
                     </h2>
-                    <span className="text-[9px] font-bold px-1.5 py-0.2 rounded-full bg-[#064E3B]/10 text-[#064E3B]">
+                    <span className="text-[9px] font-bold px-1.5 py-0.2 rounded-full bg-emerald-ink/10 text-emerald-ink">
                       {group.items.length}
                     </span>
                   </div>
@@ -127,7 +127,7 @@ export default function Instruments() {
         </div>
       </div>
 
-      <div className="flex-1 h-full bg-[#F8E7C9] relative overflow-hidden flex flex-col justify-center">
+      <div className="flex-1 h-full bg-champagne relative overflow-hidden flex flex-col justify-center">
         {selectedInstId ? (
           <div className="w-full h-full flex flex-col">
             <InstrumentInspector
@@ -138,10 +138,10 @@ export default function Instruments() {
           </div>
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center h-full opacity-40 space-y-3">
-            <div className="w-14 h-14 border-2 border-[#064E3B] rounded-2xl border-dashed flex items-center justify-center bg-[#064E3B]/5">
-              <Landmark className="w-7 h-7 text-[#064E3B]" />
+            <div className="w-14 h-14 border-2 border-emerald-ink rounded-2xl border-dashed flex items-center justify-center bg-emerald-ink/5">
+              <Landmark className="w-7 h-7 text-emerald-ink" />
             </div>
-            <p className="text-[#064E3B] font-bold text-sm">Select an account to view details</p>
+            <p className="text-emerald-ink font-bold text-sm">Select an account to view details</p>
           </div>
         )}
       </div>

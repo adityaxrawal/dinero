@@ -134,14 +134,14 @@ function DatabaseInner({ selectedId, labelsOn, onSelect }: Props) {
       >
         <Background color="rgba(11,74,58,0.09)" gap={22} size={1} />
         <Panel position="top-left">
-          <div className="rounded-lg border border-[#064E3B]/15 bg-white/90 px-3 py-2 shadow-sm backdrop-blur">
-            <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#064E3B]/80">
+          <div className="rounded-lg border border-emerald-ink/15 bg-white/90 px-3 py-2 shadow-sm backdrop-blur">
+            <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-emerald-ink/80">
               Entity-relationship model
             </div>
-            <div className="mt-0.5 text-[10px] text-[#064E3B]/80">
+            <div className="mt-0.5 text-[10px] text-emerald-ink/80">
               43 tables · 60 migrations · 23 modelled here
             </div>
-            <div className="mt-1.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[8.5px] text-[#064E3B]/80">
+            <div className="mt-1.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[8.5px] text-emerald-ink/80">
               {Object.entries(GROUP_LABEL).map(([k, label]) => (
                 <span key={k} className="inline-flex items-center gap-1">
                   <span
@@ -152,7 +152,7 @@ function DatabaseInner({ selectedId, labelsOn, onSelect }: Props) {
                 </span>
               ))}
             </div>
-            <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[8px] text-[#064E3B]/80">
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[8px] text-emerald-ink/80">
               <svg width="34" height="12" aria-hidden>
                 <line
                   x1="2"

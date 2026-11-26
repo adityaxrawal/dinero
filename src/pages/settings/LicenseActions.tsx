@@ -31,7 +31,7 @@ export default function LicenseActions({
     <div className="flex flex-wrap gap-3">
       <Button
         variant="outline"
-        className="h-9 font-semibold border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5"
+        className="h-9 font-semibold border-emerald-ink/20 text-emerald-ink hover:bg-emerald-ink/5"
         onClick={handleRefreshLicense}
         disabled={isRefreshingLicense}
       >
@@ -63,7 +63,7 @@ export default function LicenseActions({
 
       <Button
         variant="outline"
-        className="h-9 font-semibold border-[#064E3B]/20 text-[#064E3B]/70 hover:bg-[#064E3B]/5"
+        className="h-9 font-semibold border-emerald-ink/20 text-emerald-ink/70 hover:bg-emerald-ink/5"
         onClick={() => activation.setShowActivateForm((v) => !v)}
       >
         {activation.showActivateForm

@@ -21,7 +21,7 @@ const INPUT_CLASS = 'h-8 bg-white/50 focus-visible:bg-white text-[13px]';
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <>
-      <div className="px-4 py-3 bg-[#064E3B]/5 font-medium text-[#064E3B]/70 flex items-center">
+      <div className="px-4 py-3 bg-emerald-ink/5 font-medium text-emerald-ink/70 flex items-center">
         {label}
       </div>
       <div className="px-4 py-2 flex items-center">{children}</div>
@@ -40,8 +40,8 @@ function TwoColRow({
   last?: boolean;
 }) {
   return (
-    <div className={cn('grid grid-cols-1 md:grid-cols-2', !last && 'border-b border-[#064E3B]/5')}>
-      <div className="grid grid-cols-[110px_1fr] border-b md:border-b-0 md:border-r border-[#064E3B]/5">
+    <div className={cn('grid grid-cols-1 md:grid-cols-2', !last && 'border-b border-emerald-ink/5')}>
+      <div className="grid grid-cols-[110px_1fr] border-b md:border-b-0 md:border-r border-emerald-ink/5">
         {left}
       </div>
       <div className="grid grid-cols-[110px_1fr]">{right}</div>
@@ -68,11 +68,11 @@ export default function ExtractedDataForm({
 
   return (
     <div>
-      <h3 className="text-sm font-semibold mb-3 text-[#064E3B] flex items-center gap-2">
+      <h3 className="text-sm font-semibold mb-3 text-emerald-ink flex items-center gap-2">
         <FileText className="w-4 h-4" /> Extracted Data
       </h3>
-      <div className="bg-white rounded-xl border border-[#064E3B]/10 overflow-hidden text-[13px]">
-        <div className="grid grid-cols-[110px_1fr] border-b border-[#064E3B]/5">
+      <div className="bg-white rounded-xl border border-emerald-ink/10 overflow-hidden text-[13px]">
+        <div className="grid grid-cols-[110px_1fr] border-b border-emerald-ink/5">
           <Field label="Merchant">
             <Input
               id="save-txn-merchant"
@@ -154,11 +154,11 @@ export default function ExtractedDataForm({
           }
           right={
             <>
-              <div className="px-4 py-3 bg-[#064E3B]/5 font-medium text-[#064E3B]/70 flex items-center">
+              <div className="px-4 py-3 bg-emerald-ink/5 font-medium text-emerald-ink/70 flex items-center">
                 Source ID
               </div>
               <div
-                className="px-4 py-3 text-[#064E3B]/70 font-mono text-[11px] truncate flex items-center"
+                className="px-4 py-3 text-emerald-ink/70 font-mono text-[11px] truncate flex items-center"
                 title={sourceMessageId ?? undefined}
               >
                 {sourceMessageId ?? 'N/A'}

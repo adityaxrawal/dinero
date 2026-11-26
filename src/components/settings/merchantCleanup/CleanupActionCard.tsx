@@ -61,14 +61,14 @@ export default function CleanupActionCard({
       className={cn(
         'mb-5 p-5 rounded-xl border transition-colors',
         isRunning
-          ? 'bg-[#064E3B]/[0.06] border-[#064E3B]/30'
-          : 'bg-[#F8E7C9]/50 border-[#064E3B]/10'
+          ? 'bg-emerald-ink/[0.06] border-emerald-ink/30'
+          : 'bg-champagne/50 border-emerald-ink/10'
       )}
     >
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div className="min-w-0">
-          <h3 className="font-bold text-[15px] text-[#064E3B]">{headlineTitle(state)}</h3>
-          <p className="text-[12px] mt-1 text-[#064E3B]/60 leading-relaxed max-w-xl">
+          <h3 className="font-bold text-[15px] text-emerald-ink">{headlineTitle(state)}</h3>
+          <p className="text-[12px] mt-1 text-emerald-ink/60 leading-relaxed max-w-xl">
             {headlineBlurb(state)}
           </p>
         </div>

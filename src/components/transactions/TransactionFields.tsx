@@ -8,7 +8,7 @@ import { InfoRow } from '@/components/ui/InfoRow';
 import type { CanonicalTransaction } from '@/lib/ipc';
 
 const FIELD_INPUT_CLASS =
-  'h-9 text-[13px] font-semibold bg-[#F3EBDD]/70 border-[#064E3B]/15 text-[#064E3B] focus-visible:ring-1 focus-visible:ring-[#064E3B]/30 focus-visible:border-[#064E3B]/40 rounded-xl pr-8';
+  'h-9 text-[13px] font-semibold bg-[#F3EBDD]/70 border-emerald-ink/15 text-emerald-ink focus-visible:ring-1 focus-visible:ring-emerald-ink/30 focus-visible:border-emerald-ink/40 rounded-xl pr-8';
 
 /** Editable merchant name. */
 export function MerchantField({
@@ -36,7 +36,7 @@ export function MerchantField({
         <button
           type="button"
           onClick={() => onChange('')}
-          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#064E3B]/40 hover:text-[#064E3B]"
+          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-emerald-ink/40 hover:text-emerald-ink"
           aria-label="Clear merchant name"
         >
           <X className="w-3.5 h-3.5" />
@@ -50,10 +50,10 @@ export function MerchantField({
 export function TagsHeader({ count }: { count: number }) {
   return (
     <div className="flex items-center justify-between">
-      <Label className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70">
+      <Label className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/70">
         Tags
       </Label>
-      <span className="text-[10px] text-[#064E3B]/50 font-mono">
+      <span className="text-[10px] text-emerald-ink/50 font-mono">
         {count} tag{count !== 1 ? 's' : ''}
       </span>
     </div>
@@ -62,7 +62,7 @@ export function TagsHeader({ count }: { count: number }) {
 
 /** Shown when a transaction has no tags. */
 export function EmptyTagsNotice() {
-  return <span className="text-[12px] italic text-[#064E3B]/40">No tags added yet.</span>;
+  return <span className="text-[12px] italic text-emerald-ink/40">No tags added yet.</span>;
 }
 
 /** Badge showing the transaction's status. */
@@ -117,7 +117,7 @@ export function TransactionAuditRows({ tx }: { tx: CanonicalTransaction }) {
 
       {tx.source_mix && (
         <InfoRow icon={<Link2 className="w-3.5 h-3.5" />} label="Source Pipeline">
-          <span className="font-mono text-[11px] uppercase bg-[#064E3B]/5 px-2 py-0.5 rounded border border-[#064E3B]/10">
+          <span className="font-mono text-[11px] uppercase bg-emerald-ink/5 px-2 py-0.5 rounded border border-emerald-ink/10">
             {tx.source_mix}
           </span>
         </InfoRow>

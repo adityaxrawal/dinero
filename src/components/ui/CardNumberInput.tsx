@@ -57,7 +57,7 @@ function getCardNetwork(cardNumber: string): {
   return {
     network: 'generic',
     label: 'CARD',
-    badgeClass: 'bg-[#064E3B]/10 text-[#064E3B] border-[#064E3B]/20',
+    badgeClass: 'bg-emerald-ink/10 text-emerald-ink border-emerald-ink/20',
   };
 }
 
@@ -162,8 +162,8 @@ export default function CardNumberInput({
         placeholder={placeholder}
         maxLength={23}
         className={cn(
-          'w-full h-9 pl-14 pr-16 text-[13px] font-mono font-bold bg-[#F3EBDD]/80 border border-[#064E3B]/15 text-[#064E3B]',
-          'placeholder:text-[#064E3B]/30 outline-none rounded-xl focus:border-[#064E3B]/40 focus:ring-1 focus:ring-[#064E3B]/30 transition-all',
+          'w-full h-9 pl-14 pr-16 text-[13px] font-mono font-bold bg-[#F3EBDD]/80 border border-emerald-ink/15 text-emerald-ink',
+          'placeholder:text-emerald-ink/30 outline-none rounded-xl focus:border-emerald-ink/40 focus:ring-1 focus:ring-emerald-ink/30 transition-all',
           className
         )}
       />
@@ -172,7 +172,7 @@ export default function CardNumberInput({
         <button
           type="button"
           onClick={() => setIsMasked((prev) => !prev)}
-          className="p-1 rounded-md text-[#064E3B]/60 hover:text-[#064E3B] hover:bg-[#064E3B]/10 transition-colors cursor-pointer"
+          className="p-1 rounded-md text-emerald-ink/60 hover:text-emerald-ink hover:bg-emerald-ink/10 transition-colors cursor-pointer"
           title={isMasked ? 'Show card number' : 'Mask card number'}
           aria-label={isMasked ? 'Show card number' : 'Mask card number'}
         >
@@ -182,7 +182,7 @@ export default function CardNumberInput({
         <button
           type="button"
           onClick={handleCopy}
-          className="p-1 rounded-md text-[#064E3B]/60 hover:text-[#064E3B] hover:bg-[#064E3B]/10 transition-colors cursor-pointer"
+          className="p-1 rounded-md text-emerald-ink/60 hover:text-emerald-ink hover:bg-emerald-ink/10 transition-colors cursor-pointer"
           title="Copy card number"
           aria-label="Copy card number"
         >

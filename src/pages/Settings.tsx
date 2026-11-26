@@ -50,7 +50,7 @@ export default function Settings() {
         onSelectSection={setSection}
       />
 
-      <div className="flex-1 h-full bg-[#F8E7C9] relative overflow-y-auto p-8 lg:p-12 text-[#064E3B]">
+      <div className="flex-1 h-full bg-champagne relative overflow-y-auto p-8 lg:p-12 text-emerald-ink">
         <div className="max-w-3xl mx-auto space-y-12">{SectionContent && <SectionContent />}</div>
       </div>
     </div>

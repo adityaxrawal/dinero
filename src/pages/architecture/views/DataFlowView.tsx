@@ -94,11 +94,11 @@ function DataFlowInner({ selectedStage, onSelectStage }: Props) {
         >
           <Background color="rgba(6,78,59,0.10)" gap={22} size={1} />
           <Panel position="top-left">
-            <div className="w-[260px] rounded-lg border border-[#064E3B]/15 bg-white/90 p-3 backdrop-blur">
-              <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#064E3B]/80">
+            <div className="w-[260px] rounded-lg border border-emerald-ink/15 bg-white/90 p-3 backdrop-blur">
+              <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-emerald-ink/80">
                 Trace a path
               </div>
-              <p className="mt-1 text-[10px] leading-snug text-[#064E3B]/80">
+              <p className="mt-1 text-[10px] leading-snug text-emerald-ink/80">
                 Pick an end-to-end flow to highlight it, or click any stage to see the components
                 that implement it.
               </p>
@@ -110,15 +110,15 @@ function DataFlowInner({ selectedStage, onSelectStage }: Props) {
                     className={
                       'block w-full rounded px-2 py-1 text-left text-[10px] transition-colors ' +
                       (activePath === p.id
-                        ? 'bg-[#064E3B] text-white'
-                        : 'bg-[#064E3B]/6 text-[#064E3B] hover:bg-[#064E3B]/12')
+                        ? 'bg-emerald-ink text-white'
+                        : 'bg-emerald-ink/6 text-emerald-ink hover:bg-emerald-ink/12')
                     }
                   >
                     {p.name}
                   </button>
                 ))}
               </div>
-              <div className="mt-2 flex flex-wrap gap-x-2 gap-y-0.5 text-[8.5px] text-[#064E3B]/80">
+              <div className="mt-2 flex flex-wrap gap-x-2 gap-y-0.5 text-[8.5px] text-emerald-ink/80">
                 <span>
                   <span
                     className="mr-0.5 inline-block h-2 w-2 rounded-sm align-middle"
@@ -180,12 +180,12 @@ export function StageDetail({
     <div className="px-4 py-3">
       {stage ? (
         <>
-          <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-[#064E3B]/80">
+          <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-emerald-ink/80">
             Pipeline stage
           </div>
-          <h2 className="mt-0.5 text-[13px] font-semibold text-[#064E3B]">{stage.label}</h2>
-          <p className="mt-2 text-[11px] leading-relaxed text-[#064E3B]/80">{stage.detail}</p>
-          <h3 className="mt-4 text-[10px] font-semibold uppercase tracking-[0.08em] text-[#064E3B]/80">
+          <h2 className="mt-0.5 text-[13px] font-semibold text-emerald-ink">{stage.label}</h2>
+          <p className="mt-2 text-[11px] leading-relaxed text-emerald-ink/80">{stage.detail}</p>
+          <h3 className="mt-4 text-[10px] font-semibold uppercase tracking-[0.08em] text-emerald-ink/80">
             Implemented by
           </h3>
           <ul className="mt-1 space-y-1">
@@ -195,10 +195,10 @@ export function StageDetail({
                 <li key={cid}>
                   <button
                     onClick={() => onSelectComponent(cid)}
-                    className="w-full rounded bg-white/70 px-2 py-1.5 text-left text-[10.5px] text-[#064E3B] hover:bg-white"
+                    className="w-full rounded bg-white/70 px-2 py-1.5 text-left text-[10.5px] text-emerald-ink hover:bg-white"
                   >
                     {comp.name}
-                    <div className="text-[9px] text-[#064E3B]/80">{comp.purpose}</div>
+                    <div className="text-[9px] text-emerald-ink/80">{comp.purpose}</div>
                   </button>
                 </li>
               ) : null;
@@ -207,13 +207,13 @@ export function StageDetail({
         </>
       ) : (
         <>
-          <h2 className="text-[13px] font-semibold text-[#064E3B]">Data flow</h2>
-          <p className="mt-1.5 text-[11px] leading-relaxed text-[#064E3B]/80">
+          <h2 className="text-[13px] font-semibold text-emerald-ink">Data flow</h2>
+          <p className="mt-1.5 text-[11px] leading-relaxed text-emerald-ink/80">
             Source → gates / parsing → queues → reconciliation → ledger → UI. Every entry point
             (historical scan, live polling, manual upload) converges on the same processing path —
             there is no weaker-validated second path.
           </p>
-          <p className="mt-2 text-[11px] leading-relaxed text-[#064E3B]/80">
+          <p className="mt-2 text-[11px] leading-relaxed text-emerald-ink/80">
             Click a stage to inspect it; use the path list to trace a complete request lifecycle
             including its parked and discarded branches.
           </p>

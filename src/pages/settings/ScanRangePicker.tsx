@@ -16,7 +16,7 @@ export default function ScanRangePicker({ disabled }: { disabled: boolean }) {
   } = useGlobalState();
 
   return (
-    <div className="p-4 rounded-xl bg-[#F8E7C9]/40 border border-[#064E3B]/10">
+    <div className="p-4 rounded-xl bg-champagne/40 border border-emerald-ink/10">
       <DateRangePicker
         startDate={scanStartDate}
         endDate={scanEndDate}
@@ -26,7 +26,7 @@ export default function ScanRangePicker({ disabled }: { disabled: boolean }) {
         }}
         disabled={disabled}
       />
-      <label className="mt-3 flex items-center gap-2 text-[12px] text-[#064E3B]/80">
+      <label className="mt-3 flex items-center gap-2 text-[12px] text-emerald-ink/80">
         <input
           type="checkbox"
           checked={recheckRejected}

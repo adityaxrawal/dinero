@@ -14,7 +14,7 @@ export default function AccountsSection() {
         <ConnectedAccountsSettings />
       </section>
 
-      <div className="h-px w-full bg-[#064E3B]/10" />
+      <div className="h-px w-full bg-emerald-ink/10" />
 
       <MailScanSection />
       <RecentActivity />

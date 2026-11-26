@@ -19,7 +19,7 @@ export default function AiModelBanner() {
   if (progress) {
     const pct = downloadPercent(progress);
     return (
-      <div role="status" className="mx-4 mb-2 rounded-lg border border-[#F8E7C9]/20 bg-[#F8E7C9]/10 px-3 py-2.5 text-[11.5px] text-[#F8E7C9]">
+      <div role="status" className="mx-4 mb-2 rounded-lg border border-champagne/20 bg-champagne/10 px-3 py-2.5 text-[11.5px] text-champagne">
         Downloading the AI model{pct !== null ? `… ${pct}%` : '…'}
       </div>
     );

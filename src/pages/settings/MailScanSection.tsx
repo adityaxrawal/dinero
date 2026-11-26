@@ -49,9 +49,9 @@ export default function MailScanSection() {
         <ScanRangePicker disabled={scanStatus === 'running' || !connectedAccount} />
 
         {connectedAccount && (
-          <p className="text-[12px] text-[#064E3B]/60">
+          <p className="text-[12px] text-emerald-ink/60">
             Scanning account:{' '}
-            <strong className="font-semibold text-[#064E3B]">{connectedAccount.email}</strong>
+            <strong className="font-semibold text-emerald-ink">{connectedAccount.email}</strong>
           </p>
         )}
 
@@ -70,7 +70,7 @@ export default function MailScanSection() {
         {connectedAccount && (
           <Button
             variant="outline"
-            className="h-9 text-[13px] border-[#064E3B]/20 text-[#064E3B]"
+            className="h-9 text-[13px] border-emerald-ink/20 text-emerald-ink"
             onClick={checkNow}
             disabled={checking || scanStatus === 'running'}
           >

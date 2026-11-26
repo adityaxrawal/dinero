@@ -37,11 +37,11 @@ export default function Debug() {
   return (
     <div className="flex h-full w-full overflow-hidden">
       <div
-        className="flex-shrink-0 flex flex-col h-full border-r border-[#064E3B]/20"
+        className="flex-shrink-0 flex flex-col h-full border-r border-emerald-ink/20"
         style={{ width: '320px', backgroundColor: 'var(--bg-canvas)' }}
       >
-        <div className="flex flex-col gap-3 px-4 py-3 flex-shrink-0 border-b border-[#064E3B]/10">
-          <h1 className="text-[14px] font-semibold text-[#064E3B] tracking-tight">Debug Console</h1>
+        <div className="flex flex-col gap-3 px-4 py-3 flex-shrink-0 border-b border-emerald-ink/10">
+          <h1 className="text-[14px] font-semibold text-emerald-ink tracking-tight">Debug Console</h1>
         </div>
 
         <div className="flex-1 overflow-y-auto py-2">
@@ -59,14 +59,14 @@ export default function Debug() {
         </div>
       </div>
 
-      <div className="flex-1 h-full bg-[#F8E7C9] relative overflow-y-auto p-8 lg:p-12 text-[#064E3B]">
+      <div className="flex-1 h-full bg-champagne relative overflow-y-auto p-8 lg:p-12 text-emerald-ink">
         <div className="max-w-4xl mx-auto space-y-12">
           {activeTab === 'pipeline' && <PipelineSection debug={debug} />}
 
           {activeTab === 'extraction' && (
             <div className="animate-in fade-in duration-300 flex flex-col gap-8">
               <ParseErrorViewer />
-              <div className="h-px w-full bg-[#064E3B]/10" />
+              <div className="h-px w-full bg-emerald-ink/10" />
               <UnprocessedStatementViewer />
             </div>
           )}

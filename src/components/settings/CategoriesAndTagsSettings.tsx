@@ -84,12 +84,12 @@ export default function CategoriesAndTagsSettings() {
           </Button>
         </div>
 
-        <ul className="divide-y divide-[#064E3B]/10 rounded-xl border border-[#064E3B]/10">
+        <ul className="divide-y divide-emerald-ink/10 rounded-xl border border-emerald-ink/10">
           {custom.length === 0 && (
-            <li className="p-3 text-[12px] text-[#064E3B]/60">No custom categories yet.</li>
+            <li className="p-3 text-[12px] text-emerald-ink/60">No custom categories yet.</li>
           )}
           {custom.map((c) => (
-            <li key={c.id} className="flex items-center gap-2 p-3 text-[13px] text-[#064E3B]">
+            <li key={c.id} className="flex items-center gap-2 p-3 text-[13px] text-emerald-ink">
               {editing?.id === c.id ? (
                 <>
                   <Input
@@ -129,22 +129,22 @@ export default function CategoriesAndTagsSettings() {
         </ul>
 
         <div>
-          <p className="mb-2 text-[12px] font-medium text-[#064E3B]/70">Tags</p>
+          <p className="mb-2 text-[12px] font-medium text-emerald-ink/70">Tags</p>
           {tags.length === 0 ? (
-            <p className="text-[12px] text-[#064E3B]/60">No tags yet. Add them from a transaction.</p>
+            <p className="text-[12px] text-emerald-ink/60">No tags yet. Add them from a transaction.</p>
           ) : (
             <ul className="flex flex-wrap gap-2">
               {tags.map((t) => (
                 <li
                   key={t.id}
-                  className="flex items-center gap-1 rounded-full border border-[#064E3B]/15 px-2.5 py-1 text-[12px] text-[#064E3B]"
+                  className="flex items-center gap-1 rounded-full border border-emerald-ink/15 px-2.5 py-1 text-[12px] text-emerald-ink"
                 >
                   {t.name}
                   <button
                     type="button"
                     onClick={() => removeTag(t.id, t.name)}
                     aria-label={`Delete tag ${t.name}`}
-                    className="text-[#064E3B]/50 hover:text-red-700"
+                    className="text-emerald-ink/50 hover:text-red-700"
                   >
                     <Trash2 className="h-3 w-3" aria-hidden="true" />
                   </button>

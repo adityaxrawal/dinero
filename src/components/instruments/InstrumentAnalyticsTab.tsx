@@ -46,10 +46,10 @@ export default function InstrumentAnalyticsTab({ transactions }: InstrumentAnaly
 
   if (transactions.length === 0) {
     return (
-      <div className="text-center py-12 bg-[#F8E7C9]/40 rounded-2xl border border-[#064E3B]/10 p-6">
-        <PieChart className="w-8 h-8 text-[#064E3B]/40 mx-auto mb-2" />
-        <h4 className="text-sm font-bold text-[#064E3B]">No Analytics Data Available</h4>
-        <p className="text-xs text-[#064E3B]/60 mt-1">
+      <div className="text-center py-12 bg-champagne/40 rounded-2xl border border-emerald-ink/10 p-6">
+        <PieChart className="w-8 h-8 text-emerald-ink/40 mx-auto mb-2" />
+        <h4 className="text-sm font-bold text-emerald-ink">No Analytics Data Available</h4>
+        <p className="text-xs text-emerald-ink/60 mt-1">
           Upload statements or record transactions for this account to see spending insights.
         </p>
       </div>
@@ -59,9 +59,9 @@ export default function InstrumentAnalyticsTab({ transactions }: InstrumentAnaly
   return (
     <div className="space-y-4 animate-in fade-in-50 duration-200">
       <div className="grid grid-cols-2 gap-3">
-        <div className="bg-[#F8E7C9]/70 border border-[#064E3B]/10 rounded-2xl p-3.5 space-y-1">
+        <div className="bg-champagne/70 border border-emerald-ink/10 rounded-2xl p-3.5 space-y-1">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/70">
               Total Outflow
             </span>
             <div className="w-6 h-6 rounded-full bg-red-500/15 text-red-700 flex items-center justify-center">
@@ -73,9 +73,9 @@ export default function InstrumentAnalyticsTab({ transactions }: InstrumentAnaly
           </p>
         </div>
 
-        <div className="bg-[#F8E7C9]/70 border border-[#064E3B]/10 rounded-2xl p-3.5 space-y-1">
+        <div className="bg-champagne/70 border border-emerald-ink/10 rounded-2xl p-3.5 space-y-1">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/70">
               Total Inflow
             </span>
             <div className="w-6 h-6 rounded-full bg-emerald-500/15 text-emerald-700 flex items-center justify-center">
@@ -89,30 +89,30 @@ export default function InstrumentAnalyticsTab({ transactions }: InstrumentAnaly
       </div>
 
       <div className="grid grid-cols-2 gap-3">
-        <div className="bg-[#F8E7C9]/50 border border-[#064E3B]/10 rounded-2xl p-3">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-[#064E3B]/60 block">
+        <div className="bg-champagne/50 border border-emerald-ink/10 rounded-2xl p-3">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-ink/60 block">
             Total Activity
           </span>
-          <span className="text-sm font-extrabold font-mono text-[#064E3B]">
+          <span className="text-sm font-extrabold font-mono text-emerald-ink">
             {stats.totalCount} transactions
           </span>
         </div>
-        <div className="bg-[#F8E7C9]/50 border border-[#064E3B]/10 rounded-2xl p-3">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-[#064E3B]/60 block">
+        <div className="bg-champagne/50 border border-emerald-ink/10 rounded-2xl p-3">
+          <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-ink/60 block">
             Avg Transaction
           </span>
-          <span className="text-sm font-extrabold font-mono text-[#064E3B]">
+          <span className="text-sm font-extrabold font-mono text-emerald-ink">
             ₹{stats.avgTx.toLocaleString(undefined, { maximumFractionDigits: 2 })}
           </span>
         </div>
       </div>
 
-      <div className="bg-[#F8E7C9]/60 border border-[#064E3B]/10 rounded-2xl p-4 space-y-3">
-        <div className="flex items-center justify-between border-b border-[#064E3B]/10 pb-2">
-          <h4 className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]">
+      <div className="bg-champagne/60 border border-emerald-ink/10 rounded-2xl p-4 space-y-3">
+        <div className="flex items-center justify-between border-b border-emerald-ink/10 pb-2">
+          <h4 className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink">
             Top Volume Items
           </h4>
-          <ShoppingBag className="w-4 h-4 text-[#064E3B]/60" />
+          <ShoppingBag className="w-4 h-4 text-emerald-ink/60" />
         </div>
 
         <div className="space-y-2">
@@ -121,13 +121,13 @@ export default function InstrumentAnalyticsTab({ transactions }: InstrumentAnaly
             const pct = totalVolume > 0 ? (item.amount / totalVolume) * 100 : 0;
             return (
               <div key={idx} className="space-y-1">
-                <div className="flex justify-between items-center text-xs font-semibold text-[#064E3B]">
+                <div className="flex justify-between items-center text-xs font-semibold text-emerald-ink">
                   <span className="truncate max-w-[180px]">{item.name}</span>
                   <span className="font-mono font-bold">₹{item.amount.toLocaleString()}</span>
                 </div>
-                <div className="w-full h-1.5 rounded-full bg-[#064E3B]/10 overflow-hidden">
+                <div className="w-full h-1.5 rounded-full bg-emerald-ink/10 overflow-hidden">
                   <div
-                    className="h-full bg-[#064E3B] rounded-full transition-all duration-300"
+                    className="h-full bg-emerald-ink rounded-full transition-all duration-300"
                     style={{ width: `${Math.min(100, Math.max(3, pct))}%` }}
                   />
                 </div>

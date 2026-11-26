@@ -38,12 +38,12 @@ export function StatTile({
           ? 'bg-emerald-500/[0.07] border-emerald-600/25'
           : tone === 'warn'
             ? 'bg-amber-500/[0.08] border-amber-600/25'
-            : 'bg-white/70 border-[#064E3B]/10'
+            : 'bg-white/70 border-emerald-ink/10'
       )}
     >
-      <div className="flex items-start gap-1.5 text-[11px] font-semibold uppercase tracking-wide leading-tight text-[#064E3B]/55">
+      <div className="flex items-start gap-1.5 text-[11px] font-semibold uppercase tracking-wide leading-tight text-emerald-ink/55">
         {icon && (
-          <span className="shrink-0 mt-px text-[#064E3B]/45 [&_svg]:w-3.5 [&_svg]:h-3.5">
+          <span className="shrink-0 mt-px text-emerald-ink/45 [&_svg]:w-3.5 [&_svg]:h-3.5">
             {icon}
           </span>
         )}
@@ -56,12 +56,12 @@ export function StatTile({
             ? 'text-emerald-700'
             : tone === 'warn'
               ? 'text-amber-700'
-              : 'text-[#064E3B]'
+              : 'text-emerald-ink'
         )}
       >
         {value}
       </div>
-      {hint && <div className="mt-0.5 text-[11px] leading-snug text-[#064E3B]/50">{hint}</div>}
+      {hint && <div className="mt-0.5 text-[11px] leading-snug text-emerald-ink/50">{hint}</div>}
     </div>
   );
 }
@@ -73,7 +73,7 @@ export function StatStrip({ children }: { children: ReactNode }) {
 
 const CONFIDENCE_BANDS = [
   { min: 0.9, label: 'Reliable', dots: 5, className: 'text-emerald-700' },
-  { min: 0.7, label: 'Holding up', dots: 4, className: 'text-[#064E3B]' },
+  { min: 0.7, label: 'Holding up', dots: 4, className: 'text-emerald-ink' },
   { min: 0.5, label: 'Unproven', dots: 3, className: 'text-amber-700' },
   { min: 0, label: 'Weak', dots: 2, className: 'text-red-700' },
 ] as const;
@@ -152,20 +152,20 @@ export function ConfirmDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[460px] bg-[#F8E7C9] border-[#064E3B]/20 text-[#064E3B]">
+      <DialogContent className="sm:max-w-[460px] bg-champagne border-emerald-ink/20 text-emerald-ink">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 text-[#064E3B]">
+          <DialogTitle className="flex items-center gap-2 text-emerald-ink">
             {icon}
             {title}
           </DialogTitle>
-          <DialogDescription className="text-[13px] pt-2 text-[#064E3B]/70 leading-relaxed">
+          <DialogDescription className="text-[13px] pt-2 text-emerald-ink/70 leading-relaxed">
             {description}
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
           <Button
             variant="outline"
-            className="border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5"
+            className="border-emerald-ink/20 text-emerald-ink hover:bg-emerald-ink/5"
             onClick={() => onOpenChange(false)}
           >
             {cancelLabel}

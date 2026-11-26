@@ -29,8 +29,8 @@ const MONTH_NAMES = [
 const SHORT_DAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
 
 const SELECT_CLASS =
-  'bg-[#F8E7C9] text-[#064E3B] font-semibold text-xs rounded-md px-1.5 py-1 border border-[#064E3B]/20 cursor-pointer outline-none focus:ring-1 focus:ring-[#064E3B]';
-const NAV_CLASS = 'p-1.5 rounded-md hover:bg-[#064E3B]/10 text-[#064E3B] transition-colors';
+  'bg-champagne text-emerald-ink font-semibold text-xs rounded-md px-1.5 py-1 border border-emerald-ink/20 cursor-pointer outline-none focus:ring-1 focus:ring-emerald-ink';
+const NAV_CLASS = 'p-1.5 rounded-md hover:bg-emerald-ink/10 text-emerald-ink transition-colors';
 const DAY_CLASS =
   'h-8 w-8 rounded-lg text-xs flex items-center justify-center transition-all mx-auto';
 
@@ -114,7 +114,7 @@ function DayGrid({
             onClick={() => onSelectDay(dayNum, -1)}
             className={cn(
               DAY_CLASS,
-              'text-[#064E3B]/30 hover:bg-[#064E3B]/5',
+              'text-emerald-ink/30 hover:bg-emerald-ink/5',
               disabled && 'opacity-20 cursor-not-allowed pointer-events-none'
             )}
           >
@@ -139,17 +139,17 @@ function DayGrid({
               DAY_CLASS,
               'font-medium relative',
               selected
-                ? 'bg-[#064E3B] text-[#F8E7C9] font-bold shadow-md scale-105'
-                : 'hover:bg-[#064E3B]/10 text-[#064E3B]',
+                ? 'bg-emerald-ink text-champagne font-bold shadow-md scale-105'
+                : 'hover:bg-emerald-ink/10 text-emerald-ink',
               todayFlag &&
                 !selected &&
-                'border border-[#064E3B] text-[#064E3B] font-bold bg-[#F8E7C9]/60',
+                'border border-emerald-ink text-emerald-ink font-bold bg-champagne/60',
               disabled && 'opacity-30 cursor-not-allowed pointer-events-none'
             )}
           >
             {dayNum}
             {todayFlag && !selected && (
-              <span className="absolute bottom-1 w-1 h-1 rounded-full bg-[#064E3B]" />
+              <span className="absolute bottom-1 w-1 h-1 rounded-full bg-emerald-ink" />
             )}
           </button>
         );
@@ -187,7 +187,7 @@ export default function CalendarPopover({
 
       <div className="grid grid-cols-7 gap-1 text-center mb-1">
         {SHORT_DAYS.map((d) => (
-          <span key={d} className="text-[11px] font-semibold text-[#064E3B]/60 py-1">
+          <span key={d} className="text-[11px] font-semibold text-emerald-ink/60 py-1">
             {d}
           </span>
         ))}
@@ -203,7 +203,7 @@ export default function CalendarPopover({
             calendar.setViewDate(new Date());
             onClose();
           }}
-          className="text-[#064E3B] font-semibold hover:underline"
+          className="text-emerald-ink font-semibold hover:underline"
         >
           Today
         </button>

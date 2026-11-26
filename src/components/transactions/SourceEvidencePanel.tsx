@@ -98,7 +98,7 @@ function SourceLogCard({ isLoading, log }: { isLoading: boolean; log: string | n
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-[13px] flex items-center gap-2 text-[#064E3B]">
+        <CardTitle className="text-[13px] flex items-center gap-2 text-emerald-ink">
           <Mail className="w-4 h-4" />
           Source Email Content
         </CardTitle>
@@ -106,11 +106,11 @@ function SourceLogCard({ isLoading, log }: { isLoading: boolean; log: string | n
       <CardContent>
         {isLoading ? (
           <div className="flex items-center justify-center py-4">
-            <Loader2 className="w-4 h-4 animate-spin text-[#064E3B]/60" />
+            <Loader2 className="w-4 h-4 animate-spin text-emerald-ink/60" />
           </div>
         ) : log ? (
-          <div className="bg-[#F3EBDD] rounded-md border border-[#064E3B]/10 p-3 max-h-[300px] overflow-y-auto">
-            <pre className="text-[10px] font-mono whitespace-pre-wrap text-[#064E3B]/80 leading-relaxed">
+          <div className="bg-[#F3EBDD] rounded-md border border-emerald-ink/10 p-3 max-h-[300px] overflow-y-auto">
+            <pre className="text-[10px] font-mono whitespace-pre-wrap text-emerald-ink/80 leading-relaxed">
               {log}
             </pre>
           </div>
@@ -201,7 +201,7 @@ export default function SourceEvidencePanel({
       {originalPayload && (
         <Card>
           <CardHeader className="pb-3">
-            <CardTitle className="text-[13px] flex items-center gap-2 text-[#064E3B]">
+            <CardTitle className="text-[13px] flex items-center gap-2 text-emerald-ink">
               <MonitorSmartphone className="w-4 h-4" />
               Original Email (as received in Gmail)
             </CardTitle>

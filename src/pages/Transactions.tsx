@@ -21,13 +21,13 @@ import CreateTransactionModal from './transactions/CreateTransactionModal';
 function EmptyInspector() {
   return (
     <div className="flex-1 flex flex-col items-center justify-center h-full opacity-40 gap-3">
-      <div className="w-14 h-14 border-2 border-[#064E3B] rounded-2xl border-dashed flex items-center justify-center bg-[#064E3B]/5">
-        <span className="text-[#064E3B] font-extrabold text-2xl">D</span>
+      <div className="w-14 h-14 border-2 border-emerald-ink rounded-2xl border-dashed flex items-center justify-center bg-emerald-ink/5">
+        <span className="text-emerald-ink font-extrabold text-2xl">D</span>
       </div>
-      <p className="text-[#064E3B] font-semibold text-sm">
+      <p className="text-emerald-ink font-semibold text-sm">
         Select a transaction to inspect details &amp; edit
       </p>
-      <p className="text-[#064E3B]/60 text-xs font-mono">
+      <p className="text-emerald-ink/60 text-xs font-mono">
         Use ↑ / ↓ arrow keys to quickly navigate
       </p>
     </div>
@@ -61,7 +61,7 @@ export default function Transactions() {
   return (
     <div className="flex h-full w-full overflow-hidden select-none">
       <div
-        className="flex-shrink-0 flex flex-col h-full border-r border-[#064E3B]/15 bg-[#F8E7C9]"
+        className="flex-shrink-0 flex flex-col h-full border-r border-emerald-ink/15 bg-champagne"
         style={{ width: '340px' }}
       >
         <FeedHeader
@@ -97,7 +97,7 @@ export default function Transactions() {
         </div>
       </div>
 
-      <div className="flex-1 h-full bg-[#F8E7C9] relative overflow-hidden flex flex-col">
+      <div className="flex-1 h-full bg-champagne relative overflow-hidden flex flex-col">
         {selectedTxId ? (
           <TransactionInspector
             transactionId={selectedTxId}

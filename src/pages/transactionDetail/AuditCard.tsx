@@ -14,15 +14,15 @@ export default function AuditCard({ tx }: { tx: Tx }) {
   const [isOpen, setIsOpen] = useState(false);
 
   return (
-    <Card className="bg-[#F8E7C9]/60 backdrop-blur-sm border-[#064E3B]/10 shadow-xs overflow-hidden">
+    <Card className="bg-champagne/60 backdrop-blur-sm border-emerald-ink/10 shadow-xs overflow-hidden">
       <CardHeader
-        className="py-3.5 px-5 border-b border-[#064E3B]/10 bg-[#064E3B]/[0.03] flex flex-row items-center justify-between cursor-pointer select-none hover:bg-[#064E3B]/[0.06] transition-colors"
+        className="py-3.5 px-5 border-b border-emerald-ink/10 bg-emerald-ink/[0.03] flex flex-row items-center justify-between cursor-pointer select-none hover:bg-emerald-ink/[0.06] transition-colors"
         onClick={() => setIsOpen((prev) => !prev)}
       >
-        <CardTitle className="text-[12px] font-bold uppercase tracking-wider text-[#064E3B]">
+        <CardTitle className="text-[12px] font-bold uppercase tracking-wider text-emerald-ink">
           Audit &amp; Technical Specs
         </CardTitle>
-        <span className="text-[#064E3B]/60">
+        <span className="text-emerald-ink/60">
           {isOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
         </span>
       </CardHeader>

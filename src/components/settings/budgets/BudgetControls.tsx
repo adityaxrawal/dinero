@@ -26,25 +26,25 @@ export function ThresholdToggle({
         'relative flex flex-col items-center px-6 py-5 rounded-xl text-[13px] transition-all duration-200 outline-none',
         'min-w-[120px] border',
         isActive
-          ? 'border-[#064E3B] bg-[#064E3B]/5 ring-1 ring-[#064E3B]/20'
-          : 'border-[#064E3B]/20 bg-[#F8E7C9]/50 hover:border-[#064E3B]/30 hover:bg-[#064E3B]/5'
+          ? 'border-emerald-ink bg-emerald-ink/5 ring-1 ring-emerald-ink/20'
+          : 'border-emerald-ink/20 bg-champagne/50 hover:border-emerald-ink/30 hover:bg-emerald-ink/5'
       )}
     >
       <span
         className={cn(
           'text-2xl font-bold transition-colors',
-          isActive ? 'text-[#064E3B]' : 'text-[#064E3B]/70'
+          isActive ? 'text-emerald-ink' : 'text-emerald-ink/70'
         )}
       >
         {label}
       </span>
-      <span className="text-[12px] font-medium mt-1 text-[#064E3B]/70">{description}</span>
+      <span className="text-[12px] font-medium mt-1 text-emerald-ink/70">{description}</span>
       <span
         className={cn(
           'mt-3 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider',
           isActive
-            ? 'bg-[#064E3B]/10 text-[#064E3B]'
-            : 'bg-[#064E3B]/5 text-[#064E3B]/60 border border-[#064E3B]/10'
+            ? 'bg-emerald-ink/10 text-emerald-ink'
+            : 'bg-emerald-ink/5 text-emerald-ink/60 border border-emerald-ink/10'
         )}
       >
         {isActive ? 'ON' : 'OFF'}
@@ -62,12 +62,12 @@ export function CategoryBudgetCard({
   onChange: (name: string, value: string) => void;
 }) {
   return (
-    <div className="space-y-3 p-5 rounded-xl border border-[#064E3B]/10 bg-[#064E3B]/5">
-      <Label htmlFor={`cat-${cat.name}`} className="text-[14px] font-bold text-[#064E3B]">
+    <div className="space-y-3 p-5 rounded-xl border border-emerald-ink/10 bg-emerald-ink/5">
+      <Label htmlFor={`cat-${cat.name}`} className="text-[14px] font-bold text-emerald-ink">
         {cat.name}
       </Label>
       <div className="flex items-center gap-2">
-        <span className="text-[13px] font-medium text-[#064E3B]/70 shrink-0">₹</span>
+        <span className="text-[13px] font-medium text-emerald-ink/70 shrink-0">₹</span>
         <Input
           id={`cat-${cat.name}`}
           type="number"
@@ -75,11 +75,11 @@ export function CategoryBudgetCard({
           value={cat.budget === 0 ? '' : cat.budget}
           placeholder="No limit"
           onChange={(e) => onChange(cat.name, e.target.value)}
-          className="bg-[#F8E7C9]/50 border-[#064E3B]/20 text-[#064E3B] focus-visible:ring-[#064E3B]"
+          className="bg-champagne/50 border-emerald-ink/20 text-emerald-ink focus-visible:ring-emerald-ink"
         />
       </div>
       {cat.budget > 0 && (
-        <p className="text-[12px] font-semibold text-[#064E3B]/60">
+        <p className="text-[12px] font-semibold text-emerald-ink/60">
           ₹ {cat.budget.toLocaleString()} / month
         </p>
       )}

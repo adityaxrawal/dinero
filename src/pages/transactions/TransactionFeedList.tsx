@@ -32,7 +32,7 @@ function LoadMore({
     <div ref={sentinelRef} className="flex justify-center py-3">
       <button
         type="button"
-        className="text-xs font-semibold px-4 py-1.5 rounded-full border border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/10 transition-colors cursor-pointer"
+        className="text-xs font-semibold px-4 py-1.5 rounded-full border border-emerald-ink/20 text-emerald-ink hover:bg-emerald-ink/10 transition-colors cursor-pointer"
         onClick={onFetchNext}
         disabled={isFetching}
       >
@@ -62,8 +62,8 @@ export default function TransactionFeedList({
   if (feed.loading) {
     return (
       <div className="flex flex-col items-center justify-center h-48 gap-2">
-        <Loader2 className="w-5 h-5 animate-spin text-[#064E3B]/60" />
-        <span className="text-xs font-medium text-[#064E3B]/60">Loading transactions…</span>
+        <Loader2 className="w-5 h-5 animate-spin text-emerald-ink/60" />
+        <span className="text-xs font-medium text-emerald-ink/60">Loading transactions…</span>
       </div>
     );
   }
@@ -71,7 +71,7 @@ export default function TransactionFeedList({
   if (feed.transactions.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-48 px-4 text-center">
-        <p className="text-xs font-medium text-[#064E3B]/60">
+        <p className="text-xs font-medium text-emerald-ink/60">
           {isSearching ? `No transactions match "${searchQuery}"` : 'No transactions found.'}
         </p>
       </div>
@@ -90,7 +90,7 @@ export default function TransactionFeedList({
     <div className="flex flex-col gap-3">
       {feed.grouped.map((group) => (
         <div key={group.dateLabel} className="space-y-1">
-          <div className="sticky top-0 z-10 px-2 py-1 bg-[#F8E7C9]/90 backdrop-blur-xs text-[10px] font-bold text-[#064E3B]/60 uppercase tracking-wider">
+          <div className="sticky top-0 z-10 px-2 py-1 bg-champagne/90 backdrop-blur-xs text-[10px] font-bold text-emerald-ink/60 uppercase tracking-wider">
             {group.dateLabel}
           </div>
           {group.items.map((tx) => (

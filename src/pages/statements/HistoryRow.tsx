@@ -55,16 +55,16 @@ export default function HistoryRow({
   const hasPdf = isProcessed && stmt.pdf_available;
 
   return (
-    <div className="p-4 flex items-center justify-between transition-colors hover:bg-[#064E3B]/5">
+    <div className="p-4 flex items-center justify-between transition-colors hover:bg-emerald-ink/5">
       <div className="min-w-0 pr-4 flex-1">
         <div className="flex items-center gap-2 mb-1">
-          <FileText className="w-4 h-4 flex-shrink-0 text-[#064E3B]/70" />
-          <span className="text-[14px] font-semibold truncate text-[#064E3B]" title={name}>
+          <FileText className="w-4 h-4 flex-shrink-0 text-emerald-ink/70" />
+          <span className="text-[14px] font-semibold truncate text-emerald-ink" title={name}>
             {name}
           </span>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-[11px] font-medium text-[#064E3B]/60">
+          <span className="text-[11px] font-medium text-emerald-ink/60">
             {formatCustomDate(stmt.date)}
           </span>
           <StatusPill status={stmt.status} />
@@ -75,7 +75,7 @@ export default function HistoryRow({
         {hasPdf && (
           <button
             type="button"
-            className="h-8 px-3 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors bg-[#064E3B]/5 hover:bg-[#064E3B]/10 text-[#064E3B] text-[12px] font-medium gap-1.5"
+            className="h-8 px-3 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors bg-emerald-ink/5 hover:bg-emerald-ink/10 text-emerald-ink text-[12px] font-medium gap-1.5"
             onClick={(e) => {
               e.stopPropagation();
               onViewPdf();
@@ -104,7 +104,7 @@ export default function HistoryRow({
         {isProcessed && (
           <button
             type="button"
-            className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors bg-[#064E3B]/10 hover:bg-[#064E3B]/20 text-[#064E3B]"
+            className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 transition-colors bg-emerald-ink/10 hover:bg-emerald-ink/20 text-emerald-ink"
             onClick={onViewTransactions}
             aria-label="View parsed transactions"
             title="View parsed transactions"

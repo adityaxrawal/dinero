@@ -35,7 +35,7 @@ export default function CleanupRunProgress({
       <CleanupCounters progress={progress} live={live} isRunning={isRunning} />
 
       {isRunning && (
-        <p className="mt-2 text-[11px] text-[#064E3B]/50">
+        <p className="mt-2 text-[11px] text-emerald-ink/50">
           {live && <>elapsed {live.elapsed} · </>}
           {activeModel?.name ?? 'on-device model'} · nothing leaves your Mac
         </p>

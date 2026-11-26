@@ -37,11 +37,11 @@ function ResetWarningStep({
           <AlertTriangle className="w-5 h-5" aria-hidden="true" />
           Delete My Data
         </DialogTitle>
-        <DialogDescription id="reset-dialog-desc" className="text-[14px] pt-2 text-[#064E3B]">
+        <DialogDescription id="reset-dialog-desc" className="text-[14px] pt-2 text-emerald-ink">
           This permanently deletes, on this device:
         </DialogDescription>
       </DialogHeader>
-      <ul className="list-disc pl-5 space-y-1 text-[13px] text-[#064E3B]/70 font-medium">
+      <ul className="list-disc pl-5 space-y-1 text-[13px] text-emerald-ink/70 font-medium">
         <li>All transactions, statements, and instruments</li>
         <li>All local database backups (daily and pre-migration)</li>
         <li>Your connected Gmail account(s) and stored OAuth tokens</li>
@@ -52,7 +52,7 @@ function ResetWarningStep({
       <DialogFooter>
         <Button
           variant="outline"
-          className="border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5"
+          className="border-emerald-ink/20 text-emerald-ink hover:bg-emerald-ink/5"
           onClick={onCancel}
           aria-label="Cancel data deletion"
         >
@@ -91,13 +91,13 @@ function ResetConfirmStep({
           <AlertTriangle className="w-5 h-5" aria-hidden="true" />
           Confirm Deletion
         </DialogTitle>
-        <DialogDescription id="reset-dialog-desc" className="text-[#064E3B]/80 font-medium">
-          Type <strong className="text-[#064E3B]">{RESET_CONFIRM_PHRASE}</strong> below to confirm.
+        <DialogDescription id="reset-dialog-desc" className="text-emerald-ink/80 font-medium">
+          Type <strong className="text-emerald-ink">{RESET_CONFIRM_PHRASE}</strong> below to confirm.
           This is your last chance to cancel.
         </DialogDescription>
       </DialogHeader>
       <div className="py-2 space-y-2">
-        <Label htmlFor="reset-confirm-text" className="text-[#064E3B]">
+        <Label htmlFor="reset-confirm-text" className="text-emerald-ink">
           Confirmation phrase
         </Label>
         <Input
@@ -107,16 +107,16 @@ function ResetConfirmStep({
           placeholder={RESET_CONFIRM_PHRASE}
           autoFocus
           aria-describedby="reset-confirm-hint"
-          className="bg-[#F8E7C9]/50 border-[#064E3B]/20 focus-visible:ring-[#064E3B]"
+          className="bg-champagne/50 border-emerald-ink/20 focus-visible:ring-emerald-ink"
         />
-        <p id="reset-confirm-hint" className="text-xs text-[#064E3B]/60">
+        <p id="reset-confirm-hint" className="text-xs text-emerald-ink/60">
           Must match exactly, including capitalization.
         </p>
       </div>
       <DialogFooter>
         <Button
           variant="outline"
-          className="border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5"
+          className="border-emerald-ink/20 text-emerald-ink hover:bg-emerald-ink/5"
           onClick={onCancel}
           disabled={isResetting}
           aria-label="Cancel data deletion"
@@ -177,7 +177,7 @@ export default function DeleteAccountSection() {
 
   return (
     <div>
-      <p className="text-[13px] font-medium text-[#064E3B]/70 mb-4">
+      <p className="text-[13px] font-medium text-emerald-ink/70 mb-4">
         Permanently delete all your data from this device: transactions, statements, instruments,
         connected Gmail accounts, and encryption keys. This action cannot be undone.
       </p>
@@ -196,7 +196,7 @@ export default function DeleteAccountSection() {
         }}
       >
         <DialogContent
-          className="sm:max-w-[480px] bg-[#F8E7C9] border-[#064E3B]/20 text-[#064E3B]"
+          className="sm:max-w-[480px] bg-champagne border-emerald-ink/20 text-emerald-ink"
           aria-labelledby="reset-dialog-title"
           aria-describedby="reset-dialog-desc"
         >

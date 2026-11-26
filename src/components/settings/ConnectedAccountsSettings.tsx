@@ -46,10 +46,10 @@ export default function ConnectedAccountsSettings() {
   return (
     <div className="space-y-5">
       <div className="flex items-center gap-2 mb-4">
-        <Mail className="w-5 h-5 text-[#064E3B]" />
-        <h3 className="text-xl font-bold text-[#064E3B]">Connected Accounts</h3>
+        <Mail className="w-5 h-5 text-emerald-ink" />
+        <h3 className="text-xl font-bold text-emerald-ink">Connected Accounts</h3>
       </div>
-      <p className="text-sm text-[#064E3B]/70 mb-5">
+      <p className="text-sm text-emerald-ink/70 mb-5">
         Connect Gmail securely via local OAuth to automate transaction syncing. We only request read
         access, and extraction happens locally. Up to 10 accounts can be connected; connecting a 2nd
         account or beyond requires an active subscription.
@@ -65,7 +65,7 @@ export default function ConnectedAccountsSettings() {
                 className={`flex items-center gap-3 p-4 rounded-xl border ${
                   isDegraded
                     ? 'bg-amber-500/10 border-amber-500/20'
-                    : 'bg-[#064E3B]/5 border-[#064E3B]/10'
+                    : 'bg-emerald-ink/5 border-emerald-ink/10'
                 }`}
               >
                 {isDegraded ? (
@@ -79,11 +79,11 @@ export default function ConnectedAccountsSettings() {
                   >
                     {isDegraded ? 'Needs Reconnection' : 'Gmail Connected'}
                   </p>
-                  <p className="text-[12px] font-medium text-[#064E3B]/70 mt-0.5">
+                  <p className="text-[12px] font-medium text-emerald-ink/70 mt-0.5">
                     {account.email}
                   </p>
                   {isDegraded && (
-                    <p className="text-[12px] font-medium text-[#064E3B]/70 mt-0.5">
+                    <p className="text-[12px] font-medium text-emerald-ink/70 mt-0.5">
                       Syncing has stopped — Gmail access expired or was revoked outside Dinero.
                     </p>
                   )}
@@ -115,7 +115,7 @@ export default function ConnectedAccountsSettings() {
 
       {connectedAccounts.length < 10 && (
         <button
-          className="h-9 px-4 rounded-lg font-semibold bg-[#064E3B] text-[#F8E7C9] hover:bg-[#064E3B]/90 transition-colors inline-flex items-center justify-center disabled:opacity-50"
+          className="h-9 px-4 rounded-lg font-semibold bg-emerald-ink text-champagne hover:bg-emerald-ink/90 transition-colors inline-flex items-center justify-center disabled:opacity-50"
           onClick={handleConnectGmail}
           disabled={isConnecting}
           id="connect-gmail-btn"

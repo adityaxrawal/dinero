@@ -89,7 +89,7 @@ export default function SecurityCard({ fields, setField, onSave }: InstrumentFor
           value={fields.upiVpa}
           onChange={(e) => setField('upiVpa', e.target.value)}
           placeholder="e.g. user@okaxis, 9876543210@upi"
-          className="h-9 text-[13px] font-mono bg-[#F3EBDD]/80 border-[#064E3B]/15 text-[#064E3B] focus-visible:ring-1 focus-visible:ring-[#064E3B]/30 rounded-xl"
+          className="h-9 text-[13px] font-mono bg-[#F3EBDD]/80 border-emerald-ink/15 text-emerald-ink focus-visible:ring-1 focus-visible:ring-emerald-ink/30 rounded-xl"
           onKeyDown={saveOnEnter}
         />
       </LabeledField>

@@ -48,25 +48,25 @@ export default function ParallelSlotsCard({
     <div
       className={cn(
         'mb-6 p-5 rounded-xl border transition-colors',
-        isDirty ? 'bg-[#064E3B]/[0.06] border-[#064E3B]/30' : 'bg-[#F8E7C9]/50 border-[#064E3B]/10'
+        isDirty ? 'bg-emerald-ink/[0.06] border-emerald-ink/30' : 'bg-champagne/50 border-emerald-ink/10'
       )}
     >
       <div className="flex items-center justify-between flex-wrap gap-2">
-        <h3 className="font-bold text-[15px] text-[#064E3B] flex items-center gap-2">
+        <h3 className="font-bold text-[15px] text-emerald-ink flex items-center gap-2">
           <Server className="w-4 h-4" /> Parallel Processing
         </h3>
         {hwInfo && draftSlots !== hwInfo.recommended_slots && (
           <button
             type="button"
             onClick={() => slots.setDraftSlots(hwInfo.recommended_slots)}
-            className="text-[12px] font-semibold text-[#064E3B] underline underline-offset-2 hover:text-[#053d2f]"
+            className="text-[12px] font-semibold text-emerald-ink underline underline-offset-2 hover:text-emerald-ink-hover"
           >
             Use recommended ({hwInfo.recommended_slots})
           </button>
         )}
       </div>
 
-      <p className="text-[13px] mt-1 text-[#064E3B]/70 leading-relaxed max-w-2xl">
+      <p className="text-[13px] mt-1 text-emerald-ink/70 leading-relaxed max-w-2xl">
         Run multiple statement extractions at once during a scan.
         {hwInfo && (
           <>
@@ -85,15 +85,15 @@ export default function ParallelSlotsCard({
           value={draftSlots}
           onChange={(e) => slots.setDraftSlots(clampSlots(parseInt(e.target.value, 10)))}
           className={cn(
-            'w-20 h-9 px-3 rounded-lg border text-[#064E3B] font-semibold text-center transition-colors',
-            isDirty ? 'border-[#064E3B]/60 ring-1 ring-[#064E3B]/20' : 'border-[#064E3B]/20'
+            'w-20 h-9 px-3 rounded-lg border text-emerald-ink font-semibold text-center transition-colors',
+            isDirty ? 'border-emerald-ink/60 ring-1 ring-emerald-ink/20' : 'border-emerald-ink/20'
           )}
           aria-label="Number of parallel LLM instances"
         />
-        <span className="text-[12px] text-[#064E3B]/60">instances (1-10)</span>
+        <span className="text-[12px] text-emerald-ink/60">instances (1-10)</span>
         {isDirty && !slots.isSaving && (
-          <span className="text-[11px] font-semibold text-[#064E3B]/60 flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#064E3B]/60" /> Unsaved changes
+          <span className="text-[11px] font-semibold text-emerald-ink/60 flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-ink/60" /> Unsaved changes
           </span>
         )}
         <SaveButton slots={slots} />

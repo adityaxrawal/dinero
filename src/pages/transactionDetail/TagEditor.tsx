@@ -30,7 +30,7 @@ export default function TagEditor({
   onRemoveTag,
 }: TagEditorProps) {
   return (
-    <div className="space-y-2 pt-1 border-t border-[#064E3B]/10">
+    <div className="space-y-2 pt-1 border-t border-emerald-ink/10">
       <TagsHeader count={tags.length} />
       <div className="flex flex-wrap gap-1.5 min-h-[30px] items-center">
         {tags.length === 0 ? (
@@ -40,13 +40,13 @@ export default function TagEditor({
             <Badge
               key={tag}
               variant="secondary"
-              className="flex items-center gap-1 bg-[#064E3B]/10 text-[#064E3B] hover:bg-[#064E3B]/20 rounded-full px-2.5 py-0.5"
+              className="flex items-center gap-1 bg-emerald-ink/10 text-emerald-ink hover:bg-emerald-ink/20 rounded-full px-2.5 py-0.5"
             >
               {tag}
               <button
                 type="button"
                 aria-label={`Remove tag ${tag}`}
-                className="hover:bg-[#064E3B]/20 p-0.5 rounded-full cursor-pointer"
+                className="hover:bg-emerald-ink/20 p-0.5 rounded-full cursor-pointer"
                 onClick={() => onRemoveTag(tag)}
               >
                 <X className="w-3 h-3" aria-hidden="true" />
@@ -63,14 +63,14 @@ export default function TagEditor({
           value={newTag}
           onChange={(e) => setNewTag(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && (e.preventDefault(), onAddTag())}
-          className="h-8 text-[12px] bg-[#F3EBDD]/70 border-[#064E3B]/15 text-[#064E3B] flex-1"
+          className="h-8 text-[12px] bg-[#F3EBDD]/70 border-emerald-ink/15 text-emerald-ink flex-1"
         />
         <TagDatalist id="tag-suggestions" tags={tags} availableTags={availableTags} />
         <Button
           variant="outline"
           size="sm"
           onClick={onAddTag}
-          className="h-8 px-3 border-[#064E3B]/15 text-[#064E3B]"
+          className="h-8 px-3 border-emerald-ink/15 text-emerald-ink"
         >
           <Plus className="w-3.5 h-3.5 mr-1" aria-hidden="true" /> Add
         </Button>

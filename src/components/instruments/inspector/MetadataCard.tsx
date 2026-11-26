@@ -23,7 +23,7 @@ export default function MetadataCard({ fields, setField, onSave }: InstrumentFor
             value={fields.statementDueDate}
             onChange={(v) => setField('statementDueDate', v)}
             placeholder="Select due date"
-            triggerClassName="h-9 text-[12px] font-mono font-semibold bg-[#F3EBDD]/80 border-[#064E3B]/15 text-[#064E3B] focus-visible:ring-1 focus-visible:ring-[#064E3B]/30 rounded-xl w-full"
+            triggerClassName="h-9 text-[12px] font-mono font-semibold bg-[#F3EBDD]/80 border-emerald-ink/15 text-emerald-ink focus-visible:ring-1 focus-visible:ring-emerald-ink/30 rounded-xl w-full"
           />
         </LabeledField>
 

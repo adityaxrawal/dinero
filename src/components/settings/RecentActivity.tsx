@@ -28,21 +28,21 @@ export default function RecentActivity() {
         description="What your last scans and statement imports did."
       />
       {isError ? (
-        <p role="alert" className="text-[12px] text-[#064E3B]/70">
+        <p role="alert" className="text-[12px] text-emerald-ink/70">
           Couldn't load recent activity.{' '}
           <button type="button" className="underline" onClick={() => refetch()}>
             Try again
           </button>
         </p>
       ) : entries.length === 0 ? (
-        <p className="text-[12px] text-[#064E3B]/60">No scans or imports yet.</p>
+        <p className="text-[12px] text-emerald-ink/60">No scans or imports yet.</p>
       ) : (
-        <ul className="divide-y divide-[#064E3B]/10 rounded-xl border border-[#064E3B]/10">
+        <ul className="divide-y divide-emerald-ink/10 rounded-xl border border-emerald-ink/10">
           {entries.map((e) => (
-            <li key={e.id} className="p-3 text-[12px] text-[#064E3B]">
+            <li key={e.id} className="p-3 text-[12px] text-emerald-ink">
               <p className={cn('font-medium', TONE[e.outcome])}>{e.summary}</p>
               {e.created_at && (
-                <p className="text-[#064E3B]/50">
+                <p className="text-emerald-ink/50">
                   {new Date(`${e.created_at.replace(' ', 'T')}Z`).toLocaleString('en-IN')}
                 </p>
               )}

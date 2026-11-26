@@ -36,7 +36,7 @@ export default function InspectorBody({
   if (form.isLoading && !form.detailInst) {
     return (
       <div className="flex items-center justify-center py-16">
-        <Loader2 className="w-6 h-6 animate-spin text-[#064E3B]" />
+        <Loader2 className="w-6 h-6 animate-spin text-emerald-ink" />
       </div>
     );
   }

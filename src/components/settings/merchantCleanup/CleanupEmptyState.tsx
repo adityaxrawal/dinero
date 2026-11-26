@@ -6,9 +6,9 @@ import { Cpu } from 'lucide-react';
 /** Shown when there is nothing to clean up. */
 export default function CleanupEmptyState() {
   return (
-    <div className="p-5 rounded-xl border border-dashed border-[#064E3B]/15 bg-[#F8E7C9]/40 flex items-start gap-2.5">
-      <Cpu className="w-4 h-4 mt-0.5 shrink-0 text-[#064E3B]/50" />
-      <p className="text-[13px] text-[#064E3B]/65 leading-relaxed">
+    <div className="p-5 rounded-xl border border-dashed border-emerald-ink/15 bg-champagne/40 flex items-start gap-2.5">
+      <Cpu className="w-4 h-4 mt-0.5 shrink-0 text-emerald-ink/50" />
+      <p className="text-[13px] text-emerald-ink/65 leading-relaxed">
         Nothing to clean up. Every merchant name currently scores above the confidence threshold, so
         there is nothing worth spending inference on.
       </p>

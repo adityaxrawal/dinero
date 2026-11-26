@@ -54,7 +54,7 @@ describe('RuleFilters', () => {
 
     expect(screen.getByRole('button', { name: 'Everything' })).toBeInTheDocument();
     const active = screen.getByRole('button', { name: 'amount' });
-    expect(active.className).toContain('bg-[#064E3B]');
+    expect(active.className).toContain('bg-emerald-ink');
   });
 
   it('selects a filter on click', () => {

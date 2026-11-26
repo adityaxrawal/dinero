@@ -27,7 +27,7 @@ export default function LicenseCtaButton({
     return (
       <Button
         variant="outline"
-        className="h-9 font-semibold border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5"
+        className="h-9 font-semibold border-emerald-ink/20 text-emerald-ink hover:bg-emerald-ink/5"
         onClick={onManageBilling}
       >
         {cta.label}
@@ -48,7 +48,7 @@ export default function LicenseCtaButton({
 
   return (
     <Button
-      className="h-9 font-semibold bg-[#064E3B] text-[#F8E7C9] hover:bg-[#064E3B]/90"
+      className="h-9 font-semibold bg-emerald-ink text-champagne hover:bg-emerald-ink/90"
       onClick={() => onSubscribe('desktop_pro_monthly')}
       disabled={isCheckingOut}
     >

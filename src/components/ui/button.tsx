@@ -14,7 +14,7 @@ import { cn } from '@/lib/utils';
 const buttonVariants = cva(
   'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ' +
     'transition-all duration-200 ease-out ' +
-    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#064E3B] focus-visible:ring-offset-2 focus-visible:ring-offset-background ' +
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-ink focus-visible:ring-offset-2 focus-visible:ring-offset-background ' +
     'disabled:pointer-events-none disabled:opacity-40 ' +
     'active:scale-[0.98] ' +
     '[&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0',
@@ -41,10 +41,10 @@ const buttonVariants = cva(
           'text-muted-foreground ' +
           'hover:bg-accent hover:text-foreground ' +
           'active:bg-accent/70',
-        link: 'text-[#064E3B] underline-offset-4 hover:underline hover:text-[#053d2f]',
+        link: 'text-emerald-ink underline-offset-4 hover:underline hover:text-emerald-ink-hover',
         accent:
-          'bg-[#064E3B] text-[#F8E7C9] font-semibold border border-transparent ' +
-          'shadow-sm hover:bg-[#053d2f] hover:shadow-md ' +
+          'bg-emerald-ink text-champagne font-semibold border border-transparent ' +
+          'shadow-sm hover:bg-emerald-ink-hover hover:shadow-md ' +
           'active:bg-[#042e24]',
       },
       size: {

@@ -173,11 +173,11 @@ export default function ClusterMemberComparison({
   return (
     <div className="flex flex-col gap-4">
       {reference && (
-        <Card className="border-[#064E3B]/30 shadow-sm">
-          <CardHeader className="py-3 px-4 bg-[#064E3B]/5 border-b border-border/40">
+        <Card className="border-emerald-ink/30 shadow-sm">
+          <CardHeader className="py-3 px-4 bg-emerald-ink/5 border-b border-border/40">
             <CardTitle className="text-sm flex items-center justify-between gap-2">
               <span className="flex items-center gap-2">
-                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider bg-[#064E3B]/10 text-[#064E3B]">
+                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider bg-emerald-ink/10 text-emerald-ink">
                   New Evidence
                 </span>
               </span>

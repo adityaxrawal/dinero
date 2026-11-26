@@ -29,10 +29,10 @@ const SelectTrigger = React.forwardRef<
       'border border-border bg-background',
       'data-[placeholder]:text-muted-foreground/60',
       'transition-all duration-150 ease-out',
-      'hover:border-[#064E3B]/30 hover:bg-accent',
-      'data-[state=open]:border-[#064E3B]/60 data-[state=open]:bg-[#064E3B]/[0.04]',
-      'data-[state=open]:ring-2 data-[state=open]:ring-[#064E3B]/30',
-      'focus:outline-none focus:ring-2 focus:ring-[#064E3B]/60 focus:ring-offset-0 focus:border-[#064E3B]/60',
+      'hover:border-emerald-ink/30 hover:bg-accent',
+      'data-[state=open]:border-emerald-ink/60 data-[state=open]:bg-emerald-ink/[0.04]',
+      'data-[state=open]:ring-2 data-[state=open]:ring-emerald-ink/30',
+      'focus:outline-none focus:ring-2 focus:ring-emerald-ink/60 focus:ring-offset-0 focus:border-emerald-ink/60',
       'disabled:cursor-not-allowed disabled:opacity-40',
       '[&>span]:line-clamp-1',
       className
@@ -151,10 +151,10 @@ const SelectItem = React.forwardRef<
       'relative flex w-full cursor-pointer select-none items-center rounded-lg py-2 pl-3 pr-9 text-sm outline-none',
       'text-muted-foreground',
       'transition-all duration-100 ease-out',
-      'focus:bg-[#064E3B]/10 focus:text-foreground',
+      'focus:bg-emerald-ink/10 focus:text-foreground',
       'hover:bg-accent hover:text-foreground',
-      'data-[state=checked]:bg-[#064E3B]/10 data-[state=checked]:text-[#053d2f] data-[state=checked]:font-medium',
-      'data-[state=checked]:border-l-2 data-[state=checked]:border-l-[#064E3B] data-[state=checked]:pl-[10px]',
+      'data-[state=checked]:bg-emerald-ink/10 data-[state=checked]:text-emerald-ink-hover data-[state=checked]:font-medium',
+      'data-[state=checked]:border-l-2 data-[state=checked]:border-l-emerald-ink data-[state=checked]:pl-[10px]',
       'data-[disabled]:pointer-events-none data-[disabled]:opacity-30',
       className
     )}
@@ -163,7 +163,7 @@ const SelectItem = React.forwardRef<
     {!hideCheckmark && (
       <span className="absolute right-2.5 flex h-4 w-4 items-center justify-center">
         <SelectPrimitive.ItemIndicator>
-          <Check className="h-3.5 w-3.5 text-[#064E3B]" strokeWidth={3} />
+          <Check className="h-3.5 w-3.5 text-emerald-ink" strokeWidth={3} />
         </SelectPrimitive.ItemIndicator>
       </span>
     )}

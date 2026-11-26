@@ -22,15 +22,15 @@ import type { ClusterRecord, LlmState, UnassignedTransactionRecord } from '@/lib
 
 const ROW_CLASS =
   'flex flex-col w-full text-left px-3.5 py-3 mx-2 rounded-xl transition-all max-w-[calc(100%-16px)] cursor-pointer select-none border';
-const ROW_SELECTED = 'bg-[#064E3B] text-[#F8E7C9] border-[#064E3B] shadow-sm';
+const ROW_SELECTED = 'bg-emerald-ink text-champagne border-emerald-ink shadow-sm';
 const ROW_IDLE =
-  'bg-white/60 hover:bg-white text-[#064E3B] border-[#064E3B]/10 hover:border-[#064E3B]/20';
+  'bg-white/60 hover:bg-white text-emerald-ink border-emerald-ink/10 hover:border-emerald-ink/20';
 
 const CLUSTER_TONES = {
   selected: {
     row: ROW_SELECTED,
-    badge: 'bg-[#F8E7C9]/20 text-[#F8E7C9]',
-    meta: 'text-[#F8E7C9]/70',
+    badge: 'bg-champagne/20 text-champagne',
+    meta: 'text-champagne/70',
     age: '',
     merchant: 'text-white',
   },
@@ -39,7 +39,7 @@ const CLUSTER_TONES = {
     badge: 'bg-amber-100 text-amber-800 border border-amber-200',
     meta: 'text-slate-400',
     age: 'text-red-500 font-semibold',
-    merchant: 'text-[#064E3B]',
+    merchant: 'text-emerald-ink',
   },
 };
 
@@ -61,7 +61,7 @@ function ClusterListItem({
     : null;
   const ageStr = cluster.created_at ? formatRelativeDate(cluster.created_at) : null;
   const isStale = cluster.created_at ? isOlderThanDays(cluster.created_at, 3) : false;
-  const amountTone = isSelected ? 'text-[#F8E7C9]' : isDebit ? 'text-red-700' : 'text-emerald-700';
+  const amountTone = isSelected ? 'text-champagne' : isDebit ? 'text-red-700' : 'text-emerald-700';
 
   return (
     <button onClick={onSelect} className={cn(ROW_CLASS, tone.row)}>
@@ -117,7 +117,7 @@ function UnassignedListItem({
           <div
             className={cn(
               'w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0',
-              isSelected ? 'bg-[#F8E7C9] text-[#064E3B]' : 'bg-[#064E3B]/10 text-[#064E3B]'
+              isSelected ? 'bg-champagne text-emerald-ink' : 'bg-emerald-ink/10 text-emerald-ink'
             )}
           >
             {info.avatarLetter}
@@ -136,7 +136,7 @@ function UnassignedListItem({
           className={cn(
             'text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider shrink-0',
             isSelected
-              ? 'bg-[#F8E7C9]/20 text-[#F8E7C9]'
+              ? 'bg-champagne/20 text-champagne'
               : item.reason === 'issuer_name_not_found'
                 ? 'bg-purple-100 text-purple-700 border border-purple-200'
                 : 'bg-amber-100 text-amber-800 border border-amber-200'
@@ -149,7 +149,7 @@ function UnassignedListItem({
       <p
         className={cn(
           'text-[11px] line-clamp-1 mb-2 font-normal',
-          isSelected ? 'text-[#F8E7C9]/80' : 'text-slate-600'
+          isSelected ? 'text-champagne/80' : 'text-slate-600'
         )}
       >
         {info.snippet}
@@ -160,7 +160,7 @@ function UnassignedListItem({
           <span
             className={cn(
               'font-semibold font-mono text-[12px]',
-              isSelected ? 'text-[#F8E7C9]' : 'text-emerald-700'
+              isSelected ? 'text-champagne' : 'text-emerald-700'
             )}
           >
             {info.amountStr}
@@ -169,7 +169,7 @@ function UnassignedListItem({
           <span
             className={cn(
               'italic text-[10px]',
-              isSelected ? 'text-[#F8E7C9]/60' : 'text-slate-400'
+              isSelected ? 'text-champagne/60' : 'text-slate-400'
             )}
           >
             Amount missing
@@ -177,7 +177,7 @@ function UnassignedListItem({
         )}
 
         {info.dateStr && (
-          <span className={cn('text-[10px]', isSelected ? 'text-[#F8E7C9]/70' : 'text-slate-400')}>
+          <span className={cn('text-[10px]', isSelected ? 'text-champagne/70' : 'text-slate-400')}>
             {info.dateStr}
           </span>
         )}
@@ -193,7 +193,7 @@ function UnassignedListItem({
 function LlmQueueLine({ pending, state }: { pending: number; state: LlmState }) {
   const emails = `${pending} ${pending === 1 ? 'email' : 'emails'}`;
   return (
-    <p className="flex items-center gap-1.5 text-[11px] text-[#064E3B]/70" role="status">
+    <p className="flex items-center gap-1.5 text-[11px] text-emerald-ink/70" role="status">
       {state === 'ready' ? (
         <>
           <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />
@@ -219,7 +219,7 @@ function LlmQueueLine({ pending, state }: { pending: number; state: LlmState }) 
 
 /** Shown when a queue section has nothing left to resolve. */
 function EmptyQueueNotice({ message }: { message: string }) {
-  return <p className="text-[12px] text-center p-4 text-[#064E3B]/60">{message}</p>;
+  return <p className="text-[12px] text-center p-4 text-emerald-ink/60">{message}</p>;
 }
 
 /** Switches between the clusters and unassigned queues, with counts. */
@@ -244,7 +244,7 @@ function SectionTabs({
             onClick={() => onSelect(section.id)}
             className={cn(
               'px-3 py-1.5 text-[12px] font-medium rounded-full transition-colors whitespace-nowrap flex items-center gap-1.5',
-              isActive ? 'bg-[#064E3B] text-[#F8E7C9]' : 'text-[#064E3B]/70 hover:bg-[#064E3B]/10'
+              isActive ? 'bg-emerald-ink text-champagne' : 'text-emerald-ink/70 hover:bg-emerald-ink/10'
             )}
           >
             <section.icon className="w-3.5 h-3.5" />
@@ -253,7 +253,7 @@ function SectionTabs({
               <span
                 className={cn(
                   'ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold',
-                  isActive ? 'bg-[#F8E7C9]/20 text-[#F8E7C9]' : 'bg-[#064E3B]/10 text-[#064E3B]'
+                  isActive ? 'bg-champagne/20 text-champagne' : 'bg-emerald-ink/10 text-emerald-ink'
                 )}
               >
                 {section.badge}
@@ -272,12 +272,12 @@ function QueueStatus({ isLoading, onRetry }: { isLoading: boolean; onRetry?: () 
   if (onRetry) {
     return (
       <div className="flex flex-col items-center justify-center text-center p-8 h-full gap-3" role="alert">
-        <h3 className="text-sm font-semibold text-[#064E3B]">Couldn't load the review queue</h3>
-        <p className="text-[11px] text-[#064E3B]/70">Your items are safe; the list just didn't load.</p>
+        <h3 className="text-sm font-semibold text-emerald-ink">Couldn't load the review queue</h3>
+        <p className="text-[11px] text-emerald-ink/70">Your items are safe; the list just didn't load.</p>
         <button
           type="button"
           onClick={onRetry}
-          className="text-[12px] font-medium text-[#064E3B] px-3 py-1 rounded-full border border-[#064E3B]/20 hover:bg-[#064E3B]/10"
+          className="text-[12px] font-medium text-emerald-ink px-3 py-1 rounded-full border border-emerald-ink/20 hover:bg-emerald-ink/10"
         >
           Try again
         </button>
@@ -287,18 +287,18 @@ function QueueStatus({ isLoading, onRetry }: { isLoading: boolean; onRetry?: () 
   if (isLoading) {
     return (
       <div className="flex flex-col items-center justify-center h-40 gap-2">
-        <Loader2 className="w-4 h-4 animate-spin text-[#064E3B]/50" />
-        <span className="text-xs text-[#064E3B]/50">Loading queue...</span>
+        <Loader2 className="w-4 h-4 animate-spin text-emerald-ink/50" />
+        <span className="text-xs text-emerald-ink/50">Loading queue...</span>
       </div>
     );
   }
   return (
     <div className="flex flex-col items-center justify-center text-center p-8 h-full opacity-60">
-      <div className="w-12 h-12 rounded-full flex items-center justify-center mb-4 bg-[#064E3B]/10 text-[#064E3B]">
+      <div className="w-12 h-12 rounded-full flex items-center justify-center mb-4 bg-emerald-ink/10 text-emerald-ink">
         <CheckCircle2 className="w-6 h-6" />
       </div>
-      <h3 className="text-sm font-semibold mb-1 text-[#064E3B]">All Caught Up!</h3>
-      <p className="text-[11px] text-[#064E3B]">Nothing is waiting for your review.</p>
+      <h3 className="text-sm font-semibold mb-1 text-emerald-ink">All Caught Up!</h3>
+      <p className="text-[11px] text-emerald-ink">Nothing is waiting for your review.</p>
     </div>
   );
 }
@@ -406,10 +406,10 @@ function InspectorPane({
 function InspectorPlaceholder({ currentSection }: { currentSection: string }) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center h-full opacity-30">
-      <div className="w-12 h-12 border-2 border-[#064E3B] rounded-xl mb-4 border-dashed flex items-center justify-center">
-        <Layers className="w-6 h-6 text-[#064E3B]" />
+      <div className="w-12 h-12 border-2 border-emerald-ink rounded-xl mb-4 border-dashed flex items-center justify-center">
+        <Layers className="w-6 h-6 text-emerald-ink" />
       </div>
-      <p className="text-[#064E3B] font-medium text-sm">
+      <p className="text-emerald-ink font-medium text-sm">
         {currentSection === 'clusters'
           ? 'Select a cluster to resolve'
           : 'Select an item to view details'}
@@ -484,12 +484,12 @@ export default function Reconciliation() {
   return (
     <div className="flex h-full w-full overflow-hidden">
       <div
-        className="flex-shrink-0 flex flex-col h-full border-r border-[#064E3B]/20"
+        className="flex-shrink-0 flex flex-col h-full border-r border-emerald-ink/20"
         style={{ width: '320px', backgroundColor: 'var(--bg-canvas)' }}
       >
-        <div className="flex flex-col gap-3 px-4 py-3 flex-shrink-0 border-b border-[#064E3B]/10">
+        <div className="flex flex-col gap-3 px-4 py-3 flex-shrink-0 border-b border-emerald-ink/10">
           <div className="flex items-center justify-between">
-            <h1 className="text-[14px] font-semibold text-[#064E3B] tracking-tight">
+            <h1 className="text-[14px] font-semibold text-emerald-ink tracking-tight">
               Review Inbox
             </h1>
             {currentSection === 'unassigned' && canRecheckAll && (
@@ -497,7 +497,7 @@ export default function Reconciliation() {
                 type="button"
                 onClick={handleRecheckAll}
                 disabled={recheckAll.isPending}
-                className="flex items-center gap-1 text-[11px] font-medium text-[#064E3B] px-2 py-1 rounded-full hover:bg-[#064E3B]/10 disabled:opacity-50"
+                className="flex items-center gap-1 text-[11px] font-medium text-emerald-ink px-2 py-1 rounded-full hover:bg-emerald-ink/10 disabled:opacity-50"
                 title="Run your learned patterns again on every entry, then the local AI"
               >
                 <RefreshCw
@@ -532,7 +532,7 @@ export default function Reconciliation() {
         </div>
       </div>
 
-      <div className="flex-1 h-full bg-[#F8E7C9] relative overflow-hidden flex flex-col justify-center">
+      <div className="flex-1 h-full bg-champagne relative overflow-hidden flex flex-col justify-center">
         <InspectorPane
           currentSection={currentSection}
           clusters={clusters}

@@ -8,7 +8,7 @@ import { API } from '@/lib/ipc';
 import { errorMessage } from '@/lib/utils';
 
 const INPUT_CLASS =
-  'w-full px-3 py-2 rounded-lg border text-[13px] font-medium bg-[#F8E7C9]/50 border-[#064E3B]/20 text-[#064E3B] focus:border-[#064E3B] focus:ring-1 focus:ring-[#064E3B] placeholder:text-[#064E3B]/40';
+  'w-full px-3 py-2 rounded-lg border text-[13px] font-medium bg-champagne/50 border-emerald-ink/20 text-emerald-ink focus:border-emerald-ink focus:ring-1 focus:ring-emerald-ink placeholder:text-emerald-ink/40';
 
 /** Restore form, shown behind a toggle while the licence is not active. */
 export default function RestoreLicenseForm({
@@ -43,7 +43,7 @@ export default function RestoreLicenseForm({
     return (
       <Button
         variant="outline"
-        className="h-9 font-semibold border-[#064E3B]/20 text-[#064E3B]/70 hover:bg-[#064E3B]/5"
+        className="h-9 font-semibold border-emerald-ink/20 text-emerald-ink/70 hover:bg-emerald-ink/5"
         onClick={() => setOpen(true)}
       >
         Already paid? Restore licence
@@ -52,8 +52,8 @@ export default function RestoreLicenseForm({
   }
 
   return (
-    <div className="mt-6 pt-6 border-t border-[#064E3B]/10 space-y-4">
-      <p className="text-[13px] font-medium text-[#064E3B]/70">
+    <div className="mt-6 pt-6 border-t border-emerald-ink/10 space-y-4">
+      <p className="text-[13px] font-medium text-emerald-ink/70">
         Reinstalled Dinero or reset this Mac? Enter the email you bought with and the payment ID
         from your Razorpay receipt (it starts with <code>pay_</code>).
       </p>
@@ -74,7 +74,7 @@ export default function RestoreLicenseForm({
         />
         <div className="flex gap-3">
           <Button
-            className="h-9 font-semibold bg-[#064E3B] text-[#F8E7C9] hover:bg-[#064E3B]/90"
+            className="h-9 font-semibold bg-emerald-ink text-champagne hover:bg-emerald-ink/90"
             onClick={restore}
             disabled={busy || !email.trim() || !paymentId.trim()}
           >

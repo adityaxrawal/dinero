@@ -71,14 +71,14 @@ export default function PortableBackupSettings() {
 
   return (
     <div className="space-y-4">
-      <h3 className="text-[15px] font-bold text-[#064E3B]">Portable backup</h3>
-      <p className="text-[13px] font-medium text-[#064E3B]/70">
+      <h3 className="text-[15px] font-bold text-emerald-ink">Portable backup</h3>
+      <p className="text-[13px] font-medium text-emerald-ink/70">
         Export your data protected by a password you choose. The file can be restored on any Mac. To
         restore, enter the password the backup was made with.
       </p>
       <div className="grid gap-3 sm:grid-cols-2 max-w-xl">
         <div className="space-y-1">
-          <Label htmlFor="backup-password" className="text-[#064E3B]">
+          <Label htmlFor="backup-password" className="text-emerald-ink">
             Backup password
           </Label>
           <Input
@@ -90,7 +90,7 @@ export default function PortableBackupSettings() {
           />
         </div>
         <div className="space-y-1">
-          <Label htmlFor="backup-password-confirm" className="text-[#064E3B]">
+          <Label htmlFor="backup-password-confirm" className="text-emerald-ink">
             Confirm password (export only)
           </Label>
           <Input
@@ -111,7 +111,7 @@ export default function PortableBackupSettings() {
       <div className="flex gap-3">
         <button
           type="button"
-          className="h-9 px-4 rounded-lg font-semibold bg-[#064E3B] text-[#F8E7C9] disabled:opacity-50 inline-flex items-center gap-2"
+          className="h-9 px-4 rounded-lg font-semibold bg-emerald-ink text-champagne disabled:opacity-50 inline-flex items-center gap-2"
           onClick={handleExport}
           disabled={busy || !!passwordError || mismatch}
         >
@@ -120,7 +120,7 @@ export default function PortableBackupSettings() {
         </button>
         <button
           type="button"
-          className="h-9 px-4 rounded-lg font-semibold border border-[#064E3B]/20 text-[#064E3B] disabled:opacity-50 inline-flex items-center gap-2"
+          className="h-9 px-4 rounded-lg font-semibold border border-emerald-ink/20 text-emerald-ink disabled:opacity-50 inline-flex items-center gap-2"
           onClick={handleRestore}
           disabled={busy || !!passwordError}
         >
@@ -129,7 +129,7 @@ export default function PortableBackupSettings() {
         </button>
       </div>
       {message && (
-        <p role="status" className="text-[13px] text-[#064E3B]">
+        <p role="status" className="text-[13px] text-emerald-ink">
           {message}
         </p>
       )}

@@ -41,15 +41,15 @@ export default function TransactionRow({
       className={cn(
         'flex items-center gap-3 w-full text-left px-3 py-2.5 rounded-xl transition-all cursor-pointer border select-none',
         isSelected
-          ? 'bg-[#064E3B] text-[#F8E7C9] border-[#064E3B] shadow-sm'
-          : 'bg-[#F8E7C9]/40 hover:bg-[#064E3B]/5 border-transparent text-[#064E3B]'
+          ? 'bg-emerald-ink text-champagne border-emerald-ink shadow-sm'
+          : 'bg-champagne/40 hover:bg-emerald-ink/5 border-transparent text-emerald-ink'
       )}
       onClick={onSelect}
     >
       <div
         className={cn(
           'w-8 h-8 rounded-lg flex items-center justify-center text-[13px] font-bold shrink-0 transition-colors',
-          isSelected ? 'bg-[#F8E7C9]/20 text-[#F8E7C9]' : 'bg-[#064E3B]/10 text-[#064E3B]'
+          isSelected ? 'bg-champagne/20 text-champagne' : 'bg-emerald-ink/10 text-emerald-ink'
         )}
       >
         {tx.merchant?.charAt(0).toUpperCase() ?? '?'}
@@ -60,7 +60,7 @@ export default function TransactionRow({
           <span
             className={cn(
               'font-semibold text-[13px] truncate pr-1',
-              isSelected ? 'text-white' : 'text-[#064E3B]'
+              isSelected ? 'text-white' : 'text-emerald-ink'
             )}
           >
             {tx.merchant}

@@ -46,13 +46,13 @@ export function InstrumentPicker({
               {inst.issuer_name} •••• {inst.masked_identifier}
             </SelectItem>
           ))}
-          <div className="border-t border-[#064E3B]/10 my-1 mt-2 mx-2" />
+          <div className="border-t border-emerald-ink/10 my-1 mt-2 mx-2" />
           <SelectItem
             value="CREATE_NEW"
             hideCheckmark
-            className="py-2.5 px-2.5 my-1 mx-1 rounded-xl transition-all cursor-pointer select-none outline-none focus:bg-[#064E3B]/10 hover:bg-[#064E3B]/[0.05]"
+            className="py-2.5 px-2.5 my-1 mx-1 rounded-xl transition-all cursor-pointer select-none outline-none focus:bg-emerald-ink/10 hover:bg-emerald-ink/[0.05]"
           >
-            <div className="flex items-center text-[#064E3B] font-bold text-[13px]">
+            <div className="flex items-center text-emerald-ink font-bold text-[13px]">
               <Plus className="w-4 h-4 mr-2" strokeWidth={3} />
               Create Instrument
             </div>

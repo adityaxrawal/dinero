@@ -26,11 +26,11 @@ export function PageSidebar<T extends string>({
 }: PageSidebarProps<T>) {
   return (
     <div
-      className="flex-shrink-0 flex flex-col h-full border-r border-[#064E3B]/20"
+      className="flex-shrink-0 flex flex-col h-full border-r border-emerald-ink/20"
       style={{ width: '320px', backgroundColor: 'var(--bg-canvas)' }}
     >
-      <div className="flex flex-col gap-3 px-4 py-3 flex-shrink-0 border-b border-[#064E3B]/10">
-        <h1 className="text-[14px] font-semibold text-[#064E3B] tracking-tight">{title}</h1>
+      <div className="flex flex-col gap-3 px-4 py-3 flex-shrink-0 border-b border-emerald-ink/10">
+        <h1 className="text-[14px] font-semibold text-emerald-ink tracking-tight">{title}</h1>
       </div>
 
       <div className="flex-1 overflow-y-auto py-2">

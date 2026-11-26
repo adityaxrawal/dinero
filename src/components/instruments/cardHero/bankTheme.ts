@@ -75,9 +75,9 @@ export function getBankTheme(issuerName: string): BankTheme {
   if (match) return match[1];
 
   return {
-    gradient: 'from-[#064E3B] via-[#043327] to-[#022018]',
+    gradient: 'from-emerald-ink via-[#043327] to-[#022018]',
     accentColor: '#34D399',
-    badgeBg: 'bg-[#F8E7C9]/15 text-[#F8E7C9] border-[#F8E7C9]/20',
+    badgeBg: 'bg-champagne/15 text-champagne border-champagne/20',
     label: issuerName,
   };
 }

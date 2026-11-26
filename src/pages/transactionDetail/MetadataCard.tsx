@@ -13,7 +13,7 @@ import DetailActions from './DetailActions';
 
 type Form = ReturnType<typeof useTransactionForm>;
 
-const FIELD_LABEL = 'text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70';
+const FIELD_LABEL = 'text-[11px] font-bold uppercase tracking-wider text-emerald-ink/70';
 
 /** Merchant row, showing raw and normalised names. */
 function MerchantRow({ form, originalName }: { form: Form; originalName: string }) {
@@ -27,7 +27,7 @@ function MerchantRow({ form, originalName }: { form: Form; originalName: string 
           <button
             type="button"
             onClick={() => form.setMerchant(originalName)}
-            className="text-[10px] font-semibold text-[#064E3B]/60 hover:text-[#064E3B] underline cursor-pointer"
+            className="text-[10px] font-semibold text-emerald-ink/60 hover:text-emerald-ink underline cursor-pointer"
           >
             Reset
           </button>
@@ -54,9 +54,9 @@ export default function MetadataCard({
   onViewSource: () => void;
 }) {
   return (
-    <Card className="bg-[#F8E7C9]/60 backdrop-blur-sm border-[#064E3B]/10 shadow-xs">
-      <CardHeader className="py-3.5 px-5 border-b border-[#064E3B]/10 bg-[#064E3B]/[0.03]">
-        <CardTitle className="text-[12px] font-bold uppercase tracking-wider text-[#064E3B]">
+    <Card className="bg-champagne/60 backdrop-blur-sm border-emerald-ink/10 shadow-xs">
+      <CardHeader className="py-3.5 px-5 border-b border-emerald-ink/10 bg-emerald-ink/[0.03]">
+        <CardTitle className="text-[12px] font-bold uppercase tracking-wider text-emerald-ink">
           Metadata &amp; Categorization
         </CardTitle>
       </CardHeader>
@@ -73,7 +73,7 @@ export default function MetadataCard({
               onChange={form.setCategoryId}
               categories={form.categories}
               id="category"
-              triggerClassName="h-9 text-[13px] bg-[#F3EBDD]/70 border-[#064E3B]/15 text-[#064E3B] focus:ring-1 focus:ring-[#064E3B]/30 rounded-xl w-full"
+              triggerClassName="h-9 text-[13px] bg-[#F3EBDD]/70 border-emerald-ink/15 text-emerald-ink focus:ring-1 focus:ring-emerald-ink/30 rounded-xl w-full"
             />
           </div>
         </div>
@@ -88,7 +88,7 @@ export default function MetadataCard({
             onChange={(e) => form.setNotes(e.target.value)}
             placeholder="Add private notes or annotations…"
             rows={3}
-            className="text-[13px] bg-[#F3EBDD]/70 border-[#064E3B]/15 text-[#064E3B] focus-visible:ring-1 focus-visible:ring-[#064E3B]/30 focus-visible:border-[#064E3B]/40 rounded-xl resize-none"
+            className="text-[13px] bg-[#F3EBDD]/70 border-emerald-ink/15 text-emerald-ink focus-visible:ring-1 focus-visible:ring-emerald-ink/30 focus-visible:border-emerald-ink/40 rounded-xl resize-none"
           />
         </div>
 

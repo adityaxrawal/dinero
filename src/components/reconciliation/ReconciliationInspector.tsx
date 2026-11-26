@@ -55,12 +55,12 @@ export default function ReconciliationInspector({
       <div
         className={cn(
           'flex items-center justify-end p-3 flex-shrink-0',
-          !inline && 'border-b border-[#064E3B]/10'
+          !inline && 'border-b border-emerald-ink/10'
         )}
       >
         <button
           type="button"
-          className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-[#064E3B]/10 text-[#064E3B]/60 hover:text-[#064E3B]"
+          className="w-8 h-8 flex items-center justify-center rounded-lg transition-colors hover:bg-emerald-ink/10 text-emerald-ink/60 hover:text-emerald-ink"
           onClick={onClose}
           aria-label="Close inspector"
         >

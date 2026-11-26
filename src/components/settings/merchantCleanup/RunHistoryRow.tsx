@@ -25,7 +25,7 @@ export default function RunHistoryRow({
   const isBusy = busyId === run.run_id;
 
   return (
-    <div className="rounded-xl border border-[#064E3B]/10 bg-white overflow-hidden">
+    <div className="rounded-xl border border-emerald-ink/10 bg-white overflow-hidden">
       <div className="px-4 py-3 flex items-center gap-3 flex-wrap">
         <button
           type="button"
@@ -34,14 +34,14 @@ export default function RunHistoryRow({
         >
           <ChevronRight
             className={cn(
-              'w-4 h-4 shrink-0 text-[#064E3B]/50 transition-transform',
+              'w-4 h-4 shrink-0 text-emerald-ink/50 transition-transform',
               open && 'rotate-90'
             )}
           />
-          <span className="font-semibold text-[13px] text-[#064E3B] shrink-0">
+          <span className="font-semibold text-[13px] text-emerald-ink shrink-0">
             <RelativeDate iso={run.started_at} />
           </span>
-          <span className="text-[12px] text-[#064E3B]/60 truncate">
+          <span className="text-[12px] text-emerald-ink/60 truncate">
             {run.applied} still applied
             {run.reverted > 0 && ` · ${run.reverted} undone`}
             {run.banks.length > 0 && ` · ${run.banks.join(', ')}`}
@@ -54,7 +54,7 @@ export default function RunHistoryRow({
             size="sm"
             onClick={() => onUndoRun(run)}
             disabled={isBusy}
-            className="shrink-0 border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5"
+            className="shrink-0 border-emerald-ink/20 text-emerald-ink hover:bg-emerald-ink/5"
           >
             {isBusy ? (
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -64,14 +64,14 @@ export default function RunHistoryRow({
             <span className="ml-1.5">Undo run</span>
           </Button>
         ) : (
-          <span className="text-[11px] font-semibold uppercase tracking-wide text-[#064E3B]/40 shrink-0">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-emerald-ink/40 shrink-0">
             Already undone
           </span>
         )}
       </div>
 
       {open && (
-        <ul className="border-t border-[#064E3B]/[0.07] divide-y divide-[#064E3B]/[0.07]">
+        <ul className="border-t border-emerald-ink/[0.07] divide-y divide-emerald-ink/[0.07]">
           {run.changes.map((c) => (
             <RunChangeRow
               key={c.correction_id}

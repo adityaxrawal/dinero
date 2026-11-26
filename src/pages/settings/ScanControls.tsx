@@ -40,7 +40,7 @@ export default function ScanControls({ hasAccount }: { hasAccount: boolean }) {
       {hasAccount && failedScanCount > 0 && scanStatus !== 'running' && (
         <Button
           variant="outline"
-          className="h-9 px-4 font-semibold border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5"
+          className="h-9 px-4 font-semibold border-emerald-ink/20 text-emerald-ink hover:bg-emerald-ink/5"
           onClick={handleRetryFailed}
         >
           <RotateCcw className="w-4 h-4 mr-2" />
@@ -51,7 +51,7 @@ export default function ScanControls({ hasAccount }: { hasAccount: boolean }) {
       {isFinished && (
         <Button
           variant="outline"
-          className="h-9 px-4 font-semibold border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5"
+          className="h-9 px-4 font-semibold border-emerald-ink/20 text-emerald-ink hover:bg-emerald-ink/5"
           onClick={resetScan}
         >
           Clear

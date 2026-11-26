@@ -50,7 +50,7 @@ function ScanRunning({
         aria-label="Historical scan progress"
       >
         <div
-          className="h-full bg-[#064E3B] transition-all duration-300"
+          className="h-full bg-emerald-ink transition-all duration-300"
           style={{ width: `${pct}%` }}
         />
       </div>
@@ -156,7 +156,7 @@ export default function HistoricalScanScreen({ onDone }: HistoricalScanScreenPro
 
   return (
     <div className="space-y-5 animate-in fade-in slide-in-from-bottom-4">
-      <div className="p-4 rounded-xl bg-[#F8E7C9]/30 border border-[#064E3B]/10">
+      <div className="p-4 rounded-xl bg-champagne/30 border border-emerald-ink/10">
         <DateRangePicker
           startDate={scanStartDate}
           endDate={scanEndDate}

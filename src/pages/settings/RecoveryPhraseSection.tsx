@@ -52,14 +52,14 @@ export default function RecoveryPhraseSection() {
             Write these 24 words down. Anyone with this phrase can decrypt your data on any
             computer.
           </p>
-          <p className="font-mono text-[14px] leading-relaxed text-[#064E3B] font-medium break-words select-all p-4 bg-[#F8E7C9] rounded-lg border border-[#064E3B]/20 shadow-inner">
+          <p className="font-mono text-[14px] leading-relaxed text-emerald-ink font-medium break-words select-all p-4 bg-champagne rounded-lg border border-emerald-ink/20 shadow-inner">
             {recoveryPhrase}
           </p>
         </div>
       ) : (
         <Button
           variant="outline"
-          className="h-9 font-semibold border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5"
+          className="h-9 font-semibold border-emerald-ink/20 text-emerald-ink hover:bg-emerald-ink/5"
           onClick={handleViewRecoveryPhrase}
           disabled={isFetchingPhrase}
         >

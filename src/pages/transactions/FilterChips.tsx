@@ -14,8 +14,8 @@ import { ALL } from './useTransactionFilters';
 
 const CHIP =
   'h-6 text-[11px] font-semibold border-0 rounded-full px-2.5 min-w-[85px] max-w-[125px] cursor-pointer shadow-2xs';
-const CHIP_ACTIVE = 'bg-[#064E3B] text-[#F8E7C9]';
-const CHIP_IDLE = 'bg-[#064E3B]/5 text-[#064E3B] hover:bg-[#064E3B]/10';
+const CHIP_ACTIVE = 'bg-emerald-ink text-champagne';
+const CHIP_IDLE = 'bg-emerald-ink/5 text-emerald-ink hover:bg-emerald-ink/10';
 
 /** Dropdown backing one filter chip. */
 function ChipSelect({
@@ -69,9 +69,9 @@ export default function FilterChips({
   onReset: () => void;
 }) {
   return (
-    <div className="flex items-center gap-1.5 px-3.5 py-2 flex-shrink-0 border-b border-[#064E3B]/10 bg-[#064E3B]/[0.02]">
+    <div className="flex items-center gap-1.5 px-3.5 py-2 flex-shrink-0 border-b border-emerald-ink/10 bg-emerald-ink/[0.02]">
       <SlidersHorizontal
-        className="w-3 h-3 flex-shrink-0 opacity-40 mx-0.5 text-[#064E3B]"
+        className="w-3 h-3 flex-shrink-0 opacity-40 mx-0.5 text-emerald-ink"
         aria-hidden="true"
       />
 

@@ -15,7 +15,7 @@ export default function ScanElapsed({
   etaSeconds: number | null;
 }) {
   return (
-    <div className="mb-4 text-[12px] text-[#064E3B]/60">
+    <div className="mb-4 text-[12px] text-emerald-ink/60">
       {scanStatus === 'running'
         ? `Elapsed: ${formatDuration(elapsedSeconds)}`
         : scanStatus === 'done'

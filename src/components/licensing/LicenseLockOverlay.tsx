@@ -62,7 +62,7 @@ export default function LicenseLockOverlay() {
           size="sm"
           onClick={() => navigate('/settings')}
           aria-label="Go to Settings to reactivate"
-          className="h-7 text-[11.5px] flex-1 bg-[#F8E7C9] text-[#064E3B] hover:bg-[#F8E7C9]/90"
+          className="h-7 text-[11.5px] flex-1 bg-champagne text-emerald-ink hover:bg-champagne/90"
         >
           Reactivate
         </Button>

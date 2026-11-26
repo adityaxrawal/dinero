@@ -25,21 +25,21 @@ export default function CancelScanDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="sm:max-w-[440px] bg-[#F8E7C9] border-[#064E3B]/20 text-[#064E3B]"
+        className="sm:max-w-[440px] bg-champagne border-emerald-ink/20 text-emerald-ink"
         aria-labelledby="cancel-scan-dialog-title"
         aria-describedby="cancel-scan-dialog-desc"
       >
         <DialogHeader>
           <DialogTitle
             id="cancel-scan-dialog-title"
-            className="flex items-center gap-2 text-[#064E3B]"
+            className="flex items-center gap-2 text-emerald-ink"
           >
             <XCircle className="w-5 h-5" aria-hidden="true" />
             Cancel Scan
           </DialogTitle>
           <DialogDescription
             id="cancel-scan-dialog-desc"
-            className="text-[13px] pt-2 text-[#064E3B]/70"
+            className="text-[13px] pt-2 text-emerald-ink/70"
           >
             Cancel the in-progress scan? Emails already processed keep their imported transactions.
           </DialogDescription>
@@ -47,7 +47,7 @@ export default function CancelScanDialog({
         <DialogFooter>
           <Button
             variant="outline"
-            className="border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5"
+            className="border-emerald-ink/20 text-emerald-ink hover:bg-emerald-ink/5"
             onClick={() => onOpenChange(false)}
           >
             Keep Scanning

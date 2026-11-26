@@ -18,11 +18,11 @@ export default function PastRuns({
   busyId: string | null;
 }) {
   return (
-    <div className="mt-6 pt-6 border-t border-[#064E3B]/10">
-      <h3 className="font-bold text-[15px] text-[#064E3B] flex items-center gap-2">
+    <div className="mt-6 pt-6 border-t border-emerald-ink/10">
+      <h3 className="font-bold text-[15px] text-emerald-ink flex items-center gap-2">
         <History className="w-4 h-4" /> Past runs
       </h3>
-      <p className="text-[13px] mt-1 mb-3 text-[#064E3B]/65 leading-relaxed max-w-2xl">
+      <p className="text-[13px] mt-1 mb-3 text-emerald-ink/65 leading-relaxed max-w-2xl">
         Every run stays undoable — as a whole or one merchant at a time. Undoing also retires the
         extraction rules that run taught.
       </p>

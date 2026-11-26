@@ -42,8 +42,8 @@ function CheckRow({ check }: { check: DiagnosticCheck }) {
 /** Which attribution signals were present or missing. */
 export default function DiagnosticChecklist({ checks }: { checks: DiagnosticCheck[] }) {
   return (
-    <div className="bg-white/90 rounded-lg p-3 border border-[#064E3B]/10">
-      <h4 className="text-[11px] font-bold uppercase tracking-wider text-[#064E3B]/70 mb-2.5">
+    <div className="bg-white/90 rounded-lg p-3 border border-emerald-ink/10">
+      <h4 className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/70 mb-2.5">
         Ingestion Diagnostic Checklist
       </h4>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">

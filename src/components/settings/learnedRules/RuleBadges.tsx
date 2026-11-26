@@ -24,7 +24,7 @@ export function StatusBadge({ status }: { status: string }) {
 /** Chip naming the field a rule extracts. */
 export function FieldChip({ field }: { field: string }) {
   return (
-    <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-[#064E3B]/[0.07] text-[#064E3B]/75">
+    <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-ink/[0.07] text-emerald-ink/75">
       {FIELD_CHIPS[field] ?? field}
     </span>
   );

@@ -50,7 +50,7 @@ export function ClusterLoading() {
 export function ClusterNotFound() {
   return (
     <div className="flex flex-col items-center justify-center py-16 gap-2 text-center">
-      <p className="text-base font-semibold text-[#064E3B]">Cluster Not Found</p>
+      <p className="text-base font-semibold text-emerald-ink">Cluster Not Found</p>
       <p className="text-sm text-muted-foreground">
         This cluster could not be found. It may already be resolved.
       </p>
@@ -74,10 +74,10 @@ export function QueueNav({
   const prev = index > 0 ? queueClusters[index - 1] : null;
   const next = index < queueClusters.length - 1 ? queueClusters[index + 1] : null;
   const arrow =
-    'w-6 h-6 flex items-center justify-center rounded-md hover:bg-[#064E3B]/10 disabled:opacity-30 disabled:hover:bg-transparent';
+    'w-6 h-6 flex items-center justify-center rounded-md hover:bg-emerald-ink/10 disabled:opacity-30 disabled:hover:bg-transparent';
 
   return (
-    <div className="flex items-center gap-1 text-[11px] font-medium text-[#064E3B]/60">
+    <div className="flex items-center gap-1 text-[11px] font-medium text-emerald-ink/60">
       <button
         type="button"
         className={arrow}
@@ -123,7 +123,7 @@ export function VerdictHeader({
             Ambiguous Match
           </span>
           {cluster.created_at && (
-            <span className="text-[10px] font-medium text-[#064E3B]/50">
+            <span className="text-[10px] font-medium text-emerald-ink/50">
               Flagged {formatRelativeDate(cluster.created_at).toLowerCase()}
             </span>
           )}
@@ -131,14 +131,14 @@ export function VerdictHeader({
         {children}
       </div>
 
-      <p className="text-[15px] font-semibold text-[#064E3B]">{verdict}</p>
+      <p className="text-[15px] font-semibold text-emerald-ink">{verdict}</p>
       {candidateCount > 1 && (
-        <p className="text-[12px] text-[#064E3B]/60">
+        <p className="text-[12px] text-emerald-ink/60">
           {candidateCount} candidates found — pick the correct one below.
         </p>
       )}
       {candidateCount === 0 && (
-        <p className="text-[12px] text-[#064E3B]/60">
+        <p className="text-[12px] text-emerald-ink/60">
           No existing transaction candidates were found for this evidence.
         </p>
       )}
@@ -162,18 +162,18 @@ export function ResolutionActions({
   const { isPending, candidates, selectedCandidateId } = actions;
 
   return (
-    <div className="p-4 rounded-xl border border-[#064E3B]/10 flex flex-col gap-3 bg-[#F8E7C9]/50">
-      <p className="text-[11px] font-medium flex items-center gap-1.5 text-[#064E3B]/60 uppercase tracking-wide">
+    <div className="p-4 rounded-xl border border-emerald-ink/10 flex flex-col gap-3 bg-champagne/50">
+      <p className="text-[11px] font-medium flex items-center gap-1.5 text-emerald-ink/60 uppercase tracking-wide">
         <SplitSquareHorizontal className="w-3.5 h-3.5" /> Resolution Actions
       </p>
-      <p className="text-[11px] italic text-[#064E3B]/60">
+      <p className="text-[11px] italic text-emerald-ink/60">
         Review carefully — these actions alter your financial records.
       </p>
 
       <ActionWithCaption caption="No changes made. Stays in your queue for another day.">
         <Button
           variant="ghost"
-          className="w-full text-xs h-8 text-[#064E3B]/70 hover:bg-[#064E3B]/5 hover:text-[#064E3B]"
+          className="w-full text-xs h-8 text-emerald-ink/70 hover:bg-emerald-ink/5 hover:text-emerald-ink"
           onClick={actions.handleReviewLater}
           disabled={isPending}
         >
@@ -185,7 +185,7 @@ export function ResolutionActions({
         <ActionWithCaption caption="Not the same payment — the new one is kept as its own transaction.">
           <Button
             variant="outline"
-            className="w-full text-[13px] h-9 border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5 hover:text-[#064E3B] font-semibold"
+            className="w-full text-[13px] h-9 border-emerald-ink/20 text-emerald-ink hover:bg-emerald-ink/5 hover:text-emerald-ink font-semibold"
             onClick={actions.handleKeepSeparate}
             disabled={isPending}
           >
@@ -200,7 +200,7 @@ export function ResolutionActions({
           }
         >
           <Button
-            className="w-full text-[13px] h-9 font-semibold bg-[#064E3B] text-[#F8E7C9] hover:bg-[#064E3B]/90 focus-visible:ring-[#064E3B]"
+            className="w-full text-[13px] h-9 font-semibold bg-emerald-ink text-champagne hover:bg-emerald-ink/90 focus-visible:ring-emerald-ink"
             onClick={actions.handleConfirmMatch}
             disabled={isPending || candidates.length === 0 || !selectedCandidateId}
           >

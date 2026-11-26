@@ -20,7 +20,7 @@ export default function SidebarNotificationCenter() {
 
   return (
     <div
-      className="mx-3 mb-3 rounded-xl flex flex-col transition-all duration-300 overflow-hidden border border-[#F8E7C9]/15 shadow-sm"
+      className="mx-3 mb-3 rounded-xl flex flex-col transition-all duration-300 overflow-hidden border border-champagne/15 shadow-sm"
       style={{ backgroundColor: 'rgba(248,231,201,0.06)', backdropFilter: 'blur(8px)' }}
       data-testid="sidebar-notification-center"
       {...(center.hasScanTask ? { 'data-testid-scan': 'scan-status-sidebar-item' } : {})}

@@ -13,7 +13,7 @@ function StopButton({ onCancel }: { onCancel: () => void }) {
     <Button
       variant="outline"
       onClick={onCancel}
-      className="border-[#064E3B]/20 text-[#064E3B] hover:bg-[#064E3B]/5"
+      className="border-emerald-ink/20 text-emerald-ink hover:bg-emerald-ink/5"
     >
       <XCircle className="w-4 h-4 mr-2" /> Stop
     </Button>
