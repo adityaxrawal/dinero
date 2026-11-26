@@ -68,7 +68,7 @@ export default function TransactionItemCard({
             {transaction.category ? (
               <span
                 className={cn(
-                  'text-[9px] font-extrabold px-2 py-0.2 rounded-full uppercase tracking-wider border',
+                  'text-[11px] font-extrabold px-2 py-0.2 rounded-full uppercase tracking-wider border',
                   visuals.bgClass,
                   visuals.textClass
                 )}
@@ -76,7 +76,7 @@ export default function TransactionItemCard({
                 {transaction.category.replace('_', ' ')}
               </span>
             ) : (
-              <span className="text-[9px] font-bold px-2 py-0.2 rounded-full uppercase tracking-wider bg-amber-500/15 text-amber-900 border border-amber-500/20">
+              <span className="text-[11px] font-bold px-2 py-0.2 rounded-full uppercase tracking-wider bg-amber-500/15 text-amber-900 border border-amber-500/20">
                 Uncategorized
               </span>
             )}
@@ -103,7 +103,7 @@ export default function TransactionItemCard({
             </span>
           </div>
 
-          <span className="text-[9px] font-bold uppercase tracking-wider text-emerald-ink/50 block mt-0.5">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/50 block mt-0.5">
             {isExpense ? 'Expense' : 'Credit / Refund'}
           </span>
         </div>

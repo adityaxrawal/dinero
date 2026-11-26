@@ -27,7 +27,7 @@ export default function StatementHistoryCard({ statements }: { statements: State
                   <span className="text-xs text-muted-foreground">{formatCustomDate(s.date)}</span>
                   <Badge
                     variant={s.status === 'PROCESSED' ? 'default' : 'secondary'}
-                    className="text-[10px]"
+                    className="text-[11px]"
                   >
                     {s.status}
                   </Badge>

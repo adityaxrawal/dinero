@@ -81,7 +81,7 @@ export default function TransactionRow({
           </span>
           <span
             className={cn(
-              'text-[9px] font-extrabold px-1.5 py-0.2 rounded uppercase tracking-wider border shrink-0',
+              'text-[11px] font-extrabold px-1.5 py-0.2 rounded uppercase tracking-wider border shrink-0',
               tone
             )}
           >

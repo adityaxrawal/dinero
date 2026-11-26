@@ -34,7 +34,7 @@ export function CardHeader({
         <Wifi className="w-4 h-4 text-white/60 rotate-90" />
         <span
           className={cn(
-            'px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider border backdrop-blur-md',
+            'px-2.5 py-0.5 rounded-full text-[11px] font-extrabold uppercase tracking-wider border backdrop-blur-md',
             badgeBg
           )}
         >
@@ -146,7 +146,7 @@ export function UtilizationGauge({
         />
       </div>
       {ratio > 80 && (
-        <p className="flex items-center gap-1 text-[10px] font-bold text-red-300 pt-0.5">
+        <p className="flex items-center gap-1 text-[11px] font-bold text-red-300 pt-0.5">
           <AlertCircle className="w-3 h-3 shrink-0" /> High credit utilization rate on this card.
         </p>
       )}

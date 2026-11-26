@@ -16,7 +16,7 @@ export default function MetadataCard({ fields, setField, onSave }: InstrumentFor
         <LabeledField
           htmlFor="insp-due-date"
           label="Latest Bill Due Date"
-          labelClassName="text-[10px]"
+          labelClassName="text-[11px]"
         >
           <DatePicker
             id="insp-due-date"
@@ -30,7 +30,7 @@ export default function MetadataCard({ fields, setField, onSave }: InstrumentFor
         <LabeledField
           htmlFor="insp-min-due"
           label="Minimum Amount Due (₹)"
-          labelClassName="text-[10px]"
+          labelClassName="text-[11px]"
         >
           <Input
             id="insp-min-due"

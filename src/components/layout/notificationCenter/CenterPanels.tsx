@@ -81,7 +81,7 @@ export function ExpandedFeed({ center }: { center: Center }) {
 
       {center.visibleNotifications.length > 0 && (
         <div className="flex flex-col gap-2 pt-1">
-          <div className="text-[10px] font-semibold uppercase tracking-wider text-champagne/40">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-champagne/40">
             Recent Alerts
           </div>
           {center.visibleNotifications.map((item) => (

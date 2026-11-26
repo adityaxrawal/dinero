@@ -72,7 +72,7 @@ function ObservationEvidenceRow({ obs }: { obs: TransactionObservation }) {
           {label}
         </p>
         {obs.confidence_score !== null && (
-          <Badge variant="outline" className="text-[10px]">
+          <Badge variant="outline" className="text-[11px]">
             {Math.round(obs.confidence_score * 100)}% confidence
           </Badge>
         )}
@@ -110,7 +110,7 @@ function SourceLogCard({ isLoading, log }: { isLoading: boolean; log: string | n
           </div>
         ) : log ? (
           <div className="bg-[#F3EBDD] rounded-md border border-emerald-ink/10 p-3 max-h-[300px] overflow-y-auto">
-            <pre className="text-[10px] font-mono whitespace-pre-wrap text-emerald-ink/80 leading-relaxed">
+            <pre className="text-[11px] font-mono whitespace-pre-wrap text-emerald-ink/80 leading-relaxed">
               {log}
             </pre>
           </div>

@@ -17,7 +17,7 @@ function NavBadge({ item, isActive }: { item: NavItem; isActive: boolean }) {
   return (
     <span
       className={cn(
-        'flex items-center justify-center text-[10px] font-bold rounded-full ml-auto px-2 min-w-[20px] h-5 transition-transform duration-300',
+        'flex items-center justify-center text-[11px] font-bold rounded-full ml-auto px-2 min-w-[20px] h-5 transition-transform duration-300',
         isActive ? 'bg-emerald-ink/10 text-emerald-ink' : 'bg-[#f59e0b] text-white',
         item.pulse && 'scale-125'
       )}

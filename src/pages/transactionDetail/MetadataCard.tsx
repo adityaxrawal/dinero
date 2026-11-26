@@ -27,7 +27,7 @@ function MerchantRow({ form, originalName }: { form: Form; originalName: string 
           <button
             type="button"
             onClick={() => form.setMerchant(originalName)}
-            className="text-[10px] font-semibold text-emerald-ink/60 hover:text-emerald-ink underline cursor-pointer"
+            className="text-[11px] font-semibold text-emerald-ink/60 hover:text-emerald-ink underline cursor-pointer"
           >
             Reset
           </button>

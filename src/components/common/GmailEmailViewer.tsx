@@ -167,7 +167,7 @@ function GmailHeader({
       {subject && (
         <div className="text-[15px] font-semibold text-slate-900 tracking-tight flex items-center justify-between">
           <span className="truncate">{subject}</span>
-          <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200/60 flex items-center gap-1 shrink-0 ml-2">
+          <span className="text-[11px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200/60 flex items-center gap-1 shrink-0 ml-2">
             <Mail className="w-3 h-3" /> Gmail
           </span>
         </div>

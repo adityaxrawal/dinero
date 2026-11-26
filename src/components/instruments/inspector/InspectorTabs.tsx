@@ -48,7 +48,7 @@ export default function InspectorTabs({
             {count != null && count > 0 && (
               <span
                 className={cn(
-                  'px-1.5 py-0.2 text-[10px] rounded-full font-mono font-bold',
+                  'px-1.5 py-0.2 text-[11px] rounded-full font-mono font-bold',
                   isActive ? 'bg-champagne/20 text-champagne' : 'bg-emerald-ink/10 text-emerald-ink'
                 )}
               >

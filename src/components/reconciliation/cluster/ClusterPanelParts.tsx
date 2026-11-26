@@ -28,7 +28,7 @@ function ActionWithCaption({ caption, children }: { caption: string; children: R
   return (
     <div className="flex flex-col gap-1">
       {children}
-      <p className="text-[10px] text-center text-muted-foreground leading-snug px-1">{caption}</p>
+      <p className="text-[11px] text-center text-muted-foreground leading-snug px-1">{caption}</p>
     </div>
   );
 }
@@ -120,11 +120,11 @@ export function VerdictHeader({
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-2">
-          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-sm inline-block uppercase tracking-wider bg-amber-500/15 text-amber-700">
+          <span className="text-[11px] font-bold px-1.5 py-0.5 rounded-sm inline-block uppercase tracking-wider bg-amber-500/15 text-amber-700">
             Ambiguous Match
           </span>
           {cluster.created_at && (
-            <span className="text-[10px] font-medium text-emerald-ink/50">
+            <span className="text-[11px] font-medium text-emerald-ink/50">
               Flagged {formatRelativeDate(cluster.created_at).toLowerCase()}
             </span>
           )}

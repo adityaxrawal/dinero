@@ -94,7 +94,7 @@ export default function FilterChips({
       {activeFilterCount > 0 && (
         <button
           type="button"
-          className="filter-chip text-[10px] font-bold py-0.5 px-2 rounded-full border text-red-600 border-red-500/20 hover:bg-red-500/10 cursor-pointer ml-auto"
+          className="filter-chip text-[11px] font-bold py-0.5 px-2 rounded-full border text-red-600 border-red-500/20 hover:bg-red-500/10 cursor-pointer ml-auto"
           onClick={onReset}
           aria-label="Clear all filters"
         >

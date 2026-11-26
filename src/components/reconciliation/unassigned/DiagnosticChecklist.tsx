@@ -26,7 +26,7 @@ function CheckRow({ check }: { check: DiagnosticCheck }) {
           <span>{check.label}</span>
           <span
             className={cn(
-              'text-[9px] font-extrabold uppercase px-1 rounded',
+              'text-[11px] font-extrabold uppercase px-1 rounded',
               check.passed ? 'bg-emerald-200/60 text-emerald-900' : 'bg-red-200/60 text-red-900'
             )}
           >

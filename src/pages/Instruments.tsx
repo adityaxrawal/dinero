@@ -104,10 +104,10 @@ export default function Instruments() {
               {groups.map((group) => (
                 <div key={group.value} className="flex flex-col gap-1">
                   <div className="flex items-center justify-between px-4 mb-1">
-                    <h2 className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-ink/60">
+                    <h2 className="text-[11px] font-extrabold uppercase tracking-wider text-emerald-ink/60">
                       {group.label}s
                     </h2>
-                    <span className="text-[9px] font-bold px-1.5 py-0.2 rounded-full bg-emerald-ink/10 text-emerald-ink">
+                    <span className="text-[11px] font-bold px-1.5 py-0.2 rounded-full bg-emerald-ink/10 text-emerald-ink">
                       {group.items.length}
                     </span>
                   </div>

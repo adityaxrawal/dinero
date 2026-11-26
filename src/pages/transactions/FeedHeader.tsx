@@ -79,7 +79,7 @@ export default function FeedHeader({
             <X className="w-3.5 h-3.5" />
           </button>
         ) : (
-          <kbd className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] font-mono font-medium text-emerald-ink/40 bg-emerald-ink/5 px-1.5 py-0.5 rounded border border-emerald-ink/10 pointer-events-none">
+          <kbd className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] font-mono font-medium text-emerald-ink/40 bg-emerald-ink/5 px-1.5 py-0.5 rounded border border-emerald-ink/10 pointer-events-none">
             ⌘K
           </kbd>
         )}

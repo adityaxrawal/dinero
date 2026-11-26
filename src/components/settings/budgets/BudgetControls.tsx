@@ -42,7 +42,7 @@ export function ThresholdToggle({
       <span className="text-[12px] font-medium mt-1 text-emerald-ink/70">{description}</span>
       <span
         className={cn(
-          'mt-3 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider',
+          'mt-3 px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-wider',
           isActive
             ? 'bg-emerald-ink/10 text-emerald-ink'
             : 'bg-emerald-ink/5 text-emerald-ink/60 border border-emerald-ink/10'

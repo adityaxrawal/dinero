@@ -31,7 +31,7 @@ export function SpecCard({
         <span className="flex items-center gap-1.5">
           <Icon className="w-3.5 h-3.5 text-emerald-ink" /> {title}
         </span>
-        <span className="text-[10px] font-mono text-emerald-ink/50">{hint}</span>
+        <span className="text-[11px] font-mono text-emerald-ink/50">{hint}</span>
       </h4>
       <div className={bodyClassName}>{children}</div>
     </div>

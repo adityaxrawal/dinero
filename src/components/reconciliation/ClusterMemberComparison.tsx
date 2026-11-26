@@ -53,7 +53,7 @@ function ScoreBar({ score }: { score: number }) {
           {Math.round(score * 100)}%
         </span>
       </div>
-      <p className="text-[10px] text-muted-foreground mt-0.5">
+      <p className="text-[11px] text-muted-foreground mt-0.5">
         Blends merchant, amount &amp; date match
       </p>
     </div>
@@ -175,7 +175,7 @@ export default function ClusterMemberComparison({
           <CardHeader className="py-3 px-4 bg-emerald-ink/5 border-b border-border/40">
             <CardTitle className="text-sm flex items-center justify-between gap-2">
               <span className="flex items-center gap-2">
-                <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider bg-emerald-ink/10 text-emerald-ink">
+                <span className="text-[11px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider bg-emerald-ink/10 text-emerald-ink">
                   New Evidence
                 </span>
               </span>

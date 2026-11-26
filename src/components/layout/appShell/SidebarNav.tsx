@@ -21,7 +21,7 @@ export default function SidebarNav({
     >
       {buildNavGroups(reviewCount, badgePulse).map((group) => (
         <div key={group.title} className="flex flex-col gap-1">
-          <div className="px-6 text-[10px] font-semibold uppercase tracking-wider text-champagne/40 mb-1">
+          <div className="px-6 text-[11px] font-semibold uppercase tracking-wider text-champagne/40 mb-1">
             {group.title}
           </div>
           {group.items.map((item) => (

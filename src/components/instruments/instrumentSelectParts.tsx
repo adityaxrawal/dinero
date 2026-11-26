@@ -79,10 +79,10 @@ export function InstrumentOptionGroup({
   return (
     <SelectGroup>
       {showDivider && <div className="border-t border-emerald-ink/10 my-1" />}
-      <SelectLabel className="flex items-center gap-1.5 text-[10px] font-extrabold uppercase tracking-wider text-emerald-ink/70 px-2 py-1">
+      <SelectLabel className="flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-wider text-emerald-ink/70 px-2 py-1">
         {icon}
         <span>{label}</span>
-        <span className="ml-auto text-[9px] px-1.5 py-0.2 rounded-full bg-emerald-ink/10">
+        <span className="ml-auto text-[11px] px-1.5 py-0.2 rounded-full bg-emerald-ink/10">
           {items.length}
         </span>
       </SelectLabel>

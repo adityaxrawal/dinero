@@ -45,7 +45,7 @@ function InspectorHeader({
       style={{ borderBottom: '1px solid rgba(6,78,59,0.1)' }}
     >
       <div className="min-w-0 flex-1 pr-3">
-        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-sm mb-2 inline-block uppercase tracking-wider bg-red-500/10 text-red-700">
+        <span className="text-[11px] font-bold px-1.5 py-0.5 rounded-sm mb-2 inline-block uppercase tracking-wider bg-red-500/10 text-red-700">
           {OUTCOME.needsReview}
         </span>
         <p className="text-[15px] font-semibold text-emerald-ink">{title}</p>

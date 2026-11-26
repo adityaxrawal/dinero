@@ -56,7 +56,7 @@ export default function NotificationCard({
         </div>
 
         <div className="flex items-center gap-1 shrink-0">
-          <span className="text-[9.5px] opacity-60 font-normal">
+          <span className="text-[11px] opacity-60 font-normal">
             {formatTimeAgo(item.timestamp)}
           </span>
           <button
@@ -75,7 +75,7 @@ export default function NotificationCard({
       {item.actionUrl && item.actionLabel && (
         <Link
           to={item.actionUrl}
-          className="mt-1 inline-flex items-center gap-1 text-[10.5px] font-semibold underline underline-offset-2 opacity-90 hover:opacity-100"
+          className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold underline underline-offset-2 opacity-90 hover:opacity-100"
         >
           {item.actionLabel}
           <ArrowUpRight className="w-3 h-3" />

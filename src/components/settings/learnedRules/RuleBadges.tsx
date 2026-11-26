@@ -12,7 +12,7 @@ export function StatusBadge({ status }: { status: string }) {
   return (
     <span
       className={cn(
-        'text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full border shrink-0',
+        'text-[11px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full border shrink-0',
         STATUS_STYLES[status] ?? STATUS_STYLES.inactive
       )}
     >
@@ -24,7 +24,7 @@ export function StatusBadge({ status }: { status: string }) {
 /** Chip naming the field a rule extracts. */
 export function FieldChip({ field }: { field: string }) {
   return (
-    <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-ink/[0.07] text-emerald-ink/75">
+    <span className="text-[11px] font-semibold px-1.5 py-0.5 rounded bg-emerald-ink/[0.07] text-emerald-ink/75">
       {FIELD_CHIPS[field] ?? field}
     </span>
   );

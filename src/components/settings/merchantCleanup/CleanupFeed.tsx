@@ -19,7 +19,7 @@ function FeedRow({ entry }: { entry: FeedEntry }) {
         <>
           <span className="font-semibold text-emerald-ink truncate">{entry.after}</span>
           {entry.category && (
-            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-ink/[0.07] text-emerald-ink/70 shrink-0">
+            <span className="text-[11px] font-semibold px-1.5 py-0.5 rounded bg-emerald-ink/[0.07] text-emerald-ink/70 shrink-0">
               {entry.category}
             </span>
           )}

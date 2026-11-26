@@ -90,7 +90,7 @@ export default function TransactionFeedList({
     <div className="flex flex-col gap-3">
       {feed.grouped.map((group) => (
         <div key={group.dateLabel} className="space-y-1">
-          <div className="sticky top-0 z-10 px-2 py-1 bg-champagne/90 backdrop-blur-xs text-[10px] font-bold text-emerald-ink/60 uppercase tracking-wider">
+          <div className="sticky top-0 z-10 px-2 py-1 bg-champagne/90 backdrop-blur-xs text-[11px] font-bold text-emerald-ink/60 uppercase tracking-wider">
             {group.dateLabel}
           </div>
           {group.items.map((tx) => (

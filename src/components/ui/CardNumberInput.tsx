@@ -145,7 +145,7 @@ export default function CardNumberInput({
       <div className="absolute left-2.5 flex items-center justify-center pointer-events-none z-10">
         <span
           className={cn(
-            'text-[9px] font-black px-1.5 py-0.5 rounded-md uppercase tracking-wider border font-mono',
+            'text-[11px] font-black px-1.5 py-0.5 rounded-md uppercase tracking-wider border font-mono',
             brandInfo.badgeClass
           )}
         >

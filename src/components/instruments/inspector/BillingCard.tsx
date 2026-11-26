@@ -12,7 +12,7 @@ function UtilizationBar({ balance, limit }: { balance: number; limit: number }) 
   const used = Math.min(100, Math.max(0, (balance / limit) * 100));
   return (
     <div className="space-y-1 pt-1">
-      <div className="flex justify-between text-[10px] font-mono text-emerald-ink/70">
+      <div className="flex justify-between text-[11px] font-mono text-emerald-ink/70">
         <span>Utilization</span>
         <span>{used.toFixed(1)}% Used</span>
       </div>
@@ -54,7 +54,7 @@ export default function BillingCard({
               onKeyDown={saveOnEnter}
             />
             {fields.billingCycleDay && (
-              <p className="text-[10px] text-emerald-ink/70 italic pt-0.5">
+              <p className="text-[11px] text-emerald-ink/70 italic pt-0.5">
                 Statements generated on the {fields.billingCycleDay}th of every month.
               </p>
             )}

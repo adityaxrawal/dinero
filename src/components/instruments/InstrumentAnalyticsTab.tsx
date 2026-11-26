@@ -91,7 +91,7 @@ export default function InstrumentAnalyticsTab({ transactions }: InstrumentAnaly
 
       <div className="grid grid-cols-2 gap-3">
         <div className="bg-champagne/50 border border-emerald-ink/10 rounded-2xl p-3">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-ink/60 block">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/60 block">
             Total Activity
           </span>
           <span className="text-sm font-extrabold font-mono text-emerald-ink">
@@ -99,7 +99,7 @@ export default function InstrumentAnalyticsTab({ transactions }: InstrumentAnaly
           </span>
         </div>
         <div className="bg-champagne/50 border border-emerald-ink/10 rounded-2xl p-3">
-          <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-ink/60 block">
+          <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/60 block">
             Avg Transaction
           </span>
           <span className="text-sm font-extrabold font-mono text-emerald-ink">

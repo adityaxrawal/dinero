@@ -25,7 +25,7 @@ function StatementCard({
         </span>
         <span
           className={cn(
-            'text-[10px] font-extrabold px-2.5 py-0.5 rounded-full uppercase tracking-wider shrink-0',
+            'text-[11px] font-extrabold px-2.5 py-0.5 rounded-full uppercase tracking-wider shrink-0',
             statement.status === 'PROCESSED'
               ? 'bg-emerald-500/15 text-emerald-800 border border-emerald-500/20'
               : 'bg-amber-500/15 text-amber-900 border border-amber-500/20'

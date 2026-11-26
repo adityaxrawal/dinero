@@ -53,7 +53,7 @@ export function TagsHeader({ count }: { count: number }) {
       <Label className="text-[11px] font-bold uppercase tracking-wider text-emerald-ink/70">
         Tags
       </Label>
-      <span className="text-[10px] text-emerald-ink/50 font-mono">
+      <span className="text-[11px] text-emerald-ink/50 font-mono">
         {count} tag{count !== 1 ? 's' : ''}
       </span>
     </div>

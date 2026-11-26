@@ -75,14 +75,14 @@ function ClusterListItem({
       <div className="flex items-center justify-between gap-2 mb-1.5 w-full">
         <span
           className={cn(
-            'text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider',
+            'text-[11px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider',
             tone.badge
           )}
         >
           Ambiguous
         </span>
         <span
-          className={cn('flex items-center gap-1.5 text-[10px] font-medium shrink-0', tone.meta)}
+          className={cn('flex items-center gap-1.5 text-[11px] font-medium shrink-0', tone.meta)}
         >
           {ageStr && (
             <span
@@ -130,7 +130,7 @@ function UnassignedListItem({
         <div className="flex items-center gap-2 min-w-0">
           <div
             className={cn(
-              'w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0',
+              'w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0',
               isSelected ? 'bg-champagne text-emerald-ink' : 'bg-emerald-ink/10 text-emerald-ink'
             )}
           >
@@ -148,7 +148,7 @@ function UnassignedListItem({
 
         <span
           className={cn(
-            'text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider shrink-0',
+            'text-[11px] font-bold px-1.5 py-0.5 rounded-full uppercase tracking-wider shrink-0',
             isSelected
               ? 'bg-champagne/20 text-champagne'
               : item.reason === 'issuer_name_not_found'
@@ -183,7 +183,7 @@ function UnassignedListItem({
         ) : (
           <span
             className={cn(
-              'italic text-[10px]',
+              'italic text-[11px]',
               isSelected ? 'text-champagne/60' : 'text-slate-400'
             )}
           >
@@ -192,7 +192,7 @@ function UnassignedListItem({
         )}
 
         {info.dateStr && (
-          <span className={cn('text-[10px]', isSelected ? 'text-champagne/70' : 'text-slate-400')}>
+          <span className={cn('text-[11px]', isSelected ? 'text-champagne/70' : 'text-slate-400')}>
             {info.dateStr}
           </span>
         )}
@@ -267,7 +267,7 @@ function SectionTabs({
             {section.badge > 0 && (
               <span
                 className={cn(
-                  'ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold',
+                  'ml-1 px-1.5 py-0.5 rounded-full text-[11px] font-bold',
                   isActive ? 'bg-champagne/20 text-champagne' : 'bg-emerald-ink/10 text-emerald-ink'
                 )}
               >

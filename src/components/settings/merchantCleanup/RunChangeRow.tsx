@@ -33,7 +33,7 @@ export default function RunChangeRow({
         <ArrowRight className="w-3 h-3 shrink-0 text-emerald-ink/35" />
         <span className="font-semibold text-emerald-ink">{change.new_merchant ?? '—'}</span>
         {change.category && (
-          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-ink/[0.07] text-emerald-ink/70">
+          <span className="text-[11px] font-semibold px-1.5 py-0.5 rounded bg-emerald-ink/[0.07] text-emerald-ink/70">
             {change.category}
           </span>
         )}

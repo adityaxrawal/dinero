@@ -22,7 +22,7 @@ function StatusPill({ status }: { status: string }) {
   const isFailed = status === 'failed';
   return (
     <span
-      className="text-[9px] font-bold px-1.5 py-0.5 rounded-sm flex items-center gap-1 uppercase tracking-wider"
+      className="text-[11px] font-bold px-1.5 py-0.5 rounded-sm flex items-center gap-1 uppercase tracking-wider"
       style={{
         background: isProcessed
           ? 'rgba(16,185,129,0.15)'

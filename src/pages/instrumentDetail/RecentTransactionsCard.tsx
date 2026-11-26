@@ -22,7 +22,7 @@ function TransactionRow({ tx }: { tx: Transaction }) {
         <span className="font-semibold text-emerald-ink">{tx.merchant}</span>
         <span
           className={cn(
-            'text-[9px] font-extrabold px-1.5 py-0.2 rounded uppercase tracking-wider border',
+            'text-[11px] font-extrabold px-1.5 py-0.2 rounded uppercase tracking-wider border',
             isDebit
               ? 'bg-red-500/10 text-red-700 border-red-500/20'
               : 'bg-emerald-500/10 text-emerald-700 border-emerald-500/20'

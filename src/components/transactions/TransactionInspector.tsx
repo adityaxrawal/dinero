@@ -309,7 +309,7 @@ function InspectorTabs({
             {tab.count !== undefined && tab.count > 0 && (
               <span
                 className={cn(
-                  'px-1.5 py-0.2 text-[10px] rounded-full font-mono font-bold',
+                  'px-1.5 py-0.2 text-[11px] rounded-full font-mono font-bold',
                   isActive ? 'bg-champagne/20 text-champagne' : 'bg-emerald-ink/10 text-emerald-ink'
                 )}
               >
@@ -441,7 +441,7 @@ function DetailsPanel({
                   <button
                     type="button"
                     onClick={() => form.setMerchant(tx.merchant_display_name ?? '')}
-                    className="text-[10px] font-semibold text-emerald-ink/60 hover:text-emerald-ink underline cursor-pointer"
+                    className="text-[11px] font-semibold text-emerald-ink/60 hover:text-emerald-ink underline cursor-pointer"
                   >
                     Reset
                   </button>
@@ -526,7 +526,7 @@ function DetailsPanel({
       </SectionCard>
 
       {(tx.created_at || tx.updated_at) && (
-        <p className="text-[10px] text-emerald-ink/50 text-center pt-1 font-mono">
+        <p className="text-[11px] text-emerald-ink/50 text-center pt-1 font-mono">
           {tx.created_at && `Recorded ${formatCustomDate(tx.created_at)}`}
           {tx.updated_at &&
             tx.updated_at !== tx.created_at &&
@@ -578,7 +578,7 @@ function InspectorFooter({
       {isDirty && !showSavedConfirm && (
         <div className="flex items-center justify-between text-[11px] font-semibold text-amber-800 bg-amber-500/10 py-1 px-3 rounded-lg border border-amber-500/20 animate-in fade-in">
           <span>Unsaved edits</span>
-          <kbd className="font-mono text-[10px] bg-amber-500/10 px-1.5 py-0.5 rounded">
+          <kbd className="font-mono text-[11px] bg-amber-500/10 px-1.5 py-0.5 rounded">
             ⌘S to save
           </kbd>
         </div>

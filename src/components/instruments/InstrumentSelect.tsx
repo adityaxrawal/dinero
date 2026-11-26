@@ -96,10 +96,10 @@ export function InstrumentSelect({
           >
             <div className="px-2 pt-1 pb-2 border-b border-emerald-ink/10 space-y-2 mb-1">
               <div className="flex items-center justify-between">
-                <span className="text-[10px] font-extrabold uppercase tracking-wider text-emerald-ink/70">
+                <span className="text-[11px] font-extrabold uppercase tracking-wider text-emerald-ink/70">
                   Select Payment Instrument
                 </span>
-                <span className="text-[10px] font-mono text-emerald-ink/50">
+                <span className="text-[11px] font-mono text-emerald-ink/50">
                   {filtered.length} available
                 </span>
               </div>

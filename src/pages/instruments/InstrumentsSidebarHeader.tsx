@@ -43,7 +43,7 @@ export default function InstrumentsSidebarHeader({
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <h1 className="text-[15px] font-extrabold text-emerald-ink tracking-tight">Accounts</h1>
-          <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-emerald-ink/10 text-emerald-ink">
+          <span className="text-[11px] font-extrabold px-2 py-0.5 rounded-full bg-emerald-ink/10 text-emerald-ink">
             {instruments.length}
           </span>
         </div>
@@ -61,7 +61,7 @@ export default function InstrumentsSidebarHeader({
 
       <div className="bg-emerald-ink/[0.06] rounded-xl p-2.5 border border-emerald-ink/10 flex justify-between items-center text-[11px] font-mono">
         <div>
-          <span className="text-emerald-ink/60 font-medium block text-[9px] uppercase tracking-wider">
+          <span className="text-emerald-ink/60 font-medium block text-[11px] uppercase tracking-wider">
             Bank Balance
           </span>
           <span className="font-bold text-emerald-ink text-xs">
@@ -70,7 +70,7 @@ export default function InstrumentsSidebarHeader({
         </div>
         <div className="h-6 w-[1px] bg-emerald-ink/15" />
         <div className="text-right">
-          <span className="text-emerald-ink/60 font-medium block text-[9px] uppercase tracking-wider">
+          <span className="text-emerald-ink/60 font-medium block text-[11px] uppercase tracking-wider">
             Credit Spent
           </span>
           <span className="font-bold text-red-700 text-xs">
@@ -117,7 +117,7 @@ export default function InstrumentsSidebarHeader({
             >
               <span className="shrink-0">{pill.icon}</span>
               <span className="truncate">{pill.label}</span>
-              <span className="opacity-75 text-[9px] font-mono shrink-0 font-normal">
+              <span className="opacity-75 text-[11px] font-mono shrink-0 font-normal">
                 ({count})
               </span>
             </button>

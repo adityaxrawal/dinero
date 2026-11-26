@@ -32,7 +32,7 @@ function ProgressBar({ task }: { task: UnifiedTask }) {
           style={{ width: `${task.progressPct}%` }}
         />
       </div>
-      <div className="flex items-center justify-between text-[10px] text-champagne/60 font-medium">
+      <div className="flex items-center justify-between text-[11px] text-champagne/60 font-medium">
         <span>{counts}</span>
         {task.etaSeconds != null && task.etaSeconds > 0 && (
           <span>~{formatDuration(task.etaSeconds)} remaining</span>
@@ -77,7 +77,7 @@ export default function TaskCard({
             <button
               type="button"
               onClick={onCancel}
-              className="text-[10.5px] font-medium px-1.5 py-0.5 rounded bg-red-500/20 text-red-200 hover:bg-red-500/30 transition-colors"
+              className="text-[11px] font-medium px-1.5 py-0.5 rounded bg-red-500/20 text-red-200 hover:bg-red-500/30 transition-colors"
               aria-label="Cancel pipeline process"
             >
               Cancel
