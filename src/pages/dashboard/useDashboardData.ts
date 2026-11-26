@@ -24,7 +24,12 @@ function currentMonthString(): string {
 export function useDashboardData() {
   const [granularity, setGranularity] = useState<SpendTrendGranularity>('daily');
 
-  const { data: summary, isLoading: summaryLoading } = useDashboardSummary();
+  const {
+    data: summary,
+    isLoading: summaryLoading,
+    isError: summaryFailed,
+    refetch: retrySummary,
+  } = useDashboardSummary();
   const { data: txPage, isLoading: txLoading } = useTransactionsList(1);
   const { data: monthlyTrend } = useSpendTrend('monthly');
   const { data: trendData, isLoading: trendLoading } = useSpendTrend(granularity);
@@ -50,6 +55,9 @@ export function useDashboardData() {
     setGranularity,
     summary,
     loading: summaryLoading || txLoading,
+    // Without a summary the dashboard used to spin forever (Phase 2 2.3).
+    loadFailed: summaryFailed,
+    retry: () => void retrySummary(),
     transactions: (txPage?.records ?? []).slice(0, 6),
     trendData,
     trendLoading,

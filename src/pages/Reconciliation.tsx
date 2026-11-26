@@ -21,6 +21,7 @@ import { cn, formatRelativeDate, isOlderThanDays } from '@/lib/utils';
 import { getUnassignedDisplayInfo } from './reconciliationDisplay';
 import type { ClusterRecord, LlmState, UnassignedTransactionRecord } from '@/lib/ipc';
 import { formatMoney, moneyTone } from '@/lib/formatMoney';
+import LoadError from '@/components/common/LoadError';
 
 const ROW_CLASS =
   'flex flex-col w-full text-left px-3.5 py-3 mx-2 rounded-xl transition-all max-w-[calc(100%-16px)] cursor-pointer select-none border';
@@ -285,19 +286,7 @@ function SectionTabs({
 function QueueStatus({ isLoading, onRetry }: { isLoading: boolean; onRetry?: () => void }) {
   // A failed load must never read as "All Caught Up" (audit F9-3).
   if (onRetry) {
-    return (
-      <div className="flex flex-col items-center justify-center text-center p-8 h-full gap-3" role="alert">
-        <h3 className="text-sm font-semibold text-emerald-ink">Couldn't load the review queue</h3>
-        <p className="text-[11px] text-emerald-ink/70">Your items are safe; the list just didn't load.</p>
-        <button
-          type="button"
-          onClick={onRetry}
-          className="text-[12px] font-medium text-emerald-ink px-3 py-1 rounded-full border border-emerald-ink/20 hover:bg-emerald-ink/10"
-        >
-          Try again
-        </button>
-      </div>
-    );
+    return <LoadError what="the review queue" onRetry={onRetry} className="h-full" />;
   }
   if (isLoading) {
     return (

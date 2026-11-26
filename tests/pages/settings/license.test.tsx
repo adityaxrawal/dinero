@@ -76,7 +76,7 @@ describe('LicenseSection status', () => {
 
   it('says so plainly when the status cannot be loaded', async () => {
     await renderLicense(null);
-    expect(await screen.findByText('Could not load license status.')).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't load your licence status")).toBeInTheDocument();
   });
 });
 

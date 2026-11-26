@@ -12,6 +12,7 @@ import { Button } from '@/components/ui/button';
 import { useToast } from '@/hooks/use-toast';
 import { API } from '@/lib/ipc';
 import { getErrorToast } from '@/lib/errorMapping';
+import LoadError from '@/components/common/LoadError';
 
 const SKIPPED_KEY = ['skippedEmails'] as const;
 
@@ -70,12 +71,7 @@ export default function SkippedEmailsSettings() {
         description="Emails from the last 30 days that weren't treated as transactions, and why. If a real bank email was rejected by the sender check, trust the sender."
       />
       {isError ? (
-        <p role="alert" className="text-[12px] text-emerald-ink/70">
-          Couldn't load skipped emails.{' '}
-          <button type="button" className="underline" onClick={() => refetch()}>
-            Try again
-          </button>
-        </p>
+        <LoadError what="skipped emails" onRetry={() => refetch()} />
       ) : skipped.length === 0 ? (
         <p className="text-[12px] text-emerald-ink/60">Nothing skipped in the last 30 days.</p>
       ) : (

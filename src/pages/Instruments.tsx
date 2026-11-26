@@ -1,6 +1,7 @@
 /**
  * Lists all payment instruments with portfolio-level totals.
  */
+import LoadError from '@/components/common/LoadError';
 import { useState, useMemo, useEffect } from 'react';
 import { Loader2, Landmark } from 'lucide-react';
 import { useInstrumentsList } from '@/hooks/queries/useInstrumentsList';
@@ -16,7 +17,7 @@ import InstrumentsSidebarHeader, {
 
 /** Lists instruments with portfolio-level totals. */
 export default function Instruments() {
-  const { data: instruments = [], isLoading } = useInstrumentsList();
+  const { data: instruments = [], isLoading, isError, refetch } = useInstrumentsList();
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [selectedInstId, setSelectedInstId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -82,6 +83,9 @@ export default function Instruments() {
               <Loader2 className="w-4 h-4 animate-spin text-emerald-ink/50" />
               <span className="text-xs text-emerald-ink/50">Loading accounts...</span>
             </div>
+          ) : isError && instruments.length === 0 ? (
+            // A failed load used to read as "No instruments yet" (Phase 2 2.3).
+            <LoadError what="your accounts" onRetry={() => refetch()} />
           ) : groups.length === 0 ? (
             <div className="text-center py-10 px-4 space-y-2">
               <p className="text-xs text-emerald-ink/50">

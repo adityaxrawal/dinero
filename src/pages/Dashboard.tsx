@@ -14,6 +14,7 @@ import { useDashboardData } from './dashboard/useDashboardData';
 import KpiRow from './dashboard/KpiRow';
 import AttentionRail from './dashboard/AttentionRail';
 import ChartsRow from './dashboard/ChartsRow';
+import LoadError from '@/components/common/LoadError';
 
 /** Time-of-day greeting for the dashboard header. */
 function formatGreeting(): string {
@@ -62,6 +63,10 @@ export default function Dashboard() {
     },
     [navigate]
   );
+
+  if (data.loadFailed) {
+    return <LoadError what="the dashboard" onRetry={data.retry} className="h-full" />;
+  }
 
   if (data.loading || !summary) {
     return (

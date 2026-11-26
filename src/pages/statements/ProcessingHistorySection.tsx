@@ -11,6 +11,7 @@ import { useStatementsList } from '@/hooks/queries/useStatementsList';
 import SectionHeading from '@/components/settings/SectionHeading';
 import StatementPdfViewerModal from '@/components/statements/StatementPdfViewerModal';
 import HistoryRow from './HistoryRow';
+import LoadError from '@/components/common/LoadError';
 
 type Statement = NonNullable<ReturnType<typeof useStatementsList>['data']>[number];
 
@@ -36,14 +37,7 @@ function HistoryList({
   }
   // A failed load must not read as "No statements uploaded yet" (audit F8-8).
   if (onRetry) {
-    return (
-      <div className="p-8 text-center text-[13px] text-emerald-ink/70" role="alert">
-        Couldn't load your statement history.{' '}
-        <button type="button" onClick={onRetry} className="underline font-medium text-emerald-ink">
-          Try again
-        </button>
-      </div>
-    );
+    return <LoadError what="your statement history" onRetry={onRetry} />;
   }
   if (history.length === 0) {
     return (

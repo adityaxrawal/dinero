@@ -9,6 +9,7 @@ import SectionHeading from '@/components/settings/SectionHeading';
 import { API } from '@/lib/ipc';
 import { queryKeys } from '@/lib/queryKeys';
 import { cn } from '@/lib/utils';
+import LoadError from '@/components/common/LoadError';
 
 const TONE: Record<string, string> = {
   failed: 'text-red-700',
@@ -29,12 +30,7 @@ export default function RecentActivity() {
         description="What your recent scans, statement imports, duplicate checks and AI reads did."
       />
       {isError ? (
-        <p role="alert" className="text-[12px] text-emerald-ink/70">
-          Couldn't load recent activity.{' '}
-          <button type="button" className="underline" onClick={() => refetch()}>
-            Try again
-          </button>
-        </p>
+        <LoadError what="recent activity" onRetry={() => refetch()} />
       ) : entries.length === 0 ? (
         <p className="text-[12px] text-emerald-ink/60">Nothing has happened yet.</p>
       ) : (

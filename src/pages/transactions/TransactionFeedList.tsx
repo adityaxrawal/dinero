@@ -4,6 +4,7 @@
 import { Loader2 } from 'lucide-react';
 import type { useTransactionsFeed } from './useTransactionsFeed';
 import TransactionRow from './TransactionRow';
+import LoadError from '@/components/common/LoadError';
 
 type Feed = ReturnType<typeof useTransactionsFeed>;
 type Transaction = Feed['transactions'][number];
@@ -66,6 +67,10 @@ export default function TransactionFeedList({
         <span className="text-xs font-medium text-emerald-ink/60">Loading transactions…</span>
       </div>
     );
+  }
+
+  if (feed.loadFailed) {
+    return <LoadError what="your transactions" onRetry={feed.retry} />;
   }
 
   if (feed.transactions.length === 0) {

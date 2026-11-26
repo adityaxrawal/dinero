@@ -10,6 +10,7 @@ import LicenseStatusGrid from './LicenseStatusGrid';
 import LicenseActions from './LicenseActions';
 import ManualActivationForm from './ManualActivationForm';
 import RestoreLicenseForm from './RestoreLicenseForm';
+import LoadError from '@/components/common/LoadError';
 
 /** Licence and subscription section. */
 export default function LicenseSection() {
@@ -52,7 +53,7 @@ export default function LicenseSection() {
           )}
         </div>
       ) : (
-        <p className="text-[13px] font-medium text-emerald-ink/70">Could not load license status.</p>
+        <LoadError what="your licence status" onRetry={() => license.loadLicenseStatus()} />
       )}
     </div>
   );

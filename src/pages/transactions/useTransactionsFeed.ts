@@ -56,6 +56,9 @@ export function useTransactionsFeed(
     transactions,
     grouped,
     loading: isSearching ? search.isLoading : infinite.isLoading,
+    // A failed load used to read as "No transactions found" (Phase 2 2.3).
+    loadFailed: isSearching ? search.isError : infinite.isError && listed.length === 0,
+    retry: () => void (isSearching ? search.refetch() : infinite.refetch()),
     total: isSearching ? transactions.length : (infinite.data?.pages[0]?.total ?? 0),
     hasNextPage,
     isFetchingNextPage,
