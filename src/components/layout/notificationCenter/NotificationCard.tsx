@@ -5,6 +5,7 @@ import { Link } from 'react-router-dom';
 import { X, Sparkles, FileText, Activity, Database, Bell, ArrowUpRight } from 'lucide-react';
 import type { NotificationFeedItem, NotificationCategory } from '@/stores/useNotificationStore';
 import { cn } from '@/lib/utils';
+import type { Severity } from '@/lib/severity';
 
 const CATEGORY_ICON: Record<NotificationCategory, typeof Bell> = {
   ingestion: Activity,
@@ -14,13 +15,12 @@ const CATEGORY_ICON: Record<NotificationCategory, typeof Bell> = {
   system: Bell,
 };
 
-const SEVERITY_STYLES: Record<string, string> = {
-  error: 'border-red-500/30 bg-red-500/10 text-red-200',
-  warning: 'border-amber-400/30 bg-amber-400/10 text-amber-200',
+const SEVERITY_STYLES: Record<Severity, string> = {
+  info: 'border-champagne/10 bg-emerald-ink/30 text-champagne',
   success: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200',
+  attention: 'border-amber-400/30 bg-amber-400/10 text-amber-200',
+  error: 'border-red-500/30 bg-red-500/10 text-red-200',
 };
-
-const DEFAULT_SEVERITY = 'border-champagne/10 bg-emerald-ink/30 text-champagne';
 
 /** Relative time for a feed entry. */
 function formatTimeAgo(timestamp: number): string {
@@ -46,7 +46,7 @@ export default function NotificationCard({
     <div
       className={cn(
         'flex flex-col gap-1 rounded-lg p-2 border text-[11.5px]',
-        SEVERITY_STYLES[item.severity] ?? DEFAULT_SEVERITY
+        SEVERITY_STYLES[item.severity] ?? SEVERITY_STYLES.info
       )}
     >
       <div className="flex items-start justify-between gap-1.5">

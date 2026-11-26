@@ -7,6 +7,7 @@ import { useIpcListen } from '@/hooks/useIpcListen';
 import { toast } from '@/hooks/use-toast';
 import { confirmAction } from '@/lib/confirmDialog';
 import type { LlmDownloadProgress } from './format';
+import { getErrorToast } from '@/lib/errorMapping';
 
 /**
  * Whether this machine has enough RAM for a model, honouring a prior override.
@@ -76,7 +77,10 @@ export function useLlmModels(onHardware: (hw: LlmHardwareInfo) => number) {
           .setParallelSlots(initial)
           .catch((err) => console.error('Failed to sync parallel slots:', err));
       })
-      .catch((err) => console.error('Failed to load LLM state:', err));
+      .catch((err) => {
+        console.error('Failed to load LLM state:', err);
+        toast({ variant: 'destructive', ...getErrorToast(err, 'Could not load the AI model settings.') });
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -115,6 +119,7 @@ export function useLlmModels(onHardware: (hw: LlmHardwareInfo) => number) {
       await API.llm.cancelDownload(modelId);
     } catch (err) {
       console.error('Failed to cancel download:', err);
+      toast({ variant: 'destructive', ...getErrorToast(err, 'Could not cancel the download.') });
     } finally {
       setCancellingModelId(null);
     }

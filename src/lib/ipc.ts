@@ -285,7 +285,7 @@ export interface PollStatus {
 
 export interface ActivityEntry {
   id: string;
-  kind: 'scan' | 'statement';
+  kind: 'scan' | 'statement' | 'cluster' | 'ai';
   outcome: string;
   summary: string;
   details_json: string | null;

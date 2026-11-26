@@ -22,6 +22,7 @@ import {
   clampSlots,
   storedSlots,
 } from '@/components/settings/localLlm/format';
+import { getErrorToast } from '@/lib/errorMapping';
 
 /** The model with the smallest RAM requirement -- the safe fallback for any machine. */
 function lightestModel(models: LlmModelInfo[]): LlmModelInfo {
@@ -88,7 +89,10 @@ export async function syncLlmState(): Promise<void> {
               API.llm
                 .setRamOverride(true)
                 .then(() => API.llm.setActiveModel(selected.id))
-                .catch((e) => console.error('Failed to apply the RAM override', e));
+                .catch((e) => {
+        console.error('Failed to apply the RAM override', e);
+        toast({ variant: 'destructive', ...getErrorToast(e, 'Could not apply the memory override.') });
+      });
             }}
           >
             Use anyway

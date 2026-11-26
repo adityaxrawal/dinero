@@ -7,6 +7,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { API, SpendingLimits as SpendingLimitsData, CategoryBudget } from '@/lib/ipc';
 import { useToast } from '@/hooks/use-toast';
+import { getErrorToast } from '@/lib/errorMapping';
 
 const MAX_GLOBAL_LIMIT = 999999999999;
 
@@ -37,10 +38,11 @@ export function useBudgetsForm() {
       setCategories(data.categories);
     } catch (e) {
       console.error('Failed to load spending limits', e);
+      toast({ variant: 'destructive', ...getErrorToast(e, 'Could not load your spending limits.') });
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [toast]);
 
   useEffect(() => {
     loadLimits();

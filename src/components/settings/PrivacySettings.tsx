@@ -8,9 +8,10 @@
 import { useState, useEffect } from 'react';
 import { History, ShieldAlert, FileText } from 'lucide-react';
 import { API, ConsentEventRecord } from '@/lib/ipc';
-import { getErrorMessage } from '@/lib/errorMapping';
+import { getErrorMessage, getErrorToast } from '@/lib/errorMapping';
 import ConsentHistoryList from './ConsentHistoryList';
 import DeleteAccountSection from './DeleteAccountSection';
+import { toast } from '@/hooks/use-toast';
 
 /** Network disclosure, consent history, and diagnostic export. */
 export default function PrivacySettings() {
@@ -27,6 +28,7 @@ export default function PrivacySettings() {
       setConsentHistory(events);
     } catch (err) {
       console.error('Failed to fetch consent history:', err);
+      toast({ variant: 'destructive', ...getErrorToast(err, 'Could not load your consent history.') });
     } finally {
       setIsLoadingConsent(false);
     }

@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { API } from '@/lib/ipc';
+import { toast } from '@/hooks/use-toast';
+import { getErrorToast } from '@/lib/errorMapping';
 
 /**
  * Re-validate the license against the backend, with a pending flag for the UI.
@@ -18,6 +20,7 @@ export function useLicenseRefresh() {
       await API.licensing.refresh();
     } catch (err) {
       console.error('License refresh failed:', err);
+      toast({ variant: 'destructive', ...getErrorToast(err, 'Could not refresh your licence.') });
     } finally {
       setIsRetrying(false);
     }

@@ -8,9 +8,10 @@
 import { useState } from 'react';
 import { Mail, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react';
 import { API } from '@/lib/ipc';
-import { getErrorMessage } from '@/lib/errorMapping';
+import { getErrorMessage, getErrorToast } from '@/lib/errorMapping';
 import RevokeGmailButton from './RevokeGmailButton';
 import { useGlobalState } from '@/lib/GlobalStateContext';
+import { toast } from '@/hooks/use-toast';
 
 /** Manages connected Gmail accounts. */
 export default function ConnectedAccountsSettings() {
@@ -40,6 +41,7 @@ export default function ConnectedAccountsSettings() {
       await refreshConnectedAccounts();
     } catch (err) {
       console.error('Failed to disconnect Gmail:', err);
+      toast({ variant: 'destructive', ...getErrorToast(err, 'Could not disconnect Gmail.') });
     }
   };
 

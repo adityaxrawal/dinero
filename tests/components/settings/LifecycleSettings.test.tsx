@@ -18,6 +18,8 @@ vi.mock('@/lib/ipc', () => ({
     },
   },
 }));
+const toast = vi.fn();
+vi.mock('@/hooks/use-toast', () => ({ toast: (...a: unknown[]) => toast(...a) }));
 
 const asMock = (fn: unknown) => fn as ReturnType<typeof vi.fn>;
 const L = API.lifecycle;
@@ -119,5 +121,20 @@ describe('LifecycleSettings', () => {
     // section permanently disabled.
     await waitFor(() => expect(launchBox()).toBeEnabled());
     expect(launchBox()).not.toBeChecked();
+  });
+});
+
+// No silent failures (Phase 2 2.1): a failed toggle says so, not only rolls back.
+describe('failure feedback', () => {
+  it('tells the user when launch at login could not be changed', async () => {
+    asMock(L.setLaunchAtLogin).mockRejectedValue(new Error('launchd refused'));
+    render(<LifecycleSettings />);
+    await waitFor(() => expect(launchBox()).not.toBeDisabled());
+    fireEvent.click(launchBox());
+    await waitFor(() =>
+      expect(toast).toHaveBeenCalledWith(
+        expect.objectContaining({ variant: 'destructive', title: expect.any(String) })
+      )
+    );
   });
 });

@@ -15,6 +15,8 @@ import { useState, useEffect, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { API, type ConnectedAccountInfo, type ScanProgressPayload } from '@/lib/ipc';
 import { errorMessage } from '@/lib/utils';
+import { toast } from '@/hooks/use-toast';
+import { getErrorToast } from '@/lib/errorMapping';
 
 export type ScanStatus = 'idle' | 'running' | 'done' | 'error' | 'cancelled';
 
@@ -77,6 +79,7 @@ export function useScanState() {
       setConnectedAccounts(await API.auth.listConnectedAccounts());
     } catch (err) {
       console.error('Failed to fetch connected accounts:', err);
+      toast({ variant: 'destructive', ...getErrorToast(err, 'Could not load your connected accounts.') });
     }
   };
 

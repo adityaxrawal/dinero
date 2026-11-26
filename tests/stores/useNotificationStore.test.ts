@@ -312,7 +312,7 @@ describe('fetchActiveWarnings', () => {
 
   it.each([
     ['critical', 'error'],
-    ['degraded', 'warning'],
+    ['degraded', 'attention'],
     ['info', 'info'],
   ])('maps %s severity to %s', async (severity, expected) => {
     asMock(isTauriRuntime).mockReturnValue(true);

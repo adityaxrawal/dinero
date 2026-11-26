@@ -19,7 +19,7 @@ import {
 import type { NavItem } from './SidebarItem';
 
 /** Builds the navigation groups, including counts and dev-only entries. */
-export function buildNavGroups(reviewCount: number, badgePulse: boolean) {
+export function buildNavGroups(reviewCount: number, badgePulse: boolean, statementCount = 0) {
   return [
     {
       title: 'Workspace',
@@ -32,7 +32,12 @@ export function buildNavGroups(reviewCount: number, badgePulse: boolean) {
           badge: reviewCount,
           pulse: badgePulse,
         },
-        { path: '/statements', label: 'Statements', icon: <FileText size={15} />, badge: 0 },
+        {
+          path: '/statements',
+          label: 'Statements',
+          icon: <FileText size={15} />,
+          badge: statementCount,
+        },
       ],
     },
     {

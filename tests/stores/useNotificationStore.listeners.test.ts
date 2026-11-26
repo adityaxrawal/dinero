@@ -218,7 +218,7 @@ describe('background_task_progress', () => {
 describe('system_warning and db_backup_completed', () => {
   it.each([
     ['critical', 'error'],
-    ['degraded', 'warning'],
+    ['degraded', 'attention'],
     ['info', 'info'],
   ])('maps %s severity to %s', (severity, expected) => {
     emit('system_warning', {

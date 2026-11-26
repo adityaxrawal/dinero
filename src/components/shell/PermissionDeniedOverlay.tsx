@@ -8,6 +8,8 @@ import { useState } from 'react';
 import { useIpcListen } from '@/hooks/useIpcListen';
 import { AlertTriangle, BellOff, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { toast } from '@/hooks/use-toast';
+import { getErrorToast } from '@/lib/errorMapping';
 
 interface SystemWarningPayload {
   warning_type: string;
@@ -41,6 +43,7 @@ export default function PermissionDeniedOverlay() {
       await openUrl(`x-apple.systempreferences:${pane}`);
     } catch (e) {
       console.error('Failed to open System Settings', e);
+      toast({ variant: 'destructive', ...getErrorToast(e, 'Could not open System Settings.') });
     }
   };
 

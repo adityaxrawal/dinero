@@ -7,6 +7,8 @@
 import { useState, useEffect } from 'react';
 import { Power, RefreshCw } from 'lucide-react';
 import { API } from '@/lib/ipc';
+import { toast } from '@/hooks/use-toast';
+import { getErrorToast } from '@/lib/errorMapping';
 
 /** Launch-at-login, background sync, and battery thresholds. */
 export default function LifecycleSettings() {
@@ -28,7 +30,10 @@ export default function LifecycleSettings() {
         setBackgroundSync(sync);
         setThresholdPercent(threshold);
       })
-      .catch((e) => console.error('Failed to load lifecycle settings:', e))
+      .catch((e) => {
+        console.error('Failed to load lifecycle settings:', e);
+        toast({ variant: 'destructive', ...getErrorToast(e, 'Could not load these settings.') });
+      })
       .finally(() => setIsLoading(false));
   }, []);
 
@@ -40,6 +45,7 @@ export default function LifecycleSettings() {
       await API.lifecycle.setLaunchAtLogin(next);
     } catch (e) {
       console.error('Failed to update launch-at-login setting:', e);
+      toast({ variant: 'destructive', ...getErrorToast(e, 'Could not change launch at login.') });
       setLaunchAtLogin(!next);
     } finally {
       setIsSavingLaunch(false);
@@ -54,6 +60,7 @@ export default function LifecycleSettings() {
       await API.lifecycle.setBackgroundSyncEnabled(next);
     } catch (e) {
       console.error('Failed to update background-sync setting:', e);
+      toast({ variant: 'destructive', ...getErrorToast(e, 'Could not change background sync.') });
       setBackgroundSync(!next);
     } finally {
       setIsSavingSync(false);
@@ -67,6 +74,7 @@ export default function LifecycleSettings() {
       await API.lifecycle.setLowBatteryPollThresholdPercent(next);
     } catch (e) {
       console.error('Failed to update low-battery threshold:', e);
+      toast({ variant: 'destructive', ...getErrorToast(e, 'Could not change the low-battery threshold.') });
     }
   };
 

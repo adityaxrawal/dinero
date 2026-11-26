@@ -6,6 +6,8 @@ import { useNavigate } from 'react-router-dom';
 import { API } from '@/lib/ipc';
 import { isTauriRuntime } from '@/lib/tauriRuntime';
 import { useLicenseStore } from '@/stores/useLicenseStore';
+import { toast } from '@/hooks/use-toast';
+import { getErrorToast } from '@/lib/errorMapping';
 
 const CORRUPTION_EVENT = 'db_corrupted';
 
@@ -39,6 +41,7 @@ export function useBackendStatus() {
       setBackendStatus('healthy');
     } catch (err) {
       console.error('Restore backup failed:', err);
+      toast({ variant: 'destructive', ...getErrorToast(err, 'Could not restore the backup.') });
     } finally {
       setIsRestoring(false);
     }
@@ -53,6 +56,7 @@ export function useBackendStatus() {
       window.location.reload();
     } catch (err) {
       console.error('Start fresh failed:', err);
+      toast({ variant: 'destructive', ...getErrorToast(err, 'Could not reset the app data.') });
       setIsStartingFresh(false);
     }
   }, []);

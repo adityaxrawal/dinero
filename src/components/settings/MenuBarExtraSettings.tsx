@@ -4,6 +4,8 @@
 import { useState, useEffect } from 'react';
 import { AppWindow } from 'lucide-react';
 import { API } from '@/lib/ipc';
+import { toast } from '@/hooks/use-toast';
+import { getErrorToast } from '@/lib/errorMapping';
 
 /** Toggles the macOS menu-bar extra. */
 export default function MenuBarExtraSettings() {
@@ -15,7 +17,10 @@ export default function MenuBarExtraSettings() {
     API.menuBarExtra
       .getEnabled()
       .then(setEnabled)
-      .catch((e) => console.error('Failed to load menu bar extra setting:', e))
+      .catch((e) => {
+        console.error('Failed to load menu bar extra setting:', e);
+        toast({ variant: 'destructive', ...getErrorToast(e, 'Could not load the menu bar setting.') });
+      })
       .finally(() => setIsLoading(false));
   }, []);
 
@@ -27,6 +32,7 @@ export default function MenuBarExtraSettings() {
       await API.menuBarExtra.setEnabled(next);
     } catch (e) {
       console.error('Failed to update menu bar extra setting:', e);
+      toast({ variant: 'destructive', ...getErrorToast(e, 'Could not change the menu bar setting.') });
       setEnabled(!next);
     } finally {
       setIsSaving(false);

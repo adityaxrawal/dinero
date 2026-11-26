@@ -28,6 +28,12 @@ describe('Toaster', () => {
     expect(screen.getByText('Your changes were stored.')).toBeInTheDocument();
   });
 
+  it('renders an error-severity toast in the destructive style (shared levels)', () => {
+    toasts = [{ id: '1', title: 'Failed', open: true, severity: 'error' }];
+    render(<Toaster />);
+    expect(screen.getByText('Failed').closest('li')?.className).toMatch(/destructive/);
+  });
+
   it('omits the description when there is none', () => {
     toasts = [{ id: '1', title: 'Saved', open: true }];
     render(<Toaster />);

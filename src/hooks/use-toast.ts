@@ -1,6 +1,7 @@
 import * as React from 'react';
 
 import type { ToastActionElement, ToastProps } from '@/components/ui/toast';
+import type { Severity } from '@/lib/severity';
 
 /**
  * Toast notification store, following the standard shadcn pattern.
@@ -35,6 +36,8 @@ type ToasterToast = ToastProps & {
   actionLabel?: string;
   /** Button action, rendered with actionLabel when there is no actionTo link. */
   onAction?: () => void;
+  /** Shared level (src/lib/severity.ts); 'error' renders the destructive style. */
+  severity?: Severity;
 };
 
 let count = 0;

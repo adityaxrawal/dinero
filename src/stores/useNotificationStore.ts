@@ -7,7 +7,11 @@ import {
   type BackgroundTaskProgressPayload,
   type ScanProgressPayload,
   type SystemWarningPayload,
+  type ActivityEntry,
 } from '@/lib/ipc';
+import { fromSystemWarning, type Severity } from '@/lib/severity';
+import { toast } from '@/hooks/use-toast';
+import { getErrorToast } from '@/lib/errorMapping';
 
 /**
  * Backs the sidebar notification centre: live tasks plus a historical feed.
@@ -31,7 +35,8 @@ export type NotificationCategory =
   | 'normalization'
   | 'database'
   | 'system';
-export type NotificationSeverity = 'info' | 'success' | 'warning' | 'error';
+/** The shared levels (src/lib/severity.ts). */
+export type NotificationSeverity = Severity;
 export type TaskStatus = 'running' | 'completed' | 'failed' | 'cancelled' | 'cancelling';
 
 /**
@@ -81,6 +86,35 @@ export interface NotificationFeedItem {
   taskId?: string;
 }
 
+/** One Activity log entry as a (read) feed item (audit F19-3). */
+export function activityToFeedItem(e: ActivityEntry): NotificationFeedItem {
+  const category: NotificationCategory =
+    e.kind === 'statement' ? 'statements' : e.kind === 'scan' ? 'ingestion' : 'normalization';
+  const severity: Severity =
+    e.outcome === 'failed'
+      ? 'error'
+      : e.outcome === 'cancelled' || e.outcome === 'needs_review'
+        ? 'attention'
+        : 'success';
+  const titles: Record<ActivityEntry['kind'], string> = {
+    scan: 'Email scan',
+    statement: 'Statement import',
+    cluster: 'Duplicate check',
+    ai: 'Local AI',
+  };
+  return {
+    id: `activity_${e.id}`,
+    category,
+    severity,
+    title: titles[e.kind] ?? 'Activity',
+    message: e.summary,
+    // SQLite CURRENT_TIMESTAMP is UTC without a zone marker.
+    timestamp: e.created_at ? Date.parse(`${e.created_at.replace(' ', 'T')}Z`) : 0,
+    read: true,
+    dismissed: false,
+  };
+}
+
 interface NotificationStoreState {
   tasks: Record<string, UnifiedTask>;
   notifications: NotificationFeedItem[];
@@ -102,6 +136,7 @@ interface NotificationStoreState {
 
   fetchActiveTasks: () => Promise<void>;
   fetchActiveWarnings: () => Promise<void>;
+  fetchRecentActivity: () => Promise<void>;
 }
 
 export const useNotificationStore = create<NotificationStoreState>((set, get) => ({
@@ -171,6 +206,7 @@ export const useNotificationStore = create<NotificationStoreState>((set, get) =>
         await API.ingestion.cancelScan(task.meta.account_id);
       } catch (err) {
         console.error('Failed to cancel scan:', err);
+        toast({ variant: 'destructive', ...getErrorToast(err, 'Could not cancel the scan.') });
       }
     }
   },
@@ -252,6 +288,27 @@ export const useNotificationStore = create<NotificationStoreState>((set, get) =>
   },
 
   /**
+   * Seed the feed with the newest Activity log entries at startup (audit
+   * F19-3). The feed itself is in memory, so a restart used to empty it; the
+   * backend log is the persistent record. Seeded entries count as read, so
+   * past events don't light the unread badge.
+   */
+  fetchRecentActivity: async () => {
+    if (!isTauriRuntime()) return;
+    try {
+      const entries = await API.activity.list();
+      const seeded = entries.slice(0, 10).map(activityToFeedItem);
+      set((state) => {
+        const known = new Set(state.notifications.map((n) => n.id));
+        const merged = [...state.notifications, ...seeded.filter((n) => !known.has(n.id))];
+        return { notifications: merged.sort((a, b) => b.timestamp - a.timestamp).slice(0, 30) };
+      });
+    } catch (err) {
+      console.error('Failed to load recent activity into the feed:', err);
+    }
+  },
+
+  /**
    * Pull outstanding system warnings into the feed at startup.
    *
    * Backend severity levels are mapped onto the feed's own severity vocabulary,
@@ -273,12 +330,7 @@ export const useNotificationStore = create<NotificationStoreState>((set, get) =>
         }
         get().addNotification({
           category: 'system',
-          severity:
-            warning.severity === 'critical'
-              ? 'error'
-              : warning.severity === 'degraded'
-                ? 'warning'
-                : 'info',
+          severity: fromSystemWarning(warning.severity),
           title: 'System Alert',
           message: warning.message,
         });
@@ -391,7 +443,7 @@ function onScanCompleted(p: ScanProgressPayload) {
   const failed = p.errors > 0;
   notifications().addNotification({
     category: 'ingestion',
-    severity: failed ? 'warning' : 'success',
+    severity: failed ? 'attention' : 'success',
     title: failed ? 'Gmail scan finished with failures' : 'Gmail scan finished',
     message: failed
       ? `${scanSummary(p)} Retry the failed ones from Settings → Mail Scan.`
@@ -594,7 +646,7 @@ function onSystemWarning(w: SystemWarningPayload) {
 
   notifications().addNotification({
     category: 'system',
-    severity: w.severity === 'critical' ? 'error' : w.severity === 'degraded' ? 'warning' : 'info',
+    severity: fromSystemWarning(w.severity),
     title: 'System Alert',
     message: w.message,
   });
@@ -625,6 +677,7 @@ function initNotificationStoreListeners() {
   // Catch up on work already in progress before live events start arriving.
   store.fetchActiveTasks();
   store.fetchActiveWarnings();
+  store.fetchRecentActivity();
 
   (async () => {
     try {

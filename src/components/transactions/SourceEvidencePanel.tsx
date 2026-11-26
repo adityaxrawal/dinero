@@ -14,6 +14,8 @@ import SourcePipelineIcon from './SourcePipelineIcon';
 import { evidenceDescription } from './evidenceDescription';
 import { GmailEmailViewer } from '@/components/common/GmailEmailViewer';
 import ReportWrongBankDialog from './ReportWrongBankDialog';
+import { toast } from '@/hooks/use-toast';
+import { getErrorToast } from '@/lib/errorMapping';
 
 interface SourceEvidencePanelProps {
   transactionId: string;
@@ -149,6 +151,7 @@ export default function SourceEvidencePanel({
         }
       } catch (err) {
         console.error('Failed to fetch source log', err);
+        toast({ variant: 'destructive', ...getErrorToast(err, 'Could not load the source email.') });
       } finally {
         if (mounted) {
           setIsLoadingLog(false);

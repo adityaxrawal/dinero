@@ -3,6 +3,8 @@
  */
 import { useState, useEffect } from 'react';
 import { API, type LlmModelInfo } from '@/lib/ipc';
+import { toast } from '@/hooks/use-toast';
+import { getErrorToast } from '@/lib/errorMapping';
 
 export type StatementPref = 'auto' | 'manual';
 
@@ -25,7 +27,10 @@ export function useOnboardingPreferences() {
         setAvailableModels(models);
         if (models.length > 0) setLlmConfig(models[0].id);
       })
-      .catch((err) => console.error('Failed to fetch LLM model catalog:', err));
+      .catch((err) => {
+        console.error('Failed to fetch LLM model catalog:', err);
+        toast({ variant: 'destructive', ...getErrorToast(err, 'Could not load the AI model list.') });
+      });
   }, []);
 
   /** Rejects a spending limit that is not a positive number. */

@@ -7,7 +7,8 @@
 import { useState, useEffect } from 'react';
 import { Lock, Trash2 } from 'lucide-react';
 import { API, PdfPasswordSummary } from '@/lib/ipc';
-import { getErrorMessage } from '@/lib/errorMapping';
+import { getErrorMessage, getErrorToast } from '@/lib/errorMapping';
+import { toast } from '@/hooks/use-toast';
 
 /** Manages saved statement-PDF passwords. */
 export default function StatementPasswordSettings() {
@@ -23,6 +24,7 @@ export default function StatementPasswordSettings() {
       setPdfPasswords(passwords);
     } catch (err) {
       console.error('Failed to fetch stored PDF passwords:', err);
+      toast({ variant: 'destructive', ...getErrorToast(err, 'Could not load your saved statement passwords.') });
     } finally {
       setIsLoadingPasswords(false);
     }

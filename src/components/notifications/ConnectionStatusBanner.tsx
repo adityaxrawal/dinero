@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 import { AlertTriangle, Info, WifiOff } from 'lucide-react';
 import { API, type SystemWarningPayload } from '@/lib/ipc';
 import { useIpcListen } from '@/hooks/useIpcListen';
+import { fromSystemWarning } from '@/lib/severity';
 
 const OWNED_ELSEWHERE = new Set(['keychain_denied', 'notification_denied']);
 
@@ -59,15 +60,16 @@ export default function ConnectionStatusBanner() {
   const top = highestPriority(warnings);
   if (!top) return null;
 
+  const level = fromSystemWarning(top.severity);
   const palette =
-    top.severity === 'critical'
+    level === 'error'
       ? {
           border: 'border-red-500/40',
           bg: 'bg-red-500/10',
           icon: 'text-red-400',
           text: 'text-red-200',
         }
-      : top.severity === 'degraded'
+      : level === 'attention'
         ? {
             border: 'border-amber-400/30',
             bg: 'bg-amber-400/10',
@@ -82,7 +84,7 @@ export default function ConnectionStatusBanner() {
           };
 
   const Icon =
-    top.severity === 'critical' ? WifiOff : top.severity === 'degraded' ? AlertTriangle : Info;
+    level === 'error' ? WifiOff : level === 'attention' ? AlertTriangle : Info;
 
   return (
     <div

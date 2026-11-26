@@ -16,6 +16,7 @@ import { useResumeFromSleepRefetch } from './hooks/useResumeFromSleepRefetch';
 import { syncLlmState } from './lib/syncLlmState';
 import RecoveryScreen from './components/RecoveryScreen';
 import './App.css';
+import { getErrorToast } from '@/lib/errorMapping';
 
 /** Payload of the backend's `update_available` event. */
 interface UpdateAvailablePayload {
@@ -82,7 +83,10 @@ function IpcEventBridge() {
               onClick={() => {
                 void API.updater
                   .confirmInstall()
-                  .catch((e) => console.error('Failed to install update', e));
+                  .catch((e) => {
+        console.error('Failed to install update', e);
+        toast({ variant: 'destructive', ...getErrorToast(e, 'Could not install the update.') });
+      });
               }}
             >
               Update Now

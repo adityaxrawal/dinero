@@ -10,6 +10,8 @@ import { AlertTriangle, RefreshCw, FileText } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { API } from '@/lib/ipc';
 import { reportRendererError } from '@/lib/rendererErrorReporting';
+import { toast } from '@/hooks/use-toast';
+import { getErrorToast } from '@/lib/errorMapping';
 
 interface Props {
   children: ReactNode;
@@ -50,6 +52,7 @@ export class ErrorBoundary extends Component<Props, State> {
       this.setState({ exportedPath: result.file_path });
     } catch (err) {
       console.error('Failed to export diagnostic bundle:', err);
+      toast({ variant: 'destructive', ...getErrorToast(err, 'Could not export the diagnostic bundle.') });
     } finally {
       this.setState({ isExporting: false });
     }
