@@ -18,6 +18,7 @@ import { Progress } from '@/components/ui/progress';
 import { useStatementDraft } from './review/useStatementDraft';
 import DraftMetadataForm from './review/DraftMetadataForm';
 import DraftRowsEditor from './review/DraftRowsEditor';
+import MissedLinesPanel from './review/MissedLinesPanel';
 
 const STAGE_LABELS: Record<string, string> = {
   parsing: 'Parsing PDF…',
@@ -107,6 +108,7 @@ export default function StatementReviewModal() {
             {isStaged && metadata && (
               <div className="flex-1 flex flex-col gap-4 min-h-0">
                 <DraftMetadataForm metadata={metadata} onChange={draft.setMetadata} />
+                <MissedLinesPanel lines={draft.missedLines} onAdd={draft.addMissedLine} />
                 <DraftRowsEditor
                   rows={draft.rows}
                   onUpdateRow={draft.updateRow}

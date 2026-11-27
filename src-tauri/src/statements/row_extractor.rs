@@ -166,9 +166,13 @@ fn merge_broken_line_boundaries(text: &str) -> String {
 ///
 /// Deliberately conservative: it is better to extract fewer rows the user can add
 /// to than to invent transactions from a layout it does not really understand.
-fn parse_universal(pages: &[ParsedPage]) -> Vec<StatementRow> {
-    let re_row = match Regex::new(
-        r"(?x)
+/// The one pattern a statement transaction row must match (shared by the
+/// parser and `missed_lines`, so "missed" always means "not a row").
+fn row_regex() -> &'static Regex {
+    static ROW: OnceLock<Regex> = OnceLock::new();
+    ROW.get_or_init(|| {
+        Regex::new(
+            r"(?x)
         ^(?P<date>
             \d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}          # 27/06/2026, 4-3-26
           | \d{1,2}[\s\-/][A-Za-z]{3}[\s\-/]?,?\s?\d{2,4} # 12 Jun 26, 13-May-2026, 21/Oct/2025
@@ -187,13 +191,90 @@ fn parse_universal(pages: &[ParsedPage]) -> Vec<StatementRow> {
         (?:\s+\S{1,2})?                                 # HDFC's trailing bullet glyph
         \s*$
         ",
-    ) {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!("parse_universal regex failed to compile: {e}");
-            return vec![];
+        )
+        .expect("static regex must compile")
+    })
+}
+
+/// A line that looks like a transaction (a date and an amount) but did not
+/// become a row, shown in draft review so the user can add it (current-
+/// issues #4). The date and amount are parsed from the line itself.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MissedLine {
+    pub page: usize,
+    pub text: String,
+    pub date: Option<String>,
+    pub amount_minor: Option<i64>,
+}
+
+/// Lines with a date and an amount that the parser did not turn into a row.
+/// Totals, balances and other lines the parser excludes on purpose are not
+/// reported. Capped so a table the parser can't read at all stays usable.
+pub fn missed_lines(pages: &[ParsedPage]) -> Vec<MissedLine> {
+    static DATE: OnceLock<Regex> = OnceLock::new();
+    static AMOUNT: OnceLock<Regex> = OnceLock::new();
+    let date_re = DATE.get_or_init(|| {
+        Regex::new(r"\b(\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}|\d{1,2}[\s\-/][A-Za-z]{3}[\s\-/]?,?\s?\d{2,4})\b")
+            .expect("static regex must compile")
+    });
+    let amount_re = AMOUNT
+        .get_or_init(|| Regex::new(r"\d[\d,]*\.\d{2}\b").expect("static regex must compile"));
+    let rows = parse_universal(
+        &pages
+            .iter()
+            .map(|p| ParsedPage {
+                page_number: p.page_number,
+                text: merge_broken_line_boundaries(&p.text),
+                ocr_used: p.ocr_used,
+            })
+            .collect::<Vec<_>>(),
+    );
+    let mut missed = Vec::new();
+    for page in pages {
+        for line in merge_broken_line_boundaries(&page.text).lines().map(str::trim) {
+            let Some(date) = date_re.find(line) else { continue };
+            // A standalone amount: not part of a date ("11.02.1985") and not
+            // glued to one.
+            let dates: Vec<_> = date_re.find_iter(line).map(|d| d.range()).collect();
+            let standalone = |m: &regex::Match| {
+                let before = line[..m.start()].chars().last();
+                let after = line[m.end()..].chars().next();
+                !dates.iter().any(|d| m.start() < d.end && d.start < m.end())
+                    && !matches!(before, Some('.' | '/' | '-'))
+                    && !matches!(after, Some('.' | '/' | '-'))
+                    && !before.is_some_and(|c| c.is_ascii_digit())
+            };
+            let Some(amount) = amount_re.find_iter(line).filter(standalone).last() else { continue };
+            if is_excluded_row(line) || !has_description_word(line, date_re, amount_re) {
+                continue;
+            }
+            let parsed_date = parse_date(date.as_str());
+            let parsed_amount = parse_amount_minor(amount.as_str());
+            // Already a row: same date and amount on a row that came from it.
+            let became_row = row_regex().is_match(line)
+                && rows.iter().any(|r| {
+                    Some(&r.transaction_date) == parsed_date.as_ref()
+                        && Some(r.amount_minor) == parsed_amount
+                });
+            if became_row {
+                continue;
+            }
+            missed.push(MissedLine {
+                page: page.page_number,
+                text: line.to_string(),
+                date: parsed_date,
+                amount_minor: parsed_amount,
+            });
+            if missed.len() == 50 {
+                return missed;
+            }
         }
-    };
+    }
+    missed
+}
+
+fn parse_universal(pages: &[ParsedPage]) -> Vec<StatementRow> {
+    let re_row = row_regex();
 
     let mut rows = Vec::new();
 
@@ -308,6 +389,17 @@ fn merchant_column(description: &str) -> String {
 }
 
 /// Whether a string has enough letters to be a description rather than a code.
+/// Whether a line still has a word of three or more letters (a merchant or
+/// description) once dates, amounts and Dr/Cr markers are removed. Summary
+/// rows ("4,215.69 Dr  663 Dr  01/01/2026") have none.
+fn has_description_word(line: &str, date_re: &Regex, amount_re: &Regex) -> bool {
+    let without_dates = date_re.replace_all(line, " ");
+    let rest = amount_re.replace_all(&without_dates, " ");
+    rest.split(|c: char| !c.is_alphabetic()).any(|w| {
+        w.chars().count() >= 3 && !matches!(w.to_ascii_uppercase().as_str(), "DR" | "CR")
+    })
+}
+
 fn has_enough_letters(description: &str) -> bool {
     description.chars().filter(|c| c.is_alphabetic()).count() >= 3
 }
@@ -455,6 +547,32 @@ mod tests {
             text: text.to_string(),
             ocr_used: false,
         }
+    }
+
+    /// current-issues #4: a transaction-looking line in a layout the parser
+    /// doesn't read is reported; read rows and excluded lines are not.
+    #[test]
+    fn missed_lines_skips_summary_rows_and_dates_read_as_amounts() {
+        let pages = vec![make_page(
+            "4215.69 Dr                       663 Dr                       01/01/2026\n\
+             20/Nov/2025             6,283.37                0.000              05/Dec/2025\n\
+             A.B. Name       11.02.1985             ABNA1102\n",
+        )];
+        assert!(missed_lines(&pages).is_empty(), "got {:?}", missed_lines(&pages));
+    }
+
+    #[test]
+    fn missed_lines_reports_only_unread_transaction_lines() {
+        let pages = vec![make_page(
+            "04/07/2026    AIRTEL PAYMENTS BANK L,GURGAON      UTILITIES     588.82 Dr\n\
+             Ref 99 on 06/07/2026 paid SWIGGY BANGALORE 450.00 debit noted\n\
+             01/07/2026    Opening Balance                     12,000.00\n",
+        )];
+        let missed = missed_lines(&pages);
+        assert_eq!(missed.len(), 1, "got {missed:?}");
+        assert!(missed[0].text.contains("SWIGGY"));
+        assert_eq!(missed[0].date.as_deref(), Some("2026-07-06"));
+        assert_eq!(missed[0].amount_minor, Some(45000));
     }
 
     #[test]

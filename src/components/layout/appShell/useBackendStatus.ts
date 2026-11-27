@@ -88,6 +88,7 @@ export function useBackendStatus() {
     hydrateLicenseStore();
 
     const unlisteners: (() => void)[] = [];
+    let cancelled = false;
 
     /** Starts the health poll. */
     const setup = async () => {
@@ -100,11 +101,17 @@ export function useBackendStatus() {
       }
       if (!listen) return;
 
-      unlisteners.push(await listen(CORRUPTION_EVENT, () => setBackendStatus('corrupted')));
+      const unlisten = await listen(CORRUPTION_EVENT, () => setBackendStatus('corrupted'));
+      // Released at once if the effect was cleaned up while subscribing.
+      if (cancelled) unlisten();
+      else unlisteners.push(unlisten);
     };
 
     setup().catch(console.error);
-    return () => unlisteners.forEach((fn) => fn());
+    return () => {
+      cancelled = true;
+      unlisteners.forEach((fn) => fn());
+    };
   }, [navigate, hydrateLicenseStore]);
 
   return {

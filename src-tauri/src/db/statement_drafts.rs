@@ -27,12 +27,14 @@ pub struct StatementDraftRow {
     pub updated_at: Option<NaiveDateTime>,
     /// JSON array of pages that could not be read; None when complete.
     pub missing_pages: Option<String>,
+    /// JSON array of `row_extractor::MissedLine`; None when there are none.
+    pub missed_lines: Option<String>,
 }
 
 const SELECT_COLUMNS: &str =
     "id, origin, file_hash, instrument_id, issuer_name, masked_identifier, \
      instrument_type, billing_period_start, billing_period_end, due_date, statement_date, \
-     current_balance, minimum_due, rows_json, status, created_at, updated_at, missing_pages";
+     current_balance, minimum_due, rows_json, status, created_at, updated_at, missing_pages, missed_lines";
 
 /// Maps a result row onto a draft record.
 fn row_from_sql(row: &Row) -> rusqlite::Result<StatementDraftRow> {
@@ -55,6 +57,7 @@ fn row_from_sql(row: &Row) -> rusqlite::Result<StatementDraftRow> {
         created_at: row.get(15)?,
         updated_at: row.get(16)?,
         missing_pages: row.get(17)?,
+        missed_lines: row.get(18)?,
     })
 }
 
@@ -64,8 +67,8 @@ pub fn insert(conn: &Connection, draft: &StatementDraftRow) -> Result<()> {
         "INSERT INTO statement_drafts \
          (id, origin, file_hash, instrument_id, issuer_name, masked_identifier, instrument_type, \
           billing_period_start, billing_period_end, due_date, statement_date, current_balance, \
-          minimum_due, rows_json, status, missing_pages) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+          minimum_due, rows_json, status, missing_pages, missed_lines) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         params![
             draft.id,
             draft.origin,
@@ -83,6 +86,7 @@ pub fn insert(conn: &Connection, draft: &StatementDraftRow) -> Result<()> {
             draft.rows_json,
             draft.status,
             draft.missing_pages,
+            draft.missed_lines,
         ],
     )?;
     Ok(())
@@ -173,6 +177,7 @@ mod tests {
             created_at: None,
             updated_at: None,
             missing_pages: None,
+            missed_lines: None,
         }
     }
 

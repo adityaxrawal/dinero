@@ -196,19 +196,33 @@ pub async fn try_all_stored_passwords(
     pdf_bytes: &[u8],
     pool: &deadpool_sqlite::Pool,
 ) -> Result<PasswordResolutionResult> {
+    try_stored_passwords_for(pdf_bytes, pool, None).await
+}
+
+/// Like `try_all_stored_passwords`, but tries passwords saved for the same
+/// bank first: a bank usually protects every statement of a customer the
+/// same way (current-issues #4). Every saved password is still tried.
+pub async fn try_stored_passwords_for(
+    pdf_bytes: &[u8],
+    pool: &deadpool_sqlite::Pool,
+    issuer_hint: Option<&str>,
+) -> Result<PasswordResolutionResult> {
     if is_pdf_unencrypted(pdf_bytes).await {
         return Ok(PasswordResolutionResult::NotEncrypted);
     }
 
+    let issuer = issuer_hint.map(crate::db::instruments::canonical_issuer);
     let conn = pool.get().await?;
     let rows: Vec<(String, Vec<u8>)> = conn
-        .interact(|c| {
+        .interact(move |c| {
             let mut stmt = c.prepare(
-                "SELECT id, password_ciphertext FROM pdf_passwords \
-                 ORDER BY success_count DESC, last_used_at DESC",
+                "SELECT p.id, p.password_ciphertext FROM pdf_passwords p \
+                 LEFT JOIN instruments i ON i.id = p.instrument_id \
+                 ORDER BY (i.issuer_name IS NOT NULL AND i.issuer_name = ?1) DESC, \
+                          p.success_count DESC, p.last_used_at DESC",
             )?;
             let rows = stmt
-                .query_map([], |row| {
+                .query_map([issuer], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -324,7 +338,8 @@ pub async fn resolve_statement_password<R: tauri::Runtime>(
         return Ok(StatementPasswordResolution::Proceed(None));
     }
 
-    match try_all_stored_passwords(bytes, pool).await? {
+    let issuer_hint = email_meta.as_ref().and_then(|m| m.bank_name.clone());
+    match try_stored_passwords_for(bytes, pool, issuer_hint.as_deref()).await? {
         PasswordResolutionResult::NotEncrypted => Ok(StatementPasswordResolution::Proceed(None)),
         PasswordResolutionResult::UnlockedWithStored(password) => {
             tracing::info!("PDF unlocked with stored password");

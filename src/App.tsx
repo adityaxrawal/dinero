@@ -44,6 +44,7 @@ function IpcEventBridge() {
   // React and has no access to a navigate function.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    let cancelled = false;
     onAction((notification) => {
       const route = notification.extra?.deep_link;
       if (typeof route === 'string') {
@@ -51,15 +52,21 @@ function IpcEventBridge() {
       }
     })
       .then((handle) => {
-        unlisten = () => handle.unregister();
+        // Released at once if the effect was cleaned up while registering.
+        if (cancelled) handle.unregister();
+        else unlisten = () => handle.unregister();
       })
       .catch((e) => console.error('Failed to register notification action listener', e));
-    return () => unlisten?.();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   }, []);
 
   // Update availability, surfaced as a toast with a direct install action.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    let cancelled = false;
 
     /** Subscribes to update-available events, if the Tauri bus exists. */
     const setup = async () => {
@@ -84,9 +91,12 @@ function IpcEventBridge() {
                 void API.updater
                   .confirmInstall()
                   .catch((e) => {
-        console.error('Failed to install update', e);
-        toast({ variant: 'destructive', ...getErrorToast(e, 'Could not install the update.') });
-      });
+                    console.error('Failed to install update', e);
+                    toast({
+                      variant: 'destructive',
+                      ...getErrorToast(e, 'Could not install the update.'),
+                    });
+                  });
               }}
             >
               Update Now
@@ -94,13 +104,17 @@ function IpcEventBridge() {
           ),
         });
       });
-      unlisten = handle;
+      if (cancelled) handle();
+      else unlisten = handle;
     };
 
     // The async setup is fired and its unlisten captured on completion; the
     // cleanup tolerates unmounting before setup resolved.
     setup().catch((e) => console.error('Failed to listen for update_available', e));
-    return () => unlisten?.();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   }, []);
 
   return null;

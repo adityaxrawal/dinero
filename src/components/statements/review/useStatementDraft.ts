@@ -4,7 +4,13 @@
 import { statementCommitToast } from '@/lib/engineOutcome';
 import { getErrorToast } from '@/lib/errorMapping';
 import { useCallback, useEffect, useState } from 'react';
-import { API, type DraftMetadataInput, type DraftRow, type StatementDraft } from '@/lib/ipc';
+import {
+  API,
+  type DraftMetadataInput,
+  type DraftRow,
+  type MissedLine,
+  type StatementDraft,
+} from '@/lib/ipc';
 import { TOAST_AUTO_DISMISS_DELAY, useToast } from '@/hooks/use-toast';
 import { useGlobalState } from '@/lib/GlobalStateContext';
 import { useCommitStatementDraft } from '@/hooks/mutations/useCommitStatementDraft';
@@ -131,6 +137,23 @@ export function useStatementDraft() {
     setRows((prev) => [...prev, { ...EMPTY_ROW, row_index: prev.length }]);
   }, []);
 
+  // Missed lines the user has already added as rows (hidden from the list).
+  const [addedMissed, setAddedMissed] = useState<Set<string>>(new Set());
+  /** Adds a missed line as a row, pre-filled from the line itself (#4). */
+  const addMissedLine = useCallback((line: MissedLine) => {
+    setRows((prev) => [
+      ...prev,
+      {
+        ...EMPTY_ROW,
+        transaction_date: line.date ?? '',
+        merchant_raw: line.text,
+        amount_minor: line.amount_minor ?? 0,
+        row_index: prev.length,
+      },
+    ]);
+    setAddedMissed((prev) => new Set(prev).add(`${line.page}:${line.text}`));
+  }, []);
+
   const removeRow = useCallback((index: number) => {
     setRows((prev) => prev.filter((_, i) => i !== index));
   }, []);
@@ -190,6 +213,8 @@ export function useStatementDraft() {
     removeRow,
     isStaged: processingProgress?.stage === 'staged' || !!draft,
     missingPages: draft?.missing_pages ?? [],
+    missedLines: (draft?.missed_lines ?? []).filter((l) => !addedMissed.has(`${l.page}:${l.text}`)),
+    addMissedLine,
     partialAcknowledged,
     setPartialAcknowledged,
     isSaving: commitDraft.isPending,

@@ -792,6 +792,11 @@ pub async fn stage_parse_pipeline<R: tauri::Runtime>(
         updated_at: None,
         missing_pages: (!parse_result.missing_pages.is_empty())
             .then(|| serde_json::to_string(&parse_result.missing_pages).unwrap_or_default()),
+        // Lines that look like transactions but weren't read (current-issues #4).
+        missed_lines: {
+            let missed = crate::statements::row_extractor::missed_lines(&parse_result.pages);
+            (!missed.is_empty()).then(|| serde_json::to_string(&missed).unwrap_or_default())
+        },
     };
     let conn = pool
         .get()
@@ -2269,6 +2274,11 @@ pub async fn statements_get_draft(
             .missing_pages
             .as_deref()
             .and_then(|m| serde_json::from_str::<Vec<usize>>(m).ok()),
+        "missed_lines": draft
+            .missed_lines
+            .as_deref()
+            .and_then(|m| serde_json::from_str::<Vec<crate::statements::row_extractor::MissedLine>>(m).ok())
+            .unwrap_or_default(),
     }))
 }
 
@@ -4548,6 +4558,7 @@ mod tests {
                 created_at: None,
                 updated_at: None,
                 missing_pages: None,
+                missed_lines: None,
             };
             crate::db::statement_drafts::insert(c, &row).unwrap();
         })

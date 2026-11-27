@@ -339,6 +339,16 @@ export interface StatementDraft {
   status: string;
   /** Pages neither the text layer nor OCR could read (review P3). */
   missing_pages: number[] | null;
+  /** Lines that look like transactions but weren't read (current-issues #4). */
+  missed_lines?: MissedLine[];
+}
+
+/** A transaction-looking line the statement parser didn't turn into a row. */
+export interface MissedLine {
+  page: number;
+  text: string;
+  date: string | null;
+  amount_minor: number | null;
 }
 
 export interface DraftMetadataInput {
