@@ -175,6 +175,16 @@ pub const MERCHANT_STOPWORDS: &[&str] = &[
 
 pub const MIN_MERCHANT_NAME_LEN: usize = 3;
 
+/// Generic words that are never a merchant on their own (audit P3-J: an HDFC
+/// credit was booked with the merchant "real"). Only a merchant that is one of
+/// these words alone is rejected, so "Real Mart" or "The Credit Store" stay.
+pub const NEVER_ALONE_MERCHANT_WORDS: &[&str] = &[
+    "real", "time", "realtime", "credit", "credited", "debit", "debited", "amount",
+    "payment", "paid", "balance", "transfer", "transferred", "transaction", "info",
+    "information", "details", "update", "alert", "available", "total", "upi", "imps",
+    "neft", "rtgs", "online", "bank", "ref", "reference", "via", "using", "towards",
+];
+
 /// Whether a merchant candidate is nothing but filler words.
 ///
 /// A "merchant" extracted as "payment to" is a failed extraction, not a merchant.

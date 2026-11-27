@@ -46,6 +46,13 @@ pub fn is_plausible_merchant_name(cleaned: &str) -> bool {
     if tokens.is_empty() {
         return false;
     }
+    // One generic word on its own ("real") is a failed extraction (P3-J).
+    if let [only] = tokens.as_slice() {
+        let word = only.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+        if crate::extraction::lexicon::NEVER_ALONE_MERCHANT_WORDS.contains(&word.as_str()) {
+            return false;
+        }
+    }
 
     if cleaned
         .trim()
@@ -214,6 +221,16 @@ pub async fn normalize_merchant(pool: &Pool, merchant_raw: &str) -> Result<Strin
 
 #[cfg(test)]
 mod tests {
+
+    /// P3-J: a lone generic word is not a merchant; names containing one are.
+    #[test]
+    fn a_lone_generic_word_is_not_a_merchant() {
+        assert!(!is_plausible_merchant_name("real"));
+        assert!(!is_plausible_merchant_name("Payment"));
+        assert!(is_plausible_merchant_name("Real Mart"));
+        assert!(is_plausible_merchant_name("Swiggy"));
+    }
+
     use super::*;
 
     fn dummy_pool() -> Pool {
