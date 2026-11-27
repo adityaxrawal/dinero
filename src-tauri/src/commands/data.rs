@@ -1709,6 +1709,7 @@ pub async fn instrument_rules_create(
     instrument_type: String,
     instrument_id: String,
     pool: State<'_, deadpool_sqlite::Pool>,
+    app_handle: tauri::AppHandle,
 ) -> Result<String, crate::error::AppError> {
     crate::ipc::validation::validate_uuid("instrument_id", &instrument_id)?;
     crate::ipc::validation::validate_non_empty("issuer_name", &issuer_name)?;
@@ -1721,6 +1722,8 @@ pub async fn instrument_rules_create(
     .await
     .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
     .map_err(|e| crate::error::AppError::Db(e.to_string()))?;
+    // Other entries from the same issuer and card type can now be booked.
+    spawn_rules_recheck(app_handle, pool.inner().clone());
     Ok("created".to_string())
 }
 
@@ -2445,6 +2448,64 @@ pub async fn reconciliation_recheck_unassigned_transaction(
         .map_err(recheck_error)?;
     notify_recheck(&app_handle, outcome == crate::ingestion::recheck::RecheckOutcome::Booked);
     Ok(outcome)
+}
+
+/// What "Book it" would do for a review entry: the values the rule layers
+/// find and whether it would book, without writing anything (current-issues
+/// #3). Read-only.
+#[tauri::command]
+pub async fn reconciliation_preview_recheck(
+    id: String,
+    pool: State<'_, deadpool_sqlite::Pool>,
+    app_handle: tauri::AppHandle,
+) -> Result<crate::ingestion::recheck::RecheckPreview, crate::error::AppError> {
+    crate::ipc::validation::validate_uuid("id", &id)?;
+    let (app_dir, _, _) = recheck_context(&app_handle);
+    crate::ingestion::recheck::preview_entry(pool.inner(), app_dir.as_deref(), &id)
+        .await
+        .map_err(recheck_error)
+}
+
+/// Sends a review entry to the local AI ahead of the background queue
+/// (current-issues #3, "Ask the AI now").
+#[tauri::command]
+pub async fn reconciliation_ask_ai_now(
+    id: String,
+    pool: State<'_, deadpool_sqlite::Pool>,
+    app_handle: tauri::AppHandle,
+) -> Result<crate::ingestion::recheck::RecheckOutcome, crate::error::AppError> {
+    use tauri::Manager;
+    crate::ipc::validation::validate_uuid("id", &id)?;
+    crate::licensing::gate::assert_write_allowed(pool.inner()).await?;
+    let (app_dir, _, ready) = recheck_context(&app_handle);
+    let tx = app_handle
+        .state::<crate::ingestion::queues::QueueHandles>()
+        .layer6_priority_tx
+        .clone();
+    let ai = crate::ingestion::recheck::AiHandle { ready, app_dir: app_dir.as_deref(), tx: &tx };
+    let outcome = crate::ingestion::recheck::ask_ai_now(pool.inner(), &ai, &id)
+        .await
+        .map_err(recheck_error)?;
+    notify_recheck(&app_handle, false);
+    Ok(outcome)
+}
+
+/// Re-checks open review entries with the rule layers only, in the
+/// background, after the user teaches a rule (current-issues #3). Whatever
+/// the new rule completes is booked; nothing is handed to the AI.
+pub(crate) fn spawn_rules_recheck(app: tauri::AppHandle, pool: deadpool_sqlite::Pool) {
+    tauri::async_runtime::spawn(async move {
+        let (app_dir, _, _) = recheck_context(&app);
+        match crate::ingestion::recheck::recheck_with_rules(&pool, app_dir.as_deref()).await {
+            Ok(summary) => {
+                if summary.booked > 0 {
+                    tracing::info!("Re-check after a new rule booked {} entries", summary.booked);
+                }
+                notify_recheck(&app, summary.booked > 0);
+            }
+            Err(e) => tracing::warn!("Re-check after a new rule failed: {e}"),
+        }
+    });
 }
 
 /// Re-checks every review entry that keeps its email.

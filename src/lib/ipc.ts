@@ -451,6 +451,12 @@ export interface ClusterMember {
   source_raw_payload_json: string | null;
 }
 
+/** Outcome of a duplicate-check decision (typed, Phase 2 2.1). */
+export interface ClusterResolution {
+  decision: 'matched' | 'kept_separate' | 'deferred';
+  transaction_id: string | null;
+}
+
 export interface ClusterRecord {
   id: string;
   reason: string;
@@ -487,6 +493,22 @@ export interface UnassignedTransactionRecord {
 
 /** What a re-check did with one review entry. */
 export type RecheckOutcome = 'booked' | 'queued_for_ai' | 'no_ai_available' | 'already_queued';
+
+/** What "Book it" would do, worked out without writing (current-issues #3). */
+export interface RecheckPreview {
+  layer: string | null;
+  confidence: number | null;
+  merchant: string | null;
+  amount_minor: number | null;
+  currency: string | null;
+  direction: string | null;
+  card_issuer: string | null;
+  card_last4: string | null;
+  card_from_rule: boolean;
+  would_book: boolean;
+  missing: string | null;
+  ai_queued: boolean;
+}
 
 /** Totals for "Re-check all". */
 export interface RecheckSummary {
@@ -891,6 +913,11 @@ export const API = {
       ),
     recheckUnassigned: (id: string) =>
       invokeCommand<RecheckOutcome>('reconciliation_recheck_unassigned_transaction', { id }),
+    /** Read-only: what a re-check would do. */
+    previewRecheck: (id: string) =>
+      invokeCommand<RecheckPreview>('reconciliation_preview_recheck', { id }),
+    /** Sends the entry to the local AI ahead of the background queue. */
+    askAiNow: (id: string) => invokeCommand<RecheckOutcome>('reconciliation_ask_ai_now', { id }),
     recheckAllUnassigned: () =>
       invokeCommand<RecheckSummary>('reconciliation_recheck_all_unassigned_transactions'),
     dismissUnassigned: (id: string) =>
@@ -928,7 +955,7 @@ export const API = {
       action: 'confirm_match' | 'reject_candidate' | 'keep_separate' | 'mark_unresolved',
       chosenCanonicalId?: string
     ) =>
-      invokeCommand<string>('reconciliation_clusters_resolve', {
+      invokeCommand<ClusterResolution>('reconciliation_clusters_resolve', {
         clusterId,
         observationId,
         action,

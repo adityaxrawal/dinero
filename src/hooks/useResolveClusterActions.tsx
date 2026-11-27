@@ -7,6 +7,7 @@ import { API } from '@/lib/ipc';
 import { confirmAction } from '@/lib/confirmDialog';
 import type { ClusterRecord } from '@/lib/ipc';
 import { formatMoney } from '@/lib/formatMoney';
+import { OUTCOME } from '@/lib/outcomeVocabulary';
 
 /**
  * The interaction layer around resolving a reconciliation cluster.
@@ -91,16 +92,17 @@ export function useResolveClusterActions({ cluster, onSuccess }: UseResolveClust
         // affordance -- it is the one action that actually merged records and
         // therefore the one with something to reverse. Deferring or keeping
         // entries separate leaves the data untouched.
-        onSuccess: () => {
-          if (action === 'mark_unresolved') {
+        // Worded from the decision the backend reports (typed outcome).
+        onSuccess: (outcome) => {
+          if (outcome.decision === 'deferred') {
             toast({
               title: 'Marked for Later Review',
               description: 'This cluster will stay in your queue.',
             });
-          } else if (action === 'confirm_match') {
+          } else if (outcome.decision === 'matched') {
             toast({
-              title: 'Cluster Resolved',
-              description: 'Your decision has been recorded.',
+              title: OUTCOME.matched,
+              description: 'Linked to the transaction already in your ledger.',
               action: (
                 <ToastAction
                   altText="Undo"
@@ -120,7 +122,10 @@ export function useResolveClusterActions({ cluster, onSuccess }: UseResolveClust
               ),
             });
           } else {
-            toast({ title: 'Cluster Resolved', description: 'Your decision has been recorded.' });
+            toast({
+              title: OUTCOME.booked,
+              description: 'Kept as a separate transaction in your ledger.',
+            });
           }
           onSuccess();
         },

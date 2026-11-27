@@ -34,11 +34,18 @@ pub(crate) enum Authored {
 }
 
 /// ponytail: single consumer; revisit only if a bulk re-correction feature ever
-pub fn spawn_learning_worker(pool: Pool) -> LearningHandle {
+/// `on_rule_activated` runs after a user correction becomes an active rule,
+/// so open review entries it can complete are re-checked (current-issues #3).
+pub fn spawn_learning_worker(
+    pool: Pool,
+    on_rule_activated: impl Fn() + Send + Sync + 'static,
+) -> LearningHandle {
     let (tx, mut rx) = mpsc::channel::<FeedbackJob>(FEEDBACK_QUEUE_CAPACITY);
     tauri::async_runtime::spawn(async move {
         while let Some(job) = rx.recv().await {
-            process_feedback_job(job, &pool).await;
+            if process_feedback_job(job, &pool).await {
+                on_rule_activated();
+            }
         }
     });
     LearningHandle { tx }
@@ -55,13 +62,14 @@ pub async fn enqueue(handle: &LearningHandle, job: FeedbackJob) {
 ///
 /// Runs on the worker rather than inline, because synthesis can invoke the LLM
 /// and the user's edit must stay instant.
-pub(crate) async fn process_feedback_job(job: FeedbackJob, pool: &Pool) {
+/// Returns whether an active rule was stored.
+pub(crate) async fn process_feedback_job(job: FeedbackJob, pool: &Pool) -> bool {
     if job.source_text.trim().is_empty() || job.new_value.trim().is_empty() {
         tracing::debug!(
             field = %job.field_name,
             "learning: no source text for this correction, nothing to learn from"
         );
-        return;
+        return false;
     }
 
     let template_hash = crate::extraction::ladder::compute_template_hash(&job.source_text);
@@ -86,7 +94,7 @@ pub(crate) async fn process_feedback_job(job: FeedbackJob, pool: &Pool) {
                 "no self-consistent candidate from either author",
             )
             .await;
-            return;
+            return false;
         }
     };
 
@@ -97,7 +105,7 @@ pub(crate) async fn process_feedback_job(job: FeedbackJob, pool: &Pool) {
         && !crate::extraction::rule_synthesis::self_check(&payload, &job.source_text, &needles)
     {
         record_rejection(pool, &job, Some(payload), "self-check failed").await;
-        return;
+        return false;
     }
 
     let samples = {
@@ -131,7 +139,7 @@ pub(crate) async fn process_feedback_job(job: FeedbackJob, pool: &Pool) {
         crate::extraction::rule_synthesis::regression_check(&payload, &samples, &job.field_name)
     {
         record_rejection(pool, &job, Some(payload), &reason).await;
-        return;
+        return false;
     }
 
     let status = if job.learned_from == "drift_llm" {
@@ -161,7 +169,7 @@ pub(crate) async fn process_feedback_job(job: FeedbackJob, pool: &Pool) {
     let feedback_id = job.feedback_log_id.clone();
     let field_for_log = job.field_name.clone();
     let bank_for_log = job.bank_name.clone();
-    let Ok(conn) = pool.get().await else { return };
+    let Ok(conn) = pool.get().await else { return false };
     let stored = conn
         .interact(move |c| {
             let feedback_ref = if feedback_id.is_empty() {
@@ -174,16 +182,25 @@ pub(crate) async fn process_feedback_job(job: FeedbackJob, pool: &Pool) {
         .await;
 
     match stored {
-        Ok(Ok(id)) => tracing::info!(
-            bank = %bank_for_log,
-            field = %field_for_log,
-            rule_id = %id,
-            authored_by,
-            status,
-            "learning: stored a validated extraction rule"
-        ),
-        Ok(Err(e)) => tracing::warn!("learning: failed to store rule: {e}"),
-        Err(e) => tracing::warn!("learning: pool interact failed while storing rule: {e:?}"),
+        Ok(Ok(id)) => {
+            tracing::info!(
+                bank = %bank_for_log,
+                field = %field_for_log,
+                rule_id = %id,
+                authored_by,
+                status,
+                "learning: stored a validated extraction rule"
+            );
+            status == "active"
+        }
+        Ok(Err(e)) => {
+            tracing::warn!("learning: failed to store rule: {e}");
+            false
+        }
+        Err(e) => {
+            tracing::warn!("learning: pool interact failed while storing rule: {e:?}");
+            false
+        }
     }
 }
 

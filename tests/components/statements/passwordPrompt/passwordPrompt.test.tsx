@@ -91,7 +91,7 @@ describe('PasswordPromptModal submission', () => {
     fireEvent.change(await screen.findByLabelText('PDF Password'), { target: { value: 'nope' } });
     fireEvent.click(screen.getByRole('button', { name: 'Submit PDF password' }));
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Incorrect password');
+    expect(await screen.findByRole('alert')).toHaveTextContent("That password didn't open");
     expect(openReviewModal).not.toHaveBeenCalled();
   });
 

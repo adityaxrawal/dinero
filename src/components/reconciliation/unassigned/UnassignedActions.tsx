@@ -32,7 +32,7 @@ export default function UnassignedActions({
         onClick={onRecheck}
         disabled={!canRecheck || isPending}
         title={
-          canRecheck ? 'Run your learned patterns again, then the local AI' : NO_EMAIL_TO_RECHECK
+          canRecheck ? 'See what your learned patterns would fill in, before anything is booked' : NO_EMAIL_TO_RECHECK
         }
       >
         <RefreshCw className="w-3.5 h-3.5 mr-2" /> Re-check

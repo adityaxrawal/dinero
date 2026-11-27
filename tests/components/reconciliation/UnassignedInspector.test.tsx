@@ -68,32 +68,58 @@ describe('UnassignedInspector re-check (current-issues #3)', () => {
     expect(button).toHaveAttribute('title', expect.stringMatching(/no stored email/i));
   });
 
-  it('re-checks the entry and closes it once it leaves the queue', async () => {
-    const spy = vi
-      .spyOn(API.reconciliation, 'recheckUnassigned')
-      .mockResolvedValue('queued_for_ai');
-    const onClose = vi.fn();
-    renderWithQuery(
-      <UnassignedInspector record={{ ...baseRecord, can_recheck: true }} onClose={onClose} />
-    );
-    fireEvent.click(screen.getByRole('button', { name: /^re-check$/i }));
-    await waitFor(() => expect(onClose).toHaveBeenCalled());
-    expect(spy).toHaveBeenCalledWith('u1');
-    spy.mockRestore();
+  const preview = (over = {}) => ({
+    layer: 'learned_fields',
+    confidence: 0.9,
+    merchant: 'Swiggy',
+    amount_minor: 45050,
+    currency: 'INR',
+    direction: 'debit',
+    card_issuer: 'HDFC',
+    card_last4: '0364',
+    card_from_rule: false,
+    would_book: true,
+    missing: null,
+    ai_queued: false,
+    ...over,
   });
 
-  it('keeps the entry open when nothing new was found', async () => {
-    const spy = vi
-      .spyOn(API.reconciliation, 'recheckUnassigned')
-      .mockResolvedValue('no_ai_available');
+  // current-issues #3: Re-check previews first; nothing is booked until Book it.
+  it('previews a re-check, then books and closes on Book it', async () => {
+    const previewSpy = vi.spyOn(API.reconciliation, 'previewRecheck').mockResolvedValue(preview());
+    const bookSpy = vi.spyOn(API.reconciliation, 'recheckUnassigned').mockResolvedValue('booked');
     const onClose = vi.fn();
     renderWithQuery(
       <UnassignedInspector record={{ ...baseRecord, can_recheck: true }} onClose={onClose} />
     );
     fireEvent.click(screen.getByRole('button', { name: /^re-check$/i }));
-    await waitFor(() => expect(spy).toHaveBeenCalled());
+    expect(await screen.findByText('Found by your learned patterns')).toBeInTheDocument();
+    expect(previewSpy).toHaveBeenCalledWith('u1');
+    expect(bookSpy).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Book it' }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(bookSpy).toHaveBeenCalledWith('u1');
+    previewSpy.mockRestore();
+    bookSpy.mockRestore();
+  });
+
+  it('says why it would stay in review and offers Ask the AI now', async () => {
+    const previewSpy = vi
+      .spyOn(API.reconciliation, 'previewRecheck')
+      .mockResolvedValue(preview({ would_book: false, missing: 'No card or account found' }));
+    const askSpy = vi.spyOn(API.reconciliation, 'askAiNow').mockResolvedValue('no_ai_available');
+    const onClose = vi.fn();
+    renderWithQuery(
+      <UnassignedInspector record={{ ...baseRecord, can_recheck: true }} onClose={onClose} />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /^re-check$/i }));
+    expect(await screen.findByText(/No card or account found/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Book it' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Ask the AI now' }));
+    await waitFor(() => expect(askSpy).toHaveBeenCalledWith('u1'));
     expect(onClose).not.toHaveBeenCalled();
-    spy.mockRestore();
+    previewSpy.mockRestore();
+    askSpy.mockRestore();
   });
 
   it('offers the re-check prompt inside the missing-instrument diagnosis only', () => {

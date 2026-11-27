@@ -51,6 +51,8 @@ struct Entry {
     bank: String,
     body: String,
     event_time_seconds: Option<i64>,
+    /// From a sender the user hasn't trusted: never booked automatically.
+    review_only: bool,
 }
 
 /// Why an entry cannot be re-checked, worded for the user.
@@ -81,7 +83,7 @@ pub async fn recheck_entry(
 ) -> Result<RecheckOutcome, RecheckError> {
     let entry = match load_entry(pool, unassigned_id).await? {
         Loaded::Entry(e) => e,
-        Loaded::Queued => return Ok(RecheckOutcome::AlreadyQueued),
+        Loaded::Queued(_) => return Ok(RecheckOutcome::AlreadyQueued),
     };
 
     // Learned patterns, then templates, regex and NLP, exactly as the scan
@@ -155,12 +157,186 @@ pub async fn recheck_all(pool: &Pool, ai: &AiHandle<'_>) -> Result<RecheckSummar
     Ok(summary)
 }
 
+/// Re-checks every open entry with the rule layers only, never handing one
+/// to the AI. Run after the user teaches a rule (a card rule or a corrected
+/// field), so entries the new rule completes are booked straight away
+/// (current-issues #3).
+pub async fn recheck_with_rules(
+    pool: &Pool,
+    app_dir: Option<&std::path::Path>,
+) -> Result<RecheckSummary, RecheckError> {
+    // Not ready: entries the rules can't complete stay as they are.
+    let (tx, _rx) = mpsc::channel(1);
+    recheck_all(pool, &AiHandle { ready: false, app_dir, tx: &tx }).await
+}
+
+/// Sends one entry to the local AI ahead of the background queue (current-
+/// issues #3, "Ask the AI now"). `ai.tx` is the priority channel. An entry
+/// already queued is offered again there; workers never run the same entry
+/// twice at once, and a late duplicate finds it settled.
+pub async fn ask_ai_now(
+    pool: &Pool,
+    ai: &AiHandle<'_>,
+    unassigned_id: &str,
+) -> Result<RecheckOutcome, RecheckError> {
+    if !ai.ready {
+        return Ok(RecheckOutcome::NoAiAvailable);
+    }
+    match load_entry(pool, unassigned_id).await? {
+        Loaded::Entry(entry) => queue_for_ai(pool, ai, unassigned_id, entry).await,
+        Loaded::Queued(entry) => {
+            let Some(app_dir) = ai.app_dir else {
+                return Ok(RecheckOutcome::NoAiAvailable);
+            };
+            let job = Layer6Job {
+                observation_id: entry.observation_id,
+                unassigned_id: unassigned_id.to_string(),
+                bank_name: entry.bank,
+                body_text: entry.body,
+                app_dir: app_dir.to_path_buf(),
+                internal_date_seconds: entry.event_time_seconds,
+            };
+            ai.tx
+                .send(job)
+                .await
+                .map_err(|e| RecheckError::Internal(e.to_string()))?;
+            Ok(RecheckOutcome::QueuedForAi)
+        }
+    }
+}
+
+/// What "Book it" would do, worked out without writing anything (current-
+/// issues #3: preview before booking). Values the rules find are merged over
+/// what the entry already has, as a real re-check does.
+#[derive(Debug, Serialize, PartialEq)]
+pub struct RecheckPreview {
+    /// Rule layer that produced the values, e.g. "learned_fields".
+    pub layer: Option<String>,
+    pub confidence: Option<f64>,
+    pub merchant: Option<String>,
+    pub amount_minor: Option<i64>,
+    pub currency: Option<String>,
+    pub direction: Option<String>,
+    pub card_issuer: Option<String>,
+    pub card_last4: Option<String>,
+    /// A card rule (Settings > Learned Rules) supplies the card.
+    pub card_from_rule: bool,
+    pub would_book: bool,
+    /// Why it would stay in review, in plain words.
+    pub missing: Option<String>,
+    /// The local AI already has this email.
+    pub ai_queued: bool,
+}
+
+pub async fn preview_entry(
+    pool: &Pool,
+    app_dir: Option<&std::path::Path>,
+    unassigned_id: &str,
+) -> Result<RecheckPreview, RecheckError> {
+    let (entry, ai_queued) = match load_entry(pool, unassigned_id).await? {
+        Loaded::Entry(e) => (e, false),
+        Loaded::Queued(e) => (e, true),
+    };
+    let mut trace = crate::logging::EmailTrace::new(unassigned_id);
+    let extracted = crate::extraction::ladder::run_extraction_ladder(
+        pool,
+        &entry.bank,
+        &entry.body,
+        app_dir.map(std::path::Path::to_path_buf),
+        false,
+        entry.event_time_seconds,
+        &mut false,
+        None,
+        &mut trace,
+    )
+    .await?;
+    let mut found = extracted.unwrap_or_default();
+    crate::ingestion::message_processor::MessageProcessor::clean_merchant(&mut found, &entry.body);
+
+    let (obs_id, issuer, kind) =
+        (entry.observation_id.clone(), found.issuer_name.clone(), found.instrument_type.clone());
+    let need_rule = found.masked_identifier.is_none();
+    let conn = pool.get().await.map_err(|e| RecheckError::Internal(e.to_string()))?;
+    type Existing = (Option<i64>, Option<String>, Option<String>, Option<String>, Option<String>);
+    let (existing, rule): (Option<Existing>, Option<String>) = conn
+        .interact(move |c| -> rusqlite::Result<_> {
+            let existing = c
+                .query_row(
+                    "SELECT amount_minor, currency, direction, merchant_raw, instrument_id \
+                     FROM transaction_observations WHERE id = ?1",
+                    [&obs_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                )
+                .optional()?;
+            let rule = match (need_rule, issuer, kind) {
+                (true, Some(i), Some(k)) => crate::db::instrument_rules::lookup(c, &i, &k).ok().flatten(),
+                _ => None,
+            };
+            Ok((existing, rule))
+        })
+        .await
+        .map_err(|e| RecheckError::Internal(e.to_string()))?
+        .map_err(|e| RecheckError::Internal(e.to_string()))?;
+    let (e_amount, e_currency, e_direction, e_merchant, e_instrument) =
+        existing.unwrap_or_default();
+
+    let amount_minor = found.amount_minor.or(e_amount);
+    let currency = found.currency.clone().or(e_currency);
+    let direction = found.direction.clone().or(e_direction);
+    let merchant = found.merchant_raw.clone().or(e_merchant);
+    let card_from_rule = rule.is_some();
+    let has_card = e_instrument.is_some()
+        || (found.issuer_name.is_some() && found.masked_identifier.is_some())
+        || card_from_rule;
+    let confident = found.confidence_score.unwrap_or(0.0)
+        >= crate::extraction::ladder::MIN_LEDGER_CONFIDENCE;
+
+    // Same order of blame as the real booking check.
+    let missing = if amount_minor.unwrap_or(0) <= 0 {
+        Some("No amount found")
+    } else if merchant.as_deref().is_none_or(|m| m.trim().is_empty()) {
+        Some("No merchant found")
+    } else if direction.is_none() {
+        Some("Debit or credit not stated")
+    } else if currency.is_none() {
+        Some("No currency found")
+    } else if !has_card {
+        Some("No card or account found")
+    } else if entry.review_only {
+        Some("From a sender you haven't trusted")
+    } else if !confident {
+        Some("The rules aren't confident enough")
+    } else {
+        None
+    };
+    Ok(RecheckPreview {
+        layer: extracted_layer(&found),
+        confidence: found.confidence_score,
+        merchant,
+        amount_minor,
+        currency,
+        direction,
+        card_issuer: found.issuer_name,
+        card_last4: found.masked_identifier,
+        card_from_rule,
+        would_book: missing.is_none() && !ai_queued,
+        missing: missing.map(str::to_string),
+        ai_queued,
+    })
+}
+
+fn extracted_layer(found: &crate::extraction::ladder::ExtractionResult) -> Option<String> {
+    (!found.extraction_method.is_empty()).then(|| found.extraction_method.clone())
+}
+
 /// status, live AI job, observation id, raw payload, event time.
 type EntryRow = (String, bool, String, Option<String>, Option<chrono::NaiveDateTime>);
 
 enum Loaded {
     Entry(Entry),
-    Queued,
+    /// An AI job for it is live; the email is still returned, so "Ask the AI
+    /// now" can move it up the queue.
+    Queued(Entry),
 }
 
 async fn load_entry(pool: &Pool, unassigned_id: &str) -> Result<Loaded, RecheckError> {
@@ -186,9 +362,6 @@ async fn load_entry(pool: &Pool, unassigned_id: &str) -> Result<Loaded, RecheckE
         if status != "open" {
             return Err(RecheckError::NotOpen);
         }
-        if live_job {
-            return Ok(Loaded::Queued);
-        }
         let payload: serde_json::Value = raw
             .as_deref()
             .and_then(|r| serde_json::from_str(r).ok())
@@ -196,12 +369,14 @@ async fn load_entry(pool: &Pool, unassigned_id: &str) -> Result<Loaded, RecheckE
         let (Some(bank), Some(body)) = (payload["bank"].as_str(), payload["body"].as_str()) else {
             return Err(RecheckError::NoEmail);
         };
-        Ok(Loaded::Entry(Entry {
+        let entry = Entry {
             observation_id,
             bank: bank.to_string(),
             body: body.to_string(),
             event_time_seconds: event_time.and_then(ist_naive_to_unix),
-        }))
+            review_only: payload["review_only"] == serde_json::Value::Bool(true),
+        };
+        Ok(if live_job { Loaded::Queued(entry) } else { Loaded::Entry(entry) })
     })
     .await
     .map_err(|e| RecheckError::Internal(e.to_string()))?
@@ -383,6 +558,56 @@ mod tests {
         let outcome = recheck_entry(&f.pool, &f.ai(true), &id).await.unwrap();
         assert_eq!(outcome, RecheckOutcome::Booked);
         assert_eq!(f.status_reason(&id).await.0, "resolved");
+    }
+
+    /// Preview before booking (current-issues #3): says what would happen
+    /// and writes nothing.
+    #[tokio::test]
+    async fn a_preview_predicts_the_booking_and_writes_nothing() {
+        let f = Fixture::new().await;
+        let id = f.entry(COMPLETE, ReviewRoute::Review).await;
+        let p = preview_entry(&f.pool, Some(&f.dir), &id).await.unwrap();
+        assert!(p.would_book, "{p:?}");
+        assert_eq!(p.amount_minor, Some(259000));
+        assert_eq!(p.card_last4.as_deref(), Some("0364"));
+        assert!(p.layer.is_some());
+        assert_eq!(f.status_reason(&id).await.0, "open", "a preview never books");
+
+        let id = f.entry(NO_CARD, ReviewRoute::Review).await;
+        let p = preview_entry(&f.pool, Some(&f.dir), &id).await.unwrap();
+        assert!(!p.would_book);
+        assert_eq!(p.missing.as_deref(), Some("No card or account found"));
+
+        let id = f.entry(COMPLETE, ReviewRoute::ReviewOnlySender).await;
+        let p = preview_entry(&f.pool, Some(&f.dir), &id).await.unwrap();
+        assert_eq!(p.missing.as_deref(), Some("From a sender you haven't trusted"));
+    }
+
+    /// After a new rule: the rules alone book what they can; nothing goes
+    /// to the AI (current-issues #3).
+    #[tokio::test]
+    async fn a_rules_only_recheck_books_what_it_can_and_never_queues_the_ai() {
+        let mut f = Fixture::new().await;
+        let done = f.entry(COMPLETE, ReviewRoute::Review).await;
+        let stays = f.entry(NO_CARD, ReviewRoute::Review).await;
+        let summary = recheck_with_rules(&f.pool, Some(&f.dir)).await.unwrap();
+        assert_eq!(summary.booked, 1);
+        assert_eq!(f.status_reason(&done).await.0, "resolved");
+        assert_eq!(f.status_reason(&stays).await.0, "open");
+        assert!(f.rx.try_recv().is_err(), "nothing handed to the AI");
+    }
+
+    /// "Ask the AI now" uses the given (priority) channel, and offers an
+    /// already-queued entry again there instead of refusing.
+    #[tokio::test]
+    async fn ask_ai_now_queues_and_re_offers_a_queued_entry() {
+        let mut f = Fixture::new().await;
+        let id = f.entry(NO_CARD, ReviewRoute::Review).await;
+        assert_eq!(ask_ai_now(&f.pool, &f.ai(true), &id).await.unwrap(), RecheckOutcome::QueuedForAi);
+        assert_eq!(f.rx.try_recv().unwrap().unassigned_id, id);
+        assert_eq!(ask_ai_now(&f.pool, &f.ai(true), &id).await.unwrap(), RecheckOutcome::QueuedForAi);
+        assert_eq!(f.rx.try_recv().unwrap().unassigned_id, id);
+        assert_eq!(ask_ai_now(&f.pool, &f.ai(false), &id).await.unwrap(), RecheckOutcome::NoAiAvailable);
     }
 
     #[tokio::test]

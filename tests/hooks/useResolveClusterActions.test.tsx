@@ -165,7 +165,9 @@ describe('useResolveClusterActions', () => {
         act(() => result.current.setSelectedCandidateId('canon1'));
       await act(async () => result.current[method]());
       await waitFor(() => expect(mutate).toHaveBeenCalled());
-      act(() => mutate.mock.calls[0][1].onSuccess());
+      // The backend's typed outcome for each action.
+      const decision = { handleConfirmMatch: 'matched', handleReviewLater: 'deferred', handleKeepSeparate: 'kept_separate' }[method];
+      act(() => mutate.mock.calls[0][1].onSuccess({ decision, transaction_id: 't1' }));
       return onSuccess;
     };
 
@@ -178,13 +180,13 @@ describe('useResolveClusterActions', () => {
 
     it('offers an Undo action after a confirmed match', async () => {
       await runSuccess('handleConfirmMatch');
-      const call = toast.mock.calls.find((c) => c[0].title === 'Cluster Resolved');
+      const call = toast.mock.calls.find((c) => c[0].title === 'Matched to existing');
       expect(call![0].action).toBeTruthy();
     });
 
     it('offers no Undo for a keep-separate decision', async () => {
       await runSuccess('handleKeepSeparate');
-      const call = toast.mock.calls.find((c) => c[0].title === 'Cluster Resolved');
+      const call = toast.mock.calls.find((c) => c[0].title === 'Booked');
       expect(call![0].action).toBeUndefined();
     });
 
@@ -198,8 +200,8 @@ describe('useResolveClusterActions', () => {
       act(() => result.current.setSelectedCandidateId('canon1'));
       await act(async () => result.current.handleConfirmMatch());
       await waitFor(() => expect(mutate).toHaveBeenCalled());
-      act(() => mutate.mock.calls[0][1].onSuccess());
-      const action = toast.mock.calls.find((c) => c[0].title === 'Cluster Resolved')![0].action;
+      act(() => mutate.mock.calls[0][1].onSuccess({ decision: 'matched', transaction_id: 'canon1' }));
+      const action = toast.mock.calls.find((c) => c[0].title === 'Matched to existing')![0].action;
       await act(async () => action.props.onClick());
       expect(API.reconciliation.unmergeCluster).toHaveBeenCalledWith('c1');
     });

@@ -7,7 +7,7 @@
 import { OUTCOME } from '@/lib/outcomeVocabulary';
 import { X } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { UnassignedTransactionRecord } from '@/lib/ipc';
+import { API, type RecheckPreview, type UnassignedTransactionRecord } from '@/lib/ipc';
 import { useInstrumentsList } from '@/hooks/queries/useInstrumentsList';
 import { inspectorPanelClasses, inspectorPanelStyle } from '@/components/layout/inspectorPanel';
 import { reasonTitle, parseEmailEvidence } from './unassigned/diagnostics';
@@ -16,9 +16,11 @@ import FailureDiagnosis from './unassigned/FailureDiagnosis';
 import ExtractedDataForm from './unassigned/ExtractedDataForm';
 import SourceEmailEvidence from './unassigned/SourceEmailEvidence';
 import UnassignedActions from './unassigned/UnassignedActions';
+import RecheckPreviewPanel from './unassigned/RecheckPreviewPanel';
 import { useToast } from '@/hooks/use-toast';
 import { getErrorToast } from '@/lib/errorMapping';
 import { recheckMessage, useRecheckUnassigned } from '@/hooks/mutations/useRecheckUnassigned';
+import { useState } from 'react';
 
 interface UnassignedInspectorProps {
   record: UnassignedTransactionRecord | undefined;
@@ -79,6 +81,8 @@ export default function UnassignedInspector({
   const { data: instruments = [] } = useInstrumentsList();
   const form = useUnassignedForm(record, onClose);
   const recheck = useRecheckUnassigned();
+  const [preview, setPreview] = useState<{ id: string; data: RecheckPreview } | null>(null);
+  const [previewing, setPreviewing] = useState(false);
   const { toast } = useToast();
 
   const asideClasses = inspectorPanelClasses(inline, isOpen);
@@ -91,8 +95,31 @@ export default function UnassignedInspector({
   }
 
   const recordId = record.id;
-  /** Re-checks this entry; it leaves the queue unless nothing changed. */
-  const handleRecheck = () =>
+  const shownPreview = preview?.id === recordId ? preview.data : null;
+  /** Shows what a re-check would do; nothing is booked yet (current-issues #3). */
+  const handleRecheck = () => {
+    setPreviewing(true);
+    API.reconciliation
+      .previewRecheck(recordId)
+      .then((data) => setPreview({ id: recordId, data }))
+      .catch((err) => toast({ variant: 'destructive', ...getErrorToast(err) }))
+      .finally(() => setPreviewing(false));
+  };
+  /** Sends it to the local AI ahead of the queue. */
+  const handleAskAi = () => {
+    setPreviewing(true);
+    API.reconciliation
+      .askAiNow(recordId)
+      .then((outcome) => {
+        toast(recheckMessage(outcome));
+        setPreview(null);
+        if (outcome === 'queued_for_ai') onClose();
+      })
+      .catch((err) => toast({ variant: 'destructive', ...getErrorToast(err) }))
+      .finally(() => setPreviewing(false));
+  };
+  /** "Book it": the real re-check; it leaves the queue unless nothing changed. */
+  const handleBook = () =>
     recheck.mutate(recordId, {
       onSuccess: (outcome) => {
         toast(recheckMessage(outcome));
@@ -100,7 +127,7 @@ export default function UnassignedInspector({
       },
       onError: (err) => toast({ variant: 'destructive', ...getErrorToast(err) }),
     });
-  const busy = form.isPending || recheck.isPending;
+  const busy = form.isPending || recheck.isPending || previewing;
 
   const evidence = parseEmailEvidence(record);
   const hasEvidence = Boolean(evidence.html || evidence.text || record.body_snippet);
@@ -152,10 +179,19 @@ export default function UnassignedInspector({
               AI's later answer is ignored.
             </p>
           )}
+          {shownPreview && (
+            <RecheckPreviewPanel
+              preview={shownPreview}
+              busy={busy}
+              onBook={handleBook}
+              onAskAi={handleAskAi}
+              onClose={() => setPreview(null)}
+            />
+          )}
           <FailureDiagnosis
             record={record}
             onRecheck={handleRecheck}
-            isRechecking={recheck.isPending}
+            isRechecking={busy}
           />
 
           <ExtractedDataForm

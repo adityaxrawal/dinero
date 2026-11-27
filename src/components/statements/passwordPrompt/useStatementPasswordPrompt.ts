@@ -15,6 +15,16 @@ function errorText(error: unknown): string {
 }
 
 /** State and submission for the password prompt, including retries. */
+/**
+ * Wrong-password message: names the file and says where banks state the
+ * format, instead of a bare "Incorrect password" (current-issues #4). Generic
+ * guidance only; nothing about the user is guessed.
+ */
+export function wrongPasswordMessage(name: string | null | undefined): string {
+  const file = name ? `"${name}"` : 'this statement';
+  return `That password didn't open ${file}. The bank's email or website usually says what it is made of (often part of your name with your date of birth, or digits of your card or account number).`;
+}
+
 export function useStatementPasswordPrompt(onUnlocked: () => void) {
   const {
     passwordModalOpen,
@@ -72,13 +82,13 @@ export function useStatementPasswordPrompt(onUnlocked: () => void) {
       } else if (result.status === 'awaiting_instrument_confirmation') {
         close();
       } else {
-        setPasswordError('Incorrect password');
+        setPasswordError(wrongPasswordMessage(statementDetails?.display_name ?? statementDetails?.filename));
       }
     } catch (error: unknown) {
       setPasswordError(
         errorText(error).toLowerCase().includes('session has expired')
           ? 'Session expired. Please re-upload the file.'
-          : 'Incorrect password'
+          : wrongPasswordMessage(statementDetails?.display_name ?? statementDetails?.filename)
       );
     } finally {
       setIsSubmitting(false);
@@ -91,6 +101,7 @@ export function useStatementPasswordPrompt(onUnlocked: () => void) {
     onUnlocked,
     watchDraftOrigin,
     openReviewModal,
+    statementDetails,
   ]);
 
   return {

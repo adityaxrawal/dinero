@@ -146,6 +146,12 @@ pub(crate) const LAYER6_QUEUE_CAPACITY: usize = 256;
 
 pub static ACTIVE_LAYER6_JOBS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+/// Entries a worker is running right now. "Ask the AI now" can put a second
+/// copy of a queued job on the priority channel; this keeps two workers from
+/// running the same entry at once (the late copy finds it settled).
+static LAYER6_IN_FLIGHT: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(Default::default);
+
 /// Persists a job, then offers it: what `record_unassigned_transaction`
 /// (with `ReviewRoute::AwaitLlm`) plus `offer_layer6_job` do in production.
 #[cfg(test)]
@@ -402,6 +408,8 @@ pub struct QueueHandles {
     pub statement_tx: mpsc::Sender<StatementJob>,
     pub mandate_tx: mpsc::Sender<MandateJob>,
     pub layer6_tx: mpsc::Sender<Layer6Job>,
+    /// "Ask the AI now": workers take these before the background queue.
+    pub layer6_priority_tx: mpsc::Sender<Layer6Job>,
 }
 
 const TRANSACTION_QUEUE_WORKERS: usize = 4;
@@ -526,17 +534,19 @@ pub fn spawn_queues<R: tauri::Runtime>(
     let (statement_tx, statement_rx) = mpsc::channel::<StatementJob>(STATEMENT_QUEUE_CAPACITY);
     let (mandate_tx, mandate_rx) = mpsc::channel::<MandateJob>(MANDATE_QUEUE_CAPACITY);
     let (layer6_tx, layer6_rx) = mpsc::channel::<Layer6Job>(LAYER6_QUEUE_CAPACITY);
+    let (layer6_priority_tx, layer6_priority_rx) = mpsc::channel::<Layer6Job>(LAYER6_WORKERS);
 
     spawn_transaction_workers(transaction_rx, transaction_tx.clone(), pool.clone(), app.clone());
     spawn_statement_dispatcher(statement_rx, pool.clone(), app.clone());
     spawn_mandate_workers(mandate_rx, mandate_tx.clone(), pool.clone());
-    spawn_layer6_workers(app.clone(), layer6_rx, layer6_tx.clone(), pool, learning);
+    spawn_layer6_workers(app.clone(), layer6_rx, layer6_priority_rx, layer6_tx.clone(), pool, learning);
 
     let handles = QueueHandles {
         transaction_tx,
         statement_tx,
         mandate_tx,
         layer6_tx,
+        layer6_priority_tx,
     };
 
     spawn_queue_monitor(app.clone(), handles.clone());
@@ -621,6 +631,7 @@ fn spawn_queue_monitor<R: tauri::Runtime>(
 fn spawn_layer6_workers<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     rx: mpsc::Receiver<Layer6Job>,
+    priority_rx: mpsc::Receiver<Layer6Job>,
     tx: mpsc::Sender<Layer6Job>,
     pool: Pool,
     learning: crate::learning::LearningHandle,
@@ -629,16 +640,31 @@ fn spawn_layer6_workers<R: tauri::Runtime>(
     // up behind the sidecar's own semaphore; now the channel's capacity is
     // the backpressure, and at most LAYER6_WORKERS jobs are in flight.
     let rx = Arc::new(Mutex::new(rx));
+    let priority_rx = Arc::new(Mutex::new(priority_rx));
     for _ in 0..LAYER6_WORKERS {
         let rx = Arc::clone(&rx);
+        let priority_rx = Arc::clone(&priority_rx);
         let pool = pool.clone();
         let learning = learning.clone();
         let tx = tx.clone();
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
             loop {
-                let job = { rx.lock().await.recv().await };
+                // Priority jobs ("Ask the AI now") first, then the queue.
+                let job = tokio::select! {
+                    biased;
+                    Some(job) = async { priority_rx.lock().await.recv().await } => Some(job),
+                    job = async { rx.lock().await.recv().await } => job,
+                };
                 let Some(job) = job else { break };
+                let first = LAYER6_IN_FLIGHT
+                    .lock()
+                    .map(|mut f| f.insert(job.unassigned_id.clone()))
+                    .unwrap_or(true);
+                if !first {
+                    // Another worker has this entry; its result settles it.
+                    continue;
+                }
                 crate::security::incident_response::wait_while_ingestion_paused().await;
                 ACTIVE_LAYER6_JOBS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let (id, app_dir) = (job.unassigned_id.clone(), job.app_dir.clone());
@@ -693,6 +719,9 @@ fn spawn_layer6_workers<R: tauri::Runtime>(
                     );
                 }
                 ACTIVE_LAYER6_JOBS.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                if let Ok(mut f) = LAYER6_IN_FLIGHT.lock() {
+                    f.remove(&id);
+                }
                 refill_layer6_queue(&pool, &tx, &app_dir).await;
             }
         });
@@ -3221,7 +3250,8 @@ mod dispatch_tests {
         let (statement_tx, _) = mpsc::channel(1);
         let (mandate_tx, _) = mpsc::channel(1);
         let (layer6_tx, _) = mpsc::channel(1);
-        app.manage(QueueHandles { transaction_tx, statement_tx, mandate_tx, layer6_tx });
+        let (layer6_priority_tx, _) = mpsc::channel(1);
+        app.manage(QueueHandles { transaction_tx, statement_tx, mandate_tx, layer6_tx, layer6_priority_tx });
 
         dispatch_transaction_alert(
             app.handle(),

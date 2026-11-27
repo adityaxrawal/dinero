@@ -2279,7 +2279,7 @@ pub async fn reconciliation_clusters_resolve(
     action: String,
     chosen_canonical_id: Option<String>,
     pool: tauri::State<'_, deadpool_sqlite::Pool>,
-) -> Result<String, crate::error::AppError> {
+) -> Result<ClusterResolution, crate::error::AppError> {
     crate::ipc::validation::validate_uuid("cluster_id", &cluster_id)?;
     crate::ipc::validation::validate_uuid("observation_id", &observation_id)?;
     if let Some(ref chosen_canonical_id) = chosen_canonical_id {
@@ -2339,13 +2339,38 @@ pub async fn reconciliation_clusters_resolve(
             Some(&serde_json::json!({ "cluster_id": cluster_id, "observation_id": observation_id })),
         );
 
-        Ok::<(), crate::error::AppError>(())
+        // What happened, so the UI words it from the decision rather than
+        // assuming (Phase 2 2.1 typed outcomes).
+        let decision = match action.as_str() {
+            "mark_unresolved" => "deferred",
+            "confirm_match" => "matched",
+            _ => "kept_separate",
+        };
+        let transaction_id = if decision == "deferred" {
+            None
+        } else {
+            conn.query_row(
+                "SELECT canonical_transaction_id FROM transaction_observations WHERE id = ?1",
+                [&observation_id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .ok()
+            .flatten()
+        };
+        Ok::<ClusterResolution, crate::error::AppError>(ClusterResolution { decision, transaction_id })
     })
     .await
     .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?
-    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))?;
+    .map_err(|e| crate::error::AppError::Unknown(e.to_string()))
+}
 
-    Ok("Cluster resolved".to_string())
+/// Typed outcome of a duplicate-check decision.
+#[derive(serde::Serialize, Debug)]
+pub struct ClusterResolution {
+    /// `matched`, `kept_separate` or `deferred`.
+    pub decision: &'static str,
+    /// The ledger transaction the email now belongs to (none when deferred).
+    pub transaction_id: Option<String>,
 }
 
 
@@ -3409,6 +3434,8 @@ pub fn get_handlers() -> impl Fn(tauri::ipc::Invoke) -> bool {
         data::reconciliation_dismiss_unassigned_transaction,
         data::reconciliation_restore_unassigned_transaction,
         data::reconciliation_recheck_unassigned_transaction,
+        data::reconciliation_preview_recheck,
+        data::reconciliation_ask_ai_now,
         data::reconciliation_recheck_all_unassigned_transactions,
         data::reconciliation_resolve_unassigned_transaction_manually,
         data::reconciliation_clusters_unmerge,
@@ -3657,6 +3684,7 @@ mod tests {
             ("instrument_rules_list", "read-only query"),
             ("skipped_emails_list", "read-only query"),
             ("activity_list", "read-only query"),
+            ("reconciliation_preview_recheck", "read-only query"),
             ("sync_poll_status", "read-only query"),
             ("check_backend_status", "read-only query"),
             ("check_system_ram", "read-only query"),

@@ -27,11 +27,13 @@ mod tests {
         let (statement_tx, _) = tokio::sync::mpsc::channel(1);
         let (mandate_tx, _) = tokio::sync::mpsc::channel(1);
         let (layer6_tx, _) = tokio::sync::mpsc::channel(1);
+        let (layer6_priority_tx, _) = tokio::sync::mpsc::channel(1);
         crate::ingestion::queues::QueueHandles {
             transaction_tx,
             statement_tx,
             mandate_tx,
             layer6_tx,
+            layer6_priority_tx,
         }
     }
 

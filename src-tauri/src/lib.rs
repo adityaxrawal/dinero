@@ -525,7 +525,12 @@ pub fn run() {
             // Background services from here on. Each is spawned onto the async
             // runtime so startup completes and the window renders while they come
             // up in the background.
-            let learning_handle = crate::learning::spawn_learning_worker(pool_clone.clone());
+            let learning_handle = {
+                let (app, pool) = (app.handle().clone(), pool_clone.clone());
+                crate::learning::spawn_learning_worker(pool_clone.clone(), move || {
+                    crate::commands::data::spawn_rules_recheck(app.clone(), pool.clone())
+                })
+            };
             app.manage(learning_handle.clone());
 
             let queue_handles = crate::ingestion::queues::spawn_queues(
